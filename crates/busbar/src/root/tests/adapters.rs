@@ -3,9 +3,9 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_caps::KernelSeal;
+use busbar_contract::caps::KernelSeal;
 use busbar_contract::WireStatus;
-use busbar_unit_egress::ports::Disposition;
+use busbar_kernel_egress::ports::Disposition;
 
 /// A fresh `UnitToken<Route>` for one `observe`/`ready`/`cooldown_remaining` call — test-only,
 /// minted through the kernel seal exactly as CG-29 says a real deployment would
@@ -19,7 +19,7 @@ fn route_token() -> UnitToken<Route> {
 /// A sink for a test that is about a ladder rather than about a diagnostic. The breaker crate's
 /// own noop, at the shared handle's width, so the unit under test is the production one.
 fn silent_sink() -> DiagnosticsSink {
-    Arc::new(busbar_unit_breaker::classify::NoopDiagnostics)
+    Arc::new(busbar_kernel_breaker::classify::NoopDiagnostics)
 }
 
 /// A sink that keeps what it was told, so a test can ask whether the value reached it.
@@ -134,7 +134,7 @@ fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lan
 /// the two readings apart rather than letting either stand in for the other.
 #[test]
 fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
-    use busbar_unit_breaker::port::UpstreamCode;
+    use busbar_kernel_breaker::port::UpstreamCode;
     let grpc = UpstreamStatus {
         class: Some(WireStatusClass::ServerError),
         code: Some(WireStatus::new(
@@ -178,10 +178,10 @@ fn a_slow_ladder() -> BreakerCfg {
     BreakerCfg {
         base_cooldown_secs: 300,
         max_cooldown_secs: 600,
-        trip: busbar_unit_breaker::cfg::TripConfig {
-            mode: busbar_unit_breaker::cfg::TripMode::Consecutive,
+        trip: busbar_kernel_breaker::cfg::TripConfig {
+            mode: busbar_kernel_breaker::cfg::TripMode::Consecutive,
             consecutive_n: 1,
-            ..busbar_unit_breaker::cfg::TripConfig::default()
+            ..busbar_kernel_breaker::cfg::TripConfig::default()
         },
         ..BreakerCfg::default()
     }
@@ -420,8 +420,8 @@ fn the_two_label_banks_agree() {
 /// wire nobody is holding.
 #[test]
 fn the_shared_labels_are_the_expected_wire_values() {
-    use busbar_unit_breaker::port::label;
-    use busbar_unit_egress::ports::disposition;
+    use busbar_kernel_breaker::port::label;
+    use busbar_kernel_egress::ports::disposition;
 
     assert_eq!(label::TRANSIENT_UPSTREAM, "transient_upstream");
     assert_eq!(label::HARD_DOWN, "hard_down");

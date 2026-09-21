@@ -40,7 +40,7 @@
 //! bytes, which is what keeps every terminal on this plane on one path — and what lets this file
 //! carry no HTTP vocabulary beyond the two kind constants the live doors already spell.
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Decision, PrincipalId, ReasonCode, Refusal, UnitToken, VerifiedDestination, Verify,
 };
 use busbar_substrate::plane_host::{CostHandle, EngineHost, EngineTablesView};

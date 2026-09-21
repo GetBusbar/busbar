@@ -62,7 +62,7 @@
 use std::sync::Arc;
 
 use axum::response::Response;
-use busbar_caps::{
+use busbar_contract::caps::{
     step::Admit, Admission, AdmitToken, Decision, Hold, PrincipalId, ReasonCode, Refusal,
     UnitToken, VerifiedDestination,
 };

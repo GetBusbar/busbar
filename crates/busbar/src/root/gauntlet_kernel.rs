@@ -23,7 +23,7 @@
 
 use axum::response::Response;
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
     Authenticated, Decision, Decode, Encode, Frame, Meter, OpClassId, OriginKind, Outcome,
     PrincipalId, ReasonCode, Refusal, Route, TrustToken, UnitToken, Usage, UsageToken,
@@ -303,7 +303,7 @@ pub async fn run_gauntlet_via_kernel(
 ) -> Response {
     let kernel = crate::root::kernel::new_kernel();
     let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
-    let canary = busbar_caps::Canary::new();
+    let canary = busbar_contract::caps::Canary::new();
     let inflight = busbar_kernel::inflight::InFlight::new(usize::MAX, 0);
     let meter = AccrualMeter::new();
     let table = PlaneInFlight::new();
@@ -404,7 +404,7 @@ pub fn open_gauntlet_via_kernel(
 ) -> Result<Admitted, Response> {
     let kernel = crate::root::kernel::new_kernel();
     let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
-    let canary = busbar_caps::Canary::new();
+    let canary = busbar_contract::caps::Canary::new();
     let inflight = busbar_kernel::inflight::InFlight::new(usize::MAX, 0);
     let meter = AccrualMeter::new();
     let table = PlaneInFlight::new();

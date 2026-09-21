@@ -28,7 +28,6 @@ name = "busbar_kernel"
 path = "src/lib.rs"
 
 [dependencies]
-busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
 busbar-grammar = { path = "../busbar-grammar" }
 

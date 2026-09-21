@@ -1,0 +1,405 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The sealed answer: what the loop actually receives.
+
+use busbar_contract::caps::{Authenticate, KernelSeal, ReasonCode, StepName, UnitToken};
+
+use super::{entry, Canned};
+use crate::admin::{admin_grants, kernel_verb_scope_satisfied, Grants, Scope};
+use crate::chain::AuthChain;
+use crate::challenge::{Challenge, ChallengeBounds};
+use crate::module::AuthOutcome;
+use crate::principal::{Principal, ANONYMOUS};
+use crate::unit::{Auth, AuthRequest};
+
+fn request<'a>() -> AuthRequest<'a> {
+    AuthRequest {
+        candidate: Some("cred"),
+        scheme: None,
+        declared_schemes: &[],
+        expected_aud: None,
+        in_handshake: false,
+        now: 1000,
+        new_unit: true,
+    }
+}
+
+fn seal_and_token() -> (KernelSeal, UnitToken<Authenticate>) {
+    let seal = KernelSeal::acquire_for_kernel();
+    let token = UnitToken::mint(&seal);
+    (seal, token)
+}
+
+#[test]
+fn anonymous_renders_as_the_literal_word() {
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(Vec::new(), false));
+    let req = AuthRequest {
+        candidate: None,
+        ..request()
+    };
+    let d = auth.resolve(&req, None, None, None, None, &token);
+    let principal = d.into_result(&seal).expect("the open door admits");
+    assert_eq!(
+        principal
+            .principal()
+            .expect("the open door settles on an identity")
+            .as_str(),
+        ANONYMOUS,
+        "the anonymous caller renders as the plain word on every surface"
+    );
+    assert_eq!(Principal::anonymous().actor_id(), "anonymous");
+}
+
+#[test]
+fn a_denied_chain_refuses_at_the_authenticate_step() {
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(
+        vec![entry("a", Box::new(Canned::new("a", AuthOutcome::Pass)))],
+        false,
+    ));
+    let d = auth.resolve(&request(), None, None, None, None, &token);
+    let refusal = d.into_result(&seal).expect_err("an all-pass chain denies");
+    assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
+    assert_eq!(
+        refusal.step(),
+        Some(StepName::Authenticate),
+        "the step is stamped by the decision, not claimed by the unit"
+    );
+    assert!(!refusal.under_hold(), "nothing is charged this early");
+}
+
+#[test]
+fn a_plane_may_only_narrow_within_the_claims_alternatives() {
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(Vec::new(), false));
+    let req = AuthRequest {
+        scheme: Some("mutual-tls"),
+        declared_schemes: &["bearer", "signature"],
+        ..request()
+    };
+    let d = auth.resolve(&req, None, None, None, None, &token);
+    let refusal = d
+        .into_result(&seal)
+        .expect_err("an undeclared scheme is refused");
+    assert_eq!(refusal.reason(), ReasonCode::SchemeNotDeclared);
+
+    // Narrowing WITHIN the alternatives is fine and the chain runs normally.
+    let (seal, token) = seal_and_token();
+    let req = AuthRequest {
+        scheme: Some("bearer"),
+        declared_schemes: &["bearer", "signature"],
+        ..request()
+    };
+    let d = auth.resolve(&req, None, None, None, None, &token);
+    assert!(d.into_result(&seal).is_ok());
+}
+
+#[test]
+fn a_challenge_is_only_offered_inside_a_handshake_unit() {
+    let bounds = ChallengeBounds {
+        max_rounds: 3,
+        max_bytes: 64,
+    };
+    let auth = Auth::new(AuthChain::new(
+        vec![entry("a", Box::new(Canned::new("a", AuthOutcome::Pass)))],
+        false,
+    ));
+
+    // Inside a handshake unit the challenge is handed back for delivery.
+    let (seal, token) = seal_and_token();
+    let req = AuthRequest {
+        in_handshake: true,
+        ..request()
+    };
+    let pending = Challenge::open(b"nonce".to_vec(), bounds);
+    let offered = auth
+        .resolve(&req, None, None, None, Some(pending), &token)
+        .into_result(&seal)
+        .expect("a handshake unit is offered the round");
+    assert!(matches!(offered, busbar_contract::caps::Authenticated::Challenge(_)));
+
+    // Outside one, the chain's own verdict stands.
+    let (seal, token) = seal_and_token();
+    let pending = Challenge::open(b"nonce".to_vec(), bounds);
+    let d = auth.resolve(&request(), None, None, None, Some(pending), &token);
+    assert_eq!(
+        d.into_result(&seal).expect_err("all-pass denies").reason(),
+        ReasonCode::Unauthenticated
+    );
+}
+
+#[test]
+fn an_exhausted_exchange_ends_the_unit() {
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(Vec::new(), true));
+    let req = AuthRequest {
+        in_handshake: true,
+        ..request()
+    };
+    let spent = Challenge::open(
+        b"nonce".to_vec(),
+        ChallengeBounds {
+            max_rounds: 1,
+            max_bytes: 64,
+        },
+    );
+    assert!(spent.exhausted(), "one round, and it was spent opening");
+    let d = auth.resolve(&req, None, None, None, Some(spent), &token);
+    assert_eq!(
+        d.into_result(&seal).expect_err("exhausted").reason(),
+        ReasonCode::ChallengeExhausted
+    );
+}
+
+#[test]
+fn a_challenge_advances_within_its_bounds_and_then_stops() {
+    let c = Challenge::open(
+        b"aa".to_vec(),
+        ChallengeBounds {
+            max_rounds: 3,
+            max_bytes: 6,
+        },
+    );
+    assert_eq!(c.rounds_left, 2);
+    assert_eq!(c.bytes_left, 4);
+    let c = c.advance(b"bb".to_vec()).expect("within both bounds");
+    assert_eq!(c.rounds_left, 1);
+    assert_eq!(c.bytes_left, 2);
+    assert!(
+        c.clone().advance(b"ccc".to_vec()).is_none(),
+        "a round larger than the remaining byte budget is refused"
+    );
+    let c = c.advance(b"cc".to_vec()).expect("exactly the budget");
+    assert!(c.exhausted());
+    assert!(c.advance(b"d".to_vec()).is_none());
+}
+
+#[test]
+fn revocation_gates_a_new_unit_and_not_one_in_flight() {
+    struct AllRevoked;
+    impl crate::chain::RevocationView for AllRevoked {
+        fn is_revoked(&self, _credential: &str) -> bool {
+            true
+        }
+    }
+    let auth = Auth::new(AuthChain::new(
+        vec![entry(
+            "a",
+            Box::new(Canned::new(
+                "a",
+                AuthOutcome::Identify(Principal::from_id("alice")),
+            )),
+        )],
+        false,
+    ));
+
+    let (seal, token) = seal_and_token();
+    let d = auth.resolve(&request(), None, None, Some(&AllRevoked), None, &token);
+    assert_eq!(
+        d.into_result(&seal)
+            .expect_err("a new unit is gated")
+            .reason(),
+        ReasonCode::Revoked
+    );
+
+    let (seal, token) = seal_and_token();
+    let in_flight = AuthRequest {
+        new_unit: false,
+        ..request()
+    };
+    let d = auth.resolve(&in_flight, None, None, Some(&AllRevoked), None, &token);
+    assert_eq!(
+        d.into_result(&seal)
+            .expect("a unit already in flight runs to its end")
+            .principal()
+            .expect("and settles on an identity")
+            .as_str(),
+        "alice"
+    );
+}
+
+/// The revocation gate speaks only about a credential the chain ACTUALLY IDENTIFIED.
+///
+/// Applied to the presented string whatever the chain answered, it does two things it was never
+/// asked to do. It tells an unauthenticated caller WHICH of two refusals they earned — a credential
+/// the chain rejects and the revocation set names refuses `Revoked`, one it merely rejects refuses
+/// `Unauthenticated` — which is a probe for "was this credential ever real", answered before
+/// anything has authenticated. And on the open front door, where no chain is authenticating anyone,
+/// it turns the anonymous admit into a refusal on the strength of a string nothing verified.
+///
+/// `AuthChain::run_chain_for_new_unit` collapses both to the one `Denied` it can spell, so the two
+/// spellings of one rule inside this crate answered differently for the same input.
+#[test]
+fn the_revocation_gate_does_not_distinguish_refusals_the_chain_already_made() {
+    struct AllRevoked;
+    impl crate::chain::RevocationView for AllRevoked {
+        fn is_revoked(&self, _credential: &str) -> bool {
+            true
+        }
+    }
+
+    // A chain that denies on its own. The revocation set must not upgrade that to a different,
+    // more informative code.
+    let (seal, token) = seal_and_token();
+    let denies = Auth::new(AuthChain::new(
+        vec![entry("a", Box::new(Canned::new("a", AuthOutcome::Pass)))],
+        false,
+    ));
+    assert_eq!(
+        denies
+            .resolve(&request(), None, None, Some(&AllRevoked), None, &token)
+            .into_result(&seal)
+            .expect_err("an all-pass chain denies")
+            .reason(),
+        ReasonCode::Unauthenticated,
+        "a credential the chain never identified must refuse for the reason the chain gave, not \
+         for one that says whether it was ever a real credential"
+    );
+
+    // The open front door authenticates nobody, so there is no identification for a revocation to
+    // gate: the anonymous admit stands.
+    let (seal, token) = seal_and_token();
+    let open = Auth::new(AuthChain::new(Vec::new(), false));
+    assert_eq!(
+        open.resolve(&request(), None, None, Some(&AllRevoked), None, &token)
+            .into_result(&seal)
+            .expect("the open door admits anonymously")
+            .principal()
+            .expect("and settles on an identity")
+            .as_str(),
+        ANONYMOUS,
+        "the open posture is not authenticating the presented string, so revoking it says nothing"
+    );
+}
+
+#[test]
+fn a_module_may_not_synthesize_a_reserved_identity() {
+    for reserved in ["group:admins", "vk_forged"] {
+        let (seal, token) = seal_and_token();
+        let auth = Auth::new(AuthChain::new(
+            vec![entry(
+                "a",
+                Box::new(Canned::new(
+                    "a",
+                    AuthOutcome::Identify(Principal::from_id(reserved)),
+                )),
+            )],
+            false,
+        ));
+        let d = auth.resolve(&request(), None, None, None, None, &token);
+        assert_eq!(
+            d.into_result(&seal)
+                .expect_err("a reserved id is refused")
+                .reason(),
+            ReasonCode::Unauthenticated,
+            "id {reserved}"
+        );
+    }
+}
+
+#[test]
+fn open_admin_grants_full_scope_to_an_absent_principal() {
+    let grants = admin_grants(true, None).expect("the open posture grants");
+    assert_eq!(grants.scope(), Scope::Full);
+    assert!(grants.satisfies(Scope::ReadOnly));
+    assert!(grants.satisfies(Scope::Full));
+    // With a chain configured, an absent principal holds nothing.
+    assert!(admin_grants(false, None).is_none());
+    // And a resolved principal's grants come from the bindings, not from the posture.
+    assert!(admin_grants(true, Some(&Principal::from_id("alice"))).is_none());
+}
+
+#[test]
+fn the_kernel_verb_scope_check_is_satisfied_for_anonymous_on_the_open_posture() {
+    assert!(kernel_verb_scope_satisfied(true, &Principal::anonymous()));
+    assert!(
+        !kernel_verb_scope_satisfied(false, &Principal::anonymous()),
+        "with a chain configured the check is not satisfied by being nobody"
+    );
+    assert!(
+        !kernel_verb_scope_satisfied(true, &Principal::from_id("alice")),
+        "a resolved principal is judged on its own scopes"
+    );
+}
+
+/// The satisfaction table, pinned pair by pair.
+///
+/// Pinned rather than derived from an ordering: a comparison would answer for a rung nobody has
+/// decided about yet, and the answer it invents comes from where the variant was written. Every
+/// pair below is a decision, and adding a rung to `Scope` fails to compile until its pairs are
+/// added here too — which is the whole point of spelling satisfaction as a match.
+#[test]
+fn satisfaction_is_a_decided_table_not_a_declaration_order() {
+    let cases = [
+        (Scope::ReadOnly, Scope::ReadOnly, true),
+        (Scope::ReadOnly, Scope::Full, false),
+        (Scope::Full, Scope::ReadOnly, true),
+        (Scope::Full, Scope::Full, true),
+    ];
+    for (held, needed, expected) in cases {
+        assert_eq!(
+            Grants::of(held).satisfies(needed),
+            expected,
+            "held {held:?} against needed {needed:?}"
+        );
+    }
+}
+
+/// The reserved-id rule is about MODULES, and applies only to them.
+///
+/// A virtual key's own id starts with `vk_` — that prefix is reserved precisely so that nothing
+/// BUT the key directory can mint an id in it. Applying the rule to the engine's own signed-key arm
+/// therefore refuses every real key: the arm does not synthesize an identity, it resolves the one
+/// the directory issued. A boxed module, which cannot resolve a key, is still refused.
+#[test]
+fn the_reserved_id_rule_binds_modules_and_not_the_engines_own_key_arm() {
+    struct Resolves;
+    impl crate::chain::KeyVerifier for Resolves {
+        fn verify_token(
+            &self,
+            _token: &str,
+            _now: u64,
+            _expected_aud: Option<&str>,
+        ) -> Option<crate::chain::ResolvedKey> {
+            Some(crate::chain::ResolvedKey {
+                id: "vk_live".to_string(),
+                name: "live".to_string(),
+            })
+        }
+    }
+
+    // The keys arm: a `vk_` id is the key's OWN id, and it is admitted.
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(Vec::new(), true));
+    let d = auth.resolve(&request(), None, Some(&Resolves), None, None, &token);
+    assert_eq!(
+        d.into_result(&seal)
+            .expect("a resolved key is an identity the directory issued")
+            .principal()
+            .expect("and it settles on that identity")
+            .as_str(),
+        "vk_live"
+    );
+
+    // A boxed module claiming the same id is still refused: it synthesized it.
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(
+        vec![entry(
+            "a",
+            Box::new(Canned::new(
+                "a",
+                AuthOutcome::Identify(Principal::from_id("vk_live")),
+            )),
+        )],
+        false,
+    ));
+    let d = auth.resolve(&request(), None, None, None, None, &token);
+    assert_eq!(
+        d.into_result(&seal)
+            .expect_err("a module may not name a key")
+            .reason(),
+        ReasonCode::Unauthenticated
+    );
+}

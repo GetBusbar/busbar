@@ -94,7 +94,7 @@ impl AbiStore for SilentStore {
 /// and every location the later steps resolve are all read off exactly these bytes.
 #[test]
 fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
-    use busbar_caps::KernelSeal;
+    use busbar_contract::caps::KernelSeal;
 
     let seal = KernelSeal::acquire_for_kernel();
     let over_tls = |chain: Vec<&'static str>| ArrivalRecord {
@@ -159,7 +159,7 @@ fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
     .into_result(&seal)
     .expect_err("this plane claims no socket surface");
     assert_eq!(refusal.reason(), ReasonCode::HandoffMismatch);
-    assert_eq!(refusal.step(), Some(busbar_caps::StepName::Arrival));
+    assert_eq!(refusal.step(), Some(busbar_contract::caps::StepName::Arrival));
 
     // Claimed, but not the layer this connection ended on: an sse stack matched as a document
     // request. Nothing is wrong with the bytes and nothing is wrong with the claim — the two
@@ -272,7 +272,7 @@ fn one_frame(body: &str) -> Vec<busbar_contract::wire::Frame> {
 /// version and the progress token reachable as the facts the later steps read.
 #[test]
 fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
-    use busbar_caps::KernelSeal;
+    use busbar_contract::caps::KernelSeal;
     use busbar_contract::bounded::{FactValue, Labels};
     use busbar_contract::unit::{Clock, Ctx};
     use busbar_contract::wire::FrameCursor;
@@ -362,7 +362,7 @@ fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
             .into_result(&seal)
             .expect_err("a body this plane cannot read is refused");
         assert_eq!(refusal.reason(), ReasonCode::DecodeFailed);
-        assert_eq!(refusal.step(), Some(busbar_caps::StepName::Decode));
+        assert_eq!(refusal.step(), Some(busbar_contract::caps::StepName::Decode));
     }
 
     // A notice nobody recognises is DROPPED, never refused: a refusal is an answer, and this
@@ -397,8 +397,8 @@ fn the_declared_schemes_are_the_claims_own() {
 #[test]
 fn the_bound_form_authenticates_through_the_nodes_own_seams() {
     use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
-    use busbar_caps::{Authenticated, KernelSeal};
-    use busbar_unit_auth::{AuthChain, ChainVerdict};
+    use busbar_contract::caps::{Authenticated, KernelSeal};
+    use busbar_kernel_identity::{AuthChain, ChainVerdict};
 
     struct OneKey;
 
@@ -600,7 +600,7 @@ fn the_catalogue_asks_the_breaker_about_the_registered_lanes_position() {
             _pool: &str,
             _lane: usize,
             _now: u64,
-        ) -> Result<(), busbar_unit_trust::Unavailable> {
+        ) -> Result<(), busbar_kernel_egress::trust::Unavailable> {
             Ok(())
         }
     }
@@ -1079,7 +1079,7 @@ fn the_balance_names_the_caller_and_not_the_registration() {
 // ─────────────────────────────────────────────────────────────────────────
 
 /// A unit of this plane, ended, with everything the money is decided from.
-fn ended(shape: Shape, origin: busbar_caps::OriginKind, answered: bool) -> Ended<'static> {
+fn ended(shape: Shape, origin: busbar_contract::caps::OriginKind, answered: bool) -> Ended<'static> {
     Ended {
         shape,
         origin,
@@ -1128,7 +1128,7 @@ fn the_shape_reads_the_hop_off_the_plan() {
 /// cannot happen, and every unit of this plane over-reserves for the life of the deployment.
 #[test]
 fn the_flat_fee_is_posted_for_a_delivered_client_call_and_for_nothing_else() {
-    use busbar_caps::OriginKind as CameFrom;
+    use busbar_contract::caps::OriginKind as CameFrom;
     use busbar_kernel::teller::fee_count;
 
     let called = Shape {
@@ -1165,7 +1165,7 @@ fn the_flat_fee_is_posted_for_a_delivered_client_call_and_for_nothing_else() {
 /// unrepresentable rather than merely unlikely.
 #[test]
 fn the_settlement_and_the_record_read_one_fee_decision() {
-    use busbar_caps::OriginKind as CameFrom;
+    use busbar_contract::caps::OriginKind as CameFrom;
     use busbar_kernel::teller::fee_count;
     let origin = busbar_kernel::teller::Kernel::new().origin(CameFrom::Client);
     let at = Clocks {
@@ -1183,7 +1183,7 @@ fn the_settlement_and_the_record_read_one_fee_decision() {
         (CameFrom::Provider, true),
     ] {
         let unit = ended(called, who, answered);
-        let record = audit_inputs(&unit, busbar_caps::Outcome::Completed, origin, at);
+        let record = audit_inputs(&unit, busbar_contract::caps::Outcome::Completed, origin, at);
         assert_eq!(
             record.amount.fee_count,
             fee_count(&evidence(&unit).fee).0,
@@ -1197,7 +1197,7 @@ fn the_settlement_and_the_record_read_one_fee_decision() {
 #[test]
 fn the_record_names_the_caller_the_class_and_the_resource() {
     let who = PrincipalId::new("vk_mcp");
-    let origin = busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client);
+    let origin = busbar_kernel::teller::Kernel::new().origin(busbar_contract::caps::OriginKind::Client);
     let at = Clocks {
         wall: 1_700_000_000,
         mono: 7,
@@ -1207,19 +1207,19 @@ fn the_record_names_the_caller_the_class_and_the_resource() {
             op: ops::OP_TOOL_CALL,
             hops_upstream: true,
         },
-        busbar_caps::OriginKind::Client,
+        busbar_contract::caps::OriginKind::Client,
         true,
     );
     unit.principal = Some(&who);
 
-    let record = audit_inputs(&unit, busbar_caps::Outcome::Completed, origin, at);
+    let record = audit_inputs(&unit, busbar_contract::caps::Outcome::Completed, origin, at);
     assert_eq!(
         record.subject,
-        busbar_unit_audit::Subject::PrincipalId("vk_mcp".to_string())
+        busbar_kernel_audit::Subject::PrincipalId("vk_mcp".to_string())
     );
     assert_eq!(
         record.what.op_class,
-        busbar_unit_audit::record::OpClassId::new("tool_call"),
+        busbar_kernel_audit::record::OpClassId::new("tool_call"),
         "the record must file under the plane's own literal op-class name, not a re-derivation \
          of whatever record_op_class happens to produce today"
     );
@@ -1240,8 +1240,8 @@ fn the_record_names_the_caller_the_class_and_the_resource() {
 fn memory_durability() -> crate::root::durability::Durability {
     crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open")
 }
@@ -1250,7 +1250,7 @@ fn memory_durability() -> crate::root::durability::Durability {
 /// it opens it only because the decision said yes. Nothing about the size is a decision.
 #[test]
 fn the_door_opens_a_reservation_sized_off_this_planes_estimate() {
-    use busbar_caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, UnitToken};
+    use busbar_contract::caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, UnitToken};
     let seal = KernelSeal::acquire_for_kernel();
     let door = Door::new(InMemoryCells::new());
     let pricer = Pricer::flat(0);
@@ -1276,7 +1276,7 @@ fn the_door_opens_a_reservation_sized_off_this_planes_estimate() {
         &UnitToken::<AdmitStep>::mint(&seal),
         &GroupLeaseSlip::new(),
     );
-    let busbar_caps::Admission::Own(hold) = decision
+    let busbar_contract::caps::Admission::Own(hold) = decision
         .into_result(&seal)
         .expect("an empty chain refuses nothing")
     else {
@@ -1287,13 +1287,13 @@ fn the_door_opens_a_reservation_sized_off_this_planes_estimate() {
         127,
         "100 fee + one call at 7 + ten bytes at 2"
     );
-    let _ = busbar_caps::Posted::settle(
+    let _ = busbar_contract::caps::Posted::settle(
         hold,
         // The unit is only admitted here, never run, so it priced at nothing.
         0,
-        &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
+        &busbar_contract::caps::Usage::report(&busbar_contract::caps::UsageToken::mint(&seal), Vec::new())
             .expect("empty"),
-        &busbar_caps::LedgerToken::mint(&seal),
+        &busbar_contract::caps::LedgerToken::mint(&seal),
     );
 }
 
@@ -1301,7 +1301,7 @@ fn the_door_opens_a_reservation_sized_off_this_planes_estimate() {
 ///
 /// Built through the interner the root uses at boot, so the name the slot records is the same
 /// static the vocabulary holds rather than one this fixture invented.
-fn one_call_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
+fn one_call_at_a_time(group: &str) -> busbar_kernel_budget::GroupTable {
     let groups = BTreeMap::from([(
         group.to_string(),
         busbar_substrate::config::groups::GroupCfg {
@@ -1331,8 +1331,8 @@ fn ask_the_door(
     door: &Door<InMemoryCells>,
     chain: &BucketChain,
     who: &PrincipalId,
-) -> (Result<busbar_caps::Admission, Refusal>, GroupLeaseSlip) {
-    use busbar_caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, UnitToken};
+) -> (Result<busbar_contract::caps::Admission, Refusal>, GroupLeaseSlip) {
+    use busbar_contract::caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, UnitToken};
     let seal = KernelSeal::acquire_for_kernel();
     let pricer = Pricer::flat(0);
     let est = estimate(ops::OP_TOOL_CALL, 10, &ClassPrices::default(), 0);
@@ -1405,7 +1405,7 @@ fn an_mcp_group_capped_at_one_call_refuses_the_second_and_admits_it_after_the_fi
 /// happened nowhere at all.
 #[test]
 fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
-    use busbar_caps::{
+    use busbar_contract::caps::{
         step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
         MeterClassId, QuantitySource, Usage, UsageLine, UsageToken,
     };
@@ -1428,7 +1428,7 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
     .expect("one line");
     // The line's class is `nano_units`, so its quantity IS the money — the same shape the
     // kernel's exit path builds, and the same figure passed on both sides.
-    let posted = busbar_caps::Posted::settle(hold, 400, &usage, &LedgerToken::mint(&seal));
+    let posted = busbar_contract::caps::Posted::settle(hold, 400, &usage, &LedgerToken::mint(&seal));
 
     let mono = Mono::new();
     let settled = settle(
@@ -1446,8 +1446,8 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
     assert!(settled.overdraft.is_none());
 
     let key = balance(&who);
-    let window = busbar_unit_admission::budget_window(
-        busbar_unit_admission::window::WINDOW_DAY,
+    let window = busbar_kernel_budget::budget_window(
+        busbar_kernel_budget::window::WINDOW_DAY,
         1_700_000_000,
     );
     let figures = durability.ledger.book().get(&key, window);
@@ -1479,7 +1479,7 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
 /// stepped backwards writes records that read as having happened in an order they did not.
 #[test]
 fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_clock() {
-    use busbar_caps::{
+    use busbar_contract::caps::{
         step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
         Usage, UsageToken,
     };
@@ -1497,7 +1497,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_c
             mono: clock.tick(),
         };
         let hold = Hold::open(&AdmitToken::<AdmitStep>::mint(&seal), who.clone(), 0);
-        let posted = busbar_caps::Posted::settle(
+        let posted = busbar_contract::caps::Posted::settle(
             hold,
             0,
             &Usage::report(&UsageToken::mint(&seal), Vec::new()).expect("empty"),
@@ -1532,7 +1532,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_c
 /// its own on the chain beside the posting it came out of.
 #[test]
 fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
-    use busbar_caps::{
+    use busbar_contract::caps::{
         step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
         MeterClassId, PostingFlags, QuantitySource, Usage, UsageLine, UsageToken,
     };
@@ -1558,7 +1558,7 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
     .expect("one line");
     // Money on both sides again: the spend ran 3_000 past a 1_000 reservation with no slice to
     // draw on, so the hold's own counter raises the flag and the settlement agrees with it.
-    let posted = busbar_caps::Posted::settle(hold, 4_000, &usage, &LedgerToken::mint(&seal));
+    let posted = busbar_contract::caps::Posted::settle(hold, 4_000, &usage, &LedgerToken::mint(&seal));
     assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
 
     let settled = settle(

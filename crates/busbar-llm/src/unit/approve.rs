@@ -37,7 +37,7 @@
 //! When a native gate is seated, the first veto wins and the unit stops here, BEFORE the door, which
 //! is the whole point of having the seat at this step rather than the next one.
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Approve, Decision, PrincipalId, ReasonCode, Refusal, ScopeFacts, UnitToken, VerifiedDestination,
 };
 

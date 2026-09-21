@@ -633,12 +633,12 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
 
     // The transport offers somewhere to put a config; the unit is what puts one there.
     let server = StdArc::new(TlsTransport::new());
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let keys = busbar_unit_transport_key::provision_server(
         &source,
         &journal,
         &*server,
-        &busbar_caps::TransportKeyToken::mint(&seal),
+        &busbar_contract::caps::TransportKeyToken::mint(&seal),
         busbar_unit_transport_key::Slot {
             index: 0,
             fingerprint: "fixture",
@@ -691,7 +691,7 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
     let client = StdArc::new(TlsTransport::new());
     let client_keys = busbar_unit_transport_key::provision_client(
         &*client,
-        &busbar_caps::TransportKeyToken::mint(&seal),
+        &busbar_contract::caps::TransportKeyToken::mint(&seal),
         busbar_unit_transport_key::Slot {
             index: 0,
             fingerprint: "fixture-client",
@@ -1165,14 +1165,14 @@ mod cg_49_sni {
             .collect(),
         );
         let journal = RecordingJournal::default();
-        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
 
         let server = StdArc::new(TlsTransport::new());
         let handle = busbar_unit_transport_key::provision_server_named(
             &source,
             &journal,
             &*server,
-            &busbar_caps::TransportKeyToken::mint(&seal),
+            &busbar_contract::caps::TransportKeyToken::mint(&seal),
             Slot {
                 index: 0,
                 fingerprint: "fixture",

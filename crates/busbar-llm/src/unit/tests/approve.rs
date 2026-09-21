@@ -3,7 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_caps::{KernelSeal, StepName};
+use busbar_contract::caps::{KernelSeal, StepName};
 
 struct Always;
 impl VetoSeat for Always {

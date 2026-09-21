@@ -11,7 +11,7 @@
 //! Every method here is `// contract:` — this crate has no store dependency of its own (it depends
 //! on `busbar-caps` only), so the actual durable operation is always the integrator's.
 
-use busbar_caps::AdminToken;
+use busbar_contract::caps::AdminToken;
 
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
 

@@ -15,15 +15,15 @@ busbar-plugin-sign = { path = "../plugin-sign" }
 # None of the three crates may name a store, so the adapter that implements all three lives on this
 # side of the seam — where the loaded plugin and its declared payload schema already are. All three
 # depend only on `busbar-caps`/`busbar-contract`, so there is no cycle back into this crate.
-busbar-caps = { path = "../busbar-caps" }
+busbar-contract = { path = "../busbar-contract" }
 busbar-kernel = { path = "../busbar-kernel" }
 busbar-unit-verbs = { path = "../busbar-unit-verbs" }
 # The migration's read off the previous release's rows. The ledger unit states WHAT an opening
 # figure is; the row shapes it is read from are on this side of the seam, where the loaded plugin
 # already is — the same division the ledger's dual write makes in the other direction. The ledger
 # unit depends only on `busbar-caps`, so there is no cycle back into this crate.
-busbar-unit-ledger = { path = "../busbar-unit-ledger" }
-busbar-unit-wal = { path = "../busbar-unit-wal" }
+busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
+busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 libloading = { workspace = true }
 # The kind:hook seam: `DlopenPolicy` implements the async `busbar_api::RoutingPolicy` trait, running
 # the blocking `busbar_call` on `spawn_blocking` (a hook gate can be CPU-heavy). `async-trait` matches

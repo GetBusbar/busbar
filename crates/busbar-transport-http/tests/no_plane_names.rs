@@ -35,7 +35,7 @@
 //! `busbar_contract::transport::driver::UnitDriver`, handed to it at listen by the root that
 //! implements it.
 //!
-//! So `busbar_kernel`, `busbar_caps` and `run_unit` are refused here beside the plane names, in the
+//! So `busbar_kernel`, `busbar_contract::caps` and `run_unit` are refused here beside the plane names, in the
 //! source and in the manifest both.
 //!
 //! ## What counts as a plane name
@@ -77,7 +77,7 @@ const CORE_NAMES: &[&str] = &[
     "busbar-kernel",
     "busbar_kernel",
     "busbar-caps",
-    "busbar_caps",
+    "busbar_contract::caps",
     "run_unit",
 ];
 

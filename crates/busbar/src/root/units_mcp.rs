@@ -49,7 +49,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
-use busbar_caps::{
+use busbar_contract::caps::{
     Admit, AdmitToken, Arrival, ArrivalRecord, Authenticate, Decision, Decode, PrincipalId,
     ReasonCode, Refusal, TrustToken, UnitToken, UsageToken, Verify,
 };
@@ -61,20 +61,20 @@ use busbar_kernel::teller::Evidence;
 use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
 use busbar_plane_mcp::{claims, ops, records, McpPlane, Server};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
-use busbar_unit_admission::{
+use busbar_kernel_budget::{
     Admission, AdmissionUnit, BucketChain, ClassEstimate, Door, Estimate, InMemoryCells, Pricer,
 };
-use busbar_unit_audit::legacy::{AuditInput, OUTCOME_APPLIED, OUTCOME_REJECTED};
-use busbar_unit_audit::AuditInputs;
-use busbar_unit_auth::{Auth, AuthRequest, CredentialCache, KeyVerifier, RevocationView};
-use busbar_unit_ledger::{BucketId, BucketScope, CapDimension, TotalsKey};
-use busbar_unit_scope::{Grants, PolicyView, Refused, Scope};
-use busbar_unit_trust::destination::{KindFacts, OriginKind};
-use busbar_unit_trust::guard::PoolView;
-use busbar_unit_trust::lane::{BreakerQuery, BreakerView};
-use busbar_unit_trust::net::{Denylist, GuardPolicy, Resolver};
-use busbar_unit_trust::{Trust, VerifyRequest};
-use busbar_unit_usage::{
+use busbar_kernel_audit::legacy::{AuditInput, OUTCOME_APPLIED, OUTCOME_REJECTED};
+use busbar_kernel_audit::AuditInputs;
+use busbar_kernel_identity::{Auth, AuthRequest, CredentialCache, KeyVerifier, RevocationView};
+use busbar_kernel_ledger::{BucketId, BucketScope, CapDimension, TotalsKey};
+use busbar_kernel_scope::{Grants, PolicyView, Refused, Scope};
+use busbar_kernel_egress::trust::destination::{KindFacts, OriginKind};
+use busbar_kernel_egress::trust::guard::PoolView;
+use busbar_kernel_egress::trust::lane::{BreakerQuery, BreakerView};
+use busbar_kernel_egress::trust::net::{Denylist, GuardPolicy, Resolver};
+use busbar_kernel_egress::trust::{Trust, VerifyRequest};
+use busbar_kernel_ledger::usage::{
     meter as fold_usage, KernelCounts, LegDeclaration, LocatedValue, Metered, RetainedLocatorValues,
 };
 
@@ -465,7 +465,7 @@ impl<'r> Catalogue<'r> {
 
 impl KindFacts for Catalogue<'_> {
     fn net_guard_passes(&self, dest: &DestinationFacts) -> bool {
-        match busbar_unit_trust::net::check_destination_facts(
+        match busbar_kernel_egress::trust::net::check_destination_facts(
             dest,
             &[],
             self.net.resolver,
@@ -476,7 +476,7 @@ impl KindFacts for Catalogue<'_> {
             // destinations reaches where it is going without one, so "not an upstream" is this
             // caller's pass rather than its refusal. A spawned stdio server has an address that is
             // a program, and the guard answers `Ok(None)` for it for the same reason.
-            Ok(_) | Err(busbar_unit_trust::NetworkRefusal::NotAnUpstream) => true,
+            Ok(_) | Err(busbar_kernel_egress::trust::NetworkRefusal::NotAnUpstream) => true,
             Err(_) => false,
         }
     }
@@ -786,9 +786,9 @@ pub fn approve(
     if resources.is_empty() {
         return Err(ApproveRefusal::NoResource);
     }
-    let needed = busbar_unit_scope::required_scope(claim_key(), op, policy)
+    let needed = busbar_kernel_scope::required_scope(claim_key(), op, policy)
         .ok_or(ApproveRefusal::NoPolicyEntry)?;
-    busbar_unit_scope::approve(held, needed).map_err(ApproveRefusal::Insufficient)?;
+    busbar_kernel_scope::approve(held, needed).map_err(ApproveRefusal::Insufficient)?;
     Ok(resources)
 }
 
@@ -1216,13 +1216,13 @@ pub fn located_values(op: OpClassId, response_bytes: u64) -> Vec<LocatedValue> {
         out.push(LocatedValue {
             class: CLASS_TOOL_CALLS,
             quantity: 1,
-            source: busbar_caps::QuantitySource::KernelFrames { factor: 1 },
+            source: busbar_contract::caps::QuantitySource::KernelFrames { factor: 1 },
         });
     }
     out.push(LocatedValue {
         class: CLASS_BYTES,
         quantity: response_bytes,
-        source: busbar_caps::QuantitySource::KernelBytes { divisor: 1 },
+        source: busbar_contract::caps::QuantitySource::KernelBytes { divisor: 1 },
     });
     out
 }
@@ -1235,9 +1235,9 @@ pub fn located_values(op: OpClassId, response_bytes: u64) -> Vec<LocatedValue> {
 pub fn meter(
     retained: &RetainedLocatorValues,
     kernel: &KernelCounts,
-    policy: &busbar_unit_usage::MeterPolicy,
+    policy: &busbar_kernel_ledger::usage::MeterPolicy,
     token: &UsageToken,
-) -> Result<Metered, busbar_caps::UsageError> {
+) -> Result<Metered, busbar_contract::caps::UsageError> {
     fold_usage(retained, kernel, policy, &leg_declaration(), token)
 }
 
@@ -1291,12 +1291,12 @@ impl Shape {
 #[must_use]
 pub fn fee_evidence(
     shape: Shape,
-    origin: busbar_caps::OriginKind,
+    origin: busbar_contract::caps::OriginKind,
     relayed_first_response_frame: bool,
     finish: busbar_contract::unit::FinishClass,
 ) -> busbar_kernel::teller::FeeEvidence {
     busbar_kernel::teller::FeeEvidence {
-        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client,
+        client_open_or_one_shot: origin == busbar_contract::caps::OriginKind::Client,
         selected_upstream: shape.hops_upstream,
         relayed_first_response_frame,
         status_at: None,
@@ -1315,7 +1315,7 @@ pub struct Ended<'a> {
     /// What the unit is, as far as the money is concerned.
     pub shape: Shape,
     /// Where the unit came from.
-    pub origin: busbar_caps::OriginKind,
+    pub origin: busbar_contract::caps::OriginKind,
     /// The plane's own verdict on the ending.
     pub finish: busbar_contract::unit::FinishClass,
     /// The request document the hold was sized against, which is the kernel's own floor.
@@ -1381,20 +1381,20 @@ pub fn settle(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
     at: Clocks,
-    token: &busbar_caps::DurabilityToken,
-    posted: busbar_caps::Posted,
-) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+    token: &busbar_contract::caps::DurabilityToken,
+    posted: busbar_contract::caps::Posted,
+) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
     let key = balance(principal);
     let settling = crate::root::durability::Settling {
         key: &key,
-        window: busbar_unit_admission::budget_window(
-            busbar_unit_admission::window::WINDOW_DAY,
+        window: busbar_kernel_budget::budget_window(
+            busbar_kernel_budget::window::WINDOW_DAY,
             at.wall,
         ),
         durability: token,
         // The loop has no exit step of its own; the figure this posting is OF is the metering
         // step's, and that is the step a durability loss here is attributed to.
-        step: busbar_caps::StepName::Meter,
+        step: busbar_contract::caps::StepName::Meter,
         stamp: crate::root::durability::PostingStamp {
             rate_card_version: 0,
             wall: at.wall,
@@ -1462,8 +1462,8 @@ impl Mono {
 #[must_use]
 pub fn audit_inputs(
     ended: &Ended<'_>,
-    outcome: busbar_caps::Outcome,
-    origin: busbar_caps::Origin,
+    outcome: busbar_contract::caps::Outcome,
+    origin: busbar_contract::caps::Origin,
     at: Clocks,
 ) -> AuditInputs {
     let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
@@ -1474,10 +1474,10 @@ pub fn audit_inputs(
     ));
     AuditInputs {
         subject: match ended.principal {
-            Some(who) => busbar_unit_audit::Subject::PrincipalId(who.as_str().to_string()),
-            None => busbar_unit_audit::Subject::Arrival,
+            Some(who) => busbar_kernel_audit::Subject::PrincipalId(who.as_str().to_string()),
+            None => busbar_kernel_audit::Subject::Arrival,
         },
-        what: busbar_unit_audit::What {
+        what: busbar_kernel_audit::What {
             unit_key: busbar_contract::ids::UnitKey::new(0),
             op_class: record_op_class(ended.shape.op),
             destination: ended
@@ -1490,7 +1490,7 @@ pub fn audit_inputs(
         wall: at.wall,
         mono: at.mono,
         origin,
-        outcome: busbar_unit_audit::OutcomeFacts {
+        outcome: busbar_kernel_audit::OutcomeFacts {
             unit_end: outcome,
             step: outcome.step(),
             finish: record_finish(ended.finish),
@@ -1498,7 +1498,7 @@ pub fn audit_inputs(
             emission_delta: 0,
             stale_policy: false,
         },
-        amount: busbar_unit_audit::Amount {
+        amount: busbar_kernel_audit::Amount {
             lines: Vec::new(),
             pre_tier: 0,
             priced: 0,
@@ -1508,7 +1508,7 @@ pub fn audit_inputs(
             rate_card_version: 0,
             bucket_chain_ref: String::new(),
         },
-        controls: busbar_unit_audit::Controls::default(),
+        controls: busbar_kernel_audit::Controls::default(),
         correlation_label: None,
     }
 }
@@ -1550,26 +1550,26 @@ pub fn legacy_entry(
 /// rather than borrowed declarations. Converting here, once, is what keeps the two from drifting into
 /// two vocabularies.
 #[must_use]
-pub fn record_op_class(op: OpClassId) -> busbar_unit_audit::record::OpClassId {
-    busbar_unit_audit::record::OpClassId::new(op.as_str())
+pub fn record_op_class(op: OpClassId) -> busbar_kernel_audit::record::OpClassId {
+    busbar_kernel_audit::record::OpClassId::new(op.as_str())
 }
 
 /// How the plane's finish class reads on the record.
 #[must_use]
 pub fn record_finish(
     finish: busbar_contract::unit::FinishClass,
-) -> busbar_unit_audit::record::FinishClass {
+) -> busbar_kernel_audit::record::FinishClass {
     match finish {
         busbar_contract::unit::FinishClass::Complete => {
-            busbar_unit_audit::record::FinishClass::Complete
+            busbar_kernel_audit::record::FinishClass::Complete
         }
         busbar_contract::unit::FinishClass::TurnComplete => {
-            busbar_unit_audit::record::FinishClass::TurnComplete
+            busbar_kernel_audit::record::FinishClass::TurnComplete
         }
         busbar_contract::unit::FinishClass::Partial => {
-            busbar_unit_audit::record::FinishClass::Partial
+            busbar_kernel_audit::record::FinishClass::Partial
         }
-        busbar_contract::unit::FinishClass::Error => busbar_unit_audit::record::FinishClass::Error,
+        busbar_contract::unit::FinishClass::Error => busbar_kernel_audit::record::FinishClass::Error,
     }
 }
 

@@ -65,7 +65,7 @@ use axum::response::Response;
 // pass-throughs would otherwise repeat it per signature.
 use busbar_api::PlaneRequestCtx;
 #[cfg(feature = "teller-waist")]
-use busbar_caps::{step::Audit, AuditFacts, Decision, OpClassId, UnitToken};
+use busbar_contract::caps::{step::Audit, AuditFacts, Decision, OpClassId, UnitToken};
 #[cfg(feature = "teller-waist")]
 use busbar_contract::FinishClass;
 use busbar_substrate::plane_host::EngineHost;

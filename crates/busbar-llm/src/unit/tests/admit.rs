@@ -5,7 +5,7 @@
 use super::*;
 use crate::test_support::TestApp;
 use busbar_api::Store as _;
-use busbar_caps::{KernelSeal, LedgerToken, Posted, StepName, Usage, UsageToken};
+use busbar_contract::caps::{KernelSeal, LedgerToken, Posted, StepName, Usage, UsageToken};
 use busbar_store_memory::MemoryStore;
 use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 use std::collections::BTreeMap;

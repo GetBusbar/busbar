@@ -58,7 +58,7 @@
 //!   The emission clock and the one-shot counter are integers.
 //! - **Allocates once, off the path.** The in-flight and session shards, the credential slab and
 //!   the registry allocate when they are built or when a connection is accepted, never per frame.
-//! - **Still allocates, and is marked.** `busbar_caps::Usage` takes a `Vec` of lines, so the exit path
+//! - **Still allocates, and is marked.** `busbar_contract::caps::Usage` takes a `Vec` of lines, so the exit path
 //!   builds one small vector per unit; the usage report is the contract's bounded `usage_lines ≤ 16`
 //!   type once that lands. Every stand-in that owns a `String` (selector literals, lane and class
 //!   names) allocates when config is read at boot, which is not the Teller path, but the names

@@ -68,7 +68,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
     Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
     TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
@@ -79,15 +79,15 @@ use busbar_contract::unit::{FinishClass, ResourceLocator};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 use busbar_plane_a2a::{ops, records};
-use busbar_unit_admission::{Admission as _, AdmissionUnit, CellStore, Door, Estimate, Pricer};
-use busbar_unit_audit::{Audit as _, AuditInputs};
-use busbar_unit_auth::{Auth, AuthRequest};
-use busbar_unit_scope::{Grants, Scope};
-use busbar_unit_trust::{
+use busbar_kernel_budget::{Admission as _, AdmissionUnit, CellStore, Door, Estimate, Pricer};
+use busbar_kernel_audit::{Audit as _, AuditInputs};
+use busbar_kernel_identity::{Auth, AuthRequest};
+use busbar_kernel_scope::{Grants, Scope};
+use busbar_kernel_egress::trust::{
     kind_permitted, kind_rule_passes, BreakerQuery, BreakerView, GuardPolicy, KindFacts,
     OriginKind, PoolView, Resolver,
 };
-use busbar_unit_usage::{KernelCounts, LegDeclaration, LocatedValue, RetainedLocatorValues};
+use busbar_kernel_ledger::usage::{KernelCounts, LegDeclaration, LocatedValue, RetainedLocatorValues};
 
 /// The action an audited unit of this plane is recorded under.
 ///
@@ -621,7 +621,7 @@ pub struct A2aBindings<'r, S: CellStore> {
     /// How far the network guard lets this plane's hops reach.
     pub guard: GuardPolicy,
     /// The deployment's additions to and carve-outs from the metadata denylist.
-    pub denylist: &'r busbar_unit_trust::Denylist,
+    pub denylist: &'r busbar_kernel_egress::trust::Denylist,
     /// The agents whose cards an operator has approved, by configured name.
     ///
     /// The pin itself is decided in the A2A plugin, where the JWS issuer key and the approved
@@ -643,7 +643,7 @@ pub struct A2aBindings<'r, S: CellStore> {
     /// node's configuration does not have, whose caps therefore could not be read. A caller bound
     /// to no group at all — the ordinary posture for a deployment with no `groups:` section — has a
     /// perfectly good chain of one uncapped attribution bucket, and gets it.
-    pub chain: Option<&'r busbar_unit_admission::BucketChain>,
+    pub chain: Option<&'r busbar_kernel_budget::BucketChain>,
     /// What the door prices a unit against.
     pub pricer: &'r Pricer,
     /// What the deployment's card charges for a byte of the priced document, in nano-units.
@@ -697,7 +697,7 @@ pub struct A2aBindings<'r, S: CellStore> {
     /// Sealed by the kernel and carried here for the same reason the trust token is: `Origin::seal`
     /// takes the kernel's seal, and this is not the kernel. `UnitCtx` hands each step the origin's
     /// KIND, which is what the destination rules read; the sealed value is what the record needs.
-    pub origin: busbar_caps::Origin,
+    pub origin: busbar_contract::caps::Origin,
 }
 
 /// A lock this plane holds, taken the way the root takes its locks.
@@ -774,11 +774,11 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     /// in; the ledger keeps it. An uncapped attribution bucket is still a balance, which is the
     /// point — a deployment that configured no group still has one figure per principal.
     #[must_use]
-    pub fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
-        busbar_unit_ledger::totals::TotalsKey::new(
-            busbar_unit_ledger::totals::BucketId::new(principal.as_str()),
-            busbar_unit_ledger::totals::CapDimension::NanoUnits,
-            busbar_unit_ledger::totals::BucketScope::All,
+    pub fn balance(principal: &PrincipalId) -> busbar_kernel_ledger::totals::TotalsKey {
+        busbar_kernel_ledger::totals::TotalsKey::new(
+            busbar_kernel_ledger::totals::BucketId::new(principal.as_str()),
+            busbar_kernel_ledger::totals::CapDimension::NanoUnits,
+            busbar_kernel_ledger::totals::BucketScope::All,
         )
     }
 
@@ -802,20 +802,20 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     pub fn settle(
         &self,
         principal: &PrincipalId,
-        posted: busbar_caps::Posted,
-        token: &busbar_caps::DurabilityToken,
-    ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+        posted: busbar_contract::caps::Posted,
+        token: &busbar_contract::caps::DurabilityToken,
+    ) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
         let key = Self::balance(principal);
         let at = crate::root::durability::Settling {
             key: &key,
-            window: busbar_unit_admission::budget_window(
-                busbar_unit_admission::window::WINDOW_DAY,
+            window: busbar_kernel_budget::budget_window(
+                busbar_kernel_budget::window::WINDOW_DAY,
                 self.bindings.now,
             ),
             durability: token,
             // The loop has no exit step of its own; the figure this posting is OF is the metering
             // step's, and that is the step a durability loss here is attributed to.
-            step: busbar_caps::StepName::Meter,
+            step: busbar_contract::caps::StepName::Meter,
             // The posting's own two clocks, the same pair the audit record carries and read the same
             // way: the wall epoch dates it, the monotonic reading orders it. A posting stamped twice
             // off the wall clock is a posting a stepped clock can reorder against its own record.
@@ -848,7 +848,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     pub fn verified_lanes(&self, origin: OriginKind) -> Result<Vec<LaneId>, Refusal> {
         // Guard one, two and three: the pool's allow-list, every fallback pool reachable from it,
         // and the unpriced-name gate.
-        if let Err(refusal) = busbar_unit_trust::destination_guard(
+        if let Err(refusal) = busbar_kernel_egress::trust::destination_guard(
             self.bindings.pools,
             self.bindings.pool,
             UNPRICED_MESSAGE,
@@ -944,9 +944,9 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     /// verified set contains an agent AND the unit is a caller's — a push the agent sent draws no
     /// client's slot and posts no fee, so the hold does not size for one. The rule is
     /// [`fee_could_land`], which reads the same evidence the settlement reads.
-    fn estimate(&self, origin: busbar_caps::OriginKind) -> Estimate {
+    fn estimate(&self, origin: busbar_contract::caps::OriginKind) -> Estimate {
         Estimate {
-            per_class: vec![busbar_unit_admission::ClassEstimate {
+            per_class: vec![busbar_kernel_budget::ClassEstimate {
                 class: CLASS_BYTES.as_str().to_string(),
                 quantity: self.draft.request_bytes,
                 max_unit_price_nanos: self.bindings.bytes_nanos,
@@ -979,14 +979,14 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         ));
         AuditInputs {
             subject: match principal.or(progress.principal.as_ref()) {
-                Some(p) => busbar_unit_audit::Subject::PrincipalId(p.as_str().to_string()),
-                None => busbar_unit_audit::Subject::Arrival,
+                Some(p) => busbar_kernel_audit::Subject::PrincipalId(p.as_str().to_string()),
+                None => busbar_kernel_audit::Subject::Arrival,
             },
-            what: busbar_unit_audit::What {
+            what: busbar_kernel_audit::What {
                 unit_key: busbar_contract::ids::UnitKey::new(0),
                 // The action, not the operation class. The rig reads this word, and the plane's own
                 // class is carried beside it on the facts the step returns.
-                op_class: busbar_unit_audit::OpClassId::new(AUDIT_ACTION),
+                op_class: busbar_kernel_audit::OpClassId::new(AUDIT_ACTION),
                 destination: self
                     .draft
                     .resource
@@ -1000,7 +1000,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             wall: self.bindings.now,
             mono: self.bindings.mono,
             origin: self.bindings.origin,
-            outcome: busbar_unit_audit::OutcomeFacts {
+            outcome: busbar_kernel_audit::OutcomeFacts {
                 unit_end: outcome,
                 step: outcome.step(),
                 finish: audit_finish(self.draft.finish),
@@ -1008,7 +1008,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 emission_delta: 0,
                 stale_policy: false,
             },
-            amount: busbar_unit_audit::Amount {
+            amount: busbar_kernel_audit::Amount {
                 lines: Vec::new(),
                 pre_tier: 0,
                 priced: 0,
@@ -1018,7 +1018,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 rate_card_version: 0,
                 bucket_chain_ref: String::new(),
             },
-            controls: busbar_unit_audit::Controls::default(),
+            controls: busbar_kernel_audit::Controls::default(),
             correlation_label: None,
         }
     }
@@ -1047,12 +1047,12 @@ const NANOS_PER_CENT: u64 = 10_000_000;
 /// Two crates name the same four endings and neither depends on the other, so the mapping is
 /// written once, here, where both are in scope. Totality is what makes it safe: a fifth ending
 /// would not compile.
-fn audit_finish(finish: FinishClass) -> busbar_unit_audit::FinishClass {
+fn audit_finish(finish: FinishClass) -> busbar_kernel_audit::FinishClass {
     match finish {
-        FinishClass::Complete => busbar_unit_audit::FinishClass::Complete,
-        FinishClass::TurnComplete => busbar_unit_audit::FinishClass::TurnComplete,
-        FinishClass::Partial => busbar_unit_audit::FinishClass::Partial,
-        FinishClass::Error => busbar_unit_audit::FinishClass::Error,
+        FinishClass::Complete => busbar_kernel_audit::FinishClass::Complete,
+        FinishClass::TurnComplete => busbar_kernel_audit::FinishClass::TurnComplete,
+        FinishClass::Partial => busbar_kernel_audit::FinishClass::Partial,
+        FinishClass::Error => busbar_kernel_audit::FinishClass::Error,
     }
 }
 
@@ -1180,11 +1180,11 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // authorized, and there is deliberately no arm here that reads an absent entry as a
         // permissive one.
         let Some(needed) =
-            busbar_unit_scope::required_scope(CLAIM_A2A, op, self.bindings.scope_policy)
+            busbar_kernel_scope::required_scope(CLAIM_A2A, op, self.bindings.scope_policy)
         else {
             return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
         };
-        match busbar_unit_scope::approve(self.grants, needed) {
+        match busbar_kernel_scope::approve(self.grants, needed) {
             Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied)),
             Ok(()) => {
                 // The plane says WHAT is being asked for; the resource travels with the approval so
@@ -1363,12 +1363,12 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         let retained = RetainedLocatorValues::new(vec![bytes_located(&self.draft)]);
         // The kernel's own floor for this unit is what it moved on the way in. It is the tripwire
         // beside the located figure, never the charge.
-        let kernel = KernelCounts::new(vec![busbar_unit_usage::KernelLine {
+        let kernel = KernelCounts::new(vec![busbar_kernel_ledger::usage::KernelLine {
             class: CLASS_BYTES,
             quantity: self.draft.request_bytes,
             // A byte is a byte: the class's own quantity is the quantity, so the floor divides by
             // one. The plane declared that divisor and this is the declaration read back.
-            source: busbar_caps::QuantitySource::KernelBytes { divisor: 1 },
+            source: busbar_contract::caps::QuantitySource::KernelBytes { divisor: 1 },
         }]);
         // This protocol's answers name no lane — the lane is the agent's and the trust unit sealed
         // it — so only the legs that exist are declared. A declared leg absent at runtime is a
@@ -1378,7 +1378,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             verified: true,
             response: false,
         };
-        match busbar_unit_usage::meter(
+        match busbar_kernel_ledger::usage::meter(
             &retained,
             &kernel,
             self.bindings.meter_policy.policy(),
@@ -1422,7 +1422,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // The second door: a unit that never passed the first one, and was charged nothing. It is
         // sealed on the same chain, because a refusal is an event with a record of its own.
         let outcome = Outcome::Refused(
-            refusal.step().unwrap_or(busbar_caps::StepName::Admit),
+            refusal.step().unwrap_or(busbar_contract::caps::StepName::Admit),
             refusal.reason(),
         );
         let inputs = self.audit_inputs(ctx, outcome, None);
@@ -1507,11 +1507,11 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 /// response — so the plane's finish is the single source, and an error ending posts nothing.
 fn fee_evidence(
     draft: &A2aDraft,
-    origin: busbar_caps::OriginKind,
+    origin: busbar_contract::caps::OriginKind,
     relayed_first_response_frame: bool,
 ) -> busbar_kernel::teller::FeeEvidence {
     busbar_kernel::teller::FeeEvidence {
-        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client,
+        client_open_or_one_shot: origin == busbar_contract::caps::OriginKind::Client,
         selected_upstream: draft.has_upstream(),
         relayed_first_response_frame,
         status_at: None,
@@ -1534,11 +1534,11 @@ fn bytes_located(draft: &A2aDraft) -> LocatedValue {
     LocatedValue {
         class: CLASS_BYTES,
         quantity: draft.response_bytes,
-        source: busbar_caps::QuantitySource::Locator {
+        source: busbar_contract::caps::QuantitySource::Locator {
             direction: busbar_contract::ids::ClassDirection::Response,
             // The quantity was not at a pointer: it is the size of the document the plane just
             // read, which the locator carried by value precisely for this case.
-            ptr: busbar_caps::LocatorPtr::new(""),
+            ptr: busbar_contract::caps::LocatorPtr::new(""),
         },
     }
 }
@@ -1555,7 +1555,7 @@ fn bytes_located(draft: &A2aDraft) -> LocatedValue {
 /// hold that spelled the origin rule a second time is a second rule, and the one that drifts is the
 /// one nobody re-derived. Spelled twice, a provider push on a thin bucket was refused `OverBudget`
 /// for a fee its own settlement would never have posted.
-fn fee_could_land(draft: &A2aDraft, origin: busbar_caps::OriginKind) -> bool {
+fn fee_could_land(draft: &A2aDraft, origin: busbar_contract::caps::OriginKind) -> bool {
     // `false` for the relay: it is not knowable at the door and it is not part of this question.
     let evidence = fee_evidence(draft, origin, false);
     evidence.client_open_or_one_shot && evidence.selected_upstream
@@ -1581,9 +1581,9 @@ pub fn guard_destination(
     candidate: &DestinationFacts,
     resolver: &dyn Resolver,
     policy: GuardPolicy,
-    denylist: &busbar_unit_trust::Denylist,
-) -> Result<Option<busbar_unit_trust::PinnedTarget>, busbar_unit_trust::NetworkRefusal> {
-    match busbar_unit_trust::net::check_destination_facts(
+    denylist: &busbar_kernel_egress::trust::Denylist,
+) -> Result<Option<busbar_kernel_egress::trust::PinnedTarget>, busbar_kernel_egress::trust::NetworkRefusal> {
+    match busbar_kernel_egress::trust::net::check_destination_facts(
         candidate,
         &[],
         resolver,
@@ -1592,7 +1592,7 @@ pub fn guard_destination(
     ) {
         // Only an upstream is dialled at an address. Every other kind reaches its destination
         // without one, so "this is not an upstream" is this caller's pass, not its refusal.
-        Err(busbar_unit_trust::NetworkRefusal::NotAnUpstream) => Ok(None),
+        Err(busbar_kernel_egress::trust::NetworkRefusal::NotAnUpstream) => Ok(None),
         other => other,
     }
 }
@@ -1603,16 +1603,16 @@ pub fn guard_destination(
 /// here, where both are in scope, and it is total: an origin added to either would not compile. The
 /// nested arm carries a parent key the destination rules never read, which is exactly why the two
 /// spellings are not one type.
-fn trust_origin(kind: busbar_caps::OriginKind) -> OriginKind {
+fn trust_origin(kind: busbar_contract::caps::OriginKind) -> OriginKind {
     match kind {
-        busbar_caps::OriginKind::Client => OriginKind::Client,
-        busbar_caps::OriginKind::Provider => OriginKind::Provider,
-        busbar_caps::OriginKind::Tick => OriginKind::Tick,
-        busbar_caps::OriginKind::Arrival => OriginKind::Arrival,
-        busbar_caps::OriginKind::Handshake => OriginKind::Handshake,
-        busbar_caps::OriginKind::Bootstrap => OriginKind::Bootstrap,
-        busbar_caps::OriginKind::Nested { .. } => OriginKind::Nested,
-        busbar_caps::OriginKind::Delivery { .. } => OriginKind::Delivery,
+        busbar_contract::caps::OriginKind::Client => OriginKind::Client,
+        busbar_contract::caps::OriginKind::Provider => OriginKind::Provider,
+        busbar_contract::caps::OriginKind::Tick => OriginKind::Tick,
+        busbar_contract::caps::OriginKind::Arrival => OriginKind::Arrival,
+        busbar_contract::caps::OriginKind::Handshake => OriginKind::Handshake,
+        busbar_contract::caps::OriginKind::Bootstrap => OriginKind::Bootstrap,
+        busbar_contract::caps::OriginKind::Nested { .. } => OriginKind::Nested,
+        busbar_contract::caps::OriginKind::Delivery { .. } => OriginKind::Delivery,
     }
 }
 

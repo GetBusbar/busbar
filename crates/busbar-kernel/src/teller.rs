@@ -56,7 +56,7 @@
 
 use std::future::Future;
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Abort, AdminToken, Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate,
     Authenticated, Canary, Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldAccrual,
     HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted,
@@ -151,8 +151,8 @@ impl Kernel {
     ///
     /// Kept beside the other two and named the same way, so the source scan that accounts for every
     /// mint sees this one too.
-    pub fn durability_token(&self) -> busbar_caps::DurabilityToken {
-        busbar_caps::DurabilityToken::mint(&self.seal)
+    pub fn durability_token(&self) -> busbar_contract::caps::DurabilityToken {
+        busbar_contract::caps::DurabilityToken::mint(&self.seal)
     }
 
     /// The ledger unit's token, as the composition root lends it to a posting made after the exit.
@@ -169,8 +169,8 @@ impl Kernel {
     ///
     /// Kept beside the other three and named the same way, so the source scan that accounts for
     /// every mint sees this one too.
-    pub fn ledger_token(&self) -> busbar_caps::LedgerToken {
-        busbar_caps::LedgerToken::mint(&self.seal)
+    pub fn ledger_token(&self) -> busbar_contract::caps::LedgerToken {
+        busbar_contract::caps::LedgerToken::mint(&self.seal)
     }
 
     /// The usage record's token, as the composition root lends it to a report assembled after the exit.
@@ -1237,7 +1237,7 @@ pub fn exit<U: Units>(
                 Err(_) => {
                     drop_arrival(hold);
                     Err(DurabilityLost::observed(
-                        &busbar_caps::DurabilityToken::mint(seal),
+                        &busbar_contract::caps::DurabilityToken::mint(seal),
                         StepName::Meter,
                     ))
                 }

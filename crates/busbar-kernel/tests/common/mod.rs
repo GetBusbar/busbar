@@ -12,7 +12,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode,
     Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal,
     Route, ScopeFacts, StepName, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
@@ -97,7 +97,7 @@ pub struct TestUnits {
     /// Answer the authenticate step with a challenge instead of an identity.
     pub challenge: bool,
     /// The lanes the verified set carried when it reached the approve step.
-    pub approved_lanes: Mutex<Vec<busbar_caps::LaneId>>,
+    pub approved_lanes: Mutex<Vec<busbar_contract::caps::LaneId>>,
     /// The capped-`concurrent` groups this door names on its yes, as the root would have interned
     /// them. Empty is the door that names none, which is every case that predates the slip.
     pub groups: Vec<&'static str>,
@@ -169,7 +169,7 @@ impl TestUnits {
     }
 
     /// The destination set as the approve step received it — what the verify step actually sealed.
-    pub fn approved_lanes(&self) -> Vec<busbar_caps::LaneId> {
+    pub fn approved_lanes(&self) -> Vec<busbar_contract::caps::LaneId> {
         self.approved_lanes.lock().unwrap().clone()
     }
 
@@ -236,8 +236,8 @@ impl busbar_kernel::teller::RouteAwait for NeverRoutes<'_> {
 
 /// A principal every test shares.
 /// The arrival record the battery's kernel-owned arrival step hands forward.
-pub fn arrival_record() -> busbar_caps::ArrivalRecord {
-    busbar_caps::ArrivalRecord {
+pub fn arrival_record() -> busbar_contract::caps::ArrivalRecord {
+    busbar_contract::caps::ArrivalRecord {
         source: "127.0.0.1:9".into(),
         port: 9,
         alpn: None,
@@ -248,16 +248,16 @@ pub fn arrival_record() -> busbar_caps::ArrivalRecord {
 }
 
 /// What the battery's audit step seals.
-pub fn audit_facts() -> busbar_caps::AuditFacts {
-    busbar_caps::AuditFacts {
-        op_class: busbar_caps::OpClassId::new("battery"),
+pub fn audit_facts() -> busbar_contract::caps::AuditFacts {
+    busbar_contract::caps::AuditFacts {
+        op_class: busbar_contract::caps::OpClassId::new("battery"),
         finish: busbar_contract::FinishClass::Complete,
     }
 }
 
 /// The one frame the battery's encode step produces.
-pub fn encoded_frame() -> busbar_caps::Frame {
-    busbar_caps::Frame {
+pub fn encoded_frame() -> busbar_contract::caps::Frame {
+    busbar_contract::caps::Frame {
         direction: busbar_contract::Direction::Outbound,
         stream: busbar_contract::StreamId(0),
         bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b""[..])),
@@ -273,7 +273,7 @@ impl busbar_kernel::inflight::ArrivalDoor for TestDoor {
     fn arrival_hold(
         &self,
         principal: PrincipalId,
-        token: &busbar_caps::AdmitToken<busbar_caps::Admit>,
+        token: &busbar_contract::caps::AdmitToken<busbar_contract::caps::Admit>,
     ) -> Hold {
         Hold::open(token, principal, 0)
     }
@@ -307,7 +307,7 @@ pub fn usage(token: &UsageToken, quantity: u64) -> Usage {
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity,
-            source: busbar_caps::QuantitySource::Count,
+            source: busbar_contract::caps::QuantitySource::Count,
             estimated: false,
         }],
     )
@@ -335,7 +335,7 @@ impl Units for TestUnits {
             token,
             Decode,
             StepName::Decode,
-            busbar_caps::OpClassId::new("battery")
+            busbar_contract::caps::OpClassId::new("battery")
         )
     }
 
@@ -345,13 +345,13 @@ impl Units for TestUnits {
         _ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
         let facts = if self.challenge {
-            busbar_caps::Authenticated::Challenge(busbar_contract::Challenge {
+            busbar_contract::caps::Authenticated::Challenge(busbar_contract::Challenge {
                 bytes: b"nonce".to_vec(),
                 state: busbar_contract::ChallengeState(Vec::new()),
                 rounds_left: 2,
             })
         } else {
-            busbar_caps::Authenticated::Principal(principal())
+            busbar_contract::caps::Authenticated::Principal(principal())
         };
         step!(self, token, Authenticate, StepName::Authenticate, facts)
     }
@@ -359,7 +359,7 @@ impl Units for TestUnits {
     fn verify(
         &self,
         token: &UnitToken<Verify>,
-        trust: &busbar_caps::TrustToken,
+        trust: &busbar_contract::caps::TrustToken,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -373,7 +373,7 @@ impl Units for TestUnits {
                 token,
                 vec![VerifiedDestination::seal(
                     trust,
-                    busbar_caps::LaneId::new("fixture-lane"),
+                    busbar_contract::caps::LaneId::new("fixture-lane"),
                 )],
             ),
         }
@@ -455,7 +455,7 @@ impl Units for TestUnits {
         meter.accrue(self.spend);
         match self.refusal(StepName::Route) {
             Some(refusal) => Decision::refuse(token, refusal),
-            None => Decision::proceed(token, busbar_caps::RoutePlan::default()),
+            None => Decision::proceed(token, busbar_contract::caps::RoutePlan::default()),
         }
     }
 

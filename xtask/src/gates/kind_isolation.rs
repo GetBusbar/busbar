@@ -268,10 +268,17 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["busbar-unit-"],
     },
+    // THE ENGINE + THE 8 WORKFLOW CRATES (DECISIONS #36). `busbar-kernel` is the loop/registry/
+    // teller/sessions; `busbar-kernel-<name>` are the 8 workflow crates the 14 `busbar-unit-*` folded
+    // into (identity, scope, budget, ledger, egress, breaker, wal, audit). One kind, matched by the
+    // exact loop name AND the `busbar-kernel-` prefix — the same shape the `core` kind uses. A kernel
+    // crate is NEUTRAL: it may carry no plane and no transport instance in its name, and its external
+    // deps are the neutral spine ({contract, plugin-sdk} and other kernel crates), so an edge to a
+    // plane, a dialect, a transport or a unit is a NEW class and is refused like any other.
     KindDef {
         kind: "kernel",
         family: Family::Neutral,
-        matchers: &["=busbar-kernel"],
+        matchers: &["=busbar-kernel", "busbar-kernel-"],
     },
     // THE ENGINE SURFACES BEING CARVED OUT OF `busbar-core` — `busbar-core-config`,
     // `busbar-core-hooks`, and whatever the drain names next. A `core` crate is NEUTRAL on exactly
@@ -288,11 +295,8 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["busbar-core-"],
     },
-    KindDef {
-        kind: "caps",
-        family: Family::Neutral,
-        matchers: &["=busbar-caps"],
-    },
+    // `busbar-caps` is KILLED/folded into `busbar-contract` (DECISIONS #37/#38, W2.c): the capability
+    // vocabulary is neutral ABI and lands in the one contract crate. There is no `caps` kind.
     KindDef {
         kind: "contract",
         family: Family::Neutral,
@@ -490,11 +494,6 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
          depends on busbar-contract-transport as every unit on that path does.",
     ),
     (
-        "busbar-unit-auth",
-        "the ingress AUTH unit. `auth` here is the step of the Teller loop this unit runs, not the \
-         auth-plugin kind: the unit calls auth plugins, it is not one.",
-    ),
-    (
         "busbar-core-hooks",
         "the engine's HOOK DISPATCH, carved out of busbar-core. `hooks` here is the thing core \
          dispatches, not the hooks-plugin kind: a hook plugin is `busbar-hook-<name>` and \
@@ -518,14 +517,19 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
 /// [`PENDING_EDGES`] joins it: those are classes the DESIGN grants ahead of the tree, which is the
 /// same kind of statement made about a crate that does not exist yet.
 const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
-    ("caps", "contract"),
     // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
     ("contract", "contract-transport"),
     ("contract", "grammar"),
-    ("kernel", "caps"),
     ("kernel", "contract"),
+    // `busbar-kernel` (the loop) names the closed span grammar directly; the folded capability
+    // vocabulary now lives in `busbar-contract`, so the former `kernel -> caps` edge is gone (W2.c).
     ("kernel", "grammar"),
+    // A kernel workflow crate may depend on other kernel crates (DECISIONS #36 group structure, e.g.
+    // budget -> ledger); intra-tier edges are allowed structure, not a widening.
+    ("kernel", "kernel"),
+    // A kernel crate may name the author-side plugin machinery face (the dep-wall admits plugin-sdk).
+    ("kernel", "plugin-tooling"),
     ("legacy", "contract"),
     // A PLANE ADAPTER PATH-DEPS ITS OWN CODEC (DECISIONS #6/#18/#21). The codec crate is stateful
     // (entropy pools, streaming accumulators, feature `#[cfg]`) and so cannot live in the pure
@@ -538,7 +542,6 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("plane", "contract"),
     // The composition root is the one thing that names all three axes — that is what a root IS.
     ("root", "api"),
-    ("root", "caps"),
     ("root", "cleanliness"),
     ("root", "contract"),
     ("root", "kernel"),
@@ -554,14 +557,12 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("transport", "contract"),
     ("transport", "contract-transport"),
     ("transport", "transport"),
-    ("unit", "caps"),
     ("unit", "contract"),
     ("unit", "unit"),
     // A CLEANLINESS SURFACE (admin/oauth2) is compiled-in with a one-way dep on core (DECISIONS #5).
-    // The ship twin permits its contract/caps edges here; its core/substrate/api/loader edges are
+    // The ship twin permits its contract edge here; its core/substrate/api/loader edges are
     // measured in the `[[dep]]` ledger like every other Neutral kind's.
     ("cleanliness", "contract"),
-    ("cleanliness", "caps"),
 ];
 
 /// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `ARCHITECTURE.md` 1.4 says
@@ -571,7 +572,9 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
 /// the architecture's own graph, and the TCB is a hole in that graph rather than a clause of it.
 const ARCHITECTURE_TCB: &[(&str, &str)] = &[
     ("plugin-tooling", "api"),
-    ("plugin-tooling", "caps"),
+    // The loader's store adapter names the folded capability vocabulary at its new home in
+    // `busbar-contract` (formerly `busbar-caps`, W2.c).
+    ("plugin-tooling", "contract"),
     ("plugin-tooling", "kernel"),
     ("plugin-tooling", "plugin-abi"),
     ("plugin-tooling", "plugin-tooling"),
@@ -3827,7 +3830,7 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
 /// The kernel's OWN step table, and the plane trait it is run through. Both are read; neither is
 /// restated here, because a hand-written step list is a list that goes stale the first time a step
 /// is added and nothing says so.
-const STEP_TABLE_FILE: &str = "crates/busbar-caps/src/step.rs";
+const STEP_TABLE_FILE: &str = "crates/busbar-contract/src/caps/step.rs";
 const PLANE_TRAIT_FILE: &str = "crates/busbar-contract/src/plane.rs";
 
 /// A tree with fewer than this many plane-owned steps has not been read; the loop is ten steps long

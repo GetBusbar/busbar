@@ -28,9 +28,9 @@
 //!
 //! `busbar-caps` only (a `serde_json` DEV-dependency exists solely to parse the openapi fixture in
 //! the conformance test above; it is not part of the shipped crate). This crate holds
-//! [`busbar_caps::AdminToken`] (lent by reference from the kernel — this crate never mints one; see
-//! `busbar_caps::token` for why minting is confined to the kernel) and is the one place a
-//! [`busbar_caps::SecretOnce`] is built for an administrative mint or rotate.
+//! [`busbar_contract::caps::AdminToken`] (lent by reference from the kernel — this crate never mints one; see
+//! `busbar_contract::caps::token` for why minting is confined to the kernel) and is the one place a
+//! [`busbar_contract::caps::SecretOnce`] is built for an administrative mint or rotate.
 //!
 //! ## What is ported IN FULL versus what is `// contract:`
 //!

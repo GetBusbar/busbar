@@ -43,7 +43,7 @@
 //! proposed diff rather than made here. Until it lands, [`run`] is usable by any caller that can
 //! already build a unit, and the cross-leg table cannot be closed.
 
-use busbar_caps::{Canary, Hold, HoldCell, PrincipalId};
+use busbar_contract::caps::{Canary, Hold, HoldCell, PrincipalId};
 use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
 use busbar_kernel::teller::{run_unit, AccrualMeter, Ended, Kernel, Run, UnitCtx, Units};
 use std::sync::Mutex;

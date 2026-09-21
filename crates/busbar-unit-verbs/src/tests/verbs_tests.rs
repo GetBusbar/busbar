@@ -12,7 +12,7 @@ use crate::rate::CONFIG_CLASS_RULES;
 use crate::store::{Store, StoreError};
 use crate::verb::{KernelVerb, VerbScope};
 use crate::verbs::{MintedKeyOutcome, NonceSource, Verbs};
-use busbar_caps::{AdminToken, KernelSeal, UnitKey};
+use busbar_contract::caps::{AdminToken, KernelSeal, UnitKey};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;

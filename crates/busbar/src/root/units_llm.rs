@@ -80,7 +80,7 @@ use std::time::Instant;
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision, Decode,
     Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
     TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
@@ -234,7 +234,7 @@ pub struct LlmNode {
     kernel: busbar_kernel::teller::Kernel,
     inflight: busbar_kernel::inflight::InFlight,
     gauge: busbar_kernel::slice::ConcurrencyGauge,
-    canary: busbar_caps::Canary,
+    canary: busbar_contract::caps::Canary,
     door: crate::root::kernel::AdmissionDoor,
     /// THE NODE'S ONE INTERNER. A configured lane's name is read out of config as a runtime `String`
     /// and a `LaneId` is a borrowed static one, so the two are bridged by leaking each name exactly
@@ -265,7 +265,7 @@ pub struct LlmNode {
     /// Minted outside the loop because making a posting durable happens after the exit has sealed
     /// the end: there is no step of the unit whose token could stand in, which is the same reason
     /// the verbs unit's and the transport-key unit's are minted outside it.
-    durability_token: busbar_caps::DurabilityToken,
+    durability_token: busbar_contract::caps::DurabilityToken,
     // THE RATE-CARD HISTORY THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
     // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is appended to rather than
     // bound once, because a rate is a statement about a deployment and a deployment's rates change
@@ -287,7 +287,7 @@ pub struct LlmNode {
     /// Minted outside the loop for the same reason the journal's and the ledger's are: the report a
     /// late accrual prices arrives after the exit sealed the end, so there is no step of the unit
     /// whose token could stand in.
-    usage_token: busbar_caps::UsageToken,
+    usage_token: busbar_contract::caps::UsageToken,
     /// THE ONE SEAM THIS PLANE'S ROUTE STEP REACHES THE ENGINE THROUGH.
     ///
     /// On the node rather than on the unit because what it instruments is a statement about a SET of
@@ -334,7 +334,7 @@ impl LlmNode {
             // answered.
             inflight: busbar_kernel::inflight::InFlight::new(usize::MAX, 0),
             gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
-            canary: busbar_caps::Canary::new(),
+            canary: busbar_contract::caps::Canary::new(),
             door: crate::root::kernel::AdmissionDoor,
             lanes: Arc::clone(&lanes),
             lane_names: Mutex::new(LaneNames {
@@ -669,9 +669,9 @@ impl LlmNode {
 /// The flat fee is NOT a line built here. It is the card's, added by the pricing as a line of its own
 /// from the billable count the report carries, which is what keeps one configured fee to one place.
 fn usage_record(
-    token: &busbar_caps::UsageToken,
+    token: &busbar_contract::caps::UsageToken,
     usage: &busbar_substrate::billing::Usage,
-) -> busbar_caps::Usage {
+) -> busbar_contract::caps::Usage {
     let lines = [
         busbar_api::UNIT_INPUT,
         busbar_api::UNIT_OUTPUT,
@@ -683,10 +683,10 @@ fn usage_record(
         // A zero-quantity line is not a fact about anything, and the plane's own metering step drops
         // them for the same reason. Kept out here too so the two reports have the same shape.
         let quantity = usage.usage_units.get(class).copied().unwrap_or(0);
-        (quantity > 0).then(|| busbar_caps::UsageLine {
-            class: busbar_caps::MeterClassId::new(class),
+        (quantity > 0).then(|| busbar_contract::caps::UsageLine {
+            class: busbar_contract::caps::MeterClassId::new(class),
             quantity,
-            source: busbar_caps::QuantitySource::Count,
+            source: busbar_contract::caps::QuantitySource::Count,
             estimated: false,
         })
     })
@@ -695,8 +695,8 @@ fn usage_record(
     // a bound on lines, and the four tiers this plane reports are far inside it. An empty record is
     // the honest fallback — it prices the fee and no tokens, which is what a response that reported
     // nothing costs.
-    busbar_caps::Usage::report(token, lines)
-        .unwrap_or_else(|_| busbar_caps::Usage::report(token, Vec::new()).expect("no lines fit"))
+    busbar_contract::caps::Usage::report(token, lines)
+        .unwrap_or_else(|_| busbar_contract::caps::Usage::report(token, Vec::new()).expect("no lines fit"))
 }
 
 /// **WHAT ONE REPORT IS WORTH**, against one card — the node's single pricing expression.
@@ -723,19 +723,19 @@ fn usage_record(
 fn priced_posting(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
-    token: &busbar_caps::UsageToken,
+    token: &busbar_contract::caps::UsageToken,
     report: &LateReport,
-) -> (busbar_unit_cost::Posting, Option<busbar_unit_cost::Priced>) {
+) -> (busbar_kernel_ledger::cost::Posting, Option<busbar_kernel_ledger::cost::Priced>) {
     // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
     // the classes and their counts, and the unit's PINNED arrival supplies the instant in both its
     // readings. The instant is not a clock read — this runs after the body drained, which may be a
     // different day from the one the request was admitted in, and a fresh reading would price the
     // request against a card it never agreed to.
-    let mut posting = busbar_unit_cost::Posting::from_usage(
+    let mut posting = busbar_kernel_ledger::cost::Posting::from_usage(
         &report.lane,
         &usage_record(token, &report.usage),
         u64::from(report.fee_count),
-        busbar_unit_cost::STANDARD_TIER_BP,
+        busbar_kernel_ledger::cost::STANDARD_TIER_BP,
         arrived.ms(),
         arrived.mono(),
     );
@@ -743,7 +743,7 @@ fn priced_posting(
     // history resolves which entry was in force then; a later apply is not in this view at all, so
     // there is no arm here that could read one.
     let currency = crate::root::kernel::node_currency();
-    let priced = busbar_unit_cost::price(&history.view(), &posting, currency).ok();
+    let priced = busbar_kernel_ledger::cost::price(&history.view(), &posting, currency).ok();
     // THE CACHE IS WRITTEN AND IS NEVER READ BACK. It rides the posting so a reader has a figure to
     // compare a re-derivation against and so a totals read need not re-price a day of postings on
     // every request — but the figure this function RETURNS is the lookup's, taken off `priced`
@@ -764,7 +764,7 @@ fn priced_posting(
 fn priced_amount(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
-    token: &busbar_caps::UsageToken,
+    token: &busbar_contract::caps::UsageToken,
     report: &LateReport,
 ) -> u64 {
     let (_posting, priced) = priced_posting(history, arrived, token, report);
@@ -797,9 +797,9 @@ struct LateAccrual {
     /// request an operator edited a price underneath — which is the request the distinction exists
     /// for.
     history: crate::root::kernel::PinnedHistory,
-    durability_token: busbar_caps::DurabilityToken,
-    ledger_token: busbar_caps::LedgerToken,
-    usage_token: busbar_caps::UsageToken,
+    durability_token: busbar_contract::caps::DurabilityToken,
+    ledger_token: busbar_contract::caps::LedgerToken,
+    usage_token: busbar_contract::caps::UsageToken,
     principal: PrincipalId,
     arrived: Arrived,
     /// The unit's carry, kept alive for exactly as long as the body is: the reading needs the lane
@@ -853,8 +853,8 @@ impl LateAccrual {
             return;
         }
         let accrual =
-            busbar_caps::HoldAccrual::after_terminal(principal.clone(), amount, &ledger_token);
-        let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
+            busbar_contract::caps::HoldAccrual::after_terminal(principal.clone(), amount, &ledger_token);
+        let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
         // Through the money-book seam, as the terminal exit arm does — the same shared book, the
         // same posting, the lock taken and released behind the seam.
         let book = crate::root::durability::SharedBook::over(book);
@@ -1422,7 +1422,7 @@ impl Units for LlmUnit<'_> {
         // is the honest answer rather than a trailer this surface does not send.
         Decision::proceed(
             token,
-            busbar_caps::Frame {
+            busbar_contract::caps::Frame {
                 direction: busbar_contract::Direction::Outbound,
                 stream: busbar_contract::StreamId(0),
                 bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b""[..])),
@@ -1538,11 +1538,11 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
 /// The caller rather than the pool, because the kernel's posting is the unit's — what the POOL spent
 /// is the governance ledger's figure and is already moved there by the walk's tap. Two figures, two
 /// books, neither a second spelling of the other.
-fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
-    busbar_unit_ledger::totals::TotalsKey::new(
-        busbar_unit_ledger::totals::BucketId::new(principal.as_str()),
-        busbar_unit_ledger::totals::CapDimension::NanoUnits,
-        busbar_unit_ledger::totals::BucketScope::All,
+fn balance(principal: &PrincipalId) -> busbar_kernel_ledger::totals::TotalsKey {
+    busbar_kernel_ledger::totals::TotalsKey::new(
+        busbar_kernel_ledger::totals::BucketId::new(principal.as_str()),
+        busbar_kernel_ledger::totals::CapDimension::NanoUnits,
+        busbar_kernel_ledger::totals::BucketScope::All,
     )
 }
 
@@ -1566,20 +1566,20 @@ pub fn settle(
     book: &dyn crate::root::durability::MoneyBook,
     principal: &PrincipalId,
     arrived: Arrived,
-    token: &busbar_caps::DurabilityToken,
-    posted: busbar_caps::Posted,
-) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+    token: &busbar_contract::caps::DurabilityToken,
+    posted: busbar_contract::caps::Posted,
+) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
     let key = balance(principal);
     let at = crate::root::durability::Settling {
         key: &key,
-        window: busbar_unit_admission::budget_window(
-            busbar_unit_admission::window::WINDOW_DAY,
+        window: busbar_kernel_budget::budget_window(
+            busbar_kernel_budget::window::WINDOW_DAY,
             arrived.secs(),
         ),
         durability: token,
         // The loop has no exit step of its own; the figure this posting is OF is the metering step's,
         // and that is the step a durability loss here is attributed to.
-        step: busbar_caps::StepName::Meter,
+        step: busbar_contract::caps::StepName::Meter,
         // The posting's two clocks, and they are two READINGS of the one arrival: the wall epoch
         // DATES the posting, the monotonic reading ORDERS it. Stamped from the wall clock twice, the
         // second field is a copy — and two postings of one second become unorderable, which is

@@ -23,7 +23,7 @@
 
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
 use crate::verb::KernelVerb;
-use busbar_caps::AdminToken;
+use busbar_contract::caps::AdminToken;
 
 /// A governance-layer error, mapped to a [`Refusal`] by [`GovernanceError::into_refusal`] rather
 /// than exposed to the caller directly — the same fail-closed shape 1.5.5's admin handlers use
@@ -56,7 +56,7 @@ impl GovernanceError {
 
 /// A freshly minted or rotated key's once-shown material, as far as this crate's own logic needs to
 /// see it (the secret text itself is never a plain `String` here — see
-/// [`crate::verbs::Verbs::create_key`] for how it is wrapped in a [`busbar_caps::SecretOnce`] before
+/// [`crate::verbs::Verbs::create_key`] for how it is wrapped in a [`busbar_contract::caps::SecretOnce`] before
 /// leaving this crate).
 pub struct MintedKey {
     /// The key's id.

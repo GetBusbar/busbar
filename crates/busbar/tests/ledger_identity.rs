@@ -28,7 +28,7 @@
 //! ## The two ledger sides, and why there are two
 //!
 //! The first is RECONSTRUCTED: the figures the run actually produced, priced through the real
-//! `busbar_unit_cost::price`, checked against the legacy projection. That is the full-width identity
+//! `busbar_kernel_ledger::cost::price`, checked against the legacy projection. That is the full-width identity
 //! — bucket, day, lane and provider, with the flat fee as a line of its own — and it is the check
 //! that says the ledger's arithmetic and the legacy projection's agree on the binary's own traffic.
 //!
@@ -52,8 +52,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use busbar_caps::{KernelSeal, MeterClassId, QuantitySource, Usage, UsageLine, UsageToken};
-use busbar_unit_cost::{
+use busbar_contract::caps::{KernelSeal, MeterClassId, QuantitySource, Usage, UsageLine, UsageToken};
+use busbar_kernel_ledger::cost::{
     price, CurrencyCode, History, LaneClass, Posting, RateCard, STANDARD_TIER_BP,
 };
 

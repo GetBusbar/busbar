@@ -549,11 +549,11 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     // settle path onto a real journal, come back off it in the order they were written — which
     // is the ordering the record is FOR, and which does not exist if the second field is the
     // first one copied.
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     // Both settlements through the ONE money-book seam over the shared book — the pass-through the
@@ -562,14 +562,14 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let seam = crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book));
     let who = PrincipalId::new("acct:llm");
     for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
-        let ledger_token = busbar_caps::LedgerToken::mint(&seal);
-        let accrual = busbar_caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
-        let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
+        let ledger_token = busbar_contract::caps::LedgerToken::mint(&seal);
+        let accrual = busbar_contract::caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
+        let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
         settle(
             &seam,
             &who,
             arrived,
-            &busbar_caps::DurabilityToken::mint(&seal),
+            &busbar_contract::caps::DurabilityToken::mint(&seal),
             posted,
         )
         .expect("the memory-buffered journal takes it");
@@ -689,7 +689,7 @@ const EPOCH: u64 = 1_700_000_000;
 /// The first entry is effective from zero for the same reason the holder's is: an instant before
 /// the first entry is a hole and a hole is a refusal.
 fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
-    let mut history = busbar_unit_cost::History::new();
+    let mut history = busbar_kernel_ledger::cost::History::new();
     for (n, (from, output)) in entries.iter().enumerate() {
         let card = crate::root::kernel::card_from_config(
             [(
@@ -705,19 +705,19 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
             true,
             crate::root::kernel::node_currency(),
         );
-        history.append(busbar_unit_cost::CardEntryDraft {
+        history.append(busbar_kernel_ledger::cost::CardEntryDraft {
             effective_from: if n == 0 { 0 } else { *from },
             effective_until: None,
             card,
             appended_at: *from,
-            author: busbar_unit_cost::Author::Config {
+            author: busbar_kernel_ledger::cost::Author::Config {
                 policy_epoch: n as u64,
             },
         });
     }
     crate::root::kernel::PinnedHistory::for_test(
         std::sync::Arc::new(history),
-        busbar_unit_cost::HistorySeq((entries.len() - 1) as u64),
+        busbar_kernel_ledger::cost::HistorySeq((entries.len() - 1) as u64),
     )
 }
 
@@ -843,7 +843,7 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
     let token = kernel.usage_token();
     let head = history_of(&[(0, 1.0), (5_000, 100.0)]);
     let earlier =
-        crate::root::kernel::PinnedHistory::for_test_at(&head, busbar_unit_cost::HistorySeq(0));
+        crate::root::kernel::PinnedHistory::for_test_at(&head, busbar_kernel_ledger::cost::HistorySeq(0));
 
     let at = Arrived::at(9_000, 1);
     assert_eq!(
@@ -888,9 +888,9 @@ fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
     assert_eq!(posting.arrived_mono, 7);
 
     // The tamper. Every figure a reader could be tempted to trust, made a lie.
-    posting.cached = Some(busbar_unit_cost::CachedPrice {
-        history_seq: busbar_unit_cost::HistorySeq(u64::MAX),
-        card_seq: busbar_unit_cost::HistorySeq(u64::MAX),
+    posting.cached = Some(busbar_kernel_ledger::cost::CachedPrice {
+        history_seq: busbar_kernel_ledger::cost::HistorySeq(u64::MAX),
+        card_seq: busbar_kernel_ledger::cost::HistorySeq(u64::MAX),
         currency: crate::root::kernel::node_currency(),
         pre_tier_nanos: 1,
         priced_nanos: 1,
@@ -936,11 +936,11 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         "this plane's door opens the kernel's hold at zero; the spend is the governance ledger's"
     );
 
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     // Settle THROUGH the money-book seam, over the shared book — the pass-through the live exit arm
@@ -951,7 +951,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         &crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book)),
         &who,
         Arrived::at(EPOCH * 1_000, 0),
-        &busbar_caps::DurabilityToken::mint(&seal),
+        &busbar_contract::caps::DurabilityToken::mint(&seal),
         posted,
     )
     .expect("the memory-buffered journal takes it");
@@ -959,7 +959,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let window =
-        busbar_unit_admission::budget_window(busbar_unit_admission::window::WINDOW_DAY, EPOCH);
+        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, EPOCH);
     let figures = durability.ledger.book().get(&balance(&who), window);
     assert_eq!(figures.overdraft_carried_out, 0);
     let replayed = durability

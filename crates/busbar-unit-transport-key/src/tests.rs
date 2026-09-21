@@ -281,7 +281,7 @@ fn a_client_ca_with_no_certificates_in_it_is_refused() {
 #[test]
 fn provisioning_carries_the_caller_declared_alpn_list() {
     install_crypto_provider();
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let token = TransportKeyToken::mint(&seal);
 
     for (alpn, want) in [
@@ -425,7 +425,7 @@ fn missing_secret_is_refused_and_not_journaled() {
 /// is none to show — it carries only the slot and the fingerprint), and equal slots compare equal.
 #[test]
 fn issue_handle_is_opaque_and_slot_addressed() {
-    use busbar_caps::{KernelSeal, TransportKeyToken};
+    use busbar_contract::caps::{KernelSeal, TransportKeyToken};
     let seal = KernelSeal::acquire_for_kernel();
     let a = issue_handle(&TransportKeyToken::mint(&seal), 7, "fp");
     let b = issue_handle(&TransportKeyToken::mint(&seal), 7, "fp");
@@ -445,7 +445,7 @@ fn issue_handle_is_opaque_and_slot_addressed() {
 /// one, with nothing in the tree bridging them.
 #[test]
 fn the_handle_the_unit_issues_is_the_one_a_transport_consumes() {
-    use busbar_caps::{KernelSeal, TransportKeyToken};
+    use busbar_contract::caps::{KernelSeal, TransportKeyToken};
     let seal = KernelSeal::acquire_for_kernel();
     let issued = issue_handle(&TransportKeyToken::mint(&seal), 3, "fp");
     let consumed: &busbar_contract::TransportKeyHandle = &issued;
@@ -460,7 +460,7 @@ fn the_handle_the_unit_issues_is_the_one_a_transport_consumes() {
 #[test]
 fn provision_client_registers_the_exact_config_handed_in_over_its_slot() {
     install_crypto_provider();
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let token = TransportKeyToken::mint(&seal);
     let sink = RecordingSink::default();
     let cfg = Arc::new(
@@ -503,7 +503,7 @@ fn provision_client_registers_the_exact_config_handed_in_over_its_slot() {
 #[test]
 fn a_named_sni_listeners_shared_mtls_setting_refuses_an_anonymous_client() {
     install_crypto_provider();
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let token = TransportKeyToken::mint(&seal);
 
     let (server_ca_pem, server_cert_pem, server_key_pem) =

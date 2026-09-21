@@ -30,7 +30,7 @@ use axum::body::Bytes;
 use axum::http::HeaderMap;
 use axum::response::Response;
 
-use busbar_caps::{Decision, Meter, Outcome, Route, UnitToken, UsageToken};
+use busbar_contract::caps::{Decision, Meter, Outcome, Route, UnitToken, UsageToken};
 use busbar_substrate::plane_host::{EngineHost, EngineTablesView};
 
 use crate::unit::admit::Admitted;
@@ -347,7 +347,7 @@ impl Walk {
     /// The plane's own half of it — the meter half of the hold, whether the charge landed, and which
     /// pool it landed on — stays here; the kernel's half is handed straight back. The refusal, where
     /// the door raised one, waits with the other rendered bytes for the terminal.
-    pub fn take_admission(&self, admitted: Admitted) -> Decision<busbar_caps::Admit> {
+    pub fn take_admission(&self, admitted: Admitted) -> Decision<busbar_contract::caps::Admit> {
         let mut carry = self.lock();
         carry.charged = admitted.charged;
         carry.effective = admitted.effective_pool;
@@ -536,10 +536,10 @@ impl Walk {
     /// still has to say something if it is.
     pub fn audit(
         &self,
-        token: &UnitToken<busbar_caps::step::Audit>,
+        token: &UnitToken<busbar_contract::caps::step::Audit>,
         ctx: &crate::unit::audit::AuditCtx<'_>,
         fallback: impl FnOnce() -> Served,
-    ) -> Decision<busbar_caps::step::Audit> {
+    ) -> Decision<busbar_contract::caps::step::Audit> {
         let bytes = self.take_bytes().unwrap_or_else(fallback);
         let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged());
         self.seal_terminal(audited.response);
@@ -552,10 +552,10 @@ impl Walk {
     /// is the refund. See [`Walk::audit`] for why the bytes are fetched here rather than passed in.
     pub fn audit_refused(
         &self,
-        token: &UnitToken<busbar_caps::step::Audit>,
+        token: &UnitToken<busbar_contract::caps::step::Audit>,
         ctx: &crate::unit::audit::AuditCtx<'_>,
         fallback: impl FnOnce() -> Served,
-    ) -> Decision<busbar_caps::step::Audit> {
+    ) -> Decision<busbar_contract::caps::step::Audit> {
         let bytes = self.take_bytes().unwrap_or_else(fallback);
         let audited = crate::unit::audit::audit_refused(token, ctx, bytes);
         self.seal_terminal(audited.response);
@@ -584,7 +584,7 @@ impl Walk {
         let Some(arrived) = arrived else {
             return Decision::refuse(
                 token,
-                busbar_caps::Refusal::new(busbar_caps::ReasonCode::NoDestination),
+                busbar_contract::caps::Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
             );
         };
         let op = busbar_substrate::handlers::frame(
@@ -602,7 +602,7 @@ impl Walk {
                 None => {
                     return Decision::refuse(
                         token,
-                        busbar_caps::Refusal::new(busbar_caps::ReasonCode::NoDestination),
+                        busbar_contract::caps::Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
                     )
                 }
             },
@@ -676,7 +676,7 @@ impl Walk {
             // loop's order and answered rather than unwrapped.
             return Decision::proceed(
                 token,
-                busbar_caps::Usage::report(usage, Vec::new())
+                busbar_contract::caps::Usage::report(usage, Vec::new())
                     .unwrap_or_else(|_| unreachable!("the empty report fits any record")),
             );
         };

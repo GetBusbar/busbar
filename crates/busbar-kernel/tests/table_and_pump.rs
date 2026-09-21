@@ -9,7 +9,7 @@
 
 mod common;
 
-use busbar_caps::{Canary, OriginKind, PostingFlags, ReasonCode, StepName};
+use busbar_contract::caps::{Canary, OriginKind, PostingFlags, ReasonCode, StepName};
 use busbar_kernel::grammar::DeepestPointer;
 use busbar_kernel::inflight::{
     arrival_hold, cap_refusal_step, reserve_for, Binding, Enter, InFlight, Progression, Sessions,
@@ -24,7 +24,7 @@ use common::{principal, TestDoor};
 
 fn enter(kernel: &Kernel, key: u64, origin: OriginKind) -> Enter {
     Enter {
-        key: busbar_caps::UnitKey::new(key),
+        key: busbar_contract::caps::UnitKey::new(key),
         origin,
         session: None,
         admin_listener: false,
@@ -102,10 +102,10 @@ fn an_in_flight_cap_refusal_is_stamped_at_the_step_the_unit_was_constructed_at()
         OriginKind::Provider,
         OriginKind::Tick,
         OriginKind::Nested {
-            parent: busbar_caps::UnitKey::new(1),
+            parent: busbar_contract::caps::UnitKey::new(1),
         },
         OriginKind::Delivery {
-            parent: busbar_caps::UnitKey::new(1),
+            parent: busbar_contract::caps::UnitKey::new(1),
         },
     ] {
         assert_eq!(cap_refusal_step(origin), StepName::Decode);
@@ -134,7 +134,7 @@ fn an_unsolicited_push_refused_at_the_cap_still_posts_the_floor_line() {
         ..Evidence::default()
     };
     let (amount, flags) = settle_amount(
-        &busbar_caps::Outcome::Refused(refused.step, refused.reason),
+        &busbar_contract::caps::Outcome::Refused(refused.step, refused.reason),
         &evidence,
     );
     assert_eq!(amount, 2_500);
@@ -201,7 +201,7 @@ fn the_table_empties_as_units_leave() {
             .expect("under the cap");
     }
     assert_eq!(table.len(), 4);
-    assert!(table.remove(busbar_caps::UnitKey::new(2)).is_some());
+    assert!(table.remove(busbar_contract::caps::UnitKey::new(2)).is_some());
     assert_eq!(table.len(), 3);
     assert!(table.insert(enter(&kernel, 9, OriginKind::Client)).is_ok());
 }
@@ -292,7 +292,7 @@ fn a_second_open_on_an_occupied_direction_is_refused_and_the_session_stays_up() 
         .claim_open(
             StreamId(1),
             Direction::Inbound,
-            busbar_caps::UnitKey::new(1),
+            busbar_contract::caps::UnitKey::new(1),
         )
         .expect("the slot was free");
 
@@ -456,7 +456,7 @@ fn a_superseding_open_reaches_the_compare_and_set_even_on_an_occupied_direction(
     let session = sessions
         .open(kernel.session_id(2), Binding::Bound, 0)
         .expect("under the session budget");
-    let target = busbar_caps::UnitKey::new(7);
+    let target = busbar_contract::caps::UnitKey::new(7);
     let slot = table
         .insert(Enter {
             key: target,
@@ -500,8 +500,8 @@ fn a_supersede_frees_only_the_direction_the_superseded_unit_was_holding() {
         .open(kernel.session_id(3), Binding::Bound, 0)
         .expect("under the session budget");
 
-    let target = busbar_caps::UnitKey::new(21);
-    let bystander = busbar_caps::UnitKey::new(22);
+    let target = busbar_contract::caps::UnitKey::new(21);
+    let bystander = busbar_contract::caps::UnitKey::new(22);
     for key in [target, bystander] {
         table
             .insert(Enter {

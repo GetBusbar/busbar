@@ -19,7 +19,7 @@
 //!      actual bytes against the node's spill budget, and it refuses at the same byte however the
 //!      bytes were split -- one chunk, or many thousands more chunks than the frame ceiling.
 
-use busbar_caps::ReasonCode;
+use busbar_contract::caps::ReasonCode;
 use busbar_contract::transport::TransportMeta;
 use busbar_kernel::grammar::DeepestPointer;
 use busbar_kernel::inflight::InFlight;

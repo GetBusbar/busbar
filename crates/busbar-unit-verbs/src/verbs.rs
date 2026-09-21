@@ -44,7 +44,7 @@ use crate::store::{Store, StoreError};
 use crate::verb::{
     KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
-use busbar_caps::{AdminToken, SecretOnce, UnitKey};
+use busbar_contract::caps::{AdminToken, SecretOnce, UnitKey};
 
 /// The nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
 /// [`SecretOnce`] is bound to — the thing that proves exactly one occurrence of the minted secret

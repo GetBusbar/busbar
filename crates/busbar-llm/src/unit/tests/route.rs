@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_caps::KernelSeal;
+use busbar_contract::caps::KernelSeal;
 use busbar_contract::Registration;
 use busbar_substrate::store::{now as store_now, BreakerState};
 use serde_json::json;
@@ -469,10 +469,10 @@ async fn route_step_refuses_an_unresolved_destination_without_a_terminal() {
         .decision
         .into_result(&seal)
         .expect_err("an unresolved destination must refuse");
-    assert_eq!(refusal.reason(), busbar_caps::ReasonCode::NoDestination);
+    assert_eq!(refusal.reason(), busbar_contract::caps::ReasonCode::NoDestination);
     assert_eq!(
         refusal.step(),
-        Some(busbar_caps::StepName::Route),
+        Some(busbar_contract::caps::StepName::Route),
         "the decision stamps the step, so the record cannot claim it stopped elsewhere"
     );
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);

@@ -19,7 +19,7 @@
 //! The busbar-core DRAIN relocates each engine step out to its own `busbar-unit-<step>` crate. If
 //! every consumer named the step through this facade instead of reaching straight into
 //! `crate::auth`, `crate::egress`, … then relocating a step becomes a ONE-LINE edit here (swap
-//! `pub use crate::auth;` for `pub use busbar_unit_auth;`), and the steps can move **in ANY order**
+//! `pub use crate::auth;` for `pub use busbar_kernel_identity;`), and the steps can move **in ANY order**
 //! with nothing downstream moving — exactly the property W1.e's GREEN condition requires
 //! ("steps relocatable in any order"). It is the same behavior-neutral visibility-lift discipline
 //! the sibling [`crate::engine_facade`] uses for the plane→core DOWN edge — wire the seam in place

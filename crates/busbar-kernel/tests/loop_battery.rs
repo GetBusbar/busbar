@@ -11,7 +11,7 @@ use std::ops::Not;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Waker};
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Abort, Canary, HoldCellState, OriginKind, Outcome, PostingFlags, ReasonCode, StepName, UnitKey,
 };
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
@@ -36,7 +36,7 @@ const ORDER: [StepName; 10] = [
     StepName::Encode,
 ];
 
-fn run(units: &TestUnits, kernel: &Kernel, cell: &busbar_caps::HoldCell, canary: &Canary) -> Ended {
+fn run(units: &TestUnits, kernel: &Kernel, cell: &busbar_contract::caps::HoldCell, canary: &Canary) -> Ended {
     let gauge = ConcurrencyGauge::new();
     let leases = LeaseCell::new();
     let meter = AccrualMeter::new();
@@ -218,7 +218,7 @@ fn every_unit_end_leaves_through_the_one_exit() {
             reason: ReasonCode::Drain,
         }),
         Outcome::Aborted(Abort::Superseded {
-            by: busbar_caps::UnitKey::new(9),
+            by: busbar_contract::caps::UnitKey::new(9),
         }),
         Outcome::TimedOut(StepName::Route),
     ];
@@ -305,7 +305,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
 
     // A parent that has passed the door and is still open.
     let parent = std::sync::Arc::new(cell(&kernel));
-    let admitted = busbar_caps::Hold::open(&kernel.admit_token(), common::principal(), 5_000);
+    let admitted = busbar_contract::caps::Hold::open(&kernel.admit_token(), common::principal(), 5_000);
     // The cell hands the arrival hold back rather than dropping it; the parent's admitted hold has
     // taken its place, and this binding is what the loop's own swap does with it.
     let _arrival = parent
@@ -352,7 +352,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
             assert_eq!(posted.overdraft(), 0);
             assert!(!posted
                 .flags()
-                .contains(busbar_caps::PostingFlags::LATE_ACCRUAL));
+                .contains(busbar_contract::caps::PostingFlags::LATE_ACCRUAL));
             assert_eq!(
                 (requests, fee),
                 (0, 0),
@@ -370,7 +370,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
     // other unit, and its cell is emptied at its end. Leaving it full would leave the sweep — the
     // other holder of a key to that cell — free to settle a unit that has already finished, and its
     // spend is already inside the parent's posting.
-    assert_eq!(child_slot.cell().state(), busbar_caps::HoldCellState::Taken);
+    assert_eq!(child_slot.cell().state(), busbar_contract::caps::HoldCellState::Taken);
     let swept = busbar_kernel::tick::sweep_settle(
         &kernel,
         &child_slot,

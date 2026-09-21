@@ -3,7 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_unit_scope::required_scope;
+use busbar_kernel_scope::required_scope;
 
 const POOL: &str = "pool-main";
 const LANE_A: &str = "lane-a";

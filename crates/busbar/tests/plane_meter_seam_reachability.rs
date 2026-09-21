@@ -149,7 +149,7 @@ const BILLING_PLANE_ROOT_LEGS: &[(&str, &str)] = &[
 /// per-leg fold helper that wraps it. A leg reaching NONE of these reports no lines, and a Meter
 /// step that reports no lines charges nobody.
 const TELLER_USAGE_SEAM_TOKENS: &[&str] =
-    &["busbar_unit_usage::meter(", "Usage::report(", "fold_usage("];
+    &["busbar_kernel_ledger::usage::meter(", "Usage::report(", "fold_usage("];
 
 /// THE ONE HOP a Meter step is allowed. `units_llm.rs`'s step is `self.walk.meter(token, usage)`,
 /// which lands in the plane's own Meter module — the same one usage seam, reached through the

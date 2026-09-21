@@ -5,7 +5,7 @@
 
 mod common;
 
-use busbar_caps::{Canary, HoldCellState, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey};
+use busbar_contract::caps::{Canary, HoldCellState, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey};
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::recovery::{
     frame, owed_after, recover_all, truncate_torn_tail, voids_claim, HoldRecord, KillPoint, Owed,
@@ -215,7 +215,7 @@ fn a_lost_task_is_settled_within_one_tick() {
     assert!(!slot.leases().is_owned(), "the slot is unowned now");
     assert_eq!(
         end.outcome(),
-        busbar_caps::Outcome::Failed(StepName::Route, ReasonCode::TaskLost)
+        busbar_contract::caps::Outcome::Failed(StepName::Route, ReasonCode::TaskLost)
     );
     assert_eq!(end.posted().map(|p| p.settled()), Ok(42));
     assert_eq!(canary.counts().settlements, 1);
@@ -469,7 +469,7 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
 
     // AND THE NEXT UNIT IS ADMITTED into the room the sweep gave back.
     let next_units = common::TestUnits::behind(&group);
-    let cell = busbar_caps::HoldCell::new(busbar_kernel::inflight::arrival_hold(
+    let cell = busbar_contract::caps::HoldCell::new(busbar_kernel::inflight::arrival_hold(
         &kernel,
         &TestDoor,
         principal(),
@@ -693,7 +693,7 @@ fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
         .expect("a stall is an end, and an end settles");
     assert_eq!(
         end.outcome(),
-        busbar_caps::Outcome::Failed(StepName::Route, ReasonCode::Stalled)
+        busbar_contract::caps::Outcome::Failed(StepName::Route, ReasonCode::Stalled)
     );
     assert_eq!(
         end.posted().map(|p| p.settled()),
@@ -829,8 +829,8 @@ fn drain_never_cuts_a_protocol_that_was_never_cut_before() {
     );
     assert_eq!(
         drain_outcome(),
-        busbar_caps::Outcome::Aborted(busbar_caps::Abort::Kernel {
-            reason: busbar_caps::ReasonCode::Drain,
+        busbar_contract::caps::Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
+            reason: busbar_contract::caps::ReasonCode::Drain,
         })
     );
 }

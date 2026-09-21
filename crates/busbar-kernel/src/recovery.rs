@@ -22,7 +22,7 @@
 //! and a checksum, the reader stops at the first record that does not check out, and the tail is
 //! truncated there. A torn tail is normal. A torn record in the MIDDLE is not, and says so.
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Canary, Hold, LedgerToken, Outcome, Posted, PrincipalId, QuantitySource, ReasonCode,
     RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
 };

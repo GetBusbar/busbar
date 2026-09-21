@@ -47,9 +47,9 @@ use busbar_contract::{ClaimKey, OpClassId};
 use busbar_substrate::config::groups::{GroupCfg, LimitMetric};
 use busbar_substrate::config::limits::LimitsResolved;
 use busbar_transport_http::ClientSettings;
-use busbar_unit_admission::{GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
-use busbar_unit_scope::{PolicyView, Scope};
-use busbar_unit_usage::MeterPolicy;
+use busbar_kernel_budget::{GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
+use busbar_kernel_scope::{PolicyView, Scope};
+use busbar_kernel_ledger::usage::MeterPolicy;
 
 /// One pool, as the metering policy needs to know it: its name and the lanes it stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]

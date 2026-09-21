@@ -98,7 +98,7 @@
 
 use std::sync::Arc;
 
-use busbar_caps::{
+use busbar_contract::caps::{
     step::Meter, Decision, Hold, MeterClassId, Outcome, QuantitySource, UnitToken, Usage,
     UsageLine, UsageToken,
 };
@@ -453,7 +453,7 @@ fn push_line(
         // tiers: uncached input, the response, and the two additive cache sides.
         source: QuantitySource::Locator {
             direction,
-            ptr: busbar_caps::LocatorPtr::new(class.as_str()),
+            ptr: busbar_contract::caps::LocatorPtr::new(class.as_str()),
         },
         estimated: false,
     });

@@ -12,6 +12,7 @@
 
 pub mod authz;
 pub mod bounded;
+pub mod caps;
 pub mod dest;
 pub mod grammar;
 pub mod ids;

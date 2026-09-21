@@ -26,7 +26,7 @@ fn the_kernels_ceilings_are_the_contracts_own() {
         busbar_contract::MAX_SESSION_UPSTREAMS
     );
     assert_eq!(
-        busbar_caps::usage::MAX_USAGE_LINES,
+        busbar_contract::caps::usage::MAX_USAGE_LINES,
         busbar_contract::MAX_USAGE_LINES
     );
 }
@@ -55,11 +55,11 @@ fn an_oversize_credential_is_refused_against_the_slab_and_not_the_cursor() {
     let mut slab = CredentialSlab::with_capacity(8);
     assert_eq!(
         slab.mask(&mut cursor, Span::new(0, 32)),
-        Err(busbar_caps::ReasonCode::CredentialBudget)
+        Err(busbar_contract::caps::ReasonCode::CredentialBudget)
     );
     assert_eq!(
         slab.mask(&mut cursor, Span::new(0, 128)),
-        Err(busbar_caps::ReasonCode::CursorBudget)
+        Err(busbar_contract::caps::ReasonCode::CursorBudget)
     );
 }
 
@@ -236,7 +236,7 @@ fn asking_the_arena_for_more_than_it_has_is_an_answer_not_a_panic() {
     assert_eq!(full.len(), ARENA_BYTES);
     let refused = arena.push(b"one more byte").expect_err("nothing left");
     assert_eq!(refused.remaining, 0);
-    assert_eq!(refused.reason(), busbar_caps::ReasonCode::ArenaBudget);
+    assert_eq!(refused.reason(), busbar_contract::caps::ReasonCode::ArenaBudget);
 }
 
 /// A span the arena hands out holds nothing of the frame before it.

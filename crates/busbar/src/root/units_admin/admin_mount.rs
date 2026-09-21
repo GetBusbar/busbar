@@ -22,7 +22,7 @@ pub struct AdminNode {
     pub(super) units: crate::root::kernel::ProductionUnits,
     pub(super) inflight: busbar_kernel::inflight::InFlight,
     pub(super) gauge: busbar_kernel::slice::ConcurrencyGauge,
-    pub(super) canary: busbar_caps::Canary,
+    pub(super) canary: busbar_contract::caps::Canary,
     pub(super) next_key: std::sync::atomic::AtomicU64,
 }
 
@@ -43,7 +43,7 @@ impl AdminNode {
             // real, because a hold still has to live somewhere.
             inflight: busbar_kernel::inflight::InFlight::new(0, 0),
             gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
-            canary: busbar_caps::Canary::new(),
+            canary: busbar_contract::caps::Canary::new(),
             next_key: std::sync::atomic::AtomicU64::new(1),
         }
     }
@@ -93,7 +93,7 @@ impl AdminNode {
         );
         let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
-            origin: busbar_caps::OriginKind::Client,
+            origin: busbar_contract::caps::OriginKind::Client,
             session: None,
             admin_listener: true,
             provider_of_open_session: false,
@@ -109,7 +109,7 @@ impl AdminNode {
             Ok(slot) => {
                 let ctx = UnitCtx {
                     key,
-                    origin: busbar_caps::OriginKind::Client,
+                    origin: busbar_contract::caps::OriginKind::Client,
                     session: None,
                     generation: busbar_kernel::registry::Generation::FIRST,
                     admin_listener: true,
@@ -262,7 +262,7 @@ pub(crate) fn is_scope_refusal(outcome: Outcome) -> bool {
 /// rather than from a recording, and the oracle cannot confirm them.
 #[cfg(feature = "root-admin")]
 pub(crate) fn scope_answer(request: &AdminRequest) -> AdminAnswer {
-    let needed = busbar_unit_scope::admin_required_scope(&request.method, &request.path);
+    let needed = busbar_kernel_scope::admin_required_scope(&request.method, &request.path);
     error_answer_with_message(
         403,
         "forbidden",

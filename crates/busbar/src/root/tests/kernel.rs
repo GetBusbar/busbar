@@ -21,7 +21,7 @@ fn an_apply_moves_the_head_and_leaves_a_pinned_reader_on_the_snapshot_it_took() 
         "a holder that has heard no apply prices nothing"
     );
 
-    holder.apply(busbar_unit_cost::RateCard::absent(3), 1_000);
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(3), 1_000);
     let admitted = holder.pin().expect("the first apply put an entry in place");
     assert_eq!(
         fee_at(&admitted, 1_000),
@@ -30,7 +30,7 @@ fn an_apply_moves_the_head_and_leaves_a_pinned_reader_on_the_snapshot_it_took() 
     );
 
     // The apply a request in flight must not feel.
-    holder.apply(busbar_unit_cost::RateCard::absent(11), 2_000);
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(11), 2_000);
     assert_eq!(
         fee_at(&admitted, 5_000),
         30_000_000,
@@ -69,9 +69,9 @@ fn fee_at(pinned: &PinnedHistory, at: u64) -> u128 {
 #[test]
 fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
     let holder = RootHistory::default();
-    holder.apply(busbar_unit_cost::RateCard::absent(3), 1_000);
-    holder.apply(busbar_unit_cost::RateCard::absent(11), 2_000);
-    holder.apply(busbar_unit_cost::RateCard::absent(29), 3_000);
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(3), 1_000);
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(11), 2_000);
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(29), 3_000);
 
     assert_eq!(
         holder.len(),
@@ -89,7 +89,7 @@ fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
     );
     assert_eq!(
         entries[0].seq(),
-        busbar_unit_cost::HistorySeq(0),
+        busbar_kernel_ledger::cost::HistorySeq(0),
         "the first entry was renumbered, which unmakes every invoice that named a snapshot"
     );
     assert_eq!(
@@ -112,8 +112,8 @@ fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
 #[test]
 fn an_instant_before_a_reload_resolves_to_the_entry_that_was_in_force_then() {
     let holder = RootHistory::default();
-    holder.apply(busbar_unit_cost::RateCard::absent(3), 1_000);
-    holder.apply(busbar_unit_cost::RateCard::absent(11), 2_000);
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(3), 1_000);
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(11), 2_000);
 
     let head = holder.pin().expect("two applies put a head in place");
     assert_eq!(
@@ -137,7 +137,7 @@ fn an_instant_before_a_reload_resolves_to_the_entry_that_was_in_force_then() {
 #[test]
 fn the_first_entry_covers_every_instant_before_the_boot_that_wrote_it() {
     let holder = RootHistory::default();
-    holder.apply(busbar_unit_cost::RateCard::absent(3), 9_000_000);
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(3), 9_000_000);
     let head = holder.pin().expect("the apply put an entry in place");
     assert_eq!(
         fee_at(&head, 0),
@@ -152,17 +152,17 @@ fn the_first_entry_covers_every_instant_before_the_boot_that_wrote_it() {
 #[test]
 fn every_config_apply_records_the_generation_that_wrote_it() {
     let holder = RootHistory::default();
-    holder.apply(busbar_unit_cost::RateCard::absent(3), 1_000);
-    holder.apply(busbar_unit_cost::RateCard::absent(11), 2_000);
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(3), 1_000);
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(11), 2_000);
     let head = holder.pin().expect("two applies put a head in place");
     let view = head.view();
-    let epochs: Vec<busbar_unit_cost::Author> =
+    let epochs: Vec<busbar_kernel_ledger::cost::Author> =
         view.entries().iter().map(|e| e.author().clone()).collect();
     assert_eq!(
         epochs,
         vec![
-            busbar_unit_cost::Author::Config { policy_epoch: 0 },
-            busbar_unit_cost::Author::Config { policy_epoch: 1 },
+            busbar_kernel_ledger::cost::Author::Config { policy_epoch: 0 },
+            busbar_kernel_ledger::cost::Author::Config { policy_epoch: 1 },
         ]
     );
 }
@@ -199,18 +199,18 @@ fn the_card_an_apply_builds_prices_the_currency_the_node_reads_it_in() {
 /// nothing is enough to state the posture with.
 struct NeverIdentifies;
 
-impl busbar_unit_auth::module::AuthModule for NeverIdentifies {
+impl busbar_kernel_identity::module::AuthModule for NeverIdentifies {
     fn name(&self) -> &'static str {
         "never"
     }
-    fn authenticate(&self, _candidate: Option<&str>) -> busbar_unit_auth::module::AuthOutcome {
-        busbar_unit_auth::module::AuthOutcome::Pass
+    fn authenticate(&self, _candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
+        busbar_kernel_identity::module::AuthOutcome::Pass
     }
 }
 
 fn a_closed_door() -> AuthChain {
     AuthChain::new(
-        vec![busbar_unit_auth::chain::ChainEntry {
+        vec![busbar_kernel_identity::chain::ChainEntry {
             provider: "never".to_string(),
             module: Box::new(NeverIdentifies),
         }],
@@ -268,10 +268,10 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     let units = ProductionUnits::admin_only(std::sync::Arc::new(
         crate::root::units_admin::RefusingDispatch,
     ));
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let ctx = UnitCtx {
         key: busbar_contract::ids::UnitKey::new(9),
-        origin: busbar_caps::OriginKind::Client,
+        origin: busbar_contract::caps::OriginKind::Client,
         session: None,
         generation: busbar_kernel::registry::Generation::FIRST,
         admin_listener: false,
@@ -288,7 +288,7 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
         .audit_refused(
             &token,
             &ctx,
-            &Refusal::new(busbar_caps::ReasonCode::NoDestination),
+            &Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
         )
         .into_result(&seal)
         .expect("the door seals a record for a unit it did not compose");
@@ -342,8 +342,8 @@ fn the_arrival_door_opens_a_hold_that_reserves_nothing() {
 fn the_units_assemble_from_values_configuration_decided() {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
 
@@ -393,7 +393,7 @@ fn an_unrecognized_error_map_class_reaches_the_roots_sink() {
     #[derive(Debug, Default)]
     struct RecordingSink(Mutex<Vec<String>>);
 
-    impl busbar_unit_breaker::classify::Diagnostics for RecordingSink {
+    impl busbar_kernel_breaker::classify::Diagnostics for RecordingSink {
         fn unrecognized_error_map_value(&self, value: &str) {
             self.0
                 .lock()
@@ -404,8 +404,8 @@ fn an_unrecognized_error_map_class_reaches_the_roots_sink() {
 
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
 
@@ -433,16 +433,16 @@ fn an_unrecognized_error_map_class_reaches_the_roots_sink() {
         crate::root::adapters::BreakerPolicy::new(),
     );
 
-    let destination = busbar_unit_breaker::DestinationId::new(11);
+    let destination = busbar_kernel_breaker::DestinationId::new(11);
     units.breaker.unit().set_error_map(
         destination,
         std::collections::HashMap::from([("503".to_string(), "rate_limt".to_string())]),
     );
 
-    let classified = busbar_unit_egress::ports::Breaker::classify(
+    let classified = busbar_kernel_egress::ports::Breaker::classify(
         &units.breaker,
         destination,
-        busbar_unit_egress::ports::UpstreamStatus {
+        busbar_kernel_egress::ports::UpstreamStatus {
             code: Some(busbar_contract::WireStatus::new(
                 busbar_contract::transport::status_ns::HTTP,
                 503,
@@ -459,7 +459,7 @@ fn an_unrecognized_error_map_class_reaches_the_roots_sink() {
     );
     assert_eq!(
         classified.disposition,
-        busbar_unit_egress::ports::Disposition::TransientUpstream,
+        busbar_kernel_egress::ports::Disposition::TransientUpstream,
         "and the mapping stayed ignored: the 503 classified from its HTTP status"
     );
 }

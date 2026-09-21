@@ -3,7 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_caps::{KernelSeal, StepName};
+use busbar_contract::caps::{KernelSeal, StepName};
 
 /// A key row carrying only what this step reads. Every other field is what the store's own
 /// default row carries, so the fixture cannot drift from the shape the middleware resolves.
@@ -83,10 +83,10 @@ fn no_input_the_middleware_can_leave_makes_this_step_refuse() {
 #[test]
 fn the_answer_is_stamped_with_this_step() {
     assert_eq!(
-        <Authenticate as busbar_caps::Step>::NAME,
+        <Authenticate as busbar_contract::caps::Step>::NAME,
         StepName::Authenticate
     );
     // A step whose token the kernel keeps to itself is never asked of a unit at all; this one
     // is, which is what makes the file above reachable.
-    const { assert!(!<Authenticate as busbar_caps::Step>::KERNEL_OWNED) };
+    const { assert!(!<Authenticate as busbar_contract::caps::Step>::KERNEL_OWNED) };
 }

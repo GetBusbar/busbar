@@ -61,7 +61,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde_json::Value;
 
-use busbar_caps::{step::Route, Decision, LaneId, ReasonCode, Refusal, RoutePlan, UnitToken};
+use busbar_contract::caps::{step::Route, Decision, LaneId, ReasonCode, Refusal, RoutePlan, UnitToken};
 use busbar_contract::{DestinationFacts, Leg, UpstreamAddress};
 use busbar_substrate::observability::HOTPATH_LEVEL;
 use busbar_substrate::plane_host::EngineHost;

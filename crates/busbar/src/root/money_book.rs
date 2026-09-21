@@ -42,9 +42,9 @@
 //! plane's field mapping byte-for-byte, and the tests lock that it does.
 
 use busbar_api::{AuditRecord, MeteringRow, UsageDelta, UsageLedger};
-use busbar_caps::{Hold, LedgerToken, Posted, Usage};
-use busbar_unit_ledger::settle::{Ledger, Settlement};
-use busbar_unit_ledger::totals::{TotalsKey, WindowStart};
+use busbar_contract::caps::{Hold, LedgerToken, Posted, Usage};
+use busbar_kernel_ledger::settle::{Ledger, Settlement};
+use busbar_kernel_ledger::totals::{TotalsKey, WindowStart};
 
 /// The raw per-tier counts a completed unit consumed, in the four reserved classes.
 ///

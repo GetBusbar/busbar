@@ -3,9 +3,9 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_unit_ledger::legacy::{LegacyHead, LegacyMigrationSource};
-use busbar_unit_ledger::migration::{LegacyFamily, LegacyFigure, LegacyFigures, NodeLocalRecords};
-use busbar_unit_ledger::totals::CapDimension;
+use busbar_kernel_ledger::legacy::{LegacyHead, LegacyMigrationSource};
+use busbar_kernel_ledger::migration::{LegacyFamily, LegacyFigure, LegacyFigures, NodeLocalRecords};
+use busbar_kernel_ledger::totals::CapDimension;
 
 /// Rows a test seeded, counting the reads so "the second boot touched nothing" is an assertion
 /// about the previous release's rows rather than about a return value.
@@ -113,8 +113,8 @@ fn the_second_boot_reads_nothing() {
 #[test]
 fn the_marker_is_sealed_on_the_journal() {
     use crate::root::durability::{build_for_node, DurabilityConfig};
-    use busbar_caps::{DurabilityToken, KernelSeal, StepName};
-    use busbar_unit_wal::{NullShipper, RecordClass};
+    use busbar_contract::caps::{DurabilityToken, KernelSeal, StepName};
+    use busbar_kernel_wal::{NullShipper, RecordClass};
 
     let rows = rows();
     let token = DurabilityToken::mint(&KernelSeal::acquire_for_kernel());
@@ -122,7 +122,7 @@ fn the_marker_is_sealed_on_the_journal() {
         &DurabilityConfig { data_dir: None },
         1,
         Box::new(NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
 

@@ -837,8 +837,8 @@ fn compose_voice_governed_calls() {
 
     let durability = match root::durability::build(
         &root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     ) {
         Ok(d) => d,
         Err(e) => {
@@ -854,8 +854,8 @@ fn compose_voice_governed_calls() {
             &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),
         ),
-        pricer: busbar_unit_admission::Pricer::flat(0),
-        auth: busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+        pricer: busbar_kernel_budget::Pricer::flat(0),
+        auth: busbar_kernel_identity::Auth::new(busbar_kernel_identity::AuthChain::new(Vec::new(), false)),
         auth_bindings: root::kernel::auth_bindings::AuthBindings::without_directory(),
         scope: root::units_voice::scope_policy(),
         meter_policy: root::policy::build(&root::policy::MeterPolicyConfig::default()),
@@ -863,7 +863,7 @@ fn compose_voice_governed_calls() {
         io: root::units_voice::VoiceIo::default(),
         // Minted from the root's own kernel, which is the only place a sealed origin can come from:
         // a unit is lent its audit token and nothing else, so it cannot mint one where it is used.
-        origin: root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
+        origin: root::kernel::new_kernel().origin(busbar_contract::caps::OriginKind::Client),
     }));
     busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
 }

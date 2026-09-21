@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_caps::{
+use busbar_contract::caps::{
     step::Admit, AdmitToken, Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId,
     StepName, UnitKey,
 };

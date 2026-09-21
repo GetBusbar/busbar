@@ -16,12 +16,12 @@
 //! captured red/green output.
 
 use busbar_api::{ModelTokensDelta, UsageDelta, UsageLedger};
-use busbar_caps::{
+use busbar_contract::caps::{
     Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId, QuantitySource,
     Usage, UsageLine, UsageToken,
 };
-use busbar_unit_ledger::settle::Ledger;
-use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+use busbar_kernel_ledger::settle::Ledger;
+use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
 use crate::root::money_book::{AuditFacts, MeterCounts, MeteringFacts, MoneyBook, PassThroughBook};
 
@@ -145,9 +145,9 @@ fn settle_records_the_overdraft_through_the_seam() {
 fn post_through_the_seam_matches_the_direct_ledger() {
     let k = key("p");
     let posted =
-        busbar_caps::Posted::settle(hold("dave", 500), 400, &usage("tokens", 400), &ledger_token());
+        busbar_contract::caps::Posted::settle(hold("dave", 500), 400, &usage("tokens", 400), &ledger_token());
     let posted2 =
-        busbar_caps::Posted::settle(hold("dave", 500), 400, &usage("tokens", 400), &ledger_token());
+        busbar_contract::caps::Posted::settle(hold("dave", 500), 400, &usage("tokens", 400), &ledger_token());
 
     let mut direct = primed(&k, 500);
     let d = direct.post(&k, 1, posted);

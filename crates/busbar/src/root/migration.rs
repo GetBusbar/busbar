@@ -53,8 +53,8 @@
 //! records could not be read or written, or the figures do not fit in a ledger figure.
 
 use busbar_plugin_loader::store_adapter::{LegacyReadPlan, StoreAdapter};
-use busbar_unit_ledger::checkpoint::CheckpointSecret;
-use busbar_unit_ledger::migration::{
+use busbar_kernel_ledger::checkpoint::CheckpointSecret;
+use busbar_kernel_ledger::migration::{
     migrate, LegacyLedgerRows, MigrationError, MigrationRecords, Outcome,
 };
 

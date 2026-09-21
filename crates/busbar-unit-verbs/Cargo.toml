@@ -32,7 +32,7 @@ name = "busbar_unit_verbs"
 path = "src/lib.rs"
 
 [dependencies]
-busbar-caps = { path = "../busbar-caps" }
+busbar-contract = { path = "../busbar-contract" }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -39,8 +39,8 @@
 //! The cache is still built, because a cache is not an authority: it holds what a module already
 //! decided, for less time than the module suggested, and never holds a rejection at all.
 
-use busbar_unit_auth::cache::CredentialCache;
-use busbar_unit_auth::chain::{KeyVerifier, ResolvedKey, RevocationView};
+use busbar_kernel_identity::cache::CredentialCache;
+use busbar_kernel_identity::chain::{KeyVerifier, ResolvedKey, RevocationView};
 use std::sync::Arc;
 
 /// The facts the chain reads out of a verified key.
@@ -266,13 +266,13 @@ impl AdminTokens {
     }
 }
 
-impl busbar_unit_auth::module::AuthModule for AdminTokens {
+impl busbar_kernel_identity::module::AuthModule for AdminTokens {
     fn name(&self) -> &'static str {
         ADMIN_TOKENS_MODULE
     }
 
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_unit_auth::module::AuthOutcome {
-        use busbar_unit_auth::module::AuthOutcome;
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
+        use busbar_kernel_identity::module::AuthOutcome;
         // No token configured is not a refusal and not an admission: this module has nothing to
         // judge, so it defers. What that means for the node is decided by the chain around it — an
         // all-pass chain denies — and not by an opinion invented here.
@@ -286,7 +286,7 @@ impl busbar_unit_auth::module::AuthModule for AdminTokens {
         };
         if busbar_api::constant_time_eq(&busbar_api::sha256_hex(candidate.as_bytes()), &configured)
         {
-            AuthOutcome::Identify(busbar_unit_auth::principal::Principal::from_id(
+            AuthOutcome::Identify(busbar_kernel_identity::principal::Principal::from_id(
                 ADMIN_PRINCIPAL_ID,
             ))
         } else {
@@ -311,9 +311,9 @@ impl busbar_unit_auth::module::AuthModule for AdminTokens {
 /// which is the previous release's "the admin API is disabled without a token", reached the same
 /// way rather than restated here.
 #[must_use]
-pub fn admin_chain(state: Arc<busbar_core::governance::GovState>) -> busbar_unit_auth::AuthChain {
-    busbar_unit_auth::AuthChain::new(
-        vec![busbar_unit_auth::chain::ChainEntry {
+pub fn admin_chain(state: Arc<busbar_core::governance::GovState>) -> busbar_kernel_identity::AuthChain {
+    busbar_kernel_identity::AuthChain::new(
+        vec![busbar_kernel_identity::chain::ChainEntry {
             provider: ADMIN_TOKENS_MODULE.to_string(),
             module: Box::new(AdminTokens::new(state)),
         }],

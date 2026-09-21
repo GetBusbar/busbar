@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_caps::{KernelSeal, StepName};
+use busbar_contract::caps::{KernelSeal, StepName};
 use busbar_substrate::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
 
 /// The literal token figures every identity here is pinned on: eleven uncached input tokens and
@@ -364,7 +364,7 @@ fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
         None,
         &Outcome::Failed(
             StepName::Route,
-            busbar_caps::ReasonCode::DestinationUnreachable,
+            busbar_contract::caps::ReasonCode::DestinationUnreachable,
         ),
     );
     assert_eq!(

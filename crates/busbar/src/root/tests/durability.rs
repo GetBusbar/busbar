@@ -3,10 +3,10 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_caps::KernelSeal;
-use busbar_unit_audit::{Clock, NoSeam};
-use busbar_unit_ledger::legacy::RecordingRows;
-use busbar_unit_wal::{decode_run, verify_journal, NullShipper};
+use busbar_contract::caps::KernelSeal;
+use busbar_kernel_audit::{Clock, NoSeam};
+use busbar_kernel_ledger::legacy::RecordingRows;
+use busbar_kernel_wal::{decode_run, verify_journal, NullShipper};
 
 /// A scratch directory that removes itself, following the journal unit's own test fixture: the
 /// point of these tests is what is and is not created, so each needs a directory nobody else is
@@ -168,7 +168,7 @@ fn no_data_dir_creates_no_file_even_once_every_unit_has_written() {
 }
 
 fn posting() -> Posting {
-    use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension};
+    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension};
     Posting {
         key: TotalsKey::new(
             BucketId::new("vk_a"),
@@ -186,9 +186,9 @@ fn posting() -> Posting {
 }
 
 /// A sealed audit record for a unit that ran.
-fn audit_inputs(unit: u64) -> busbar_unit_audit::AuditInputs {
-    use busbar_caps::{KernelSeal, Origin, OriginKind, Outcome, UnitKey};
-    use busbar_unit_audit::{
+fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
+    use busbar_contract::caps::{KernelSeal, Origin, OriginKind, Outcome, UnitKey};
+    use busbar_kernel_audit::{
         Amount, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, What,
     };
     AuditInputs {
@@ -236,8 +236,8 @@ fn audit_inputs(unit: u64) -> busbar_unit_audit::AuditInputs {
 /// where a reader asking "under which policy" looks.
 #[test]
 fn a_sealed_audit_record_goes_on_the_journal() {
-    use busbar_caps::{Audit as AuditStep, KernelSeal, UnitToken};
-    use busbar_unit_audit::Audit as _;
+    use busbar_contract::caps::{Audit as AuditStep, KernelSeal, UnitToken};
+    use busbar_kernel_audit::Audit as _;
 
     let mut durability = build_for_node(
         &DurabilityConfig { data_dir: None },
@@ -508,13 +508,13 @@ fn journalling_does_not_touch_the_legacy_admin_chain() {
         durability.legacy.record_by(
             action,
             resource,
-            busbar_unit_audit::OUTCOME_APPLIED,
+            busbar_kernel_audit::OUTCOME_APPLIED,
             "admin",
         );
         alone.record_by(
             action,
             resource,
-            busbar_unit_audit::OUTCOME_APPLIED,
+            busbar_kernel_audit::OUTCOME_APPLIED,
             "admin",
         );
     }
@@ -556,7 +556,7 @@ impl Clock for PinnedClock {
 /// has lost nothing it shipped.
 #[test]
 fn what_the_store_took_is_the_chain() {
-    let shipper = busbar_unit_wal::BufferShipper::new();
+    let shipper = busbar_kernel_wal::BufferShipper::new();
     let mut durability = build_for_node(
         &DurabilityConfig { data_dir: None },
         4,
@@ -600,7 +600,7 @@ fn memory_node() -> Durability {
 }
 
 fn totals_key(bucket: &str) -> TotalsKey {
-    use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension};
+    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension};
     TotalsKey::new(
         BucketId::new(bucket),
         CapDimension::NanoUnits,
@@ -631,7 +631,7 @@ fn settling<'a>(key: &'a TotalsKey, durability: &'a DurabilityToken) -> Settling
 /// to close.
 #[test]
 fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
-    use busbar_caps::{
+    use busbar_contract::caps::{
         step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
         QuantitySource, Usage, UsageLine, UsageToken,
     };
@@ -689,7 +689,7 @@ fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
 /// already carries both, and a replay that added them twice would double the window.
 #[test]
 fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
-    use busbar_caps::{
+    use busbar_contract::caps::{
         step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
         QuantitySource, Usage, UsageLine, UsageToken,
     };
@@ -765,11 +765,11 @@ fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
 #[derive(Clone, Default)]
 struct CountingShipper(std::sync::Arc<std::sync::Mutex<Vec<usize>>>);
 
-impl busbar_unit_wal::Shipper for CountingShipper {
+impl busbar_kernel_wal::Shipper for CountingShipper {
     fn ship(
         &mut self,
-        records: &[busbar_unit_wal::Record],
-    ) -> Result<(), busbar_unit_wal::ShipError> {
+        records: &[busbar_kernel_wal::Record],
+    ) -> Result<(), busbar_kernel_wal::ShipError> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -787,7 +787,7 @@ impl busbar_unit_wal::Shipper for CountingShipper {
 /// what makes the pair atomic against a crash rather than merely adjacent.
 #[test]
 fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
-    use busbar_caps::{
+    use busbar_contract::caps::{
         step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
         QuantitySource, Usage, UsageLine, UsageToken,
     };
@@ -864,7 +864,7 @@ fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
 /// through.
 #[test]
 fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
-    use busbar_caps::{
+    use busbar_contract::caps::{
         step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, Posted, PrincipalId,
         QuantitySource, Usage, UsageLine, UsageToken,
     };

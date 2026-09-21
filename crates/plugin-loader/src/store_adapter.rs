@@ -78,16 +78,16 @@
 use crate::DynStore;
 use busbar_api::Store as AbiStore;
 use busbar_api::{StoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
-use busbar_caps::AdminToken;
+use busbar_contract::caps::AdminToken;
 use busbar_kernel::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
-use busbar_unit_ledger::legacy::{LegacyHead, LegacyMigrationSource};
-use busbar_unit_ledger::migration::{
+use busbar_kernel_ledger::legacy::{LegacyHead, LegacyMigrationSource};
+use busbar_kernel_ledger::migration::{
     LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows, MigrationError, MigrationMarker,
     MigrationRecords,
 };
-use busbar_unit_ledger::totals::CapDimension;
+use busbar_kernel_ledger::totals::CapDimension;
 use busbar_unit_verbs::store::{Store as VerbStore, StoreError as VerbStoreError};
-use busbar_unit_wal::{Record, ShipError, Shipper};
+use busbar_kernel_wal::{Record, ShipError, Shipper};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 

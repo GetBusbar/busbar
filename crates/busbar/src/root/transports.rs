@@ -53,7 +53,7 @@ use busbar_transport_ws::MESSAGE_MAX_BYTES_KEY;
 
 use std::sync::Arc;
 
-use busbar_caps::{TransportKeyHandle, TransportKeyToken};
+use busbar_contract::caps::{TransportKeyHandle, TransportKeyToken};
 use busbar_unit_transport_key::{
     provision_client, provision_server, AccessJournal, SecretSource, Slot, TlsConfigSink,
     TlsLocations,
@@ -329,7 +329,7 @@ pub struct LoopDriver<'n> {
     kernel: &'n busbar_kernel::teller::Kernel,
     units: &'n crate::root::kernel::ProductionUnits,
     gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
-    canary: &'n busbar_caps::Canary,
+    canary: &'n busbar_contract::caps::Canary,
     next_key: std::sync::atomic::AtomicU64,
 }
 
@@ -352,7 +352,7 @@ impl<'n> LoopDriver<'n> {
         kernel: &'n busbar_kernel::teller::Kernel,
         units: &'n crate::root::kernel::ProductionUnits,
         gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
-        canary: &'n busbar_caps::Canary,
+        canary: &'n busbar_contract::caps::Canary,
     ) -> Self {
         Self {
             kernel,
@@ -364,8 +364,8 @@ impl<'n> LoopDriver<'n> {
     }
 
     /// The key of the next unit this driver will walk.
-    fn next_unit(&self) -> busbar_caps::UnitKey {
-        busbar_caps::UnitKey::new(
+    fn next_unit(&self) -> busbar_contract::caps::UnitKey {
+        busbar_contract::caps::UnitKey::new(
             self.next_key
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         )
@@ -386,7 +386,7 @@ impl<'n> LoopDriver<'n> {
 #[cfg(feature = "root-admin")]
 #[must_use]
 pub fn outcome_of(ended: &busbar_kernel::teller::Ended) -> busbar_contract::transport::Outcome {
-    use busbar_caps::{Outcome as Ends, ReasonCode as R, StepName as S};
+    use busbar_contract::caps::{Outcome as Ends, ReasonCode as R, StepName as S};
     use busbar_contract::transport::Outcome as Out;
     match ended {
         busbar_kernel::teller::Ended::Settled { end, .. } => match end.outcome() {
@@ -419,16 +419,16 @@ impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
         _surface: &busbar_contract::transport::WireSurface,
     ) -> busbar_contract::transport::Answer {
         let key = self.next_unit();
-        let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
+        let cell = busbar_contract::caps::HoldCell::new(busbar_contract::caps::Hold::open(
             &self.kernel.admit_token(),
-            busbar_caps::PrincipalId::new(""),
+            busbar_contract::caps::PrincipalId::new(""),
             0,
         ));
         let leases = busbar_kernel::slice::LeaseCell::new();
         let meter = busbar_kernel::teller::AccrualMeter::new();
         let ctx = busbar_kernel::teller::UnitCtx {
             key,
-            origin: busbar_caps::OriginKind::Client,
+            origin: busbar_contract::caps::OriginKind::Client,
             session: None,
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: false,
@@ -484,7 +484,7 @@ pub trait PlaneDispatch: Send + Sync {
     /// Drive ONE operation of one unit, and count that it was driven.
     ///
     /// `drive` is the plane's own leg, already built and not yet polled. An implementation returns a
-    /// leg that produces the same [`Decision`](busbar_caps::Decision) the one it was handed would
+    /// leg that produces the same [`Decision`](busbar_contract::caps::Decision) the one it was handed would
     /// have: this seam chooses WHERE the work happens, never WHAT it answers.
     fn execute<'a>(
         &'a self,

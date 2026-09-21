@@ -9,7 +9,7 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Admission, AdmitToken, Approve, Audit, Authenticate, KernelSeal, OpClassId, Outcome,
     PrincipalId, Route, TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
@@ -1812,7 +1812,7 @@ async fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
 /// a signature.
 #[tokio::test]
 async fn route_and_audit_are_on_the_token_seam() {
-    use busbar_caps::{AuditFacts, RoutePlan, StepName};
+    use busbar_contract::caps::{AuditFacts, RoutePlan, StepName};
     use busbar_contract::FinishClass;
 
     let rig = rig(Fixture::UnknownModel).await;
@@ -1918,7 +1918,7 @@ async fn route_and_audit_are_on_the_token_seam() {
         .into_result(&seal)
         .expect_err("a destination that resolves to nothing refuses");
     assert_eq!(refusal.step(), Some(StepName::Route));
-    assert_eq!(refusal.reason(), busbar_caps::ReasonCode::NoDestination);
+    assert_eq!(refusal.reason(), busbar_contract::caps::ReasonCode::NoDestination);
 
     rig.server.shutdown().await;
 }

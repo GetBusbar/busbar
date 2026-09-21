@@ -55,7 +55,7 @@ pub use super::auth_bindings;
 
 use std::sync::{Arc, LazyLock, Mutex};
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode, Hold,
     Meter, Outcome, PrincipalId, Refusal, Route, UnitToken, UsageToken, VerifiedDestination,
     Verify,
@@ -63,10 +63,10 @@ use busbar_caps::{
 use busbar_kernel::inflight::ArrivalDoor;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
-use busbar_unit_admission::{Door, InMemoryCells};
-use busbar_unit_auth::{Auth, AuthChain};
-use busbar_unit_egress::EgressUnit;
-use busbar_unit_trust::Trust;
+use busbar_kernel_budget::{Door, InMemoryCells};
+use busbar_kernel_identity::{Auth, AuthChain};
+use busbar_kernel_egress::EgressUnit;
+use busbar_kernel_egress::trust::Trust;
 
 /// Take the kernel's seal. Boot only, once per process.
 ///
@@ -110,8 +110,8 @@ pub fn new_registration() -> busbar_contract::Registration {
 /// a node comes to price a card in one currency and read it in another and report the refusal as a
 /// zero. The day a deployment declares its own, this is the one body that changes.
 #[must_use]
-pub fn node_currency() -> busbar_unit_cost::CurrencyCode {
-    busbar_unit_cost::CurrencyCode::USD
+pub fn node_currency() -> busbar_kernel_ledger::cost::CurrencyCode {
+    busbar_kernel_ledger::cost::CurrencyCode::USD
 }
 
 /// A HISTORY PINNED BY ONE READER: the `Arc` it took at admission, and the snapshot it took with it.
@@ -126,8 +126,8 @@ pub fn node_currency() -> busbar_unit_cost::CurrencyCode {
 /// pair on demand, which costs nothing — a slice and a number.
 #[derive(Clone, Debug)]
 pub struct PinnedHistory {
-    history: Arc<busbar_unit_cost::History>,
-    at: busbar_unit_cost::HistorySeq,
+    history: Arc<busbar_kernel_ledger::cost::History>,
+    at: busbar_kernel_ledger::cost::HistorySeq,
 }
 
 impl PinnedHistory {
@@ -136,13 +136,13 @@ impl PinnedHistory {
     /// Everything with `seq <= at`, which is exactly the history as it stood at the door. An entry
     /// appended since is not in it and cannot be: the slice stops short of it.
     #[must_use]
-    pub fn view(&self) -> busbar_unit_cost::HistoryView<'_> {
+    pub fn view(&self) -> busbar_kernel_ledger::cost::HistoryView<'_> {
         self.history.snapshot(self.at)
     }
 
     /// The snapshot's own number — the figure a posting records so a reader can reproduce it.
     #[must_use]
-    pub fn seq(&self) -> busbar_unit_cost::HistorySeq {
+    pub fn seq(&self) -> busbar_kernel_ledger::cost::HistorySeq {
         self.at
     }
 
@@ -156,8 +156,8 @@ impl PinnedHistory {
     #[cfg(test)]
     #[must_use]
     pub fn for_test(
-        history: Arc<busbar_unit_cost::History>,
-        at: busbar_unit_cost::HistorySeq,
+        history: Arc<busbar_kernel_ledger::cost::History>,
+        at: busbar_kernel_ledger::cost::HistorySeq,
     ) -> Self {
         PinnedHistory { history, at }
     }
@@ -166,7 +166,7 @@ impl PinnedHistory {
     /// load-bearing, because both pins hold the identical `Arc`.
     #[cfg(test)]
     #[must_use]
-    pub fn for_test_at(other: &PinnedHistory, at: busbar_unit_cost::HistorySeq) -> Self {
+    pub fn for_test_at(other: &PinnedHistory, at: busbar_kernel_ledger::cost::HistorySeq) -> Self {
         PinnedHistory {
             history: Arc::clone(&other.history),
             at,
@@ -196,7 +196,7 @@ pub struct RootHistory {
     /// `None` until the boot resolution raises the rate-apply seam. Absent, a report is not priced
     /// and nothing is posted — the honest answer for a build that has read no configuration yet,
     /// rather than a fallback card whose figures no operator wrote.
-    history: arc_swap::ArcSwapOption<busbar_unit_cost::History>,
+    history: arc_swap::ArcSwapOption<busbar_kernel_ledger::cost::History>,
     /// **THE ROOT'S OWN COUNT OF CONFIG RESOLUTIONS**, and that count is what an entry records as
     /// its policy epoch.
     ///
@@ -248,24 +248,24 @@ impl RootHistory {
     /// which is a price change that silently did not happen.
     pub fn apply(
         &self,
-        card: busbar_unit_cost::RateCard,
+        card: busbar_kernel_ledger::cost::RateCard,
         now_ms: u64,
-    ) -> busbar_unit_cost::HistorySeq {
+    ) -> busbar_kernel_ledger::cost::HistorySeq {
         let policy_epoch = self
             .resolutions
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let appended = self.history.rcu(|current| {
             let mut next = match current {
-                Some(history) => busbar_unit_cost::History::clone(history),
-                None => busbar_unit_cost::History::new(),
+                Some(history) => busbar_kernel_ledger::cost::History::clone(history),
+                None => busbar_kernel_ledger::cost::History::new(),
             };
             let effective_from = if next.is_empty() { 0 } else { now_ms };
-            next.append(busbar_unit_cost::CardEntryDraft {
+            next.append(busbar_kernel_ledger::cost::CardEntryDraft {
                 effective_from,
                 effective_until: None,
                 card: card.clone(),
                 appended_at: now_ms,
-                author: busbar_unit_cost::Author::Config { policy_epoch },
+                author: busbar_kernel_ledger::cost::Author::Config { policy_epoch },
             });
             Some(Arc::new(next))
         });
@@ -274,11 +274,11 @@ impl RootHistory {
             .load()
             .as_ref()
             .and_then(|h| h.head())
-            .unwrap_or(busbar_unit_cost::HistorySeq::OPENING)
+            .unwrap_or(busbar_kernel_ledger::cost::HistorySeq::OPENING)
     }
 
     /// **THE SIGNED, BACK-DATED CORRECTION** — the effect half of the `amend_rate_history` verb
-    /// (D38). Append an [`busbar_unit_cost::Author::Amend`] entry over the window the operator named,
+    /// (D38). Append an [`busbar_kernel_ledger::cost::Author::Amend`] entry over the window the operator named,
     /// and return its number — or `None` when there is nothing to amend.
     ///
     /// Unlike [`RootHistory::apply`] this never invents a from-zero opening entry: an amendment
@@ -297,16 +297,16 @@ impl RootHistory {
     /// fingerprint rather than a policy epoch for exactly that reason.
     pub fn amend(
         &self,
-        card: busbar_unit_cost::RateCard,
+        card: busbar_kernel_ledger::cost::RateCard,
         effective_from: u64,
         effective_until: Option<u64>,
         appended_at_ms: u64,
         operator_fingerprint: String,
         reason_hash: [u8; 32],
-    ) -> Option<busbar_unit_cost::HistorySeq> {
+    ) -> Option<busbar_kernel_ledger::cost::HistorySeq> {
         // Nothing to amend: no opening entry a correction could out-rank.
         self.history.load_full()?;
-        let author = busbar_unit_cost::Author::Amend {
+        let author = busbar_kernel_ledger::cost::Author::Amend {
             operator_fingerprint,
             reason_hash,
         };
@@ -315,10 +315,10 @@ impl RootHistory {
         // time rather than moving them.
         self.history.rcu(|current| {
             let mut next = match current {
-                Some(history) => busbar_unit_cost::History::clone(history),
-                None => busbar_unit_cost::History::new(),
+                Some(history) => busbar_kernel_ledger::cost::History::clone(history),
+                None => busbar_kernel_ledger::cost::History::new(),
             };
-            next.append(busbar_unit_cost::CardEntryDraft {
+            next.append(busbar_kernel_ledger::cost::CardEntryDraft {
                 effective_from,
                 effective_until,
                 card: card.clone(),
@@ -356,7 +356,7 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 ///
 /// A RELAY, AND DELIBERATELY NOTHING MORE. Reading the deployment's configuration is the root's;
 /// turning those figures into a card is the cost unit's, on
-/// [`busbar_unit_cost::RateCard::from_config`] — so the class fan-out, the absent/present branch and
+/// [`busbar_kernel_ledger::cost::RateCard::from_config`] — so the class fan-out, the absent/present branch and
 /// the fee's clamp all happen where the card lives, and there is no arithmetic here to disagree with
 /// it. No plane sees a rate at all.
 ///
@@ -387,15 +387,15 @@ pub(crate) fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
     flat_minor: i64,
     present: bool,
-    currency: busbar_unit_cost::CurrencyCode,
-) -> busbar_unit_cost::RateCard {
+    currency: busbar_kernel_ledger::cost::CurrencyCode,
+) -> busbar_kernel_ledger::cost::RateCard {
     // The substrate's neutral raw-rate view, lifted into the cost unit's own — four numbers copied
     // across a crate boundary, in the same canonical order, with nothing computed on the way.
     let lanes = present.then(|| {
         rates.into_iter().map(|(lane, raw)| {
             (
                 lane,
-                busbar_unit_cost::TierRates {
+                busbar_kernel_ledger::cost::TierRates {
                     input: raw.input,
                     output: raw.output,
                     cache_read: raw.cache_read,
@@ -407,7 +407,7 @@ pub(crate) fn card_from_config<'r>(
     // The flat figure crosses as a NEUTRAL minor-unit value; the cost unit's constructor is the one
     // that reads it AS the per-request fee (clamps it, bills it), so no plane and no root file spells
     // a fee — the read lives where the card lives.
-    busbar_unit_cost::RateCard::from_config_in(currency, lanes, flat_minor)
+    busbar_kernel_ledger::cost::RateCard::from_config_in(currency, lanes, flat_minor)
 }
 
 /// The root, answering the engine's rate-apply seam.
@@ -454,7 +454,7 @@ pub struct AdmissionDoor;
 
 impl ArrivalDoor for AdmissionDoor {
     fn arrival_hold(&self, principal: PrincipalId, token: &AdmitToken<Admit>) -> Hold {
-        busbar_unit_admission::arrival_hold(principal, token)
+        busbar_kernel_budget::arrival_hold(principal, token)
     }
 }
 
@@ -470,14 +470,14 @@ pub struct RefusingStore;
 impl busbar_unit_verbs::store::Store for RefusingStore {
     fn chain_break(
         &self,
-        _admin: &busbar_caps::AdminToken,
+        _admin: &busbar_contract::caps::AdminToken,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         Err(busbar_unit_verbs::StoreError::Failed)
     }
 
     fn store_restore(
         &self,
-        _admin: &busbar_caps::AdminToken,
+        _admin: &busbar_contract::caps::AdminToken,
         _backup_ref: &str,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         Err(busbar_unit_verbs::StoreError::Failed)
@@ -485,7 +485,7 @@ impl busbar_unit_verbs::store::Store for RefusingStore {
 
     fn reseal_epoch_floor(
         &self,
-        _admin: &busbar_caps::AdminToken,
+        _admin: &busbar_contract::caps::AdminToken,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         Err(busbar_unit_verbs::StoreError::Failed)
     }
@@ -577,7 +577,7 @@ pub struct ProductionUnits {
     /// Minted once, at boot, from the node's one authority — the second token in the tree minted
     /// outside the loop, for the same reason as the first: a kernel verb is a Route destination
     /// rather than a step, so no step's token stands in for it.
-    pub admin_token: busbar_caps::AdminToken,
+    pub admin_token: busbar_contract::caps::AdminToken,
     /// The planes registered onto this loop, in registration order.
     ///
     /// Every step consults this table before it does anything: the FIRST plane whose `claims`
@@ -710,7 +710,7 @@ impl ProductionUnits {
         // the node; the read half stays here so the ledger views have somewhere to read the
         // previous release's rows from. They are the same rows because they are the same value —
         // a second recorder would be a second answer to what the dual write wrote.
-        let rows = busbar_unit_ledger::legacy::RecordingRows::new();
+        let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
         ProductionUnits::admin_only_over(dispatch, Box::new(rows.clone()), Arc::new(rows))
     }
 
@@ -725,12 +725,12 @@ impl ProductionUnits {
     #[must_use]
     pub fn admin_only_over(
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
-        write: Box<dyn busbar_unit_ledger::legacy::LegacyRows>,
+        write: Box<dyn busbar_kernel_ledger::legacy::LegacyRows>,
         read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
     ) -> Self {
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_kernel_wal::NullShipper::new()),
             write,
         )
         .expect("a memory-buffered journal cannot fail to open");
@@ -896,7 +896,7 @@ pub trait RegisteredUnits: Send + Sync {
         &self,
         root: &ProductionUnits,
         token: &UnitToken<Verify>,
-        trust: &busbar_caps::TrustToken,
+        trust: &busbar_contract::caps::TrustToken,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify>;
@@ -1037,14 +1037,14 @@ impl Units for ProductionUnits {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.arrival(self, token, ctx);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
+        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::NoDestination))
     }
 
     fn decode(&self, token: &UnitToken<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.decode(self, token, ctx);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::DecodeFailed))
+        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::DecodeFailed))
     }
 
     fn authenticate(
@@ -1057,21 +1057,21 @@ impl Units for ProductionUnits {
         }
         Decision::refuse(
             token,
-            Refusal::new(busbar_caps::ReasonCode::Unauthenticated),
+            Refusal::new(busbar_contract::caps::ReasonCode::Unauthenticated),
         )
     }
 
     fn verify(
         &self,
         token: &UnitToken<Verify>,
-        trust: &busbar_caps::TrustToken,
+        trust: &busbar_contract::caps::TrustToken,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.verify(self, token, trust, ctx, principal);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
+        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::NoDestination))
     }
 
     fn approve(
@@ -1084,7 +1084,7 @@ impl Units for ProductionUnits {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.approve(self, token, ctx, principal, destinations);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::ScopeDenied))
+        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::ScopeDenied))
     }
 
     fn admit(
@@ -1099,7 +1099,7 @@ impl Units for ProductionUnits {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.admit(self, token, admit, ctx, principal, destinations, leases);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
+        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::NoDestination))
     }
 
     fn route(
@@ -1111,7 +1111,7 @@ impl Units for ProductionUnits {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.route(self, token, ctx, meter);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
+        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::NoDestination))
     }
 
     fn meter(
@@ -1124,7 +1124,7 @@ impl Units for ProductionUnits {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.meter(self, token, usage, ctx, provisional);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::Unpriced))
+        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::Unpriced))
     }
 
     fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
@@ -1149,7 +1149,7 @@ impl Units for ProductionUnits {
             // without one never came from a decision; the door itself is the latest step it could
             // have been raised at, which is a truer answer than a fixed sentinel.
             unclaimed_facts(&Outcome::Refused(
-                refusal.step().unwrap_or(busbar_caps::StepName::Admit),
+                refusal.step().unwrap_or(busbar_contract::caps::StepName::Admit),
                 refusal.reason(),
             )),
         )
@@ -1164,7 +1164,7 @@ impl Units for ProductionUnits {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.encode(self, token, ctx, outcome);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::DecodeFailed))
+        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::DecodeFailed))
     }
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {

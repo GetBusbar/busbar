@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 
-use busbar_caps::{OriginKind, ReasonCode};
+use busbar_contract::caps::{OriginKind, ReasonCode};
 
 use crate::Millis;
 

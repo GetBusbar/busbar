@@ -92,14 +92,14 @@
 
 use std::path::{Path, PathBuf};
 
-use busbar_caps::{DurabilityLost, DurabilityToken, StepName};
-use busbar_unit_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
-use busbar_unit_ledger::checkpoint::Checkpoint;
-use busbar_unit_ledger::legacy::{LegacyRows, RecordingRows};
-use busbar_unit_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
-use busbar_unit_ledger::settle::{Ledger, Settlement};
-use busbar_unit_ledger::totals::{TotalsKey, WindowStart};
-use busbar_unit_wal::{
+use busbar_contract::caps::{DurabilityLost, DurabilityToken, StepName};
+use busbar_kernel_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
+use busbar_kernel_ledger::checkpoint::Checkpoint;
+use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};
+use busbar_kernel_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
+use busbar_kernel_ledger::settle::{Ledger, Settlement};
+use busbar_kernel_ledger::totals::{TotalsKey, WindowStart};
+use busbar_kernel_wal::{
     BodyWriter, Entry, Journal, JournalAck, Mode, OpenError, RecordClass, Shipper,
 };
 
@@ -259,10 +259,10 @@ impl Durability {
     pub fn settle(
         &mut self,
         at: &Settling<'_>,
-        hold: busbar_caps::Hold,
+        hold: busbar_contract::caps::Hold,
         priced_nanos: u128,
-        usage: &busbar_caps::Usage,
-        ledger: &busbar_caps::LedgerToken,
+        usage: &busbar_contract::caps::Usage,
+        ledger: &busbar_contract::caps::LedgerToken,
     ) -> Result<Settled, DurabilityLost> {
         let settlement =
             self.ledger
@@ -283,7 +283,7 @@ impl Durability {
     pub fn settle_posted(
         &mut self,
         at: &Settling<'_>,
-        posted: busbar_caps::Posted,
+        posted: busbar_contract::caps::Posted,
     ) -> Result<Settled, DurabilityLost> {
         let settlement = self.ledger.post(at.key, at.window, posted);
         self.journal_settlement(at, settlement)
@@ -425,7 +425,7 @@ pub trait MoneyBook: Send + Sync {
     /// Settle a posting the exit path already built, and journal it.
     ///
     /// The exit path owns the hold and consumes it there, so what reaches the seam is a
-    /// [`busbar_caps::Posted`] and never a hold. This is the settlement act every plane's exit arm
+    /// [`busbar_contract::caps::Posted`] and never a hold. This is the settlement act every plane's exit arm
     /// makes; see [`Durability::settle_posted`] for the book side of it.
     ///
     /// # Errors
@@ -436,7 +436,7 @@ pub trait MoneyBook: Send + Sync {
     fn settle_posted(
         &self,
         at: &Settling<'_>,
-        posted: busbar_caps::Posted,
+        posted: busbar_contract::caps::Posted,
     ) -> Result<Settled, DurabilityLost>;
 }
 
@@ -470,7 +470,7 @@ impl MoneyBook for SharedBook {
     fn settle_posted(
         &self,
         at: &Settling<'_>,
-        posted: busbar_caps::Posted,
+        posted: busbar_contract::caps::Posted,
     ) -> Result<Settled, DurabilityLost> {
         // The same lock, taken the way every other holder of it takes it — read through a poisoning
         // an unrelated unit caused rather than refusing to settle a delivered unit. Held for exactly
@@ -704,7 +704,7 @@ pub fn node_book() -> NodeBook {
     let rows = std::sync::Arc::new(RecordingRows::new());
     let durability = build(
         &DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
         Box::new(RecordingRows::clone(&rows)),
     )
     .expect("a memory-buffered journal cannot fail to open");

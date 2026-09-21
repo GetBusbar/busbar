@@ -87,29 +87,23 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # trait), the registry seal, the vocabulary interner, the durability branch and the listener
 # provisioning have somewhere to live that is not a unit and not a plane.
 busbar-kernel = { path = "../busbar-kernel" }
-busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
 # THE PUBLISHED STORE PROTOCOL. A plane's durable records reach the node through record legs on its
 # route plan, and the eight kind-tagged operations those legs run are declared here. Named by the
 # root and by nothing else on this path: a plane may not hold a store and a unit may not know a
 # schema, so the mapping from one to the other belongs to the composition and lives in `src/root/`.
 busbar-api = { path = "../api" }
-# The fourteen units. Eight are facades reached as free functions; six carry a long-lived object the
-# root owns and holds in `ProductionUnits`.
-busbar-unit-admission = { path = "../busbar-unit-admission" }
-busbar-unit-audit = { path = "../busbar-unit-audit" }
-busbar-unit-auth = { path = "../busbar-unit-auth", features = ["sha256"] }
-busbar-unit-breaker = { path = "../busbar-unit-breaker" }
-busbar-unit-cost = { path = "../busbar-unit-cost" }
-busbar-unit-egress = { path = "../busbar-unit-egress" }
-busbar-unit-egress-auth = { path = "../busbar-unit-egress-auth" }
-busbar-unit-ledger = { path = "../busbar-unit-ledger" }
-busbar-unit-scope = { path = "../busbar-unit-scope" }
+# The eight kernel workflow crates (#36), plus the two units still standing (verbs, transport-key).
+busbar-kernel-identity = { path = "../busbar-kernel-identity", features = ["sha256"] }
+busbar-kernel-scope = { path = "../busbar-kernel-scope" }
+busbar-kernel-budget = { path = "../busbar-kernel-budget" }
+busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
+busbar-kernel-egress = { path = "../busbar-kernel-egress" }
+busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
+busbar-kernel-wal = { path = "../busbar-kernel-wal" }
+busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 busbar-unit-transport-key = { path = "../busbar-unit-transport-key" }
-busbar-unit-trust = { path = "../busbar-unit-trust" }
-busbar-unit-usage = { path = "../busbar-unit-usage" }
 busbar-unit-verbs = { path = "../busbar-unit-verbs" }
-busbar-unit-wal = { path = "../busbar-unit-wal" }
 # The five planes. The root is the only thing that knows both a plane's type (and therefore its
 # `PlaneMeta` associated constants, which a `dyn Plugin` cannot read) and its registry key, so the
 # root is what pairs them into the claim slice the boot check reads.

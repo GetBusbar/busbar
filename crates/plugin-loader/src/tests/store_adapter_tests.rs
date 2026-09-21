@@ -30,10 +30,10 @@ use super::*;
 use crate::store_adapter::{
     speaks_new_ops, ShimClock, StoreAdapter, REPLAY_TTL_SECS, STORE_ABI_WITH_NEW_OPS,
 };
-use busbar_caps::{AdminToken, KernelSeal};
+use busbar_contract::caps::{AdminToken, KernelSeal};
 use busbar_kernel::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_unit_verbs::store::Store as VerbStore;
-use busbar_unit_wal::Record;
+use busbar_kernel_wal::Record;
 use std::sync::Arc;
 
 /// The verbs unit's admin token. Minting one is what the kernel does for the length of an admin

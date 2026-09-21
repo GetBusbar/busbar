@@ -31,7 +31,7 @@ fn the_metered_lines_direction_is_the_side_its_quantity_came_from() {
         "the quantity is measured off the answer document"
     );
     match located.source {
-        busbar_caps::QuantitySource::Locator { direction, .. } => assert_eq!(
+        busbar_contract::caps::QuantitySource::Locator { direction, .. } => assert_eq!(
             direction,
             busbar_contract::ids::ClassDirection::Response,
             "and the direction says so, rather than naming the side it did not come from"
@@ -139,8 +139,8 @@ fn a_poisoned_lock_does_not_stop_the_audit_chain() {
     let durability = Mutex::new(
         crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_unit_wal::NullShipper::new()),
-            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
         )
         .expect("a memory-buffered node cannot fail to open"),
     );
@@ -216,7 +216,7 @@ fn every_operation_class_is_declared() {
     assert_eq!(policy.len(), ops::OP_CLASSES.len());
     for op in ops::OP_CLASSES {
         assert!(
-            busbar_unit_scope::PolicyView::required_scope(&policy, CLAIM_A2A, *op).is_some(),
+            busbar_kernel_scope::PolicyView::required_scope(&policy, CLAIM_A2A, *op).is_some(),
             "{op} has no scope entry"
         );
     }
@@ -252,7 +252,7 @@ fn a_projection_is_read_only_and_a_send_is_not() {
 ///   the plane would have guessed from its own claims.
 #[test]
 fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arrival() {
-    use busbar_caps::{KernelSeal, OriginKind, StepName, UnitKey};
+    use busbar_contract::caps::{KernelSeal, OriginKind, StepName, UnitKey};
     use busbar_kernel::inflight::{arrival_hold, cap_refusal_step, Enter, InFlight};
 
     let kernel = busbar_kernel::teller::Kernel::new();
@@ -281,7 +281,7 @@ fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arr
     assert_eq!(table.len(), 1);
     assert_eq!(
         slot.cell().state(),
-        busbar_caps::HoldCellState::Arrival,
+        busbar_contract::caps::HoldCellState::Arrival,
         "the unit is in the table holding its arrival hold and nothing more"
     );
 
@@ -338,8 +338,8 @@ fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arr
 #[test]
 fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
     use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
-    use busbar_caps::{Authenticated, KernelSeal};
-    use busbar_unit_auth::{AuthChain, ChainVerdict};
+    use busbar_contract::caps::{Authenticated, KernelSeal};
+    use busbar_kernel_identity::{AuthChain, ChainVerdict};
 
     /// The audience this plane's ingress requires of a signed token.
     const AUD: &str = "a2a";
@@ -459,8 +459,8 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
 #[test]
 fn a_read_only_grant_does_not_reach_a_send() {
     let held = Grants::of(Scope::ReadOnly);
-    assert!(busbar_unit_scope::approve(held, declared_scope(ops::OP_TASK_GET)).is_ok());
-    assert!(busbar_unit_scope::approve(held, declared_scope(ops::OP_MESSAGE_SEND)).is_err());
+    assert!(busbar_kernel_scope::approve(held, declared_scope(ops::OP_TASK_GET)).is_ok());
+    assert!(busbar_kernel_scope::approve(held, declared_scope(ops::OP_MESSAGE_SEND)).is_err());
 }
 
 /// A leg naming an operation its schema does not declare is refused, not attempted.
@@ -667,7 +667,7 @@ fn only_a_hop_to_an_agent_carries_the_fee() {
 /// and the ending the plane itself called an error. Only the fifth shape pays, and it pays once.
 #[test]
 fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
-    use busbar_caps::OriginKind;
+    use busbar_contract::caps::OriginKind;
     use busbar_kernel::teller::fee_count;
 
     let served = draft(ops::OP_MESSAGE_SEND);
@@ -710,19 +710,19 @@ fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
 fn every_ending_has_an_audited_spelling() {
     assert_eq!(
         audit_finish(FinishClass::Complete),
-        busbar_unit_audit::FinishClass::Complete
+        busbar_kernel_audit::FinishClass::Complete
     );
     assert_eq!(
         audit_finish(FinishClass::TurnComplete),
-        busbar_unit_audit::FinishClass::TurnComplete
+        busbar_kernel_audit::FinishClass::TurnComplete
     );
     assert_eq!(
         audit_finish(FinishClass::Partial),
-        busbar_unit_audit::FinishClass::Partial
+        busbar_kernel_audit::FinishClass::Partial
     );
     assert_eq!(
         audit_finish(FinishClass::Error),
-        busbar_unit_audit::FinishClass::Error
+        busbar_kernel_audit::FinishClass::Error
     );
 }
 
@@ -737,7 +737,7 @@ fn a_record_leg_is_not_a_network_hop() {
         },
         &resolver,
         GuardPolicy::default(),
-        &busbar_unit_trust::Denylist::default(),
+        &busbar_kernel_egress::trust::Denylist::default(),
     )
     .is_ok());
 }
@@ -764,7 +764,7 @@ fn a_kind_that_is_not_dialled_at_an_address_passes_and_pins_nothing() {
                 &candidate,
                 &resolver,
                 GuardPolicy::default(),
-                &busbar_unit_trust::Denylist::default(),
+                &busbar_kernel_egress::trust::Denylist::default(),
             ),
             Ok(None),
             "{candidate:?} has no address to have judged"
@@ -789,12 +789,12 @@ fn a_metadata_endpoint_is_refused_even_when_private_addressing_is_allowed() {
         &upstream("http://metadata.google.internal/"),
         &resolver,
         permissive,
-        &busbar_unit_trust::Denylist::default(),
+        &busbar_kernel_egress::trust::Denylist::default(),
     )
     .expect_err("a metadata endpoint is not reachable");
     assert!(matches!(
         refusal,
-        busbar_unit_trust::NetworkRefusal::MetadataDenied(_)
+        busbar_kernel_egress::trust::NetworkRefusal::MetadataDenied(_)
     ));
 }
 
@@ -810,7 +810,7 @@ fn a_private_address_needs_the_operators_word() {
         &dest,
         &resolver,
         GuardPolicy::default(),
-        &busbar_unit_trust::Denylist::default(),
+        &busbar_kernel_egress::trust::Denylist::default(),
     )
     .is_err());
     let opted_in = GuardPolicy {
@@ -821,7 +821,7 @@ fn a_private_address_needs_the_operators_word() {
         &dest,
         &resolver,
         opted_in,
-        &busbar_unit_trust::Denylist::default(),
+        &busbar_kernel_egress::trust::Denylist::default(),
     )
     .is_ok());
 }
@@ -834,7 +834,7 @@ fn a_name_that_answers_nothing_is_refused() {
         &upstream("https://agent.example/"),
         &resolver,
         GuardPolicy::default(),
-        &busbar_unit_trust::Denylist::default(),
+        &busbar_kernel_egress::trust::Denylist::default(),
     )
     .is_err());
 }
@@ -847,7 +847,7 @@ fn a_public_address_over_tls_is_reached() {
         &upstream("https://agent.example/"),
         &resolver,
         GuardPolicy::default(),
-        &busbar_unit_trust::Denylist::default(),
+        &busbar_kernel_egress::trust::Denylist::default(),
     )
     .is_ok());
 }
@@ -860,7 +860,7 @@ fn a_bare_authority_is_judged_like_a_url() {
         &upstream("agent.internal:8080"),
         &resolver,
         GuardPolicy::default(),
-        &busbar_unit_trust::Denylist::default(),
+        &busbar_kernel_egress::trust::Denylist::default(),
     )
     .is_err());
 }
@@ -878,7 +878,7 @@ fn a_userinfo_bearing_bare_authority_is_refused() {
         &upstream("user@agent.example:443"),
         &resolver,
         GuardPolicy::default(),
-        &busbar_unit_trust::Denylist::default(),
+        &busbar_kernel_egress::trust::Denylist::default(),
     )
     .is_err());
 }
@@ -894,7 +894,7 @@ fn the_root_guard_and_the_trust_units_own_door_agree() {
     // The token the loop lends the trust unit, which is what seals a destination in a running
     // deployment. A private type carrying an impl of the contract's sealing trait would forge
     // the same value while reading as if that were the ordinary way to obtain one.
-    let trust = busbar_caps::TrustToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
+    let trust = busbar_contract::caps::TrustToken::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel());
     let resolver = FixedResolver(vec!["93.184.216.34".parse().expect("an address")]);
     for authority in [
         "https://agent.example/",
@@ -911,17 +911,17 @@ fn the_root_guard_and_the_trust_units_own_door_agree() {
             &facts,
             &resolver,
             GuardPolicy::default(),
-            &busbar_unit_trust::Denylist::default(),
+            &busbar_kernel_egress::trust::Denylist::default(),
         )
         .is_ok();
         // The published door answers `NotAnUpstream` for a kind that is not dialled at an
         // address; every row here IS an upstream, so the two verdicts are directly comparable.
-        let through_the_unit = busbar_unit_trust::net::check_destination(
+        let through_the_unit = busbar_kernel_egress::trust::net::check_destination(
             &sealed,
             &[],
             &resolver,
             GuardPolicy::default(),
-            &busbar_unit_trust::Denylist::default(),
+            &busbar_kernel_egress::trust::Denylist::default(),
         )
         .is_ok();
         assert_eq!(
@@ -934,7 +934,7 @@ fn the_root_guard_and_the_trust_units_own_door_agree() {
 /// Every origin has a spelling on the trust unit's side.
 #[test]
 fn every_origin_has_a_trust_side_spelling() {
-    use busbar_caps::OriginKind as K;
+    use busbar_contract::caps::OriginKind as K;
     assert_eq!(trust_origin(K::Client), OriginKind::Client);
     assert_eq!(trust_origin(K::Provider), OriginKind::Provider);
     assert_eq!(trust_origin(K::Tick), OriginKind::Tick);
@@ -1524,7 +1524,7 @@ impl BreakerView for EveryLaneOpen {
         _pool: &str,
         _lane: usize,
         _now: u64,
-    ) -> Result<(), busbar_unit_trust::Unavailable> {
+    ) -> Result<(), busbar_kernel_egress::trust::Unavailable> {
         Ok(())
     }
 }
@@ -1582,7 +1582,7 @@ impl KindFacts for EveryKindPasses {
 }
 
 /// One group, one call at a time — the smallest cap an operator can write.
-fn one_call_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
+fn one_call_at_a_time(group: &str) -> busbar_kernel_budget::GroupTable {
     let groups = std::collections::BTreeMap::from([(
         group.to_string(),
         busbar_substrate::config::groups::GroupCfg {
@@ -1614,51 +1614,51 @@ fn one_call_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
 struct Deployment {
     auth: Auth,
     auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
-    trust: busbar_caps::TrustToken,
+    trust: busbar_contract::caps::TrustToken,
     pools: UnrestrictedKey,
     kinds: EveryKindPasses,
     resolver: FixedResolver,
-    denylist: busbar_unit_trust::Denylist,
-    door: Door<busbar_unit_admission::InMemoryCells>,
-    groups: busbar_unit_admission::GroupTable,
+    denylist: busbar_kernel_egress::trust::Denylist,
+    door: Door<busbar_kernel_budget::InMemoryCells>,
+    groups: busbar_kernel_budget::GroupTable,
     pricer: Pricer,
     records: RecordLegs,
     meter_policy: crate::root::policy::MeterPolicyHandle,
     scope: crate::root::policy::ScopePolicy,
     durability: Mutex<crate::root::durability::Durability>,
-    origin: busbar_caps::Origin,
+    origin: busbar_contract::caps::Origin,
     /// The node's monotonic source, as the composition root holds it: a counter that only ever
     /// goes up, whatever the wall clock does.
     mono: AtomicU64,
 }
 
-fn deployment(groups: busbar_unit_admission::GroupTable) -> Deployment {
+fn deployment(groups: busbar_kernel_budget::GroupTable) -> Deployment {
     deployment_priced(groups, Pricer::flat(0))
 }
 
-fn deployment_priced(groups: busbar_unit_admission::GroupTable, pricer: Pricer) -> Deployment {
+fn deployment_priced(groups: busbar_kernel_budget::GroupTable, pricer: Pricer) -> Deployment {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     Deployment {
-        auth: Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+        auth: Auth::new(busbar_kernel_identity::AuthChain::new(Vec::new(), false)),
         auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
-        trust: busbar_caps::TrustToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel()),
+        trust: busbar_contract::caps::TrustToken::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel()),
         pools: UnrestrictedKey,
         kinds: EveryKindPasses,
         resolver: FixedResolver(vec!["203.0.113.7".parse().expect("a public address")]),
-        denylist: busbar_unit_trust::Denylist::default(),
-        door: Door::new(busbar_unit_admission::InMemoryCells::new()),
+        denylist: busbar_kernel_egress::trust::Denylist::default(),
+        door: Door::new(busbar_kernel_budget::InMemoryCells::new()),
         groups,
         pricer,
         records: RecordLegs::new(Arc::new(RecordingStore::default())),
         meter_policy: crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
         scope: scope_policy(crate::root::policy::ScopePolicy::new()),
         durability: Mutex::new(durability),
-        origin: busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client),
+        origin: busbar_kernel::teller::Kernel::new().origin(busbar_contract::caps::OriginKind::Client),
         mono: AtomicU64::new(0),
     }
 }
@@ -1670,15 +1670,15 @@ impl Deployment {
         &self,
         who: &PrincipalId,
         group: Option<&str>,
-    ) -> Option<busbar_unit_admission::BucketChain> {
+    ) -> Option<busbar_kernel_budget::BucketChain> {
         self.groups.chain_for(who.as_str(), group).ok()
     }
 
     /// One unit of this deployment, lent a chain somebody already resolved.
     fn calling<'r>(
         &'r self,
-        chain: Option<&'r busbar_unit_admission::BucketChain>,
-    ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
+        chain: Option<&'r busbar_kernel_budget::BucketChain>,
+    ) -> A2aUnits<'r, busbar_kernel_budget::InMemoryCells> {
         self.calling_at(chain, 1_700_000_000)
     }
 
@@ -1686,9 +1686,9 @@ impl Deployment {
     /// way an operator or an NTP correction steps it and watch what the record does.
     fn calling_at<'r>(
         &'r self,
-        chain: Option<&'r busbar_unit_admission::BucketChain>,
+        chain: Option<&'r busbar_kernel_budget::BucketChain>,
         now: u64,
-    ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
+    ) -> A2aUnits<'r, busbar_kernel_budget::InMemoryCells> {
         A2aUnits::new(
             A2aBindings {
                 auth: &self.auth,
@@ -1727,12 +1727,12 @@ impl Deployment {
 }
 
 fn a2a_ctx() -> UnitCtx {
-    a2a_ctx_from(busbar_caps::OriginKind::Client)
+    a2a_ctx_from(busbar_contract::caps::OriginKind::Client)
 }
 
-fn a2a_ctx_from(origin: busbar_caps::OriginKind) -> UnitCtx {
+fn a2a_ctx_from(origin: busbar_contract::caps::OriginKind) -> UnitCtx {
     UnitCtx {
-        key: busbar_caps::UnitKey::new(1),
+        key: busbar_contract::caps::UnitKey::new(1),
         origin,
         session: None,
         generation: busbar_kernel::registry::Generation::FIRST,
@@ -1743,30 +1743,30 @@ fn a2a_ctx_from(origin: busbar_caps::OriginKind) -> UnitCtx {
 
 /// Ask the door for one call, keeping what its yes counted.
 fn ask_the_door(
-    unit: &A2aUnits<'_, busbar_unit_admission::InMemoryCells>,
+    unit: &A2aUnits<'_, busbar_kernel_budget::InMemoryCells>,
     who: &PrincipalId,
 ) -> (
-    Result<busbar_caps::Admission, busbar_caps::Refusal>,
+    Result<busbar_contract::caps::Admission, busbar_contract::caps::Refusal>,
     GroupLeaseSlip,
 ) {
-    ask_the_door_as(unit, who, busbar_caps::OriginKind::Client)
+    ask_the_door_as(unit, who, busbar_contract::caps::OriginKind::Client)
 }
 
 /// The same call, under a named origin — the one fact that decides whether a fee is coming.
 fn ask_the_door_as(
-    unit: &A2aUnits<'_, busbar_unit_admission::InMemoryCells>,
+    unit: &A2aUnits<'_, busbar_kernel_budget::InMemoryCells>,
     who: &PrincipalId,
-    origin: busbar_caps::OriginKind,
+    origin: busbar_contract::caps::OriginKind,
 ) -> (
-    Result<busbar_caps::Admission, busbar_caps::Refusal>,
+    Result<busbar_contract::caps::Admission, busbar_contract::caps::Refusal>,
     GroupLeaseSlip,
 ) {
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let slip = GroupLeaseSlip::new();
     let decision = Units::admit(
         unit,
-        &busbar_caps::UnitToken::mint(&seal),
-        &busbar_caps::AdmitToken::mint(&seal),
+        &busbar_contract::caps::UnitToken::mint(&seal),
+        &busbar_contract::caps::AdmitToken::mint(&seal),
         &a2a_ctx_from(origin),
         who,
         &[],
@@ -1850,22 +1850,22 @@ fn the_hold_reserves_a_fee_only_where_the_settlement_could_post_one() {
             .0
             .expect("the group is uncapped on spend, so the door says yes to both")
         {
-            busbar_caps::Admission::Own(hold) => hold.reserved(),
+            busbar_contract::caps::Admission::Own(hold) => hold.reserved(),
             // Nothing held is nothing reserved, which is exactly the answer for a unit priced
             // at zero.
-            busbar_caps::Admission::ZeroHold => 0,
-            busbar_caps::Admission::Accrual(_) => panic!("this unit has no parent"),
+            busbar_contract::caps::Admission::ZeroHold => 0,
+            busbar_contract::caps::Admission::Accrual(_) => panic!("this unit has no parent"),
         }
     };
 
     let fee_nanos = u64::try_from(FEE_CENTS).expect("a positive fee") * NANOS_PER_CENT;
     assert_eq!(
-        reserved(busbar_caps::OriginKind::Client),
+        reserved(busbar_contract::caps::OriginKind::Client),
         fee_nanos,
         "a caller's request is charged the flat fee, so the hold covers it"
     );
     assert_eq!(
-        reserved(busbar_caps::OriginKind::Provider),
+        reserved(busbar_contract::caps::OriginKind::Provider),
         0,
         "a push the agent sent posts no fee, so there is nothing for the hold to reserve"
     );

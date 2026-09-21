@@ -40,7 +40,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use busbar_caps::{
+use busbar_contract::caps::{
     Admission, Admit, AdmitToken, Approve, Audit, Authenticate, Decision, Decode, Encode, Meter,
     Outcome, PrincipalId, ReasonCode, Refusal, Route, UnitToken, Usage, UsageToken,
     VerifiedDestination, Verify,
@@ -48,8 +48,8 @@ use busbar_caps::{
 use busbar_contract::UnitKey;
 use busbar_kernel::teller::UnitCtx;
 use busbar_plane_admin::verbs::ResolvedVerb;
-use busbar_unit_auth::unit::AuthRequest;
-use busbar_unit_scope::Scope;
+use busbar_kernel_identity::unit::AuthRequest;
+use busbar_kernel_scope::Scope;
 
 use crate::root::kernel::{ProductionUnits, RegisteredUnits};
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
@@ -252,10 +252,10 @@ pub trait LedgerView: Send + Sync {
     fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot;
 
     /// The sealed checkpoints, oldest first.
-    fn checkpoints(&self) -> Vec<busbar_unit_ledger::checkpoint::Checkpoint>;
+    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint>;
 
     /// The marker the first boot after the upgrade sealed, if this deployment has migrated.
-    fn migration_marker(&self) -> Option<busbar_unit_ledger::migration::MigrationMarker>;
+    fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker>;
 
     /// BOTH sides of the identity, as of one moment.
     ///
@@ -299,11 +299,11 @@ impl LedgerView for UnopenedLedger {
         crate::root::ledger_identity::LegacySnapshot::new()
     }
 
-    fn checkpoints(&self) -> Vec<busbar_unit_ledger::checkpoint::Checkpoint> {
+    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
         Vec::new()
     }
 
-    fn migration_marker(&self) -> Option<busbar_unit_ledger::migration::MigrationMarker> {
+    fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
         None
     }
 }
@@ -442,7 +442,7 @@ impl NodeLedger {
                 (
                     row,
                     LegacyRow {
-                        spend_micros: busbar_unit_cost::micros_of(nanos),
+                        spend_micros: busbar_kernel_ledger::cost::micros_of(nanos),
                         billable_requests: 0,
                     },
                 )
@@ -473,18 +473,18 @@ impl LedgerView for NodeLedger {
         )
     }
 
-    fn checkpoints(&self) -> Vec<busbar_unit_ledger::checkpoint::Checkpoint> {
+    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
         self.lock().checkpoints.clone()
     }
 
-    fn migration_marker(&self) -> Option<busbar_unit_ledger::migration::MigrationMarker> {
+    fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
         self.lock().migration_marker()
     }
 }
 
 /// The read half of the dual write.
 ///
-/// [`busbar_unit_ledger::legacy::LegacyRows`] is a WRITE trait and deliberately so — the unit's job
+/// [`busbar_kernel_ledger::legacy::LegacyRows`] is a WRITE trait and deliberately so — the unit's job
 /// is to say what was posted and hand it over, never to read a shape it does not own. But the
 /// reconciliation identity needs both sides, and the previous release's side of it is exactly what
 /// that write produced. So the root asks for the read half separately, as its own seam, and a
@@ -502,26 +502,26 @@ pub trait LegacyRowsRead: Send + Sync {
     /// that genuinely wants the postings themselves; every view goes through [`fold_postings`].
     ///
     /// [`fold_postings`]: Self::fold_postings
-    fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting>;
+    fn postings(&self) -> Vec<busbar_kernel_ledger::legacy::LegacyPosting>;
 
     /// Show each posting to a fold, in the order the dual write made them, without copying any.
     ///
     /// The form a view reads through. What a view builds is a per-row sum, so it needs to SEE each
     /// posting once and to keep none of them — and the default below is the honest fallback for a
     /// binding that can only hand over a copy, not the shape the production one takes.
-    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_unit_ledger::legacy::LegacyPosting)) {
+    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_kernel_ledger::legacy::LegacyPosting)) {
         for posting in self.postings() {
             take(&posting);
         }
     }
 }
 
-impl LegacyRowsRead for busbar_unit_ledger::legacy::RecordingRows {
-    fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting> {
+impl LegacyRowsRead for busbar_kernel_ledger::legacy::RecordingRows {
+    fn postings(&self) -> Vec<busbar_kernel_ledger::legacy::LegacyPosting> {
         self.written()
     }
 
-    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_unit_ledger::legacy::LegacyPosting)) {
+    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_kernel_ledger::legacy::LegacyPosting)) {
         self.fold_written(take);
     }
 }
@@ -586,7 +586,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
 
     fn provision_group(
         &self,
-        _admin: &busbar_caps::AdminToken,
+        _admin: &busbar_contract::caps::AdminToken,
         _group: &str,
         _parent: &str,
     ) -> Result<(), busbar_unit_verbs::GovernanceError> {
@@ -595,7 +595,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
 
     fn mint_key(
         &self,
-        _admin: &busbar_caps::AdminToken,
+        _admin: &busbar_contract::caps::AdminToken,
         _group: Option<&str>,
     ) -> Result<busbar_unit_verbs::MintedKey, busbar_unit_verbs::GovernanceError> {
         // A minted secret is revealed by the operation's own response and by nothing else. The root
@@ -606,7 +606,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
 
     fn rotate_key(
         &self,
-        _admin: &busbar_caps::AdminToken,
+        _admin: &busbar_contract::caps::AdminToken,
         _id: &str,
     ) -> Result<busbar_unit_verbs::RotateOutcome, busbar_unit_verbs::GovernanceError> {
         Err(busbar_unit_verbs::GovernanceError::Validation)
@@ -615,7 +615,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
     fn execute_legacy(
         &self,
         _verb: KernelVerb,
-        _admin: &busbar_caps::AdminToken,
+        _admin: &busbar_contract::caps::AdminToken,
         _request: &[u8],
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
         Ok(self.run())
@@ -624,7 +624,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
     fn execute_new_verb(
         &self,
         verb: KernelVerb,
-        _admin: &busbar_caps::AdminToken,
+        _admin: &busbar_contract::caps::AdminToken,
         request: &[u8],
         operator: busbar_unit_verbs::OperatorState,
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
@@ -648,7 +648,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
     fn execute_ledger_read(
         &self,
         verb: KernelVerb,
-        _admin: &busbar_caps::AdminToken,
+        _admin: &busbar_contract::caps::AdminToken,
         _request: &[u8],
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
         // The request body is deliberately unread. Every view is a `GET` whose whole identity is its
@@ -756,15 +756,15 @@ fn amend_rate_history_effect(
     // because an amendment that changes no price is a history append and nothing else.
     let currency = match obj.get("currency").and_then(serde_json::Value::as_str) {
         Some(code) => {
-            busbar_unit_cost::CurrencyCode::new(code).ok_or(GovernanceError::Validation)?
+            busbar_kernel_ledger::cost::CurrencyCode::new(code).ok_or(GovernanceError::Validation)?
         }
-        None => busbar_unit_cost::CurrencyCode::USD,
+        None => busbar_kernel_ledger::cost::CurrencyCode::USD,
     };
     let per_request_fee = match obj.get("per_request_fee") {
         None | Some(serde_json::Value::Null) => None,
         Some(v) => Some(v.as_i64().ok_or(GovernanceError::Validation)?),
     };
-    let mut entries: Vec<(busbar_unit_cost::LaneClass, f64)> = Vec::new();
+    let mut entries: Vec<(busbar_kernel_ledger::cost::LaneClass, f64)> = Vec::new();
     if let Some(rates) = obj.get("rates") {
         for row in rates.as_array().ok_or(GovernanceError::Validation)? {
             let r = row.as_object().ok_or(GovernanceError::Validation)?;
@@ -785,13 +785,13 @@ fn amend_rate_history_effect(
             if !micro.is_finite() || micro < 0.0 {
                 return Err(GovernanceError::Validation);
             }
-            entries.push((busbar_unit_cost::LaneClass::new(lane, class), micro));
+            entries.push((busbar_kernel_ledger::cost::LaneClass::new(lane, class), micro));
         }
     }
     if entries.is_empty() && per_request_fee.is_none() {
         return Err(GovernanceError::Validation);
     }
-    let card = busbar_unit_cost::RateCard::from_micro_rates_in(
+    let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates_in(
         currency,
         entries,
         per_request_fee.unwrap_or(0),
@@ -1023,7 +1023,7 @@ fn render_totals(rows: &crate::root::ledger_identity::LedgerSnapshot) -> String 
 /// `body_hash_verifies` is served beside the hash rather than instead of it. The hash is what an
 /// auditor re-derives independently; the boolean is this node's own answer for the same question,
 /// and serving both is what lets the two be compared rather than trusted.
-fn render_checkpoints(checkpoints: &[busbar_unit_ledger::checkpoint::Checkpoint]) -> String {
+fn render_checkpoints(checkpoints: &[busbar_kernel_ledger::checkpoint::Checkpoint]) -> String {
     let mut out = String::from("{\"checkpoints\":[");
     for (i, cp) in checkpoints.iter().enumerate() {
         if i > 0 {
@@ -1084,9 +1084,9 @@ fn render_checkpoints(checkpoints: &[busbar_unit_ledger::checkpoint::Checkpoint]
 
 /// One sealed balance, as the checkpoint holds it.
 fn render_totals_cell(
-    key: &busbar_unit_ledger::totals::TotalsKey,
-    window: busbar_unit_ledger::totals::WindowStart,
-    totals: &busbar_unit_ledger::totals::Totals,
+    key: &busbar_kernel_ledger::totals::TotalsKey,
+    window: busbar_kernel_ledger::totals::WindowStart,
+    totals: &busbar_kernel_ledger::totals::Totals,
     out: &mut String,
 ) {
     out.push_str("{\"bucket\":");
@@ -1185,7 +1185,7 @@ fn render_reconciliation(
 /// because the two facts an operator is actually asking about — "has this deployment opened its
 /// balances" and "what did it open them at" — fail separately, and a reader who has to derive the
 /// first from the absence of the second will eventually derive it wrong.
-fn render_migration(marker: Option<&busbar_unit_ledger::migration::MigrationMarker>) -> String {
+fn render_migration(marker: Option<&busbar_kernel_ledger::migration::MigrationMarker>) -> String {
     let Some(m) = marker else {
         return String::from("{\"migrated\":false,\"marker\":null}");
     };
@@ -1597,9 +1597,9 @@ pub fn mutation_class(verb: KernelVerb) -> MutationClass {
 /// the budgets it would otherwise apply are the data listener's.
 pub(crate) fn arrival(
     binding: &AdminBinding,
-    token: &UnitToken<busbar_caps::Arrival>,
+    token: &UnitToken<busbar_contract::caps::Arrival>,
     ctx: &UnitCtx,
-) -> Decision<busbar_caps::Arrival> {
+) -> Decision<busbar_contract::caps::Arrival> {
     let _ = binding;
     Decision::proceed(
         token,
@@ -1650,7 +1650,7 @@ pub(crate) fn decode(
 /// and a set nothing supplies revokes nothing, so an absence here would be a revoked credential that
 /// still opens the administrative surface.
 pub(crate) fn authenticate(
-    auth: &busbar_unit_auth::Auth,
+    auth: &busbar_kernel_identity::Auth,
     binding: &AdminBinding,
     bindings: &crate::root::auth_bindings::AuthBindings,
     token: &UnitToken<Authenticate>,
@@ -1729,7 +1729,7 @@ pub(crate) fn approve(
     let Some(request) = binding.units.request(ctx.key) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
     };
-    let needed = busbar_unit_scope::admin_required_scope(&request.method, &request.path);
+    let needed = busbar_kernel_scope::admin_required_scope(&request.method, &request.path);
     binding.units.set_granted(ctx.key, granted);
     if !granted.allows(scope_as_verb_scope(needed)) {
         return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
@@ -1791,7 +1791,7 @@ pub(crate) fn admit(
 pub(crate) fn route(
     binding: &AdminBinding,
     store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
-    admin: &busbar_caps::AdminToken,
+    admin: &busbar_contract::caps::AdminToken,
     token: &UnitToken<Route>,
     ctx: &UnitCtx,
     _meter: &busbar_kernel::teller::AccrualMeter,
@@ -1808,7 +1808,7 @@ pub(crate) fn route(
         .units
         .granted(ctx.key)
         .unwrap_or(scope_as_verb_scope(
-            busbar_unit_scope::admin_required_scope(&request.method, &request.path),
+            busbar_kernel_scope::admin_required_scope(&request.method, &request.path),
         ));
 
     // THE ONE PLACE THE CHOICE IS MADE. Route is this plane's destination, and a destination is
@@ -2093,7 +2093,7 @@ pub(crate) fn meter(
 /// record of what changed.
 pub(crate) fn audit(
     binding: &AdminBinding,
-    legacy: &busbar_unit_audit::AuditLog,
+    legacy: &busbar_kernel_audit::AuditLog,
     token: &UnitToken<Audit>,
     ctx: &UnitCtx,
     outcome: &Outcome,
@@ -2131,7 +2131,7 @@ pub(crate) fn audit(
 /// the attempt rather than pretending it did not happen.
 pub(crate) fn audit_refused(
     binding: &AdminBinding,
-    legacy: &busbar_unit_audit::AuditLog,
+    legacy: &busbar_kernel_audit::AuditLog,
     token: &UnitToken<Audit>,
     ctx: &UnitCtx,
     refusal: &Refusal,
@@ -2154,7 +2154,7 @@ pub(crate) fn audit_refused(
                     .map(|request| request.method)
                     .as_deref(),
                 &Outcome::Refused(
-                    refusal.step().unwrap_or(busbar_caps::StepName::Audit),
+                    refusal.step().unwrap_or(busbar_contract::caps::StepName::Audit),
                     refusal.reason(),
                 ),
             ),
@@ -2173,7 +2173,7 @@ pub(crate) fn audit_refused(
             legacy.record_by(
                 resolved.verb,
                 &request.path,
-                busbar_unit_audit::OUTCOME_REJECTED,
+                busbar_kernel_audit::OUTCOME_REJECTED,
                 &actor,
             );
         }
@@ -2230,8 +2230,8 @@ fn is_read_method(method: &str) -> bool {
 
 fn outcome_word(outcome: &Outcome) -> &'static str {
     match outcome {
-        Outcome::Completed => busbar_unit_audit::OUTCOME_APPLIED,
-        _ => busbar_unit_audit::OUTCOME_REJECTED,
+        Outcome::Completed => busbar_kernel_audit::OUTCOME_APPLIED,
+        _ => busbar_kernel_audit::OUTCOME_REJECTED,
     }
 }
 
@@ -2315,9 +2315,9 @@ impl RegisteredUnits for AdminPlane {
     fn arrival(
         &self,
         root: &ProductionUnits,
-        token: &UnitToken<busbar_caps::Arrival>,
+        token: &UnitToken<busbar_contract::caps::Arrival>,
         ctx: &UnitCtx,
-    ) -> Decision<busbar_caps::Arrival> {
+    ) -> Decision<busbar_contract::caps::Arrival> {
         arrival(&root.admin, token, ctx)
     }
 
@@ -2343,7 +2343,7 @@ impl RegisteredUnits for AdminPlane {
         &self,
         root: &ProductionUnits,
         token: &UnitToken<Verify>,
-        _trust: &busbar_caps::TrustToken,
+        _trust: &busbar_contract::caps::TrustToken,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -2463,7 +2463,7 @@ trait TapAdmin: Sized {
     }
 }
 
-impl<S: busbar_caps::Step> TapAdmin for Decision<S> {}
+impl<S: busbar_contract::caps::Step> TapAdmin for Decision<S> {}
 
 /// The store the verbs unit is handed, behind the published ABI.
 ///
@@ -2475,14 +2475,14 @@ struct StoreRef(Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>);
 impl busbar_unit_verbs::store::Store for StoreRef {
     fn chain_break(
         &self,
-        admin: &busbar_caps::AdminToken,
+        admin: &busbar_contract::caps::AdminToken,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         self.0.chain_break(admin)
     }
 
     fn store_restore(
         &self,
-        admin: &busbar_caps::AdminToken,
+        admin: &busbar_contract::caps::AdminToken,
         backup_ref: &str,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         self.0.store_restore(admin, backup_ref)
@@ -2490,7 +2490,7 @@ impl busbar_unit_verbs::store::Store for StoreRef {
 
     fn reseal_epoch_floor(
         &self,
-        admin: &busbar_caps::AdminToken,
+        admin: &busbar_contract::caps::AdminToken,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         self.0.reseal_epoch_floor(admin)
     }

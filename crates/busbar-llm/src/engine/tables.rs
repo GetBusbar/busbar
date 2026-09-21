@@ -32,7 +32,7 @@ pub(crate) struct Lane {
     pub(crate) authority: &'static str,
     /// THE LANE NAME THIS LANE ROUTES UNDER, as the node's interned `&'static str` — `model` seated
     /// through the same registration, at the same moment, for the same reason. This is the string a
-    /// `busbar_caps::LaneId` is built over on the planning path.
+    /// `busbar_contract::caps::LaneId` is built over on the planning path.
     #[cfg(feature = "teller-waist")]
     pub(crate) lane_id: &'static str,
     /// The SigV4 signed-`host` header value, derived ONCE at boot from `base_url` (scheme + userinfo
