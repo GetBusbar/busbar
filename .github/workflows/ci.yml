@@ -997,7 +997,7 @@ jobs:
   # if the committed `openapi.json` — the file the runtime serves via `include_str!` — no longer
   # matches what the code generates, and the COVERAGE LOCK proves every operation has a typed body.
   # Regenerate a stale file with:
-  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-core -p busbar-admin --features openapi-schema openapi_json_matches_committed_file
+  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-kernel -p busbar-admin --features openapi-schema openapi_json_matches_committed_file
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -1034,7 +1034,7 @@ jobs:
             ${{ env.CARGO_HOME }}/git
             target
       - name: Clippy (--features openapi-schema)
-        run: cargo clippy -p busbar -p busbar-core -p busbar-admin --all-targets --features openapi-schema --locked -- -D warnings
+        run: cargo clippy -p busbar -p busbar-kernel -p busbar-admin --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
         run: |
           set -euo pipefail
@@ -1042,7 +1042,7 @@ jobs:
           # prints "running 0 tests / test result: ok" and EXITS 0. The floor is not 1 — this step
           # claims to run the drift guard AND the coverage lock AND their neighbours, so a filter
           # that quietly collapsed to a single surviving test would still be a coverage hole.
-          out="$(cargo test -p busbar -p busbar-core -p busbar-admin --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
+          out="$(cargo test -p busbar -p busbar-kernel -p busbar-admin --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
           n="$(echo "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')"
           if [ "$n" -lt 8 ]; then
             echo "::error::the OpenAPI suite ran only ${n} tests, expected >= 8."
@@ -1685,8 +1685,8 @@ jobs:
             features: busbar/test-harness
             tests: -p busbar
           - name: timing
-            features: busbar-core/timing,busbar-llm/timing,busbar-llm-codec/timing
-            tests: -p busbar-core -p busbar-llm -p busbar-llm-codec -p busbar-timing
+            features: busbar-kernel/timing,busbar-llm/timing,busbar-llm-codec/timing
+            tests: -p busbar-kernel -p busbar-llm -p busbar-llm-codec -p busbar-timing
           - name: llm webhook-receiver
             features: busbar-llm/webhook-receiver
             tests: -p busbar-llm
@@ -1697,8 +1697,8 @@ jobs:
           # matrix anyway, because reachability is a property of a DEFAULT and a default moving is
           # the exposure this whole job is about. A row that NAMES the feature survives the flip.
           - name: core duplex-ws
-            features: busbar-core/duplex-ws
-            tests: -p busbar-core
+            features: busbar-kernel/duplex-ws
+            tests: -p busbar-kernel
           # admin/oauth2 test-support are non-default forwards no sibling edge enables (busbar-admin's
           # dev-deps deliberately do NOT turn on its own test-support), so nothing builds the
           # `cfg(all(not(test), feature = "test-support"))` surface behind them. Each row builds and
@@ -1887,34 +1887,26 @@ jobs:
   # docs/ci/feature-sets.md, produced with `cargo tree -f '{p}|{f}'` over every CI invocation.
   #
   # feature-covered: busbar/loom-model -- txn-guards -- scripts/loom.sh builds it in release to explore the txn interleavings
-  # feature-covered: busbar-core/loom-model -- txn-guards -- same scripts/loom.sh run; the root feature is a forward onto this one
+  # feature-covered: busbar-kernel/loom-model -- txn-guards -- same scripts/loom.sh run; the root feature is a forward onto this one
   # feature-covered: busbar/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar with the feature named
-  # feature-covered: busbar-core/openapi-schema -- openapi-schema -- same job names -p busbar-core with the feature
-  # feature-covered: busbar-a2a/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
-  # feature-covered: busbar-llm/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
+  # feature-covered: busbar-kernel/openapi-schema -- openapi-schema -- same job names -p busbar-kernel with the feature
+  # feature-covered: busbar-a2a/openapi-schema -- openapi-schema -- pulled by the forward from busbar-kernel in that job's build
+  # feature-covered: busbar-llm/openapi-schema -- openapi-schema -- pulled by the forward from busbar-kernel in that job's build
   # feature-covered: busbar-llm-codec/openapi-schema -- openapi-schema -- pulled by the forward from busbar-llm in that job's build
-  # feature-covered: busbar-mcp/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
-  # feature-covered: busbar-substrate/openapi-schema -- openapi-schema -- pulled by the forward from every plane crate there
+  # feature-covered: busbar-mcp/openapi-schema -- openapi-schema -- pulled by the forward from busbar-kernel in that job's build
   # feature-covered: busbar-voice/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
   # feature-covered: busbar-timing/timing -- check -- the Timing implementation tests step names -p busbar-timing --features timing
   # feature-covered: busbar-llm/teller-waist -- check -- the LLM teller-step tests step names it, and the root default reaches it
   # feature-covered: busbar-voice/test-support -- check -- the Voice runtime tests step names --features runtime,test-support
   # feature-covered: busbar-voice/runtime -- check -- the Voice runtime tests step names it, and the root default reaches it
   # feature-covered: busbar-voice-codec/runtime -- check -- the Voice runtime tests step names -p busbar-voice-codec --features runtime
-  # feature-covered: busbar-core/plane-voice -- check -- reached from the root binary's default plane-voice in the workspace build
-  # feature-covered: busbar-substrate/plane-voice -- check -- reached from busbar-core/plane-voice in the workspace default build
-  # feature-covered: busbar-substrate/plane-a2a -- check -- reached from busbar-core/plane-a2a in the workspace default build
-  # feature-covered: busbar-substrate/plane-mcp -- check -- reached from busbar-core/plane-mcp in the workspace default build
-  # feature-covered: busbar-substrate/plane-llm -- check -- reached from busbar-core/plane-llm in the workspace default build
-  # feature-covered: busbar-substrate/dispatch -- check -- reached from the plane-mcp forward in the workspace default build
-  # feature-covered: busbar-substrate/relay -- check -- reached from the plane-a2a forward in the workspace default build
-  # feature-covered: busbar-substrate/runtime -- check -- reached from the plane-voice forward in the workspace default build
-  # feature-covered: busbar-substrate-values/dispatch -- check -- reached from busbar-substrate/dispatch in the default build
-  # feature-covered: busbar-substrate-values/relay -- check -- reached from busbar-substrate/relay in the default build
-  # feature-covered: busbar-substrate-values/runtime -- check -- reached from busbar-substrate/runtime in the default build
+  # feature-covered: busbar-kernel/plane-voice -- check -- reached from the root binary's default plane-voice in the workspace build
+  # feature-covered: busbar-kernel/runtime -- check -- reached from the plane-voice forward in the workspace default build
+  # feature-covered: busbar-substrate-values/dispatch -- check -- reached from busbar-kernel/dispatch in the default build
+  # feature-covered: busbar-substrate-values/relay -- check -- reached from busbar-kernel/relay in the default build
+  # feature-covered: busbar-substrate-values/runtime -- check -- reached from busbar-kernel/runtime in the default build
   # feature-covered: busbar-kernel-identity/sha256 -- check -- reached from the default auth-admin-tokens closure in the workspace build
-  # feature-covered: busbar-core/test-support -- check -- unified in by a dev-dependency under cargo clippy --workspace --all-targets
-  # feature-covered: busbar-substrate/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-kernel/test-support -- check -- unified in by a dev-dependency under cargo clippy --workspace --all-targets
   # feature-covered: busbar-substrate-values/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-a2a/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-a2a/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
