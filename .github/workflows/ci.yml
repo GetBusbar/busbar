@@ -234,6 +234,14 @@ jobs:
         run: cargo xtask gate structure-lint --selftest
       - name: Structure lint
         run: cargo xtask gate structure-lint
+      # NO-TRACKED-IGNORED: a file that is both tracked AND matched by a .gitignore rule of this tree
+      # is a landmine — it ships from a clean checkout but vanishes from a fresh `git add`, so the two
+      # halves of the team see different trees. Cheap, structural, and belongs on every push. Self-test
+      # FIRST, so the matcher is proven able to catch a planted tracked-and-ignored path.
+      - name: No-tracked-ignored self-test
+        run: cargo xtask gate no-tracked-ignored --selftest
+      - name: No-tracked-ignored gate (no tracked path matches a .gitignore rule of this tree)
+        run: cargo xtask gate no-tracked-ignored
       # RELEASE-SCRIPT lint — durable guard against the 1.5.2 gate's 2h31m hang: a backgrounded
       # server (serve_forever) whose stdout was NOT redirected, captured via `$(...)`, held the
       # substitution's pipe open until the job timeout. Self-test runs FIRST (never trust the lint's
@@ -466,6 +474,14 @@ jobs:
         run: cargo xtask gate money-invariants --selftest
       - name: Money-invariants gate (BLOCKING — no plugin-keyed money, no stored price, one seal site)
         run: cargo xtask gate money-invariants
+      # SEAL-WITNESS (#77): the money facts-line seal has exactly ONE root minter, spelled only inside
+      # the kernel crate — a second minter anywhere else is a second book. This is the money-model
+      # sibling of money-invariants above; it runs on every push for the same reason. Self-test FIRST,
+      # so the seal scanner is proven able to catch a planted second minter before its verdict is trusted.
+      - name: Seal-witness self-test (the seal scanner cannot be lied to)
+        run: cargo xtask gate seal-witness --selftest
+      - name: Seal-witness gate (BLOCKING — the money facts-line has one root minter, kernel-only)
+        run: cargo xtask gate seal-witness
       # NO-FLOAT-MONEY (#77.8): the 1.6.0 money model is unitless integer arithmetic — a float on the
       # money runtime path sums differently by order and rounds in ways nobody configured, which turns
       # "the bill equals the sum of the lines" from a proof into a hope. This scans the one-book money
