@@ -66,6 +66,14 @@ pub fn table(a: &Addresses) -> Vec<CensusRow> {
     let mut tree_and_substrate = tree.clone();
     tree_and_substrate.push(format!("{}/", a.substrate));
 
+    // The ordered validator's refusal WORDS were unified into the audit vocabulary, and that
+    // vocabulary rode the civil/duration/audit-vocab value-leaves extraction DOWN into the neutral
+    // `busbar-contract` crate (W4.b P0). `audit::vocab` is still the one home and the kernel
+    // RE-EXPORTS from it — so the census that proves "one spelling" has to look where the spelling
+    // now lives. This is the same scope as `tree_and_substrate` plus that one neutral home.
+    let mut refusal_scope = tree_and_substrate.clone();
+    refusal_scope.push("crates/busbar-contract/src/".to_string());
+
     vec![
         // ── The five shared MCP wire words. One definition each; the outbound client imports them.
         //    A second occurrence is a second copy that can drift silently in the one direction no
@@ -95,22 +103,22 @@ pub fn table(a: &Addresses) -> Vec<CensusRow> {
         //    argued for in almost identical words on both sides. A chain that answers an operator
         //    differently depending on which module a plane imported from is the defect the audit
         //    unification existed to end. `audit::vocab` is the home and the validator RE-EXPORTS.
-        r("refusal-word-identity-not-live", "REFUSAL-WORD-RESPELT", r#""identity_not_live""#, 1, tree_and_substrate.clone(),
+        r("refusal-word-identity-not-live", "REFUSAL-WORD-RESPELT", r#""identity_not_live""#, 1, refusal_scope.clone(),
           "the ordered validator's identity refusal has one spelling, defined once and re-exported; a second definition is two homes for one vocabulary"),
-        r("refusal-word-not-serving", "REFUSAL-WORD-RESPELT", r#""not_serving""#, 1, tree_and_substrate.clone(),
+        r("refusal-word-not-serving", "REFUSAL-WORD-RESPELT", r#""not_serving""#, 1, refusal_scope.clone(),
           "the registration-level refusal has one spelling; a plane may render it more finely under its own words, but it may not respell this one"),
-        r("refusal-word-artifact-drifted", "REFUSAL-WORD-RESPELT", r#""artifact_drifted""#, 1, tree_and_substrate.clone(),
+        r("refusal-word-artifact-drifted", "REFUSAL-WORD-RESPELT", r#""artifact_drifted""#, 1, refusal_scope.clone(),
           "the rug-pull refusal has one spelling: it is the one word that indicts the UPSTREAM rather than the config or the grant, and a second copy is two answers to who is at fault"),
-        r("refusal-word-generation-moved", "REFUSAL-WORD-RESPELT", r#""generation_moved""#, 1, tree_and_substrate.clone(),
+        r("refusal-word-generation-moved", "REFUSAL-WORD-RESPELT", r#""generation_moved""#, 1, refusal_scope.clone(),
           "the lifecycle-race refusal has one spelling across both planes; two copies is the in-flight-outliving-an-approval story told two ways"),
 
         // ── THE FAILOVER SEAM'S REFUSAL WORDS: the seam is CORE, so its words are core's, and a
         //    plane that renders a refusal must render THIS word rather than invent a near-synonym.
-        r("refusal-word-no-upstream-left", "REFUSAL-WORD-RESPELT", r#""no_upstream_left""#, 1, tree_and_substrate.clone(),
+        r("refusal-word-no-upstream-left", "REFUSAL-WORD-RESPELT", r#""no_upstream_left""#, 1, refusal_scope.clone(),
           "the nowhere-left-to-send refusal has one spelling across every plane that fails over; a second copy is one outage recorded under two words"),
-        r("refusal-word-not-interchangeable", "REFUSAL-WORD-RESPELT", r#""not_interchangeable""#, 1, tree_and_substrate.clone(),
+        r("refusal-word-not-interchangeable", "REFUSAL-WORD-RESPELT", r#""not_interchangeable""#, 1, refusal_scope.clone(),
           "the pins-disagree refusal has one spelling: it is the one word that indicts the CONFIGURATION rather than the caller or the upstream"),
-        r("refusal-word-not-repeatable", "REFUSAL-WORD-RESPELT", r#""not_repeatable""#, 1, tree_and_substrate.clone(),
+        r("refusal-word-not-repeatable", "REFUSAL-WORD-RESPELT", r#""not_repeatable""#, 1, refusal_scope.clone(),
           "the safety rule's refusal has one spelling; it is the one outcome an operator may deliberately want to change, and a second copy is a change they would make in one place and not the other"),
 
         r("the-one-ordered-request-validator", "VALIDATOR-RESPELT", r"fn[[:space:]]+validate_request[^a-zA-Z0-9_]", 1, tree_and_substrate.clone(),
