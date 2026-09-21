@@ -288,7 +288,7 @@ root-admin = ["dep:tower"]
 # release build, which is why the surface ceilings do not count it.
 test-harness = []
 auth-admin-tokens = ["busbar-kernel/auth-admin-tokens", "busbar-admin/auth-admin-tokens"]
-hooks-ranking = ["busbar-kernel/hooks-ranking"]
+hooks-ranking = ["busbar-kernel/hooks-ranking", "busbar-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
