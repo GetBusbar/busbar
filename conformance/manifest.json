@@ -1,13 +1,13 @@
 {
   "_generated": "by `cargo xtask gate conformance-sync --write`; DO NOT EDIT — the drift gate is fatal",
-  "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+  "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
   "generated_at": "2026-09-19T14:05:00Z",
   "release": "1.6.0",
   "schema": "busbar.conformance.manifest/1",
   "suites": [
     {
       "claim": "Conformant — passes official a2aproject/a2a-tck + a2a-harness + a2a-go reference peer",
-      "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
       "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1201",
       "plan": "official a2aproject/a2a-tck + a2a-harness + a2a-go reference peer",
       "public": true,
@@ -50,7 +50,7 @@
     },
     {
       "claim": "Spec-conformant — Anthropic Messages API",
-      "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
       "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1202",
       "plan": "spec battery vs pinned vendor OpenAPI",
       "public": true,
@@ -63,7 +63,7 @@
     },
     {
       "claim": "Spec-conformant — Amazon Bedrock Runtime API",
-      "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
       "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1203",
       "plan": "spec battery vs pinned botocore models",
       "public": true,
@@ -76,7 +76,7 @@
     },
     {
       "claim": "Spec-conformant — Cohere Chat API",
-      "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
       "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1204",
       "plan": "spec battery vs pinned vendor OpenAPI",
       "public": true,
@@ -89,7 +89,7 @@
     },
     {
       "claim": "Spec-conformant — Google Gemini API",
-      "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
       "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1205",
       "plan": "spec battery vs pinned discovery document",
       "public": true,
@@ -102,7 +102,7 @@
     },
     {
       "claim": "Spec-conformant — OpenAI Chat Completions API",
-      "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
       "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1206",
       "plan": "spec battery vs pinned vendor OpenAPI",
       "public": true,
@@ -115,7 +115,7 @@
     },
     {
       "claim": "Spec-conformant — OpenAI Responses API",
-      "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
       "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1207",
       "plan": "spec battery vs pinned vendor OpenAPI",
       "public": true,
@@ -128,7 +128,7 @@
     },
     {
       "claim": "Conformant — passes official modelcontextprotocol TCK + in-house battery",
-      "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
       "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1208",
       "plan": "official modelcontextprotocol TCK + in-house battery",
       "public": true,
@@ -171,7 +171,7 @@
     },
     {
       "claim": "Spec-conformant — Google Gemini Live API",
-      "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
       "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1209",
       "plan": "spec battery + replay",
       "public": true,
@@ -184,7 +184,7 @@
     },
     {
       "claim": "Spec-conformant — OpenAI Realtime API",
-      "commit": "dc7bb3233bf9cf73f02b7d0afd59cbce05d022b6",
+      "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
       "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1210",
       "plan": "spec battery + replay",
       "public": true,
