@@ -250,6 +250,11 @@ spell a token constructor. Every such spelling elsewhere is a forged token."""
 patterns = ["Pass::mint(", "Grant::<WriteMoney>::mint(", "Grant::<Consumption>::mint(", "Grant::<Exit>::mint("]
 allowed_root = "crates/busbar-kernel/src"
 max_sites = 0
+# The RULE-SPEC DATA for the hold-discipline scan below, not surface this rule scans: its own header
+# says "This file is DATA, not surface... the specification", so its literal token-constructor
+# strings (written down so the scan's own test keeps this list from going stale) self-match the
+# scanner. Excluded rather than counted as a forged mint.
+exclude_files = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 # Two more of the same shape, scoped to busbar-kernel (not busbar-substrate/src/teller, which is
 # the pre-busbar-kernel path the `patterns` list above still ratchets against): `KernelSeal::
 # acquire_for_kernel(` mints the one seal every token constructor needs, and the unit crates'
@@ -750,24 +755,33 @@ known_sites = [
 # confining anything. `confined_to_paths` is the same scope resolved against this tree —
 # crate-relative paths, matched as prefixes, so only the files actually named are excused. An empty
 # `confined_to` (and an empty or absent `confined_to_paths`) means banned everywhere.
+# Every symbol below also excuses `crates/busbar-contract/src/caps/fixtures/lint_rules.rs`: that
+# file is the RULE-SPEC DATA this whole scan reads (its own header says "This file is DATA, not
+# surface... the specification"), so its literal escape-symbol strings self-match the scanner. Not a
+# reviewed exception to the RULE (there is no runtime hold there to escape) — the file is data ABOUT
+# the rule, not code the rule is checking.
 [rules.hold-escapes.symbols.forget]
 symbol = "mem::forget"
 confined_to = ""
+confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "a forgotten hold is a unit that was admitted and never settled"
 
 [rules.hold-escapes.symbols.manually-drop]
 symbol = "ManuallyDrop"
 confined_to = ""
+confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "the same as forgetting, spelled differently"
 
 [rules.hold-escapes.symbols.box-leak]
 symbol = "Box::leak"
 confined_to = ""
+confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "a leaked hold never reaches the exit path"
 
 [rules.hold-escapes.symbols.process-abort]
 symbol = "process::abort"
 confined_to = ""
+confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "aborting skips every exit path at once; the node drains instead"
 
 [rules.hold-escapes.symbols.assert-unwind-safe]
@@ -777,12 +791,13 @@ confined_to = "kernel/src/teller"
 # module that rules 12 and 13 above already treat as where the loop is entered. The third site is
 # busbar-timing's atexit diagnostic dump: a debug-only (`feature = "timing"`) profiling crate that
 # holds no unit, so its catch_unwind cannot smuggle a hold across — a distinct, provably-safe use.
-confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-substrate/src/teller", "crates/busbar-timing/src/lib.rs"]
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-substrate/src/teller", "crates/busbar-timing/src/lib.rs", "crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place (plus busbar-timing's holdless atexit dump)"
 
 [rules.hold-escapes.symbols.join-abort]
 symbol = "JoinHandle::abort"
 confined_to = ""
+confined_to_paths = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "an aborted task loses its unit's end; the sweep is the second exit, not abort"
 
 # ── 25. unit-no-wall-clock ───────────────────────────────────────────────────────────────────────

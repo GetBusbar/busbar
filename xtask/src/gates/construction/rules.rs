@@ -781,6 +781,18 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         .map(|k| need_str(c, k, "token-sealed").map(|s| s.replace('\\', "")))
         .collect::<Result<_, _>>()?;
 
+    // Files that are the SPECIFICATION for this very scan rather than surface it scans (e.g. the
+    // lint fixture whose doc comments and string literals self-match the patterns it defines).
+    // Exact-path or directory-prefix, matching `confined_to_paths`'s semantics elsewhere in this
+    // module.
+    let exclude_files: Vec<String> = c.list_of("exclude_files");
+    let excluded = |rel: &str| -> bool {
+        exclude_files.iter().any(|p| {
+            let p = p.trim_end_matches('/');
+            !p.is_empty() && (rel == p || rel.starts_with(&format!("{p}/")))
+        })
+    };
+
     let mut offenders = Vec::new();
     for pat in c.list_of("patterns") {
         if delegated.contains(&pat) {
@@ -788,7 +800,7 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         }
         let rx_pat = Regex::new(&word(&pat))?;
         for (rel, l) in tree.grep(&rx_pat, true, None) {
-            if rel.starts_with(root.as_str()) {
+            if rel.starts_with(root.as_str()) || excluded(rel) {
                 continue;
             }
             offenders.push(format!("`{pat}` at {rel}:{}", l.no));
