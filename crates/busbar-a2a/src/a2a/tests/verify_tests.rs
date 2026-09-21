@@ -569,7 +569,7 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
                 )
             })
     };
-    let reverify_src = read("../busbar-core/src/trust/reverify.rs");
+    let reverify_src = read("../busbar-kernel/src/trust/reverify.rs");
     let config_src = read("src/a2a/config.rs");
     let verify_src = read("src/a2a/verify.rs");
     // THE OTHER PLANE'S BOUND, held to the identical rule, PLUS THE SHARED GATE BOTH PLANES NOW RUN.
@@ -584,7 +584,7 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     // THEM rather than dropping the path — the sibling-crate spelling reaches the same two files.
     let mcp_config_src = read("../busbar-mcp/src/mcp/config.rs");
     let mcp_fetch_src = read("../busbar-mcp/src/mcp/connect.rs");
-    let shared_verify_src = read("../busbar-core/src/trust/verify.rs");
+    let shared_verify_src = read("../busbar-kernel/src/trust/verify.rs");
 
     let code = |s: &str| -> String {
         s.lines()

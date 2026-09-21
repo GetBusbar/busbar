@@ -14,10 +14,14 @@
 use crate::ctx::SourceFile;
 
 /// The root the witness measures. A neutral crate, so the shell's `$CORE`.
-pub const CORE_ROOT: &str = "crates/busbar-core/src";
+///
+/// `busbar-core` was absorbed into `busbar-kernel` (W4.a, commit 673ecdaaa) — the `ir/` module and
+/// its consumer up-refs both landed under `crates/busbar-kernel/src`, so the witness follows them
+/// there rather than scanning the now-deleted `busbar-core` path as zero files.
+pub const CORE_ROOT: &str = "crates/busbar-kernel/src";
 
 /// The definitions half: everything under here DEFINES the concrete types and relocates as a unit.
-pub const DEFS_PREFIX: &str = "crates/busbar-core/src/ir/";
+pub const DEFS_PREFIX: &str = "crates/busbar-kernel/src/ir/";
 
 /// Concrete LLM-family IR types that MUST leave core. Whole-word matched.
 ///

@@ -207,7 +207,8 @@
       ],
       "strategy": {
         "fail-fast": false,
-        "matrix": "${{ fromJSON(needs.fast.outputs.matrix) }}"
+        "matrix": "${{ fromJSON(needs.fast.outputs.matrix) }}",
+        "max-parallel": 8
       },
       "timeout-minutes": 180
     },

@@ -32,10 +32,13 @@ jobs:
     permissions:
       # Read the code under scan.
       contents: read
-      # rustsec/audit-check annotates the run with a check; on the weekly schedule it also
-      # files an advisory issue. Grant exactly those two writes and nothing more.
+      # rustsec/audit-check annotates the run with a check. On a `schedule` trigger it would
+      # also self-file a GitHub issue per new advisory if granted `issues: write` — exactly the
+      # self-filed-issue anti-pattern `no-self-filed-issues` (xtask gate) exists to refuse, so
+      # that scope is withheld on purpose. Losing it does not affect the check-annotation path
+      # above, which is the only one `push`/`pull_request`/`workflow_run` triggers ever reach;
+      # on the weekly schedule, advisory issue creation now no-ops instead of self-filing.
       checks: write
-      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

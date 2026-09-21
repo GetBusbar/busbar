@@ -64,8 +64,13 @@ pub fn plane_src_roots() -> Vec<String> {
 /// walk refuses a missing root rather than narrowing itself.
 pub fn neutral_src_roots() -> Vec<String> {
     vec![
-        "crates/busbar-core/src".to_string(),
-        "crates/busbar-substrate/src".to_string(),
+        // `busbar-core` was absorbed into `busbar-kernel` (W4.a, 673ecdaaa); `busbar-substrate`'s
+        // engine followed it (W4.b P2, 5fa320208) while its value leaves live in
+        // `busbar-substrate-values` (already listed below). Both former roots are gone from disk —
+        // scanning them now would read zero files and pass every ban silently.
+        "crates/busbar-kernel/src".to_string(),
+        "crates/busbar-core-config/src".to_string(),
+        "crates/busbar-core-hooks/src".to_string(),
         "crates/busbar-substrate-values/src".to_string(),
         "crates/api/src".to_string(),
     ]
