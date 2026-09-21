@@ -8,7 +8,7 @@ use crate::test_support::{LaneSpec, TestApp};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use busbar_contract::caps::KernelSeal;
-use busbar_core::proxy::reqlog::{RequestRecord, REQUESTS};
+use busbar_kernel::proxy::reqlog::{RequestRecord, REQUESTS};
 use busbar_store_memory::MemoryStore;
 use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
@@ -517,7 +517,7 @@ async fn observable(resp: Response) -> (u16, Vec<(String, String)>, String) {
 
 /// Every refusal class the plane can turn a caller away with before it has an upstream answer,
 /// as the three values a refusal IS plus the headers it carries in its own right. The
-/// status/kind pairs are the live ones: the group-limit arms in `busbar_core::ingress` for the
+/// status/kind pairs are the live ones: the group-limit arms in `busbar_kernel::ingress` for the
 /// quota and rate-limit rows, `VerifyRefusal` for the scope and unpriced rows, `DecodeRefusal` /
 /// the route step for the not-found rows, and the arrival guards for the oversize row.
 #[allow(clippy::type_complexity)]

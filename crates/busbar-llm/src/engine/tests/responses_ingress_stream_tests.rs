@@ -276,11 +276,11 @@ fn parse_frames(body: &str) -> Vec<(String, String)> {
 /// metering row conditional on billing being on (a `rate_card:` present); these tests assert a
 /// metering row is written, so they model a billed plane. The rates are nonzero but no admission
 /// fee is charged on this path, so token/spend assertions are unaffected.
-fn billed_m0() -> busbar_core::cost::CostModel {
-    busbar_core::cost::CostModel::resolve_parts(
+fn billed_m0() -> busbar_kernel::cost::CostModel {
+    busbar_kernel::cost::CostModel::resolve_parts(
         Some(&std::collections::BTreeMap::from([(
             "m0".to_string(),
-            busbar_core::config::RateEntryCfg {
+            busbar_kernel::config::RateEntryCfg {
                 input_utok: 2.0,
                 output_utok: 6.0,
                 cache_read_utok: 0.0,

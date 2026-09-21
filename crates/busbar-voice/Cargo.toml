@@ -21,7 +21,7 @@ name = "busbar-voice"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+# `rust-version` rationale: see busbar-kernel/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
 description = "The duplex / live-voice plane for busbar (Plane 4): the OpenAI Realtime and Gemini Live dialects and the four-layer session IR, as one removable plugin."
 license = "Apache-2.0"

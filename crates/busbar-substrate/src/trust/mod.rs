@@ -476,7 +476,7 @@ pub mod validate;
 pub mod verify;
 
 /// The verify-on-call gate type, surfaced at the `trust` root so `busbar_substrate::trust::VerifyGate`
-/// (and, through core's glob re-export, `busbar_core::trust::VerifyGate`) both name it.
+/// (and, through core's glob re-export, `busbar_kernel::trust::VerifyGate`) both name it.
 pub use verify::VerifyGate;
 
 #[cfg(test)]

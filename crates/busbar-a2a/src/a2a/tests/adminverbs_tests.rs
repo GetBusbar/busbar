@@ -32,7 +32,7 @@ const STD: base64::engine::general_purpose::GeneralPurpose =
 /// Mount the admin JSON-REST surface (`/api/v1/admin/*`) for THIS crate's OWN test binary.
 ///
 /// The surface is served by busbar-admin, which busbar-core nests through the runtime fn-pointer seam
-/// `busbar_core::admin::seam` — a no-op until `busbar_admin::install()` registers it. Production does
+/// `busbar_kernel::admin::seam` — a no-op until `busbar_admin::install()` registers it. Production does
 /// that once at the composition root; this plane crate's `test-support` engine path never does, so
 /// without this call the router carries no admin surface and every trust verb here is a router-level
 /// `404`.

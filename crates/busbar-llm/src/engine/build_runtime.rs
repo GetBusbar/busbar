@@ -34,7 +34,7 @@ use crate::engine::{
 /// provider's catalog definition (`providers.yaml`) with its operator deployment (`config.yaml`'s
 /// `providers:` entry) into the resolved [`ProviderCfg`] a lane is built from.
 ///
-/// Byte-identical to the pre-seam inline merge in `busbar_core::config::resolve`: a deployment
+/// Byte-identical to the pre-seam inline merge in `busbar_kernel::config::resolve`: a deployment
 /// override REPLACES the catalog default field-by-field (`protocol`/`base_url`/`health`/`path`/
 /// `path_base`/`token_url`/`scope`/`subject`/`auth`/`allow_metadata_hosts`), `error_map` UNIONS the
 /// two (deployment entries win on key collision), and `api_key` carries the deployment's secret

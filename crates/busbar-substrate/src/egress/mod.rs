@@ -16,8 +16,8 @@
 
 // The neutral INPUT to the host-mediated fetch adapter: the `HopSpec` pure-data hop description a
 // plane builds without naming a core type. The adapter DRIVERS that consume it stay in
-// `busbar_core::egress::seam` (they reach the core-owned `plane_host` FFI egress vtable); core
-// re-exports `HopSpec` from there so `busbar_core::egress::seam::HopSpec` still resolves.
+// `busbar_kernel::egress::seam` (they reach the core-owned `plane_host` FFI egress vtable); core
+// re-exports `HopSpec` from there so `busbar_kernel::egress::seam::HopSpec` still resolves.
 pub mod seam;
 
 // THE EGRESS ENGINE — the one owned outbound HTTP stack (the owned dial-coalescing pool over

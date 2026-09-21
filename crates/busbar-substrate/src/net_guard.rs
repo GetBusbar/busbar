@@ -855,10 +855,10 @@ pub fn refuse_oversized_body(
     Ok(())
 }
 
-// ── SSRF host guards relocated from `busbar_core::config_validate` (Batch A). These pure-std
+// ── SSRF host guards relocated from `busbar_kernel::config_validate` (Batch A). These pure-std
 //    string/address predicates are the config-side siblings of the IP predicates above; they were
 //    moved DOWN into this neutral leaf so `busbar-mcp` reaches them without depending on
-//    `busbar-core`. `busbar_core::config_validate` re-exports them so every in-core caller is
+//    `busbar-core`. `busbar_kernel::config_validate` re-exports them so every in-core caller is
 //    unchanged. Behavior is byte-identical to the pre-move definitions.
 
 pub fn scheme_is(url: &str, scheme: &str) -> bool {

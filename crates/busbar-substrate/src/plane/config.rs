@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE NEUTRAL CONFIG-SEAM CONTRACTS a plane's config section is read THROUGH — relocated to the
-//! neutral substrate so a plane crate names them without reaching into `busbar_core::plane::config`.
+//! neutral substrate so a plane crate names them without reaching into `busbar_kernel::plane::config`.
 //!
 //! These are the pure CONTRACTS: [`PlaneCfg`] (a plane section asked for its own secrets / registry
 //! queries), [`PlaneEndpointCfg`] (its endpoint twin), [`ContainerGateInputs`] (a section's hook-gate
@@ -16,7 +16,7 @@
 //! `indexmap` + `busbar_api::UpstreamCreds` once its ONE registry coupling (the `PlaneDecl` lookup
 //! that turned a plane key into the section/noun WORDS) is lifted out into a param pair the caller
 //! supplies, so an extracted plane reads its own section without naming core. Core keeps only a thin
-//! `split_section` WRAPPER that supplies those words from `busbar_core::plane::registry` for its own
+//! `split_section` WRAPPER that supplies those words from `busbar_kernel::plane::registry` for its own
 //! callers, and `config_sections`, which reaches that registry. So this module is now the whole config
 //! reader a plane needs; the registry-coupled `config_sections` singleton stays core.
 
@@ -24,7 +24,7 @@
 /// references without naming that plane's credential-bearing types.
 ///
 /// Implemented by the type a plane's top-level config section deserializes into (`tools:` →
-/// `busbar_mcp`'s `ToolsCfg`, `agents:` → `busbar_core::a2a::config::AgentsCfg`). The composition
+/// `busbar_mcp`'s `ToolsCfg`, `agents:` → `busbar_kernel::a2a::config::AgentsCfg`). The composition
 /// walk in `config_validate::secret_refs` gathers every plane's references by LOOPING this trait over
 /// the configured plane sections, rather than destructuring each plane's own config types itself: the
 /// section that owns a credential is the section that knows it is one.
@@ -176,13 +176,13 @@ impl From<Refusal<'_>> for String {
 /// `hooks:` map, judged against `sections`?
 ///
 /// `sections` is a PARAMETER rather than a literal so the set of sections this rule knows about is
-/// the set the config grammar declares — see `busbar_core::plane::config::config_sections`.
+/// the set the config grammar declares — see `busbar_kernel::plane::config::config_sections`.
 /// Production passes that; a test passes a plane busbar does not have and gets the same judgement
 /// with nothing written for it.
 ///
 /// No I/O, no globals, no config types: a string and a list of section names in, a verdict out.
 ///
-/// `pub` (rather than the pre-move `pub(crate)`) so `busbar_core`'s `plane::config` tests can reach
+/// `pub` (rather than the pre-move `pub(crate)`) so `busbar_kernel`'s `plane::config` tests can reach
 /// it through the core re-export; its only production caller is [`refuse_cross_plane_reference`].
 pub fn judge_hook_ref(hook: &str, sections: &[&'static str]) -> Result<(), HookRefError> {
     let hook = hook.trim();
@@ -224,7 +224,7 @@ pub fn refuse_cross_plane_reference(
 }
 
 /// THE SECTION-LIST PROVIDER SEAM — the neutral read side of core's registry-coupled
-/// [`config_sections`] singleton (which stays in `busbar_core::plane::config`, since it folds the
+/// [`config_sections`] singleton (which stays in `busbar_kernel::plane::config`, since it folds the
 /// process plane registry this crate must not name).
 ///
 /// A plane crate that refuses a cross-plane hook reference at parse time needs the WHOLE section
@@ -237,7 +237,7 @@ pub fn refuse_cross_plane_reference(
 static PLANE_SECTIONS: std::sync::OnceLock<fn() -> Vec<&'static str>> = std::sync::OnceLock::new();
 
 /// BIND the process section-list provider. Idempotent (first bind wins); the composition root calls
-/// this once at startup with `busbar_core::plane::config::config_sections`.
+/// this once at startup with `busbar_kernel::plane::config::config_sections`.
 pub fn install_plane_sections(provider: fn() -> Vec<&'static str>) {
     let _ = PLANE_SECTIONS.set(provider);
 }
@@ -266,7 +266,7 @@ pub const NAMED_MAP_SECTIONS: [&str; 4] = ["identity-providers", "export", "tool
 
 /// TEST-SUPPORT SEAM — the section-list PROVIDER a plane's `testkit` binds through
 /// [`install_plane_sections`], so an extracted plane crate reaches the NEUTRAL ABI rather than back
-/// into `busbar_core::plane::config::config_sections`. Byte-for-byte the same fold that singleton runs:
+/// into `busbar_kernel::plane::config::config_sections`. Byte-for-byte the same fold that singleton runs:
 /// every registered plane's own `config_section` (from [`crate::plane::registry::test_registered_planes`],
 /// in registration order) followed by the frozen 1.5.3 named-definition-map sections, deduped in that
 /// order. `tools:`/`agents:` appear in BOTH halves — a plane declares them and they are also 1.5.3
@@ -297,7 +297,7 @@ pub fn default_plane_sections() -> Vec<&'static str> {
 /// per plane because it is a rule of the CONFIG GRAMMAR, not of any plane — and because two copies of
 /// it is exactly how the section list and an entry list come to dedupe differently on one plane and
 /// not the other. Core re-exports it at `crate::hooks::attach_list`; the extracted plane crates reach
-/// it here without naming `busbar_core::hooks`.
+/// it here without naming `busbar_kernel::hooks`.
 pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(section.len() + own.len());
     for h in section.iter().chain(own) {
@@ -312,7 +312,7 @@ pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
 //
 // The reserved-key refusals + the two typed lifts (`hooks:` / `upstream_credentials:`) a plane's
 // top-level section is read into, plus the reserved-key literal and the operator refusal sentence.
-// Relocated here from `busbar_core::plane::config` so an extracted plane crate reads its own section
+// Relocated here from `busbar_kernel::plane::config` so an extracted plane crate reads its own section
 // without naming core: the ONE registry coupling — the `PlaneDecl` lookup that turned a plane key
 // into the section/noun WORDS — is lifted OUT into a param pair the caller supplies (a plane passes
 // its own `PLANE_DECL.config_section` / `subject_noun` consts), so this half names only `serde` +

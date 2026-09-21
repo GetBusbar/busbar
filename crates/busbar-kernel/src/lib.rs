@@ -1,78 +1,132 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+//
+// busbar-core — the busbar engine LIBRARY. Everything a request touches lives here: the protocol
+// registry and dialects, the generic plugin/plane host and its FFI seam, the admin plane and its
+// transaction choke point, the config load/validate pipeline, the proxy engine, auth, governance,
+// trust, audit, the durability sink, hooks, ingress, the IR, TLS termination and the router
+// builders. The `busbar` BINARY is a thin composition root over this crate: argument parsing,
+// config location, process lifecycle and (from step 4 of 1.6.0) protocol registration. See
+// docs/code-layout.md and the split plan.
+//
+// VISIBILITY DOCTRINE: `pub` here is the lib/bin seam, not an API promise (`publish = false`; the
+// manifest header says the same). Security-relevant internals — the audit chain's sink, the token
+// signer, the durable-state statics, the trust sweeper — stay `pub(crate)` behind one boot entry
+// point each; see `boot.rs`.
 
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
+// busbar contains ZERO `unsafe` code OUTSIDE the audited `plane_host` FFI seam; enforce that as a
+// compile-time guarantee so any future PR that introduces an `unsafe` block elsewhere fails to build
+// rather than slipping in unreviewed. `deny` (not `forbid`) so the ONE module that MUST speak the
+// `#[repr(C)]` plane ABI — recovering `&HostState` from the opaque `HostCtx` a plane hands back across
+// the seam — can opt in with a narrow, documented `#[allow(unsafe_code)]`; every other module still
+// hard-fails on `unsafe`. See `plane_host`.
+#![deny(unsafe_code)]
 
-//! # busbar-kernel — the Teller, and exactly what the loop needs
-//!
-//! Bytes arrive on a transport; a plane says what they mean; this crate runs the same steps on
-//! every unit of work and posts the result. It knows no protocol. It has no idea what any plane
-//! is for. What it owns is the ORDER, the DOOR and the EXIT: the ten steps happen in one place, a
-//! unit's reservation is opened in one place, and it is taken back and settled in one place.
-//!
-//! ## One file per subject
-//!
-//! - [`teller`] — the loop. Ten steps, the two audit doors, the settlement table as a pure
-//!   function, and the single exit path that takes the hold out of its cell.
-//! - [`pump`] — frames in, frames out: which frame belongs to which unit, one open unit per
-//!   direction, a bounded number of one-shots, the emission clock.
-//! - [`inflight`] — the node-global sharded table of live units (hold cell, accrual count,
-//!   cancellation, step state) and the session table beside it.
-//! - [`reply`] — which answer wakes which unit waiting on a reply leg, matched on the whole
-//!   correlation the leg's key names and the unit's draft minted.
-//! - [`recovery`] — bringing a hold back from a journal record after a crash and settling it.
-//! - [`mod@slice`] — the node's slices of a bucket window, the concurrency leases, and the epoch fence.
-//! - [`registry`] — the plugin registry, its generations, and whether two claims can both match.
-//! - [`grammar`] — the closed grammars: selectors, locations, and the JSON span scanner.
-//! - [`tick`] — the session tick, the node tick and its sweep, drain, and the fleet rule.
-//! - [`arena`] — the per-unit 4 KiB scratch space and the per-connection credential slab.
-//! - [`scratch`] — the grow-on-demand per-call scratch pad (DECISIONS #41): starts at a measured
-//!   4 KiB, grows a chunk for a big request instead of refusing, shrinks back on reset, and has an
-//!   abuse-only backstop that refuses one runaway request without ever panicking.
-//!
-//! ## What this crate names, and what it owns
-//!
-//! It depends on the capability types and on the contract crate, and on nothing else in the
-//! workspace. Every type that belongs to the plugin-visible contract — the frame, the stream id,
-//! the direction, the selector, the location, the plugin kinds, the claim, the cap dimension, the
-//! bucket, the status and finish classes — is the contract's own and is named here rather than
-//! restated. Each of those values arrives from outside the kernel or leaves for outside it, so a
-//! kernel-local copy would be the loop deciding about something other than what it was handed.
-//!
-//! What is genuinely the kernel's own stays here and says so: how specific one selector is against
-//! another, which axis the boot-time overlap check groups a form onto, the pump's reduction of the
-//! plane's richer answer, and the record recovery reads a hold back from.
-//!
-//! Every door onto the outside world — the units behind their sealed traits, the store behind the
-//! slice trait, the clock — is a trait this crate declares and someone else implements. That is
-//! what makes the loop testable with no transport, no store and no runtime.
-//!
-//! ## Where the no-allocation rule is actually met
-//!
-//! The design's rule is that nothing on the Teller path allocates outside the per-unit arena.
-//! Honestly, as this crate stands:
-//!
-//! - **Met.** [`arena::Arena`] is a fixed 4 KiB buffer with a bump cursor and no heap use at all.
-//!   The JSON span scanner in [`grammar`] allocates nothing, ever — it returns byte spans into the
-//!   caller's buffer and decodes escapes through a stack buffer. The hold cell, the accrual
-//!   counter, the cancellation token and the step state are atomics and a mutex. The settlement
-//!   table, the fee rule, the sweep verdict and the fleet rule are pure functions over `Copy` data.
-//!   The emission clock and the one-shot counter are integers.
-//! - **Allocates once, off the path.** The in-flight and session shards, the credential slab and
-//!   the registry allocate when they are built or when a connection is accepted, never per frame.
-//! - **Still allocates, and is marked.** `busbar_contract::caps::Usage` takes a `Vec` of lines, so the exit path
-//!   builds one small vector per unit; the usage report is the contract's bounded `usage_lines ≤ 16`
-//!   type once that lands. Every stand-in that owns a `String` (selector literals, lane and class
-//!   names) allocates when config is read at boot, which is not the Teller path, but the names
-//!   themselves become interned ids in the contract crate.
-//!
-//! ## Plain words for the money rules
-//!
-//! Where evidence is missing or two sources disagree, the ledger posts the LOWER amount, marks the
-//! posting, and puts it on a report a person reads. That is the whole of [`teller::settle_amount`],
-//! and it is a pure function precisely so it can be read as a table and tested as one.
+// W4.a (#19/#37): this crate's source was absorbed INTO busbar-kernel. Every internal
+// `busbar_kernel::` spelling is rewritten to `busbar_kernel::` (the crate's real name now), so no
+// `extern crate self` alias is needed — the former dual-compile of protocol dialects is gone.
 
+// The lib's TEST binary runs on jemalloc for two reasons: (1) the telemetry recovery tests
+// (src/tests/telemetry_tests.rs) measure per-thread jemalloc counters via `tikv_jemalloc_ctl`
+// (the mallctl C API), which is only real when jemalloc actually services allocations; and (2) the
+// SHIPPED binary runs on jemalloc, so measurements match production. Test-only: the library itself
+// declares no allocator (that is the BINARY's property, and only one crate in a link may).
+//
+// The allocator is WRAPPED in `CountingJemalloc`, a zero-overhead-in-production (test-only) shim
+// that DELEGATES every operation to `tikv_jemallocator::Jemalloc` — so jemalloc's own mallctl
+// counters the telemetry tests read stay byte-accurate — while incrementing a PER-THREAD counter on
+// each allocation. That counter is the instrument behind an ALLOCATION-COUNT PERF GATE: a test drives
+// one request through a plugin's real forward path and asserts the heap-allocation count has not
+// regressed past a committed bound, so a stray per-request allocation (the "FIX-9" class — a
+// redundant `Box::new` on the hot path) turns CI red. That gate itself now lives with the extracted
+// engine plane (see the `count`/`reset` doc below); this counting seam stays wired here so it keeps
+// measuring accurately if a gate is ever re-added to core. Per-thread (a `const`-init `Cell`, no
+// heap, no destructor) so concurrent `cargo test` threads never inflate the measured thread's count,
+// and so `.with()` is safe to call from inside `GlobalAlloc` (jemalloc never re-enters this shim).
+#[cfg(all(test, not(target_env = "msvc")))]
+pub(crate) use alloc_gate_instrument::CountingJemalloc;
+
+#[cfg(all(test, not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: CountingJemalloc = CountingJemalloc;
+
+// The counting `GlobalAlloc` impl is the ONLY test-only `unsafe` in core; every method delegates to
+// jemalloc verbatim (see the SAFETY note on the impl). Narrowly allowed here, exactly as the
+// `plane_host` FFI seam is, so the crate-wide `deny(unsafe_code)` still guards everything else.
+#[cfg(all(test, not(target_env = "msvc")))]
+#[allow(unsafe_code)]
+mod alloc_gate_instrument {
+    use std::alloc::{GlobalAlloc, Layout};
+    use tikv_jemallocator::Jemalloc;
+
+    thread_local! {
+        static ALLOC_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A jemalloc wrapper that counts allocations per-thread. See the module header at the
+    /// `#[global_allocator]` site.
+    pub(crate) struct CountingJemalloc;
+
+    impl CountingJemalloc {
+        /// Allocations observed on THIS thread since process start (or last `reset`).
+        // The alloc-count PERF gate that read these moved to the extracted engine plane's own crate
+        // (see `proxy/mod.rs`), so the read APIs are now unexercised in core's own test binary while
+        // the `#[global_allocator]` counting seam stays wired for parity; keep the seam intact rather
+        // than delete it.
+        #[allow(dead_code)]
+        pub(crate) fn count() -> u64 {
+            ALLOC_COUNT.with(|c| c.get())
+        }
+        /// Reset this thread's counter to zero, returning the previous value.
+        #[allow(dead_code)]
+        pub(crate) fn reset() -> u64 {
+            ALLOC_COUNT.with(|c| c.replace(0))
+        }
+        #[inline]
+        fn bump() {
+            ALLOC_COUNT.with(|c| c.set(c.get() + 1));
+        }
+    }
+
+    // SAFETY: every method delegates verbatim to `Jemalloc` (a sound `GlobalAlloc`); the only added
+    // work is a per-thread `Cell` increment, which allocates nothing and cannot re-enter the
+    // allocator. `dealloc` is NOT counted — the gate measures allocation COUNT, and jemalloc's own
+    // deallocation accounting (which the telemetry tests read) is untouched.
+    unsafe impl GlobalAlloc for CountingJemalloc {
+        #[inline]
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            Self::bump();
+            Jemalloc.alloc(layout)
+        }
+        #[inline]
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            Jemalloc.dealloc(ptr, layout)
+        }
+        #[inline]
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            Self::bump();
+            Jemalloc.alloc_zeroed(layout)
+        }
+        #[inline]
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            Self::bump();
+            Jemalloc.realloc(ptr, layout, new_size)
+        }
+    }
+}
+
+// PLUGIN PLANE SOURCES are NO LONGER dual-compiled into this crate's test binary. Each plane's source
+// lives in its own plane crate and is exercised by this crate's own integration tests through the
+// REAL, externally-linked crates (added as `[dev-dependencies]` with `test-support`), and by each
+// plane crate's OWN `--lib` tests under `feature = "test-support"`. Core names NO plane type:
+// `test_support::TestApp` installs type-erased plane runtimes through its neutral
+// `install_plane_runtime` seam, and each plane's `testkit` builds+installs its own. The former
+// per-plane `#[path = "../../busbar-*/src/*/mod.rs"] pub mod` source shims (and the build-script
+// cfgs that gated them) are GONE — the engine no longer reaches into its plugins' source.
+// ── THE KERNEL LOOP (absorbed from the pre-1.6.0 busbar-kernel crate; W4.a #19/#37) ───────────────
+// busbar-kernel now IS the engine: the Teller loop plus everything the busbar-core engine held.
+// These modules are the original busbar-kernel's own — the loop, the pump, the in-flight/session
+// tables, recovery, the registry, the closed grammars, the ticks and the per-unit arena.
 pub mod arena;
 pub mod grammar;
 pub mod inflight;
@@ -81,18 +135,14 @@ pub mod recovery;
 pub mod registry;
 pub mod reply;
 pub mod scratch;
-// The node's slice/lease types moved DOWN to `busbar-contract` (the ONE ABI crate, DECISIONS #38):
-// `SliceStore` is implemented by the integrator's store plugin and consumed by this loop, so it is
-// an ABI type. Re-exported here so every `crate::slice::…` / `busbar_kernel::slice::…` path is
-// byte-unchanged.
-pub use busbar_contract::slice;
 pub mod teller;
 pub mod tick;
 
-/// Milliseconds on the kernel's monotonic clock.
-///
-/// Moved DOWN to `busbar-contract` (the ONE ABI crate, DECISIONS #38) with the slice/lease types
-/// it stamps; re-exported here so every `crate::Millis` / `busbar_kernel::Millis` path is unchanged.
+// The node's slice/lease types live in busbar-contract (the ONE ABI crate, #38); re-exported so
+// `crate::slice` / `busbar_kernel::slice` paths are unchanged.
+pub use busbar_contract::slice;
+
+/// Milliseconds on the kernel's monotonic clock (re-exported from busbar-contract, #38).
 pub use busbar_contract::Millis;
 
 /// Nanoseconds, for the one thing measured that finely: the pacing gap between two emitted frames.
@@ -129,4 +179,220 @@ impl Clock for ManualClock {
     fn now(&self) -> Millis {
         self.now.load(std::sync::atomic::Ordering::Relaxed)
     }
+}
+
+pub mod admin;
+/// THE APPEND-ONLY HASH CHAIN, in core. One append, one digest, one verifier, for every stream of
+/// evidence busbar keeps — a plane supplies the record type and nothing else. `audit_ring` is the
+/// admin-mutation STREAM that runs on it, not a second mechanism.
+pub mod audit;
+/// The admin-mutation audit RING: core's own security-audit infrastructure (hash-chained
+/// `AuditEntry`s, the process-wide `AUDIT` ring, `record_by`), relocated out of `admin::` (1.6.0
+/// de-vocab) since it is consumed by core's auth middleware and the plane-mutation spine, not the
+/// admin HTTP API. Runs on the append-only chain mechanism in [`audit`] above.
+pub mod audit_ring;
+pub mod auth;
+pub mod auth_cache;
+pub mod billing;
+/// THE BOOT SEAM: one entry point per boot action, so the internals each action composes stay
+/// crate-private. See the module header.
+pub mod boot;
+/// THE DURABLE PER-CALL LOG: one hash-chained record per recorded call. A plane supplies the RECORD
+/// SHAPE for core's one audit chain — named at the crate root rather than under the
+/// neutral `plane::` namespace. See the module header.
+pub mod calllog;
+pub use busbar_substrate::breaker;
+pub mod catalogue;
+pub mod config;
+pub mod config_validate;
+pub mod core_routes;
+pub mod cost;
+pub mod diagnostics;
+// THE DRAIN FACADE (1.6.0 wave W1.e, DECISIONS #27b): the one stable per-step re-export surface for
+// busbar-core's own Teller workflow steps (arrival…exit), so each step relocates to its
+// `busbar-unit-<step>` crate in ANY order by editing one line here. Pure additive/dormant re-export
+// of already-`pub` modules — no code moves, the shipped path is byte-untouched. See the module.
+pub mod drain;
+// The durable-write choke point moved to the shared `busbar-api` crate so the plugin-loader
+// (plugins.fetch cache write) can route through the SAME primitive. Re-exported here so every
+// existing `crate::durable::*` call site in this binary resolves unchanged.
+pub use busbar_api::durable;
+// The host-owned outbound surface: the neutral SSRF-pinned client (re-exported wholesale from
+// busbar-substrate) plus the host-mediated `seam` adapter that drives egress through the
+// `plane_host` FFI vtable, gated behind the neutral `egress-seam` capability feature rather than
+// any one plane. Always compiled, like `net_guard`, because the host owns every outbound byte
+// whether or not a plane needing the seam is built. See the module header.
+pub mod egress;
+pub mod egress_auth;
+pub mod endpoints;
+// The narrow, `pub` re-export facade a plane's own extracted engine reaches DOWN into core through
+// once it lives in its own plane crate (1.6.0 money-path relocation, Phase 0). Pure visibility lift
+// — see the module.
+pub mod engine_facade;
+// wt2/neutral-utils: relocated DOWN to busbar-substrate (the neutral crate a plane's own extracted
+// crate may name) so a plane reaches the AWS EventStream framing codec via the ABI, not
+// `busbar_kernel::`. Core re-exports it here so `crate::eventstream::…` call sites are unchanged.
+pub use busbar_substrate::eventstream;
+pub mod export;
+pub mod failover;
+pub mod governance;
+pub mod handlers;
+pub mod hooks;
+pub mod ingress;
+pub mod ir;
+// wt2/neutral-utils: relocated DOWN to busbar-substrate. The depth-guarded JSON parse/serialize seam
+// (sonic-rs) is a neutral utility; core re-exports it so `crate::json::{parse,to_vec,…}` are unchanged.
+pub use busbar_substrate::json;
+pub mod limits;
+pub mod lineage;
+// wt2/neutral-utils: both relocated DOWN to busbar-substrate (neutral value/util leaves). Core
+// re-exports them so `crate::lossless`/`crate::media` and any `busbar_kernel::{lossless,media}` are unchanged.
+pub use busbar_substrate::lossless;
+pub use busbar_substrate::media;
+pub mod metrics;
+pub mod net_guard;
+pub mod oauth_as;
+pub mod observability;
+// `operation` is the neutral operation vocabulary (`Operation`, `OpShape`), re-exported wholesale
+// from `busbar-api` so `crate::operation::Operation` and `busbar_kernel::operation::*` are unchanged
+// for every existing user. THE ONE GAUNTLET (`run`, the single canonical resolved-operation entry
+// every arrival converges on) RELOCATED with the extracted engine plane into its own crate; core
+// reaches it only through the neutral body-arrival seam, so this is now a plain re-export of the
+// neutral vocabulary.
+pub mod operation {
+    pub use busbar_api::operation::*;
+}
+
+#[cfg(test)]
+#[path = "tests/operation_tests.rs"]
+mod operation_tests;
+pub mod plane;
+// The ONLY module permitted `unsafe`: it recovers `&HostState` from the opaque `HostCtx` the
+// `#[repr(C)]` plane ABI threads through every host call — a raw-pointer deref that cannot be
+// expressed safely. The `unsafe` is confined here and audited (see `plane_host::recover`).
+#[allow(unsafe_code)]
+pub mod plane_host;
+pub mod plugin_routes;
+// A′ (ABI-purity P4): the hot-path stage profiler relocated DOWN to busbar-substrate so a plane's
+// own extracted engine names it via the ABI. Re-exported here so `crate::profile::…` (the
+// auth/ingress stage spans) is unchanged and byte-identical.
+pub use busbar_substrate::profile;
+pub mod proto;
+pub mod proxy;
+/// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
+/// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
+/// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
+pub mod ratelimit;
+// THE NEUTRAL PER-SESSION SUBSTRATE relocated DOWN to busbar-substrate (std-only, money-safe, zero
+// busbar deps). Core re-exports it so `crate::session::{SessionStore, SessionKey, OwnerKey}` — the
+// gate's screen-cache tenant, the appbuild session_store construction and the App field — are
+// unchanged. The former hooks::gate ↔ core::session co-location edge is dissolved: the gate now
+// reaches `SessionStore` via the substrate type.
+pub mod session {
+    pub use busbar_substrate::session::*;
+}
+/// The wire error-type taxonomy (`ERR_TYPE_*`), relocated out of `admin::` (1.6.0 de-vocab): the
+/// constant string VALUES (the wire error-type tokens) are byte-identical; only their Rust binding
+/// path moved, since `ingress::dispatch`/`ingress::arrival_host`/`router` consume them, not the
+/// admin HTTP API.
+pub(crate) mod taxonomy;
+// wt2/neutral-utils: the hand-rolled SigV4 signer relocated DOWN to busbar-substrate (neutral crypto,
+// verifies via `busbar_api::constant_time_eq`). Core re-exports it so `crate::sigv4::…` is unchanged.
+pub use busbar_substrate::sigv4;
+pub mod state;
+pub mod store;
+pub mod telemetry;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+pub mod tls;
+pub use busbar_substrate::transport;
+
+#[cfg(test)]
+#[path = "tests/transport_tests.rs"]
+mod transport_tests;
+pub mod trust;
+
+// ── THE CRATE-ROOT SURFACE ───────────────────────────────────────────────────────────────────────
+// The moved crate-root items live in three modules split by concern (`appbuild`, `preflight`,
+// `router`) plus the boot seam (`boot`); these re-exports keep every existing `crate::X` /
+// `busbar_kernel::X` path resolving unchanged, and each item's crate-root VISIBILITY is exactly what
+// the lib/bin seam demanded — nothing widened for convenience.
+#[cfg(test)]
+#[path = "tests/alarm_silence_tests.rs"]
+mod alarm_silence_tests;
+pub mod appbuild;
+// `key_revoke_tombstone_tests` drives the admin key-revoke HTTP surface; it moved to `busbar-admin`
+// with the service (`busbar_admin::tests::key_revoke_tombstone_tests`).
+pub mod preflight;
+pub mod router;
+#[cfg(test)]
+#[path = "tests/tests.rs"]
+mod tests;
+#[cfg(test)]
+#[path = "tests/drain_facade_tests.rs"]
+mod drain_facade_tests;
+
+pub use appbuild::{
+    build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,
+    resolve_model_context_max, GovCredentialRotation, LoadedConfig, DEFAULT_CONFIG_PATH,
+    ENV_CONFIG, ENV_PROVIDERS,
+};
+pub use preflight::{
+    plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
+};
+pub use router::{
+    build_router, build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS,
+};
+// Referenced as `crate::...` only from the test trees (`#[cfg(test)]`), so the production lib
+// build sees them as unused — allowed, with the reason written down rather than widened away.
+#[allow(unused_imports)]
+pub(crate) use router::base_data_router;
+// `build_router_with_limits` is a curated `pub` test-support seam (an extracted plane's own
+// subscribe/ingress tests build a limited router directly); production keeps it crate-internal.
+#[cfg(not(any(test, feature = "test-support")))]
+#[allow(unused_imports)]
+pub(crate) use router::build_router_with_limits;
+#[cfg(any(test, feature = "test-support"))]
+pub use router::build_router_with_limits;
+
+/// TEST-SUPPORT ROUTER-SURFACE VIEW: the `(path, declared admission bar)` pairs the base data router
+/// mounts for `app`, built through the very same `router::base_data_router` production calls (off the
+/// App's neutral slots). Exposed as a curated `pub` seam — over PUBLIC types (`String`,
+/// [`busbar_plugin_loader::RouteAuth`]) — ONLY under the test-support surface, so an extracted
+/// plane's own ingress tests can assert the mounted surface (which paths appear, at which bar) WITHOUT
+/// core widening the `pub(crate)` router fn or the `CoreRouteTable`/`CoreRoute` types to `pub`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn base_data_route_table_view(
+    app: &state::App,
+) -> Vec<(String, busbar_plugin_loader::RouteAuth)> {
+    router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
+        .1
+        .routes()
+        .iter()
+        .map(|r| (r.path.clone(), r.auth))
+        .collect()
+}
+
+/// TEST-SUPPORT ROUTER-SURFACE VIEW, with the declared METHOD. The sibling of
+/// [`base_data_route_table_view`] for the plane-boundary ratchet, which walks each mounted route with
+/// a real request and so needs the method too. Over PUBLIC types only (`String`, `String`,
+/// [`busbar_plugin_loader::RouteAuth`]) — the `pub(crate)` `CoreRoute`/`CoreRouteTable` stay sealed.
+#[cfg(any(test, feature = "test-support"))]
+pub fn base_data_route_method_view(
+    app: &state::App,
+) -> Vec<(String, String, busbar_plugin_loader::RouteAuth)> {
+    router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
+        .1
+        .routes()
+        .iter()
+        .map(|r| (r.path.clone(), r.method.as_str().to_string(), r.auth))
+        .collect()
+}
+
+/// TEST-SUPPORT VIEW of [`state::App::boot_route_paths`]: the plugin-route paths this process can
+/// serve, as they stood at boot. A curated `pub` seam over `String`s so a router-walking test can
+/// enumerate the plugin surface without core widening the private field.
+#[cfg(any(test, feature = "test-support"))]
+pub fn boot_route_paths_of(app: &state::App) -> Vec<String> {
+    app.boot_route_paths.iter().cloned().collect()
 }

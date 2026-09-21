@@ -14,7 +14,7 @@
 //!
 //! The family-blind `IrFacts` projection over `SubscribeReq` lives HERE (relocated beside its data at
 //! Batch C-2, keeping the orphan rule satisfied now that the `IrFacts` trait is substrate-resident);
-//! core re-exports both the type and the projection through `busbar_core::ir::subscribe`.
+//! core re-exports both the type and the projection through `busbar_kernel::ir::subscribe`.
 
 use super::SourceScopedExtra;
 use busbar_api::operation::Operation;

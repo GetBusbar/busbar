@@ -1606,7 +1606,7 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
     // (`busbar_substrate::plane::config::plane_sections`), which the composition root (and, under
     // `test-support`, the plane test-kit's `install_test_seams`) binds to core's registry-coupled
     // `config_sections` fold — so this plane reads the whole section list without naming
-    // `busbar_core`. Standalone (`not(feature = "test-support")`) binds no provider and never drives
+    // `busbar_kernel`. Standalone (`not(feature = "test-support")`) binds no provider and never drives
     // config resolution anyway — the plane runs inside busbar-core — so the standalone arm falls back
     // to this plane's own section, the only one a standalone build knows; it is unreachable in
     // practice, and no cross-plane reference is possible when only one plane exists.

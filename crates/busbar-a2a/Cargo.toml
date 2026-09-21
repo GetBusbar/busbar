@@ -1,13 +1,13 @@
 # busbar-a2a — THE A2A (Agent2Agent) PLUGIN CRATE.
 #
-# The A2A plane and codec, folded together (the former `crates/busbar-core/src/a2a`, ~19k lines: the
+# The A2A plane and codec, folded together (the former `crates/busbar-kernel/src/a2a`, ~19k lines: the
 # agent card, the task store, the delegating and inbound JSON-RPC/gRPC/REST transports, the `agents:`
 # config sections, boot hydration, the router mount and the admin API). A2A the protocol and A2A the
 # plane are the same protocol, so they sit behind ONE on/off switch rather than two — ONE PLUGIN PER
 # PROTOCOL. Unlike busbar-mcp, A2A is PLANE-ONLY: it contributes a `PlaneDecl` (`PLANE_DECL`) and no
 # separate protocol-codec `PROTO_DECL`.
 #
-# `busbar-core = { default-features = false, optional = true }` mirrors busbar-mcp's SEALED shape: the
+# `busbar-kernel = { default-features = false, optional = true }` mirrors busbar-mcp's SEALED shape: the
 # feature decisions belong to the composition root, and busbar-core is no longer a PRODUCTION
 # dependency — the default build compiles with NO busbar-core in its closure, every former
 # `busbar_core::` reach served by the neutral substrate (the config-section split, the task-reader /
@@ -21,7 +21,7 @@ name = "busbar-a2a"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+# `rust-version` rationale: see busbar-kernel/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
 description = "The Agent2Agent protocol for busbar: the A2A codec and the A2A plane, as one removable plugin."
 license = "Apache-2.0"
@@ -36,7 +36,7 @@ path = "src/lib.rs"
 # test kit, and the engine's implementation of that kit is bound in the `tests/`-path boot files
 # alone (see the header). Optional rather than a dev-dependency because a feature cannot reference a
 # dev-dep-only crate.
-busbar-core = { path = "../busbar-core", default-features = false, features = ["plane-a2a"], optional = true }
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-a2a"], optional = true }
 # The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the
 # diagnostics macros, the config-section split, the task-reader / hostless-egress / admin-envelope
 # seams. Carries `plane-a2a` so the plane-gated items are present in this crate's own default build.
@@ -102,7 +102,7 @@ bytes = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 getrandom = { workspace = true }
-# THE OPENAPI SCHEMA DERIVE, optional and mirroring busbar-core/busbar-mcp exactly. The plane's
+# THE OPENAPI SCHEMA DERIVE, optional and mirroring busbar-kernel/busbar-mcp exactly. The plane's
 # admin-view types derive `schemars::JsonSchema` under `openapi-schema`; when these sources
 # dual-compile into busbar-core they take core's `schemars`, and when they compile HERE they need
 # their own. Same optional dep, same feature edge, so the derive resolves whichever crate is compiling.
@@ -129,7 +129,7 @@ openapi-schema = ["busbar-substrate/openapi-schema", "dep:schemars"]
 # The one `auth-admin-tokens` site is a test module. Forwarded WEAKLY (`?`) so enabling it never
 # force-pulls the optional busbar-core into a non-test-support build; it only cascades where
 # busbar-core is already in the closure.
-auth-admin-tokens = ["busbar-core?/auth-admin-tokens"]
+auth-admin-tokens = ["busbar-kernel?/auth-admin-tokens"]
 # Pulls busbar-core (the optional dep) and its test fixtures: the plane's App-driving tests reach the
 # engine fixture through the neutral substrate test kit, whose engine-side implementation the
 # `tests/`-path boot files bind from busbar-core, so this feature is the one edge that puts
@@ -137,10 +137,10 @@ auth-admin-tokens = ["busbar-core?/auth-admin-tokens"]
 # planes' config types unconditionally, so this forwards `plane-mcp`/`plane-a2a` too — the same
 # both-planes shape core's own dual-compile test binary builds with.
 test-support = [
-    "dep:busbar-core",
-    "busbar-core/test-support",
-    "busbar-core/plane-mcp",
-    "busbar-core/plane-a2a",
+    "dep:busbar-kernel",
+    "busbar-kernel/test-support",
+    "busbar-kernel/plane-mcp",
+    "busbar-kernel/plane-a2a",
     "dep:reqwest",
     "dep:busbar-store-memory",
 ]

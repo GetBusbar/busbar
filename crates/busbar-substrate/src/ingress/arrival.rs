@@ -17,7 +17,7 @@
 //! the dialect crate holds an `Arc<dyn ArrivalHost>` (carried on the [`Arrival`]) and calls typed, safe
 //! methods on it, crossing the core-only `App`/`GovCtx`/`CallerToken` as an OPAQUE [`ArrivalCtx`] and
 //! the neutral `Operation`/`Response`/`HeaderMap`/`Bytes` directly. So the dialect names no
-//! `busbar_core::` item and core names no dialect — exactly the plane ABI, mirroring `EngineHost`.
+//! `busbar_kernel::` item and core names no dialect — exactly the plane ABI, mirroring `EngineHost`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -50,7 +50,7 @@ impl ArrivalCtx {
 
 /// THE NEUTRAL ARRIVAL PAYLOAD (App-retype WEDGE 3 — THE FLIP): the concrete value core boxes into the
 /// opaque [`ArrivalCtx`] at the catch-all, and that both core's [`ArrivalHost`] impl and the LLM plane's
-/// universal ingress downcast back out. It USED to be `busbar_core::ingress::arrival_host::ArrivalPayload`
+/// universal ingress downcast back out. It USED to be `busbar_kernel::ingress::arrival_host::ArrivalPayload`
 /// (an `Arc<App>` + `GovCtx` + caller token), which forced the extracted LLM plane to name a core type to
 /// downcast it — the last structural backwards reach on the request path. Pivoted here so the payload is
 /// spelled in the NEUTRAL substrate: it carries the minted `Arc<dyn EngineHost>` (not the `Arc<App>` it

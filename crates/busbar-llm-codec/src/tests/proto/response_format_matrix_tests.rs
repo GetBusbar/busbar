@@ -260,7 +260,7 @@ fn req_with_stop(stop: Vec<String>) -> crate::ir::IrRequest {
 /// OpenAI caps at 4, Gemini/Cohere at 5 — exceeding any is a guaranteed 400.
 ///
 /// v1.5.4-restored clamp: each capped writer TRUNCATES an over-cap stop list to its published cap
-/// (`busbar_core::ir::clamp_stop`) — with a `warn!` naming the dropped count — and forwards the
+/// (`busbar_kernel::ir::clamp_stop`) — with a `warn!` naming the dropped count — and forwards the
 /// clamped set at HTTP 200, rather than the cross-protocol seam rejecting the request with a 400.
 /// Fail-loud is a deliberate future opt-in, not a 1.6.0 default. See
 /// `proxy::tests::stop_sequence_cap_degrade_tests` for the end-to-end degrade coverage of all three

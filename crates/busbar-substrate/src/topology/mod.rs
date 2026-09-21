@@ -3,12 +3,12 @@
 
 //! THE NEUTRAL DATA-PLANE TOPOLOGY + the sharded upstream client (1.6.0 App-retype WEDGE 3-PREP).
 //!
-//! Relocated DOWN from `busbar_core::state` so a plane crate names the sharded egress client and the
+//! Relocated DOWN from `busbar_kernel::state` so a plane crate names the sharded egress client and the
 //! worker-topology facts without reaching into `busbar-core`. These are neutral PROCESS facts — how
 //! many data workers exist and which worker each thread is — plus the per-worker-sharded upstream
 //! HTTP client those facts size. No `App`, no config, no plane vocabulary; the sole value type
 //! ([`UpstreamClients`]) holds a set of the substrate egress engine's own [`EngineClient`] shards.
-//! Core re-exports each item at its historical `busbar_core::state::…` path (the `pub(crate)` worker
+//! Core re-exports each item at its historical `busbar_kernel::state::…` path (the `pub(crate)` worker
 //! accessors kept `pub(crate)` on the re-export) so every in-core call site — the composition root's
 //! boot publish, the store-striping readers, `appbuild`'s client build — is unchanged.
 

@@ -28,7 +28,7 @@ name = "busbar_oauth2"
 path = "src/lib.rs"
 
 [dependencies]
-busbar-core = { path = "../busbar-core", default-features = false }
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # The neutral substrate: the CIMD fetch (`cimd.rs`) goes through `busbar_substrate::egress::engine`
 # directly — the SAME bounded-body/hop-deadline guard the rest of busbar's egress uses — rather than
 # a second copy of it, exactly as it did when this file compiled inside busbar-core (core names this
@@ -57,10 +57,10 @@ serde = { workspace = true }
 # does not need this flag itself — the dev-dependency below already carries the same core feature —
 # but a SIBLING crate that wants to build an `oauth_as:`-configured `TestApp` in its own tests
 # enables this to pull `testkit` in as a production (non-dev) capability.
-test-support = ["busbar-core/test-support"]
+test-support = ["busbar-kernel/test-support"]
 
 [dev-dependencies]
-busbar-core = { path = "../busbar-core", default-features = false, features = ["test-support"] }
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 axum = { workspace = true, features = ["http1"] }
 oauth-as = { workspace = true, features = ["test-util"] }

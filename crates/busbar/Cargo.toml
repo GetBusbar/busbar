@@ -3,7 +3,7 @@ name = "busbar"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+# `rust-version` rationale: see busbar-kernel/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
 description = "Native-protocol LLM gateway: lossless cross-protocol translation, weighted pools, per-(pool,lane) circuit breaking, and governance — in one self-contained Rust binary."
 license = "Apache-2.0"
@@ -17,9 +17,10 @@ name = "busbar"
 path = "src/main.rs"
 
 [dependencies]
-# The engine. `default-features = false` so the binary's OWN feature list is the single decision
-# point: each busbar feature forwards to the core feature of the same name below.
-busbar-core = { path = "../busbar-core", default-features = false }
+# The engine (busbar-core absorbed INTO busbar-kernel, W4.a #19/#37) is the merged `busbar-kernel`
+# dep declared below with the loop crate; `default-features = false` there so the binary's OWN
+# feature list stays the single decision point (each busbar feature forwards to the kernel feature
+# of the same name below).
 # The neutral substrate, named directly so the composition root can install the plane-facing seams
 # that live there — the hostless-egress driver (`egress::seam::install_hostless_egress`), which the
 # binary backs with core's `CoreHostlessEgress`. Core already depends on substrate; naming it here is
@@ -86,7 +87,7 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # composes them. These edges exist so `ProductionUnits` (the one implementor of the kernel's `Units`
 # trait), the registry seal, the vocabulary interner, the durability branch and the listener
 # provisioning have somewhere to live that is not a unit and not a plane.
-busbar-kernel = { path = "../busbar-kernel" }
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-contract = { path = "../busbar-contract" }
 # THE PUBLISHED STORE PROTOCOL. A plane's durable records reach the node through record legs on its
 # route plan, and the eight kind-tagged operations those legs run are declared here. Named by the
@@ -176,19 +177,19 @@ default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plan
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
 # a second, finer answer to a question the owner ruling already settled.
-proto-llm = ["dep:busbar-llm", "busbar-core/plane-llm"]
+proto-llm = ["dep:busbar-llm", "busbar-kernel/plane-llm"]
 # THE MCP PROTOCOL, carried by `busbar-mcp`: the dependency edge plus the `busbar_mcp::PROTO_DECL`
 # registration line in main.rs. ONE switch for MCP the protocol codec today and MCP the plane once
 # it folds in — never two — so it keeps the plane-kind name `plane-mcp` rather than a `proto-mcp`
 # that would imply the plane rode a different knob. Default-on: the shipped binary speaks MCP.
-plane-mcp = ["dep:busbar-mcp", "busbar-core/plane-mcp", "busbar-admin/plane-mcp"]
+plane-mcp = ["dep:busbar-mcp", "busbar-kernel/plane-mcp", "busbar-admin/plane-mcp"]
 # THE A2A PLANE, now the `busbar-a2a` crate, behind this switch which carries that crate edge. ONE
 # switch for A2A the plane and the A2A crate — never two — the exact analogue of `plane-mcp` above.
-# Default-on: the shipped binary speaks A2A. Forwards to `busbar-core/plane-a2a` (= `busbar-substrate/
+# Default-on: the shipped binary speaks A2A. Forwards to `busbar-kernel/plane-a2a` (= `busbar-substrate/
 # plane-a2a`), which gates the plane's substrate items and captures/refuses the `agents:` config
 # section when off, so `--no-default-features` drops the `busbar-a2a` edge and compiles the whole A2A
 # plane out while core still routes LLM + MCP (the plane-split deletion test).
-plane-a2a = ["dep:busbar-a2a", "busbar-core/plane-a2a", "busbar-admin/plane-a2a"]
+plane-a2a = ["dep:busbar-a2a", "busbar-kernel/plane-a2a", "busbar-admin/plane-a2a"]
 # THE VOICE PLANE, the busbar-voice crate, behind this switch. The analogue of `plane-a2a` — one
 # switch for the crate edge + the core/substrate forwards — EXCEPT it is deliberately absent from
 # `default`. `dep:busbar-voice` pulls the crate; `busbar-voice?/runtime` turns on its live-session
@@ -197,7 +198,7 @@ plane-a2a = ["dep:busbar-a2a", "busbar-core/plane-a2a", "busbar-admin/plane-a2a"
 # reference, so the strong-form deletion gate (scripts/plane-delete-test.sh) strips it with the same
 # rule it strips `busbar-voice?/openapi-schema`, leaving voice byte-for-byte removable. Compiling the
 # runtime here gives the `build_runtime` body; the skeleton build leaves `build_runtime: None`.
-plane-voice = ["dep:busbar-voice", "dep:busbar-transport-ws", "busbar-voice?/runtime", "busbar-core/plane-voice"]
+plane-voice = ["dep:busbar-voice", "dep:busbar-transport-ws", "busbar-voice?/runtime", "busbar-kernel/plane-voice"]
 # THE VOICE PLANE, SERVED THROUGH THE COMPOSITION ROOT rather than through the previous release's
 # path, DEFAULT ON. `main()` seals the composition and mounts the voice plane's units at boot.
 # Default-off was the ordering, not the destination — the root is BUILT before any plane is SWITCHED
@@ -288,10 +289,10 @@ root-admin = ["dep:tower"]
 # module is `#[cfg(any(test, feature = "test-harness"))]` and this feature is never enabled by a
 # release build, which is why the surface ceilings do not count it.
 test-harness = []
-auth-admin-tokens = ["busbar-core/auth-admin-tokens", "busbar-admin/auth-admin-tokens"]
-hooks-ranking = ["busbar-core/hooks-ranking"]
-openapi-schema = ["busbar-core/openapi-schema", "busbar-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
-loom-model = ["busbar-core/loom-model"]
+auth-admin-tokens = ["busbar-kernel/auth-admin-tokens", "busbar-admin/auth-admin-tokens"]
+hooks-ranking = ["busbar-kernel/hooks-ranking"]
+openapi-schema = ["busbar-kernel/openapi-schema", "busbar-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
+loom-model = ["busbar-kernel/loom-model"]
 
 [dev-dependencies]
 # The loop-unify shadow-compare test (`root::gauntlet_kernel`) implements a deterministic
@@ -301,8 +302,8 @@ async-trait = { workspace = true }
 # The root's own llm tests install the plane's seams.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
-# through core's test_support, which core exposes to dependents only behind this feature.
-busbar-core = { path = "../busbar-core", features = ["test-support"] }
+# through the kernel's test_support, exposed to dependents only behind this feature.
+busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
 # The integration suite under tests/ (black-box: boots the binary / reads generated inventories).
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }

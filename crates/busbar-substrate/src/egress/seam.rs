@@ -7,9 +7,9 @@
 //! [`HopSpec`] names only `std` types (a couple of borrowed slices, two allowlist flags, two opaque
 //! host-side refs, a deadline and an already-judged pinned address). The FETCH ADAPTER that consumes
 //! it — the `buffered` / `stream_head` / `pump` drivers that reach the `plane_host` FFI egress vtable
-//! — stays in `busbar_core::egress::seam`, because that half drives core-owned unsafe drivers. This
+//! — stays in `busbar_kernel::egress::seam`, because that half drives core-owned unsafe drivers. This
 //! is only the neutral INPUT to that adapter, relocated so a plane crate builds a hop spec without
-//! reaching into core; core re-exports it, so `busbar_core::egress::seam::HopSpec` still resolves.
+//! reaching into core; core re-exports it, so `busbar_kernel::egress::seam::HopSpec` still resolves.
 
 /// The one hop the adapter opens, as neutral data. The plane composes protocol on top; this carries
 /// only what an outbound request IS — verb, url, headers, body — plus the host's allowlist stance and
@@ -40,10 +40,10 @@ pub struct HopSpec<'a> {
 //
 // The buffered / streamed RETURN shapes a plane reads back from one governed hop, plus the neutral
 // DRIVER trait an extracted plane calls to run that hop without naming core. The concrete driver
-// stays core's (`busbar_core::egress::seam::CoreHostlessEgress`, over the `plane_host` FFI egress
+// stays core's (`busbar_kernel::egress::seam::CoreHostlessEgress`, over the `plane_host` FFI egress
 // vtable) and is installed at boot; a plane holds only `&dyn HostlessEgress` off [`hostless`]. The
 // shapes below are field-neutral (they name only `std` + the substrate `ReadEnd` and the plugin
-// `EgressFailClass`), relocated from `busbar_core::egress::seam` / `busbar_core::plane_host::egress`
+// `EgressFailClass`), relocated from `busbar_kernel::egress::seam` / `busbar_kernel::plane_host::egress`
 // so a plane crate reads them without reaching into core; core re-exports them so its own call sites
 // resolve unchanged. Gated to the plane features, this seam's only consumers.
 

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The NEUTRAL hook value/wire layer — the plain-data hook types both the engine (busbar-core) and the
-//! LLM model plane (busbar-llm) name, relocated here off `busbar_core::hooks::` so a plane reaches the
+//! LLM model plane (busbar-llm) name, relocated here off `busbar_kernel::hooks::` so a plane reaches the
 //! substrate ABI rather than back into core (the reverse-edge rule; see
 //! docs/design/1.6.0-hooks-seam-notes.md).
 //!
@@ -12,7 +12,7 @@
 //! (busbar-api), [`PolicyOnError`](crate::config::PolicyOnError) (this crate), `Duration`, `bool`. No
 //! trait object crosses the plugin C-ABI / `Any` boundary here: the model plane holds these in-process
 //! and invokes `policy.decide(..)` directly on the api trait. The hook REPLY-side normalizers and the
-//! settings-bag-carrying `StatusReply` stay in `busbar_core::hooks::wire` (inside the settings-leak-lint
+//! settings-bag-carrying `StatusReply` stay in `busbar_kernel::hooks::wire` (inside the settings-leak-lint
 //! scan root); core re-exports the request-side names from here so its own paths are unchanged.
 
 pub mod wire;
@@ -24,11 +24,11 @@ use std::sync::Arc;
 /// scope)`. The 4th element is the hook's `groups:` SELECTION scope (1.5.3) — the firing site fires
 /// the tap only for a caller in that scope (empty = every caller).
 ///
-/// Relocated here off `busbar_core::hooks::TapEntry` (App-retype WEDGE 2d): a purely-neutral tuple —
+/// Relocated here off `busbar_kernel::hooks::TapEntry` (App-retype WEDGE 2d): a purely-neutral tuple —
 /// [`Duration`](std::time::Duration), `bool`, the [`RoutingPolicy`](busbar_api::RoutingPolicy) trait
 /// object (busbar-api), `Vec<String>` — so the engine's tap-facet host seams
 /// (`EngineHost::tap_hooks*`) can name it without reaching back into core. Core re-exports this alias
-/// so `busbar_core::hooks::TapEntry` is unchanged (a transparent alias, identical by structure).
+/// so `busbar_kernel::hooks::TapEntry` is unchanged (a transparent alias, identical by structure).
 pub type TapEntry = (
     std::time::Duration,
     bool,
@@ -41,9 +41,9 @@ pub type TapEntry = (
 /// with a single `AND`+compare BEFORE any compute fn runs ([`RequestedSignals::wants`]), never
 /// call-then-discard.
 ///
-/// Relocated here off `busbar_core::hooks::RequestedSignals` (App-retype WEDGE 2d) so the engine's
+/// Relocated here off `busbar_kernel::hooks::RequestedSignals` (App-retype WEDGE 2d) so the engine's
 /// `EngineHost::requested_signals` seam returns a NEUTRAL type; core re-exports it (identity) and its
-/// config-time builder (`busbar_core::hooks::requested_signals`, which takes core's `HookCfg`) stays
+/// config-time builder (`busbar_kernel::hooks::requested_signals`, which takes core's `HookCfg`) stays
 /// in core and drives [`insert`](RequestedSignals::insert).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RequestedSignals(u64);
@@ -67,7 +67,7 @@ impl RequestedSignals {
     }
 
     /// Set the bit for `s`. `pub` (rather than the former core-private visibility) only because the
-    /// config-time builder that calls it — `busbar_core::hooks::requested_signals` — now lives across
+    /// config-time builder that calls it — `busbar_kernel::hooks::requested_signals` — now lives across
     /// the crate boundary from the type; it is otherwise the same one-line bit-OR.
     #[inline]
     pub fn insert(&mut self, s: Signal) {

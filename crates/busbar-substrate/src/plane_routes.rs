@@ -5,15 +5,15 @@
 //! routes it answers on WITHOUT naming a core router type or `Arc<AppHandle>`.
 //!
 //! Before this seam a plane's data routes were contributed through `PlaneDecl::mount`, a
-//! `fn(CoreRouter, &dyn Any) -> CoreRouter` — a field whose TYPE named `busbar_core::core_routes::CoreRouter`
-//! and whose handlers extracted `axum::State<Arc<busbar_core::state::AppHandle>>`. Both bound the
+//! `fn(CoreRouter, &dyn Any) -> CoreRouter` — a field whose TYPE named `busbar_kernel::core_routes::CoreRouter`
+//! and whose handlers extracted `axum::State<Arc<busbar_kernel::state::AppHandle>>`. Both bound the
 //! plane to core: the field could not live in a neutral crate, and the handler bodies reached the
 //! whole engine through the router state.
 //!
 //! This module replaces that with a flat, transport-agnostic DESCRIPTION. A plane returns a
 //! [`Vec<PlaneRouteSpec>`] — each spec is a `(path, method, auth, handler)` quadruple where the
 //! handler is a neutral async fn over a [`PlaneReqCtx`]. The CORE-side adapter
-//! (`busbar_core::router`) is the single place that still names `CoreRouter` / `Arc<AppHandle>`: it
+//! (`busbar_kernel::router`) is the single place that still names `CoreRouter` / `Arc<AppHandle>`: it
 //! iterates the specs, and per spec calls the EXISTING `CoreRouter::route(path, method, auth, …)` —
 //! so the security-critical `CoreRouteTable` rows (path, method, [`RouteAuth`]) are recorded by the
 //! same act as before and stay BYTE-IDENTICAL. Only the handler's SHAPE changed: it receives a
@@ -108,7 +108,7 @@ pub struct PlaneReqCtx {
     pub engine: Arc<dyn Any + Send + Sync>,
     /// The NEUTRAL host seam — the `EngineHost` the core adapter minted over the request's live
     /// engine snapshot, so the plane reaches host capabilities (the clock, and later gate/govern/…)
-    /// by calling typed methods on it rather than naming `busbar_core::plane_host::*_over`. Carried
+    /// by calling typed methods on it rather than naming `busbar_kernel::plane_host::*_over`. Carried
     /// alongside `engine` during the transition: `engine` is the residual downcast the per-subsystem
     /// App-sever removes, `host` is the durable seam that replaces it.
     pub host: Arc<dyn crate::plane_host::EngineHost>,

@@ -103,7 +103,7 @@ fn parse_service_account(
 /// malformed SA JSON / non-PKCS#8 keys to surface only at boot/apply). Runs the exact same checks as
 /// [`build`].
 // `pub` (not `pub(crate)`): core's `config_validate` reaches this through the
-// `busbar_core::egress_auth::jwt_bearer` re-export shim after the module relocated DOWN here, so it
+// `busbar_kernel::egress_auth::jwt_bearer` re-export shim after the module relocated DOWN here, so it
 // must be visible cross-crate. Visibility only — no behaviour change.
 pub fn validate_credential(
     credential: &str,

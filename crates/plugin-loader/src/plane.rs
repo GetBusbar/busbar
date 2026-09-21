@@ -17,9 +17,9 @@
 //!
 //! This is the FIRST caller of the hot lane: until now `busbar_plugin::hot::PlaneDecl` +
 //! [`PlaneHostVtable`] were a fully-built but UNUSED skeleton (`hot/mod.rs`'s own doc says so). The
-//! host vtable half is already real (`busbar_core::plane_host::build_plane_host_vtable`); this is the
+//! host vtable half is already real (`busbar_kernel::plane_host::build_plane_host_vtable`); this is the
 //! LOADER half. The remaining work to fold a dropped-in plane into the native
-//! `busbar_core::plane::registry` claim seal — an adapter from this C-ABI decl to the native Rust
+//! `busbar_kernel::plane::registry` claim seal — an adapter from this C-ABI decl to the native Rust
 //! `PlaneDecl`, and manifest-CARRIED claims — is tracked as the post-1.6.0 registry-seal item and is
 //! NOT done here (see the crate-level module notes); `DynPlane` is the boundary-safe handle that item
 //! will adapt.

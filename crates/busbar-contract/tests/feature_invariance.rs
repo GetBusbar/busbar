@@ -157,7 +157,7 @@ fn the_source_names_no_kernel_side_crate() {
         "busbar_plane",
         "busbar_transport",
         "busbar_substrate",
-        "busbar_core",
+        "busbar_kernel",
     ];
     let mut offenders = Vec::new();
     walk(&src_dir(), &mut |path, text| {

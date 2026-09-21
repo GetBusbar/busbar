@@ -6,15 +6,15 @@
 //!
 //! Before the extraction, `TestApp::oauth_as(cfg)` lived in busbar-core and built the real
 //! `AsPlane` directly. Now that builder lives here, as an extension trait over `TestApp`'s public
-//! `oauth_as_plane` seam (`busbar_core::test_support::TestApp::oauth_as_plane`) — the same relation
+//! `oauth_as_plane` seam (`busbar_kernel::test_support::TestApp::oauth_as_plane`) — the same relation
 //! `TestAppMcpExt`/`TestAppA2aExt` have to the CRUD-shaped planes' `TestAppSeam`, sized down for a
 //! singleton plane with no scratch accumulation: one config in, one plane out, no finalizer needed.
 
 use std::sync::Arc;
 
-use busbar_core::oauth_as::config::{AsIdentity, OauthAsCfg};
-use busbar_core::state::App;
-use busbar_core::test_support::TestApp;
+use busbar_kernel::oauth_as::config::{AsIdentity, OauthAsCfg};
+use busbar_kernel::state::App;
+use busbar_kernel::test_support::TestApp;
 
 use crate::plane::AsPlane;
 

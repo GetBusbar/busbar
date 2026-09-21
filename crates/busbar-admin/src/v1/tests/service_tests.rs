@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-core/src/admin/v1/service.rs`.
 
 use super::*;
-use busbar_core::config::{HookCfg, HookKind, PromptAccess, UserAccess};
+use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 
 fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
@@ -31,7 +31,7 @@ fn hook(kind: HookKind, global: bool) -> HookCfg {
 /// Lanes/store are shared (unchanged), proving the store-constraint-free subset.
 #[test]
 fn build_with_hook_registers_and_wires_global_tap() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
     else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -64,7 +64,7 @@ fn build_with_hook_registers_and_wires_global_tap() {
 /// reported `global: true`.
 #[test]
 fn build_with_hook_demotes_global_false_removes_wiring() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
     else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -105,7 +105,7 @@ fn build_with_hook_demotes_global_false_removes_wiring() {
 /// fail-open for a plane-owned attach, using MCP as the concrete plane under test.
 #[test]
 fn build_with_hook_makes_an_mcp_attach_live() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
     else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -138,7 +138,7 @@ fn build_with_hook_makes_an_mcp_attach_live() {
             .unwrap(),
         );
         builder.install_plane_runtime(
-            busbar_core::state::runtime_slot_key("mcp"),
+            busbar_kernel::state::runtime_slot_key("mcp"),
             busbar_mcp::testkit::mcp_runtime_with_servers(tools),
         );
     }
@@ -286,7 +286,7 @@ fn tmp_plugins_dir(tag: &str) -> std::path::PathBuf {
     // dir_as_ok_empty` finding a PREVIOUS run's leftover file inside its "really empty" dir and
     // failing on two honest fingerprints of two different directories. A once-per-process clock
     // token makes the name unique across pid reuse; the counter keeps it unique within the
-    // process (same idiom, same reasoning as `busbar_core::tests::tmp_plugin_dir`).
+    // process (same idiom, same reasoning as `busbar_kernel::tests::tmp_plugin_dir`).
     static PROC_TOKEN: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
     let token = PROC_TOKEN.get_or_init(|| {
         std::time::SystemTime::now()
@@ -333,7 +333,7 @@ fn signed_tarball(key: &SigningKey, m: Manifest, lib: &[u8]) -> Vec<u8> {
 }
 
 /// Build a service over an App whose plugins dir + `plugins.*` posture are the given ones.
-fn svc_with(dir: std::path::PathBuf, cfg: busbar_core::config::PluginsCfg) -> AdminService {
+fn svc_with(dir: std::path::PathBuf, cfg: busbar_kernel::config::PluginsCfg) -> AdminService {
     let app = crate::new_test_app()
         .plugins_dir(dir)
         .plugins_cfg(cfg)
@@ -342,21 +342,21 @@ fn svc_with(dir: std::path::PathBuf, cfg: busbar_core::config::PluginsCfg) -> Ad
 }
 
 /// The STRICT default posture: no publishers, no opt-ins.
-fn strict_posture() -> busbar_core::config::PluginsCfg {
-    busbar_core::config::PluginsCfg::default()
+fn strict_posture() -> busbar_kernel::config::PluginsCfg {
+    busbar_kernel::config::PluginsCfg::default()
 }
 
 /// A permissive posture (allow_unsigned): an unsigned upload installs "unverified".
-fn unsigned_ok_posture() -> busbar_core::config::PluginsCfg {
-    let mut cfg = busbar_core::config::PluginsCfg::default();
+fn unsigned_ok_posture() -> busbar_kernel::config::PluginsCfg {
+    let mut cfg = busbar_kernel::config::PluginsCfg::default();
     cfg.trust.allow_unsigned = true;
     cfg
 }
 
 /// A posture that allowlists one third-party publisher key.
-fn publisher_posture(name: &str, key: &SigningKey) -> busbar_core::config::PluginsCfg {
-    let mut cfg = busbar_core::config::PluginsCfg::default();
-    cfg.trust.publishers = vec![busbar_core::config::PluginPublisher {
+fn publisher_posture(name: &str, key: &SigningKey) -> busbar_kernel::config::PluginsCfg {
+    let mut cfg = busbar_kernel::config::PluginsCfg::default();
+    cfg.trust.publishers = vec![busbar_kernel::config::PluginPublisher {
         name: name.into(),
         public_key: hex::encode(key.verifying_key().to_bytes()),
     }];
@@ -1228,8 +1228,8 @@ fn install_alias_conflict_is_rejected() {
 
 // ---- groups read surface ----
 
-use busbar_core::config::groups::{ChildDefault, LimitMetric, LimitWindow};
-use busbar_core::config::{GroupCfg, LimitCfg};
+use busbar_kernel::config::groups::{ChildDefault, LimitMetric, LimitWindow};
+use busbar_kernel::config::{GroupCfg, LimitCfg};
 
 fn budget(cents: u64, per: LimitWindow) -> LimitCfg {
     LimitCfg {
@@ -1265,7 +1265,7 @@ async fn list_groups_projects_the_limit_tree() {
     let svc = AdminService::new(app);
 
     let page = svc
-        .list_groups(0, busbar_core::admin::v1::contract::LIST_LIMIT_DEFAULT)
+        .list_groups(0, busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT)
         .await
         .expect("list ok");
     // BTreeMap order: "team" < "user:bob".
@@ -1322,14 +1322,14 @@ async fn list_groups_is_cursor_paginated() {
         .next_cursor
         .as_deref()
         .expect("more rows remain -> a next_cursor is present");
-    let start2 = busbar_core::admin::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
+    let start2 = busbar_kernel::admin::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
 
     let p2 = svc.list_groups(start2, 2).await.expect("list ok");
     assert_eq!(p2.items.len(), 2);
     let names: Vec<&str> = p2.items.iter().map(|g| g.name.as_str()).collect();
     assert_eq!(names, vec!["g2", "g3"]);
     let c2 = p2.next_cursor.as_deref().expect("one row remains");
-    let start3 = busbar_core::admin::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
+    let start3 = busbar_kernel::admin::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
 
     let p3 = svc.list_groups(start3, 2).await.expect("list ok");
     assert_eq!(p3.items.len(), 1, "final page holds the remainder");
@@ -1415,7 +1415,7 @@ fn build_with_group_rejects_dangling_parent() {
         panic!("dangling parent must be rejected");
     };
     assert!(
-        matches!(&err, busbar_core::config::transaction::TxnError::Validation(m) if m.contains("orphan")),
+        matches!(&err, busbar_kernel::config::transaction::TxnError::Validation(m) if m.contains("orphan")),
         "dangling parent is a validation error: {err:?}"
     );
 }
@@ -1428,7 +1428,7 @@ fn build_with_group_rejects_empty_name() {
     };
     assert!(matches!(
         err,
-        busbar_core::config::transaction::TxnError::Validation(_)
+        busbar_kernel::config::transaction::TxnError::Validation(_)
     ));
 }
 
@@ -1502,10 +1502,10 @@ fn build_without_group_not_found() {
 #[test]
 fn build_without_group_conflict_when_keys_still_bound() {
     use busbar_api::Store as _;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::{GovState, MemoryStore};
     let store = std::sync::Arc::new(MemoryStore::new());
     store
-        .put_key(&busbar_core::governance::VirtualKey {
+        .put_key(&busbar_kernel::governance::VirtualKey {
             id: "vk_bound".to_string(),
             generation_hash: "h:vk_bound".to_string(),
             name: "bound".to_string(),
@@ -1547,7 +1547,7 @@ fn build_without_group_conflict_when_keys_still_bound() {
 
 // ---- group usage read ----
 
-use busbar_core::governance::{GovState, MemoryStore, VirtualKey};
+use busbar_kernel::governance::{GovState, MemoryStore, VirtualKey};
 
 /// The fixture group: a group-wide requests cap (day), a group-wide budget (month), and a
 /// POOL-SCOPED budget on `frontier` (month) — three distinct `(window, pool?)` enforcement
@@ -1580,17 +1580,17 @@ fn usage_group_cfg() -> GroupCfg {
 /// token (in and out) — 1 cent per 1_000 tokens, so the derived-spend assertions are round.
 fn usage_cost(
     groups: &std::collections::BTreeMap<String, GroupCfg>,
-) -> busbar_core::cost::CostModel {
+) -> busbar_kernel::cost::CostModel {
     let card = std::collections::BTreeMap::from([(
         "m".to_string(),
-        busbar_core::config::RateEntryCfg {
+        busbar_kernel::config::RateEntryCfg {
             input_utok: 10.0,
             output_utok: 10.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
         },
     )]);
-    busbar_core::cost::CostModel::resolve_parts(Some(&card), 0, groups)
+    busbar_kernel::cost::CostModel::resolve_parts(Some(&card), 0, groups)
 }
 
 fn usage_key(group: &str) -> VirtualKey {
@@ -1712,7 +1712,7 @@ async fn get_group_usage_unknown_group_not_found() {
 /// same counts). A downstream FinOps consumer's parser keeps working across the upgrade.
 #[test]
 fn admin_usage_breakdown_json_is_byte_identical_flat_token_aliases() {
-    use busbar_core::admin::v1::contract::UsageBreakdown;
+    use busbar_kernel::admin::v1::contract::UsageBreakdown;
     let b = UsageBreakdown {
         tokens_input: 100,
         tokens_output: 40,
@@ -1818,7 +1818,7 @@ impl busbar_api::Store for FailingMeteringStore {
 #[test]
 fn usage_read_store_failure_logs_the_real_error() {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let cap = busbar_core::test_support::warn_capture::WarnCapture::default();
+    let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     tracing::subscriber::with_default(subscriber, || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -1954,7 +1954,7 @@ fn max_inspect_schema_json_bytes_is_exactly_256_kibibytes() {
 /// return `Some(false)` and pass a loose "it's false" check, but the detail text would be wrong.
 #[tokio::test]
 async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
-    let Some(env) = busbar_core::test_support::test_hook_env_with_wrong_kind_plugin(
+    let Some(env) = busbar_kernel::test_support::test_hook_env_with_wrong_kind_plugin(
         "test-hook",
         "test-wrong-kind",
     ) else {
@@ -2003,7 +2003,7 @@ async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
 /// would defeat the guard and double-push on every re-register.
 #[test]
 fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
     else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -2032,7 +2032,7 @@ fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
 #[test]
 fn build_with_hook_demote_only_removes_the_target_hook() {
     let Some(env) =
-        busbar_core::test_support::test_hook_env(&["test-hook", "test-hook-2"], Default::default())
+        busbar_kernel::test_support::test_hook_env(&["test-hook", "test-hook-2"], Default::default())
     else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -2062,7 +2062,7 @@ fn build_with_hook_demote_only_removes_the_target_hook() {
 #[test]
 fn build_without_hook_only_removes_the_target_from_global_wiring() {
     let Some(env) =
-        busbar_core::test_support::test_hook_env(&["test-hook", "test-hook-2"], Default::default())
+        busbar_kernel::test_support::test_hook_env(&["test-hook", "test-hook-2"], Default::default())
     else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -2111,7 +2111,7 @@ fn build_with_group_name_length_boundary_is_exact() {
 /// one is fine — a mutated `> 1` boundary needs both sides tested to catch `==`/`>=` variants.
 #[test]
 fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
     else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -2140,7 +2140,7 @@ fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
 /// every VALID global reference instead.
 #[test]
 fn build_with_registry_rejects_a_dangling_global_hook_reference() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
     else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -2171,7 +2171,7 @@ fn build_with_registry_rejects_a_dangling_global_hook_reference() {
 #[tokio::test]
 async fn healthz_returns_a_real_response_not_the_default() {
     let app = crate::new_test_app().build();
-    let resp = busbar_core::endpoints::healthz(busbar_core::state::CurrentApp(app)).await;
+    let resp = busbar_kernel::endpoints::healthz(busbar_kernel::state::CurrentApp(app)).await;
     use axum::body::to_bytes;
     let status = resp.status();
     let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
@@ -2196,7 +2196,7 @@ async fn healthz_returns_a_real_response_not_the_default() {
 /// whose gate disagrees with its own hook registry.
 #[test]
 fn hook_snapshot_builders_recompute_the_content_gate() {
-    let Some(env) = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default())
+    let Some(env) = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
     else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
@@ -2247,22 +2247,22 @@ fn hook_snapshot_builders_recompute_the_content_gate() {
 fn hook_derived_fields_follow_the_registry() {
     // PANIC, never skip: a rig that skips when the cdylib is absent reports green over the code it
     // was written to cover. Build it (`cargo build -p busbar-hook-test-plugin`) or fail loudly.
-    let env = busbar_core::test_support::test_hook_env(&["test-hook"], Default::default()).expect(
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default()).expect(
         "the hook-test plugin cdylib must be built for this test (cargo build -p \
          busbar-hook-test-plugin); refusing to skip the derived-field invariant",
     );
 
     /// Every `App` field that is a PURE FUNCTION of `hook_registry`, re-derived from the snapshot's
     /// own registry and compared against what the builder installed.
-    fn assert_hook_derived(app: &busbar_core::state::App, ctx: &str) {
+    fn assert_hook_derived(app: &busbar_kernel::state::App, ctx: &str) {
         assert_eq!(
             app.any_content_hook,
-            busbar_core::hooks::any_content_hook(&app.hook_registry),
+            busbar_kernel::hooks::any_content_hook(&app.hook_registry),
             "{ctx}: `any_content_hook` disagrees with the registry the snapshot installed"
         );
         assert_eq!(
             app.requested_signals,
-            busbar_core::hooks::requested_signals(&app.hook_registry),
+            busbar_kernel::hooks::requested_signals(&app.hook_registry),
             "{ctx}: `requested_signals` disagrees with the registry the snapshot installed — a \
              hook's `signals:` declaration did not take effect on the snapshot that installed it"
         );
@@ -2345,9 +2345,9 @@ plugins:
         // double-quoted scalar would read `\U`/`\v`/... as invalid escapes and fail to parse.
         evil_dir.display()
     );
-    let deploy: busbar_core::config::DeployCfg =
+    let deploy: busbar_kernel::config::DeployCfg =
         serde_yaml::from_str(&yaml).expect("test DeployCfg yaml must parse");
-    let def: busbar_core::config::ProviderDef = serde_yaml::from_str(
+    let def: busbar_kernel::config::ProviderDef = serde_yaml::from_str(
         "protocol: anthropic\nbase_url: https://api.anthropic.com\nerror_map:\n  \"400\": client_error\n",
     )
     .unwrap();

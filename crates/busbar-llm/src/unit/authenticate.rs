@@ -5,7 +5,7 @@
 //!
 //! On this plane, today, that question is already answered by the time any plane code runs. The
 //! HTTP auth middleware runs the configured chain and resolves the one verdict
-//! (`busbar_core::auth::resolve_data_plane_identity`) before the request reaches a handler; what it
+//! (`busbar_kernel::auth::resolve_data_plane_identity`) before the request reaches a handler; what it
 //! leaves behind is a [`busbar_api::PlaneRequestCtx`] carrying the resolved `Arc<VirtualKey>`, and
 //! that context is the only thing the LLM ingress is handed about identity
 //! (`native_ingress::operation_ingress_inner`'s `gov` parameter, and everything it threads on).
@@ -23,7 +23,7 @@
 //!
 //! Every refusal this step could raise — `Unauthenticated`, `Revoked`, `SchemeNotDeclared`,
 //! `ChallengeExhausted` — is raised UPSTREAM of the plane today, by the middleware, and rendered by
-//! `busbar_core::auth::unauthorized_response`: the vendor-native 401 shaped by the dialect the path
+//! `busbar_kernel::auth::unauthorized_response`: the vendor-native 401 shaped by the dialect the path
 //! resolves to, never a plane-shaped one. A request that reaches this step is a request the chain
 //! already admitted, so there is no input to this function that can refuse, and inventing an arm
 //! that could would be a SECOND door answering a question the first one already answered —

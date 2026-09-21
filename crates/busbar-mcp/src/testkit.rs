@@ -177,7 +177,7 @@ impl<A: TestAppSeam> TestAppMcpExt for A {
 /// An MCP per-generation runtime carrying the given `tools:` registrations, type-erased — for
 /// busbar-core integration tests that seed a LIVE tools section on a hand-built `App` (so the admin
 /// named-map CRUD sees it) WITHOUT naming `McpRuntime`. Signature names only `ToolsCfg` + `Arc<dyn
-/// Any>`, no `busbar_core` type, so it type-checks across the crate boundary.
+/// Any>`, no `busbar_kernel` type, so it type-checks across the crate boundary.
 pub fn mcp_runtime_with_servers(tools: ToolsCfg) -> Arc<dyn std::any::Any + Send + Sync> {
     Arc::new(McpRuntime {
         catalogue: Arc::new(crate::mcp::catalogue::Catalogue::build(&tools)),
@@ -256,7 +256,7 @@ pub fn swap_test_http_server(url: &str) -> McpServerDefCfg {
 /// verify-on-call reuses the snapshot rather than re-fetching on the next `tools/call`. Relocated here
 /// from busbar-core's `test_support` (it names `mcp::runtime`/`mcp::client` types). Reads the runtime
 /// through the NEUTRAL `runtime_slots(&dyn PlaneSlots)` seam — `App` implements `PlaneSlots`, so a
-/// caller hands its `&App` straight in and this helper names no `busbar_core` type.
+/// caller hands its `&App` straight in and this helper names no `busbar_kernel` type.
 pub fn prefresh_mcp_sightings(slots: &dyn busbar_substrate::plane_host::PlaneSlots) {
     use crate::mcp::client::catalogue::ServerCatalogue;
     use crate::mcp::client::identity::ServerId;

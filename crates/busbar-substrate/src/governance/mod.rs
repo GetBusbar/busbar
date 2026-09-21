@@ -5,7 +5,7 @@
 //! the busbar-signed token crypto (`signing`), the mint-parameter struct (`NewKeySpec`), and the
 //! metering-bucket time base (`metering_bucket` + `METERING_BUCKET_SECS`). Pure data and pure
 //! arithmetic — no `App`, no `Store`, no engine reach. Core re-exports each from its old
-//! `busbar_core::governance::…` path so its own call sites are unchanged.
+//! `busbar_kernel::governance::…` path so its own call sites are unchanged.
 
 pub mod signing;
 
@@ -53,7 +53,7 @@ pub fn metering_bucket(now: u64) -> u64 {
 /// A pure three-field figure with no engine dependency at all, so it lives HERE (the neutral
 /// governance vocabulary) rather than in the engine: a plane's tests read it back off the neutral
 /// registry seam (`testkit::engine_kit::GovKit::usage_for`), and the engine re-exports this very
-/// type as `busbar_core::governance::DerivedUsage` — the same type, one home.
+/// type as `busbar_kernel::governance::DerivedUsage` — the same type, one home.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DerivedUsage {
     /// The spend derived from the token ledger at the CURRENT card, truncated to whole cents.
@@ -66,5 +66,5 @@ pub struct DerivedUsage {
 
 /// Seconds in a UTC day — the day boundary the budget windows and the metering buckets are floored
 /// to. A bare calendar constant with no engine dependency, so it lives here in the neutral
-/// governance vocabulary; the engine re-exports it as `busbar_core::governance::SECS_PER_DAY`.
+/// governance vocabulary; the engine re-exports it as `busbar_kernel::governance::SECS_PER_DAY`.
 pub const SECS_PER_DAY: u64 = 86_400;

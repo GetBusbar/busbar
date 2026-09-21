@@ -10,7 +10,7 @@
 
 use axum::http::header::AUTHORIZATION;
 use busbar_api::ScopeRef;
-use busbar_core::auth::AuthMiddleware;
+use busbar_kernel::auth::AuthMiddleware;
 use busbar_substrate::sigv4::{
     sha256_hex, sign_v4, uri_encode_path, X_AMZ_CONTENT_SHA256, X_AMZ_DATE,
 };

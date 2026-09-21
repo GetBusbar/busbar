@@ -40,17 +40,17 @@ use std::time::Duration;
 
 use axum::Router;
 
-use busbar_core::{
+use busbar_kernel::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
     DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
-use busbar_core::{config, config_validate, export, metrics, observability, tls};
+use busbar_kernel::{config, config_validate, export, metrics, observability, tls};
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
 // unconditionally is an unused-import error there under `-D warnings`.
 #[cfg(not(target_env = "msvc"))]
-use busbar_core::REQUEST_ACTIVITY_TICKS;
+use busbar_kernel::REQUEST_ACTIVITY_TICKS;
 
 /// THE BUILD-PROVENANCE STAMP, as one machine-parseable line. Every field is baked at compile time
 /// by `build.rs` (see its header for what cargo does and does not expose) EXCEPT `debug-assertions`,
@@ -591,7 +591,7 @@ fn register_protocols() {
     // seams. `install_protocols_with_path_ingress` asserts at boot that every `has_model_in_url` decl
     // has an arrival, so the two registrations cannot drift into a silent 404-shaped fall-through.
     #[allow(unused_mut)]
-    let mut path_ingress: Vec<(&'static str, busbar_core::ingress::PathIngress)> = Vec::new();
+    let mut path_ingress: Vec<(&'static str, busbar_kernel::ingress::PathIngress)> = Vec::new();
     #[cfg(feature = "proto-llm")]
     {
         installed.extend_from_slice(busbar_llm::DECLS);
@@ -650,7 +650,7 @@ fn register_protocols() {
 }
 
 /// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis
-/// (`busbar_core::plane::registry::install_planes`), exactly `register_protocols`' shape on the
+/// (`busbar_kernel::plane::registry::install_planes`), exactly `register_protocols`' shape on the
 /// plane axis. The MCP plane is now a crate (`busbar-mcp`), so it contributes its `&PLANE_DECL` here
 /// under the `plane-mcp` feature; core's PRODUCTION build carries no MCP built-in row (it dual-compiles
 /// the plane back in for its own test builds only), and `merged_boot_plane_decls` folds this installed
@@ -663,7 +663,7 @@ fn register_protocols() {
 #[allow(clippy::vec_init_then_push)]
 fn register_planes() {
     #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_core::plane::registry::PlaneDecl> = Vec::new();
+    let mut installed: Vec<&'static busbar_kernel::plane::registry::PlaneDecl> = Vec::new();
     // The LLM plane, now its own crate (`busbar-llm`), contributes its `&PLANE_DECL` here behind the
     // SAME `proto-llm` feature that carries its dependency edge and its protocol `DECLS` — one switch
     // for the LLM protocol and the LLM plane, never two. `merged_boot_plane_decls` normalises the
@@ -686,14 +686,14 @@ fn register_planes() {
     // build with voice compiled out (`--no-default-features`) pushes nothing.
     #[cfg(feature = "plane-voice")]
     installed.push(&busbar_voice::PLANE_DECL);
-    busbar_core::plane::registry::install_planes(installed.leak());
+    busbar_kernel::plane::registry::install_planes(installed.leak());
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-oauth2` dependency above), before any config loads. Mirrors
     // `install_planes` immediately above for the same reason: one composition root, one
     // registration, before the first `App` is built.
     busbar_oauth2::install();
-    // Register the admin API service's mount seam (`busbar_core::admin::seam`) — the composition
+    // Register the admin API service's mount seam (`busbar_kernel::admin::seam`) — the composition
     // root is the one place entitled to name `busbar-admin`, exactly as it names `busbar-oauth2`
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
     // through the seam whenever this (mandatory) sibling is linked, which is every real build.
@@ -912,7 +912,7 @@ fn main() {
     // `&CoreHostlessEgress` is a ZST unit struct, so it promotes to `'static`.
     #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
     busbar_substrate::egress::seam::install_hostless_egress(
-        &busbar_core::egress::seam::CoreHostlessEgress,
+        &busbar_kernel::egress::seam::CoreHostlessEgress,
     );
     // THE EGRESS-TRUST HOST CAPABILITY (HOST-CAPS S3, DECISIONS #26), installed once here beside the
     // hostless-egress driver — the "both ends" binding of the outbound trust seam: the composition
@@ -931,12 +931,12 @@ fn main() {
     // and drives the generic `PlaneRecord` store directly at its own boot hook, so the composition root
     // binds no task codec or reader seam here — both were deleted with the relocation.
     // The parse-time section list: the A2A plane refuses a cross-plane hook reference against the WHOLE
-    // section fold (`busbar_core::plane::config::config_sections`, which reads the process plane
+    // section fold (`busbar_kernel::plane::config::config_sections`, which reads the process plane
     // registry), so it names no core registry. Bound here — after `register_planes`, before the CLI
     // flags read `--validate` — so config validation sees the populated list. Gated to `plane-a2a`.
     #[cfg(feature = "plane-a2a")]
     busbar_substrate::plane::config::install_plane_sections(
-        busbar_core::plane::config::config_sections,
+        busbar_kernel::plane::config::config_sections,
     );
     // The self-enveloping verb backing: the A2A `approve` verb builds its OWN response + audit
     // (`AdminReply::Prebuilt`) through the neutral `PlaneAdminEnvelope` seam, so it names no
@@ -945,7 +945,7 @@ fn main() {
     // Gated to `plane-a2a`.
     #[cfg(feature = "plane-a2a")]
     busbar_substrate::admin_verbs::install_plane_admin_envelope(
-        &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
+        &busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope,
     );
     // THE A2A PLANE'S KERNEL COMPOSITION, behind `root-a2a`, which is default-ON. The root is built
     // before any plane is switched onto it, so what this installs is the scope entries the approve
@@ -1192,7 +1192,7 @@ async fn run(data_workers: usize) {
     // `x-busbar-route-policy` / `x-busbar-route-target` are a fingerprintable observable, same class
     // as `Server-Timing: busbar` above, so they too default off and are gated by ONE process-wide
     // decision read at every emission site (`proxy::wire::maybe_attach_route_policy`).
-    busbar_core::proxy::configure_route_policy_headers(response_headers_cfg.route_policy);
+    busbar_kernel::proxy::configure_route_policy_headers(response_headers_cfg.route_policy);
     // METRICS OPT-IN, read here and nowhere else: 1.5.3 the switch is the built-in `prometheus`
     // EXPORTER (`export.prometheus`) — present ⇒ install the recorder (COLLECTION) with the operator's
     // REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay off for the life of the
@@ -1417,13 +1417,13 @@ async fn run(data_workers: usize) {
 
     // DURABLE STATE HYDRATION — the audit ring, the A2A task table, the MCP per-call log and
     // the MCP demotion/spent-approval records, restored from the configured governance store
-    // BEFORE a listener is bound. One boot entry point (`busbar_core::boot::hydrate_all`)
+    // BEFORE a listener is bound. One boot entry point (`busbar_kernel::boot::hydrate_all`)
     // rather than four widened statics: the sinks (`AUDIT`, `TASKS`, `CALLS`) and their
     // restore verbs stay crate-private in core, so nothing outside the engine can swap a sink
     // out from under the hash chains. The narration (which restore is a hiccup, which is
     // tamper evidence) moved with the code; see busbar-core/src/boot.rs. A plane whose durable
     // state cannot be restored REFUSES BOOT — `hydrate_all` propagates the plane hook's `Err`.
-    busbar_core::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
+    busbar_kernel::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
     // business, and nothing about it is restored from disk here. The durable config that makes "fix
@@ -1451,7 +1451,7 @@ async fn run(data_workers: usize) {
     // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
     // `Weak<App>` did when the boot snapshot drained.
     #[cfg(feature = "proto-llm")]
-    let boot_host = busbar_core::plane_host::engine_host(&app);
+    let boot_host = busbar_kernel::plane_host::engine_host(&app);
     #[cfg(feature = "proto-llm")]
     busbar_llm::spawn_probers(&boot_host);
 
@@ -1467,7 +1467,7 @@ async fn run(data_workers: usize) {
     // configured-but-unresolvable / malformed key — a fleet that MEANT to seal one must not come up
     // silently ungated. `None` (absent) ⇒ `OperatorState::Unset` in the posture view below.
     #[cfg(feature = "root-admin")]
-    let operator_key = busbar_core::preflight::resolve_operator_public_key(
+    let operator_key = busbar_kernel::preflight::resolve_operator_public_key(
         boot_operator_auth.as_ref(),
         &tls_secret_resolver,
     )
@@ -1586,7 +1586,7 @@ async fn run(data_workers: usize) {
     if let Some(gov) = app_handle.load().governance.clone() {
         // Handle intentionally dropped (not awaited): the flusher runs for the process lifetime and
         // exits its own loop on the shutdown broadcast; nothing here needs to join it.
-        std::mem::drop(busbar_core::governance::spawn_budget_flusher(
+        std::mem::drop(busbar_kernel::governance::spawn_budget_flusher(
             gov,
             shutdown_tx.subscribe(),
         ));
@@ -1601,7 +1601,7 @@ async fn run(data_workers: usize) {
     // is: a second job against the same registry would double every fetch and race every ledger stamp.
     // Fatal if an A2A outbound client identity does not resolve, exactly as before — the refusal text
     // is the plane hook's, propagated through `start_planes`.
-    busbar_core::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
+    busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
     // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
     // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve
@@ -1617,7 +1617,7 @@ async fn run(data_workers: usize) {
     if mcp_stdio_requested(std::env::args()) {
         // The neutral host factory, minted core-side and threaded into the stdio transport so the plane
         // re-mints the host over each frame's live snapshot without naming the core factory itself.
-        let factory = busbar_core::plane_host::live_host_factory(app_handle.clone());
+        let factory = busbar_kernel::plane_host::live_host_factory(app_handle.clone());
         let code = busbar_mcp::mcp::stdio_serve::serve_stdio(factory).await;
         if let Some(gov) = app_handle.load().governance.clone() {
             let n = gov.flush_budgets();
@@ -1766,7 +1766,7 @@ fn serve_thread_per_core(
     addr: String,
     data_router: Router,
     tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
-    secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
+    secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Vec<std::thread::JoinHandle<()>> {
@@ -1922,7 +1922,7 @@ async fn serve_listener(
     listener: tokio::net::TcpListener,
     router: Router,
     tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
-    secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
+    secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     label: &str,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     // The data workers' connection-placement balancer (`None` for the admin listener and
@@ -2305,9 +2305,9 @@ fn providers_override_notice(flag: Option<&str>, providers_file: Option<&str>) -
 /// `--validate`/`--migrate-config`, it writes nothing; the operator PLACES the key (busbar never
 /// edits their config). Exit 0 on success, 1 if the OS entropy source is unavailable.
 fn generate_signing_key_command() -> i32 {
-    // The mint lives behind `busbar_core::boot`: the CLI needs a hex string, not a `TokenSigner`,
+    // The mint lives behind `busbar_kernel::boot`: the CLI needs a hex string, not a `TokenSigner`,
     // so the signer type and its default kid stay crate-private in core.
-    let hex = match busbar_core::boot::generate_signing_key_hex() {
+    let hex = match busbar_kernel::boot::generate_signing_key_hex() {
         Ok(h) => h,
         Err(e) => {
             eprintln!(

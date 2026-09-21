@@ -9,7 +9,7 @@ use crate::test_support::BuiltApp as App;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use busbar_core::ingress::{
+use busbar_kernel::ingress::{
     admit_check, finish, finish_admitted, finish_rejected, governance_guard, ingress_error,
     not_found_message, percent_decode, pool_authorized, pool_label,
 };
@@ -2152,7 +2152,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         )
         .pool("gpool-a", &[(0, 1)])
         .pool("gpool-b", &[(0, 1)])
-        .auth(StdArc::new(busbar_core::auth::AuthMiddleware::new_builtin(
+        .auth(StdArc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(
             &auth_cfg,
         )))
         .governance_kit(gov)

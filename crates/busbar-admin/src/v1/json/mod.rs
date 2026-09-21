@@ -5,7 +5,7 @@
 //!
 //! The version-specific WIRE layer for the JSON transport: it declares the v1 routes, owns the v1 JSON
 //! envelope helpers, and maps each route to a shared `AdminService` call. It holds NO operation logic
-//! — logic lives in `super::service`, the frozen types in `busbar_core::admin::v1::contract`. A GraphQL adapter for v1
+//! — logic lives in `super::service`, the frozen types in `busbar_kernel::admin::v1::contract`. A GraphQL adapter for v1
 //! is a sibling `super::graphql` over the SAME service. Releasing v2 copies the whole `v1/` directory
 //! to `v2/`, changes only what differs, and mounts `/admin/v2/*` alongside; v1 keeps answering.
 
@@ -24,13 +24,13 @@ use super::service::{
     build_without_hook, AdminService,
 };
 use crate::transport::AdminTransport;
-use busbar_core::admin::v1::contract::taxonomy::Cond;
-use busbar_core::admin::v1::contract::{
+use busbar_kernel::admin::v1::contract::taxonomy::Cond;
+use busbar_kernel::admin::v1::contract::{
     AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_GROUPS, PATH_HOOKS,
     PATH_PLUGINS_INSPECT,
 };
-use busbar_core::audit_ring as audit;
-use busbar_core::state::AppHandle;
+use busbar_kernel::audit_ring as audit;
+use busbar_kernel::state::AppHandle;
 
 /// The OpenAPI response-object key (`"responses"`). Named here ONCE and assembled from fragments so
 /// this neutral admin source carries no bare `responses` token: the OpenAPI keyword collides with a
@@ -140,7 +140,7 @@ impl AdminTransport for JsonV1 {
             )
             .route("/openapi.json", get(openapi))
             // Virtual-key management — the keys resource of the SAME v1 admin surface. Handlers
-            // live in `busbar_core::admin` while they migrate into the layered service; mounting them
+            // live in `busbar_kernel::admin` while they migrate into the layered service; mounting them
             // here (not in main.rs) keeps the whole admin surface one router under one prefix.
             .route(
                 "/keys",
@@ -198,7 +198,7 @@ async fn record_declared_error(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    use busbar_core::admin::v1::contract::taxonomy;
+    use busbar_kernel::admin::v1::contract::taxonomy;
     let Some(method) = taxonomy::method_tag(req.method()) else {
         return next.run(req).await;
     };
@@ -210,7 +210,7 @@ async fn record_declared_error(
     let tag = resp.extensions().get::<taxonomy::observed::Tag>().copied();
     if let (Some(path), Some(tag)) = (matched, tag) {
         let rel = path
-            .strip_prefix(busbar_core::admin::v1::contract::ADMIN_PREFIX)
+            .strip_prefix(busbar_kernel::admin::v1::contract::ADMIN_PREFIX)
             .unwrap_or(&path);
         // UNDER-CLAIM IS FATAL, HERE, NOW. If a handler emitted something the endpoint's
         // declaration does not list, `openapi.json` would under-document the surface — so fail the
@@ -264,11 +264,11 @@ pub use busbar_substrate::api::ap;
 /// inside `txn::config_transaction`, which owns the (file-private) mutation lock, hands the body a
 /// FRESH post-lock snapshot, forces store/disk work onto `spawn_blocking`, and applies the resulting
 /// plan through `AppHandle::commit_and_swap`. See `txn.rs` for the four guarantees.
-// The config-mutation choke point RELOCATED to `busbar_core::config::transaction` (1.6.0 de-alias, stage
+// The config-mutation choke point RELOCATED to `busbar_kernel::config::transaction` (1.6.0 de-alias, stage
 // 2a): core infrastructure, not admin-surface vocabulary. Re-exported here so every existing
 // `config_transaction`/`Outcome` call site in this module tree is unchanged; `E` resolves to
 // `AdminError` by inference at every one of them (their bodies construct `AdminError::…` directly).
-pub(crate) use busbar_core::config::transaction::{config_transaction, Outcome};
+pub(crate) use busbar_kernel::config::transaction::{config_transaction, Outcome};
 
 /// The GENERIC named-DEFINITION map CRUD (`/identity-providers`, `/export`; further sections land
 /// additively as planes register them). One handler set for every section of the universal config
@@ -288,7 +288,7 @@ pub(crate) mod named_map;
 /// snapshot through the host the shim mints per request, so no build-time slot value is needed — a
 /// unit placeholder satisfies the signature.
 fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>> {
-    for decl in busbar_core::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane::registry::plane_decls() {
         if let Some(admin_routes) = decl.admin_routes {
             for spec in admin_routes(&() as &dyn std::any::Any) {
                 router = mount_one_admin_spec(router, decl.key, spec);
@@ -318,10 +318,10 @@ fn mount_one_admin_spec(
         kind,
         handler,
     } = spec;
-    let method_filter = busbar_core::plugin_routes::method_filter_of(method);
+    let method_filter = busbar_kernel::plugin_routes::method_filter_of(method);
     let shim = move |State(handle): State<Arc<AppHandle>>,
                      Path(name): Path<String>,
-                     principal: Option<axum::Extension<busbar_core::auth::AuthPrincipal>>,
+                     principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
                      headers: axum::http::HeaderMap,
                      body: axum::body::Bytes| {
         let handler = handler.clone();
@@ -330,7 +330,7 @@ fn mount_one_admin_spec(
             // LOAD + MINT stays 100% core-side (the plane names neither `AppHandle` nor the host
             // factory). `from_handle` mirrors the data-plane adapter; the verbs here read only the BOUND
             // slot, so it is byte-identical to the pre-seam `engine_host(&handle.load())` mint.
-            let host = busbar_core::plane_host::engine_host_from_handle(&handle);
+            let host = busbar_kernel::plane_host::engine_host_from_handle(&handle);
             let ctx = AdminReqCtx {
                 host,
                 name: name.clone(),
@@ -352,20 +352,20 @@ fn finish_admin_reply(
     plane: &'static str,
     name: &str,
     kind: busbar_substrate::admin_verbs::AdminVerbKind,
-    principal: Option<busbar_core::auth::AuthPrincipal>,
+    principal: Option<busbar_kernel::auth::AuthPrincipal>,
     reply: busbar_substrate::admin_verbs::AdminReply,
 ) -> Response {
     use busbar_substrate::admin_verbs::{AdminReply, AdminVerbKind};
     let record_audit = |outcome: &'static str| {
         if let AdminVerbKind::Audited { verb } = kind {
-            let anon = busbar_core::auth::AuthPrincipal(None);
+            let anon = busbar_kernel::auth::AuthPrincipal(None);
             let p = principal.as_ref().unwrap_or(&anon);
-            busbar_core::admin::planeverbs::audit(plane, verb, name, outcome, p);
+            busbar_kernel::admin::planeverbs::audit(plane, verb, name, outcome, p);
         }
     };
     match reply {
         AdminReply::Prebuilt(resp) => resp,
-        AdminReply::Refused(e) => err_json(&busbar_core::admin::planeverbs::to_admin_error(
+        AdminReply::Refused(e) => err_json(&busbar_kernel::admin::planeverbs::to_admin_error(
             plane, name, e,
         )),
         AdminReply::Applied(body) => {
@@ -374,14 +374,14 @@ fn finish_admin_reply(
             // body was serialized handler-side by the SAME `serde_json::to_string(&view)` call.
             (
                 StatusCode::OK,
-                [(CONTENT_TYPE, busbar_core::proxy::APPLICATION_JSON)],
+                [(CONTENT_TYPE, busbar_kernel::proxy::APPLICATION_JSON)],
                 body,
             )
                 .into_response()
         }
         AdminReply::Rejected(e) => {
             record_audit(audit::OUTCOME_REJECTED);
-            err_json(&busbar_core::admin::planeverbs::to_admin_error(
+            err_json(&busbar_kernel::admin::planeverbs::to_admin_error(
                 plane, name, e,
             ))
         }
@@ -391,11 +391,11 @@ fn finish_admin_reply(
 // ── JSON wire helpers (v1) ───────────────────────────────────────────────────────────────────────
 
 // The v1 envelope PRIMITIVES (`ok_json`/`err_json`/`err_json_cond`) STAY in busbar-core
-// (`busbar_core::admin::v1::json`): `busbar_core::router::fallback_error_response` renders `err_json`
-// for the native-API root, and `busbar_core::admin::planeverbs::CorePlaneAdminEnvelope` reaches all
+// (`busbar_kernel::admin::v1::json`): `busbar_kernel::router::fallback_error_response` renders `err_json`
+// for the native-API root, and `busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope` reaches all
 // three — so they cannot move here without the forbidden reverse dependency edge. Imported so every
 // call site below is unchanged.
-use busbar_core::admin::v1::json::{err_json, err_json_cond, ok_json};
+use busbar_kernel::admin::v1::json::{err_json, err_json_cond, ok_json};
 
 /// Map a service `Result<View, AdminError>` onto the JSON wire: `ok_json` on success (given status),
 /// `err_json` on error. The single seam every v1 json handler funnels through.
@@ -414,7 +414,7 @@ fn respond<T: Serialize>(status: StatusCode, result: Result<T, AdminError>) -> R
 fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize, Response> {
     match q.get("cursor") {
         None => Ok(0),
-        Some(c) => busbar_core::admin::v1::contract::decode_offset_cursor(c).ok_or_else(|| {
+        Some(c) => busbar_kernel::admin::v1::contract::decode_offset_cursor(c).ok_or_else(|| {
             err_json_cond(
                 &AdminError::Validation("invalid or foreign pagination cursor".into()),
                 Cond::MalformedCursor,
@@ -433,7 +433,7 @@ fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize,
 fn page_cursor<T>(items: &mut Vec<T>, start: usize, limit: usize) -> Option<String> {
     if items.len() > limit {
         items.truncate(limit);
-        Some(busbar_core::admin::v1::contract::encode_offset_cursor(
+        Some(busbar_kernel::admin::v1::contract::encode_offset_cursor(
             start.saturating_add(limit),
         ))
     } else {

@@ -13,7 +13,7 @@ use busbar_contract::caps::{Grant,
     Admission, Admittance, Approve, Audit, Authenticate, KernelSeal, OpClassId, Outcome,
     PrincipalId, Route, Dial, Pass, Consumption, VerifiedDestination, Verify,
 };
-use busbar_core::proxy::reqlog::REQUESTS;
+use busbar_kernel::proxy::reqlog::REQUESTS;
 use busbar_substrate::plane_host::EngineTablesView;
 use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 

@@ -28,11 +28,11 @@
 use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
-use busbar_core::core_routes::CoreRouter;
-use busbar_core::state::AppHandle;
+use busbar_kernel::core_routes::CoreRouter;
+use busbar_kernel::state::AppHandle;
 use busbar_plugin_loader::{RouteAuth, RouteMethod};
 
-/// The seam-typed mount (`busbar_core::oauth_as::seam::AsPlaneSeam::mount`): downcasts the
+/// The seam-typed mount (`busbar_kernel::oauth_as::seam::AsPlaneSeam::mount`): downcasts the
 /// type-erased plane object core hands in and defers to [`mount`]. Core cannot call [`mount`]
 /// directly — it would have to name `AsPlane`, the reverse edge Cargo refuses — so this is the
 /// function pointer `busbar_oauth2::install` actually registers.
@@ -108,7 +108,7 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&super::plane::AsPlane>) -
 /// three request handlers below. The ONLY place outside [`seam_mount`] this crate downcasts
 /// `App::oauth_as_any()` — every other reach in this file already holds a `&AsPlane` (from `mount`
 /// or from a handler that already called this once).
-fn as_plane(app: &busbar_core::state::App) -> Option<&super::plane::AsPlane> {
+fn as_plane(app: &busbar_kernel::state::App) -> Option<&super::plane::AsPlane> {
     app.oauth_as_any()
         .and_then(|p| p.downcast_ref::<super::plane::AsPlane>())
 }
@@ -120,7 +120,7 @@ fn as_plane(app: &busbar_core::state::App) -> Option<&super::plane::AsPlane> {
 /// that "improves" one of them is a gateway that fails a conformance suite for a reason nobody can
 /// find.
 async fn forward(
-    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     request: axum::extract::Request,
 ) -> Response {
     let Some(plane) = as_plane(&app) else {
@@ -144,7 +144,7 @@ async fn forward(
 /// be: a second opinion about who an operator is, held by the authorization server, is the exact
 /// duplication this plane was built not to have.
 async fn consent_screen(
-    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     axum::extract::Query(query): axum::extract::Query<ConsentQuery>,
 ) -> Response {
     let Some(plane) = as_plane(&app) else {
@@ -218,7 +218,7 @@ async fn consent_screen(
 /// paths is unambiguous by construction: no request path can match both, so no request ever carries
 /// two of them, and [`super::consent::session_id`] never has to choose.
 pub(super) fn session_cookies(
-    identity: &busbar_core::oauth_as::config::AsIdentity,
+    identity: &busbar_kernel::oauth_as::config::AsIdentity,
     id: &str,
 ) -> [String; 2] {
     // `Secure` follows the ISSUER'S SCHEME rather than being unconditional. Unconditional would be
@@ -259,7 +259,7 @@ pub(super) fn session_cookies(
 /// rather than from the form: a form field naming the scope would be a value the browser could
 /// change between being shown one thing and approving another.
 async fn consent_submit(
-    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     headers: axum::http::HeaderMap,
     axum::extract::Form(form): axum::extract::Form<ConsentForm>,
 ) -> Response {

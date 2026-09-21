@@ -4,8 +4,8 @@
 //! THE NEUTRAL FIXTURE HOST — an in-memory [`EngineHost`] a plane crate's tests drive INSTEAD of
 //! minting a host over the engine's `App`. A plane is a plugin on the plane ABI, and its tests must
 //! not reach into core any more than its production code does; before this fixture a plane test that
-//! needed a host had to build `busbar_core::test_support::TestApp` and call
-//! `busbar_core::plane_host::engine_host(&app)` — the exact backwards reach the purity lint forbids.
+//! needed a host had to build `busbar_kernel::test_support::TestApp` and call
+//! `busbar_kernel::plane_host::engine_host(&app)` — the exact backwards reach the purity lint forbids.
 //!
 //! This host models, in memory, just the host-side state a plane's production path drives through the
 //! seam and a test then reads back:

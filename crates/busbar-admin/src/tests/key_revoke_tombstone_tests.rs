@@ -7,8 +7,8 @@
 //! the 404 a truly nonexistent id gets. Driven end to end through the real router (mint, DELETE,
 //! then revoke) so the admin handler under test is the shipped one, not a reimplementation.
 
-use busbar_core::governance::signing::{TokenSigner, DEFAULT_KID};
-use busbar_core::governance::{GovState, MemoryStore};
+use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
+use busbar_kernel::governance::{GovState, MemoryStore};
 use std::sync::Arc;
 
 const X_ADMIN_TOKEN: &str = "x-admin-token";
@@ -16,7 +16,7 @@ const X_ADMIN_TOKEN: &str = "x-admin-token";
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
 
     let store = Arc::new(MemoryStore::new());
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
@@ -59,7 +59,7 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
 
     // A unique marker so this test's own audit rows are distinguishable from any other test
     // sharing the process-global AUDIT ring.
-    let before = busbar_core::audit_ring::AUDIT
+    let before = busbar_kernel::audit_ring::AUDIT
         .export()
         .iter()
         .filter(|e| e.resource == format!("key:{id}") && e.action == "key.revoke")
@@ -91,13 +91,13 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
     assert_eq!(body["revoked"], id.as_str());
 
     // A `key.revoke` / `applied` audit row landed for this key.
-    let after = busbar_core::audit_ring::AUDIT
+    let after = busbar_kernel::audit_ring::AUDIT
         .export()
         .iter()
         .filter(|e| {
             e.resource == format!("key:{id}")
                 && e.action == "key.revoke"
-                && e.outcome == busbar_core::audit_ring::OUTCOME_APPLIED
+                && e.outcome == busbar_kernel::audit_ring::OUTCOME_APPLIED
         })
         .count();
     assert!(

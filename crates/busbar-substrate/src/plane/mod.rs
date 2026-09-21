@@ -6,7 +6,7 @@
 //! These are the canonical spellings of the wire formats busbar's mounted planes speak. They live
 //! in the neutral substrate because a plane crate names them without reaching into `busbar-core`,
 //! and because a literal spelled per site is how two answers that must agree start to differ. The
-//! plane spine (`busbar_core::plane`) re-exports them unchanged.
+//! plane spine (`busbar_kernel::plane`) re-exports them unchanged.
 
 // D3 Phase-C: the neutral per-call record INPUT and the ask-state seal PODs a plane names when it
 // reaches the call-log / approval host seams. Both name only `std` + crypto, so they live here; core
@@ -16,12 +16,12 @@ pub mod calllog;
 
 // The NEUTRAL plane-observe response marker `Counted` — the one type a plane's handler and core's
 // `plane::observe` boundary both name. It carries nothing and names no engine type, so it lives
-// here; core re-exports it from `busbar_core::plane::observe` so its middleware reads the same type.
+// here; core re-exports it from `busbar_kernel::plane::observe` so its middleware reads the same type.
 pub mod observe;
 
 // The plane store seam's narrowing adapter: the `PlaneStore` trait a plane persists through and the
 // `PlaneStoreView` that narrows a real `busbar_api::Store` to it. Both name only `busbar_api` leaf
-// types, so they live here; core re-exports them from `busbar_core::plane::store`.
+// types, so they live here; core re-exports them from `busbar_kernel::plane::store`.
 pub mod store;
 
 // Phase-C config-seam: the NEUTRAL config-seam CONTRACTS a plane's config section is read through
@@ -35,7 +35,7 @@ pub mod config;
 // `BuildCtx` its `build` reads, the neutral `PlaneBootCtx` boot-context trait + its `RestoredSummary`
 // return, and the `BootHook` alias. Relocated here so an extracted plane crate constructs its own
 // `PlaneDecl` and every seam type its fields name without a path back to core. Core re-exports each
-// from `busbar_core::plane::registry`, and keeps the population glue + the concrete `BootCtx` (which
+// from `busbar_kernel::plane::registry`, and keeps the population glue + the concrete `BootCtx` (which
 // borrows the core-live `App`) that implements `PlaneBootCtx`.
 pub mod registry;
 
@@ -51,7 +51,7 @@ pub mod handle_engine;
 /// A PLANE'S OAUTH RESOURCE-SERVER ADMISSION FACTS — the audience a token must carry to be spent on
 /// this plane's mount, and the RFC 9728 metadata URL a refused caller is pointed at. A neutral POD so
 /// a plane crate contributes its admission across the mount seam without naming a core type; core
-/// re-exports it, so `busbar_core::plane::PlaneAdmission` still resolves there.
+/// re-exports it, so `busbar_kernel::plane::PlaneAdmission` still resolves there.
 ///
 /// The confused-deputy defence (RFC 8707) is "a token minted for someone else must not be spendable
 /// here". Keeping the audience beside the MOUNT (not in a handler) means the check is a property of

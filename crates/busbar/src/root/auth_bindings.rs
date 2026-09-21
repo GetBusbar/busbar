@@ -203,13 +203,13 @@ fn credential_cache() -> CredentialCache {
 /// there is no second opinion here about what a valid key is, no second denylist, and nothing this
 /// type could get wrong that the state has not already decided.
 pub struct GovernanceDirectory {
-    state: Arc<busbar_core::governance::GovState>,
+    state: Arc<busbar_kernel::governance::GovState>,
 }
 
 impl GovernanceDirectory {
     /// Bind the directory to one governance state.
     #[must_use]
-    pub fn new(state: Arc<busbar_core::governance::GovState>) -> Self {
+    pub fn new(state: Arc<busbar_kernel::governance::GovState>) -> Self {
         GovernanceDirectory { state }
     }
 }
@@ -251,7 +251,7 @@ pub const ADMIN_TOKENS_MODULE: &str = "admin-tokens";
 /// the same one the credential cache digests with, a few lines up — so there is no second spelling
 /// of the digest in this file, only one function named twice.
 pub struct AdminTokens {
-    state: Arc<busbar_core::governance::GovState>,
+    state: Arc<busbar_kernel::governance::GovState>,
 }
 
 impl AdminTokens {
@@ -261,7 +261,7 @@ impl AdminTokens {
     /// admin token expects the next request to be judged against the new one — a copy taken here
     /// would keep admitting the old credential until the process restarted.
     #[must_use]
-    pub fn new(state: Arc<busbar_core::governance::GovState>) -> Self {
+    pub fn new(state: Arc<busbar_kernel::governance::GovState>) -> Self {
         AdminTokens { state }
     }
 }
@@ -311,7 +311,7 @@ impl busbar_kernel_identity::module::AuthModule for AdminTokens {
 /// which is the previous release's "the admin API is disabled without a token", reached the same
 /// way rather than restated here.
 #[must_use]
-pub fn admin_chain(state: Arc<busbar_core::governance::GovState>) -> busbar_kernel_identity::AuthChain {
+pub fn admin_chain(state: Arc<busbar_kernel::governance::GovState>) -> busbar_kernel_identity::AuthChain {
     busbar_kernel_identity::AuthChain::new(
         vec![busbar_kernel_identity::chain::ChainEntry {
             provider: ADMIN_TOKENS_MODULE.to_string(),

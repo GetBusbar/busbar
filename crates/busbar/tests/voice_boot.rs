@@ -10,7 +10,7 @@
 use busbar_substrate::plane::registry::{check_owned_config_claims, register_test_plane};
 
 /// The real `CORE_OWNED_CONCRETE_SECTIONS` (providers/models/pools/rate_card/limits) — mirrored here
-/// because `busbar_core`'s const is `pub(crate)`. `busbar_core`'s own unit test
+/// because `busbar_kernel`'s const is `pub(crate)`. `busbar_kernel`'s own unit test
 /// `dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision` proves the guard against the
 /// REAL const; this literal is kept honest by that test plus the plane-config-noun gate.
 const CORE_OWNED_CONCRETE_SECTIONS: &[&str] =
@@ -34,7 +34,7 @@ fn voice_decl_owns_streams_and_wires_the_section_hooks() {
 }
 
 /// The dup-claim guard ADMITS the real voice decl: `streams` is not core-owned and voice is its sole
-/// claimant. (The collision-refusal half is proven directly in `busbar_core`'s registry unit test,
+/// claimant. (The collision-refusal half is proven directly in `busbar_kernel`'s registry unit test,
 /// which owns a second synthetic claimant against the real `CORE_OWNED_CONCRETE_SECTIONS`.)
 #[test]
 fn dup_claim_guard_admits_the_real_voice_decl() {
@@ -73,7 +73,7 @@ fn dup_claim_guard_refuses_a_planted_streams_collision() {
 #[test]
 fn registering_voice_puts_streams_into_config_sections() {
     register_test_plane(&busbar_voice::PLANE_DECL);
-    let sections = busbar_core::plane::config::config_sections();
+    let sections = busbar_kernel::plane::config::config_sections();
     assert!(
         sections.contains(&"streams"),
         "voice's owned `streams:` section must reach the config grammar once the plane is \

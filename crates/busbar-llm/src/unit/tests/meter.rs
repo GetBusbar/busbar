@@ -88,11 +88,11 @@ async fn rig() -> (
 /// A PRESENT rate card that prices the lane `m0` at zero on every tier, with the flat fee (`1`) the
 /// unbilled rig's `CostModel::flat(1)` default carried. `pricing_enabled` is true (a card is present)
 /// so #42 lets the metering row through, while every priced figure stays the no-card baseline's.
-fn billed_zero_card() -> busbar_core::cost::CostModel {
-    busbar_core::cost::CostModel::resolve_parts(
+fn billed_zero_card() -> busbar_kernel::cost::CostModel {
+    busbar_kernel::cost::CostModel::resolve_parts(
         Some(&std::collections::BTreeMap::from([(
             "m0".to_string(),
-            busbar_core::config::RateEntryCfg {
+            busbar_kernel::config::RateEntryCfg {
                 input_utok: 0.0,
                 output_utok: 0.0,
                 cache_read_utok: 0.0,
@@ -422,11 +422,11 @@ fn the_step_has_the_meters_shape() {
 /// projection turns into 2_000 and 6_000 nano-units per token. The two tiers are priced
 /// DIFFERENTLY on purpose: a card that priced them alike could not tell a money figure from a
 /// token count, which is the whole thing under test.
-fn priced_card() -> busbar_core::cost::CostModel {
-    busbar_core::cost::CostModel::resolve_parts(
+fn priced_card() -> busbar_kernel::cost::CostModel {
+    busbar_kernel::cost::CostModel::resolve_parts(
         Some(&std::collections::BTreeMap::from([(
             "m0".to_string(),
-            busbar_core::config::RateEntryCfg {
+            busbar_kernel::config::RateEntryCfg {
                 input_utok: 2.0,
                 output_utok: 6.0,
                 cache_read_utok: 0.0,
@@ -442,7 +442,7 @@ fn priced_card() -> busbar_core::cost::CostModel {
 /// the sink the door pins carries a card that actually prices something. No upstream is dialled
 /// here: this test drives the step directly over a usage report the reader already produced.
 fn priced_rig() -> (
-    std::sync::Arc<busbar_core::state::App>,
+    std::sync::Arc<busbar_kernel::state::App>,
     std::sync::Arc<busbar_api::VirtualKey>,
 ) {
     crate::testkit::install_test_seams();

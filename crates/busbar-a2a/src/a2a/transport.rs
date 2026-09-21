@@ -485,7 +485,7 @@ impl RelayTransport for ReqwestTransport {
         // the pump are ALL the seam's: `HostlessEgress::stream` runs the exact `stream_head`+`pump`
         // body over ONE hostless scope (see `CoreHostlessEgress::stream`), so a mid-body failure still
         // carries the flattened cause and the relay reports the same operator line — byte-identical to
-        // the manual orchestration this replaced, now naming no `busbar_core` egress driver.
+        // the manual orchestration this replaced, now naming no `busbar_kernel` egress driver.
         seam::send_pinned_stream(&hop, cap, on_chunk).map_err(|f| f.cause)
     }
 }

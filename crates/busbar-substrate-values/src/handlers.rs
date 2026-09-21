@@ -15,7 +15,7 @@
 //!
 //! RELOCATED DOWN from `busbar-core` (`handlers`) so the dialect crates implement these traits
 //! against the neutral substrate; core re-exports every item from its historical
-//! `busbar_core::handlers::…` path so its own call sites (and the netted dual-compile test build)
+//! `busbar_kernel::handlers::…` path so its own call sites (and the netted dual-compile test build)
 //! are unchanged. The engine dispatch handle (`OpDispatch`), the registry-resolved `chat`/`op_for`
 //! resolvers and `protocol_error` STAY in core — those name the core registry singleton.
 
@@ -517,9 +517,9 @@ pub trait RequestHandler: Send + Sync {
 /// the no-handler 404. A read of `ProtocolDecl::handler` — the cell a protocol DECLARES beside the
 /// codec, the verbs and the head keys, in the same struct.
 ///
-/// RELOCATED DOWN from `busbar_core::handlers` so the dialect crates resolve dispatch through the
+/// RELOCATED DOWN from `busbar_kernel::handlers` so the dialect crates resolve dispatch through the
 /// neutral ABI rather than reaching BACK into `busbar-core`. `busbar-core` re-exports every item in
-/// this block at its historical `busbar_core::handlers::…` path so in-core / plugin callers are
+/// this block at its historical `busbar_kernel::handlers::…` path so in-core / plugin callers are
 /// unchanged. Every dependency (`Transport`, `RawUpstreamError`, `Operation`, `TokenUsage`,
 /// `TEXT_EVENT_STREAM`, the registry `decl_for`) already lives on the substrate, so the move is
 /// by-identity.

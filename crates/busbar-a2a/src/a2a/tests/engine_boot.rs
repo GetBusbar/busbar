@@ -14,5 +14,5 @@ use busbar_substrate::testkit::engine_kit_plus::EngineTestKitPlus;
 
 /// The engine's test kit, bound once. Everything a test needs from the engine is a method on it.
 pub(crate) fn engine() -> &'static dyn EngineTestKitPlus {
-    &busbar_core::test_support::engine_kit::CORE_ENGINE_KIT
+    &busbar_kernel::test_support::engine_kit::CORE_ENGINE_KIT
 }

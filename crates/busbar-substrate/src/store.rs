@@ -297,7 +297,7 @@ impl BreakerCfg {
 
 // ── App-retype WEDGE 1 (1.6.0): the `LaneRuntime` type family relocated DOWN from `busbar-core`'s
 //    `store` so the LLM plane names the lane-runtime seam via the ABI instead of reaching back into
-//    `busbar_core::store::LaneRuntime`. `Admit`/`LaneSnapshot`/`LaneHealthSnapshot`(+its per-pool
+//    `busbar_kernel::store::LaneRuntime`. `Admit`/`LaneSnapshot`/`LaneHealthSnapshot`(+its per-pool
 //    `PoolCellHealthSnapshot`) travel with the trait because its method signatures name them; every
 //    other type they name (`Permit`/`BreakerState`/`Unavailable`/`BreakerCfg`) already lives here.
 //    Core re-exports each at its historical `crate::store::…` path so the in-memory breaker engine's
@@ -426,7 +426,7 @@ pub struct PoolCellHealthSnapshot {
 /// LaneRuntime trait - the seam for lane state access.
 /// Operations, NOT field access. `lane: usize` identifies a member.
 ///
-/// The in-memory breaker engine (`busbar_core::store::HealthState`) is the sole implementer; the
+/// The in-memory breaker engine (`busbar_kernel::store::HealthState`) is the sole implementer; the
 /// LLM plane's money path names `&dyn LaneRuntime` here so it drives lane admission/health without
 /// reaching into `busbar-core`. Its method signatures name only substrate types
 /// (`Permit`/`BreakerCfg`/`Admit`/`LaneSnapshot`/`LaneHealthSnapshot`/`BreakerState`/`Unavailable`),

@@ -4,7 +4,7 @@
 //! `IrHandle` — the SEALED, NEUTRAL request/response handle the operation-blind engine holds now that
 //! `IrReq`/`IrResp` have dissolved (G6 A4b). NEUTRAL, RELOCATED DOWN from `busbar-core` (`ir::handle`)
 //! at Batch C-4 so the dialect crates (`busbar-mcp`/`busbar-llm`/`busbar-a2a`) implement it without
-//! reaching into `busbar-core`. Core re-exports it from `busbar_core::ir::handle` so its own call
+//! reaching into `busbar-core`. Core re-exports it from `busbar_kernel::ir::handle` so its own call
 //! sites are unchanged.
 //!
 //! **SEALED (owner ruling 2026-08-20): a neutral TRAIT, never `Box<dyn Any>` + downcast.** Substrate

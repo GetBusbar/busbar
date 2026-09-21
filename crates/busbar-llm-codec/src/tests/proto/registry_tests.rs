@@ -396,7 +396,7 @@ impl busbar_substrate_values::ir::handle::IrHandle for TelexRespHandle {
 #[test]
 fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
     let reg = Registry::new(
-        busbar_core::proto::registry::builtin_decls()
+        busbar_kernel::proto::registry::builtin_decls()
             .iter()
             .copied()
             .chain(std::iter::once(&TELEX_DECL)),

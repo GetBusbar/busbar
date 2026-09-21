@@ -6,7 +6,7 @@
 //! no longer serves. Behavior is byte-identical; only the crate they live in changed.
 
 use axum::Router;
-use busbar_core::auth::X_ADMIN_TOKEN;
+use busbar_kernel::auth::X_ADMIN_TOKEN;
 
 /// A present-but-blank `x-admin-token` must be rejected on
 /// the admin surface. Driven end-to-end through the real router + `auth_middleware` so the
@@ -16,11 +16,11 @@ use busbar_core::auth::X_ADMIN_TOKEN;
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_admin_blank_header_token_rejected() {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::{GovState, MemoryStore};
 
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -76,11 +76,11 @@ async fn test_admin_blank_header_token_rejected() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::{GovState, MemoryStore};
 
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -155,11 +155,11 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_admin_token_not_acceptable_via_vendor_carriers() {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::{GovState, MemoryStore};
 
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -239,14 +239,14 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
     let (gov, _secret) = dp_gov_with_key();
     let app = crate::new_test_app().governance(gov).build();
     let (addr, handle) = dp_serve(app).await;
     // Mint a key through the admin API using the operator admin token.
     let r = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header(busbar_core::auth::X_ADMIN_TOKEN, "admintok")
+        .header(busbar_kernel::auth::X_ADMIN_TOKEN, "admintok")
         .header("content-type", "application/json")
         .body(serde_json::json!({"name": "minted-via-admin"}).to_string())
         .send()
@@ -260,7 +260,7 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
     // Wrong admin token → 401 (admin gate still enforced).
     let bad = reqwest::Client::new()
         .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header(busbar_core::auth::X_ADMIN_TOKEN, "nope")
+        .header(busbar_kernel::auth::X_ADMIN_TOKEN, "nope")
         .header("content-type", "application/json")
         .body(serde_json::json!({"name": "x"}).to_string())
         .send()
@@ -283,10 +283,10 @@ async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn split_admin_listener_no_double_exposure() {
-    use busbar_core::governance::{GovState, MemoryStore};
-    use busbar_core::test_support::LaneSpec;
+    use busbar_kernel::governance::{GovState, MemoryStore};
+    use busbar_kernel::test_support::LaneSpec;
     use std::sync::Arc;
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
 
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
@@ -295,7 +295,7 @@ async fn split_admin_listener_no_double_exposure() {
     let app = crate::new_test_app()
         .lane(LaneSpec::new(
             "test-model",
-            busbar_core::proto::PROTO_ANTHROPIC,
+            busbar_kernel::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -304,8 +304,8 @@ async fn split_admin_listener_no_double_exposure() {
     let (data_router, admin_router, _handle) = crate::build_split_routers_with_limits(
         app,
         busbar_substrate::proxy::max_translate_body_bytes(),
-        busbar_core::config::DEFAULT_MAX_INBOUND_CONCURRENT,
-        busbar_core::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+        busbar_kernel::config::DEFAULT_MAX_INBOUND_CONCURRENT,
+        busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
 
     async fn get(router: Router, path: &str, token: Option<&str>) -> u16 {
@@ -321,7 +321,7 @@ async fn split_admin_listener_no_double_exposure() {
         code
     }
 
-    let admin_path = format!("{}/keys", busbar_core::admin::v1::contract::ADMIN_PREFIX);
+    let admin_path = format!("{}/keys", busbar_kernel::admin::v1::contract::ADMIN_PREFIX);
     // Admin surface SERVED on the admin plane (valid token ⇒ 200).
     assert_eq!(
         get(admin_router.clone(), &admin_path, Some("admintok")).await,
@@ -351,15 +351,15 @@ async fn split_admin_listener_no_double_exposure() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_governance_admin_api() {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_kernel::governance::{GovState, MemoryStore};
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
     // A signing key is required to MINT signed-token keys (1.5.0).
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
@@ -461,7 +461,7 @@ async fn test_governance_admin_api() {
 // Local helpers copied from busbar-core's auth tests (shared there; a private copy here).
 /// Local helper: serve a router on an ephemeral port, returning (addr, join handle).
 async fn dp_serve(
-    app: std::sync::Arc<busbar_core::state::App>,
+    app: std::sync::Arc<busbar_kernel::state::App>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -471,12 +471,12 @@ async fn dp_serve(
 }
 
 /// A governance engine (admin token set) with ONE enabled, pool-`pa` virtual key. Returns (gov, secret).
-fn dp_gov_with_key() -> (std::sync::Arc<busbar_core::governance::GovState>, String) {
-    use busbar_core::governance::{GovState, MemoryStore, NewKeySpec};
+fn dp_gov_with_key() -> (std::sync::Arc<busbar_kernel::governance::GovState>, String) {
+    use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
-    let signer = busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_core::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = std::sync::Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),

@@ -14,7 +14,7 @@
 //! rather than re-typed here, so the gate and the golden cannot drift into checking different sets.
 //!
 //! This is the closed-set half of the alarm/dispute tripwire in
-//! `busbar_core::tests::alarm_silence_tests` (that one captures `tracing` + scans the exposition
+//! `busbar_kernel::tests::alarm_silence_tests` (that one captures `tracing` + scans the exposition
 //! from in-process; this one boots the real shipped binary end to end so the plane crates'
 //! actual `Cargo.toml` feature wiring, not a unit-test fixture, is what is under test).
 #![cfg(unix)]

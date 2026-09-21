@@ -118,13 +118,13 @@ pub mod plane {
     /// THE SECOND WIRE FORMAT THE A2A PLANE SPEAKS: A2A's HTTP+JSON binding, where the REQUEST LINE
     /// names the operation rather than a body member. Named once, here, because it is read three ways
     /// and all three must agree — as a `wire_format_names` entry, as the
-    /// `busbar_core::transport::Transport::HttpJson` label, and (upper-cased by
+    /// `busbar_kernel::transport::Transport::HttpJson` label, and (upper-cased by
     /// `a2a::serve::servable_bindings`) as the `protocolBinding` a served agent card advertises. The
     /// card spelling is `HTTP+JSON`, so this is that string lower-cased and nothing else.
     pub const WIRE_HTTP_JSON: &str = "http+json";
 
     /// The A2A specification's gRPC binding, as a wire-format name. Lower-case here and upper-cased
-    /// once, by `busbar_core::a2a::serve::servable_bindings`, into the `GRPC` an agent card advertises
+    /// once, by `busbar_kernel::a2a::serve::servable_bindings`, into the `GRPC` an agent card advertises
     /// — so the card cannot claim a binding the plane does not list, which is the whole reason that
     /// function reads this list rather than writing one of its own.
     pub const WIRE_GRPC: &str = "grpc";

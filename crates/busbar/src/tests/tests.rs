@@ -5,7 +5,7 @@
 // named failure mode — validate_worker_threads_config and signing_key_command_output have no
 // other coverage.
 use super::*;
-use busbar_core::test_support::EnvVarGuard;
+use busbar_kernel::test_support::EnvVarGuard;
 
 /// `worker_threads_from_env`: an unset var returns None (the normal default path, no warning); a
 /// valid positive integer returns Some(n); zero/negative/non-numeric returns None WITH a warning
@@ -263,7 +263,7 @@ async fn serve_listener_actually_serves_real_http_traffic() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let router = Router::new().route("/probe", axum::routing::get(|| async { "ok" }));
-    let secret_resolver = Arc::new(busbar_core::test_support::builtins_only_secret_resolver());
+    let secret_resolver = Arc::new(busbar_kernel::test_support::builtins_only_secret_resolver());
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
 
     let serve_handle = tokio::spawn(serve_listener(
@@ -300,7 +300,7 @@ async fn serve_listener_actually_serves_real_http_traffic() {
 fn signing_key_guidance_omits_secret() {
     // A real generated key (64 hex chars) through the boot doorway (the signer type stays
     // crate-private in core), so the assertion is against actual secret material.
-    let hex = busbar_core::boot::generate_signing_key_hex().expect("generate a signing key");
+    let hex = busbar_kernel::boot::generate_signing_key_hex().expect("generate a signing key");
     assert_eq!(hex.len(), 64, "sanity: an ed25519 secret is 64 hex chars");
 
     let (stdout, stderr) = signing_key_command_output(&hex);

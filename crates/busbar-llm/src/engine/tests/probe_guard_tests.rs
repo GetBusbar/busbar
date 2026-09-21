@@ -11,7 +11,7 @@ use super::ProbeGuard;
 // the legacy crate's, and still named from it: they have no home elsewhere yet.
 use busbar_substrate::store::{BreakerState, LaneRuntime};
 
-use busbar_core::store::{HealthState, LaneData};
+use busbar_kernel::store::{HealthState, LaneData};
 use std::sync::Arc;
 
 fn lane(max: usize) -> LaneData {

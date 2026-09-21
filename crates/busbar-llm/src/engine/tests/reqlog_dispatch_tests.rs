@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE MODEL PLANE'S CHAIN, PROVEN FROM THE OUTSIDE: a real model request, over a real socket,
-//! through `busbar_core::build_router` and the real governance guards, landing a real hash-chained record
+//! through `busbar_kernel::build_router` and the real governance guards, landing a real hash-chained record
 //! that is then read back and RECOMPUTED.
 //!
 //! ## Why this battery does not touch the log's write surface
@@ -29,7 +29,7 @@
 //! second chain of its own.
 
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_core::proxy::reqlog::{
+use busbar_kernel::proxy::reqlog::{
     RequestRecord, OUTCOME_DISPATCHED, OUTCOME_REFUSED, PRINCIPAL_UNGOVERNED, REASON_NOT_GRANTED,
     REQUESTS,
 };
@@ -139,7 +139,7 @@ async fn call(addr: std::net::SocketAddr, pool: &str, secret: &str) -> u16 {
 /// EVERY MODEL REQUEST LANDS ON THE PRESENTING KEY'S HASH CHAIN — the dispatch and the refusal
 /// alike, as consecutive links of one chain, and the chain RECOMPUTES.
 ///
-/// This is the `audit-chain x llm` cell. Before it, `grep busbar_core::audit` over `proxy/` and
+/// This is the `audit-chain x llm` cell. Before it, `grep busbar_kernel::audit` over `proxy/` and
 /// `handlers/` returned nothing at all: model traffic reached billing and telemetry and no
 /// tamper-evident record of any kind, while the other two planes chained theirs.
 ///

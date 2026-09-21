@@ -31,7 +31,7 @@
 //! back in under `crate::proto::{anthropic, …}` via `#[path]`, so core's pre-extraction fixture
 //! surface keeps exercising the real codecs from inside core's own test binary. Two consequences
 //! bind every file here: dialect sources address core by its crate name (core's
-//! `extern crate self as busbar_core` alias resolves that to itself), and a dialect referring to a
+//! `extern crate self as busbar_kernel` alias resolves that to itself), and a dialect referring to a
 //! SIBLING dialect must do it RELATIVELY — `super::gemini::…` from a `mod.rs`, `super::super::…`
 //! from one file deeper — because the parent module is this crate's root in one shape and
 //! `crate::proto` in the other, and only a relative path is correct in both.
@@ -165,7 +165,7 @@ pub mod unit;
 /// present solely in this crate's own test binary. Nothing outside that binary reaches this module.
 #[cfg(test)]
 pub mod test_support {
-    pub use busbar_core::test_support::*;
+    pub use busbar_kernel::test_support::*;
 
     /// THE CHAT DISPATCH CELL the money-path tests hold by value — `frame(Http, CHAT, ChatOperation)`
     /// over THIS crate's real openai chat codec. It USED to live in core's `handlers/tests/chat_fixture`
@@ -353,7 +353,7 @@ pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngres
 /// that owns the declaration — and the only place its `wire_format_names` field and
 /// `busbar_substrate::proto::known_protocols` resolve to the SAME `busbar-core` instance, so a by-pointer
 /// identity is meaningful (core's own test binary links two core instances and cannot check it — see
-/// `busbar_core`'s `the_llm_planes_dialects_are_the_registrys_...`). A mutation that replaced the
+/// `busbar_kernel`'s `the_llm_planes_dialects_are_the_registrys_...`). A mutation that replaced the
 /// registry read with a literal spelling today's six dialects — the vacuous shape a `PlaneDecl` uses
 /// to keep claiming dialects a build no longer compiles in — is a DIFFERENT fn pointer and fails here.
 #[cfg(test)]

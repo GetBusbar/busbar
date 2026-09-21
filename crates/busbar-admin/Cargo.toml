@@ -25,7 +25,7 @@ name = "busbar_admin"
 path = "src/lib.rs"
 
 [dependencies]
-busbar-core = { path = "../busbar-core", default-features = false }
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-substrate = { path = "../busbar-substrate" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-sign = { path = "../plugin-sign" }
@@ -50,23 +50,23 @@ schemars = { workspace = true, optional = true }
 default = ["auth-admin-tokens", "hooks-ranking", "plane-mcp", "plane-a2a"]
 # The moved v1 service has a `#[cfg(feature = "hooks-ranking")]` site; declare the feature (forwarded
 # to busbar-core) so the cfg is recognized, mirroring busbar-core's own default.
-hooks-ranking = ["busbar-core/hooks-ranking"]
+hooks-ranking = ["busbar-kernel/hooks-ranking"]
 # Forwards to busbar-core's own feature: the admin e2e tests authenticate through the `admin-tokens`
 # module, and the drift-audit test module is gated on it. A `--no-default-features` build compiles
 # the admin-token module OUT, disabling the admin API wholesale, exactly as it did in-core.
-auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
-plane-mcp = ["busbar-core/plane-mcp"]
-plane-a2a = ["busbar-core/plane-a2a"]
+auth-admin-tokens = ["busbar-kernel/auth-admin-tokens"]
+plane-mcp = ["busbar-kernel/plane-mcp"]
+plane-a2a = ["busbar-kernel/plane-a2a"]
 # Pulls busbar-core's `test-support` so a SIBLING crate can build an admin-configured `TestApp`, and
 # so this crate's own dev-deps resolve the fixtures.
-test-support = ["busbar-core/test-support"]
+test-support = ["busbar-kernel/test-support"]
 # The openapi-schema derive: the moved admin-view types derive `schemars::JsonSchema` under this
-# feature, mirroring busbar-core/busbar-a2a. Forwards to busbar-core/openapi-schema so the shared
+# feature, mirroring busbar-kernel/busbar-a2a. Forwards to busbar-kernel/openapi-schema so the shared
 # schema surface resolves in lock-step.
-openapi-schema = ["dep:schemars", "busbar-core/openapi-schema"]
+openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema"]
 
 [dev-dependencies]
-busbar-core = { path = "../busbar-core", default-features = false, features = ["test-support", "auth-admin-tokens", "plane-mcp", "plane-a2a"] }
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support", "auth-admin-tokens", "plane-mcp", "plane-a2a"] }
 # The moved cross-plane drift test drives the MCP and A2A plane trust-verb error surfaces. Their
 # testkits register the plane decls + the self-enveloping admin-verb backing (core's
 # `CorePlaneAdminEnvelope`, which STAYED in busbar-core). NOTE: do NOT enable busbar-admin/test-support

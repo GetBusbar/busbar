@@ -1421,7 +1421,7 @@ impl PostureView for UnsealedPosture {
 /// [`UnsealedPosture`].
 ///
 /// It carries ONE piece of sealed state: the operator-ceremony key, resolved once at boot from
-/// `auth.operator_pub` (a fleet-shared `operator.pub`, [`busbar_core::preflight::resolve_operator_public_key`]).
+/// `auth.operator_pub` (a fleet-shared `operator.pub`, [`busbar_kernel::preflight::resolve_operator_public_key`]).
 /// Present ⇒ [`OperatorState::Set`] with the raw 32-byte verifying key, which lifts the ceremony gate
 /// for the sealed key and hands D38's `amend_rate_history` the key it verifies a correction's
 /// signature against; ABSENT ⇒ [`OperatorState::Unset`], and this view then reports the EXACT posture

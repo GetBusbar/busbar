@@ -3,12 +3,12 @@
 # Step 3.A.1 of the plane split folded the MCP protocol codec in here: the `codec` module
 # (`src/codec/`) is the `ProtocolDecl`, the JSON-RPC dialect and the `tools/call` + subscription
 # operation cells — everything the former `busbar-proto-mcp` crate carried. The MCP PLANE (today's
-# former `crates/busbar-core/src/mcp`, ~18k lines: the catalogue, the call log, the client pool and its
+# former `crates/busbar-kernel/src/mcp`, ~18k lines: the catalogue, the call log, the client pool and its
 # transports, the config sections, boot hydration, the router mount and the admin API) folded in
 # BESIDE the codec in a later plane-split step — ONE PLUGIN PER PROTOCOL, and MCP the protocol and
 # MCP the plane are the same protocol, so they end up behind the same on/off switch rather than two.
 #
-# `busbar-core = { default-features = false }` mirrors `busbar-llm`: the feature decisions belong to
+# `busbar-kernel = { default-features = false }` mirrors `busbar-llm`: the feature decisions belong to
 # the composition root, not to a plugin. `busbar-api` is named ahead of the code that needs it, per
 # 1.6.0's owner ruling R-E, which plans this crate to depend on `busbar-api` the way
 # `busbar-auth-admin-tokens` and `busbar-hooks-ranking` do today.
@@ -17,7 +17,7 @@ name = "busbar-mcp"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+# `rust-version` rationale: see busbar-kernel/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
 description = "The Model Context Protocol for busbar: the MCP codec and the MCP plane, as one removable plugin. Shell only — code has not moved here yet."
 license = "Apache-2.0"
@@ -38,7 +38,7 @@ path = "src/lib.rs"
 # weak `auth-admin-tokens` forward below no longer needs an optional dep to hang off — is a change to
 # that one function and this manifest, not to the tests. (Optional rather than a dev-dependency today
 # because a feature cannot reference a dev-dep-only crate.)
-busbar-core = { path = "../busbar-core", default-features = false, features = ["plane-mcp"], optional = true }
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["plane-mcp"], optional = true }
 # The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the
 # diagnostics macros, the approvals seal, the config-section split, the hostless-egress seam. Carries
 # `plane-mcp` so the plane-gated items (the `HostlessEgress` seam, the relocated leaves) are present
@@ -56,7 +56,7 @@ busbar-mcp-codec = { path = "../busbar-mcp-codec" }
 busbar-plane-mcp-host = { path = "../busbar-plane-mcp-host" }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
-# The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the
+# The specification authors' own crate, pinned narrow (see busbar-kernel/Cargo.toml's rationale): the
 # codec takes the protocol VOCABULARY — MCP method names and parameter shapes — from it and nothing
 # else, so a name the SDK retires stops compiling here instead of being served.
 rmcp = { workspace = true }
@@ -134,7 +134,7 @@ openapi-schema = ["busbar-substrate/openapi-schema", "dep:schemars"]
 # The one `auth-admin-tokens` site is a test module. Forwarded WEAKLY (`?`) so enabling it never
 # force-pulls the optional busbar-core into a non-test-support build; it only cascades where
 # busbar-core is already in the closure (the test-support / dual-compile surface that test needs).
-auth-admin-tokens = ["busbar-core?/auth-admin-tokens"]
+auth-admin-tokens = ["busbar-kernel?/auth-admin-tokens"]
 # Pulls busbar-core (the optional dep) and its test fixtures so the plane's test binary can bind the
 # engine's test kit (`src/mcp/tests/engine.rs`); the plane tests themselves name only the neutral
 # `busbar_substrate::testkit::engine_kit` seam. This feature is the one edge that puts busbar-core in
@@ -143,10 +143,10 @@ auth-admin-tokens = ["busbar-core?/auth-admin-tokens"]
 # forwards `plane-mcp`/`plane-a2a` too — the same both-planes shape core's own dual-compile test binary
 # builds with — or the fixture's `crate::a2a` references are configured out and cannot resolve.
 test-support = [
-    "dep:busbar-core",
-    "busbar-core/test-support",
-    "busbar-core/plane-mcp",
-    "busbar-core/plane-a2a",
+    "dep:busbar-kernel",
+    "busbar-kernel/test-support",
+    "busbar-kernel/plane-mcp",
+    "busbar-kernel/plane-a2a",
     "dep:reqwest",
     "dep:busbar-store-memory",
 ]

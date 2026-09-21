@@ -15,7 +15,7 @@
 //!
 //! The family-blind `IrFacts` projection over `InvokeReq` lives HERE (relocated beside its data at
 //! Batch C-2, keeping the orphan rule satisfied now that the `IrFacts` trait is substrate-resident);
-//! core re-exports both the type and the projection through `busbar_core::ir::invoke`.
+//! core re-exports both the type and the projection through `busbar_kernel::ir::invoke`.
 
 use super::SourceScopedExtra;
 use busbar_api::operation::Operation;

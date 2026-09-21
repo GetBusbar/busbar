@@ -18,7 +18,7 @@
 //!
 //! - [`AdminRouteSpec`] + [`AdminReqCtx`] + [`AdminReply`] are the ROUTE-MOUNT half (ADMIN-3), mirroring
 //!   the data plane's [`crate::plane_routes`]: a plane returns a flat list of `(method, path, scope,
-//!   kind, handler)` specs; the CORE-side adapter (`busbar_core::admin::v1::json`) is the single place
+//!   kind, handler)` specs; the CORE-side adapter (`busbar_kernel::admin::v1::json`) is the single place
 //!   that still names `Arc<AppHandle>` / `ok_json` / `err_json` / the audit chain. It loads the handle,
 //!   mints the host, builds an [`AdminReqCtx`], awaits the neutral handler, and — for an
 //!   [`AdminVerbKind::Audited`] verb — records the audit row from the [`AdminReply`] the handler
@@ -59,7 +59,7 @@ pub enum PlaneVerbError {
 
 /// ONE PLANE'S REGISTERED-UPSTREAM SURFACE: which plane, how to find one registration, and how to look
 /// at it. Relocated here (ADMIN-2) now that both `resolve` and `look` name only neutral types — the
-/// host seam and [`PlaneVerbError`]. Core re-exports this as `busbar_core::admin::planeverbs::PlaneTrust`
+/// host seam and [`PlaneVerbError`]. Core re-exports this as `busbar_kernel::admin::planeverbs::PlaneTrust`
 /// for `connect`'s bound; a plane's `impl PlaneTrust` names this crate, not core.
 pub trait PlaneTrust: Send + Sync + 'static {
     /// Which plane this surface belongs to, by registry key. Supplies the `404` noun and the audit
@@ -237,7 +237,7 @@ pub struct AdminRouteSpec {
 ///
 /// A "prebuilt" verb (A2A `approve`) carries condition-tagged validation errors and a bespoke success
 /// view, so it cannot ride the shared `Refused`/`Applied`/`Rejected` shim. It instead reaches these
-/// methods, whose CORE impl (`busbar_core::admin::CorePlaneAdminEnvelope`) maps each neutral input
+/// methods, whose CORE impl (`busbar_kernel::admin::CorePlaneAdminEnvelope`) maps each neutral input
 /// back onto the real `err_json`/`err_json_cond`/`ok_json`/`to_admin_error`/`planeverbs::audit` — so
 /// the wire bytes, the frozen taxonomy `Cond` tag, and the audit row are byte-identical to the plane
 /// having called them directly, while the plane names only this seam.
@@ -282,7 +282,7 @@ static PLANE_ADMIN_ENVELOPE: std::sync::OnceLock<&'static dyn PlaneAdminEnvelope
     std::sync::OnceLock::new();
 
 /// BIND the core envelope backing. Idempotent (first bind wins); the composition root calls this once
-/// at startup with `&busbar_core::admin::CorePlaneAdminEnvelope`.
+/// at startup with `&busbar_kernel::admin::CorePlaneAdminEnvelope`.
 pub fn install_plane_admin_envelope(envelope: &'static dyn PlaneAdminEnvelope) {
     let _ = PLANE_ADMIN_ENVELOPE.set(envelope);
 }

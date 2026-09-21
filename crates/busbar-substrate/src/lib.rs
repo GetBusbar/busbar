@@ -43,16 +43,16 @@ pub use busbar_substrate_values::{diag_debug, diag_error, diag_warn};
 pub mod net_guard;
 // A′ (ABI-purity P4): the ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`),
 // relocated DOWN from `busbar-core` so the `busbar-llm` engine names it via the ABI instead of
-// reaching back into `busbar_core::profile`. Pure std (atomics/Mutex/Instant), no `App`/`Store`
+// reaching back into `busbar_kernel::profile`. Pure std (atomics/Mutex/Instant), no `App`/`Store`
 // reach, and — like the metrics registry — its accumulator buckets live SINGLE-COMPILED here so a
 // dual-compiled plane test binary shares one profiler rather than splitting the sample set across
-// two core instances. Core re-exports it from `busbar_core::profile` so its own call sites (the
+// two core instances. Core re-exports it from `busbar_kernel::profile` so its own call sites (the
 // `auth`/`ingress` stage spans) are unchanged.
 pub mod profile;
 // A′ (ABI-purity P4): the neutral hot-path OBSERVABILITY floor a plane names via the ABI. Only the
 // pure `HOTPATH_LEVEL` compile-time const lives here (the OTLP/stderr two-filter split's DEBUG
 // floor); the App/webhook/net_guard-facing remainder of observability stays in busbar-core. Core
-// re-exports this const from `busbar_core::observability::HOTPATH_LEVEL` so its call sites are
+// re-exports this const from `busbar_kernel::observability::HOTPATH_LEVEL` so its call sites are
 // unchanged.
 pub mod observability {
     /// The tracing level at/above which the per-request hot-path spans (`forward`, lane-pick, egress)
@@ -62,10 +62,10 @@ pub mod observability {
 }
 // wt2/neutral-utils: the five NEUTRAL transport/crypto utility leaves relocated down from
 // busbar-core so a plane crate (busbar-llm) names them via the ABI instead of reaching back into
-// `busbar_core::`. Each is pure (no plane/`App`/`Store` knowledge): JSON canonicalization + the
+// `busbar_kernel::`. Each is pure (no plane/`App`/`Store` knowledge): JSON canonicalization + the
 // depth-guarded parser seam (`sonic-rs`), the base64/media-type helper, the AWS EventStream (SSE)
 // framing codec, the source-scoped lossless-extras namespace, and the hand-rolled SigV4 signer.
-// Core re-exports each from its old `busbar_core::<mod>` path so its own call sites are unchanged.
+// Core re-exports each from its old `busbar_kernel::<mod>` path so its own call sites are unchanged.
 pub use busbar_substrate_values::{eventstream, json, lossless, media, sigv4};
 pub mod audit {
     pub mod vocab;
@@ -124,7 +124,7 @@ pub mod duration;
 // The neutral protocol handler matrix — `OperationHandler`/`RequestHandler` and their codec-cell
 // value families (`Cell`/`cell_of`/`IngressReject`/`CodecError`/`TranslateCodec`). Relocated from
 // `busbar-core` so the dialect crates implement them here; core re-exports each from
-// `busbar_core::handlers`. The engine dispatch handle and registry-resolved chat/op_for stay in core.
+// `busbar_kernel::handlers`. The engine dispatch handle and registry-resolved chat/op_for stay in core.
 pub use busbar_substrate_values::handlers;
 // The neutral cross-plane IR leaves (`Invoke`/`Subscribe` request/response data) and the wire/egress
 // value types (`WireBody`/`EgressCtx`). Pure value families a plane crate names directly; core keeps
@@ -144,7 +144,7 @@ pub mod plane_routes;
 // ADMIN-2/3: the NEUTRAL PLANE TRUST-VERB SEAM — `PlaneTrust`/`PlaneVerbError`/`registered` (resolve +
 // look) and `AdminRouteSpec`/`AdminReqCtx`/`AdminReply` (route mount), so a plane declares its admin
 // trust verbs and resolves one registration without naming `AdminError`/`Scope`/`Arc<AppHandle>`/the
-// core JSON envelope. Core re-exports the resolve/look half from `busbar_core::admin::planeverbs`.
+// core JSON envelope. Core re-exports the resolve/look half from `busbar_kernel::admin::planeverbs`.
 pub mod admin_verbs;
 pub mod admin_witness;
 // The protocol registry: the whole declaration vocabulary and the registry runtime re-exported from
@@ -170,9 +170,9 @@ pub mod trust;
 // THE EGRESS-AUTH SEAM: the outbound credential dispatch (`resolve`/`prebuild_auth`/
 // `CredentialProvider`/`MetadataSsrfPolicy`), the two self-minting OAuth mechanisms (`jwt_bearer` /
 // `oauth_client_credentials`, RFC 7523 / RFC 6749 §4.4) with their shared cached-token machinery,
-// and the egress `gate` submodule. Relocated DOWN from `busbar_core::egress_auth` (the LLM plane
+// and the egress `gate` submodule. Relocated DOWN from `busbar_kernel::egress_auth` (the LLM plane
 // named it as its last backwards reach); core re-exports every item at its historical
-// `busbar_core::egress_auth::*` path so every in-core caller is unchanged. Secret material stays
+// `busbar_kernel::egress_auth::*` path so every in-core caller is unchanged. Secret material stays
 // `busbar_api::Redacted` and the mint wire form is byte-identical — proven by the migrated mint
 // suite (`jwt_bearer` / `oauth_client_credentials` / `helper` / `bearer_token` tests).
 pub mod catalogue;
@@ -181,8 +181,8 @@ pub mod failover;
 pub mod store;
 // THE NEUTRAL PER-SESSION SUBSTRATE: a `(session, owner) → opaque slot` store (bounded LRU + TTL,
 // pin-aware, clock injected as `now_ms`), std-only with zero busbar deps. Relocated DOWN from
-// `busbar_core::session` so the neutral gate and the planes name one substrate type; core re-exports
-// it at its historical `busbar_core::session::…` path (public API byte-identical). Distinct from the
+// `busbar_kernel::session` so the neutral gate and the planes name one substrate type; core re-exports
+// it at its historical `busbar_kernel::session::…` path (public API byte-identical). Distinct from the
 // plane-streaming/voice and kernel session tables, which are unrelated.
 pub mod session;
 pub mod telemetry;
@@ -193,18 +193,18 @@ pub mod telemetry;
 pub mod metrics;
 // The neutral GOVERNANCE value families — the busbar-signed token crypto, the mint-parameter struct
 // and the metering-bucket time base. Pure data + crypto with no `App`/`Store` reach; core re-exports
-// each from its old `busbar_core::governance::…` path.
+// each from its old `busbar_kernel::governance::…` path.
 pub mod governance;
 // ABI-purity CONFIG-ENUMS: the neutral LLM-runtime config VALUE enums (`PolicyOnError` /
 // `ProviderAuth`) a plane names via the ABI. Fieldless serde enums moved DOWN with their derives +
 // `#[serde(...)]` attrs VERBATIM (byte-identical wire form); core re-exports each from its historical
-// `busbar_core::config::` path so the frozen config grammar + every deserialization are unchanged.
+// `busbar_kernel::config::` path so the frozen config grammar + every deserialization are unchanged.
 pub mod config;
 
 // THE NEUTRAL hook value/wire layer (1.6.0 hooks seam): the plain-data resolved-policy carriers
 // (`ResolvedPolicy`/`FallbackHook`) and the outbound hook-request `wire` projection, relocated off
-// `busbar_core::hooks::` so the LLM model plane names the substrate ABI. Core re-exports these from its
-// historical `busbar_core::hooks::` paths; the reply-side normalizers stay core-side.
+// `busbar_kernel::hooks::` so the LLM model plane names the substrate ABI. Core re-exports these from its
+// historical `busbar_kernel::hooks::` paths; the reply-side normalizers stay core-side.
 pub mod hooks;
 
 // THE SUBSTRATE TELLER IS GONE (W2.b, DECISIONS #28). The one governed request loop every plane rode
@@ -214,13 +214,13 @@ pub mod hooks;
 // went with it, replaced by the byte-identical inline fallback in `plane_host::run_gauntlet[_session]`.
 
 // THE NEUTRAL TEST-APP SEAM the plane test-kits drive the engine's test fixture through, so a plane
-// crate builds/reaches the test App without naming `busbar_core::state::App`/`test_support::TestApp`.
+// crate builds/reaches the test App without naming `busbar_kernel::state::App`/`test_support::TestApp`.
 // Revealed only under the test surface (core implements it for `TestApp`), like the sibling doubles.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit;
 
 // WEDGE 3-PREP: the neutral data-plane topology facts (worker count / per-thread worker id) + the
-// per-worker-sharded upstream client they size, relocated DOWN from `busbar_core::state` so a plane
+// per-worker-sharded upstream client they size, relocated DOWN from `busbar_kernel::state` so a plane
 // crate names them without reaching into `busbar-core`. Core re-exports each at its historical
-// `busbar_core::state::…` path.
+// `busbar_kernel::state::…` path.
 pub mod topology;

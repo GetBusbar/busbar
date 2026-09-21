@@ -136,7 +136,7 @@ fn the_plane_names_no_kernel_side_crate() {
         "busbar_kernel",
         "busbar_unit",
         "busbar_substrate",
-        "busbar_core",
+        "busbar_kernel",
         "busbar_plane_llm",
         "busbar_plane_a2a",
     ];

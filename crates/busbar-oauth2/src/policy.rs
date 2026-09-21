@@ -28,7 +28,7 @@
 //! `allowed_grant_types` is therefore pinned to the two the authorization-code flow needs, and the
 //! adversarial test asserts the refusal rather than the configuration.
 
-use busbar_core::oauth_as::config::AsIdentity;
+use busbar_kernel::oauth_as::config::AsIdentity;
 use oauth_as::registration::{RegistrationAttempt, RegistrationDecision, RegistrationPolicy};
 
 /// The policy for every deployment that configured `oauth_as:`: anyone may register, and

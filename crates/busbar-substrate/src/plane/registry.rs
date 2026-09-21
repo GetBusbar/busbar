@@ -7,14 +7,14 @@
 //! ## Why this lives here
 //!
 //! `PlaneDecl` is the DATA a plane hands the composition root so a plane that is not in core joins by
-//! being handed to the same constructor (`busbar_core::plane::registry::install_planes`). An EXTRACTED
+//! being handed to the same constructor (`busbar_kernel::plane::registry::install_planes`). An EXTRACTED
 //! plane crate (`busbar-mcp`, `busbar-a2a`) constructs its own `PlaneDecl` and every seam type its
 //! fields name; for it to do so without a path back to core, those types live in the neutral substrate.
-//! Core RE-EXPORTS each from `busbar_core::plane::registry` so the in-core call sites — the fold, the
+//! Core RE-EXPORTS each from `busbar_kernel::plane::registry` so the in-core call sites — the fold, the
 //! dispatch build, the boot hooks and the built-in `PLANE_DECL`s — are unchanged.
 //!
 //! What STAYS in core is the population glue (`BUILTIN_PLANE_DECLS`, `plane_decls`, `install_planes`,
-//! `merged_boot_plane_decls`, `build_dispatch`) — it names `busbar_core::plane::Plane` /
+//! `merged_boot_plane_decls`, `build_dispatch`) — it names `busbar_kernel::plane::Plane` /
 //! `PlaneDispatch` and the built-in plane statics, all core-live — and `BootCtx`, whose store surface
 //! is `PlaneStore` but whose phase fields borrow the core-live `App` / `AppHandle`. A plane boot hook
 //! reads that context through the NEUTRAL [`PlaneBootCtx`] trait (which `BootCtx` implements core-side),
@@ -66,14 +66,14 @@ pub struct BuildCtx<'a> {
 /// its phase; an `Err` REFUSES BOOT (the fold propagates it with `?`).
 ///
 /// The context is the NEUTRAL [`PlaneBootCtx`] trait object rather than the core-live `BootCtx` struct
-/// so an extracted plane crate's boot hook names no `busbar_core` type: the MCP hook reads only the
+/// so an extracted plane crate's boot hook names no `busbar_kernel` type: the MCP hook reads only the
 /// neutral methods, while an in-core plane (A2A) recovers the concrete `BootCtx` through
 /// [`PlaneBootCtx::as_any`].
 pub type BootHook = fn(&dyn PlaneBootCtx) -> Result<(), String>;
 
 /// A NEUTRAL, PLAIN-DATA SUMMARY of what a boot rehydrate of a plane's durable per-call log found —
 /// the value [`PlaneBootCtx::restore_call_log`] returns so a plane's hydrate hook can log the outcome
-/// WITHOUT naming the core-live `busbar_core::calllog::Restored` type (which carries the rich
+/// WITHOUT naming the core-live `busbar_kernel::calllog::Restored` type (which carries the rich
 /// `audit::ChainBreak`). Every field is the same value the old `Restored` comparison and logging
 /// relied on: the three counts verbatim, and each chain break as its already-Display-formatted
 /// string (the exact text the hook logged via `%brk`), so an all-default summary means an all-default
@@ -99,7 +99,7 @@ pub struct RestoredSummary {
 /// out of band to pin busbar by. Deliberately NOT the signer and NOT its seed: a boot hook publishes
 /// the public half, it never signs, so no signing material crosses this seam (invariant (a)). Lives in
 /// the neutral substrate so the A2A boot hook reads it off [`PlaneBootCtx::card_issuer`] without naming
-/// a `busbar_core` type; core re-exports it at `busbar_core::plane::registry::CardIssuer` so every
+/// a `busbar_kernel` type; core re-exports it at `busbar_kernel::plane::registry::CardIssuer` so every
 /// in-core caller (`governance::state`, the A2A plane's own card slot) resolves unchanged.
 #[derive(Clone)]
 pub struct CardIssuer {
@@ -108,9 +108,9 @@ pub struct CardIssuer {
 }
 
 /// THE NEUTRAL BOOT-CONTEXT SEAM a plane's [`PlaneDecl::hydrate`] / [`PlaneDecl::start`] hook reads,
-/// implemented core-side by `busbar_core::plane::registry::BootCtx` — so an extracted plane crate
+/// implemented core-side by `busbar_kernel::plane::registry::BootCtx` — so an extracted plane crate
 /// (MCP) drives its boot restore through typed, neutral methods without the hook signature naming
-/// `busbar_core::state::App`.
+/// `busbar_kernel::state::App`.
 ///
 /// The MCP-facing methods each forward to the core-owned engine the concrete `BootCtx` wraps, keeping
 /// every `App` / `PlaneStore` / `Store` reach on the CORE side of this seam (invariant (a)): the boot
@@ -167,7 +167,7 @@ pub trait PlaneBootCtx {
 
 /// EVERYTHING CORE KNOWS ABOUT A PLANE'S VOCABULARY, declared once by the plane itself.
 ///
-/// Every field replaces one arm of one `match self` on `busbar_core::plane::Plane`. The doc on each
+/// Every field replaces one arm of one `match self` on `busbar_kernel::plane::Plane`. The doc on each
 /// says which strings it feeds, because these are the strings that must not agree by coincidence: two
 /// planes sharing a scope kind is how one plane's grant admits another plane's traffic, and two planes
 /// sharing an audit kind is how one plane's records start answering another plane's question.
@@ -185,7 +185,7 @@ pub struct PlaneDecl {
     /// TRUE for the ONE built-in plane that declares itself the FALLBACK catch-all — the plane every
     /// unclaimed path falls through to, which mounts nothing and binds no audience (the LLM plane). It
     /// is an EXPLICIT, NEUTRAL capability a plane opts into, not an implicit "whatever is left over":
-    /// core reads the fallback plane's key OFF THIS FLAG (`busbar_core::plane::fallback_key`) rather
+    /// core reads the fallback plane's key OFF THIS FLAG (`busbar_kernel::plane::fallback_key`) rather
     /// than from a hard-coded `"llm"` literal, so the fallback-guard (`PlaneDispatch::mount`/`admit`
     /// no-op) and the model-plane telemetry branch name no dialect. At most one built-in plane sets
     /// this; a build installs exactly one fallback (the LLM plane is unconditional).
@@ -223,7 +223,7 @@ pub struct PlaneDecl {
 
     /// The distinct WIRE FORMATS this plane translates between, named. A FUNCTION rather than a
     /// slice for exactly one reason, and it is the reason the field is worth its indirection: the
-    /// LLM plane's answer is `busbar_core::proto::known_protocols` — read off the live protocol
+    /// LLM plane's answer is `busbar_kernel::proto::known_protocols` — read off the live protocol
     /// registry, so a seventh dialect does not depend on anybody remembering to bump a literal here.
     /// A plane whose list is constant returns a `&'static` slice and pays nothing.
     ///
@@ -270,7 +270,7 @@ pub struct PlaneDecl {
     /// [`crate::plane_routes::PlaneRouteSpec`] — each a `(path, method, auth, handler)`
     /// where the handler is a neutral async fn over a
     /// [`crate::plane_routes::PlaneReqCtx`], never an `axum` extractor or `Arc<AppHandle>`.
-    /// The CORE adapter (`busbar_core::router::mount_plane_routes`) iterates the specs and, per spec,
+    /// The CORE adapter (`busbar_kernel::router::mount_plane_routes`) iterates the specs and, per spec,
     /// calls the EXISTING `CoreRouter::route` with the same `(path, method, auth)`, so the
     /// `CoreRouteTable` rows are byte-identical to the ones a core-typed handler would record — only
     /// the handler's shape sits behind the neutral seam.
@@ -294,7 +294,7 @@ pub struct PlaneDecl {
     /// [`crate::admin_verbs::AdminRouteSpec`] — each a `(method, path, scope, kind, handler)`
     /// where the handler is a neutral async fn over an
     /// [`crate::admin_verbs::AdminReqCtx`], never an `axum` extractor or `Arc<AppHandle>`. The
-    /// CORE adapter (`busbar_core::admin::v1::json::mount_plane_admin_routes`) registers each spec at
+    /// CORE adapter (`busbar_kernel::admin::v1::json::mount_plane_admin_routes`) registers each spec at
     /// its VERBATIM `(method, path)`, so the auth middleware's `required_scope(method, path)` is
     /// byte-identical — the security invariant this seam preserves.
     #[allow(clippy::type_complexity)]
@@ -311,21 +311,21 @@ pub struct PlaneDecl {
     pub openapi: Option<fn() -> serde_json::Value>,
 
     /// RESTORE THIS PLANE'S DURABLE STATE, in order, BEFORE a listener is bound — the plane half of
-    /// `busbar_core::boot::hydrate_all`. Handed a [`PlaneBootCtx`] whose store surface is `PlaneStore`
+    /// `busbar_kernel::boot::hydrate_all`. Handed a [`PlaneBootCtx`] whose store surface is `PlaneStore`
     /// and nothing that carries the audit chain, so a hydrate hook can attach the plane's write-through
     /// sinks and read them back but can never touch the append-only chain (invariant (a)). `None` for
     /// a plane with no durable state to restore (the LLM plane). A hook returning `Err` REFUSES BOOT:
-    /// `busbar_core::boot::hydrate_all` propagates it with `?`, so a plane cannot half-restore and serve.
+    /// `busbar_kernel::boot::hydrate_all` propagates it with `?`, so a plane cannot half-restore and serve.
     pub hydrate: Option<BootHook>,
 
     /// START THIS PLANE'S BOOT-TIME WORK, AFTER the listeners are built — the plane half of
-    /// `busbar_core::boot::start_planes`. Handed the same [`PlaneBootCtx`], now carrying the live app
+    /// `busbar_kernel::boot::start_planes`. Handed the same [`PlaneBootCtx`], now carrying the live app
     /// handle, the shutdown broadcast a spawned loop exits on and the deployment's PUBLIC card-issuer
     /// key (never its seed). Since verify-on-call replaced the background sweep, the built-in start
     /// hooks no longer spawn a reverify loop — the MCP plane has no start hook at all, and the A2A one
     /// only resolves and publishes its per-agent card transports. `None` for a plane that starts
     /// nothing. A hook returning `Err` REFUSES BOOT — an outbound identity that does not resolve is a
-    /// startup failure, never a warning — so `busbar_core::boot::start_planes` propagates it with `?`.
+    /// startup failure, never a warning — so `busbar_kernel::boot::start_planes` propagates it with `?`.
     pub start: Option<BootHook>,
 
     /// VALIDATE ONE RAW NAMED-DEFINITION DOCUMENT for this plane's config section — the write-path
@@ -407,7 +407,7 @@ pub struct PlaneDecl {
     pub reresolve_gates: Option<fn(&mut dyn crate::plane_host::ContainerGateSink)>,
 
     /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
-    /// schema pass in `busbar_core::admin::v1::json::handlers::openapi_doc`. Handed the SHARED response
+    /// schema pass in `busbar_kernel::admin::v1::json::handlers::openapi_doc`. Handed the SHARED response
     /// and request [`schemars::SchemaGenerator`]s and the `paths` map, it registers its own view/body
     /// types into `#/components/schemas` and attaches their `$ref`s onto the paths its [`Self::openapi`]
     /// fragment inserted — so `handlers` names no `crate::mcp`/`crate::a2a` view type and the document
@@ -426,7 +426,7 @@ pub struct PlaneDecl {
     >,
 
     /// CARRY THIS PLANE'S ENGINE-OWNED STATE ACROSS A CONFIG SWAP — the plane half of
-    /// `busbar_core::state::AppHandle::swap`. Run once per swap, AFTER the next snapshot is fully built
+    /// `busbar_kernel::state::AppHandle::swap`. Run once per swap, AFTER the next snapshot is fully built
     /// and BEFORE it is published, with the PRIOR and NEXT snapshots each type-erased as `&dyn Any`.
     /// A plane whose runtime state is rebuilt from config on every apply carries nothing and sets this
     /// `None`; a plane that holds live state which deliberately OUTLIVES an apply (a connection pool,
@@ -539,7 +539,7 @@ pub struct PlaneDecl {
     /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,
     /// [`crate::config::providers::ProviderDeploy`]) INTO THE RESOLVED
     /// [`crate::config::providers::ProviderCfg`] a lane is built from — the providers/models/pools
-    /// LOGIC seam (1.6.0 pools stage-B). `busbar_core::config::resolve` calls this at the EXACT point
+    /// LOGIC seam (1.6.0 pools stage-B). `busbar_kernel::config::resolve` calls this at the EXACT point
     /// the per-deployment merge always ran (right after the catalog lookup, itself unconditional core
     /// orchestration — "provider referenced but not found in providers.yaml" stays a core error), so
     /// the merged fields and their precedence (deployment override wins, catalog default otherwise)
@@ -615,7 +615,7 @@ pub fn check_owned_config_claims(
 // A plane's `testkit` registers its `&'static PlaneDecl` here — a SUBSTRATE type — exactly as
 // production's composition root `install_planes` does, so the extracted plane crates reach the neutral
 // ABI (`busbar_substrate::plane::registry::register_test_plane`) rather than back into
-// `busbar_core::plane::registry`. `busbar-core`'s test-support `plane_decls()` folds this list ahead of
+// `busbar_kernel::plane::registry`. `busbar-core`'s test-support `plane_decls()` folds this list ahead of
 // its built-ins on every read, so a plane registered by any test before it reads the list is visible
 // regardless of test order.
 #[cfg(any(test, feature = "test-support"))]
@@ -646,7 +646,7 @@ static TEST_ISOLATION_OWNER: std::sync::Mutex<Option<std::thread::ThreadId>> =
 /// the composition root's `install_planes` does in production. Idempotent by plane key; a plane's
 /// `testkit` calls it (from its build-time finalizer, and eagerly from config-surface tests) so the
 /// fixture registry matches a shipped "busbar with this plane" binary. The storage lives HERE, on the
-/// neutral substrate, so a plane crate names no `busbar_core::` implementation to register itself.
+/// neutral substrate, so a plane crate names no `busbar_kernel::` implementation to register itself.
 ///
 /// Takes the [`TEST_REGISTRY_SERIAL`] lock around the mutation so a concurrent [`TestRegistryIsolation`]
 /// either observes this registration in full or excludes it for its whole lifetime — never a torn view.

@@ -5,11 +5,11 @@
 //!
 //! This is a pure POD: it names no core type, only `std`. It lives in the substrate so a plane crate
 //! builds a [`CallInput`] and hands it to the `EngineHost::call_log_emit` / `call_log_emit_hostless`
-//! seam without naming `busbar_core::calllog`; the core call-log engine consumes it unchanged
-//! (core re-exports this type, so `busbar_core::calllog::CallInput` still resolves in core).
+//! seam without naming `busbar_kernel::calllog`; the core call-log engine consumes it unchanged
+//! (core re-exports this type, so `busbar_kernel::calllog::CallInput` still resolves in core).
 
 /// The fields a caller supplies for one call record. `seq`, `prev_hash` and `hash` are NOT here:
-/// they are the chain's own business and are supplied by `busbar_core::audit::Chain::append`, so no
+/// they are the chain's own business and are supplied by `busbar_kernel::audit::Chain::append`, so no
 /// call site can supply a sequence number or a link of its own choosing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallInput {

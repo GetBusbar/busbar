@@ -6,7 +6,7 @@
 //! `Option<u32>`, `u32`, `[u32; 4]`, `Option<usize>`) — it names ZERO concrete LLM IR — and the core
 //! driver (`proxy/wire.rs`) is what *constructs* it from lane config. Relocated DOWN from
 //! `busbar-core` (`ir::egress_prep`) at Batch C-1 so a plane crate names it without reaching into
-//! `busbar-core`; core re-exports it from its historical path (`busbar_core::ir::egress_prep`).
+//! `busbar-core`; core re-exports it from its historical path (`busbar_kernel::ir::egress_prep`).
 
 /// Resolved primitives for [`crate::ir::handle::IrHandle::prepare_for_egress`] — never a `Lane` or
 /// config handle.

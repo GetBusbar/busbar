@@ -211,7 +211,7 @@ const READ_ONLY_POST_PATHS: &[&str] = &["/config/validate", "/plugins/inspect"];
 /// dry-run `POST`s is `read-only`; every mutation needs `full`. Unknown methods fail closed to
 /// `full`.
 ///
-/// Ported verbatim from 1.5.5's `busbar_core::admin::v1::contract::required_scope` (behaviourally
+/// Ported verbatim from 1.5.5's `busbar_kernel::admin::v1::contract::required_scope` (behaviourally
 /// identical; the only change is that `method` is a plain string here instead of `axum::http::Method`,
 /// so this crate carries no HTTP-framework dependency at all).
 pub fn admin_required_scope(method: &str, path: &str) -> Scope {

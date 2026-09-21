@@ -7,7 +7,7 @@
 //! NEUTRAL, RELOCATED DOWN from `busbar-core` (`ir::facts`) at Batch C-2 — the trait `IrFacts`, the
 //! provenance `Slot`, the borrowed `ContentItem`, the `Shape` counts and the `NeutralFacts` empty
 //! projection are the operation-blind projection surface a second protocol family (`busbar-mcp`)
-//! implements without reaching into `busbar-core`. Core re-exports each from `busbar_core::ir::facts`
+//! implements without reaching into `busbar-core`. Core re-exports each from `busbar_kernel::ir::facts`
 //! so every in-core and plugin caller is unchanged.
 //!
 //! **THIS FILE CONTAINS NO EXECUTABLE PROTOCOL COMPARISON AND MUST NEVER CONTAIN ONE.** No

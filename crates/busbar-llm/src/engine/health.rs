@@ -130,7 +130,7 @@ impl ProbeSchedule {
 /// only strong reference the prober contributed, so dropping it lets the old `App` free once its last
 /// in-flight request drains — and (b) prevents the old generation from leaking forever (one task-set
 /// per reload) and writing outcomes into an orphaned store. Anchoring on the host holder instead of the
-/// raw `App` is what lets this module name NO `busbar_core` type: the prober reaches its lanes/probe
+/// raw `App` is what lets this module name NO `busbar_kernel` type: the prober reaches its lanes/probe
 /// config/store/egress client entirely through the neutral [`EngineHost`] seams.
 pub fn spawn_probers(host: &Arc<dyn EngineHost>) {
     use std::sync::atomic::Ordering;

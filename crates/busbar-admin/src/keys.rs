@@ -30,15 +30,15 @@ where
     Option::<T>::deserialize(de).map(Some)
 }
 
-use busbar_core::admin::v1::contract::taxonomy::Cond;
-use busbar_core::admin::v1::contract::AdminError;
-use busbar_core::audit_ring as audit;
-use busbar_core::config::parse::parse_duration_secs;
-use busbar_core::diagnostics::{
+use busbar_kernel::admin::v1::contract::taxonomy::Cond;
+use busbar_kernel::admin::v1::contract::AdminError;
+use busbar_kernel::audit_ring as audit;
+use busbar_kernel::config::parse::parse_duration_secs;
+use busbar_kernel::diagnostics::{
     diag_debug, diag_error, ADMIN_CREATEKEY_MALFORMED_BODY, ADMIN_STORE_OPERATION_FAILED,
     ADMIN_STORE_TASK_JOIN_FAILED, ADMIN_UPDATEKEY_MALFORMED_BODY, CREATEKEY_UNKNOWN_POOL,
 };
-use busbar_core::governance::{NewKeySpec, VirtualKey};
+use busbar_kernel::governance::{NewKeySpec, VirtualKey};
 
 /// Process-wide gate serializing the existence-sensitive critical sections of the key store.
 ///
@@ -122,15 +122,15 @@ pub(crate) struct CreateKeyReq {
 }
 
 // `MintPolicy`/`RoleCeiling`/`MintRequest`/`apply_mint_ttl_ceiling`/`DEFAULT_KEY_TTL_SECS`
-// RELOCATED to `busbar_core::governance::mint_policy` (1.6.0 de-alias, stage 2a): core mint-decision
+// RELOCATED to `busbar_kernel::governance::mint_policy` (1.6.0 de-alias, stage 2a): core mint-decision
 // infrastructure read on the hot mint path (`state.rs`'s `App::mint_policy`, `auth/exchange.rs`,
 // `auth/token.rs`), never admin-surface vocabulary. Imported below so the mint-handler call sites in
 // this file are unchanged; byte-identical move (same values, same decisions, same messages).
-use busbar_core::governance::mint_policy::{MintRequest, DEFAULT_KEY_TTL_SECS};
+use busbar_kernel::governance::mint_policy::{MintRequest, DEFAULT_KEY_TTL_SECS};
 
-// `parse_duration_secs` RELOCATED to `busbar_core::config::parse` (1.6.0 de-vocab): it is a neutral
+// `parse_duration_secs` RELOCATED to `busbar_kernel::config::parse` (1.6.0 de-vocab): it is a neutral
 // config-parsing helper (`config_validate`, `config::named_map`), not admin-surface vocabulary.
-// Imported below (`use busbar_core::config::parse::parse_duration_secs;`) so the mint-TTL call sites in
+// Imported below (`use busbar_kernel::config::parse::parse_duration_secs;`) so the mint-TTL call sites in
 // this file are unchanged.
 
 #[cfg(test)]
@@ -138,7 +138,7 @@ use busbar_core::governance::mint_policy::{MintRequest, DEFAULT_KEY_TTL_SECS};
 mod parse_duration_secs_tests;
 
 // The `ERR_TYPE_NOT_FOUND`/`ERR_TYPE_INVALID_REQUEST` wire error-type tokens RELOCATED to
-// `busbar_core::taxonomy` (1.6.0 de-vocab): they are core's own ingress error taxonomy, consumed by
+// `busbar_kernel::taxonomy` (1.6.0 de-vocab): they are core's own ingress error taxonomy, consumed by
 // `ingress::dispatch`/`ingress::arrival_host`/`router`, not the admin HTTP API. See the module doc
 // there. Byte-identical rename: the constant string VALUES are unchanged.
 
@@ -219,7 +219,7 @@ fn is_valid_label_name(name: &str) -> bool {
 fn json_response(status: StatusCode, body: Value) -> Response {
     (
         status,
-        [(CONTENT_TYPE, busbar_core::proxy::APPLICATION_JSON)],
+        [(CONTENT_TYPE, busbar_kernel::proxy::APPLICATION_JSON)],
         body.to_string(),
     )
         .into_response()
@@ -278,7 +278,7 @@ pub(crate) const KEY_RESOURCE_NONE: &str = "key:-";
 /// per-arm remembering. See [`KeyAudit`].
 fn key_err(who: KeyAudit<'_>, e: &AdminError, cond: Cond) -> Response {
     record_key_refusal(who);
-    busbar_core::admin::v1::json::err_json_cond(e, cond)
+    busbar_kernel::admin::v1::json::err_json_cond(e, cond)
 }
 
 /// The audit half of [`key_err`], usable on its own by the one refusal door that cannot name a
@@ -299,9 +299,9 @@ fn record_key_refusal(who: KeyAudit<'_>) {
 /// column/table names, or paths from the store backend) is logged server-side via `tracing::error!`;
 /// the HTTP body carries only a generic message so internal storage details are never disclosed to
 /// the client (even an authenticated admin). `op` names the operation for log correlation.
-fn internal_error(op: &str, e: &busbar_core::governance::StoreError) -> Response {
+fn internal_error(op: &str, e: &busbar_kernel::governance::StoreError) -> Response {
     diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = op, error = %e, "admin store operation failed");
-    busbar_core::admin::v1::json::err_json(&AdminError::Internal)
+    busbar_kernel::admin::v1::json::err_json(&AdminError::Internal)
 }
 
 #[cfg(test)]
@@ -312,7 +312,7 @@ mod internal_error_tests;
 //
 // The keys handlers below are mounted ONLY at the canonical `/api/v1/admin/keys*` routes (via the
 // `crate::v1::json::JsonV1` router), and speak the ONE frozen v1 contract
-// (`busbar_core::admin::v1::contract`): the `{error:{code,message}}` envelope with the stable code
+// (`busbar_kernel::admin::v1::contract`): the `{error:{code,message}}` envelope with the stable code
 // enum. The module tree (`transport`, `restart`, `v1`, `keys`) is declared by this crate's `lib.rs`;
 // `planeverbs`/`versions`/`v1::contract`/`v1::json` (envelope primitives) STAYED in busbar-core.
 
@@ -321,7 +321,7 @@ mod internal_error_tests;
 /// field changes, so `If-Match` detects a concurrent modification (409, no lost update).
 fn key_etag(k: &VirtualKey) -> String {
     let meta = key_meta(k);
-    busbar_core::sigv4::sha256_hex(meta.to_string().as_bytes())[..16].to_string()
+    busbar_kernel::sigv4::sha256_hex(meta.to_string().as_bytes())[..16].to_string()
 }
 
 /// Parse the optional `If-Match` header for a KEY mutation (PATCH/DELETE `/keys/{id}`): the key's
@@ -385,7 +385,7 @@ fn key_meta(k: &VirtualKey) -> Value {
 ///   row kept).
 /// - else `!enabled`          → **disabled** (`PATCH {enabled:false}`: reversible, not denylisted).
 /// - else                     → **active**.
-fn key_state(k: &VirtualKey, gov: &busbar_core::governance::GovState) -> &'static str {
+fn key_state(k: &VirtualKey, gov: &busbar_kernel::governance::GovState) -> &'static str {
     if k.deleted_at.is_some() {
         "tombstoned"
     } else if gov.is_revoked(&k.id) {
@@ -460,7 +460,7 @@ mod reject_overlong_id_tests;
 /// propagate as an `unwrap()` on the request path — map it to a generic 500 (details logged).
 fn join_error(op: &str, e: &tokio::task::JoinError) -> Response {
     diag_error!(ADMIN_STORE_TASK_JOIN_FAILED, operation = op, error = %e, "admin store task failed to join");
-    busbar_core::admin::v1::json::err_json(&AdminError::Internal)
+    busbar_kernel::admin::v1::json::err_json(&AdminError::Internal)
 }
 
 /// The request header carrying a client-chosen idempotency token on the two replayable admin
@@ -556,11 +556,11 @@ const UNBOUND_BUCKET_LABEL: &str = "(no group)";
 /// * The UNBOUND bucket is counted. A groupless key escapes the whole limit tree, so
 ///   exempting it from the key-count cap as well made the ceiling evadable by omitting one field.
 fn check_key_cap(
-    gov: &busbar_core::governance::GovState,
+    gov: &busbar_kernel::governance::GovState,
     cap: usize,
     group: Option<&str>,
     exclude_id: Option<&str>,
-) -> busbar_core::governance::StoreResult<Option<(String, usize)>> {
+) -> busbar_kernel::governance::StoreResult<Option<(String, usize)>> {
     if cap == 0 {
         return Ok(None); // unlimited
     }
@@ -575,7 +575,7 @@ fn check_key_cap(
         .filter(|k| {
             k.group
                 .as_deref()
-                .map(|g| !g.starts_with(busbar_core::governance::SELF_KEY_GROUP_PREFIX))
+                .map(|g| !g.starts_with(busbar_kernel::governance::SELF_KEY_GROUP_PREFIX))
                 .unwrap_or(true)
         })
         .filter(|k| k.enabled && !gov.is_revoked(&k.id))
@@ -589,9 +589,9 @@ fn check_key_cap(
 /// POST /api/v1/admin/keys — mint a virtual key. Returns the plaintext secret ONCE.
 pub(crate) async fn create_key(
     axum::extract::State(handle): axum::extract::State<
-        std::sync::Arc<busbar_core::state::AppHandle>,
+        std::sync::Arc<busbar_kernel::state::AppHandle>,
     >,
-    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -660,18 +660,18 @@ pub(crate) async fn create_key(
     let Some(gov) = &app.governance else {
         return disabled_write(who);
     };
-    // Parse the body via the depth-guarded `busbar_core::json` seam, NOT axum's stock `Json<T>` extractor,
+    // Parse the body via the depth-guarded `busbar_kernel::json` seam, NOT axum's stock `Json<T>` extractor,
     // whose `JsonRejection` body echoes the raw serde `Display` — a fragment of the offending input.
     // This body carries SECRETS (an AWS secret_access_key, the bearer being minted), so any parse
     // failure maps to a GENERIC 400, logging only the byte length via `parse_err_log` (never the raw
     // error, never an input fragment).
-    let req: CreateKeyReq = match busbar_core::json::parse(&body) {
+    let req: CreateKeyReq = match busbar_kernel::json::parse(&body) {
         Ok(req) => req,
         Err(_) => {
             diag_debug!(
                 ADMIN_CREATEKEY_MALFORMED_BODY,
                 "create_key: {}",
-                busbar_core::json::parse_err_log(body.len())
+                busbar_kernel::json::parse_err_log(body.len())
             );
             return key_err(
                 who,
@@ -753,7 +753,7 @@ pub(crate) async fn create_key(
     // both into the ceiling check and the stamp so the mode the policy is checked against is exactly
     // the mode the key is minted with — the per-role `binding_modes` ceiling is reachable and refuses
     // a caller whose role may not mint this mode.
-    let requested_binding_mode = busbar_core::governance::SELF_KEY_BINDING_MODE_APP;
+    let requested_binding_mode = busbar_kernel::governance::SELF_KEY_BINDING_MODE_APP;
     let mint_req = MintRequest {
         roles: caller_roles,
         requested_pools: req.allowed_pools.as_deref(),
@@ -826,8 +826,8 @@ pub(crate) async fn create_key(
     /// What the mint's blocking half produced: the key (bearer-only or with AWS credentials), or the
     /// anti-sprawl ceiling it hit.
     enum MintOutcome {
-        Bearer(Box<(busbar_core::governance::VirtualKey, String)>),
-        Aws(Box<(busbar_core::governance::VirtualKey, String, String, String)>),
+        Bearer(Box<(busbar_kernel::governance::VirtualKey, String)>),
+        Aws(Box<(busbar_kernel::governance::VirtualKey, String, String, String)>),
         AtCap { group: String, n: usize, cap: usize },
     }
     // Keys carry NO inline limits; enforcement flows through the bound group.
@@ -918,7 +918,7 @@ pub(crate) async fn create_key(
                 );
             }
             let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-            let minted = (|| -> busbar_core::governance::StoreResult<MintOutcome> {
+            let minted = (|| -> busbar_kernel::governance::StoreResult<MintOutcome> {
                 if let Some((group, n)) = check_key_cap(&gov, cap, cap_group.as_deref(), None)? {
                     return Ok(MintOutcome::AtCap { group, n, cap });
                 }
@@ -976,7 +976,7 @@ pub(crate) async fn create_key(
             if let Some(r) = idem_reservation.as_mut() {
                 r.clear();
             }
-            return busbar_core::admin::v1::json::err_json(&e);
+            return busbar_kernel::admin::v1::json::err_json(&e);
         }
     };
     // NOTE: the `group.provision` audit + version records are written INSIDE the transaction, at
@@ -1078,9 +1078,9 @@ pub(crate) struct UpdateKeyReq {
 /// dangling binding that fails every request closed. 404 if the key is absent.
 pub(crate) async fn update_key(
     axum::extract::State(handle): axum::extract::State<
-        std::sync::Arc<busbar_core::state::AppHandle>,
+        std::sync::Arc<busbar_kernel::state::AppHandle>,
     >,
-    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
+    axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
     body: Bytes,
@@ -1111,16 +1111,16 @@ pub(crate) async fn update_key(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    // Parse via the depth-guarded `busbar_core::json` seam, not axum's `Json<T>` (whose rejection body
+    // Parse via the depth-guarded `busbar_kernel::json` seam, not axum's `Json<T>` (whose rejection body
     // echoes the raw serde error / an input fragment). Any failure maps to a GENERIC 400, logging
     // only the byte length via `parse_err_log` — no raw error, no input fragment.
-    let req: UpdateKeyReq = match busbar_core::json::parse(&body) {
+    let req: UpdateKeyReq = match busbar_kernel::json::parse(&body) {
         Ok(req) => req,
         Err(_) => {
             diag_debug!(
                 ADMIN_UPDATEKEY_MALFORMED_BODY,
                 "update_key: {}",
-                busbar_core::json::parse_err_log(body.len())
+                busbar_kernel::json::parse_err_log(body.len())
             );
             return key_err(
                 who,
@@ -1158,7 +1158,7 @@ pub(crate) async fn update_key(
         /// The updated row plus its `state`, computed INSIDE the gated closure below (where
         /// `gov` — and therefore `gov.is_revoked`, needed to tell a disabled key from a revoked one —
         /// is in scope; the outer `match` below is outside the transaction closure and has no `gov`).
-        Updated(Box<busbar_core::governance::VirtualKey>, &'static str),
+        Updated(Box<busbar_kernel::governance::VirtualKey>, &'static str),
         NotFound,
         EtagStale,
         /// The destination bucket (rebind target, or the key's own group on a re-enable) is
@@ -1193,7 +1193,7 @@ pub(crate) async fn update_key(
         let cap = current.max_keys_per_principal;
         Ok(txn.store_write(move || {
             let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-            let outcome = (|| -> busbar_core::governance::StoreResult<UpdateOutcome> {
+            let outcome = (|| -> busbar_kernel::governance::StoreResult<UpdateOutcome> {
                 // ONE read of the pre-image, inside the gate: it answers If-Match staleness,
                 // existence, AND the cap guard below, so the three cannot disagree about which
                 // record they are talking about.
@@ -1289,7 +1289,7 @@ pub(crate) async fn update_key(
         // generic store failure, which carries no condition of its own.
         Err(e @ AdminError::Validation(_)) => key_err(who, &e, Cond::RebindTargetMissing),
         Err(e @ AdminError::Conflict(_)) => key_err(who, &e, Cond::GovernanceOff),
-        Err(e) => busbar_core::admin::v1::json::err_json(&e),
+        Err(e) => busbar_kernel::admin::v1::json::err_json(&e),
     }
 }
 
@@ -1298,7 +1298,7 @@ pub(crate) async fn update_key(
 /// `?group=<name>` (keys bound to that group: a `user:<sub>` leaf's keys are one person's
 /// keys; a team group's are the team's; the customer's self-service tool re-scopes from here).
 pub(crate) async fn list_keys(
-    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     // Strict query parsing FIRST: a malformed filter/cursor is a loud 400 on every
@@ -1332,15 +1332,15 @@ pub(crate) async fn list_keys(
     // pagination grammar, one limit policy; an unbounded default response is exactly what
     // pagination exists to prevent).
     let limit = match q.get("limit") {
-        None => busbar_core::admin::v1::contract::LIST_LIMIT_DEFAULT,
+        None => busbar_kernel::admin::v1::contract::LIST_LIMIT_DEFAULT,
         Some(v) => match v.parse::<usize>() {
-            Ok(n) => n.clamp(1, busbar_core::admin::v1::contract::LIST_LIMIT_MAX),
+            Ok(n) => n.clamp(1, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX),
             Err(_) => {
                 return key_err(
                     KeyAudit::Read,
                     &AdminError::Validation(format!(
                         "invalid `limit`: expected an integer (max {})",
-                        busbar_core::admin::v1::contract::LIST_LIMIT_MAX
+                        busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX
                     )),
                     Cond::InvalidQueryValue,
                 )
@@ -1348,7 +1348,7 @@ pub(crate) async fn list_keys(
         },
     };
     let start = match q.get("cursor") {
-        Some(c) => match busbar_core::admin::v1::contract::decode_offset_cursor(c) {
+        Some(c) => match busbar_kernel::admin::v1::contract::decode_offset_cursor(c) {
             Some(n) => n,
             None => {
                 return key_err(
@@ -1384,7 +1384,7 @@ pub(crate) async fn list_keys(
         // `state` is derived HERE, on the blocking pool, where `gov` — and therefore
         // `gov.is_revoked` — is in scope; the outer match below is past the `.await` and has no
         // `gov` of its own (it was moved into this closure).
-        Ok::<_, busbar_core::governance::StoreError>(
+        Ok::<_, busbar_kernel::governance::StoreError>(
             keys.into_iter()
                 .map(|k| {
                     let state = key_state(&k, &gov);
@@ -1429,7 +1429,7 @@ pub(crate) async fn list_keys(
             // More rows past this page → hand back the next opaque cursor; else None (end of list).
             let end = start.saturating_add(page.len());
             let next_cursor =
-                (end < total).then(|| busbar_core::admin::v1::contract::encode_offset_cursor(end));
+                (end < total).then(|| busbar_kernel::admin::v1::contract::encode_offset_cursor(end));
             json_response(
                 StatusCode::OK,
                 json!({ "items": page, "next_cursor": next_cursor }),
@@ -1452,8 +1452,8 @@ pub(crate) async fn list_keys(
 /// arming a hashed bearer secret on a signed-token key would add a second, weaker, non-expiring
 /// credential to a key deliberately minted without one.
 pub(crate) async fn rotate_key(
-    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
-    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
@@ -1588,8 +1588,8 @@ pub(crate) async fn rotate_key(
 /// still shows the (now-revoked) binding for the record. Idempotent - revoking an already-revoked
 /// key is 200. `DELETE /keys/{id}` is the revoke-AND-forget variant.
 pub(crate) async fn revoke_key(
-    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
-    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
@@ -1611,7 +1611,7 @@ pub(crate) async fn revoke_key(
     let id_for_task = id.clone();
     // The subject must name an existing binding (a revoke for a nonexistent key is a 404, not a
     // silent denylist entry for a typo'd id). Then denylist it durably.
-    let res = tokio::task::spawn_blocking(move || -> busbar_core::governance::StoreResult<bool> {
+    let res = tokio::task::spawn_blocking(move || -> busbar_kernel::governance::StoreResult<bool> {
         // Hold EXISTENCE_GATE across the existence check and the denylist write, matching
         // update_key/rotate_key/delete_key. Without it, a concurrent `delete_key` can dispose of the
         // key in the window between this check-then-act, producing a phantom `key.revoke APPLIED`
@@ -1645,8 +1645,8 @@ pub(crate) async fn revoke_key(
 /// that a fleet rotates in lockstep. Returns the current kid and the revoke-all warning; a future
 /// keyset makes this a live in-process swap.
 pub(crate) async fn rotate_signing_key(
-    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
-    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
@@ -1698,7 +1698,7 @@ pub(crate) async fn rotate_signing_key(
 /// surface; it stays on the legacy `{type}` envelope + `key_meta` shape so
 /// it is consistent with the sibling key routes (the full `{code}`-envelope migration is a follow-up).
 pub(crate) async fn get_key(
-    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     Path(id): Path<String>,
 ) -> Response {
     let Some(gov) = &app.governance else {
@@ -1750,7 +1750,7 @@ pub(crate) async fn get_key(
 /// such limit): a client can back off BEFORE hitting a 429 instead of discovering the cap by
 /// tripping it (key-06).
 pub(crate) async fn key_usage(
-    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     Path(id): Path<String>,
 ) -> Response {
     let Some(gov) = &app.governance else {
@@ -1777,9 +1777,9 @@ pub(crate) async fn key_usage(
         // as absent here, same as an unknown id, so DELETE stays a real removal from every reader's
         // point of view.
         if key.as_ref().is_some_and(|k| k.deleted_at.is_some()) {
-            return Ok::<_, busbar_core::governance::StoreError>(None);
+            return Ok::<_, busbar_kernel::governance::StoreError>(None);
         }
-        Ok::<_, busbar_core::governance::StoreError>(usage.map(|u| (u, key)))
+        Ok::<_, busbar_kernel::governance::StoreError>(usage.map(|u| (u, key)))
     })
     .await;
     match res {
@@ -1798,7 +1798,7 @@ pub(crate) async fn key_usage(
                 StatusCode::OK,
                 json!({
                     "id": id,
-                    "budget_period": busbar_core::governance::WINDOW_TOTAL,
+                    "budget_period": busbar_kernel::governance::WINDOW_TOTAL,
                     "window_start": 0,
                     "as_of": now,
                     "group": key.as_ref().and_then(|k| k.group.clone()),
@@ -1823,8 +1823,8 @@ pub(crate) async fn key_usage(
 /// contract), so a typo'd or already-deleted id is distinguishable from an actual revocation rather
 /// than masquerading as a spurious 200.
 pub(crate) async fn delete_key(
-    busbar_core::state::CurrentApp(app): busbar_core::state::CurrentApp,
-    axum::Extension(principal): axum::Extension<busbar_core::auth::AuthPrincipal>,
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {

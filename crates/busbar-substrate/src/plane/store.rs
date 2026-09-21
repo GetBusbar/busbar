@@ -3,7 +3,7 @@
 
 //! THE PLANE STORE SEAM'S NARROWING ADAPTER — the trait a plane persists through and the one bridge
 //! that narrows a real `busbar_api::Store` to it, relocated to the neutral substrate so a plane crate
-//! holds an `Arc<dyn PlaneStore>` without naming `busbar_core::plane::store`.
+//! holds an `Arc<dyn PlaneStore>` without naming `busbar_kernel::plane::store`.
 //!
 //! [`PlaneStore`] declares ONLY the eight neutral kind-tagged PLANE-RECORD verbs and NONE of the
 //! audit-chain / credential / key / usage authority `busbar_api::Store` also carries; [`PlaneStoreView`]

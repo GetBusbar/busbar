@@ -10,14 +10,14 @@
 //! that rule checkable by reading one file; a new section's projection lands here beside the others.
 
 use super::service::settings_keys;
-use busbar_core::admin::v1::contract::NamedDefView;
+use busbar_kernel::admin::v1::contract::NamedDefView;
 
 /// Project one `identity-providers:` DEFINITION onto the shared named-map view. The `token:` secret
 /// REFERENCE is collapsed to a boolean here and the `settings:` bag to its KEY NAMES — the two
 /// places a secret could leak, closed by construction.
 pub(super) fn identity_provider_view(
     name: &str,
-    cfg: &busbar_core::config::IdentityProviderCfg,
+    cfg: &busbar_kernel::config::IdentityProviderCfg,
 ) -> NamedDefView {
     NamedDefView {
         name: name.to_string(),
@@ -37,7 +37,7 @@ pub(super) fn identity_provider_view(
 /// trust ceiling nor a credential FIELD, so those are omitted from the body entirely — but its
 /// `settings:` bag routinely carries one (a `generic-webhook`'s `auth_header.value`), so the bag is
 /// projected as KEY NAMES exactly as the identity-provider view projects it.
-pub(super) fn export_def_view(name: &str, cfg: &busbar_core::config::ExportDefCfg) -> NamedDefView {
+pub(super) fn export_def_view(name: &str, cfg: &busbar_kernel::config::ExportDefCfg) -> NamedDefView {
     NamedDefView {
         name: name.to_string(),
         module: cfg.module.clone(),
@@ -64,7 +64,7 @@ pub(super) fn export_def_view(name: &str, cfg: &busbar_core::config::ExportDefCf
 /// the no-secret-in-a-read-scope rule holds even for a document that failed to parse).
 pub(super) fn unparseable_def_view(
     name: &str,
-    entry: &busbar_core::config::overlay::UnparseableNamedDef,
+    entry: &busbar_kernel::config::overlay::UnparseableNamedDef,
 ) -> NamedDefView {
     NamedDefView {
         name: name.to_string(),

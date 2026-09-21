@@ -71,7 +71,7 @@ fn split_credential(credential: &str) -> Result<(&str, &str), String> {
 /// `--validate` dry-run entry point (mirrors `jwt_bearer::validate_credential`, so a malformed
 /// credential is caught at validate time for BOTH OAuth mechanisms, not only jwt-bearer).
 // `pub` (not `pub(crate)`): core's `config_validate` reaches this through the
-// `busbar_core::egress_auth::oauth_client_credentials` re-export shim after the module relocated
+// `busbar_kernel::egress_auth::oauth_client_credentials` re-export shim after the module relocated
 // DOWN here, so it must be visible cross-crate. Visibility only — no behaviour change.
 pub fn validate_credential(credential: &str) -> Result<(), String> {
     split_credential(credential).map(|_| ())

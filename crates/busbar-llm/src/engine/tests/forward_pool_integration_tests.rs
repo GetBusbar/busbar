@@ -1,7 +1,7 @@
 use crate::engine::forward_with_pool;
 use crate::engine::AppEngineExt as _;
 use crate::test_support::*;
-use busbar_core::auth::AuthMiddleware;
+use busbar_kernel::auth::AuthMiddleware;
 use busbar_substrate::config::auth::AuthCfg;
 use busbar_substrate::store::now;
 // The common vocabulary the former `use super::*` (busbar-core `test_support`) re-exported into this
@@ -3405,7 +3405,7 @@ mod disposition_matrix_tests {
         // An EMPTY error_map is valid (HTTP-status classification still applies, like the
         // shipped `anthropic` catalog entry) — it must NOT fail validation. A present entry
         // with an unknown StatusClass value must still fail.
-        use busbar_core::config::RootCfg;
+        use busbar_kernel::config::RootCfg;
 
         let model = busbar_substrate::config::providers::ModelCfg {
             reasoning: None,
@@ -3461,11 +3461,11 @@ mod disposition_matrix_tests {
             let mut pools = HashMap::new();
             pools.insert("mypool".to_string(), pool.clone());
             RootCfg {
-                tool_defs: busbar_core::plane::config::ToolsSection::default().0,
+                tool_defs: busbar_kernel::plane::config::ToolsSection::default().0,
                 // No endpoint plane configured.
                 endpoint_resources: Default::default(),
                 oauth_as: None,
-                agent_defs: busbar_core::plane::config::AgentsSection::default().0,
+                agent_defs: busbar_kernel::plane::config::AgentsSection::default().0,
                 tool_pools: Default::default(),
                 agent_pools: Default::default(),
                 upstream_credentials: busbar_api::UpstreamCreds::Own,
@@ -3497,7 +3497,7 @@ mod disposition_matrix_tests {
             }
         };
 
-        use busbar_core::config_validate::validate;
+        use busbar_kernel::config_validate::validate;
         // Empty error_map → valid.
         assert!(
             validate(&make(std::collections::HashMap::new())).is_ok(),
@@ -5028,7 +5028,7 @@ async fn test_openai_ingress_missing_model() {
 #[tokio::test]
 async fn test_adhoc_rejects_unconfigured_provider_model() {
     crate::testkit::install_test_seams();
-    use busbar_core::ingress;
+    use busbar_kernel::ingress;
 
     let app = TestApp::new()
         .lane(
@@ -5047,7 +5047,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
 
     // Attacker-chosen provider/model that isn't configured → 404, no upstream reached.
     let resp = ingress::adhoc(
-        busbar_core::state::CurrentApp(app.clone()),
+        busbar_kernel::state::CurrentApp(app.clone()),
         axum::extract::Path(("evil.example.com".to_string(), "../secret".to_string())),
         axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
         axum::extract::Extension(busbar_api::CallerToken::default()),
@@ -5063,7 +5063,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
 
     // Configured model but WRONG provider → 400 (must match the lane's provider).
     let resp2 = ingress::adhoc(
-        busbar_core::state::CurrentApp(app),
+        busbar_kernel::state::CurrentApp(app),
         axum::extract::Path(("wrong-provider".to_string(), "test-model".to_string())),
         axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
         axum::extract::Extension(busbar_api::CallerToken::default()),

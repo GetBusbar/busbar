@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! TEST-SCAFFOLDING: install the core-backed hostless-egress driver the composition root installs at
-//! boot. The plane's own test binary (which links `busbar_core` only under `test-support`, the one
+//! boot. The plane's own test binary (which links `busbar_kernel` only under `test-support`, the one
 //! place it is nameable) has no `main` to do it, so the transport's `hop_spec` calls this once,
 //! idempotently (first-wins `OnceLock` inside the substrate seam). It reaches core's
 //! `CoreHostlessEgress` — the driver's only production implementation — as the plane's OWN test
@@ -13,6 +13,6 @@
 /// Bind core's `CoreHostlessEgress` into the substrate seam, idempotently.
 pub(crate) fn install() {
     busbar_substrate::egress::seam::install_hostless_egress(
-        &busbar_core::egress::seam::CoreHostlessEgress,
+        &busbar_kernel::egress::seam::CoreHostlessEgress,
     );
 }

@@ -75,7 +75,7 @@ fn the_source_names_no_kernel_side_crate() {
         "busbar_contract::caps",
         "busbar_kernel",
         "busbar_unit",
-        "busbar_core",
+        "busbar_kernel",
         "busbar_transport",
         "plane_host",
     ];

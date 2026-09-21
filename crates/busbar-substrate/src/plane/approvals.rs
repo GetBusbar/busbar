@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ASK-STATE SEAL — the `requestState` payload a plane mints, opens and matches, relocated to the
-//! neutral substrate so a plane crate holds the seal without naming `busbar_core::plane::approvals`.
+//! neutral substrate so a plane crate holds the seal without naming `busbar_kernel::plane::approvals`.
 //!
 //! [`Sealer::mint`] / [`Sealer::open`] are pure HMAC-SHA256 over a base64url payload and name no core
 //! type; [`AskState`] and [`Rejected`] are pure PODs. The one thing that stays core is the key
-//! DERIVATION from governance's signing secret — `busbar_core::plane::approvals::ask_state_sealer`
+//! DERIVATION from governance's signing secret — `busbar_kernel::plane::approvals::ask_state_sealer`
 //! reaches `GovState` and calls [`Sealer::derive`], so no signing material crosses to the plane. Core
 //! re-exports these, so `crate::plane::approvals::{AskState, Rejected, Sealer}` still resolves there.
 
@@ -41,7 +41,7 @@ pub fn digest_arguments(arguments: &serde_json::Value) -> String {
 /// accident and a replay window that is wider than it looks.
 ///
 /// Pure `getrandom` + `hex` (no core reach), relocated here beside the seal so a plane crate mints a
-/// nonce without naming `busbar_core::plane::approvals`; core re-exports it, so
+/// nonce without naming `busbar_kernel::plane::approvals`; core re-exports it, so
 /// `crate::plane::approvals::nonce` still resolves for the tests and the extracted plane crate.
 pub fn nonce() -> Result<String, getrandom::Error> {
     let mut b = [0u8; 16];
@@ -196,7 +196,7 @@ impl Sealer {
     /// A DERIVATION rather than the raw bytes: the same secret is the ed25519 virtual-key signer,
     /// and two unrelated uses of one secret should not be able to produce a blob the other accepts.
     ///
-    /// `pub` (was `pub(crate)` in core) so `busbar_core::plane::approvals::ask_state_sealer` — the
+    /// `pub` (was `pub(crate)` in core) so `busbar_kernel::plane::approvals::ask_state_sealer` — the
     /// one seam that reaches `GovState` — can derive from the crate-private signing seed core-side.
     pub fn derive(signing_secret: &[u8; 32]) -> Self {
         let mut mac =

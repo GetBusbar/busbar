@@ -4,7 +4,7 @@
 //! NEUTRAL WIRE/EGRESS VALUE TYPES — the serialized-body carrier an `OperationHandler` yields and
 //! the resolved-primitives egress context routing hands a `RequestHandler`. Both are pure value
 //! types a plane crate names without reaching into `busbar-core`; core re-exports them from
-//! `busbar_core::handlers::{WireBody, EgressCtx}` so its own call sites are unchanged.
+//! `busbar_kernel::handlers::{WireBody, EgressCtx}` so its own call sites are unchanged.
 
 use busbar_api::operation::Operation;
 use bytes::Bytes;
@@ -61,9 +61,9 @@ pub struct EgressCtx<'a> {
 /// router before serialization, or a FINAL body (a non-JSON egress wire — multipart transcription /
 /// audio). Mirrors the pre-cutover `write_request_value` `Some(Value)` / `None`→`write_request` split.
 ///
-/// Relocated from `busbar_core::handlers` at Batch C-3 (it is a return type on the sealed neutral
+/// Relocated from `busbar_kernel::handlers` at Batch C-3 (it is a return type on the sealed neutral
 /// `IrHandle`, so it must be nameable by a plane crate); core re-exports it from
-/// `busbar_core::handlers::EgressWire` so its own call sites are unchanged.
+/// `busbar_kernel::handlers::EgressWire` so its own call sites are unchanged.
 pub enum EgressWire {
     /// A JSON egress body the router still post-shapes (shim-key strip, model rewrite, path-base).
     Json(Value),
@@ -80,8 +80,8 @@ pub enum EgressWire {
 /// pre-cutover buffered-response arm: a delivered body (JSON / typed / synthesized native frames), or
 /// one of the two read-succeeded-but-undelivered terminals the caller still renders (404 / 500).
 ///
-/// Relocated from `busbar_core::handlers` at Batch C-3 (a return type on the sealed neutral
-/// `IrHandle`); core re-exports it from `busbar_core::handlers::TranslatedResponse` so its own call
+/// Relocated from `busbar_kernel::handlers` at Batch C-3 (a return type on the sealed neutral
+/// `IrHandle`); core re-exports it from `busbar_kernel::handlers::TranslatedResponse` so its own call
 /// sites are unchanged.
 pub enum TranslatedResponse {
     /// A JSON ingress body (`application/json`) the caller still post-processes (native response-metrics

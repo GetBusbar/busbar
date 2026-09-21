@@ -7,9 +7,9 @@
 //! no dialect and touch no `busbar-core` type, so a plane crate fires stage taps through this seam
 //! without reaching BACK into core.
 //!
-//! Relocated DOWN off `busbar_core::proxy::proxy_vocab` so the residual `busbar-llm` request path
+//! Relocated DOWN off `busbar_kernel::proxy::proxy_vocab` so the residual `busbar-llm` request path
 //! names them at `busbar_substrate::proxy::proxy_vocab::*`; core re-exports each at its historical
-//! `busbar_core::proxy::*` path (identity), so every in-core call site is unchanged.
+//! `busbar_kernel::proxy::*` path (identity), so every in-core call site is unchanged.
 //!
 //! [`fire_stage_taps`] here reads the caller's `groups:` scope through the neutral
 //! [`EngineHost::caller_in_hook_groups`](crate::plane_host::EngineHost::caller_in_hook_groups) seam

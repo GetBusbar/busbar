@@ -14,12 +14,12 @@
 //! * [`consent`] — the consent screen's session state and `oauth-as`'s subject/approval resolvers.
 //! * [`cimd`] — Client ID Metadata Document fetch-and-validate (the CIMD registration mechanism).
 //! * [`policy`] — the DCR registration ceiling and the impersonation refusal.
-//! * [`signer`] — the plane's own ES256 key (distinct from `busbar_core::governance::signing`'s
+//! * [`signer`] — the plane's own ES256 key (distinct from `busbar_kernel::governance::signing`'s
 //!   token signer; this plane never touches busbar's own resource-server signing material).
-//! * [`testkit`] — the `TestAppOauthExt` extension trait, the plane's `busbar_core::test_support`
+//! * [`testkit`] — the `TestAppOauthExt` extension trait, the plane's `busbar_kernel::test_support`
 //!   fixture builder, kept here so busbar-core names no plane type in its own fixtures.
 //!
-//! `busbar_core::oauth_as::config` (`OauthAsCfg`/`AsIdentity`) STAYS in core — `DeployConfig` and
+//! `busbar_kernel::oauth_as::config` (`OauthAsCfg`/`AsIdentity`) STAYS in core — `DeployConfig` and
 //! its validated twin embed those types by value for the single-document config pipeline, and
 //! `config_validate::secret_refs` exhaustively destructures `AsIdentity`. Moving them here would
 //! need core to name them back, which is the cycle Cargo refuses. See that module's doc for the
@@ -28,7 +28,7 @@
 //! ## The seam
 //!
 //! Core's `App::oauth_as` field, `router::base_data_router`'s mount call and `appbuild`'s plane
-//! construction all go through `busbar_core::oauth_as::seam::AsPlaneSeam` — a small fn-pointer pair
+//! construction all go through `busbar_kernel::oauth_as::seam::AsPlaneSeam` — a small fn-pointer pair
 //! (`build`/`mount`) rather than the full `PlaneDecl` vocabulary the CRUD-shaped planes (MCP/A2A)
 //! use: `oauth_as` is a SINGLETON plane (no named-definition map, no scope-kind grants, no admin
 //! CRUD verbs), so most of `PlaneDecl`'s fields would be fictions here. [`install`] registers this
@@ -42,7 +42,7 @@ pub mod plane;
 pub mod policy;
 pub mod routes;
 pub mod signer;
-// `testkit` names `busbar_core::test_support::TestApp`, which only exists when core compiles with
+// `testkit` names `busbar_kernel::test_support::TestApp`, which only exists when core compiles with
 // its own `test-support` feature (or under `cfg(test)`) — so this module is gated the same way, and
 // a production build of this crate (the shipped binary's dependency) never reaches for it.
 #[cfg(any(test, feature = "test-support"))]
@@ -63,14 +63,14 @@ mod flow_tests;
 mod mount_tests;
 
 /// Register this crate's implementation of the authorization-server plane seam
-/// (`busbar_core::oauth_as::seam::AsPlaneSeam`) into busbar-core's process-wide registration slot.
+/// (`busbar_kernel::oauth_as::seam::AsPlaneSeam`) into busbar-core's process-wide registration slot.
 ///
 /// Called EXACTLY ONCE, by the composition root (`crates/busbar`'s `main`), unconditionally and
-/// before any config loads — mirroring `busbar_core::plane::registry::install_planes`'s discipline
+/// before any config loads — mirroring `busbar_kernel::plane::registry::install_planes`'s discipline
 /// for the same reason. `oauth_as:` carries no feature flag (it is a normal dependency, like the
 /// underlying `oauth-as` crate always was), so every real build calls this.
 pub fn install() {
-    busbar_core::oauth_as::seam::install_as_plane_seam(busbar_core::oauth_as::seam::AsPlaneSeam {
+    busbar_kernel::oauth_as::seam::install_as_plane_seam(busbar_kernel::oauth_as::seam::AsPlaneSeam {
         build: plane::seam_build,
         mount: routes::seam_mount,
     });

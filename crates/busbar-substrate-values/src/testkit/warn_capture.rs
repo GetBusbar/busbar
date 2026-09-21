@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE NEUTRAL WARN-CAPTURE FIXTURE, in the substrate test kit: a plane crate asserts a `diag_warn!`
-//! fired without naming `busbar_core::test_support::warn_capture`. Core keeps its own copy for its
+//! fired without naming `busbar_kernel::test_support::warn_capture`. Core keeps its own copy for its
 //! remaining test sites; the two are byte-identical layers, and a test binary only ever links ONE of
 //! them (so the process-global capture gate below is one gate per binary, exactly as before).
 //!

@@ -7,7 +7,7 @@
 //! NOT PORTED, and why: `busbar-core::tests::tls_tests` is mostly END-TO-END wire tests —
 //! `tls_happy_path_trusted_client_gets_200`, `mtls_valid_client_cert_gets_200`, and their sibling
 //! rejection cases — each of which boots a real `tokio::net::TcpListener`, drives
-//! `busbar_core::tls::serve` (the hyper/axum accept-and-serve loop), and completes an actual HTTPS
+//! `busbar_kernel::tls::serve` (the hyper/axum accept-and-serve loop), and completes an actual HTTPS
 //! round trip with a `reqwest` client. That loop, and the `AcceptBackoff` policy its
 //! `accept_backoff_spins_only_on_per_connection_transients` test covers, are LISTENER concerns this
 //! crate does not implement (see the crate doc): this crate resolves key material and builds the

@@ -42,7 +42,7 @@
 //!
 //! Stated so the `#[path]` in core is not read as a leak: `busbar-core`'s test/`test-support`
 //! builds compile these same sources back in as `handlers::mcp` (via `extern crate self as
-//! busbar_core`), so the pre-extraction fixture surface keeps proving what it always proved without
+//! busbar_kernel`), so the pre-extraction fixture surface keeps proving what it always proved without
 //! core's PRODUCTION build knowing this dialect exists. That is why every core reference in these
 //! files is spelled through the neutral crates (`busbar_substrate_values::` / `busbar_api::`) and every self
 //! reference is relative.

@@ -1,6 +1,6 @@
 //! Tests for the "decision observability" signal catalog substrate:
 //! `busbar_api::Signal`/`SignalValue`/`SignalBag`, the `RequestedSignals` declared-signal gate
-//! (`busbar_core::hooks::requested_signals`/`RequestedSignals::wants`), and the two health signals
+//! (`busbar_kernel::hooks::requested_signals`/`RequestedSignals::wants`), and the two health signals
 //! wired into `decide_policy_order`'s candidate loop (`CandidateBreakerState`/`CandidateErrorRate`).
 //! Proves: a declared signal is computed + projected; an undeclared signal is absent AND never
 //! computed; the default (nothing declared) path never allocates the signal bag past its inline
@@ -152,7 +152,7 @@ async fn declared_signal_is_computed_and_projected() {
 // snapshots. Composed with `declared_signal_is_computed_and_projected` below (which proves the
 // engine projects any signal a correct `requested_signals` mask requests), that is the full
 // end-to-end guard — and it keeps this plane crate off a `busbar-admin` edge it must not name. The
-// duplicate that lived here (calling `busbar_core::admin::v1::service::build_with_hook`) was removed
+// duplicate that lived here (calling `busbar_kernel::admin::v1::service::build_with_hook`) was removed
 // when the admin service was extracted to `busbar-admin`.
 
 /// An UNDECLARED signal is absent from the projected bag (never computed) — the exact "declared

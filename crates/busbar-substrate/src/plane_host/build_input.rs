@@ -12,9 +12,9 @@
 //! The `build_runtime` fn-pointer is stored on the plane's `&'static PlaneDecl`, which — in
 //! `busbar-core`'s own `cfg(test)` binary — is registered through the neutral substrate test seam
 //! against a SECOND, independently-compiled copy of `busbar-core` (the plane crate's normal-dep core,
-//! distinct from the `cfg(test)` core under test). A `busbar_core::` type erased to `&dyn Any` in one
+//! distinct from the `cfg(test)` core under test). A `busbar_kernel::` type erased to `&dyn Any` in one
 //! and downcast in the other carries a DIFFERENT `TypeId`, so the downcast silently returns `None` —
-//! the dual-compile hazard. This carrier therefore holds NO `busbar_core::` type: only owned `String`s,
+//! the dual-compile hazard. This carrier therefore holds NO `busbar_kernel::` type: only owned `String`s,
 //! numbers, `bool`s, `Vec`/`HashMap` of those, and the neutral `busbar_api::UpstreamCreds`. It lives in
 //! `busbar-substrate` (compiled ONCE for the whole workspace) so its own `TypeId` is stable across the
 //! dual compile, and so a zero-plane binary that `git-rm`'d `busbar-llm` (the `plane-delete-test --all`
@@ -27,14 +27,14 @@
 //! resolved secret is carried in `busbar_api::Redacted`, never as a bare `String`: this carrier is
 //! formatted on the build path, so the wrapper is what keeps the credential out of a trace line.
 //! Pool-hook ROUTING POLICIES are NOT: their resolved value is the core-owned
-//! `busbar_core::hooks::ResolvedPolicy` (an `Arc<dyn RoutingPolicy>` over a dlopen plugin), which
+//! `busbar_kernel::hooks::ResolvedPolicy` (an `Arc<dyn RoutingPolicy>` over a dlopen plugin), which
 //! cannot be named here and must not cross the downcast — so, exactly as the container-plane gate
 //! rebuild does (`ContainerGateSink`), pool policies stay resolved-and-read core-side behind the
 //! `App::resolve_pool_*` down-facade and never enter this carrier.
 
 use std::collections::HashMap;
 
-/// The per-provider outbound AUTH STYLE, a neutral mirror of `Option<busbar_core::config::ProviderAuth>`
+/// The per-provider outbound AUTH STYLE, a neutral mirror of `Option<busbar_kernel::config::ProviderAuth>`
 /// (`None` ⇒ [`AuthStyleInput::Default`], the protocol's native auth). The plane maps this back to the
 /// core enum to drive `egress_auth::{resolve,jwt_bearer,oauth_client_credentials}`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -52,7 +52,7 @@ pub enum AuthStyleInput {
     OAuthClientCredentials,
 }
 
-/// Active health-probe mode — a neutral mirror of `busbar_core::config::HealthMode`.
+/// Active health-probe mode — a neutral mirror of `busbar_kernel::config::HealthMode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum HealthModeInput {
     /// No active probing (`none`).
@@ -64,7 +64,7 @@ pub enum HealthModeInput {
     Active,
 }
 
-/// A provider `health:` block — a neutral mirror of `busbar_core::config::HealthCfg`.
+/// A provider `health:` block — a neutral mirror of `busbar_kernel::config::HealthCfg`.
 #[derive(Clone, Debug, Default)]
 pub struct HealthInput {
     /// The probing strategy.
@@ -178,7 +178,7 @@ pub struct PoolMemberInput {
     pub tags: Vec<String>,
 }
 
-/// A pool's `failover:` block — a neutral mirror of `busbar_core::config::FailoverCfg`.
+/// A pool's `failover:` block — a neutral mirror of `busbar_kernel::config::FailoverCfg`.
 #[derive(Clone, Debug)]
 pub struct FailoverInput {
     /// Failover wall-clock budget in seconds.
@@ -189,7 +189,7 @@ pub struct FailoverInput {
     pub max_hops: usize,
 }
 
-/// A pool's `affinity:` block — a neutral mirror of `busbar_core::config::AffinityCfg` (only the
+/// A pool's `affinity:` block — a neutral mirror of `busbar_kernel::config::AffinityCfg` (only the
 /// single supported `session` mode exists, so the mode need not be carried — its presence is the fact).
 #[derive(Clone, Debug)]
 pub struct AffinityInput {
@@ -197,7 +197,7 @@ pub struct AffinityInput {
     pub header_name: Option<String>,
 }
 
-/// A pool's `on_exhausted:` policy — a neutral mirror of `busbar_core::config::OnExhausted`.
+/// A pool's `on_exhausted:` policy — a neutral mirror of `busbar_kernel::config::OnExhausted`.
 #[derive(Clone, Debug, Default)]
 pub enum OnExhaustedInput {
     /// `503` + Retry-After (the default).
@@ -214,7 +214,7 @@ pub enum OnExhaustedInput {
     },
 }
 
-/// A pool's breaker trip mode — a neutral mirror of `busbar_core::store::TripMode`.
+/// A pool's breaker trip mode — a neutral mirror of `busbar_kernel::store::TripMode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum TripModeInput {
     /// Trip on the error RATE over the window (the ADR-0002 default).
@@ -224,7 +224,7 @@ pub enum TripModeInput {
     Consecutive,
 }
 
-/// A pool's resolved breaker TRIP parameters — a neutral mirror of `busbar_core::store::TripConfig`.
+/// A pool's resolved breaker TRIP parameters — a neutral mirror of `busbar_kernel::store::TripConfig`.
 #[derive(Clone, Debug)]
 pub struct TripInput {
     /// The trip mode.
@@ -239,7 +239,7 @@ pub struct TripInput {
     pub consecutive_n: u32,
 }
 
-/// A pool's RESOLVED breaker config — a neutral mirror of the runtime `busbar_core::store::BreakerCfg`
+/// A pool's RESOLVED breaker config — a neutral mirror of the runtime `busbar_kernel::store::BreakerCfg`
 /// (the config `pools.<pool>.breaker:` block already lowered core-side via `BreakerCfg::from`, then
 /// flattened here so the plane's `build_runtime` reconstructs the runtime cfg WITHOUT the carrier
 /// naming a core type). `None` on `PoolInput` ⇒ the pool uses the ADR-0002 defaults.

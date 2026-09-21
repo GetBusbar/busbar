@@ -81,10 +81,10 @@ async fn stream_without_usage_frame_bills_zero_on_every_dialect() {
             // BILLING ON (a `rate_card:` present for `m0`, fee 0): DECISION #42 makes the metering row
             // conditional on billing, and this test asserts a metering row exists. No admission fee is
             // charged on this path, so `spend_cents == 0` still holds; the rates only enable metering.
-            .cost(busbar_core::cost::CostModel::resolve_parts(
+            .cost(busbar_kernel::cost::CostModel::resolve_parts(
                 Some(&std::collections::BTreeMap::from([(
                     "m0".to_string(),
-                    busbar_core::config::RateEntryCfg {
+                    busbar_kernel::config::RateEntryCfg {
                         input_utok: 2.0,
                         output_utok: 6.0,
                         cache_read_utok: 0.0,

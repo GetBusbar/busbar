@@ -503,7 +503,7 @@ pub enum IngressAuth {
 /// `finish_with_error(code, status, …)` are absent, since the core never passes a wire status code.
 ///
 /// RELOCATED DOWN from `busbar-core` (`proto`) so the dialect crate names it without reaching into
-/// `busbar-core`; core re-exports it from `busbar_core::proto::ArrayStreamFramer`.
+/// `busbar-core`; core re-exports it from `busbar_kernel::proto::ArrayStreamFramer`.
 pub trait ArrayStreamFramer: Send {
     /// Feed a chunk of SSE bytes; return JSON-array bytes for whatever complete frames are now
     /// available (empty if only a partial frame is buffered).
@@ -535,7 +535,7 @@ pub trait ArrayStreamFramer: Send {
 /// (`DialectRef`) lives in `busbar-llm` and forwards to that crate's writer/reader.
 ///
 /// RELOCATED DOWN from `busbar-core` (`proto`) so the dialect crate names it without reaching into
-/// `busbar-core`; core re-exports it from `busbar_core::proto::DialectCodec`.
+/// `busbar-core`; core re-exports it from `busbar_kernel::proto::DialectCodec`.
 pub trait DialectCodec: Send + Sync {
     fn probe_body(&self, model: &str) -> Vec<u8>;
     fn apply_rewrite_to_ingress_body(
@@ -589,7 +589,7 @@ pub trait DialectCodec: Send + Sync {
 ///
 /// RELOCATED DOWN from `busbar-core` (`proto`) so the substrate `ProtocolDecl`'s
 /// `egress_auth_headers` builder names it without reaching into `busbar-core`; core re-exports it
-/// from `busbar_core::proto::SigningContext` so every in-core / plugin caller is unchanged. Its only
+/// from `busbar_kernel::proto::SigningContext` so every in-core / plugin caller is unchanged. Its only
 /// non-primitive field is `busbar_api::UpstreamCreds` (a `busbar-api` leaf type), so the relocation
 /// carries no core-only machinery.
 pub struct SigningContext<'a> {
@@ -620,7 +620,7 @@ pub struct SigningContext<'a> {
 ///
 /// RELOCATED DOWN from `busbar-core` (`proto::registry`) with [`ProtocolDecl`]; it now names only
 /// substrate/`axum` types (`SigningContext`, `axum::http`), so the decl carries no core edge. Core
-/// re-exports it from `busbar_core::proto::registry::EgressAuthHeaders`.
+/// re-exports it from `busbar_kernel::proto::registry::EgressAuthHeaders`.
 pub type EgressAuthHeaders =
     fn(&str, &SigningContext) -> Vec<(http::HeaderName, http::HeaderValue)>;
 
@@ -634,9 +634,9 @@ pub type EgressAuthHeaders =
 /// and the `busbar-llm` dialects) names it WITHOUT reaching into `busbar-core`: every field type is
 /// now substrate/`busbar-api`/`axum`/`std`. The registry singleton (`Registry` / `BUILTIN_DECLS` /
 /// `install_protocols` / `decl_for`) stays in core and holds this type through the re-export at
-/// `busbar_core::proto::ProtocolDecl`. The `path_ingress` field it once carried (which named the
+/// `busbar_kernel::proto::ProtocolDecl`. The `path_ingress` field it once carried (which named the
 /// core-only `Arrival`) is SPLIT OFF into a core-owned, protocol-name-keyed side-registration
-/// (`busbar_core::ingress::path_ingress`), so the decl names zero core types.
+/// (`busbar_kernel::ingress::path_ingress`), so the decl names zero core types.
 pub struct ProtocolDecl {
     /// The registry key, and the metrics label. **OPERATOR-VISIBLE:** a protocol name appears in
     /// dashboards and in `providers.*.protocol` config, so renaming one re-bases a metric series
@@ -761,7 +761,7 @@ pub struct ProtocolDecl {
     /// Replaces `ProtocolWriter::has_model_in_url()`. True when this protocol carries the model in the
     /// URL path rather than the body (Gemini, Bedrock), so a same-protocol passthrough strips body
     /// `model`. A protocol declaring `true` MUST register a `path_ingress` (see
-    /// `busbar_core::ingress::path_ingress`); the composition root asserts this at boot.
+    /// `busbar_kernel::ingress::path_ingress`); the composition root asserts this at boot.
     pub has_model_in_url: bool,
 
     /// Replaces `ProtocolWriter::auth_failure_status_and_kind()`. The HTTP status and error `kind` a
@@ -802,14 +802,14 @@ pub struct ProtocolDecl {
 
     /// THE ROUTER detection predicate — how (and how tightly) this protocol claims an inbound
     /// `(headers, path)`. `None` for a protocol identified by its explicit mount rather than a wire
-    /// fingerprint (MCP). The generic fold in `busbar_core::proto::detect` folds this over every
+    /// fingerprint (MCP). The generic fold in `busbar_kernel::proto::detect` folds this over every
     /// registered protocol in registration order and keeps the tightest [`ClaimStrength`], which is
     /// exactly what the old `busbar-core`-resident `protocol_id` if-ladder computed by hand. Each
     /// dialect states only ITS OWN rungs here, so the router names no dialect.
     pub claims: Option<ClaimsFn>,
 
     /// THE RESIDUAL detection predicate — how (and how tightly) this protocol claims a path from its
-    /// SHAPE ALONE, the arm `busbar_core::proto::residual_dialect_for_path` folds when the mount
+    /// SHAPE ALONE, the arm `busbar_kernel::proto::residual_dialect_for_path` folds when the mount
     /// table has declined a path and a native error envelope must still be chosen. `None` when this
     /// protocol names no residual path. Replaces this dialect's arm of the core-resident
     /// `residual_dialect_for_path` ladder.
@@ -838,7 +838,7 @@ pub struct ProtocolDecl {
     /// This is DELIBERATELY NARROWER than [`Self::claims`]: the router's full predicate also claims on
     /// a dialect's CREDENTIAL header (Anthropic's `x-api-key`, Bedrock's `AWS4-HMAC-SHA256`
     /// `authorization`) and on PATHS, but an incidental credential header on a models-list GET must NOT
-    /// steer the response envelope. `busbar_core`'s list-models handler copies only these declared
+    /// steer the response envelope. `busbar_kernel`'s list-models handler copies only these declared
     /// headers into the map it hands the detection fold, so it names no dialect while staying
     /// byte-identical to the prior hand-coded two-header sniff.
     pub list_models_fingerprint_headers: &'static [&'static str],
@@ -1159,7 +1159,7 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
 // A protocol crate's test-kit registers its `&'static ProtocolDecl` here — a SUBSTRATE type — exactly
 // as production's composition root `install_protocols` does, so the extracted protocol crates
 // (`busbar-llm`, `busbar-mcp`) reach the neutral ABI (`busbar_substrate::proto::register_test_protocol`)
-// rather than back into `busbar_core::proto::registry`. `busbar-core`'s test-support `registry()` folds
+// rather than back into `busbar_kernel::proto::registry`. `busbar-core`'s test-support `registry()` folds
 // this list ahead of its built-ins on every read, so a protocol registered by any test before it reads
 // the registry is visible regardless of test order. This is the exact analogue of the plane axis's
 // `busbar_substrate::plane::registry::register_test_plane`, and it is what let the `#[path]` witness
@@ -1173,7 +1173,7 @@ static TEST_REGISTERED_PROTOCOLS: std::sync::Mutex<Vec<&'static ProtocolDecl>> =
 /// the composition root's `install_protocols` does in production. Idempotent by protocol name; a
 /// protocol crate's test setup calls it (eagerly, and/or from its App-building finalizer) so the
 /// fixture registry matches a shipped "busbar with this protocol" binary. The storage lives HERE, on
-/// the neutral substrate, so a protocol crate names no `busbar_core::` implementation to register
+/// the neutral substrate, so a protocol crate names no `busbar_kernel::` implementation to register
 /// itself.
 #[cfg(any(test, feature = "test-support"))]
 pub fn register_test_protocol(decl: &'static ProtocolDecl) {
@@ -1227,12 +1227,12 @@ pub fn test_registered_protocols_len() -> usize {
         .len()
 }
 
-// ── THE PROTOCOL REGISTRY SINGLETON — RELOCATED DOWN from `busbar_core::proto::registry` ───────────
+// ── THE PROTOCOL REGISTRY SINGLETON — RELOCATED DOWN from `busbar_kernel::proto::registry` ───────────
 // The declarations, the boot-time aggregates, and the process singleton, moved onto the neutral
 // substrate so an extracted protocol crate (`busbar-llm`) resolves `decl_for` / `known_protocols`
 // through the neutral ABI rather than reaching BACK into `busbar-core` implementation (the
 // reverse-edge rule). `busbar-core` re-exports every item below at its historical
-// `busbar_core::proto::registry::…` path, so every in-core / plugin caller compiles unchanged and the
+// `busbar_kernel::proto::registry::…` path, so every in-core / plugin caller compiles unchanged and the
 // values are byte-identical. The one item that could NOT travel is the built-in table: production
 // carries none (every protocol is a plugin the composition root installs through `install_protocols`),
 // and core's OWN test binary names its shipped set in a `tests/` file the neutral-purity lint excludes,
@@ -1575,16 +1575,16 @@ pub fn known_protocols() -> &'static [&'static str] {
     registry().codec_protocols()
 }
 
-// ── THE REGISTRY-RESOLVED PROTO ACCESSORS — RELOCATED DOWN from `busbar_core::proto` ───────────────
+// ── THE REGISTRY-RESOLVED PROTO ACCESSORS — RELOCATED DOWN from `busbar_kernel::proto` ───────────────
 // Thin reads of the registry singleton above, moved onto the neutral substrate so an extracted
 // protocol crate (`busbar-llm`) resolves a protocol fact through the neutral ABI rather than reaching
 // BACK into `busbar-core` (the reverse-edge rule). `busbar-core` re-exports each at its historical
-// `busbar_core::proto::…` path, so every in-core / plugin caller compiles unchanged and the values are
+// `busbar_kernel::proto::…` path, so every in-core / plugin caller compiles unchanged and the values are
 // byte-identical. They read the SAME singleton `registry()` returns, so — exactly as `known_protocols`
 // already does — under core's own test binary they observe the core-test built-in tail once any core
 // accessor has seeded the substrate hook (idempotent, self-healing).
 
-// ── THE NEUTRAL STREAMING-TRANSLATOR FACTORY — RELOCATED DOWN from `busbar_core::proto` ────────────
+// ── THE NEUTRAL STREAMING-TRANSLATOR FACTORY — RELOCATED DOWN from `busbar_kernel::proto` ────────────
 // The plugin-provided fn-ptr factory that builds a concrete stream translator for an ingress→egress
 // pair, and the single construction seam both forward paths call. Moved onto the neutral substrate so
 // the `busbar-llm` plugin installs its factory and drives the seam through the neutral ABI rather than

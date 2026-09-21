@@ -4,13 +4,13 @@
 //! THE ENGINE TEST-KIT — the object-safe seam a plane crate's test binary drives the WHOLE engine
 //! fixture through: building the test App, minting governance keys, reading the process-wide call
 //! log and admin audit ring, loading the store-plugin fixture, and reaching the built App's router,
-//! host, swappable handle and breaker cells — WITHOUT naming one `busbar_core::` item.
+//! host, swappable handle and breaker cells — WITHOUT naming one `busbar_kernel::` item.
 //!
 //! Why a third seam beside [`super::TestAppSeam`] / [`super::BuiltAppSeam`]: those two are the
 //! doorways a plane's TEST-KIT (its fluent builder extension) drives while the App is being built and
 //! the doorway a test generic over `A: BuiltAppSeam` drives on the App that came out. They still
 //! leave the plane's tests CONSTRUCTING the fixture by its core name
-//! (`busbar_core::test_support::TestApp::new()`) and reaching the engine's process-wide services
+//! (`busbar_kernel::test_support::TestApp::new()`) and reaching the engine's process-wide services
 //! (`metrics::init`, the call log, the audit ring, the governance registry, the admin scope table)
 //! by theirs. This kit closes that gap: every one of those is a method on a trait object the engine
 //! PROVIDES and the plane only CONSUMES.

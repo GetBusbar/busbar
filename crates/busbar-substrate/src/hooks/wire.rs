@@ -6,9 +6,9 @@
 //! transport, so a hook graduates between transports (webhook prototype → socket binary) without
 //! changing its logic. Versioned by shape, not a field, in v1: the schema is append-only.
 //!
-//! Relocated here off `busbar_core::hooks::wire` so a plane (busbar-llm) names the substrate ABI
+//! Relocated here off `busbar_kernel::hooks::wire` so a plane (busbar-llm) names the substrate ABI
 //! rather than reaching back into core. The REPLY-side normalizers + the settings-bag-carrying
-//! `StatusReply` remain in `busbar_core::hooks::wire` (the settings-leak-lint scan root); core
+//! `StatusReply` remain in `busbar_kernel::hooks::wire` (the settings-leak-lint scan root); core
 //! re-exports the names below so its own paths are unchanged.
 
 use busbar_api::{Candidate, RoutingContext, RoutingRequest};

@@ -2,16 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE NEUTRAL TEST-APP SEAM — the plane test-kits' one doorway onto the engine's test fixture,
-//! so a plane crate builds/drives the test App WITHOUT naming `busbar_core::state::App` or
-//! `busbar_core::test_support::TestApp`.
+//! so a plane crate builds/drives the test App WITHOUT naming `busbar_kernel::state::App` or
+//! `busbar_kernel::test_support::TestApp`.
 //!
 //! Before this seam, `busbar-mcp`/`busbar-a2a`'s `testkit` reached BACKWARDS into
-//! `busbar_core::test_support::TestApp` — a plane crate naming core implementation, the exact side
+//! `busbar_kernel::test_support::TestApp` — a plane crate naming core implementation, the exact side
 //! channel the neutral-purity lint forbids. The concrete fixture still lives in core (it builds a
-//! `busbar_core::state::App`, which is core-central), but core now IMPLEMENTS this trait for it and
+//! `busbar_kernel::state::App`, which is core-central), but core now IMPLEMENTS this trait for it and
 //! the plane test-kits consume only the trait — an opaque handle they drive through the same neutral
 //! install seams (`install_plane_runtime`, `mount_plane`/`admit_plane`, the type-erased scratch, the
-//! build-time finalizer) core's own `build()` reads. No `&App`, no `busbar_core::` name crosses.
+//! build-time finalizer) core's own `build()` reads. No `&App`, no `busbar_kernel::` name crosses.
 //!
 //! Object-safe by construction (so a finalizer is a `Box<dyn FnOnce(&mut dyn TestAppSeam)>` and a
 //! plane can drive the handle as `&mut dyn TestAppSeam`): the generic scratch accessors live on the
@@ -24,7 +24,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 /// The neutral warn-capture tracing layer a plane's tests assert diagnostics through — the fixture
-/// that used to be reachable only as `busbar_core::test_support::warn_capture`. It is a pure
+/// that used to be reachable only as `busbar_kernel::test_support::warn_capture`. It is a pure
 /// `tracing_subscriber::Layer`, so it moved into the values crate with the diagnostics it asserts on
 /// and is re-exported here: `busbar_substrate::testkit::warn_capture::WarnCapture` resolves as before.
 pub use busbar_substrate_values::testkit::warn_capture;
@@ -55,8 +55,8 @@ pub mod engine_kit_plus;
 /// THE BUILT-APP SEAM — the second half of the fixture doorway. [`TestAppSeam`] is what a plane drives
 /// while the test App is being BUILT; this trait is what it drives on the App that came OUT of
 /// `build()`, so a plane's money-path tests forward a request, mount the real HTTP router and mutate
-/// their own runtime slot in place WITHOUT naming `busbar_core::state::App`,
-/// `busbar_core::plane_host::engine_host` or `busbar_core::build_router`. Core implements it for its
+/// their own runtime slot in place WITHOUT naming `busbar_kernel::state::App`,
+/// `busbar_kernel::plane_host::engine_host` or `busbar_kernel::build_router`. Core implements it for its
 /// `App` (thin delegates to those very fns), and a plane's test helpers are generic over `A:
 /// BuiltAppSeam`, taking the `Arc<A>` the fixture's `build()` hands back. Every signature names only
 /// neutral ABI types (the `EngineHost` seam, axum's `Router`, an opaque `Arc<dyn Any>` slot).
@@ -91,7 +91,7 @@ pub trait BuiltAppSeam: PlaneSlots {
 }
 
 /// Free-fn sugar over [`BuiltAppSeam::engine_host_of`], so a test reads
-/// `testkit::engine_host(&app)` where it used to read `busbar_core::plane_host::engine_host(&app)`.
+/// `testkit::engine_host(&app)` where it used to read `busbar_kernel::plane_host::engine_host(&app)`.
 pub fn engine_host<A: BuiltAppSeam + ?Sized>(app: &Arc<A>) -> Arc<dyn EngineHost> {
     A::engine_host_of(app)
 }
@@ -104,7 +104,7 @@ pub fn engine_host_value<A: BuiltAppSeam + ?Sized>(
 }
 
 /// Free-fn sugar over [`BuiltAppSeam::router_of`], so a test reads `testkit::build_router(app)` where
-/// it used to read `busbar_core::build_router(app)`.
+/// it used to read `busbar_kernel::build_router(app)`.
 pub fn build_router<A: BuiltAppSeam + ?Sized>(app: Arc<A>) -> axum::Router {
     A::router_of(app)
 }
@@ -112,7 +112,7 @@ pub fn build_router<A: BuiltAppSeam + ?Sized>(app: Arc<A>) -> axum::Router {
 /// THE OBJECT-SAFE FIXTURE SEAM core implements for its `TestApp`. Every method is a neutral verb the
 /// plane test-kits already drove on the concrete fixture; the signatures name only neutral ABI types
 /// (`CardIssuer`, `PlaneAdmission`, opaque `Arc<dyn Any>` runtimes, `&str` keys), so a plane crate
-/// consuming this trait spells no `busbar_core::` implementation item.
+/// consuming this trait spells no `busbar_kernel::` implementation item.
 pub trait TestAppSeam {
     /// Get-or-create this plane's type-erased accumulator scratch under `key`, initialising with
     /// `init` on first touch. The plane downcasts the returned `&mut dyn Any` to its own scratch type

@@ -446,7 +446,7 @@ pub fn validate_request<A: PinnedArtifact>(ask: &Ask<'_, A>) -> Result<(), Refus
 // types + the trait so its in-core call sites (and the tests) are unchanged.
 
 /// The governance re-resolution a [`Standing`] performs each frame: re-resolve a principal by its
-/// stable id. Implemented core-side over `busbar_core::governance::GovState` (the one core type this
+/// stable id. Implemented core-side over `busbar_kernel::governance::GovState` (the one core type this
 /// primitive would otherwise name), so [`Standing::still_permitted`] stays transport-neutral.
 pub trait GovResolve {
     /// Re-resolve the principal with subject id `sub` against the LIVE registry, or `None` when it is

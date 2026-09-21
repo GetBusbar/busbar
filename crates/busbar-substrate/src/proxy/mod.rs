@@ -50,14 +50,14 @@ pub fn build_egress_client(
         .expect("the base egress engine posture has no failing build arm")
 }
 
-// ── THE AGNOSTIC INGRESS-ERROR SHAPER — RELOCATED DOWN from `busbar_core::proxy::proxy_vocab` ──────
+// ── THE AGNOSTIC INGRESS-ERROR SHAPER — RELOCATED DOWN from `busbar_kernel::proxy::proxy_vocab` ──────
 // The dialect-blind `(status, kind, msg)` → caller-dialect error `Response` projection, and core's own
 // fallback envelope. Moved onto the neutral substrate so the extracted native-ingress path in
 // `busbar-llm` shapes an ingress error through the neutral ABI rather than reaching BACK into
 // `busbar-core`. It names no dialect literally: `crate::proto::decl_for` reads whatever registry the
 // resident planes populated, and the fallback is the neutral envelope so it survives every LLM dialect
 // being dropped with the `busbar-llm` plane. `busbar-core` re-exports both at their historical
-// `busbar_core::proxy::{ingress_error, agnostic_error_envelope}` paths so every in-core caller is
+// `busbar_kernel::proxy::{ingress_error, agnostic_error_envelope}` paths so every in-core caller is
 // unchanged.
 
 /// The agnostic ingress-error shaper: project a `(status, kind, msg)` into the caller-dialect error

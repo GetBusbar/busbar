@@ -5,7 +5,7 @@
 //! queued replies and RECORDS what it was dialed with (path, headers, body), so a plane's egress leg
 //! is exercised over the production request path and the test asserts on the bytes the upstream
 //! actually saw. The neutral twin of the mock server core's own test support carries, so a plane crate
-//! drives a loopback provider without naming `busbar_core::test_support`.
+//! drives a loopback provider without naming `busbar_kernel::test_support`.
 
 use axum::{
     body::Body,

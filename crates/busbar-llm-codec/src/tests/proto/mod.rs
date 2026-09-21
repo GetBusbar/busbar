@@ -15,7 +15,7 @@
 //! same names it saw when they were `mod`ules of `busbar-core`'s `proto`. Fully-qualified paths in
 //! the suites were repointed mechanically: `crate::proto::{dialect}` → `crate::{dialect}`,
 //! `crate::proto::{proto_codec,proto_stream}` → `crate::{proto_codec,proto_stream}`, and every
-//! neutral `crate::proto::…` / substrate re-export to its `busbar_core::` / `busbar_substrate_values::` home.
+//! neutral `crate::proto::…` / substrate re-export to its `busbar_kernel::` / `busbar_substrate_values::` home.
 
 #![allow(unused_imports)]
 
@@ -60,8 +60,8 @@ pub use busbar_substrate_values::proto::{
 // module) and the two test-only vocabularies core still owns: the six dialect-name fixtures
 // (`PROTO_*`) and the translation-boundary `max_tokens` fallback. These are core's own items (not
 // re-exports), so they are the one reach this prelude keeps into core.
-pub use busbar_core::proto::registry;
-pub use busbar_core::proto::{
+pub use busbar_kernel::proto::registry;
+pub use busbar_kernel::proto::{
     decl_for, DEFAULT_MAX_TOKENS, PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE, PROTO_GEMINI,
     PROTO_OPENAI, PROTO_RESPONSES,
 };

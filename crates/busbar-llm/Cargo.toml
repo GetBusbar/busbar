@@ -21,7 +21,7 @@ name = "busbar-llm"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+# `rust-version` rationale: see busbar-kernel/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
 description = "The LLM protocol for busbar: the anthropic, openai-chat, gemini, bedrock, openai-responses and cohere dialects — wire codecs, request handlers and protocol declarations — linked and registered as one plugin by the busbar binary."
 license = "Apache-2.0"
@@ -161,7 +161,7 @@ busbar-llm-codec = { path = "../busbar-llm-codec", features = ["test-support"] }
 # only. The fixture constructs core's `App`, so it lives in core and this dev-edge stays until the
 # fixture (and the config/governance/cost vocabulary that configures it) has a neutral home; the tests
 # reach the BUILT App only through `busbar_substrate::testkit::BuiltAppSeam`, which core implements.
-busbar-core = { path = "../busbar-core", features = ["test-support"] }
+busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
 # THE MCP PROTOCOL crate, dev-only: ONE relocated registry test asserts core's handling of a
 # codec-LESS registered protocol using the real MCP declaration (`busbar_mcp::PROTO_DECL`), which the
 # deleted `#[path]` witness used to net in. A dev-dep back-edge (busbar-mcp normal-depends on

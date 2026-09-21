@@ -225,7 +225,7 @@ runtime = [
     "busbar-substrate-values/runtime",
 ]
 # THE PLANE-NAME FORWARDS (composition-root vocabulary; not referenced in this crate's source). Each
-# forwards to its neutral capability so core's `busbar-core/plane-{mcp,a2a}` → `busbar-substrate/
+# forwards to its neutral capability so core's `busbar-kernel/plane-{mcp,a2a}` → `busbar-substrate/
 # plane-{mcp,a2a}` edge enables the same seams it always did, in lock-step. `plane-llm` owns no
 # substrate seam yet, so it forwards to nothing — declared so the deletion gate can switch LLM off
 # across every neutral crate with one flip, exactly as it does for the other two.
