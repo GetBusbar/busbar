@@ -116,6 +116,45 @@ impl SessionView for FreshSession {
     }
 }
 
+/// A session that already holds one paired upstream and reports the client dialect it was opened
+/// on, for the paired-turn routing tests. The `dialect` is the name the plane wrote to its declared
+/// `dialect` session fact at session open (`Dialect::name`).
+#[derive(Debug)]
+pub struct PairedSession {
+    dialect: &'static str,
+    upstreams: usize,
+}
+
+impl PairedSession {
+    /// A session opened on `dialect`, holding `upstreams` paired upstreams.
+    #[must_use]
+    pub fn new(dialect: &'static str, upstreams: usize) -> Self {
+        Self { dialect, upstreams }
+    }
+}
+
+impl SessionView for PairedSession {
+    fn id(&self) -> SessionId {
+        SessionId(7)
+    }
+    fn is_bound(&self) -> bool {
+        true
+    }
+    fn session_fact(&self, key: &str) -> Option<&str> {
+        if key == "dialect" {
+            Some(self.dialect)
+        } else {
+            None
+        }
+    }
+    fn transport_fact(&self, _key: &str) -> Option<&str> {
+        None
+    }
+    fn upstream_count(&self) -> usize {
+        self.upstreams
+    }
+}
+
 /// The marker the kernel-built constructors take. A test is not a plugin; what stops a plugin
 /// fabricating one is the manifest allow-list, not the type system.
 #[derive(Debug)]
@@ -142,6 +181,28 @@ pub fn ctx<'u>(
         },
         config,
         None,
+        transport,
+        labels,
+        arena,
+    )
+}
+
+/// Build a context that carries a session — for the steps that read `Ctx::session()`.
+#[must_use]
+pub fn ctx_with_session<'u>(
+    arena: &'u LeakArena,
+    config: &'u EmptyConfig,
+    transport: &'u WsStack,
+    labels: &'u Labels<'u>,
+    session: &'u dyn SessionView,
+) -> Ctx<'u> {
+    Ctx::new(
+        Clock {
+            unix_secs: 1_772_000_000,
+            monotonic_nanos: 0,
+        },
+        config,
+        Some(session),
         transport,
         labels,
         arena,

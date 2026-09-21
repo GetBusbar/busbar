@@ -81,6 +81,95 @@ mod purity {
     // vectors in both directions, and a round trip over all 256 bytes that pins the decoded sample.
 }
 
+/// Where a paired turn is routed: to the upstream the session actually DIALED, not the first
+/// configured one. A session opened on a duplex client dialect dialed the upstream that speaks it;
+/// every later turn of that session must name that same upstream, or a turn is metered on the wrong
+/// provider's lane.
+mod route {
+    use crate::claims::Dialect;
+    use crate::tests::harness::{ctx_with_session, EmptyConfig, LeakArena, PairedSession, WsStack};
+    use crate::{StreamingPlane, Upstream};
+    use busbar_contract::bounded::{Facts, FactValue, Ir, Labels};
+    use busbar_contract::dest::DestinationFacts;
+    use busbar_contract::ids::{LaneId, OpClassId};
+    use busbar_contract::plane::Plane;
+
+    /// Two upstreams, gemini declared SECOND, each on its own priced lane.
+    static UPSTREAMS: &[Upstream] = &[
+        Upstream {
+            lane: LaneId::new("realtime-openai"),
+            host: "api.openai.example",
+            dialect: Dialect::OpenaiRealtime,
+        },
+        Upstream {
+            lane: LaneId::new("realtime-gemini"),
+            host: "api.gemini.example",
+            dialect: Dialect::GeminiLive,
+        },
+    ];
+
+    /// A paired turn of a gemini-live session routes to the gemini upstream — its real config index
+    /// and its own priced lane — not to the first-declared openai upstream. Before the fix the paired
+    /// branch hard-coded `UpstreamIdx(0)` and `upstreams().first().lane`, so a gemini session's every
+    /// turn was billed on the openai lane: the wrong provider's money.
+    #[test]
+    fn a_paired_turn_routes_to_the_dialed_upstream_not_the_first() {
+        let plane = StreamingPlane::new(UPSTREAMS);
+        let arena = LeakArena;
+        let config = EmptyConfig;
+        let transport = WsStack::new("/openai/realtime");
+        let labels = Labels::new();
+        let session = PairedSession::new(Dialect::GeminiLive.name(), 1);
+        let cx = ctx_with_session(&arena, &config, &transport, &labels, &session);
+
+        let mut facts = Facts::new();
+        let _ = facts.set("dialect", FactValue::Str(Dialect::GeminiLive.name()));
+        let u = crate::tests::harness::unit(OpClassId::new("duplex_turn"), Ir::empty(), facts);
+
+        match plane.verify(&u, &cx) {
+            DestinationFacts::SessionUpstream { upstream, lane, .. } => {
+                assert_eq!(
+                    lane,
+                    LaneId::new("realtime-gemini"),
+                    "a gemini session's turn must bill on the gemini lane it dialed"
+                );
+                assert_eq!(
+                    upstream.0, 1,
+                    "the fact must name the gemini upstream's real config index"
+                );
+            }
+            other => panic!("a paired turn must route to a session upstream, got {other:?}"),
+        }
+    }
+
+    /// A paired turn of an openai-realtime session still routes to the openai upstream (index 0),
+    /// so the fix does not simply invert the bug.
+    #[test]
+    fn a_paired_openai_turn_still_routes_to_the_openai_upstream() {
+        let plane = StreamingPlane::new(UPSTREAMS);
+        let arena = LeakArena;
+        let config = EmptyConfig;
+        let transport = WsStack::new("/openai/realtime");
+        let labels = Labels::new();
+        let session = PairedSession::new(Dialect::OpenaiRealtime.name(), 1);
+        let cx = ctx_with_session(&arena, &config, &transport, &labels, &session);
+
+        let u = crate::tests::harness::unit(
+            OpClassId::new("duplex_turn"),
+            Ir::empty(),
+            Facts::new(),
+        );
+
+        match plane.verify(&u, &cx) {
+            DestinationFacts::SessionUpstream { upstream, lane, .. } => {
+                assert_eq!(lane, LaneId::new("realtime-openai"));
+                assert_eq!(upstream.0, 0);
+            }
+            other => panic!("a paired turn must route to a session upstream, got {other:?}"),
+        }
+    }
+}
+
 /// Style rules this crate holds itself to, checked rather than merely asserted in prose: no
 /// section-sign citation and no parity-binding identifier (a two-letter prefix, a hyphen and
 /// digits, e.g. a two-letter code followed by a hyphen and a number) anywhere in this crate's own source — the same hard rule
