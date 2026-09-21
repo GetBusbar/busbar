@@ -827,8 +827,19 @@ pub(crate) async fn create_key(
     /// anti-sprawl ceiling it hit.
     enum MintOutcome {
         Bearer(Box<(busbar_kernel::governance::VirtualKey, String)>),
-        Aws(Box<(busbar_kernel::governance::VirtualKey, String, String, String)>),
-        AtCap { group: String, n: usize, cap: usize },
+        Aws(
+            Box<(
+                busbar_kernel::governance::VirtualKey,
+                String,
+                String,
+                String,
+            )>,
+        ),
+        AtCap {
+            group: String,
+            n: usize,
+            cap: usize,
+        },
     }
     // Keys carry NO inline limits; enforcement flows through the bound group.
     // An admin-minted key IS an APP/service token (1.6.0): stamp PROVENANCE (minted-by the
@@ -1428,8 +1439,8 @@ pub(crate) async fn list_keys(
                 .collect();
             // More rows past this page → hand back the next opaque cursor; else None (end of list).
             let end = start.saturating_add(page.len());
-            let next_cursor =
-                (end < total).then(|| busbar_kernel::admin::v1::contract::encode_offset_cursor(end));
+            let next_cursor = (end < total)
+                .then(|| busbar_kernel::admin::v1::contract::encode_offset_cursor(end));
             json_response(
                 StatusCode::OK,
                 json!({ "items": page, "next_cursor": next_cursor }),
@@ -1611,21 +1622,22 @@ pub(crate) async fn revoke_key(
     let id_for_task = id.clone();
     // The subject must name an existing binding (a revoke for a nonexistent key is a 404, not a
     // silent denylist entry for a typo'd id). Then denylist it durably.
-    let res = tokio::task::spawn_blocking(move || -> busbar_kernel::governance::StoreResult<bool> {
-        // Hold EXISTENCE_GATE across the existence check and the denylist write, matching
-        // update_key/rotate_key/delete_key. Without it, a concurrent `delete_key` can dispose of the
-        // key in the window between this check-then-act, producing a phantom `key.revoke APPLIED`
-        // audit record for a key another operation already fully disposed of (audit non-repudiation).
-        let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-        // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id.
-        let exists = gov.store().get_key(&id_for_task)?.is_some();
-        if !exists {
-            return Ok(false);
-        }
-        gov.revoke(&id_for_task, "revoked via admin API")?;
-        Ok(true)
-    })
-    .await;
+    let res =
+        tokio::task::spawn_blocking(move || -> busbar_kernel::governance::StoreResult<bool> {
+            // Hold EXISTENCE_GATE across the existence check and the denylist write, matching
+            // update_key/rotate_key/delete_key. Without it, a concurrent `delete_key` can dispose of the
+            // key in the window between this check-then-act, producing a phantom `key.revoke APPLIED`
+            // audit record for a key another operation already fully disposed of (audit non-repudiation).
+            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id.
+            let exists = gov.store().get_key(&id_for_task)?.is_some();
+            if !exists {
+                return Ok(false);
+            }
+            gov.revoke(&id_for_task, "revoked via admin API")?;
+            Ok(true)
+        })
+        .await;
     match res {
         Ok(Ok(true)) => {
             audit::AUDIT.record_by("key.revoke", &resource, audit::OUTCOME_APPLIED, &actor);

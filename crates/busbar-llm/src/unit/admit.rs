@@ -62,9 +62,9 @@
 use std::sync::Arc;
 
 use axum::response::Response;
-use busbar_contract::caps::{Grant, 
-    step::Admit, Admission, Admittance, Decision, Hold, PrincipalId, ReasonCode, Refusal,
-    Pass, VerifiedDestination,
+use busbar_contract::caps::{
+    step::Admit, Admission, Admittance, Decision, Grant, Hold, Pass, PrincipalId, ReasonCode,
+    Refusal, VerifiedDestination,
 };
 use busbar_kernel::plane_host::EngineHost;
 

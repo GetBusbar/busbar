@@ -121,11 +121,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use busbar_contract::caps::{Grant, 
+use busbar_contract::caps::{
     Admission, Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
-    Decision, Decode, Encode, Meter, MeterClassId, OpClassId, Outcome, PrincipalId, QuantitySource,
-    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, Dial, UnitKey, Pass, Usage,
-    UsageLine, Consumption, VerifiedDestination, Verify,
+    Consumption, Decision, Decode, Dial, Encode, Grant, Meter, MeterClassId, OpClassId, Outcome,
+    Pass, PrincipalId, QuantitySource, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, UnitKey,
+    Usage, UsageLine, VerifiedDestination, Verify,
 };
 use busbar_contract::dest::ClientMode;
 use busbar_contract::ids::{CorrelationRef, CorrelationValue, LaneId};
@@ -134,12 +134,12 @@ use busbar_kernel::reply::{AwaitingReplies, NotWaiting};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_kernel::Millis;
-use busbar_plane_voice::claims::Dialect;
-use busbar_plane_voice::{meta, Upstream, VoicePlane};
 use busbar_kernel_budget::{Admission as _, Door, Estimate, InMemoryCells, Pricer};
+use busbar_kernel_egress::trust::net::GuardPolicy;
 use busbar_kernel_identity::{Auth, AuthRequest};
 use busbar_kernel_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
-use busbar_kernel_egress::trust::net::GuardPolicy;
+use busbar_plane_voice::claims::Dialect;
+use busbar_plane_voice::{meta, Upstream, VoicePlane};
 
 /// Every meter class this plane declares fits in one usage report, with room to spare.
 ///
@@ -1418,11 +1418,7 @@ impl Units for VoiceUnit<'_> {
         Decision::proceed(token, self.shape.op_class())
     }
 
-    fn authenticate(
-        &self,
-        token: &Pass<Authenticate>,
-        _ctx: &UnitCtx,
-    ) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
         let request = AuthRequest {
             candidate: self.credential.as_deref(),
             // The plane narrows within the claim's alternatives and never outside them; the unit is
@@ -1623,12 +1619,7 @@ impl Units for VoiceUnit<'_> {
         decision
     }
 
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        ctx: &UnitCtx,
-        meter: &AccrualMeter,
-    ) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
         // **The exit for a call nobody answered.** The sweep took the wait out of the table and left
         // the ending behind; this is where the unit reads it. A call that ran out its declared
         // deadline ends under that deadline rather than settling as though the answer arrived, which
@@ -1711,18 +1702,15 @@ impl Units for VoiceUnit<'_> {
         // a record, because a refusal is an event — and the record says which step said no and why,
         // because a refusal nobody can name is an event with no information in it.
         let outcome = Outcome::Refused(
-            refusal.step().unwrap_or(busbar_contract::caps::StepName::Admit),
+            refusal
+                .step()
+                .unwrap_or(busbar_contract::caps::StepName::Admit),
             refusal.reason(),
         );
         self.seal(token, ctx, outcome, busbar_contract::FinishClass::Error)
     }
 
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Encode> {
+    fn encode(&self, token: &Pass<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
         // The plane renders the bytes; what the loop needs here is the frame they travel in. A voice
         // unit's ending is carried by the turn's own terminal frame, so the envelope is empty rather
         // than carrying a trailer this dialect does not write.
@@ -1879,7 +1867,8 @@ impl VoiceUnit<'_> {
             .durability
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let _record = busbar_kernel_audit::record::Audit::seal(&mut durability.record, inputs, token);
+        let _record =
+            busbar_kernel_audit::record::Audit::seal(&mut durability.record, inputs, token);
         Decision::proceed(token, facts)
     }
 
@@ -1908,14 +1897,16 @@ impl VoiceUnit<'_> {
                 .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
             {
-                Some(principal) => {
-                    busbar_kernel_audit::record::Subject::PrincipalId(principal.as_str().to_string())
-                }
+                Some(principal) => busbar_kernel_audit::record::Subject::PrincipalId(
+                    principal.as_str().to_string(),
+                ),
                 None => busbar_kernel_audit::record::Subject::Arrival,
             },
             what: busbar_kernel_audit::record::What {
                 unit_key: ctx.key,
-                op_class: busbar_kernel_audit::record::OpClassId::new(self.shape.op_class().as_str()),
+                op_class: busbar_kernel_audit::record::OpClassId::new(
+                    self.shape.op_class().as_str(),
+                ),
                 destination: None,
                 parent: None,
                 pre_hook_head: None,
@@ -1983,7 +1974,8 @@ fn fee_evidence(
     finish: Option<busbar_contract::FinishClass>,
 ) -> FeeEvidence {
     FeeEvidence {
-        client_open_or_one_shot: origin == busbar_contract::caps::OriginKind::Client && shape.is_handshake(),
+        client_open_or_one_shot: origin == busbar_contract::caps::OriginKind::Client
+            && shape.is_handshake(),
         selected_upstream,
         relayed_first_response_frame,
         status_at: None,
@@ -2006,7 +1998,9 @@ fn outcome_finish(outcome: &Outcome) -> busbar_contract::FinishClass {
 /// The audit crate's own spelling of a finish class.
 fn audit_finish(finish: busbar_contract::FinishClass) -> busbar_kernel_audit::record::FinishClass {
     match finish {
-        busbar_contract::FinishClass::Complete => busbar_kernel_audit::record::FinishClass::Complete,
+        busbar_contract::FinishClass::Complete => {
+            busbar_kernel_audit::record::FinishClass::Complete
+        }
         busbar_contract::FinishClass::TurnComplete => {
             busbar_kernel_audit::record::FinishClass::TurnComplete
         }

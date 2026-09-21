@@ -34,8 +34,11 @@ fn a_card() -> Value {
 fn signed_by(k: &SigningKey) -> Value {
     let mut card = a_card();
     let protected = jws::B64URL.encode(serde_json::to_string(&json!({ "alg": "EdDSA" })).unwrap());
-    let payload =
-        jws::B64URL.encode(super::super::card::signing_payload(&card).unwrap().as_bytes());
+    let payload = jws::B64URL.encode(
+        super::super::card::signing_payload(&card)
+            .unwrap()
+            .as_bytes(),
+    );
     let sig = k.sign(format!("{protected}.{payload}").as_bytes());
     card.as_object_mut().unwrap().insert(
         "signatures".to_string(),

@@ -253,7 +253,9 @@ impl LazyBody {
     pub(crate) fn into_value(self) -> Result<Value, ()> {
         match self.body {
             Body::Dom(v) => Ok(v),
-            Body::Head { bytes, .. } => busbar_substrate_values::json::parse(&bytes).map_err(|_| ()),
+            Body::Head { bytes, .. } => {
+                busbar_substrate_values::json::parse(&bytes).map_err(|_| ())
+            }
         }
     }
 }

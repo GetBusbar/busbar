@@ -15,7 +15,6 @@
 //! the neutral `busbar_substrate` client above which any plane crate can call on its own — so this half
 //! is deliberately NOT neutral, and stays core's alone.
 
-
 /// THE NEUTRAL FETCH ADAPTER: re-express a host-owned governed egress as the buffered / streamed
 /// return shapes a protocol plane already consumes, so an extracted plane never holds a concrete
 /// `reqwest::Response`. Gated on the neutral `egress-seam` capability marker, so the gate names a

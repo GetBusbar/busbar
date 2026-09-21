@@ -45,13 +45,15 @@
 //!    crates have no common dependency that could hold one, and putting an open-vocabulary key
 //!    where the kernel could compare against it is the thing the lean-core scan exists to catch.
 
-use busbar_contract::caps::{Route, Pass};
+use busbar_contract::caps::{Pass, Route};
 use busbar_contract::WireStatusClass;
 use busbar_kernel_breaker::cfg::BreakerCfg;
 use busbar_kernel_breaker::classify::Diagnostics;
 use busbar_kernel_breaker::journal::NoopJournal;
 use busbar_kernel_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
-use busbar_kernel_egress::ports::{Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus};
+use busbar_kernel_egress::ports::{
+    Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -279,13 +281,7 @@ impl Breaker for BreakerAdapter {
         }
     }
 
-    fn ready(
-        &self,
-        pool: &str,
-        destination: DestinationId,
-        now: u64,
-        token: &Pass<Route>,
-    ) -> bool {
+    fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
         matches!(
             self.unit.state(pool, destination, now, token),
             busbar_kernel_breaker::LaneState::Ready

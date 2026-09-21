@@ -6,7 +6,7 @@ use super::*;
 use crate::cfg::BreakerCfg;
 use crate::classify::{Diagnostics, NoopDiagnostics, WarnOnceDiagnostics};
 use crate::{Breaker, BreakerUnit, DestinationId, Outcome};
-use busbar_contract::caps::{KernelSeal, Route, Pass};
+use busbar_contract::caps::{KernelSeal, Pass, Route};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

@@ -43,7 +43,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use budget::LifetimeBudget;
-use busbar_contract::caps::{Route, Pass};
+use busbar_contract::caps::{Pass, Route};
 use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, DeniedBy, ProbeAdmit};
 use cfg::BreakerCfg;
 use classify::Diagnostics;

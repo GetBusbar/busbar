@@ -141,8 +141,7 @@ const VOICE_ROUTES: Option<
 /// `PLANE_DECL.hydrate` — boot-rehydrate the durable voice-session working-set before any listener
 /// binds ([`mount::voice_hydrate`]); `None` off-feature so the default decl is byte-unchanged.
 #[cfg(feature = "runtime")]
-const VOICE_HYDRATE: Option<busbar_kernel::plane::registry::BootHook> =
-    Some(mount::voice_hydrate);
+const VOICE_HYDRATE: Option<busbar_kernel::plane::registry::BootHook> = Some(mount::voice_hydrate);
 #[cfg(not(feature = "runtime"))]
 const VOICE_HYDRATE: Option<busbar_kernel::plane::registry::BootHook> = None;
 

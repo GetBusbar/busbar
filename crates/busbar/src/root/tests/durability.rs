@@ -631,9 +631,9 @@ fn settling<'a>(key: &'a TotalsKey, durability: &'a Grant<DurableWrite>) -> Sett
 /// to close.
 #[test]
 fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
-    use busbar_contract::caps::{Grant, 
-        Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, Consumption,
+    use busbar_contract::caps::{
+        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, WriteMoney,
     };
     let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_node();
@@ -689,9 +689,9 @@ fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
 /// already carries both, and a replay that added them twice would double the window.
 #[test]
 fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
-    use busbar_contract::caps::{Grant, 
-        Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, Consumption,
+    use busbar_contract::caps::{
+        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, WriteMoney,
     };
     let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_node();
@@ -787,9 +787,9 @@ impl busbar_kernel_wal::Shipper for CountingShipper {
 /// what makes the pair atomic against a crash rather than merely adjacent.
 #[test]
 fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
-    use busbar_contract::caps::{Grant, 
-        Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, Consumption,
+    use busbar_contract::caps::{
+        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, WriteMoney,
     };
     let seal = KernelSeal::acquire_for_kernel();
     let batches = CountingShipper::default();
@@ -864,9 +864,9 @@ fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
 /// through.
 #[test]
 fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
-    use busbar_contract::caps::{Grant, 
-        Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, Posted, PrincipalId,
-        QuantitySource, Usage, UsageLine, Consumption,
+    use busbar_contract::caps::{
+        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, Posted, PrincipalId,
+        QuantitySource, Usage, UsageLine, WriteMoney,
     };
     let seal = KernelSeal::acquire_for_kernel();
     let admit = Grant::<Admittance>::mint(&seal);

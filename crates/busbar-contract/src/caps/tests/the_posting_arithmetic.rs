@@ -22,7 +22,8 @@ fn seal() -> KernelSeal {
 }
 
 fn nothing_used(k: &KernelSeal) -> Usage {
-    Usage::report(&Grant::<Consumption>::mint(k), Vec::new()).expect("an empty report is within the bound")
+    Usage::report(&Grant::<Consumption>::mint(k), Vec::new())
+        .expect("an empty report is within the bound")
 }
 
 fn opened(k: &KernelSeal, reserved: u64) -> Hold {
@@ -361,7 +362,9 @@ fn a_child_that_missed_its_parent_is_handed_back_rather_than_posted_against_an_e
         .expect("an admitted parent takes a child's spend");
     assert_eq!(cell.accruals(), 1);
 
-    let taken = cell.take(&Grant::<Exit>::mint(&k)).expect("the parent exits");
+    let taken = cell
+        .take(&Grant::<Exit>::mint(&k))
+        .expect("the parent exits");
     let handed_back = Posted::into_parent(accrual, &cell, &ledger)
         .expect_err("the parent is gone; the child posts late");
     assert_eq!(handed_back.amount(), 120);

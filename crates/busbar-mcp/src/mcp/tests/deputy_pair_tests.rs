@@ -229,9 +229,9 @@ async fn a_grant_for_a_different_tool_on_the_same_server_is_refused() {
 /// The control is at the bottom: the scanner is proven able to FIND a secret on this same wire.
 #[tokio::test]
 async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::governance::NewKeySpec;
+    use busbar_store_memory::MemoryStore;
     metrics_init();
 
     let peer = Peer::start(Behaviour::Result, ISSUED).await;

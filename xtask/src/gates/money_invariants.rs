@@ -105,7 +105,8 @@ fn token_in_ident(ident: &str, needle: &str) -> bool {
             continue;
         }
         let before = i == 0 || bytes[i - 1] == b'_';
-        let after = i + n.len() == bytes.len() || bytes[i + n.len()] == b'_' || !wordy(bytes[i + n.len()]);
+        let after =
+            i + n.len() == bytes.len() || bytes[i + n.len()] == b'_' || !wordy(bytes[i + n.len()]);
         if before && after {
             return true;
         }
@@ -403,9 +404,7 @@ impl Gate for MoneyInvariantsGate {
         let mut ov3 = Overlay::new();
         ov3.set(
             victim,
-            format!(
-                "{vtext}\nfn __money_invariants_probe() {{ let _ = Posted::settle(); }}\n"
-            ),
+            format!("{vtext}\nfn __money_invariants_probe() {{ let _ = Posted::settle(); }}\n"),
         );
         report.push(prove_red(
             cx,

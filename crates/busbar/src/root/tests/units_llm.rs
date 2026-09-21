@@ -6,8 +6,8 @@ use super::*;
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
-use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use busbar_kernel::teller::Ended;
+use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 
 /// The one dialect these fixtures speak. Same-protocol openai→openai, so a divergence is about
 /// the PATH rather than about a translation.
@@ -421,9 +421,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     fields.push(("ledger_spend_cents", derived.spend_cents.to_string()));
     gov.flush_metering();
     let mut rows: Vec<busbar_api::MeteringRow> = gov
-        .metering_for(busbar_kernel::governance::metering_bucket(
-            rig.charged_at,
-        ))
+        .metering_for(busbar_kernel::governance::metering_bucket(rig.charged_at))
         .expect("metering read")
         .into_iter()
         .filter(|r| r.key_id == rig.key.id)

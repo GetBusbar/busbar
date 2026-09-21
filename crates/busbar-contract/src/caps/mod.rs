@@ -77,6 +77,10 @@ pub mod unit_end;
 pub mod usage;
 
 pub use canary::{Canary, CanaryBreak};
+pub use capability::{
+    AdminVerb, Admittance, Capability, Consumption, Dial, DurableWrite, Exit, KeyHandle, Recover,
+    Sign, WriteMoney,
+};
 pub use decision::{Decision, ReasonCode, Refusal};
 pub use egress::{AuthDecoration, SecretOnce, SecretSlot, TransportKeyHandle, VerifiedDestination};
 pub use hold::{
@@ -87,10 +91,6 @@ pub use step::{
     Admit, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Authenticated,
     Challenge, Decode, Encode, Frame, LaneId, Meter, MeterClassId, OpClassId, PrincipalId, Route,
     RoutePlan, ScopeFacts, Step, StepName, UnitKey, Verify,
-};
-pub use capability::{
-    AdminVerb, Admittance, Capability, Consumption, Dial, DurableWrite, Exit, KeyHandle, Recover,
-    Sign, WriteMoney,
 };
 pub use token::{CallId, Grant, KernelSeal, Pass};
 pub use unit_end::{Abort, IdempotencyKey, Origin, OriginKind, Outcome, SessionId, UnitEnd};

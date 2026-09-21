@@ -2478,14 +2478,12 @@ fn refuse_catalogue(
         | DispatchRefusal::NotPinned(_)
         | DispatchRefusal::Quarantined { .. } => StatusCode::FORBIDDEN,
     };
-    super::envelope::McpWords.refuse(
-        busbar_kernel::ingress::protocol::CoreRefusal::Admission {
-            id: id.unwrap_or(serde_json::Value::Null),
-            status,
-            message: refusal.to_string(),
-            reason: Some(refusal.audit_reason()),
-        },
-    )
+    super::envelope::McpWords.refuse(busbar_kernel::ingress::protocol::CoreRefusal::Admission {
+        id: id.unwrap_or(serde_json::Value::Null),
+        status,
+        message: refusal.to_string(),
+        reason: Some(refusal.audit_reason()),
+    })
 }
 
 /// The JSON-RPC code busbar answers a governance refusal with.

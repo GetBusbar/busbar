@@ -8,9 +8,9 @@
 //! then muted; and a crate whose entire dependency list is the capability crate should not grow a
 //! second one to shuffle some integers.
 
-use busbar_contract::caps::{Grant, 
-    Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId, Usage, UsageLine,
-    Consumption,
+use busbar_contract::caps::{
+    Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId, Usage, UsageLine,
+    WriteMoney,
 };
 
 use crate::totals::{BucketId, BucketScope, CapDimension, TotalsKey};

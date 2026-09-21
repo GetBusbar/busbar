@@ -211,7 +211,9 @@ pub(crate) async fn translate_response_cross_protocol(
                     );
                 }
                 Ok((usage, delivered)) => {
-                    if let busbar_substrate_values::wire::TranslatedResponse::Typed(wire) = delivered {
+                    if let busbar_substrate_values::wire::TranslatedResponse::Typed(wire) =
+                        delivered
+                    {
                         // Delivered: bill and keep the lane unit (never refund out from under an
                         // already-billed request).
                         // THE REPORT-BACK, on the opaque delivery: the whole answer is in hand and
@@ -485,11 +487,7 @@ fn deliver_json(
     };
     // The reader just discarded any vendor-scoped response metadata the caller's protocol has no
     // shape for; this is the one place that still holds the upstream body and knows the hop crossed.
-    busbar_kernel::proto::warn_untranslatable_response_metadata(
-        egress_name,
-        ingress_protocol,
-        rv,
-    );
+    busbar_kernel::proto::warn_untranslatable_response_metadata(egress_name, ingress_protocol, rv);
     // Bill ONLY when the resolved delivery hands bytes to the client. `IngressUnsupported` (a 404)
     // and `Untranslatable` (the 500) deliver no completion: leave the guard armed so the budget unit
     // is refunded, mirroring the streaming wrapper's refund-on-non-delivery.

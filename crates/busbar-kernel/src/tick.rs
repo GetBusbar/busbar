@@ -21,9 +21,9 @@
 //! **Drain** is how a node stops without cutting anyone off mid-sentence, and the fleet rule is how
 //! a node decides whether stopping is even the right thing to do when it cannot reach the store.
 
-use busbar_contract::caps::{Grant, 
-    Abort, Canary, Exit, WriteMoney, Outcome, Posted, PostingFlags, QuantitySource,
-    ReasonCode, StepName, UnitEnd, Usage, UsageLine, Consumption,
+use busbar_contract::caps::{
+    Abort, Canary, Consumption, Exit, Grant, Outcome, Posted, PostingFlags, QuantitySource,
+    ReasonCode, StepName, UnitEnd, Usage, UsageLine, WriteMoney,
 };
 
 use crate::inflight::UnitSlot;

@@ -71,7 +71,7 @@
 
 use std::collections::VecDeque;
 
-use busbar_contract::caps::{Grant, DurabilityLost, DurableWrite, StepName};
+use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
 use sha2::{Digest as _, Sha256};
 
 use crate::record::Record;

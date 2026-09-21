@@ -61,7 +61,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde_json::Value;
 
-use busbar_contract::caps::{step::Route, Decision, LaneId, ReasonCode, Refusal, RoutePlan, Pass};
+use busbar_contract::caps::{step::Route, Decision, LaneId, Pass, ReasonCode, Refusal, RoutePlan};
 use busbar_contract::{DestinationFacts, Leg, UpstreamAddress};
 use busbar_kernel::observability::HOTPATH_LEVEL;
 use busbar_kernel::plane_host::EngineHost;
@@ -324,10 +324,8 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         .map(str::to_string);
     // Opt-in client beta/version headers, collected against this plane's forwardable set. Empty ⇒
     // byte-identical egress.
-    let client_fwd = busbar_kernel::proxy::collect_client_headers(
-        headers,
-        &forwardable_client_header_names(),
-    );
+    let client_fwd =
+        busbar_kernel::proxy::collect_client_headers(headers, &forwardable_client_header_names());
 
     // THE PLAN, named before the walk runs it: one leg per candidate the destination resolved to,
     // in the order the walk was handed them. The lane and the dial target are the deployment's own

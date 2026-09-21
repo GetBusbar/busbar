@@ -4,8 +4,8 @@
 
 use super::*;
 
-use busbar_contract::caps::{Grant, Admittance};
-use busbar_contract::caps::{Hold, WriteMoney, Usage, Consumption};
+use busbar_contract::caps::{Admittance, Grant};
+use busbar_contract::caps::{Consumption, Hold, Usage, WriteMoney};
 use busbar_contract::caps::{KernelSeal, MeterClassId, PrincipalId, QuantitySource, UsageLine};
 use busbar_kernel_ledger::cost::{
     derive_spend_micros, price, CurrencyCode, History, LaneClass, Posting, RateCard,

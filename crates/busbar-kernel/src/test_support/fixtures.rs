@@ -190,11 +190,7 @@ impl busbar_kernel::testkit::TestAppSeam for TestApp {
         TestApp::mount_plane(self, key, path, wire);
     }
 
-    fn admit_plane(
-        &mut self,
-        key: &'static str,
-        admission: busbar_kernel::plane::PlaneAdmission,
-    ) {
+    fn admit_plane(&mut self, key: &'static str, admission: busbar_kernel::plane::PlaneAdmission) {
         TestApp::admit_plane(self, key, admission);
     }
 

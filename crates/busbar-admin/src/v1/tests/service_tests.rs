@@ -843,8 +843,7 @@ fn catalog_cache_ttl_prunes_stale_entries() {
     {
         let mut cache = catalog_cache().lock().unwrap();
         let entry = cache.get_mut(&dir).expect("entry present");
-        entry.inserted_at =
-            busbar_kernel::store::now().saturating_sub(CATALOG_CACHE_TTL_SECS + 1);
+        entry.inserted_at = busbar_kernel::store::now().saturating_sub(CATALOG_CACHE_TTL_SECS + 1);
     }
 
     // A cache access against a DIFFERENT directory still prunes the aged entry — `retain()` runs
@@ -1322,14 +1321,16 @@ async fn list_groups_is_cursor_paginated() {
         .next_cursor
         .as_deref()
         .expect("more rows remain -> a next_cursor is present");
-    let start2 = busbar_kernel::admin::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
+    let start2 =
+        busbar_kernel::admin::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
 
     let p2 = svc.list_groups(start2, 2).await.expect("list ok");
     assert_eq!(p2.items.len(), 2);
     let names: Vec<&str> = p2.items.iter().map(|g| g.name.as_str()).collect();
     assert_eq!(names, vec!["g2", "g3"]);
     let c2 = p2.next_cursor.as_deref().expect("one row remains");
-    let start3 = busbar_kernel::admin::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
+    let start3 =
+        busbar_kernel::admin::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
 
     let p3 = svc.list_groups(start3, 2).await.expect("list ok");
     assert_eq!(p3.items.len(), 1, "final page holds the remainder");
@@ -2031,9 +2032,10 @@ fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
 /// needs at least two).
 #[test]
 fn build_with_hook_demote_only_removes_the_target_hook() {
-    let Some(env) =
-        busbar_kernel::test_support::test_hook_env(&["test-hook", "test-hook-2"], Default::default())
-    else {
+    let Some(env) = busbar_kernel::test_support::test_hook_env(
+        &["test-hook", "test-hook-2"],
+        Default::default(),
+    ) else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
@@ -2061,9 +2063,10 @@ fn build_with_hook_demote_only_removes_the_target_hook() {
 /// wiring untouched — same `!=`/`==` retain distinction as the demote case above.
 #[test]
 fn build_without_hook_only_removes_the_target_from_global_wiring() {
-    let Some(env) =
-        busbar_kernel::test_support::test_hook_env(&["test-hook", "test-hook-2"], Default::default())
-    else {
+    let Some(env) = busbar_kernel::test_support::test_hook_env(
+        &["test-hook", "test-hook-2"],
+        Default::default(),
+    ) else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
@@ -2247,10 +2250,11 @@ fn hook_snapshot_builders_recompute_the_content_gate() {
 fn hook_derived_fields_follow_the_registry() {
     // PANIC, never skip: a rig that skips when the cdylib is absent reports green over the code it
     // was written to cover. Build it (`cargo build -p busbar-hook-test-plugin`) or fail loudly.
-    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default()).expect(
-        "the hook-test plugin cdylib must be built for this test (cargo build -p \
+    let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default())
+        .expect(
+            "the hook-test plugin cdylib must be built for this test (cargo build -p \
          busbar-hook-test-plugin); refusing to skip the derived-field invariant",
-    );
+        );
 
     /// Every `App` field that is a PURE FUNCTION of `hook_registry`, re-derived from the snapshot's
     /// own registry and compared against what the builder installed.

@@ -890,7 +890,8 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
     }))
     .expect("hook cfg");
     assert!(
-        busbar_kernel::hooks::await_transport_published("fallback-hook", &warm, &env_for_warm).await,
+        busbar_kernel::hooks::await_transport_published("fallback-hook", &warm, &env_for_warm)
+            .await,
         "the loader must publish a transport for the hook the PATCH is about to configure"
     );
     let patched = admin(client.patch(format!(
@@ -3436,8 +3437,9 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
     // "Restart": merge the overlay onto a fresh RESOLVED base config → the hook is restored.
     let fresh_deploy: busbar_kernel::config::DeployCfg =
         serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
-    let mut fresh = busbar_kernel::config::resolve(&fresh_deploy, &std::collections::HashMap::new())
-        .expect("minimal config resolves");
+    let mut fresh =
+        busbar_kernel::config::resolve(&fresh_deploy, &std::collections::HashMap::new())
+            .expect("minimal config resolves");
     busbar_kernel::config::overlay::merge_into(&mut fresh, doc);
     assert!(
         fresh.hooks.contains_key("persisted_gate"),
@@ -13005,7 +13007,8 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
 
     // Every refusal is audited — the operator's only evidence, since a real restart takes the
     // connection that would have carried the response.
-    let entries = busbar_kernel::audit_ring::AUDIT.list(busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES);
+    let entries =
+        busbar_kernel::audit_ring::AUDIT.list(busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES);
     let restarts: Vec<_> = entries
         .iter()
         .filter(|e| e.action == "admin.restart" && e.seq > baseline_seq)

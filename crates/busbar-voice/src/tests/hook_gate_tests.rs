@@ -179,11 +179,8 @@ async fn ws_accept_handshake(host: Arc<dyn EngineHost>) -> Result<(), ()> {
         allow_plaintext: true,
         ..busbar_kernel::net_guard::GuardPolicy::default()
     };
-    match busbar_kernel::egress::duplex_ws::dial(
-        &format!("ws://{addr}/telephony/call-ws"),
-        policy,
-    )
-    .await
+    match busbar_kernel::egress::duplex_ws::dial(&format!("ws://{addr}/telephony/call-ws"), policy)
+        .await
     {
         Ok(_) => Ok(()),
         Err(_) => Err(()),

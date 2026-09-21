@@ -6,10 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::cost::{Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass, RateCard};
 use busbar_contract::caps::MeterClassId;
-use crate::cost::{
-    Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass, RateCard,
-};
 
 use crate::recompute::{
     apply_tier, price_line, recheck, recompute, DerivedPrice, Divergence, HistoryArchive, Posting,

@@ -91,8 +91,10 @@ fn egress_targets_honor_azure_path_override_with_query() {
         .pool("", &[(0, 1)])
         .build();
     assert_table_matches_reference(&app, 0);
-    let op =
-        busbar_substrate_values::handlers::chat("openai", busbar_substrate_values::transport::Transport::Http);
+    let op = busbar_substrate_values::handlers::chat(
+        "openai",
+        busbar_substrate_values::transport::Transport::Http,
+    );
     let t = app.engine_tables().lanes()[0]
         .egress_target(op.operation, false)
         .unwrap();
@@ -124,8 +126,10 @@ fn egress_targets_encode_bedrock_model_id_like_the_wire() {
         .pool("", &[(0, 1)])
         .build();
     assert_table_matches_reference(&app, 0);
-    let op =
-        busbar_substrate_values::handlers::chat("bedrock", busbar_substrate_values::transport::Transport::Http);
+    let op = busbar_substrate_values::handlers::chat(
+        "bedrock",
+        busbar_substrate_values::transport::Transport::Http,
+    );
     let t = app.engine_tables().lanes()[0]
         .egress_target(op.operation, false)
         .unwrap();

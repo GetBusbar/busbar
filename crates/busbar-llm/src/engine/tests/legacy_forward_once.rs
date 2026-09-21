@@ -13,9 +13,9 @@
 
 use crate::engine::*;
 
+use busbar_kernel::observability::HOTPATH_LEVEL;
 use busbar_substrate_values::diag_debug;
 use busbar_substrate_values::diagnostics::ATTEMPT_TIMEOUT_DEGRADED;
-use busbar_kernel::observability::HOTPATH_LEVEL;
 
 /// Forward one request to a specific lane and relay the response. Shared by the degraded
 /// last-resort exhaustion paths (FallbackPool routing + LeastBad). Unlike the main forward
@@ -431,7 +431,9 @@ pub(super) async fn forward_once(
                     )
                     .map(|cell| cell.extract_error(status.as_u16(), &bytes))
                     .unwrap_or_else(|| {
-                        busbar_substrate_values::breaker::RawUpstreamError::from_status(status.as_u16())
+                        busbar_substrate_values::breaker::RawUpstreamError::from_status(
+                            status.as_u16(),
+                        )
                     });
                     let sig = busbar_substrate_values::breaker::normalize_raw_error(
                         &raw,

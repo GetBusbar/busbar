@@ -495,9 +495,9 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
 #[tokio::test]
 async fn test_untranslatable_2xx_does_not_charge_tokens() {
     crate::testkit::install_test_seams();
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped 2xx: a real `usage` block (so the tap WOULD count 7+3=10 tokens) but an EMPTY
@@ -711,9 +711,9 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
 async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
     busbar_kernel::metrics::init();
@@ -849,16 +849,14 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
 async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
 
     busbar_kernel::metrics::init();
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK
-        .lock()
-        .await;
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     // A cap small enough that the filler content alone blows well past it, but the RAII guard
     // restores whatever was installed before this test regardless of how it exits.
     const CAP: usize = 4096;
@@ -992,16 +990,14 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
 async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
 
     busbar_kernel::metrics::init();
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK
-        .lock()
-        .await;
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     const CAP: usize = 4096;
     let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(
         &busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
@@ -1154,9 +1150,9 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
 fn nonstream_tap_cap_is_read_once_per_decision() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt;
     use std::panic::AssertUnwindSafe;
@@ -1330,8 +1326,8 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     // (`new_stream_translator`, the exact seam both forward paths use), so this core FirstByteBody
     // test names no witnessed codec type. `is_sse = true` + ingress != egress reproduces the prior
     // direct translator construction byte-for-byte.
-    let translate = busbar_kernel::proto::new_stream_translator("gemini", "openai", true)
-        .expect("translator");
+    let translate =
+        busbar_kernel::proto::new_stream_translator("gemini", "openai", true).expect("translator");
     // Neutral seam: the array-stream framer is built the exact way production builds it
     // (`decl_for(name).dialect().make_array_stream_framer()`), so this test names no dialect module.
     let json_array: Box<dyn busbar_kernel::proto::ArrayStreamFramer> =
@@ -1466,9 +1462,9 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
 async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
     busbar_kernel::metrics::init();
@@ -2977,9 +2973,7 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     // small KNOWN cap under an RAII guard so the body below is deterministically over-cap regardless
     // of a concurrent install (restored on drop). Without the lock this test READS the cap to size
     // `huge`, and a sibling install could move it mid-run.
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK
-        .lock()
-        .await;
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     const CAP: usize = 4096;
     let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(
         &busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
@@ -3060,9 +3054,7 @@ async fn test_truncated_body_does_not_refund_budget() {
     // over-cap body, and a sibling's install landing mid-run would move the cap out from under it.
     // Install a small KNOWN cap under an RAII guard so the body is deterministically over-cap
     // (restored on drop). See the correctly-locked sibling `..._over_cap_body_still_bills_tail_usage`.
-    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK
-        .lock()
-        .await;
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     const CAP: usize = 4096;
     let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(
         &busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
@@ -3701,10 +3693,10 @@ async fn test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit() {
 async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -3859,10 +3851,10 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
 async fn test_cancel_drop_bills_partial_tokens() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::BreakerCfg;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -3974,10 +3966,10 @@ async fn test_cancel_drop_bills_partial_tokens() {
 async fn test_cancel_drop_skips_billing_on_aborted_translate() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::BreakerCfg;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt as _;
 

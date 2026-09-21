@@ -304,19 +304,19 @@ pub mod store;
 
 // ── W4.b P2: substrate ENGINE absorbed INTO busbar-kernel; busbar-substrate deleted. The neutral
 // engine modules that had no kernel counterpart land here at their historical `busbar_kernel::` paths.
-pub mod api;
 pub mod admin_verbs;
 pub mod admin_witness;
+pub mod api;
 pub mod detached;
 pub mod plane_routes;
 pub mod rate_apply;
-pub mod topology;
-#[cfg(any(test, feature = "test-support"))]
-pub mod testkit;
 pub mod telemetry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testkit;
 pub mod tls;
+pub mod topology;
 pub use busbar_substrate_values::transport;
 
 #[cfg(test)]
@@ -335,14 +335,14 @@ mod alarm_silence_tests;
 pub mod appbuild;
 // `key_revoke_tombstone_tests` drives the admin key-revoke HTTP surface; it moved to `busbar-admin`
 // with the service (`busbar_admin::tests::key_revoke_tombstone_tests`).
+#[cfg(test)]
+#[path = "tests/drain_facade_tests.rs"]
+mod drain_facade_tests;
 pub mod preflight;
 pub mod router;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
-#[cfg(test)]
-#[path = "tests/drain_facade_tests.rs"]
-mod drain_facade_tests;
 
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,

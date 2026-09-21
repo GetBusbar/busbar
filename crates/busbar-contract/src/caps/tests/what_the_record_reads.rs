@@ -198,20 +198,29 @@ fn a_token_prints_the_capability_it_seals_and_nothing_else() {
         format!("{:?}", KernelSeal::acquire_for_kernel()),
         "KernelSeal"
     );
-    assert_eq!(format!("{:?}", Grant::<WriteMoney>::mint(&k)), "Grant<write-money>");
-    assert_eq!(format!("{:?}", Grant::<Consumption>::mint(&k)), "Grant<consumption>");
+    assert_eq!(
+        format!("{:?}", Grant::<WriteMoney>::mint(&k)),
+        "Grant<write-money>"
+    );
+    assert_eq!(
+        format!("{:?}", Grant::<Consumption>::mint(&k)),
+        "Grant<consumption>"
+    );
     assert_eq!(format!("{:?}", Grant::<Dial>::mint(&k)), "Grant<dial>");
     assert_eq!(format!("{:?}", Grant::<Exit>::mint(&k)), "Grant<exit>");
-    assert_eq!(format!("{:?}", Grant::<Recover>::mint(&k)), "Grant<recover>");
-    assert_eq!(format!("{:?}", Grant::<AdminVerb>::mint(&k)), "Grant<admin-verb>");
+    assert_eq!(
+        format!("{:?}", Grant::<Recover>::mint(&k)),
+        "Grant<recover>"
+    );
+    assert_eq!(
+        format!("{:?}", Grant::<AdminVerb>::mint(&k)),
+        "Grant<admin-verb>"
+    );
     assert_eq!(
         format!("{:?}", Grant::<DurableWrite>::mint(&k)),
         "Grant<durable-write>"
     );
-    assert_eq!(
-        format!("{:?}", Grant::<Sign>::mint(&k)),
-        "Grant<sign>"
-    );
+    assert_eq!(format!("{:?}", Grant::<Sign>::mint(&k)), "Grant<sign>");
     assert_eq!(
         format!("{:?}", Grant::<KeyHandle>::mint(&k)),
         "Grant<key-handle>"
@@ -277,7 +286,12 @@ fn a_one_shot_secret_is_bound_to_one_unit_and_one_target() {
     // The mint is reversed unless the nonce appears exactly once at exactly this target, so both
     // facts have to be readable — and the nonce, which IS the secret, must not be.
     let k = seal();
-    let once = SecretOnce::mint(&Grant::<AdminVerb>::mint(&k), 42, UnitKey::new(6), "/body/token");
+    let once = SecretOnce::mint(
+        &Grant::<AdminVerb>::mint(&k),
+        42,
+        UnitKey::new(6),
+        "/body/token",
+    );
     assert_eq!(once.target(), "/body/token");
     assert_eq!(once.unit(), UnitKey::new(6));
     assert!(once.matches(42));
@@ -285,7 +299,12 @@ fn a_one_shot_secret_is_bound_to_one_unit_and_one_target() {
 
     // A second placeholder at a different target is a different capability, and the accessor is what
     // the substitution site reads to tell them apart.
-    let elsewhere = SecretOnce::mint(&Grant::<AdminVerb>::mint(&k), 42, UnitKey::new(6), "/header/x-key");
+    let elsewhere = SecretOnce::mint(
+        &Grant::<AdminVerb>::mint(&k),
+        42,
+        UnitKey::new(6),
+        "/header/x-key",
+    );
     assert_ne!(once.target(), elsewhere.target());
     assert_ne!(once, elsewhere);
 }

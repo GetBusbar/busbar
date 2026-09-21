@@ -16,9 +16,9 @@
 use super::{translate_response_cross_protocol, BudgetSpendGuard};
 use crate::engine::AppEngineExt as _;
 use crate::engine::TapCell;
-use busbar_store_memory::MemoryStore;
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::testkit::engine_kit::{CostKit, EngineTestKit as _, GovKit};
+use busbar_store_memory::MemoryStore;
 use std::sync::Arc;
 
 /// A governed fixture: an `App` whose sole lane is the OpenAI EGRESS with a limited request budget of
@@ -208,7 +208,10 @@ async fn delivered_cross_protocol_response_bills_once() {
     crate::testkit::install_test_seams();
     let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":9}}"#.to_vec();
     let out = drive(
-        busbar_substrate_values::handlers::chat("openai", busbar_substrate_values::transport::Transport::Http),
+        busbar_substrate_values::handlers::chat(
+            "openai",
+            busbar_substrate_values::transport::Transport::Http,
+        ),
         "anthropic",
         body,
     )

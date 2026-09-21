@@ -916,8 +916,10 @@ pub fn synthesize_completion(
                 );
             }
         };
-        let op =
-            busbar_substrate_values::handlers::chat(proto, busbar_substrate_values::transport::Transport::Http);
+        let op = busbar_substrate_values::handlers::chat(
+            proto,
+            busbar_substrate_values::transport::Transport::Http,
+        );
         operation_resolved(
             &p.host,
             &p.gov,

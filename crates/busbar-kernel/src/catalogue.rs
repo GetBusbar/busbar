@@ -12,8 +12,6 @@
 // there. `unused_imports` rather than `dead_code` because this is now a re-export; unconditional (the
 // neutral seam names no plane feature — the re-export is public API whichever planes are compiled in).
 #![allow(unused_imports)]
-
-
 #![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 #[cfg(test)]
 #[path = "tests/catalogue_tests.rs"]

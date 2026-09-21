@@ -26,8 +26,8 @@ const ISSUER: &str = "https://login.example.com";
 const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/mcp";
 
 async fn serve() -> (String, tokio::task::JoinHandle<()>) {
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
+    use busbar_store_memory::MemoryStore;
     use std::sync::Arc;
 
     metrics_init();

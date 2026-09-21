@@ -143,12 +143,14 @@ pub(crate) fn ingress_reject_response(
         // process, and the moment the axis grew a field it would have read
         // `Verb { op: Invoke, name: "image" }`. `name()` is the identifier this project publishes
         // and pins — the same word the metric label and the `paths:` key use.
-        busbar_substrate_values::handlers::IngressReject::UnsupportedSubOp { op, model } => ingress_error(
-            ingress_protocol,
-            StatusCode::NOT_FOUND,
-            KIND_NOT_FOUND,
-            &format!("{} is not supported for model \"{model}\".", op.name()),
-        ),
+        busbar_substrate_values::handlers::IngressReject::UnsupportedSubOp { op, model } => {
+            ingress_error(
+                ingress_protocol,
+                StatusCode::NOT_FOUND,
+                KIND_NOT_FOUND,
+                &format!("{} is not supported for model \"{model}\".", op.name()),
+            )
+        }
     }
 }
 
@@ -304,12 +306,14 @@ fn map_translate_req_reject(
             KIND_NOT_FOUND,
             DETAIL_MODEL_UNSUPPORTED_OPERATION,
         ),
-        busbar_substrate_values::handlers::TranslateReqReject::Unrepresentable(reason) => ingress_error(
-            ingress_protocol,
-            StatusCode::BAD_REQUEST,
-            KIND_INVALID_REQUEST,
-            &reason,
-        ),
+        busbar_substrate_values::handlers::TranslateReqReject::Unrepresentable(reason) => {
+            ingress_error(
+                ingress_protocol,
+                StatusCode::BAD_REQUEST,
+                KIND_INVALID_REQUEST,
+                &reason,
+            )
+        }
     }
 }
 
@@ -347,8 +351,8 @@ pub(crate) fn translate_request_cross_protocol(
     // pays nothing). Shared by the opaque and JSON request branches below so the two cannot drift on
     // which lane facts gate `prepare_for_egress`, and the SINGLE site outside `ir/` that names
     // `EgressPrep` — `egress_prep.is_some()` is exactly "this hop is cross-protocol".
-    let egress_prep =
-        (ingress_protocol != egress_name).then(|| busbar_substrate_values::ir::egress_prep::EgressPrep {
+    let egress_prep = (ingress_protocol != egress_name).then(|| {
+        busbar_substrate_values::ir::egress_prep::EgressPrep {
             ingress_protocol,
             egress_requires_max_tokens: egress_decl.is_some_and(|d| d.requires_max_tokens),
             lane_default_max_tokens: EngineTables::new(rt).lanes()[i].default_max_tokens,
@@ -368,14 +372,16 @@ pub(crate) fn translate_request_cross_protocol(
             // sentinel bypass and has real reports of rejecting it.
             thought_signature_fill: egress_decl.is_some_and(|d| d.fills_thought_signature)
                 && EngineTables::new(rt).lanes()[i].path_base.is_none(),
-        });
+        }
+    });
     // OPAQUE ingress body (multipart/binary — `None`): translate at the BYTE level through the
     // operation codecs (cross-protocol) or relay the pristine bytes verbatim (same-protocol) —
     // exactly the contract the JSON branch below implements at the Value level.
     let Some(mut body) = body else {
         if let Some(prep) = &egress_prep {
-            let ingress_handler = busbar_substrate_values::handlers::request_handler(ingress_protocol)
-                .and_then(|rh| rh.operation_handler(op.operation));
+            let ingress_handler =
+                busbar_substrate_values::handlers::request_handler(ingress_protocol)
+                    .and_then(|rh| rh.operation_handler(op.operation));
             let egress_handler = busbar_substrate_values::handlers::request_handler(egress_name)
                 .and_then(|rh| rh.operation_handler(op.operation));
             let (Some(ih), Some(_eh)) = (ingress_handler, egress_handler) else {
@@ -426,7 +432,9 @@ pub(crate) fn translate_request_cross_protocol(
                 busbar_substrate_values::wire::EgressWire::Unrepresentable { reason } => {
                     Err(Box::new(map_translate_req_reject(
                         ingress_protocol,
-                        busbar_substrate_values::handlers::TranslateReqReject::Unrepresentable(reason),
+                        busbar_substrate_values::handlers::TranslateReqReject::Unrepresentable(
+                            reason,
+                        ),
                     )))
                 }
             };
@@ -767,8 +775,7 @@ pub(crate) fn mid_stream_error_bytes(
         provider_signal: Some(message.to_string()),
         retry_after: None,
     };
-    let Some(dialect) =
-        busbar_kernel::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
+    let Some(dialect) = busbar_kernel::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
     else {
         return agnostic_stream_error_frame(message);
     };

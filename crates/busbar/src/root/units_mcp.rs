@@ -49,34 +49,34 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
-use busbar_contract::caps::{Grant, 
-    Admit, Admittance, Arrival, ArrivalRecord, Authenticate, Decision, Decode, PrincipalId,
-    ReasonCode, Refusal, Dial, Pass, Consumption, Verify,
+use busbar_contract::caps::{
+    Admit, Admittance, Arrival, ArrivalRecord, Authenticate, Consumption, Decision, Decode, Dial,
+    Grant, Pass, PrincipalId, ReasonCode, Refusal, Verify,
 };
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::plane::{Plane, PlaneMeta};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::Evidence;
-use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
-use busbar_plane_mcp::{claims, ops, records, McpPlane, Server};
-use busbar_plugin_loader::store_adapter::StoreAdapter;
+use busbar_kernel_audit::legacy::{AuditInput, OUTCOME_APPLIED, OUTCOME_REJECTED};
+use busbar_kernel_audit::AuditInputs;
 use busbar_kernel_budget::{
     Admission, AdmissionUnit, BucketChain, ClassEstimate, Door, Estimate, InMemoryCells, Pricer,
 };
-use busbar_kernel_audit::legacy::{AuditInput, OUTCOME_APPLIED, OUTCOME_REJECTED};
-use busbar_kernel_audit::AuditInputs;
-use busbar_kernel_identity::{Auth, AuthRequest, CredentialCache, KeyVerifier, RevocationView};
-use busbar_kernel_ledger::{BucketId, BucketScope, CapDimension, TotalsKey};
-use busbar_kernel_scope::{Grants, PolicyView, Refused, Scope};
 use busbar_kernel_egress::trust::destination::{KindFacts, OriginKind};
 use busbar_kernel_egress::trust::guard::PoolView;
 use busbar_kernel_egress::trust::lane::{BreakerQuery, BreakerView};
 use busbar_kernel_egress::trust::net::{Denylist, GuardPolicy, Resolver};
 use busbar_kernel_egress::trust::{Trust, VerifyRequest};
+use busbar_kernel_identity::{Auth, AuthRequest, CredentialCache, KeyVerifier, RevocationView};
 use busbar_kernel_ledger::usage::{
     meter as fold_usage, KernelCounts, LegDeclaration, LocatedValue, Metered, RetainedLocatorValues,
 };
+use busbar_kernel_ledger::{BucketId, BucketScope, CapDimension, TotalsKey};
+use busbar_kernel_scope::{Grants, PolicyView, Refused, Scope};
+use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
+use busbar_plane_mcp::{claims, ops, records, McpPlane, Server};
+use busbar_plugin_loader::store_adapter::StoreAdapter;
 
 /// The resource kind a registered server is judged as at the approve step.
 ///
@@ -1569,7 +1569,9 @@ pub fn record_finish(
         busbar_contract::unit::FinishClass::Partial => {
             busbar_kernel_audit::record::FinishClass::Partial
         }
-        busbar_contract::unit::FinishClass::Error => busbar_kernel_audit::record::FinishClass::Error,
+        busbar_contract::unit::FinishClass::Error => {
+            busbar_kernel_audit::record::FinishClass::Error
+        }
     }
 }
 

@@ -117,10 +117,9 @@ async fn a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issue
     // the metric label, the plane's dialect list and a served card's `protocolBinding` stay one
     // vocabulary.
     assert!(
-        attempts.iter().any(|l| l.contains(&format!(
-            "lane=\"{}\"",
-            busbar_kernel::plane::WIRE_JSONRPC
-        ))),
+        attempts
+            .iter()
+            .any(|l| l.contains(&format!("lane=\"{}\"", busbar_kernel::plane::WIRE_JSONRPC))),
         "the hop's binding must be on the series: {attempts:?}"
     );
 

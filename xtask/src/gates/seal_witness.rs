@@ -134,7 +134,11 @@ impl SealWitnessGate {
             Ok(s) => s,
             Err(e) => {
                 return vec![
-                    Row::fail(ROW_NO_SURVIVING, "the seal-witness scan could not run", e.clone()),
+                    Row::fail(
+                        ROW_NO_SURVIVING,
+                        "the seal-witness scan could not run",
+                        e.clone(),
+                    ),
                     Row::fail(ROW_SINGLE_MINTER, "the seal-witness scan could not run", e),
                 ];
             }

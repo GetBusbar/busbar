@@ -30,7 +30,7 @@ use axum::body::Bytes;
 use axum::http::HeaderMap;
 use axum::response::Response;
 
-use busbar_contract::caps::{Grant, Decision, Meter, Outcome, Route, Pass, Consumption};
+use busbar_contract::caps::{Consumption, Decision, Grant, Meter, Outcome, Pass, Route};
 use busbar_kernel::plane_host::{EngineHost, EngineTablesView};
 
 use crate::unit::admit::Admitted;
@@ -584,7 +584,9 @@ impl Walk {
         let Some(arrived) = arrived else {
             return Decision::refuse(
                 token,
-                busbar_contract::caps::Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
+                busbar_contract::caps::Refusal::new(
+                    busbar_contract::caps::ReasonCode::NoDestination,
+                ),
             );
         };
         let op = busbar_substrate_values::handlers::frame(
@@ -602,7 +604,9 @@ impl Walk {
                 None => {
                     return Decision::refuse(
                         token,
-                        busbar_contract::caps::Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
+                        busbar_contract::caps::Refusal::new(
+                            busbar_contract::caps::ReasonCode::NoDestination,
+                        ),
                     )
                 }
             },

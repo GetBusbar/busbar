@@ -54,7 +54,11 @@ fn a_request_bigger_than_the_start_grows_the_pad_instead_of_refusing() {
     let landed = pad
         .alloc_bytes(&jev)
         .expect("a big request grows the pad, it does not refuse");
-    assert_eq!(landed.as_slice(), jev.as_slice(), "the whole 5 KB came back");
+    assert_eq!(
+        landed.as_slice(),
+        jev.as_slice(),
+        "the whole 5 KB came back"
+    );
     assert!(
         pad.capacity() > SCRATCH_START_BYTES,
         "the pad grew past its starting size to fit the request"
@@ -92,7 +96,8 @@ fn a_big_request_then_a_reset_shrinks_back_to_the_starting_size() {
     let fresh = ScratchPad::new().capacity();
 
     let mut pad = ScratchPad::new();
-    pad.alloc_bytes(&vec![0u8; 64 * 1024]).expect("grows to fit");
+    pad.alloc_bytes(&vec![0u8; 64 * 1024])
+        .expect("grows to fit");
     let grown = pad.capacity();
     assert!(grown > fresh, "the big request grew the pad");
 
@@ -137,7 +142,9 @@ fn the_abuse_backstop_refuses_one_request_and_serves_the_next() {
     assert!(refused.wanted > SCRATCH_ABUSE_CEILING_BYTES);
 
     // The pad is untouched: the very next legitimate call is served.
-    let ok = pad.alloc_bytes(b"a normal request").expect("the pad still serves");
+    let ok = pad
+        .alloc_bytes(b"a normal request")
+        .expect("the pad still serves");
     assert_eq!(ok.as_slice(), b"a normal request");
 }
 

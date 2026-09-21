@@ -201,7 +201,9 @@ fn the_table_empties_as_units_leave() {
             .expect("under the cap");
     }
     assert_eq!(table.len(), 4);
-    assert!(table.remove(busbar_contract::caps::UnitKey::new(2)).is_some());
+    assert!(table
+        .remove(busbar_contract::caps::UnitKey::new(2))
+        .is_some());
     assert_eq!(table.len(), 3);
     assert!(table.insert(enter(&kernel, 9, OriginKind::Client)).is_ok());
 }

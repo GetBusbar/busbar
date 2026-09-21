@@ -310,9 +310,7 @@ fn select(
     let caller = busbar_kernel::catalogue::Caller {
         key: Some(key),
         now: host.clock_now_secs(),
-        generation: busbar_kernel::trust::validate::Generations::at_admission(
-            plane.generation(),
-        ),
+        generation: busbar_kernel::trust::validate::Generations::at_admission(plane.generation()),
     };
     let wanted = super::registry::Wanted {
         shape: shape.clone(),
@@ -3466,8 +3464,8 @@ fn uuid_like(body: &[u8], now: u64) -> String {
 pub(crate) fn a2a_routes(
     slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
-    use busbar_plugin_loader::{RouteAuth, RouteMethod};
     use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
+    use busbar_plugin_loader::{RouteAuth, RouteMethod};
     let plane = slot
         .downcast_ref::<super::plane::A2aPlane>()
         .expect("the a2a plane's routes slot is an A2aPlane");

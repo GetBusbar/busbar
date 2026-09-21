@@ -203,7 +203,10 @@ impl busbar_kernel_identity::module::AuthModule for NeverIdentifies {
     fn name(&self) -> &'static str {
         "never"
     }
-    fn authenticate(&self, _candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
+    fn authenticate(
+        &self,
+        _candidate: Option<&str>,
+    ) -> busbar_kernel_identity::module::AuthOutcome {
         busbar_kernel_identity::module::AuthOutcome::Pass
     }
 }

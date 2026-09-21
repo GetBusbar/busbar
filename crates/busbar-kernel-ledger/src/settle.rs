@@ -27,8 +27,8 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::caps::{Grant, Hold, WriteMoney, Posted, Usage};
 use crate::cost::{CurrencyCode, HistorySeq, HistoryView};
+use busbar_contract::caps::{Grant, Hold, Posted, Usage, WriteMoney};
 
 use crate::legacy::{LegacyPosting, LegacyRows};
 use crate::recompute::{price_line, Posting, PricedLine};

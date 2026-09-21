@@ -9,10 +9,10 @@ use crate::governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
 use crate::idempotency::ReplayEncoder;
 use crate::posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
 use crate::rate::CONFIG_CLASS_RULES;
-use busbar_contract::verb_store::{Store, StoreError};
 use crate::verb::{KernelVerb, VerbScope};
 use crate::verbs::{MintedKeyOutcome, NonceSource, Verbs};
-use busbar_contract::caps::{Grant, AdminVerb, KernelSeal, UnitKey};
+use busbar_contract::caps::{AdminVerb, Grant, KernelSeal, UnitKey};
+use busbar_contract::verb_store::{Store, StoreError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
@@ -155,7 +155,11 @@ impl Governance for FakeGovernance {
             expires_at: Some(9_999_999),
         })
     }
-    fn rotate_key(&self, _admin: &Grant<AdminVerb>, id: &str) -> Result<RotateOutcome, GovernanceError> {
+    fn rotate_key(
+        &self,
+        _admin: &Grant<AdminVerb>,
+        id: &str,
+    ) -> Result<RotateOutcome, GovernanceError> {
         if let Some(e) = self.injected() {
             return Err(e);
         }
@@ -201,7 +205,11 @@ impl Store for FakeStore {
     fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
         Ok(())
     }
-    fn store_restore(&self, _admin: &Grant<AdminVerb>, _backup_ref: &str) -> Result<(), StoreError> {
+    fn store_restore(
+        &self,
+        _admin: &Grant<AdminVerb>,
+        _backup_ref: &str,
+    ) -> Result<(), StoreError> {
         Ok(())
     }
     fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
@@ -868,7 +876,11 @@ impl Governance for GatedGovernance {
         self.mints.fetch_add(1, Ordering::SeqCst);
         self.inner.mint_key(admin, group)
     }
-    fn rotate_key(&self, admin: &Grant<AdminVerb>, id: &str) -> Result<RotateOutcome, GovernanceError> {
+    fn rotate_key(
+        &self,
+        admin: &Grant<AdminVerb>,
+        id: &str,
+    ) -> Result<RotateOutcome, GovernanceError> {
         self.park();
         self.inner.rotate_key(admin, id)
     }
@@ -1261,7 +1273,11 @@ impl Governance for RoutingGovernance {
     ) -> Result<MintedKey, GovernanceError> {
         Err(GovernanceError::Validation)
     }
-    fn rotate_key(&self, _admin: &Grant<AdminVerb>, _id: &str) -> Result<RotateOutcome, GovernanceError> {
+    fn rotate_key(
+        &self,
+        _admin: &Grant<AdminVerb>,
+        _id: &str,
+    ) -> Result<RotateOutcome, GovernanceError> {
         Err(GovernanceError::Validation)
     }
     fn execute_legacy(
@@ -1613,7 +1629,11 @@ impl Store for RecordingStore {
         self.0.lock().unwrap().push("chain_break");
         Ok(())
     }
-    fn store_restore(&self, _admin: &Grant<AdminVerb>, _backup_ref: &str) -> Result<(), StoreError> {
+    fn store_restore(
+        &self,
+        _admin: &Grant<AdminVerb>,
+        _backup_ref: &str,
+    ) -> Result<(), StoreError> {
         self.0.lock().unwrap().push("store_restore");
         Ok(())
     }

@@ -20,9 +20,9 @@ use std::time::Instant;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
-use busbar_substrate_values::handlers::RequestHandler;
 use busbar_kernel::ingress::arrival::{Arrival, ArrivalCtx, ArrivalHost};
 use busbar_kernel::proxy::POOL_LABEL_UNRESOLVED;
+use busbar_substrate_values::handlers::RequestHandler;
 
 use crate::proto_codec::{PROTO_BEDROCK, PROTO_GEMINI};
 // The terminal's neutral half, named one level up (see `unit/mod.rs`) rather than by the audit

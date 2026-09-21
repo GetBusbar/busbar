@@ -35,7 +35,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use busbar_contract::caps::{Grant, TransportKeyHandle, KeyHandle};
+use busbar_contract::caps::{Grant, KeyHandle, TransportKeyHandle};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::danger::ClientCertVerifier;

@@ -262,9 +262,7 @@ pub(crate) fn mirrored_verb(verb: super::local::LocalVerb) -> Option<&'static st
 /// **NOTHING FROM THE BODY REACHES THE CALLER'S WEBHOOK.** The delivery is composed from busbar's
 /// own task row (`pushdeliver::notification_body`), so a backend cannot use this endpoint to post
 /// arbitrary bytes at a URL it has never been told.
-pub(crate) async fn push_notification(
-    ctx: busbar_kernel::plane_routes::PlaneReqCtx,
-) -> Response {
+pub(crate) async fn push_notification(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
     // S7 neutral seam: this `RouteAuth::None` handler took only `CurrentApp`, the headers and the
     // body — the caller is a fronted AGENT holding no busbar key, so the middleware attached no
     // identity and this handler authenticates the per-task push token itself, below. The plane is read

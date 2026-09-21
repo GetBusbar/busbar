@@ -133,17 +133,15 @@ impl busbar_kernel::ingress::protocol::Words for A2aWords {
 /// `null`.
 pub(super) fn refuse_admission(refusal: &InboundRefusal) -> Response {
     use busbar_kernel::ingress::protocol::Words as _;
-    A2aWords.refuse(
-        busbar_kernel::ingress::protocol::CoreRefusal::Admission {
-            id: serde_json::Value::Null,
-            status: axum::http::StatusCode::from_u16(refusal.status())
-                .unwrap_or(axum::http::StatusCode::FORBIDDEN),
-            message: refusal.to_string(),
-            // NONE, and the argument is on the variant: this plane's error body carries an
-            // `ErrorInfo.reason` from A2A's own fixed vocabulary or it carries none.
-            reason: None,
-        },
-    )
+    A2aWords.refuse(busbar_kernel::ingress::protocol::CoreRefusal::Admission {
+        id: serde_json::Value::Null,
+        status: axum::http::StatusCode::from_u16(refusal.status())
+            .unwrap_or(axum::http::StatusCode::FORBIDDEN),
+        message: refusal.to_string(),
+        // NONE, and the argument is on the variant: this plane's error body carries an
+        // `ErrorInfo.reason` from A2A's own fixed vocabulary or it carries none.
+        reason: None,
+    })
 }
 
 /// THE RFC 9728 FACTS THIS PLANE PUBLISHES, rendered off the neutral host seam.

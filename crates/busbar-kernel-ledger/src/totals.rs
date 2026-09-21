@@ -21,8 +21,8 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::caps::MeterClassId;
 use crate::cost::{CurrencyCode, HistorySeq, HistoryView};
+use busbar_contract::caps::MeterClassId;
 
 use crate::recompute::{price_line, Divergence, Posting};
 

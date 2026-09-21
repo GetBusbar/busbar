@@ -1,10 +1,10 @@
 use super::*;
 
+use busbar_kernel::{diag_debug, diag_warn};
 use busbar_substrate_values::diagnostics::{
     ON_ERROR_FALLBACK_ANSWERED, ON_ERROR_FALLBACK_DEADLINE_EXCEEDED, ON_ERROR_FALLBACK_HOOK_FAILED,
     ROUTING_POLICY_DEADLINE_EXCEEDED, ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK,
 };
-use busbar_kernel::{diag_debug, diag_warn};
 
 /// The coerced result of running a routing policy at the seam — what the ordered walk should do.
 pub(crate) enum PolicyOutcome {
@@ -60,8 +60,7 @@ pub(crate) fn apply_rewrite_to_body(
     let Some(obj) = v.as_object_mut() else {
         return false;
     };
-    let Some(dialect) =
-        busbar_kernel::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
+    let Some(dialect) = busbar_kernel::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
     else {
         return false;
     };

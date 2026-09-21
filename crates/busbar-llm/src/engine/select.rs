@@ -138,10 +138,7 @@ impl RequestCtx {
                 .cloned()
                 .collect();
             if restricted.is_empty() {
-                if matches!(
-                    r.on_empty,
-                    busbar_kernel::config::PolicyOnError::Weighted
-                ) {
+                if matches!(r.on_empty, busbar_kernel::config::PolicyOnError::Weighted) {
                     continue; // advisory escape — skip this restrict on this hop
                 }
                 return Err(r.name); // fail closed — no eligible lane satisfies a required restrict

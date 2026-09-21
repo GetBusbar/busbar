@@ -35,7 +35,6 @@ mod validate_tests;
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use std::sync::atomic::{AtomicU64, Ordering};
 
-
 use super::{Approval, PinnedArtifact, Sighting, TrustState};
 
 /// THE GENERATION SOURCE. Monotonic, process-global, taken once per snapshot BUILD.

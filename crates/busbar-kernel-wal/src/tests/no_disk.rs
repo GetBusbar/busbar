@@ -34,8 +34,12 @@ fn a_memory_buffered_log_creates_no_file_anywhere() {
     // preallocation or segment roll would have to have happened by now.
     for batch in 0..8u64 {
         let batch_records = records(1, batch * 4 + 1, 4, 900);
-        wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &batch_records)
-            .unwrap();
+        wal.append_batch(
+            &token,
+            busbar_contract::caps::StepName::Meter,
+            &batch_records,
+        )
+        .unwrap();
     }
     let back = wal.read_back().unwrap();
     assert_eq!(back.records.len(), 32);
@@ -90,8 +94,12 @@ fn a_log_in_a_directory_does_write_files_there_and_nowhere_else() {
         let mut wal = Wal::in_directory(&inner, Box::new(crate::ship::NullShipper::new())).unwrap();
         assert_eq!(wal.mode(), Mode::OnDisk);
         let token = durability_token();
-        wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &records(1, 1, 3, 100))
-            .unwrap();
+        wal.append_batch(
+            &token,
+            busbar_contract::caps::StepName::Meter,
+            &records(1, 1, 3, 100),
+        )
+        .unwrap();
     }
     let files: Vec<_> = dir.walk().into_iter().filter(|p| p.is_file()).collect();
     assert_eq!(

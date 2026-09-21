@@ -41,7 +41,7 @@
 //! carry no HTTP vocabulary beyond the two kind constants the live doors already spell.
 
 use busbar_contract::caps::{
-    Decision, PrincipalId, ReasonCode, Refusal, Pass, VerifiedDestination, Verify,
+    Decision, Pass, PrincipalId, ReasonCode, Refusal, VerifiedDestination, Verify,
 };
 use busbar_kernel::plane_host::{CostHandle, EngineHost, EngineTablesView};
 

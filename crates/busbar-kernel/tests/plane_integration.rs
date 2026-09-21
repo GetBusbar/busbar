@@ -550,7 +550,11 @@ mod metrics_scrape {
             busbar_kernel::metrics::REQUESTS_TOTAL,
         );
         assert!(
-            !lines_for(&exposition, busbar_kernel::metrics::REQUEST_DURATION_SECONDS).is_empty(),
+            !lines_for(
+                &exposition,
+                busbar_kernel::metrics::REQUEST_DURATION_SECONDS
+            )
+            .is_empty(),
             "no `{}` series after driving model traffic. Exposition:\n{exposition}",
             busbar_kernel::metrics::REQUEST_DURATION_SECONDS,
         );
@@ -586,9 +590,9 @@ mod metrics_scrape {
 /// `RouteAuth::None` answers everyone, so adding one must be a deliberate act that shows up here.
 #[tokio::test]
 async fn test_mcp_token_is_confined_to_the_mcp_plane() {
+    use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::governance::{GovState, MemoryStore};
     use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use std::sync::Arc;
 
     busbar_kernel::metrics::init();

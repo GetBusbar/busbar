@@ -160,7 +160,9 @@ pub(crate) trait McpWire: Send + Sync {
 /// old `match` was: an A2A binding is never an MCP client leg, and `mcp/config.rs` refuses any
 /// `transport:` that is not `streamable_http` or `stdio` at boot, so a value reaching it here is a
 /// config-grammar defect, never a silently wrong channel.
-pub(crate) fn wire_for(transport: busbar_substrate_values::transport::Transport) -> &'static dyn McpWire {
+pub(crate) fn wire_for(
+    transport: busbar_substrate_values::transport::Transport,
+) -> &'static dyn McpWire {
     use busbar_substrate_values::transport::UpstreamWireKind;
     match transport.upstream_wire() {
         Some(UpstreamWireKind::StreamableHttp) => &super::transport::HttpTransport,

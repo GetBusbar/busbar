@@ -172,11 +172,12 @@ pub mod test_support {
     /// (a `#[cfg(test)]` file that named `busbar_llm::chat_handle::ChatOperation` across the dev-dep
     /// back-edge); with the money-path tests relocated here it is built in-plane, naming its own cell —
     /// no cross-crate `#[cfg(test)]` reach, and no `busbar-core[test-support] → busbar-llm` cycle.
-    pub const CHAT: busbar_substrate_values::handlers::Op = busbar_substrate_values::handlers::frame(
-        busbar_substrate_values::transport::Transport::Http,
-        busbar_api::operation::Operation::CHAT,
-        &crate::chat_handle::ChatOperation("openai"),
-    );
+    pub const CHAT: busbar_substrate_values::handlers::Op =
+        busbar_substrate_values::handlers::frame(
+            busbar_substrate_values::transport::Transport::Http,
+            busbar_api::operation::Operation::CHAT,
+            &crate::chat_handle::ChatOperation("openai"),
+        );
 }
 
 /// THE LLM PLUGIN'S TEST-KIT — the composition-root-shaped install seams a test uses to bring the LLM

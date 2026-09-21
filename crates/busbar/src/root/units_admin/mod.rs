@@ -40,16 +40,16 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{Grant, 
-    Admission, Admit, Admittance, Approve, Audit, Authenticate, Decision, Decode, Encode, Meter,
-    Outcome, PrincipalId, ReasonCode, Refusal, Route, Pass, Usage, Consumption,
+use busbar_contract::caps::{
+    Admission, Admit, Admittance, Approve, Audit, Authenticate, Consumption, Decision, Decode,
+    Encode, Grant, Meter, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, Usage,
     VerifiedDestination, Verify,
 };
 use busbar_contract::UnitKey;
 use busbar_kernel::teller::UnitCtx;
-use busbar_plane_admin::verbs::ResolvedVerb;
 use busbar_kernel_identity::unit::AuthRequest;
 use busbar_kernel_scope::Scope;
+use busbar_plane_admin::verbs::ResolvedVerb;
 
 use crate::root::kernel::{ProductionUnits, RegisteredUnits};
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
@@ -755,9 +755,8 @@ fn amend_rate_history_effect(
     // the fee defaults to zero. A correction must move at least one figure — a rate or the fee —
     // because an amendment that changes no price is a history append and nothing else.
     let currency = match obj.get("currency").and_then(serde_json::Value::as_str) {
-        Some(code) => {
-            busbar_kernel_ledger::cost::CurrencyCode::new(code).ok_or(GovernanceError::Validation)?
-        }
+        Some(code) => busbar_kernel_ledger::cost::CurrencyCode::new(code)
+            .ok_or(GovernanceError::Validation)?,
         None => busbar_kernel_ledger::cost::CurrencyCode::USD,
     };
     let per_request_fee = match obj.get("per_request_fee") {
@@ -785,7 +784,10 @@ fn amend_rate_history_effect(
             if !micro.is_finite() || micro < 0.0 {
                 return Err(GovernanceError::Validation);
             }
-            entries.push((busbar_kernel_ledger::cost::LaneClass::new(lane, class), micro));
+            entries.push((
+                busbar_kernel_ledger::cost::LaneClass::new(lane, class),
+                micro,
+            ));
         }
     }
     if entries.is_empty() && per_request_fee.is_none() {
@@ -2154,7 +2156,9 @@ pub(crate) fn audit_refused(
                     .map(|request| request.method)
                     .as_deref(),
                 &Outcome::Refused(
-                    refusal.step().unwrap_or(busbar_contract::caps::StepName::Audit),
+                    refusal
+                        .step()
+                        .unwrap_or(busbar_contract::caps::StepName::Audit),
                     refusal.reason(),
                 ),
             ),

@@ -8,8 +8,8 @@
 //! token that opens it — but these four are the ones that touch secrets, so their `Debug` output
 //! never shows what they carry.
 
-use crate::caps::step::{LaneId, UnitKey};
 use crate::caps::capability::{AdminVerb, Dial, Sign};
+use crate::caps::step::{LaneId, UnitKey};
 use crate::caps::token::Grant;
 
 /// A destination the trust unit judged and sealed.

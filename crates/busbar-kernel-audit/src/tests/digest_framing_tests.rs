@@ -31,7 +31,7 @@
 //!    inferred from a digest agreeing with itself.
 
 use busbar_contract::caps::{
-    Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, UnitKey, Pass,
+    Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, Pass, UnitKey,
 };
 
 use crate::legacy::chain::{digest, seal, verify_chain, ChainedRecord, Digest, Framing};

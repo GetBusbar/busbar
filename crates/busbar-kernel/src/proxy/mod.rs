@@ -10,9 +10,9 @@
 // engine names them across the crate boundary as `busbar_kernel::proxy::*`.
 pub mod proxy_vocab;
 pub use proxy_vocab::{
-    agnostic_error_envelope, gate_rejected, hook_content_max_bytes,
-    max_upstream_buffered_bytes, read_capped, set_hook_content_max_bytes, GateRejected, ReadEnd,
-    StageShape, DEFAULT_HOOK_CONTENT_MAX_BYTES,
+    agnostic_error_envelope, gate_rejected, hook_content_max_bytes, max_upstream_buffered_bytes,
+    read_capped, set_hook_content_max_bytes, GateRejected, ReadEnd, StageShape,
+    DEFAULT_HOOK_CONTENT_MAX_BYTES,
 };
 
 // NOTE: cross-protocol max-tokens defaulting lives in `IrReq::prepare_for_egress` — the IR owns its

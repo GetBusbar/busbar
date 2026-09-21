@@ -3,7 +3,7 @@
 
 //! The sealed answer: what the loop actually receives.
 
-use busbar_contract::caps::{Authenticate, KernelSeal, ReasonCode, StepName, Pass};
+use busbar_contract::caps::{Authenticate, KernelSeal, Pass, ReasonCode, StepName};
 
 use super::{entry, Canned};
 use crate::admin::{admin_grants, kernel_verb_scope_satisfied, Grants, Scope};
@@ -118,7 +118,10 @@ fn a_challenge_is_only_offered_inside_a_handshake_unit() {
         .resolve(&req, None, None, None, Some(pending), &token)
         .into_result(&seal)
         .expect("a handshake unit is offered the round");
-    assert!(matches!(offered, busbar_contract::caps::Authenticated::Challenge(_)));
+    assert!(matches!(
+        offered,
+        busbar_contract::caps::Authenticated::Challenge(_)
+    ));
 
     // Outside one, the chain's own verdict stands.
     let (seal, token) = seal_and_token();

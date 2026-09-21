@@ -469,7 +469,10 @@ async fn route_step_refuses_an_unresolved_destination_without_a_terminal() {
         .decision
         .into_result(&seal)
         .expect_err("an unresolved destination must refuse");
-    assert_eq!(refusal.reason(), busbar_contract::caps::ReasonCode::NoDestination);
+    assert_eq!(
+        refusal.reason(),
+        busbar_contract::caps::ReasonCode::NoDestination
+    );
     assert_eq!(
         refusal.step(),
         Some(busbar_contract::caps::StepName::Route),

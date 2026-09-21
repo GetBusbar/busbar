@@ -23,7 +23,7 @@ use crate::classify::{
     Disposition, NoopDiagnostics, RawUpstreamError, StatusClass, PROVIDER_CODE_CONTEXT_LENGTH,
 };
 use crate::{Admit, Breaker, BreakerUnit, DestinationId, LaneState, Outcome};
-use busbar_contract::caps::{KernelSeal, Route, Pass};
+use busbar_contract::caps::{KernelSeal, Pass, Route};
 use std::collections::HashMap;
 
 /// A fixed "now" for the tests that need one but are not ABOUT it — the kernel supplies this value

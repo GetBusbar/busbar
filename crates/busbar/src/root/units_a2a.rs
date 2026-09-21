@@ -68,26 +68,28 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{Grant, 
-    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
-    Decode, Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
-    Dial, Pass, Consumption, VerifiedDestination, Verify,
+use busbar_contract::caps::{
+    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
+    Consumption, Decision, Decode, Dial, Encode, Grant, Meter, Outcome, Pass, PrincipalId,
+    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, VerifiedDestination, Verify,
 };
 use busbar_contract::dest::{DestinationFacts, Leg};
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::unit::{FinishClass, ResourceLocator};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
-use busbar_plane_a2a::{ops, records};
-use busbar_kernel_budget::{Admission as _, AdmissionUnit, CellStore, Door, Estimate, Pricer};
 use busbar_kernel_audit::{Audit as _, AuditInputs};
-use busbar_kernel_identity::{Auth, AuthRequest};
-use busbar_kernel_scope::{Grants, Scope};
+use busbar_kernel_budget::{Admission as _, AdmissionUnit, CellStore, Door, Estimate, Pricer};
 use busbar_kernel_egress::trust::{
     kind_permitted, kind_rule_passes, BreakerQuery, BreakerView, GuardPolicy, KindFacts,
     OriginKind, PoolView, Resolver,
 };
-use busbar_kernel_ledger::usage::{KernelCounts, LegDeclaration, LocatedValue, RetainedLocatorValues};
+use busbar_kernel_identity::{Auth, AuthRequest};
+use busbar_kernel_ledger::usage::{
+    KernelCounts, LegDeclaration, LocatedValue, RetainedLocatorValues,
+};
+use busbar_kernel_scope::{Grants, Scope};
+use busbar_plane_a2a::{ops, records};
 
 /// The action an audited unit of this plane is recorded under.
 ///
@@ -1111,11 +1113,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         }
     }
 
-    fn authenticate(
-        &self,
-        token: &Pass<Authenticate>,
-        _ctx: &UnitCtx,
-    ) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
         let request = auth_request(&self.draft, self.bindings.now);
         // The chain's answer is the chain's, and a decision has no reader on it by design — the only
         // thing that opens one is the loop, with the kernel's seal. So the principal the audit and
@@ -1246,12 +1244,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         decision
     }
 
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        _ctx: &UnitCtx,
-        meter: &AccrualMeter,
-    ) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
         // The plan has to FIT before any of it happens. The route plan the loop carries is bounded,
         // and the legs are run below before they are put on it — so a plan longer than the bound
         // used to run in full and then be trimmed to what fitted, with every leg past the bound
@@ -1422,7 +1415,9 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // The second door: a unit that never passed the first one, and was charged nothing. It is
         // sealed on the same chain, because a refusal is an event with a record of its own.
         let outcome = Outcome::Refused(
-            refusal.step().unwrap_or(busbar_contract::caps::StepName::Admit),
+            refusal
+                .step()
+                .unwrap_or(busbar_contract::caps::StepName::Admit),
             refusal.reason(),
         );
         let inputs = self.audit_inputs(ctx, outcome, None);
@@ -1440,12 +1435,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         )
     }
 
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Encode> {
+    fn encode(&self, token: &Pass<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
         // The plane's encoders take the unit's arena, and this signature carries neither an arena
         // nor the plane's draft, so the bytes are written where the borrow lives and this step
         // reports what left. That is a statement about the seam, not a shortcut: a root that
@@ -1582,7 +1572,10 @@ pub fn guard_destination(
     resolver: &dyn Resolver,
     policy: GuardPolicy,
     denylist: &busbar_kernel_egress::trust::Denylist,
-) -> Result<Option<busbar_kernel_egress::trust::PinnedTarget>, busbar_kernel_egress::trust::NetworkRefusal> {
+) -> Result<
+    Option<busbar_kernel_egress::trust::PinnedTarget>,
+    busbar_kernel_egress::trust::NetworkRefusal,
+> {
     match busbar_kernel_egress::trust::net::check_destination_facts(
         candidate,
         &[],

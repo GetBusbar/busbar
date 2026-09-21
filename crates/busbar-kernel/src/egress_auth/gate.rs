@@ -12,8 +12,6 @@
 // so `not(feature = "egress-auth-gate")` is byte-identical to the original
 // `not(any(feature = "plane-mcp", feature = "plane-a2a"))` gate this replaced.
 #![cfg_attr(not(feature = "egress-auth-gate"), allow(unused_imports))]
-
-
 #![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 #[cfg(test)]
 #[path = "tests/gate_tests.rs"]

@@ -40,11 +40,11 @@ use crate::mint::{plan_mint_group, GroupLookup, MintPlan};
 use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{store_error_into_refusal, ReasonCode, Refusal, RefusalStep};
-use busbar_contract::verb_store::Store;
 use crate::verb::{
     KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
-use busbar_contract::caps::{Grant, AdminVerb, SecretOnce, UnitKey};
+use busbar_contract::caps::{AdminVerb, Grant, SecretOnce, UnitKey};
+use busbar_contract::verb_store::Store;
 
 /// The nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
 /// [`SecretOnce`] is bound to — the thing that proves exactly one occurrence of the minted secret

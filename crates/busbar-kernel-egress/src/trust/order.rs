@@ -13,7 +13,9 @@
 //! and the pre and post head of the pick lands in the audit record. An ordering that could silently
 //! move a unit to a different lane without declaring it would be a hook in everything but name.
 
-use crate::trust::lane::{survives_prewalk_filter, BreakerView, LaneCandidate, LaneTable, Unavailable};
+use crate::trust::lane::{
+    survives_prewalk_filter, BreakerView, LaneCandidate, LaneTable, Unavailable,
+};
 use crate::trust::swrr::{select_weighted, SwrrState};
 use std::collections::HashSet;
 

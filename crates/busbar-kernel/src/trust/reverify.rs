@@ -6,7 +6,6 @@
 //! hosts the core-only re-verification tests, which exercise an in-core plane consumer's
 //! registration/pin call site.
 
-
 #[cfg(test)]
 #[path = "tests/reverify_tests.rs"]
 mod reverify_tests;

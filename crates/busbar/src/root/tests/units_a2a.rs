@@ -894,7 +894,9 @@ fn the_root_guard_and_the_trust_units_own_door_agree() {
     // The token the loop lends the trust unit, which is what seals a destination in a running
     // deployment. A private type carrying an impl of the contract's sealing trait would forge
     // the same value while reading as if that were the ordinary way to obtain one.
-    let trust = busbar_contract::caps::Grant::<busbar_contract::caps::Dial>::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel());
+    let trust = busbar_contract::caps::Grant::<busbar_contract::caps::Dial>::mint(
+        &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+    );
     let resolver = FixedResolver(vec!["93.184.216.34".parse().expect("an address")]);
     for authority in [
         "https://agent.example/",
@@ -1646,7 +1648,9 @@ fn deployment_priced(groups: busbar_kernel_budget::GroupTable, pricer: Pricer) -
     Deployment {
         auth: Auth::new(busbar_kernel_identity::AuthChain::new(Vec::new(), false)),
         auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
-        trust: busbar_contract::caps::Grant::<busbar_contract::caps::Dial>::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel()),
+        trust: busbar_contract::caps::Grant::<busbar_contract::caps::Dial>::mint(
+            &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+        ),
         pools: UnrestrictedKey,
         kinds: EveryKindPasses,
         resolver: FixedResolver(vec!["203.0.113.7".parse().expect("a public address")]),
@@ -1658,7 +1662,8 @@ fn deployment_priced(groups: busbar_kernel_budget::GroupTable, pricer: Pricer) -
         meter_policy: crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
         scope: scope_policy(crate::root::policy::ScopePolicy::new()),
         durability: Mutex::new(durability),
-        origin: busbar_kernel::teller::Kernel::new().origin(busbar_contract::caps::OriginKind::Client),
+        origin: busbar_kernel::teller::Kernel::new()
+            .origin(busbar_contract::caps::OriginKind::Client),
         mono: AtomicU64::new(0),
     }
 }

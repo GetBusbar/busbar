@@ -27,9 +27,7 @@
 
 use std::sync::Arc;
 
-use busbar_kernel::admin_verbs::{
-    registered, AdminReply, AdminReqCtx, PlaneTrust, PlaneVerbError,
-};
+use busbar_kernel::admin_verbs::{registered, AdminReply, AdminReqCtx, PlaneTrust, PlaneVerbError};
 use busbar_kernel::api::NamedDefView;
 
 /// Project one `tools:` entry — one registered MCP server — onto the shared named-definition view.

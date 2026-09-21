@@ -5,9 +5,9 @@
 
 use super::*;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
+use busbar_kernel::store::BreakerState;
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{RawFault, RawStatus, Signal, POD_VERSION};
-use busbar_kernel::store::BreakerState;
 
 const POOL: &[u8] = b"tool:fs";
 const POOL_STR: &str = "tool:fs";

@@ -21,9 +21,11 @@ use std::time::Duration;
 
 use axum::http::header::{ACCEPT, CONTENT_TYPE, USER_AGENT};
 
-use busbar_substrate_values::breaker::{classify, normalize_raw_error, Disposition, RawUpstreamError};
 use busbar_kernel::plane_host::{EngineHost, HealthModeInput as HealthMode};
 use busbar_kernel::store::{now, BreakerCfg};
+use busbar_substrate_values::breaker::{
+    classify, normalize_raw_error, Disposition, RawUpstreamError,
+};
 
 use crate::engine::NativeRuntime;
 
@@ -426,8 +428,11 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
             // is byte-identical to `chat(protocol).extract_error(…)` — and does not require a concrete
             // chat codec, which core no longer carries in production (G6 A4b: `ChatOperation` and the
             // chat IR relocated to the `busbar-llm` plugin).
-            let mut raw: RawUpstreamError =
-                busbar_substrate_values::handlers::protocol_error(lane.protocol, status.as_u16(), &body);
+            let mut raw: RawUpstreamError = busbar_substrate_values::handlers::protocol_error(
+                lane.protocol,
+                status.as_u16(),
+                &body,
+            );
             raw.retry_after_secs = retry_after_secs;
             (
                 classify(&normalize_raw_error(&raw, &lane.error_map)),

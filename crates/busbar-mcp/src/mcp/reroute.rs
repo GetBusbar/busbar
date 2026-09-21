@@ -31,9 +31,9 @@
 //!    that never issued it.
 
 use super::upstream::{Authorised, BreakerCell, LegFailure, LegOutcome};
-use busbar_plugin::hot::AdmissionId;
 use busbar_kernel::failover::{Attempt, Candidate, Refusal, Repeatable, Stage};
 use busbar_kernel::plane_host::DispatchScope;
+use busbar_plugin::hot::AdmissionId;
 use std::sync::{Arc, Mutex};
 
 /// One pool member as the walk sees it. `auth` is `None` when THIS CALLER cannot dispatch to the
@@ -453,9 +453,7 @@ fn settle_leg(
         if !admission_id.is_none() {
             let sig = match outcome {
                 LegOutcome::Success => busbar_kernel::plane_host::breaker::success_signal(),
-                LegOutcome::Failure(cs) => {
-                    busbar_kernel::plane_host::breaker::failure_signal(cs)
-                }
+                LegOutcome::Failure(cs) => busbar_kernel::plane_host::breaker::failure_signal(cs),
                 // A settled `Refused` records nothing and RELEASES the probe — the raw-drop behaviour.
                 LegOutcome::Nothing => busbar_kernel::plane_host::breaker::refused_signal(),
             };

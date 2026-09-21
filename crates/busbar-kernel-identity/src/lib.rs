@@ -46,10 +46,10 @@
 pub mod admin;
 pub mod cache;
 // Folded from the former `busbar-unit-egress-auth` crate (#36: egress-auth folds into identity).
-pub mod egress_auth;
 pub mod carrier;
 pub mod chain;
 pub mod challenge;
+pub mod egress_auth;
 pub mod exchange;
 pub mod module;
 pub mod principal;

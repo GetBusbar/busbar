@@ -311,7 +311,9 @@ impl busbar_kernel_identity::module::AuthModule for AdminTokens {
 /// which is the previous release's "the admin API is disabled without a token", reached the same
 /// way rather than restated here.
 #[must_use]
-pub fn admin_chain(state: Arc<busbar_kernel::governance::GovState>) -> busbar_kernel_identity::AuthChain {
+pub fn admin_chain(
+    state: Arc<busbar_kernel::governance::GovState>,
+) -> busbar_kernel_identity::AuthChain {
     busbar_kernel_identity::AuthChain::new(
         vec![busbar_kernel_identity::chain::ChainEntry {
             provider: ADMIN_TOKENS_MODULE.to_string(),

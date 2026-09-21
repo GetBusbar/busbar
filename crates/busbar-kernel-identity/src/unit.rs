@@ -3,7 +3,7 @@
 
 //! The sealed answer: the unit the loop calls at the authenticate step.
 
-use busbar_contract::caps::{Authenticate, Authenticated, Decision, ReasonCode, Refusal, Pass};
+use busbar_contract::caps::{Authenticate, Authenticated, Decision, Pass, ReasonCode, Refusal};
 
 use crate::cache::CredentialCache;
 use crate::chain::{AuthChain, ChainVerdict, KeyVerifier, RevocationView};

@@ -319,7 +319,8 @@ fn the_url_facts_drive_the_two_steps_to_the_live_paths_answer() {
         .unwrap_or_else(|r| panic!("{path} refused at arrival: {r:?}"));
 
         // The live splice, run here on the same bytes and the same facts.
-        let mut v: serde_json::Value = busbar_substrate_values::json::parse(&body).expect("live parse");
+        let mut v: serde_json::Value =
+            busbar_substrate_values::json::parse(&body).expect("live parse");
         let obj = v.as_object_mut().expect("a native body is a document");
         obj.insert(
             "model".to_string(),

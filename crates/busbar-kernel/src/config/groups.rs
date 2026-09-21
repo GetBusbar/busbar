@@ -40,7 +40,6 @@ use std::collections::BTreeMap;
 // matching what the pre-move `groups.rs` imported for the same purpose) keeps resolving.
 pub use busbar_api::ScopeRef;
 
-
 /// Validate the whole `groups:` tree: parents exist, acyclic, and every `pool:`
 /// qualifier on a limit (own `limits` and `child_default.limits` alike) names a pool that exists.
 /// `pool_exists` abstracts the pool namespace so boot (`cfg.pools`), `--validate`, and the live
@@ -167,7 +166,6 @@ use std::fmt;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
-
 
 /// One `groups:` entry.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]

@@ -92,7 +92,7 @@
 
 use std::path::{Path, PathBuf};
 
-use busbar_contract::caps::{Grant, DurabilityLost, DurableWrite, StepName};
+use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
 use busbar_kernel_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
 use busbar_kernel_ledger::checkpoint::Checkpoint;
 use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};

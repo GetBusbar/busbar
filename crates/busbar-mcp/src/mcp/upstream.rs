@@ -630,10 +630,9 @@ fn classify_wire_failure(err: &TransportError) -> (busbar_kernel::failover::Stag
         })
     };
     match err {
-        TransportError::Unreachable(_) => (
-            busbar_kernel::failover::Stage::BeforeFirstByte,
-            network(),
-        ),
+        TransportError::Unreachable(_) => {
+            (busbar_kernel::failover::Stage::BeforeFirstByte, network())
+        }
         TransportError::Io(_) => (busbar_kernel::failover::Stage::AfterDispatch, network()),
         // Nothing left busbar (supervisor backoff / busbar's own dispatch refusal): `Nothing`, so no
         // fact is recorded against the target's cell. See the doc above for the double-accounting rule.

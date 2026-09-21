@@ -34,7 +34,7 @@
 //! `Revoked` refusal respectively, and the table above grows a row; until they do, an empty refusal
 //! set is the honest description of what the plane's authenticate step does.
 
-use busbar_contract::caps::{Authenticate, Authenticated, Decision, PrincipalId, Pass};
+use busbar_contract::caps::{Authenticate, Authenticated, Decision, Pass, PrincipalId};
 
 /// The actor id an unkeyed request is attributed to.
 ///

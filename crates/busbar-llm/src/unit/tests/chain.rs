@@ -9,12 +9,12 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
-use busbar_contract::caps::{Grant, 
-    Admission, Admittance, Approve, Audit, Authenticate, KernelSeal, OpClassId, Outcome,
-    PrincipalId, Route, Dial, Pass, Consumption, VerifiedDestination, Verify,
+use busbar_contract::caps::{
+    Admission, Admittance, Approve, Audit, Authenticate, Consumption, Dial, Grant, KernelSeal,
+    OpClassId, Outcome, Pass, PrincipalId, Route, VerifiedDestination, Verify,
 };
-use busbar_kernel::proxy::reqlog::REQUESTS;
 use busbar_kernel::plane_host::EngineTablesView;
+use busbar_kernel::proxy::reqlog::REQUESTS;
 use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
@@ -334,8 +334,7 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
         // RELAY, not retry-until-exhausted: `least_bad` is the disposition that hands the client
         // the upstream's own answer when every lane is unhealthy, which is what makes this fixture
         // a FAILED TRANSFER (the destination answered, badly) rather than a pool-empty 503.
-        builder =
-            builder.on_exhausted(POOL, busbar_kernel::config::pools::OnExhausted::LeastBad);
+        builder = builder.on_exhausted(POOL, busbar_kernel::config::pools::OnExhausted::LeastBad);
     }
     let app = builder.build();
 
@@ -463,9 +462,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     fields.push(("ledger_spend_cents", derived.spend_cents.to_string()));
     gov.flush_metering();
     let mut rows: Vec<busbar_api::MeteringRow> = gov
-        .metering_for(busbar_kernel::governance::metering_bucket(
-            rig.charged_at,
-        ))
+        .metering_for(busbar_kernel::governance::metering_bucket(rig.charged_at))
         .expect("metering read")
         .into_iter()
         .filter(|r| r.key_id == rig.key.id)
@@ -1970,7 +1967,10 @@ async fn route_and_audit_are_on_the_token_seam() {
         .into_result(&seal)
         .expect_err("a destination that resolves to nothing refuses");
     assert_eq!(refusal.step(), Some(StepName::Route));
-    assert_eq!(refusal.reason(), busbar_contract::caps::ReasonCode::NoDestination);
+    assert_eq!(
+        refusal.reason(),
+        busbar_contract::caps::ReasonCode::NoDestination
+    );
 
     rig.server.shutdown().await;
 }

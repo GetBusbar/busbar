@@ -154,7 +154,11 @@ impl KindFacts for AllYes {
     fn unit_price_within_max(&self, _d: &DestinationFacts) -> bool {
         self.price_within_max
     }
-    fn breaker_admits(&self, dest: &DestinationFacts, at: &crate::trust::lane::BreakerQuery<'_>) -> bool {
+    fn breaker_admits(
+        &self,
+        dest: &DestinationFacts,
+        at: &crate::trust::lane::BreakerQuery<'_>,
+    ) -> bool {
         match dest.lane() {
             Some(_) => at.admits_lane(self.lane_index),
             // Nothing priced on a lane has a lane for the breaker to have an opinion about.

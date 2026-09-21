@@ -12,10 +12,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::cost::{Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass, RateCard};
 use busbar_contract::caps::MeterClassId;
-use crate::cost::{
-    Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass, RateCard,
-};
 
 use crate::identity::residual;
 use crate::recompute::{

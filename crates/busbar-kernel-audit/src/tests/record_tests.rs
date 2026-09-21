@@ -4,8 +4,8 @@
 //! The fixed audit record: one shape, no content, and a chain that catches an edit.
 
 use busbar_contract::caps::{
-    Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, ReasonCode, StepName, UnitKey,
-    Pass,
+    Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, Pass, ReasonCode, StepName,
+    UnitKey,
 };
 
 use crate::record::{

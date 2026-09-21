@@ -3,7 +3,7 @@
 
 //! The sealed answer: what the loop actually receives from the verify step.
 
-use busbar_contract::caps::{Grant, KernelSeal, LaneId, ReasonCode, StepName, Dial, Pass, Verify};
+use busbar_contract::caps::{Dial, Grant, KernelSeal, LaneId, Pass, ReasonCode, StepName, Verify};
 
 use super::destination_tests::AllYes;
 use super::Pools;

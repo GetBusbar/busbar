@@ -242,8 +242,7 @@ pub(crate) extern "C-unwind" fn verify_store(
         let Some(ckey) = (unsafe { cache_key(k) }) else {
             return StatusClass::Refused;
         };
-        let expires =
-            busbar_kernel::store::now_ms().saturating_add(ttl_secs.saturating_mul(1_000));
+        let expires = busbar_kernel::store::now_ms().saturating_add(ttl_secs.saturating_mul(1_000));
         let mut c = lock_cache();
         c.fresh.insert(ckey.clone(), expires);
         // Release this subject's leadership: clear it, and drop the lease→subject mapping. The scope

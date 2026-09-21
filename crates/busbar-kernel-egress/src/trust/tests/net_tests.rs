@@ -760,7 +760,9 @@ fn the_pin_carries_the_first_admissible_address_and_the_scheme_it_was_judged_und
 /// The token is the ordinary way in — the loop lends one to the trust unit for the length of a
 /// verify call — so a test that seals with one is testing the seam the deployment uses.
 fn trust_token() -> busbar_contract::caps::Grant<busbar_contract::caps::Dial> {
-    busbar_contract::caps::Grant::<busbar_contract::caps::Dial>::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
+    busbar_contract::caps::Grant::<busbar_contract::caps::Dial>::mint(
+        &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+    )
 }
 
 /// A sealed destination naming `authority`, as a plane proposed it and the trust unit sealed it.

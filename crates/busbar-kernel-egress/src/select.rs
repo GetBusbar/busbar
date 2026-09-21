@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
-use busbar_contract::caps::{Route, Pass};
+use busbar_contract::caps::{Pass, Route};
 
 use crate::pool::Member;
 use crate::ports::{Admit, Breaker, Capacity, DestinationId, Permit, Unavailable};

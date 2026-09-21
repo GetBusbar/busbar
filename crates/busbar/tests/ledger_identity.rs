@@ -52,7 +52,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use busbar_contract::caps::{Grant, KernelSeal, MeterClassId, QuantitySource, Usage, UsageLine, Consumption};
+use busbar_contract::caps::{
+    Consumption, Grant, KernelSeal, MeterClassId, QuantitySource, Usage, UsageLine,
+};
 use busbar_kernel_ledger::cost::{
     price, CurrencyCode, History, LaneClass, Posting, RateCard, STANDARD_TIER_BP,
 };

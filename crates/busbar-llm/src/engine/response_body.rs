@@ -149,7 +149,9 @@ pub(crate) use busbar_llm_codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN;
 /// fail-open-to-free defect. Attribute the floor to the OUTPUT tier — the overflow is generated
 /// content — so it prices under the model's output rate; `.max(1)` keeps it non-zero even for a
 /// pathologically small tail.
-fn estimate_usage_from_truncated_tail(tail_len: usize) -> busbar_substrate_values::billing::TokenUsage {
+fn estimate_usage_from_truncated_tail(
+    tail_len: usize,
+) -> busbar_substrate_values::billing::TokenUsage {
     busbar_substrate_values::billing::TokenUsage {
         output: (tail_len as u64 / TRUNCATED_TAIL_BYTES_PER_TOKEN).max(1),
         ..Default::default()
@@ -463,10 +465,8 @@ where
                                 // unrecognized protocol, or a usage object so large it doesn't fit in
                                 // `cap` itself) is still observable here, not silent.
                                 this.nonstream_buf_truncated = true;
-                                metrics::counter!(
-                                    busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL
-                                )
-                                .increment(1);
+                                metrics::counter!(busbar_kernel::metrics::BILLING_TRUNCATED_TOTAL)
+                                    .increment(1);
                                 diag_debug!(
                                     USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
                                     cap,

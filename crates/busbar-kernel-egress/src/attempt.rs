@@ -22,7 +22,7 @@
 //! 6. the send;
 //! 7. the plane's response decode, per frame, relayed under the hold.
 
-use busbar_contract::caps::{Route, Pass};
+use busbar_contract::caps::{Pass, Route};
 use busbar_contract::transport::wire::{Conn, WireStatusClass};
 use busbar_contract::{Ctx, EgressBody, Frame, Plane, Transport, Unit};
 use futures::StreamExt;

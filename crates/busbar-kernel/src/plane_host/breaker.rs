@@ -341,10 +341,7 @@ pub(super) extern "C-unwind" fn breaker_admit(host: HostCtx, key: *const Key) ->
 /// than collapsing to a bare [`AdmissionId::NONE`]. The floor is the store's own single definition of
 /// "when could this be usable again" (`recovery_hint_ms`), rounded up to seconds; `0` for a refusal
 /// that does not self-recover (administratively down / budget spent).
-fn classify_unavailable(
-    u: &busbar_kernel::store::Unavailable,
-    now: u64,
-) -> (Unavailability, u64) {
+fn classify_unavailable(u: &busbar_kernel::store::Unavailable, now: u64) -> (Unavailability, u64) {
     let retry = u
         .recovery_hint_ms(now)
         .map(|ms| ms.div_ceil(1_000))

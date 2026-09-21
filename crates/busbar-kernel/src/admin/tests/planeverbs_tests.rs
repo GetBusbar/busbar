@@ -114,8 +114,8 @@ fn a_resolved_lookup_is_returned_untouched() {
 #[test]
 fn the_admin_route_table_method_path_scope_is_byte_identical() {
     use crate::admin::v1::contract::{required_scope, Scope};
-    use busbar_plugin::cold::endpoint::RouteMethod;
     use busbar_kernel::admin_verbs::AdminScope;
+    use busbar_plugin::cold::endpoint::RouteMethod;
 
     // The FROZEN rows the mcp + a2a admin verbs mount at, with the scope the middleware enforces. Reads
     // are `read-only`; both `connect`s and `approve` are mutations at `full`.

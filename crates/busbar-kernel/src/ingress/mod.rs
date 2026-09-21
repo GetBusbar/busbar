@@ -25,9 +25,7 @@ pub(crate) use busbar_kernel::ingress::arrival::body_ingress_for;
 /// neutral-purity lint excludes) before every resolve, so a `/v1/messages` (named/adhoc) or body-model
 /// dispatch request in a core test resolves its universal ingress.
 #[cfg(test)]
-pub(crate) fn body_ingress_for(
-    name: &str,
-) -> Option<busbar_kernel::ingress::arrival::BodyIngress> {
+pub(crate) fn body_ingress_for(name: &str) -> Option<busbar_kernel::ingress::arrival::BodyIngress> {
     busbar_kernel::ingress::arrival::set_test_body_ingress(test_body_ingress::test_body_ingress);
     busbar_kernel::ingress::arrival::body_ingress_for(name)
 }

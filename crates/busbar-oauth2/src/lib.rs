@@ -70,8 +70,10 @@ mod mount_tests;
 /// for the same reason. `oauth_as:` carries no feature flag (it is a normal dependency, like the
 /// underlying `oauth-as` crate always was), so every real build calls this.
 pub fn install() {
-    busbar_kernel::oauth_as::seam::install_as_plane_seam(busbar_kernel::oauth_as::seam::AsPlaneSeam {
-        build: plane::seam_build,
-        mount: routes::seam_mount,
-    });
+    busbar_kernel::oauth_as::seam::install_as_plane_seam(
+        busbar_kernel::oauth_as::seam::AsPlaneSeam {
+            build: plane::seam_build,
+            mount: routes::seam_mount,
+        },
+    );
 }

@@ -11,7 +11,6 @@
 //! and the carry tests — keeps naming `crate::trust::verify::*` unchanged. The gate's unit batteries
 //! stay here (they were always plane-neutral and drive it through its public surface).
 
-
 #[cfg(test)]
 #[path = "tests/verify_tests.rs"]
 mod verify_tests;

@@ -60,12 +60,12 @@
 pub mod arity;
 pub mod attempt;
 // Folded from the former `busbar-unit-trust` crate (#36: trust folds into egress).
-pub mod trust;
 pub mod exhaustion;
 pub mod pool;
 pub mod ports;
 pub mod race;
 pub mod select;
+pub mod trust;
 pub mod walk;
 pub mod wire;
 
@@ -78,7 +78,7 @@ pub use select::{RequestCtx, WeightedFloor};
 pub use walk::RouteRequest;
 pub use wire::{Delivered, RouteOutcome, Shed};
 
-use busbar_contract::caps::{Route, Pass};
+use busbar_contract::caps::{Pass, Route};
 
 mod sealed {
     /// The private supertrait that closes the unit trait below.

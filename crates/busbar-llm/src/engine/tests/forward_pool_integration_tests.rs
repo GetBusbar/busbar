@@ -392,8 +392,8 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 #[tokio::test]
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
     let state = Arc::new(MockServerState::new());
@@ -521,8 +521,8 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 #[tokio::test]
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
     // OpenAI-protocol SSE stream whose final chunk carries usage totalling 160 tokens
@@ -970,8 +970,8 @@ async fn test_metrics_requires_auth_in_chain_mode() {
 #[tokio::test]
 async fn test_governance_vkey_auth_and_pool_acl() {
     crate::testkit::install_test_seams();
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
 
     busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -1052,8 +1052,8 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 async fn test_governance_budget_over_quota() {
     crate::testkit::install_test_seams();
     use busbar_api::Store;
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
 
     busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -1176,8 +1176,8 @@ async fn test_governance_budget_over_quota() {
 /// needed — only a parseable body that carries `model` where the protocol expects it.
 async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use busbar_api::Store;
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
 
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -1427,8 +1427,8 @@ async fn test_budget_over_quota_bedrock_envelope() {
 #[tokio::test]
 async fn test_governance_rate_limit_429() {
     crate::testkit::install_test_seams();
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
 
     busbar_kernel::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -1541,8 +1541,8 @@ async fn test_governance_rate_limit_429() {
 /// `model` where the protocol expects it. An omitted `allowed_pools` admits every pool so the ACL
 /// never short-circuits the rate gate.
 async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
 
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -2762,7 +2762,9 @@ async fn test_stream_inspection_tap_usage_parsing() {
 #[cfg(test)]
 mod disposition_matrix_tests {
     use super::*;
-    use busbar_substrate_values::breaker::{normalize_raw_error, status_class_from_str, RawUpstreamError};
+    use busbar_substrate_values::breaker::{
+        normalize_raw_error, status_class_from_str, RawUpstreamError,
+    };
     use std::collections::HashMap;
 
     #[test]
@@ -2823,7 +2825,10 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig = normalize_raw_error(&raw, &error_map);
-        assert_eq!(sig.class, busbar_substrate_values::breaker::StatusClass::Billing);
+        assert_eq!(
+            sig.class,
+            busbar_substrate_values::breaker::StatusClass::Billing
+        );
 
         // Different code not in map → fallback to HTTP status classification
         let raw2 = RawUpstreamError {
@@ -2852,7 +2857,10 @@ mod disposition_matrix_tests {
             retry_after_secs: None,
         };
         let sig = normalize_raw_error(&raw, &error_map);
-        assert_eq!(sig.class, busbar_substrate_values::breaker::StatusClass::Auth);
+        assert_eq!(
+            sig.class,
+            busbar_substrate_values::breaker::StatusClass::Auth
+        );
 
         // HTTP 429 → RateLimit (universal spec)
         let raw2 = RawUpstreamError {
@@ -4049,8 +4057,7 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
 async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
     crate::testkit::install_test_seams();
     use busbar_kernel::store::now as store_now;
-    let (want_status, want_kind) =
-        busbar_kernel::proxy::auth_failure_status_and_kind("anthropic");
+    let (want_status, want_kind) = busbar_kernel::proxy::auth_failure_status_and_kind("anthropic");
     for upstream_status in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
         let state = Arc::new(MockServerState::new());
         state.push(MockResponse::Auth {

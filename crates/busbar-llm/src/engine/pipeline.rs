@@ -9,13 +9,13 @@ use busbar_api::VirtualKey;
 use busbar_kernel::observability::HOTPATH_LEVEL;
 // The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
 // routes its read→prepare_for_ingress→write core through `TranslateCodec::translate_response`.
+use busbar_kernel::{diag_debug, diag_error};
 use busbar_substrate_values::diagnostics::{
     DECISION_GATE_REJECTED, DECISION_GATE_RESTRICT_REJECT, DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
     REWRITE_BODY_MATERIALIZE_FAILED, REWRITE_GATE_REJECTED, REWRITE_RESERIALIZE_FAILED,
     ROUTING_POLICY_REJECTED, ROUTING_POLICY_RESTRICT_REJECT,
     ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
 };
-use busbar_kernel::{diag_debug, diag_error};
 
 /// Forward with pool name context for on_exhausted config lookup.
 /// Thin wrapper: parse the body ONCE for callers that only hold bytes (tests, ad-hoc routes), then
@@ -199,7 +199,9 @@ pub(crate) fn forward_with_pool_parsed<'a>(
         // for the whole failover walk) AND kept as this plain local so the COMPLETION tap fired below —
         // after `inner` has returned and `RequestCtx` has gone out of scope — stamps the SAME value. That
         // identity (pre-forward routing message vs. post-response tap) is the whole join-key contract.
-        let _wrap = busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::WrapSetup);
+        let _wrap = busbar_substrate_values::profile::start(
+            busbar_substrate_values::profile::Stage::WrapSetup,
+        );
         let request_id = host.next_request_id();
         // Tag every event this span covers with the correlation id — a native `u64` `record`, not a
         // `format!`, so this costs nothing beyond what the (already debug-gated) span pays. A no-op at
@@ -335,7 +337,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
     // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.
-    let _prep = busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::Prepare);
+    let _prep =
+        busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::Prepare);
     // App-retype WEDGE 3: the failover loop's telemetry emits (upstream-attempt/failure, failover) and
     // every other host reach drive through the `host: &Arc<dyn EngineHost>` threaded in — no per-call
     // `engine_host_value` mint. The borrow is the stable payload Arc, so its borrowed returns outlive
@@ -570,9 +573,8 @@ pub(crate) fn resolve_breaker_cfg(
     {
         Some(cfg) => std::sync::Arc::new(cfg.clone()),
         None => {
-            static DEFAULT: std::sync::OnceLock<
-                std::sync::Arc<busbar_kernel::store::BreakerCfg>,
-            > = std::sync::OnceLock::new();
+            static DEFAULT: std::sync::OnceLock<std::sync::Arc<busbar_kernel::store::BreakerCfg>> =
+                std::sync::OnceLock::new();
             DEFAULT
                 .get_or_init(|| std::sync::Arc::new(busbar_kernel::store::BreakerCfg::default()))
                 .clone()
@@ -733,7 +735,9 @@ async fn run_failover_loop(
             );
         }
 
-        let _pick = busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::LanePick);
+        let _pick = busbar_substrate_values::profile::start(
+            busbar_substrate_values::profile::Stage::LanePick,
+        );
         // `probe_epoch`: `Some(epoch)` when this pick WON a single-flight recovery probe (captured
         // synchronously by `pick_among` before any await), `None` otherwise. The RAII release covers
         // the WHOLE dispatch window (built inside `attempt`), including a dropped future.
@@ -779,8 +783,9 @@ async fn run_failover_loop(
         // LANE_PICK ends here (a lane + permit are in hand).
         drop(_pick);
         // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and the attempt.
-        let _asetup =
-            busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::AttemptSetup);
+        let _asetup = busbar_substrate_values::profile::start(
+            busbar_substrate_values::profile::Stage::AttemptSetup,
+        );
 
         // Mark this lane as excluded for future attempts in this request
         request_ctx.exclude(i);
@@ -872,9 +877,11 @@ fn filter_candidates_for_op(
     ingress_protocol: &str,
 ) -> Result<Vec<WeightedLane>, Response> {
     let supports = |wl: &WeightedLane| {
-        busbar_substrate_values::handlers::request_handler(EngineTables::new(rt).lanes()[wl.idx].protocol)
-            .and_then(|rh| rh.operation_handler(op.operation))
-            .is_some()
+        busbar_substrate_values::handlers::request_handler(
+            EngineTables::new(rt).lanes()[wl.idx].protocol,
+        )
+        .and_then(|rh| rh.operation_handler(op.operation))
+        .is_some()
     };
     if cands.iter().all(supports) {
         Ok(cands)

@@ -215,10 +215,7 @@ fn the_refusal_literal_is_the_shared_constant() {
         GATE_COULD_NOT_COMPLETE,
         busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
     );
-    assert_eq!(
-        503,
-        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
-    );
+    assert_eq!(503, busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS);
 }
 
 /// The four literals are pairwise distinct, so a client can tell which hook refused it.

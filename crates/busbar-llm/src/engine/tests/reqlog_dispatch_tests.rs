@@ -33,8 +33,8 @@ use busbar_kernel::proxy::reqlog::{
     RequestRecord, OUTCOME_DISPATCHED, OUTCOME_REFUSED, PRINCIPAL_UNGOVERNED, REASON_NOT_GRANTED,
     REQUESTS,
 };
-use busbar_store_memory::MemoryStore;
 use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+use busbar_store_memory::MemoryStore;
 use serde_json::json;
 use std::sync::Arc;
 

@@ -412,9 +412,7 @@ pub(super) fn extended_agent_card(
     let caller = busbar_kernel::catalogue::Caller {
         key: Some(key),
         now: engine_host.clock_now_secs(),
-        generation: busbar_kernel::trust::validate::Generations::at_admission(
-            plane.generation(),
-        ),
+        generation: busbar_kernel::trust::validate::Generations::at_admission(plane.generation()),
     };
     let anything = super::registry::Wanted::default();
     let card = plane.with_registrations(|regs| {

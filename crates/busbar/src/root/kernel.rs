@@ -55,18 +55,18 @@ pub use super::auth_bindings;
 
 use std::sync::{Arc, LazyLock, Mutex};
 
-use busbar_contract::caps::{Grant, 
-    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode, Hold,
-    Meter, Outcome, PrincipalId, Refusal, Route, Pass, Consumption, VerifiedDestination,
+use busbar_contract::caps::{
+    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decision, Decode,
+    Encode, Grant, Hold, Meter, Outcome, Pass, PrincipalId, Refusal, Route, VerifiedDestination,
     Verify,
 };
 use busbar_kernel::inflight::ArrivalDoor;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 use busbar_kernel_budget::{Door, InMemoryCells};
-use busbar_kernel_identity::{Auth, AuthChain};
-use busbar_kernel_egress::EgressUnit;
 use busbar_kernel_egress::trust::Trust;
+use busbar_kernel_egress::EgressUnit;
+use busbar_kernel_identity::{Auth, AuthChain};
 
 /// Take the kernel's seal. Boot only, once per process.
 ///
@@ -825,10 +825,7 @@ impl ProductionUnits {
     /// `ReadOnly` would hand an unbound principal every read the surface has. The scope unit's matrix
     /// still decides what a grant reaches — the grant is the ceiling, the matrix is the door — and a
     /// caller holding no ceiling never reaches the door at all.
-    pub(crate) fn admin_grant(
-        &self,
-        principal: &PrincipalId,
-    ) -> Option<busbar_admin::VerbScope> {
+    pub(crate) fn admin_grant(&self, principal: &PrincipalId) -> Option<busbar_admin::VerbScope> {
         if self.front_door_is_open() {
             return Some(busbar_admin::VerbScope::Full);
         }
@@ -1037,21 +1034,23 @@ impl Units for ProductionUnits {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.arrival(self, token, ctx);
         }
-        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::NoDestination))
+        Decision::refuse(
+            token,
+            Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
+        )
     }
 
     fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.decode(self, token, ctx);
         }
-        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::DecodeFailed))
+        Decision::refuse(
+            token,
+            Refusal::new(busbar_contract::caps::ReasonCode::DecodeFailed),
+        )
     }
 
-    fn authenticate(
-        &self,
-        token: &Pass<Authenticate>,
-        ctx: &UnitCtx,
-    ) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> Decision<Authenticate> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.authenticate(self, token, ctx);
         }
@@ -1071,7 +1070,10 @@ impl Units for ProductionUnits {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.verify(self, token, trust, ctx, principal);
         }
-        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::NoDestination))
+        Decision::refuse(
+            token,
+            Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
+        )
     }
 
     fn approve(
@@ -1084,7 +1086,10 @@ impl Units for ProductionUnits {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.approve(self, token, ctx, principal, destinations);
         }
-        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::ScopeDenied))
+        Decision::refuse(
+            token,
+            Refusal::new(busbar_contract::caps::ReasonCode::ScopeDenied),
+        )
     }
 
     fn admit(
@@ -1099,19 +1104,20 @@ impl Units for ProductionUnits {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.admit(self, token, admit, ctx, principal, destinations, leases);
         }
-        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::NoDestination))
+        Decision::refuse(
+            token,
+            Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
+        )
     }
 
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        ctx: &UnitCtx,
-        meter: &AccrualMeter,
-    ) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.route(self, token, ctx, meter);
         }
-        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::NoDestination))
+        Decision::refuse(
+            token,
+            Refusal::new(busbar_contract::caps::ReasonCode::NoDestination),
+        )
     }
 
     fn meter(
@@ -1124,7 +1130,10 @@ impl Units for ProductionUnits {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.meter(self, token, usage, ctx, provisional);
         }
-        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::Unpriced))
+        Decision::refuse(
+            token,
+            Refusal::new(busbar_contract::caps::ReasonCode::Unpriced),
+        )
     }
 
     fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
@@ -1149,22 +1158,22 @@ impl Units for ProductionUnits {
             // without one never came from a decision; the door itself is the latest step it could
             // have been raised at, which is a truer answer than a fixed sentinel.
             unclaimed_facts(&Outcome::Refused(
-                refusal.step().unwrap_or(busbar_contract::caps::StepName::Admit),
+                refusal
+                    .step()
+                    .unwrap_or(busbar_contract::caps::StepName::Admit),
                 refusal.reason(),
             )),
         )
     }
 
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        ctx: &UnitCtx,
-        outcome: &Outcome,
-    ) -> Decision<Encode> {
+    fn encode(&self, token: &Pass<Encode>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Encode> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
             return plane.encode(self, token, ctx, outcome);
         }
-        Decision::refuse(token, Refusal::new(busbar_contract::caps::ReasonCode::DecodeFailed))
+        Decision::refuse(
+            token,
+            Refusal::new(busbar_contract::caps::ReasonCode::DecodeFailed),
+        )
     }
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {

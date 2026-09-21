@@ -189,8 +189,8 @@ pub(crate) fn authorize(
     // THE ONE ORDERED GATE. Identity, then grant, then the agent's own state — including the
     // suspension, because the breaker trips on how the agent BEHAVES and an agent behaving badly
     // behaves badly for whoever reached it.
-    if let Err(refusal) = busbar_kernel::trust::validate::validate_request(
-        &busbar_kernel::trust::validate::Ask {
+    if let Err(refusal) =
+        busbar_kernel::trust::validate::validate_request(&busbar_kernel::trust::validate::Ask {
             principal: Some(key),
             now,
             grants,
@@ -202,8 +202,8 @@ pub(crate) fn authorize(
             // ADMISSION. There is no earlier snapshot for this request to have outlived, because this is
             // the one it is arriving on. The value is recorded and re-compared at the relay gate.
             generation: busbar_kernel::trust::validate::Generations::at_admission(generation),
-        },
-    ) {
+        })
+    {
         return Err(as_inbound_refusal(refusal, key, agent_id, found));
     }
 

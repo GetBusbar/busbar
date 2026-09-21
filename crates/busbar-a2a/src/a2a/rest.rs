@@ -613,8 +613,8 @@ use axum::response::IntoResponse;
 /// SPELLING a request, never a way around the admission the plane applies to it, and an unauthed
 /// REST leg beside an authed JSON-RPC one would be precisely that.
 pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
-    use busbar_plugin_loader::{RouteAuth, RouteMethod};
     use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
+    use busbar_plugin_loader::{RouteAuth, RouteMethod};
     let mount = super::serve::MOUNT_PATH;
     // Each spec's `(path, method, auth)` is handed VERBATIM to `CoreRouter::route` by the core
     // adapter, so the `CoreRouteTable` rows are byte-identical to the ones the old `mount` recorded —

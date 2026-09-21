@@ -12,7 +12,7 @@
 //! relayed to the client as it came, and only an attempt that produced no answer at all moves on
 //! to the next member.
 
-use busbar_contract::caps::{Route, Pass};
+use busbar_contract::caps::{Pass, Route};
 
 use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};
 use crate::pool::{Member, OnExhausted, Pool};

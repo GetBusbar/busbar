@@ -374,12 +374,7 @@ fn finish_of(resp: &Response) -> FinishClass {
 /// fail-opened without charging must not refund, because the refund is a decrement of a shared
 /// window and there is nothing of this unit's in it.
 #[cfg(feature = "teller-waist")]
-pub fn audit(
-    unit_token: &Pass<Audit>,
-    ctx: &AuditCtx<'_>,
-    resp: Served,
-    charged: bool,
-) -> Audited {
+pub fn audit(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served, charged: bool) -> Audited {
     let facts = AuditFacts {
         op_class: ctx.op_class,
         finish: finish_of(resp.as_response()),

@@ -42,7 +42,7 @@
 //! plane's field mapping byte-for-byte, and the tests lock that it does.
 
 use busbar_api::{AuditRecord, MeteringRow, UsageDelta, UsageLedger};
-use busbar_contract::caps::{Grant, Hold, WriteMoney, Posted, Usage};
+use busbar_contract::caps::{Grant, Hold, Posted, Usage, WriteMoney};
 use busbar_kernel_ledger::settle::{Ledger, Settlement};
 use busbar_kernel_ledger::totals::{TotalsKey, WindowStart};
 

@@ -224,9 +224,7 @@ impl PlaneBootCtx for BootCtx {
     /// THE PLANE-NARROWED DURABLE STORE, or `None` under `store: memory` — the generic handle a
     /// plane drives its own task-set boot (sink attach + rehydrate) off, so no plane-specific boot
     /// logic lives in this core seam. Just clones the phase-carried `Option<Arc<dyn PlaneStore>>`.
-    fn plane_store(
-        &self,
-    ) -> Option<std::sync::Arc<dyn busbar_kernel::plane::store::PlaneStore>> {
+    fn plane_store(&self) -> Option<std::sync::Arc<dyn busbar_kernel::plane::store::PlaneStore>> {
         self.store.clone()
     }
 

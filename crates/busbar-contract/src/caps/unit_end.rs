@@ -31,9 +31,9 @@
 //! assert!(end.outcome().is_completed());
 //! ```
 
+use crate::caps::capability::Exit;
 use crate::caps::hold::{DurabilityLost, Posted};
 use crate::caps::step::{StepName, UnitKey};
-use crate::caps::capability::Exit;
 use crate::caps::token::{Grant, KernelSeal};
 use crate::caps::ReasonCode;
 

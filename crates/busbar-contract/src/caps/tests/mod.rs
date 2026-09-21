@@ -343,8 +343,8 @@ fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
             let taken = sweep_cell.take(&exit);
             sweep_flag.store(true, Order::SeqCst);
             if let Some(hold) = taken {
-                let usage =
-                    Usage::report(&Grant::<Consumption>::mint(&seal), Vec::new()).expect("empty is fine");
+                let usage = Usage::report(&Grant::<Consumption>::mint(&seal), Vec::new())
+                    .expect("empty is fine");
                 let _ = Posted::settle(hold, 0, &usage, &Grant::<WriteMoney>::mint(&seal));
             }
         });
@@ -661,7 +661,8 @@ fn the_egress_capabilities_never_print_what_they_carry() {
 #[test]
 fn a_sealed_destination_carries_the_lane_the_money_side_reads() {
     let k = Kernel::new();
-    let dest = VerifiedDestination::seal(&Grant::<Dial>::mint(&k.seal), LaneId::new("openai:gpt-4o"));
+    let dest =
+        VerifiedDestination::seal(&Grant::<Dial>::mint(&k.seal), LaneId::new("openai:gpt-4o"));
     assert_eq!(dest.lane().as_str(), "openai:gpt-4o");
 
     let decoration = AuthDecoration::decorate(

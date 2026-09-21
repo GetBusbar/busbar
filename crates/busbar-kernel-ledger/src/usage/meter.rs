@@ -5,7 +5,7 @@
 //! settles against.
 
 use busbar_contract::caps::step::MeterClassId;
-use busbar_contract::caps::{Grant, Usage, UsageError, UsageLine, Consumption};
+use busbar_contract::caps::{Consumption, Grant, Usage, UsageError, UsageLine};
 
 use crate::usage::evidence::{KernelCounts, MeterPolicy, RetainedLocatorValues};
 use crate::usage::lane::{cross_check_lane, LaneCheck, LegDeclaration};

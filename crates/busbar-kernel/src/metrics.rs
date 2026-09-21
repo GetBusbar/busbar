@@ -64,9 +64,7 @@ use crate::state::App;
 // The builder seam and the shipped gauge idle window the reaping battery below drives. Test-only on
 // both sides of the seam, so core's shipped surface gains nothing.
 #[cfg(test)]
-pub(crate) use self::recorder_internals::{
-    recorder_builder, GAUGE_IDLE_TIMEOUT,
-};
+pub(crate) use self::recorder_internals::{recorder_builder, GAUGE_IDLE_TIMEOUT};
 // The maintenance drain and the retention decision are driven from PRODUCTION down in the substrate
 // (the maintenance thread and `HistogramSlot::record`); core names them only from the batteries that
 // pin the drain-on-a-timer and the three-state retention truth table, so the re-export is test-only.

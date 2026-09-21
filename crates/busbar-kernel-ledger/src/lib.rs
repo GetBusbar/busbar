@@ -75,13 +75,13 @@ pub mod usage;
 // handful of self-evident required trait methods (`get_key`/`list_keys`/…) would EDIT the moved
 // surface, and the sacred constraint here is that the move changes nothing. The oracle proves the
 // wire bytes; the crate's own record tests prove the serde round-trips.
-#[allow(missing_docs)]
-pub mod records;
 pub mod digest;
 pub mod identity;
 pub mod legacy;
 pub mod migration;
 pub mod recompute;
+#[allow(missing_docs)]
+pub mod records;
 pub mod settle;
 pub mod totals;
 pub mod verify;

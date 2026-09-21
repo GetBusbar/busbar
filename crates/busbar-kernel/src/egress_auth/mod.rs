@@ -13,7 +13,6 @@
 //! core's own gate shim (which hosts the gate tests that name `crate::audit_ring`). The glob's
 //! `gate` is shadowed by that explicit declaration.
 
-
 // Core's gate re-export shim (hosts the core-only `gate_tests`, which name `crate::audit_ring` /
 // `crate::audit`). Explicitly declared so it shadows the glob's `gate`.
 pub mod gate;

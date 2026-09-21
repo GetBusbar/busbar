@@ -30,7 +30,7 @@ use super::*;
 use crate::store_adapter::{
     speaks_new_ops, ShimClock, StoreAdapter, REPLAY_TTL_SECS, STORE_ABI_WITH_NEW_OPS,
 };
-use busbar_contract::caps::{Grant, AdminVerb, KernelSeal};
+use busbar_contract::caps::{AdminVerb, Grant, KernelSeal};
 use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_contract::verb_store::Store as VerbStore;
 use busbar_kernel_wal::Record;

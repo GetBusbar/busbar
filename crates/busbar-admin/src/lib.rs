@@ -58,9 +58,9 @@ pub use v1::service::mark_start;
 /// (`crates/busbar`'s `main`), unconditionally — the admin API carries no feature flag at the
 /// composition root; it is always mounted.
 pub fn install() {
-    busbar_kernel::admin::seam::install_admin_mount_seam(busbar_kernel::admin::seam::AdminMountSeam {
-        mount: seam_mount,
-    });
+    busbar_kernel::admin::seam::install_admin_mount_seam(
+        busbar_kernel::admin::seam::AdminMountSeam { mount: seam_mount },
+    );
 }
 
 /// The mount the seam calls: nest the JSON v1 admin surface onto `router` at `/api/v1/admin`.

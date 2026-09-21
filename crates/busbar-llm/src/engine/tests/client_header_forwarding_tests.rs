@@ -342,10 +342,8 @@ fn neutral_collect_captures_exactly_the_given_names() {
     );
 
     // Ask for two arbitrary names the neutral crate has never heard of.
-    let got = busbar_kernel::proxy::collect_client_headers(
-        &hm,
-        &["x-made-up-alpha", "x-made-up-beta"],
-    );
+    let got =
+        busbar_kernel::proxy::collect_client_headers(&hm, &["x-made-up-alpha", "x-made-up-beta"]);
 
     // alpha appears twice (multiplicity preserved), beta once, the un-requested name never.
     let alpha: Vec<_> = got

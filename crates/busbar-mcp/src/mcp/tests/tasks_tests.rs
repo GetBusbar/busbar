@@ -175,10 +175,7 @@ fn no_task_shape_ever_carries_request_state() {
     let task = TASKS.create("key-no-state", busbar_kernel::store::now_ms());
     assert!(task.created().get("requestState").is_none());
     assert!(task.detailed().get("requestState").is_none());
-    task.park(
-        vec![elicitation("confirm")],
-        busbar_kernel::store::now_ms(),
-    );
+    task.park(vec![elicitation("confirm")], busbar_kernel::store::now_ms());
     assert!(task.detailed().get("requestState").is_none());
 }
 

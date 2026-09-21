@@ -5,7 +5,7 @@
 //! metering series.
 
 use busbar_contract::caps::step::MeterClassId;
-use busbar_contract::caps::{Grant, KernelSeal, Usage, UsageLine, Consumption};
+use busbar_contract::caps::{Consumption, Grant, KernelSeal, Usage, UsageLine};
 
 use crate::usage::{
     Direction, KernelCounts, KernelLine, LocatedValue, LocatorPtr, QuantitySource,

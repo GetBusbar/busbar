@@ -236,7 +236,10 @@ fn asking_the_arena_for_more_than_it_has_is_an_answer_not_a_panic() {
     assert_eq!(full.len(), ARENA_BYTES);
     let refused = arena.push(b"one more byte").expect_err("nothing left");
     assert_eq!(refused.remaining, 0);
-    assert_eq!(refused.reason(), busbar_contract::caps::ReasonCode::ArenaBudget);
+    assert_eq!(
+        refused.reason(),
+        busbar_contract::caps::ReasonCode::ArenaBudget
+    );
 }
 
 /// A span the arena hands out holds nothing of the frame before it.

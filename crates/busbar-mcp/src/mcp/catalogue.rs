@@ -798,38 +798,34 @@ impl Catalogue {
                 busbar_kernel::trust::validate::Observed::At(entry.dispatch_digest().to_string())
             }
             LiveDigest::At(digest) => busbar_kernel::trust::validate::Observed::At(digest),
-            LiveDigest::Quarantined(why) => {
-                busbar_kernel::trust::validate::Observed::Drifted(why)
-            }
+            LiveDigest::Quarantined(why) => busbar_kernel::trust::validate::Observed::Drifted(why),
         };
         // THE ONE ORDERED GATE, in core, reached identically by every plane. `Approval::serves` is
         // still the comparison it makes — the same one the operator's changes queue is rendered
         // from — but the ORDER around it is no longer this file's to decide.
-        busbar_kernel::trust::validate::validate_request(
-            &busbar_kernel::trust::validate::Ask {
-                principal,
-                now,
-                // GRANT BEFORE DIGEST is now a property of the validator rather than of the order these
-                // lines happen to be written in.
-                grants: &[
-                    busbar_kernel::trust::validate::Grant::Scope {
-                        kind: SCOPE_KIND_SERVER,
-                        name: &entry.server,
-                    },
-                    busbar_kernel::trust::validate::Grant::Scope {
-                        kind: SCOPE_KIND_TOOL,
-                        name: &entry.namespaced,
-                    },
-                ],
-                approval: &server.approval,
-                sighting: &sighting,
-                capability: Some(busbar_kernel::trust::validate::Fingerprint {
-                    capability: &entry.tool,
-                    observe: &observe,
-                }),
-                generation,
-            },
-        )
+        busbar_kernel::trust::validate::validate_request(&busbar_kernel::trust::validate::Ask {
+            principal,
+            now,
+            // GRANT BEFORE DIGEST is now a property of the validator rather than of the order these
+            // lines happen to be written in.
+            grants: &[
+                busbar_kernel::trust::validate::Grant::Scope {
+                    kind: SCOPE_KIND_SERVER,
+                    name: &entry.server,
+                },
+                busbar_kernel::trust::validate::Grant::Scope {
+                    kind: SCOPE_KIND_TOOL,
+                    name: &entry.namespaced,
+                },
+            ],
+            approval: &server.approval,
+            sighting: &sighting,
+            capability: Some(busbar_kernel::trust::validate::Fingerprint {
+                capability: &entry.tool,
+                observe: &observe,
+            }),
+            generation,
+        })
         .map_err(|refusal| as_dispatch_refusal(refusal, server, entry, &sighting))?;
         Ok(entry)
     }
@@ -1078,18 +1074,19 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
     // `Declares` impl beside `TransportPin` — which mechanisms are roots, and the artifact for each
     // reading. It supplies no sequence and no blank-key rule, so an operator's `key: "  "` is
     // refused here by the same line that refuses it on the sibling plane.
-    let approval = match busbar_kernel::trust::declared::declared_pin::<TransportPin>(
-        def.pin.declaration(),
-    ) {
-        Some(pin) => Approval::declared(
-            pin,
-            def.tools_allow
-                .iter()
-                .filter_map(|(tool, allow)| allow.schema_hash.clone().map(|h| (tool.clone(), h)))
-                .collect(),
-        ),
-        None => Approval::registered(),
-    };
+    let approval =
+        match busbar_kernel::trust::declared::declared_pin::<TransportPin>(def.pin.declaration()) {
+            Some(pin) => Approval::declared(
+                pin,
+                def.tools_allow
+                    .iter()
+                    .filter_map(|(tool, allow)| {
+                        allow.schema_hash.clone().map(|h| (tool.clone(), h))
+                    })
+                    .collect(),
+            ),
+            None => Approval::registered(),
+        };
     // `validate_endpoint` has already refused every mixture of the two halves, so this is a lift and
     // not a second decision: a registration that spawns carries a command and no url, and one that
     // does not carries a url and no command.

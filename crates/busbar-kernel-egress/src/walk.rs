@@ -23,7 +23,7 @@
 //! frame the answer belongs to that member: the walk returns it, and a later failure ends the
 //! answer rather than starting another attempt.
 
-use busbar_contract::caps::{Route, Pass};
+use busbar_contract::caps::{Pass, Route};
 use busbar_contract::{Ctx, Plane, Transport, Unit, VerifiedDestination};
 
 use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};

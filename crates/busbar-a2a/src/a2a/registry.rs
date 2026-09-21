@@ -344,25 +344,21 @@ impl CatalogueItem for AgentRegistration {
     /// THE FULL ORDERED GATE. Identity, grant, artifact and generation, in one call, and it is the
     /// same call the invocation check and the pre-socket relay gate make.
     fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), Excluded> {
-        busbar_kernel::trust::validate::validate_request(
-            &busbar_kernel::trust::validate::Ask {
-                principal: caller.key,
-                now: caller.now,
-                grants,
-                approval: &self.approval,
-                sighting: &self.sighting,
-                // The card's SKILL is matched structurally in `fit`, against a declaration rather than
-                // against an approved digest: this plane approves a card, and the skill list is part of
-                // the document the fingerprint already covers.
-                capability: None,
-                generation: caller.generation,
-            },
-        )
+        busbar_kernel::trust::validate::validate_request(&busbar_kernel::trust::validate::Ask {
+            principal: caller.key,
+            now: caller.now,
+            grants,
+            approval: &self.approval,
+            sighting: &self.sighting,
+            // The card's SKILL is matched structurally in `fit`, against a declaration rather than
+            // against an approved digest: this plane approves a card, and the skill list is part of
+            // the document the fingerprint already covers.
+            capability: None,
+            generation: caller.generation,
+        })
         .map_err(|refusal| match refusal {
             busbar_kernel::trust::validate::Refusal::NotGranted { .. } => Excluded::NotInScope,
-            busbar_kernel::trust::validate::Refusal::EgressDenied { .. } => {
-                Excluded::NoEgressGrant
-            }
+            busbar_kernel::trust::validate::Refusal::EgressDenied { .. } => Excluded::NoEgressGrant,
             busbar_kernel::trust::validate::Refusal::IdentityNotLive { .. } => {
                 Excluded::CallerNotLive
             }

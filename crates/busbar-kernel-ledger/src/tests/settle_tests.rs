@@ -261,8 +261,12 @@ fn posting_an_already_built_settlement_moves_the_same_books_as_settling_a_hold()
 
     let mut through_posting = Ledger::new();
     through_posting.record_hold_opened(&k, 1, 600);
-    let posted =
-        busbar_contract::caps::Posted::settle(hold("alice", 600), 450, &usage("tokens", 450), &token);
+    let posted = busbar_contract::caps::Posted::settle(
+        hold("alice", 600),
+        450,
+        &usage("tokens", 450),
+        &token,
+    );
     let settlement = through_posting.post(&k, 1, posted);
     assert_eq!(settlement.released, 150);
 

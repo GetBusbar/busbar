@@ -152,7 +152,8 @@ fn a_report_hands_back_the_lines_it_was_given() {
             estimated: false,
         },
     ];
-    let usage = Usage::report(&Grant::<Consumption>::mint(&k), lines.clone()).expect("two lines fit");
+    let usage =
+        Usage::report(&Grant::<Consumption>::mint(&k), lines.clone()).expect("two lines fit");
     assert_eq!(usage.lines(), &lines[..]);
     assert_eq!(usage.lines().len(), 2);
     assert_eq!(usage.lines()[0].quantity, 900);
@@ -170,7 +171,8 @@ fn the_largest_report_the_record_can_hold_is_accepted() {
     let full: Vec<UsageLine> = (0..MAX_USAGE_LINES)
         .map(|_| line(QuantitySource::Count))
         .collect();
-    let usage = Usage::report(&Grant::<Consumption>::mint(&k), full).expect("exactly the bound fits");
+    let usage =
+        Usage::report(&Grant::<Consumption>::mint(&k), full).expect("exactly the bound fits");
     assert_eq!(usage.lines().len(), MAX_USAGE_LINES);
     assert_eq!(usage.total(), MAX_USAGE_LINES as u64);
 
@@ -276,7 +278,9 @@ fn a_cell_counts_the_accruals_it_took_and_starts_at_none() {
     for child in children {
         let _ = Posted::into_parent(child, &cell, &ledger).expect("the parent is still open");
     }
-    let taken = cell.take(&Grant::<Exit>::mint(&k)).expect("the exit takes it");
+    let taken = cell
+        .take(&Grant::<Exit>::mint(&k))
+        .expect("the exit takes it");
     let _ = Posted::settle(
         arrival,
         0,

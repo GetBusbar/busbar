@@ -478,10 +478,10 @@ pub(crate) fn a2a_start(
 pub(crate) fn admin_routes(
     _slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::admin_verbs::AdminRouteSpec> {
-    use busbar_plugin::cold::endpoint::RouteMethod;
     use busbar_kernel::admin_verbs::{
         connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
     };
+    use busbar_plugin::cold::endpoint::RouteMethod;
     vec![
         // `connect` is the SHARED audited verb (resolve, look; the core adapter records the row).
         AdminRouteSpec {

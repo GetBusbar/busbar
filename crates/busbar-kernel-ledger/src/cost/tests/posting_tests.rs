@@ -4,7 +4,9 @@
 //! Clause two, three and five: what a posting stores, how it projects, and the tier multiplier.
 
 use super::*;
-use crate::cost::{apply_tier, cents_of, micros_of, LaneClass, RateCard, FEE_CLASS, STANDARD_TIER_BP};
+use crate::cost::{
+    apply_tier, cents_of, micros_of, LaneClass, RateCard, FEE_CLASS, STANDARD_TIER_BP,
+};
 
 /// The stored pre-tier amount is the sum over the posting's lines INCLUDING the fee line, and each
 /// line records the rate it was priced at. Three input tokens at two thousand nano-units and four

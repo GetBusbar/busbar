@@ -1099,7 +1099,12 @@ pub trait RecordStore: Send + Sync + 'static {
     /// DEFAULT: a read-modify-write fallback (get + apply + put) for stores without a native
     /// atomic add - correct for a single writer; a real shared backend overrides with an atomic
     /// accumulate (SQL `UPDATE x = x + delta` UPSERT / valkey `HINCRBY`).
-    fn add_usage(&self, bucket_id: &str, window_start: u64, delta: &UsageDelta) -> RecordStoreResult<()> {
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> RecordStoreResult<()> {
         let mut cur = self.get_usage(bucket_id, window_start)?;
         cur.apply_delta(delta);
         self.put_usage(bucket_id, window_start, &cur)

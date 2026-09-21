@@ -12,10 +12,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{Grant, 
-    Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode,
-    Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal,
-    Route, ScopeFacts, StepName, UnitKey, Pass, Usage, UsageLine, Consumption,
+use busbar_contract::caps::{
+    Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decision,
+    Decode, Encode, Grant, Hold, HoldCell, Meter, MeterClassId, OriginKind, Outcome, Pass,
+    PrincipalId, ReasonCode, Refusal, Route, ScopeFacts, StepName, UnitKey, Usage, UsageLine,
     VerifiedDestination, Verify,
 };
 use busbar_kernel::registry::Generation;
@@ -339,11 +339,7 @@ impl Units for TestUnits {
         )
     }
 
-    fn authenticate(
-        &self,
-        token: &Pass<Authenticate>,
-        _ctx: &UnitCtx,
-    ) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
         let facts = if self.challenge {
             busbar_contract::caps::Authenticated::Challenge(busbar_contract::Challenge {
                 bytes: b"nonce".to_vec(),
@@ -445,12 +441,7 @@ impl Units for TestUnits {
         }
     }
 
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        _ctx: &UnitCtx,
-        meter: &AccrualMeter,
-    ) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
         self.note(StepName::Route);
         meter.accrue(self.spend);
         match self.refusal(StepName::Route) {
@@ -473,12 +464,7 @@ impl Units for TestUnits {
         }
     }
 
-    fn audit(
-        &self,
-        token: &Pass<Audit>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Audit> {
         self.note(StepName::Audit);
         self.admitted_door.store(true, Ordering::Release);
         Decision::proceed(token, audit_facts())
@@ -495,12 +481,7 @@ impl Units for TestUnits {
         Decision::proceed(token, audit_facts())
     }
 
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Encode> {
+    fn encode(&self, token: &Pass<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
         self.note(StepName::Encode);
         Decision::proceed(token, encoded_frame())
     }

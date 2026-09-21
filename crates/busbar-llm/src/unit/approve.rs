@@ -38,7 +38,7 @@
 //! is the whole point of having the seat at this step rather than the next one.
 
 use busbar_contract::caps::{
-    Approve, Decision, PrincipalId, ReasonCode, Refusal, ScopeFacts, Pass, VerifiedDestination,
+    Approve, Decision, Pass, PrincipalId, ReasonCode, Refusal, ScopeFacts, VerifiedDestination,
 };
 
 /// A 1.6.0-native gate seated at Approve.

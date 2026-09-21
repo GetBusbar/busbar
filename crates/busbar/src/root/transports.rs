@@ -53,7 +53,7 @@ use busbar_transport_ws::MESSAGE_MAX_BYTES_KEY;
 
 use std::sync::Arc;
 
-use busbar_contract::caps::{Grant, TransportKeyHandle, KeyHandle};
+use busbar_contract::caps::{Grant, KeyHandle, TransportKeyHandle};
 use busbar_unit_transport_key::{
     provision_client, provision_server, AccessJournal, SecretSource, Slot, TlsConfigSink,
     TlsLocations,

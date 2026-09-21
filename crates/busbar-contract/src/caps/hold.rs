@@ -82,8 +82,8 @@
 //! — and the symbols it looks for are written down in the crate's `fixtures/lint_rules.rs` rather
 //! than left to a reviewer to remember; a test in this crate holds the two tables to each other.
 
-use crate::caps::step::PrincipalId;
 use crate::caps::capability::{Admittance, DurableWrite, Exit, Recover, WriteMoney};
+use crate::caps::step::PrincipalId;
 use crate::caps::token::Grant;
 use crate::caps::usage::Usage;
 use std::marker::PhantomData;
@@ -440,11 +440,7 @@ impl HoldCell {
     /// back so the admission unit can fold it into the record.
     ///
     /// A second attempt is refused, and the hold that lost comes back untouched.
-    pub fn admit(
-        &self,
-        admitted: Hold,
-        _token: &Grant<Admittance>,
-    ) -> Result<Hold, AdmitRejected> {
+    pub fn admit(&self, admitted: Hold, _token: &Grant<Admittance>) -> Result<Hold, AdmitRejected> {
         let mut slot = self.slot();
         match std::mem::replace(&mut *slot, Slot::Taken) {
             Slot::Arrival(arrival) => {
@@ -661,7 +657,12 @@ impl Posted {
     /// A priced total wider than the reservation's own width settles at the ceiling rather than
     /// wrapping: there is no amount above it to post, and a wrap would post nearly nothing for the
     /// most expensive unit the node has ever run.
-    pub fn settle(hold: Hold, priced_nanos: u128, usage: &Usage, _token: &Grant<WriteMoney>) -> Self {
+    pub fn settle(
+        hold: Hold,
+        priced_nanos: u128,
+        usage: &Usage,
+        _token: &Grant<WriteMoney>,
+    ) -> Self {
         // Read the figures out before the principal moves: the hold is owned here, has no Drop,
         // and its two sibling constructors both move theirs.
         let reserved = hold.reserved();
@@ -783,7 +784,10 @@ pub struct DurabilityLost {
 
 impl DurabilityLost {
     /// Record the loss. Only the write-ahead-log unit can, and only on an observed failure.
-    pub fn observed(_token: &crate::caps::token::Grant<DurableWrite>, at: crate::caps::step::StepName) -> Self {
+    pub fn observed(
+        _token: &crate::caps::token::Grant<DurableWrite>,
+        at: crate::caps::step::StepName,
+    ) -> Self {
         DurabilityLost { at }
     }
 

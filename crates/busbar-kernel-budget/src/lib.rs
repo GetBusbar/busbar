@@ -66,9 +66,9 @@ pub use estimate::{ClassEstimate, Estimate};
 pub use price::{Pricer, RateNanos};
 pub use window::{budget_window, window_end};
 
-use busbar_contract::caps::{Grant, 
-    step::Admit, Admittance, Decision, Hold, HoldCell, PostingFlags, PrincipalId, ReasonCode,
-    Refusal, Pass,
+use busbar_contract::caps::{
+    step::Admit, Admittance, Decision, Grant, Hold, HoldCell, Pass, PostingFlags, PrincipalId,
+    ReasonCode, Refusal,
 };
 
 /// The sealed step-4 shape: the door, asked.
@@ -318,11 +318,18 @@ impl<S: CellStore> Admission for AdmissionUnit<'_, S> {
                     }
                 }
                 if nanos == 0 {
-                    return Decision::proceed(unit_token, busbar_contract::caps::Admission::ZeroHold);
+                    return Decision::proceed(
+                        unit_token,
+                        busbar_contract::caps::Admission::ZeroHold,
+                    );
                 }
                 Decision::proceed(
                     unit_token,
-                    busbar_contract::caps::Admission::Own(Hold::open(admit_token, principal.clone(), nanos)),
+                    busbar_contract::caps::Admission::Own(Hold::open(
+                        admit_token,
+                        principal.clone(),
+                        nanos,
+                    )),
                 )
             }
             Err(blocked) => {

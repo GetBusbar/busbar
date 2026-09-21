@@ -80,18 +80,18 @@ use std::time::Instant;
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use busbar_contract::caps::{Grant, 
-    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision, Decode,
-    Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
-    Dial, Pass, Consumption, VerifiedDestination, Verify,
+use busbar_contract::caps::{
+    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Consumption, Decision,
+    Decode, Dial, Encode, Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId,
+    ReasonCode, Refusal, Route, VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, Registration, UnitKey};
+use busbar_kernel::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_llm::arrival::PathArrivalFacts;
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
-use busbar_kernel::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
 use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
 
 /// The transport stack every request on this plane arrives over.
@@ -695,8 +695,9 @@ fn usage_record(
     // a bound on lines, and the four tiers this plane reports are far inside it. An empty record is
     // the honest fallback — it prices the fee and no tokens, which is what a response that reported
     // nothing costs.
-    busbar_contract::caps::Usage::report(token, lines)
-        .unwrap_or_else(|_| busbar_contract::caps::Usage::report(token, Vec::new()).expect("no lines fit"))
+    busbar_contract::caps::Usage::report(token, lines).unwrap_or_else(|_| {
+        busbar_contract::caps::Usage::report(token, Vec::new()).expect("no lines fit")
+    })
 }
 
 /// **WHAT ONE REPORT IS WORTH**, against one card — the node's single pricing expression.
@@ -725,7 +726,10 @@ fn priced_posting(
     arrived: Arrived,
     token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     report: &LateReport,
-) -> (busbar_kernel_ledger::cost::Posting, Option<busbar_kernel_ledger::cost::Priced>) {
+) -> (
+    busbar_kernel_ledger::cost::Posting,
+    Option<busbar_kernel_ledger::cost::Priced>,
+) {
     // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
     // the classes and their counts, and the unit's PINNED arrival supplies the instant in both its
     // readings. The instant is not a clock read — this runs after the body drained, which may be a
@@ -852,8 +856,11 @@ impl LateAccrual {
         if amount == 0 {
             return;
         }
-        let accrual =
-            busbar_contract::caps::HoldAccrual::after_terminal(principal.clone(), amount, &ledger_token);
+        let accrual = busbar_contract::caps::HoldAccrual::after_terminal(
+            principal.clone(),
+            amount,
+            &ledger_token,
+        );
         let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
         // Through the money-book seam, as the terminal exit arm does — the same shared book, the
         // same posting, the lock taken and released behind the seam.
@@ -1209,11 +1216,7 @@ impl Units for LlmUnit<'_> {
         }
     }
 
-    fn authenticate(
-        &self,
-        token: &Pass<Authenticate>,
-        _ctx: &UnitCtx,
-    ) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
         // The read of the auth middleware's already-resolved outcome. It cannot refuse — every
         // refusal this step could raise is the middleware's, upstream of the plane — and it is still
         // called, because "the middleware answered" is a fact this step states rather than one the
@@ -1344,12 +1347,7 @@ impl Units for LlmUnit<'_> {
         self.walk.take_admission(admitted)
     }
 
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        _ctx: &UnitCtx,
-        _meter: &AccrualMeter,
-    ) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, _meter: &AccrualMeter) -> Decision<Route> {
         // THIS PLANE'S ROUTE AWAITS, so it is answered by the `RouteAwait` arm below and this one is
         // not a path any unit on this plane takes: `LlmNode::answer` drives the loop's asynchronous
         // entry point and there is no other caller. Answered rather than unwrapped — an arm that
@@ -1380,12 +1378,7 @@ impl Units for LlmUnit<'_> {
         self.walk.meter(token, usage)
     }
 
-    fn audit(
-        &self,
-        token: &Pass<Audit>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Audit> {
         // THE CHARGED TERMINAL. A unit that passed the door leaves here, whatever it ended on: a
         // delivered answer, a relayed upstream failure, or a destination that resolved to nothing
         // after the caller was already charged. All three are the same door.
@@ -1411,12 +1404,7 @@ impl Units for LlmUnit<'_> {
             })
     }
 
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Encode> {
+    fn encode(&self, token: &Pass<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
         // The terminal already produced the bytes and the transport already owns the envelope: this
         // is an HTTP response, and there is no frame this plane writes around one. An empty envelope
         // is the honest answer rather than a trailer this surface does not send.

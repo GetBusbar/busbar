@@ -12,10 +12,10 @@
 use super::{AttemptOutcome, Hop};
 use crate::engine::*;
 
+use busbar_kernel::{diag_debug, diag_warn};
 use busbar_substrate_values::diagnostics::{
     ATTEMPT_TIMEOUT_DEGRADED, ATTEMPT_TIMEOUT_FAILOVER, LANE_HARD_DOWN,
 };
-use busbar_kernel::{diag_debug, diag_warn};
 
 /// The attempt cap fired before response headers arrived: a transient failure on the pool cell,
 /// counted as its own `attempt_timeout` series so operators can see hang-hops separately.
@@ -217,7 +217,9 @@ fn classify_error(
         busbar_substrate_values::transport::Transport::Http,
     )
     .map(|cell| cell.extract_error(status.as_u16(), &err.bytes))
-    .unwrap_or_else(|| busbar_substrate_values::breaker::RawUpstreamError::from_status(status.as_u16()));
+    .unwrap_or_else(|| {
+        busbar_substrate_values::breaker::RawUpstreamError::from_status(status.as_u16())
+    });
     raw.retry_after_secs = err.retry_after_secs;
     let sig = normalize_raw_error(&raw, &hop.lane_row().error_map);
     let disposition = classify_disposition(&sig);

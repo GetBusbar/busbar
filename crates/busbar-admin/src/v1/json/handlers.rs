@@ -2799,7 +2799,9 @@ fn current_root_settings(
         busbar_kernel::config::overlay::OverlayReadState::Absent => {
             busbar_kernel::config::overlay::RootSettings::default()
         }
-        busbar_kernel::config::overlay::OverlayReadState::Loaded(doc) => doc.root.unwrap_or_default(),
+        busbar_kernel::config::overlay::OverlayReadState::Loaded(doc) => {
+            doc.root.unwrap_or_default()
+        }
         busbar_kernel::config::overlay::OverlayReadState::Unreadable => {
             busbar_kernel::diagnostics::diag_warn!(
                 busbar_kernel::diagnostics::CONFIG_SETTINGS_OVERLAY_UNREADABLE,

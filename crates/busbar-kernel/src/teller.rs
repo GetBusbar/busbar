@@ -56,13 +56,13 @@
 
 use std::future::Future;
 
-use busbar_contract::caps::{Grant, CallId,
+use busbar_contract::caps::{
     Abort, AdminVerb, Admission, Admit, Admittance, Approve, Arrival, Audit, Authenticate,
-    Authenticated, Canary, Decision, Decode, DurabilityLost, Encode, Exit, Hold, HoldAccrual,
-    HoldCell, KernelSeal, WriteMoney, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted,
-    PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName,
-    KeyHandle, Dial, UnitEnd, UnitKey, Pass, Usage, UsageLine, Consumption,
-    VerifiedDestination, Verify,
+    Authenticated, CallId, Canary, Consumption, Decision, Decode, Dial, DurabilityLost, Encode,
+    Exit, Grant, Hold, HoldAccrual, HoldCell, KernelSeal, KeyHandle, Meter, MeterClassId, Origin,
+    OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId, QuantitySource, ReasonCode,
+    Refusal, Route, SessionId, StepName, UnitEnd, UnitKey, Usage, UsageLine, VerifiedDestination,
+    Verify, WriteMoney,
 };
 
 use crate::registry::Generation;
@@ -175,7 +175,9 @@ impl Kernel {
     ///
     /// Kept beside the other two and named the same way, so the source scan that accounts for every
     /// mint sees this one too.
-    pub fn durability_token(&self) -> busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite> {
+    pub fn durability_token(
+        &self,
+    ) -> busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite> {
         busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&self.seal)
     }
 
@@ -503,11 +505,7 @@ pub trait Units {
     fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> Decision<Decode>;
 
     /// Who is calling.
-    fn authenticate(
-        &self,
-        token: &Pass<Authenticate>,
-        ctx: &UnitCtx,
-    ) -> Decision<Authenticate>;
+    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> Decision<Authenticate>;
 
     /// Where the unit may go.
     ///
@@ -559,12 +557,7 @@ pub trait Units {
     ) -> Decision<Admit>;
 
     /// Dial, send, relay — all under the hold, with the meter running.
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        ctx: &UnitCtx,
-        meter: &AccrualMeter,
-    ) -> Decision<Route>;
+    fn route(&self, token: &Pass<Route>, ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route>;
 
     /// What the unit actually cost, folded from what the legs reported.
     fn meter(
@@ -587,12 +580,7 @@ pub trait Units {
     ) -> Decision<Audit>;
 
     /// The bytes that leave.
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        ctx: &UnitCtx,
-        outcome: &Outcome,
-    ) -> Decision<Encode>;
+    fn encode(&self, token: &Pass<Encode>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Encode>;
 
     /// What the unit's evidence looks like once it has run. Read by the settlement table.
     fn evidence(&self, ctx: &UnitCtx) -> Evidence;
@@ -853,12 +841,7 @@ fn open_to_door<U: Units>(
                 .and_then(
                     |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
                         units
-                            .approve(
-                                &Pass::<Approve>::mint(seal),
-                                ctx,
-                                &principal,
-                                &destinations,
-                            )
+                            .approve(&Pass::<Approve>::mint(seal), ctx, &principal, &destinations)
                             .into_result(seal)
                             .map(|_| (principal, destinations))
                     },
@@ -1251,17 +1234,22 @@ pub fn exit<U: Units>(
                     // `amount` is the settlement table's money figure, in nano-units; the line
                     // above carries it as a quantity against whichever class the unit metered on.
                     // The posting settles the money, and reads the report for its evidence.
-                    Ok(
-                        Posted::settle(hold, u128::from(amount), &usage, &Grant::<WriteMoney>::mint(seal))
-                            .flagged(flags),
+                    Ok(Posted::settle(
+                        hold,
+                        u128::from(amount),
+                        &usage,
+                        &Grant::<WriteMoney>::mint(seal),
                     )
+                    .flagged(flags))
                 }
                 // A usage report the record cannot hold is a durability failure, not a discount:
                 // the unit delivered value it cannot prove it recorded.
                 Err(_) => {
                     drop_arrival(hold);
                     Err(DurabilityLost::observed(
-                        &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(seal),
+                        &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(
+                            seal,
+                        ),
                         StepName::Meter,
                     ))
                 }

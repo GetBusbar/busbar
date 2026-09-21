@@ -8,7 +8,9 @@
 //! its own, so the counting allocator here is confined to this file and never rides into the unit.
 
 use busbar_kernel_egress::trust::lane::Unavailable;
-use busbar_kernel_egress::trust::{select_weighted, BreakerView, LaneCandidate, LaneTable, SwrrState};
+use busbar_kernel_egress::trust::{
+    select_weighted, BreakerView, LaneCandidate, LaneTable, SwrrState,
+};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 

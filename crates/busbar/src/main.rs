@@ -615,10 +615,8 @@ fn register_protocols() {
     // body-model request would resolve no arrival and 404 (the fall-through the LLM plane's
     // `BODY_INGRESS` exists to close).
     #[allow(unused_mut)]
-    let mut body_ingress: Vec<(
-        &'static str,
-        busbar_kernel::ingress::arrival::BodyIngress,
-    )> = Vec::new();
+    let mut body_ingress: Vec<(&'static str, busbar_kernel::ingress::arrival::BodyIngress)> =
+        Vec::new();
     #[cfg(all(feature = "proto-llm", not(feature = "root-llm")))]
     body_ingress.extend_from_slice(busbar_llm::BODY_INGRESS);
     // THE ROOT-DRIVEN LLM SURFACE (composition-root switch-over S2), default off. The table is the
@@ -855,7 +853,10 @@ fn compose_voice_governed_calls() {
             &std::collections::BTreeMap::new(),
         ),
         pricer: busbar_kernel_budget::Pricer::flat(0),
-        auth: busbar_kernel_identity::Auth::new(busbar_kernel_identity::AuthChain::new(Vec::new(), false)),
+        auth: busbar_kernel_identity::Auth::new(busbar_kernel_identity::AuthChain::new(
+            Vec::new(),
+            false,
+        )),
         auth_bindings: root::kernel::auth_bindings::AuthBindings::without_directory(),
         scope: root::units_voice::scope_policy(),
         meter_policy: root::policy::build(&root::policy::MeterPolicyConfig::default()),

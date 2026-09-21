@@ -110,7 +110,11 @@ pub trait Governance {
     /// Rotate an existing key's credential in place (same id, budgets, usage; the previous
     /// credential stops authenticating immediately). `// contract:` — the integrator's
     /// check-then-act under its own existence-serializing lock (1.5.5's `EXISTENCE_GATE`).
-    fn rotate_key(&self, admin: &Grant<AdminVerb>, id: &str) -> Result<RotateOutcome, GovernanceError>;
+    fn rotate_key(
+        &self,
+        admin: &Grant<AdminVerb>,
+        id: &str,
+    ) -> Result<RotateOutcome, GovernanceError>;
 
     /// `// contract:` every OTHER legacy verb's actual effect (60 of the 66 — everything but
     /// create/rotate key, whose SEMANTICS this crate ports directly). `Verbs::execute` has already

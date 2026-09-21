@@ -13,7 +13,9 @@ use futures::StreamExt;
 /// ordinary way to obtain one. The ordinary way is a token the loop lends out, so the fixture uses
 /// that and the transport under test receives exactly what a deployment hands it.
 fn fixture_seal() -> busbar_contract::caps::Grant<busbar_contract::caps::KeyHandle> {
-    busbar_contract::caps::Grant::<busbar_contract::caps::KeyHandle>::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
+    busbar_contract::caps::Grant::<busbar_contract::caps::KeyHandle>::mint(
+        &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+    )
 }
 
 fn fixture_key() -> TransportKeyHandle {

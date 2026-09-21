@@ -153,7 +153,11 @@ pub trait MeteringLease: Send + Sync {
     /// and hard-closes the carrier, exactly as on exhaustion); `Some(0)` when pricing is off (no rate
     /// card) or the turn is empty. The host u128 nanodollars clamp saturating into u64 (a per-turn
     /// increment fits u64 far below the ~$18.4B ceiling), fail-closed HIGH.
-    fn price_usage(&self, model: &str, usage: &busbar_substrate_values::billing::Usage) -> Option<u64>;
+    fn price_usage(
+        &self,
+        model: &str,
+        usage: &busbar_substrate_values::billing::Usage,
+    ) -> Option<u64>;
 
     /// Settle ONE exact already-priced increment (nanodollars) against this lease and read back the
     /// post-settle state — the `cost_settle` leg. Idempotent after exhaustion: once dry it stays dry.
@@ -256,7 +260,11 @@ impl LocalLease {
 }
 
 impl MeteringLease for LocalLease {
-    fn price_usage(&self, _model: &str, _usage: &busbar_substrate_values::billing::Usage) -> Option<u64> {
+    fn price_usage(
+        &self,
+        _model: &str,
+        _usage: &busbar_substrate_values::billing::Usage,
+    ) -> Option<u64> {
         // The in-process TEST/DEV lease carries NO rate card (the money hop's rates live host-side): a
         // dev build with no configured rate card prices at 0, exactly as core's `CostModel` does when
         // `rate_card` is absent. This is NOT a plane-private price book — it holds no rates, labels or
@@ -360,7 +368,11 @@ pub struct HostLease {
 }
 
 impl MeteringLease for HostLease {
-    fn price_usage(&self, model: &str, usage: &busbar_substrate_values::billing::Usage) -> Option<u64> {
+    fn price_usage(
+        &self,
+        model: &str,
+        usage: &busbar_substrate_values::billing::Usage,
+    ) -> Option<u64> {
         // The REAL money hop's pricing leg: the host prices the turn's usage_units against the deployment
         // rate card (the SAME `CostModel` arithmetic the LLM path uses), so the plane never names a pricer.
         // A per-turn increment fits u64 far below the ~$18.4B ceiling; saturate defensively (fail-closed
@@ -512,7 +524,11 @@ impl MeteringHost for MockMeteringHost {
         Some(l.settled)
     }
 
-    fn price_usage(&self, model: &str, usage: &busbar_substrate_values::billing::Usage) -> Option<u128> {
+    fn price_usage(
+        &self,
+        model: &str,
+        usage: &busbar_substrate_values::billing::Usage,
+    ) -> Option<u128> {
         if model == Self::UNPRICED_MODEL {
             return None; // rate card present, model unpriced → the caller fails closed.
         }

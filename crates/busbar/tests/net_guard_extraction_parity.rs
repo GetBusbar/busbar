@@ -152,7 +152,12 @@ fn both_copies_judge_the_same_hostile_table_the_same_way() {
         // With the operator's denylist — the arm the trailing-space bypass defeated.
         assert_eq!(
             busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, &operator_blocked),
-            busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, &operator_blocked),
+            busbar_kernel_egress::trust::net::ssrf_blocked_host(
+                spelling,
+                &[],
+                false,
+                &operator_blocked
+            ),
             "operator denylist disagrees on {spelling:?}"
         );
         // With a surgical allow-override, which must win in both copies or in neither.
@@ -188,9 +193,9 @@ fn the_bare_authority_fallback_makes_the_unit_stricter_and_never_laxer() {
     let mut unit_stricter = 0usize;
     for spelling in BARE_AUTHORITIES {
         for blocked in [&[][..], &operator_blocked[..]] {
-            let live =
-                busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, blocked);
-            let unit = busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, blocked);
+            let live = busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, blocked);
+            let unit =
+                busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, blocked);
             assert!(
                 live.is_none(),
                 "the substrate grew a bare-authority judgement for {spelling:?} ({live:?}) — the \
@@ -219,7 +224,8 @@ fn the_hostile_table_actually_reaches_the_guard_in_both_copies() {
         if busbar_kernel::net_guard::ssrf_blocked_host(spelling, &[], false, &[]).is_some() {
             blocked_by_live += 1;
         }
-        if busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, &[]).is_some() {
+        if busbar_kernel_egress::trust::net::ssrf_blocked_host(spelling, &[], false, &[]).is_some()
+        {
             blocked_by_unit += 1;
         }
     }

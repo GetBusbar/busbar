@@ -9,9 +9,9 @@
 //! path that turns into a refusal. The last case says it directly — the door admits, the slice is
 //! empty, the spend lands anyway.
 
-use busbar_contract::caps::{Grant, 
-    step::Admit, AccrualRefused, Admittance, Exit, Hold, HoldCell, KernelSeal, PrincipalId,
-    Pass,
+use busbar_contract::caps::{
+    step::Admit, AccrualRefused, Admittance, Exit, Grant, Hold, HoldCell, KernelSeal, Pass,
+    PrincipalId,
 };
 
 use super::*;
@@ -173,8 +173,13 @@ fn the_door_sizes_the_reservation_off_the_estimate() {
             let _ = busbar_contract::caps::Posted::settle(
                 hold,
                 0,
-                &busbar_contract::caps::Usage::report(&busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal), Vec::new())
-                    .expect("no lines"),
+                &busbar_contract::caps::Usage::report(
+                    &busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(
+                        &seal,
+                    ),
+                    Vec::new(),
+                )
+                .expect("no lines"),
                 &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
             );
         }
@@ -255,8 +260,12 @@ fn a_unit_the_door_admits_is_never_refused_by_hold_sizing() {
         }],
     )
     .expect("one line");
-    let posted =
-        busbar_contract::caps::Posted::settle(hold, 9_000, &usage, &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal));
+    let posted = busbar_contract::caps::Posted::settle(
+        hold,
+        9_000,
+        &usage,
+        &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
+    );
     assert_eq!(posted.settled(), 9_000, "the unit ran and posted in full");
     assert_eq!(posted.overdraft(), 8_999);
     assert!(posted
@@ -288,8 +297,11 @@ fn a_reservation_that_can_grow_grows_instead_of_carrying() {
     let _ = busbar_contract::caps::Posted::settle(
         hold,
         0,
-        &busbar_contract::caps::Usage::report(&busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal), Vec::new())
-            .expect("no lines"),
+        &busbar_contract::caps::Usage::report(
+            &busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal),
+            Vec::new(),
+        )
+        .expect("no lines"),
         &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
     );
 }
@@ -312,8 +324,11 @@ fn settle(hold: Hold, seal: &KernelSeal) {
     let _ = busbar_contract::caps::Posted::settle(
         hold,
         0,
-        &busbar_contract::caps::Usage::report(&busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(seal), Vec::new())
-            .expect("an empty report is within the bound"),
+        &busbar_contract::caps::Usage::report(
+            &busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(seal),
+            Vec::new(),
+        )
+        .expect("an empty report is within the bound"),
         &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(seal),
     );
 }
@@ -353,7 +368,9 @@ fn parent_principal_mismatch(seal: &KernelSeal, admit: &Grant<Admittance>) -> Pa
 fn parent_exited(seal: &KernelSeal, admit: &Grant<Admittance>) -> ParentCase {
     let who = PrincipalId::new("vk_par");
     let cell = admitted_cell(&who, seal, admit);
-    let taken = cell.take(&Grant::<Exit>::mint(seal)).expect("the parent exits");
+    let taken = cell
+        .take(&Grant::<Exit>::mint(seal))
+        .expect("the parent exits");
     settle(taken, seal);
     ParentCase { cell, child: who }
 }

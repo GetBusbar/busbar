@@ -1714,9 +1714,7 @@ impl TestApp {
                             busbar_kernel::plane_host::OnExhaustedInput::LeastBad
                         }
                         Some(crate::config::OnExhausted::Queue { max_ms }) => {
-                            busbar_kernel::plane_host::OnExhaustedInput::Queue {
-                                max_ms: *max_ms,
-                            }
+                            busbar_kernel::plane_host::OnExhaustedInput::Queue { max_ms: *max_ms }
                         }
                         _ => busbar_kernel::plane_host::OnExhaustedInput::Status503,
                     },

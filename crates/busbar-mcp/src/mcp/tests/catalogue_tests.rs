@@ -287,9 +287,9 @@ fn a_present_but_blank_pin_key_declares_nothing() {
         "boot must still refuse a rooted mechanism with no usable material"
     );
     assert_eq!(
-        busbar_kernel::trust::declared::declared_pin::<
-            crate::mcp::client::catalogue::TransportPin,
-        >(def.pin.declaration()),
+        busbar_kernel::trust::declared::declared_pin::<crate::mcp::client::catalogue::TransportPin>(
+            def.pin.declaration()
+        ),
         None,
         "and the reader must refuse it on its own, not by trusting that boot already did"
     );

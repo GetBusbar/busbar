@@ -52,11 +52,11 @@
 //! are the ones where continuing would be worse: the opening could not be signed, the ledger's own
 //! records could not be read or written, or the figures do not fit in a ledger figure.
 
-use busbar_plugin_loader::store_adapter::{LegacyReadPlan, StoreAdapter};
 use busbar_kernel_ledger::checkpoint::CheckpointSecret;
 use busbar_kernel_ledger::migration::{
     migrate, LegacyLedgerRows, MigrationError, MigrationRecords, Outcome,
 };
+use busbar_plugin_loader::store_adapter::{LegacyReadPlan, StoreAdapter};
 
 /// What the root reads out of configuration to decide which of the previous release's rows to read.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

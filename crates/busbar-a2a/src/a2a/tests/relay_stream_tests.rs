@@ -434,8 +434,7 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
     // used to read `h.gov.store()` — the shipped memory store, whose task methods keep nothing — so
     // the answer was empty on every run and the `if !events.is_empty()` arm never ran: a regression
     // that stopped chaining `task.resumed` entirely would have shipped green.
-    let events =
-        await_chain_with(&ledger, &first, busbar_contract::vocab::EV_RESUMED).await;
+    let events = await_chain_with(&ledger, &first, busbar_contract::vocab::EV_RESUMED).await;
     crate::taskstore::TASKS.clear_sink_for_test();
     crate::taskstore::verify_chain(&events).expect("the chain verifies across a resume");
     assert!(

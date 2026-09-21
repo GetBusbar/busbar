@@ -4,7 +4,7 @@
 //! The sealed answer: the unit the loop calls at the verify step.
 
 use busbar_contract::caps::VerifiedDestination;
-use busbar_contract::caps::{Grant, Decision, Refusal, Dial, Pass, Verify};
+use busbar_contract::caps::{Decision, Dial, Grant, Pass, Refusal, Verify};
 
 use crate::trust::destination::{
     kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind,

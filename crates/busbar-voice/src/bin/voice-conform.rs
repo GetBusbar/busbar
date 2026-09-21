@@ -1054,7 +1054,11 @@ impl MeteringHost for ConformHost {
         Some(self.inner.lock().unwrap().leases.remove(&lease.0)?.0)
     }
 
-    fn price_usage(&self, _model: &str, usage: &busbar_substrate_values::billing::Usage) -> Option<u128> {
+    fn price_usage(
+        &self,
+        _model: &str,
+        usage: &busbar_substrate_values::billing::Usage,
+    ) -> Option<u128> {
         Some(usage.usage_units.values().copied().map(u128::from).sum())
     }
 }

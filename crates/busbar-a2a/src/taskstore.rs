@@ -964,9 +964,7 @@ impl TaskTestHarness {
     /// Fresh isolated harness over `store` (the durable sink).
     pub fn over(store: Arc<dyn busbar_api::Store>) -> Self {
         let reg = TaskRegistry::new();
-        reg.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
-            store,
-        ));
+        reg.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(store));
         Self { reg }
     }
 

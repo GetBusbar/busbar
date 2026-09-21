@@ -98,9 +98,9 @@
 
 use std::sync::Arc;
 
-use busbar_contract::caps::{Grant, 
-    step::Meter, Decision, Hold, MeterClassId, Outcome, QuantitySource, Pass, Usage,
-    UsageLine, Consumption,
+use busbar_contract::caps::{
+    step::Meter, Consumption, Decision, Grant, Hold, MeterClassId, Outcome, Pass, QuantitySource,
+    Usage, UsageLine,
 };
 use busbar_contract::ClassDirection;
 use busbar_kernel::plane_host::EngineHost;

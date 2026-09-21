@@ -543,7 +543,11 @@ impl busbar_kernel::plane_host::MeteringHost for EngineHostImpl {
         cost_host::close_lease(lease.0)
     }
 
-    fn price_usage(&self, model: &str, usage: &busbar_substrate_values::billing::Usage) -> Option<u128> {
+    fn price_usage(
+        &self,
+        model: &str,
+        usage: &busbar_substrate_values::billing::Usage,
+    ) -> Option<u128> {
         // Price against the BOUND snapshot's resolved `CostModel` — the SAME rate card + arithmetic the
         // LLM enforcement/derive path prices with (a new reader, not a new pricer), so a live voice
         // carrier meters against the deployment's real rates while staying plane-neutral.
@@ -974,8 +978,7 @@ impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
         standing: &busbar_kernel::trust::validate::Standing,
         live_gen: u64,
         now: u64,
-    ) -> Result<Option<Arc<busbar_api::VirtualKey>>, busbar_kernel::trust::validate::Lapsed>
-    {
+    ) -> Result<Option<Arc<busbar_api::VirtualKey>>, busbar_kernel::trust::validate::Lapsed> {
         // Inject the host's live `GovState` through the `GovResolve` seam so the plane holds only the
         // `Standing`. Byte-identical to the pre-relocation `Standing::still_permitted(app.governance, …)`.
         standing.still_permitted(
@@ -1216,9 +1219,7 @@ pub fn engine_host(app: &Arc<App>) -> Arc<dyn busbar_kernel::plane_host::EngineH
 /// (`identity_admit`/`synthesize_completion`) still work — they `Arc::clone` internally — but the
 /// engine hot path calls only the SYNC methods, so this borrowed carrier is the right one there.
 #[must_use]
-pub fn engine_host_value(
-    app: &Arc<App>,
-) -> impl busbar_kernel::plane_host::EngineHost + 'static {
+pub fn engine_host_value(app: &Arc<App>) -> impl busbar_kernel::plane_host::EngineHost + 'static {
     EngineHostImpl::new(Arc::clone(app))
 }
 

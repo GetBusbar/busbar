@@ -151,8 +151,12 @@ fn a_poisoned_segment_never_takes_another_write() {
     let (mut wal, switch, memory) = wal_with_faults();
     let token = durability_token();
     switch.arm(Fault::SyncEio);
-    wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &records(1, 1, 1, 10))
-        .expect_err("armed");
+    wal.append_batch(
+        &token,
+        busbar_contract::caps::StepName::Meter,
+        &records(1, 1, 1, 10),
+    )
+    .expect_err("armed");
 
     // The poisoned segment's own bytes, held by a strong reference so they survive the roll that
     // follows. A fresh segment NUMBER is not the claim: the claim is that the region of unknown
@@ -168,7 +172,11 @@ fn a_poisoned_segment_never_takes_another_write() {
     // The switch is one-shot, so the disk is healthy again — but the segment stays closed and the
     // log moves on rather than writing more bytes into a region of unknown state.
     let ack = wal
-        .append_batch(&token, busbar_contract::caps::StepName::Meter, &records(1, 2, 1, 10))
+        .append_batch(
+            &token,
+            busbar_contract::caps::StepName::Meter,
+            &records(1, 2, 1, 10),
+        )
         .unwrap();
     assert!(ack.segment > 0, "the write went to a fresh segment");
     assert_eq!(
@@ -391,6 +399,10 @@ fn a_store_that_refuses_an_on_disk_batch_does_not_fail_the_commit() {
     let mut wal =
         Wal::with_parts(Box::new(factory), Box::new(Refuses), Mode::OnDisk, CEILING).unwrap();
     let token = durability_token();
-    wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &records(1, 1, 2, 20))
-        .expect("the bytes are on the medium; the store can catch up later");
+    wal.append_batch(
+        &token,
+        busbar_contract::caps::StepName::Meter,
+        &records(1, 1, 2, 20),
+    )
+    .expect("the bytes are on the medium; the store can catch up later");
 }

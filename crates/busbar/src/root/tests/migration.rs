@@ -4,7 +4,9 @@
 
 use super::*;
 use busbar_kernel_ledger::legacy::{LegacyHead, LegacyMigrationSource};
-use busbar_kernel_ledger::migration::{LegacyFamily, LegacyFigure, LegacyFigures, NodeLocalRecords};
+use busbar_kernel_ledger::migration::{
+    LegacyFamily, LegacyFigure, LegacyFigures, NodeLocalRecords,
+};
 use busbar_kernel_ledger::totals::CapDimension;
 
 /// Rows a test seeded, counting the reads so "the second boot touched nothing" is an assertion
@@ -113,7 +115,7 @@ fn the_second_boot_reads_nothing() {
 #[test]
 fn the_marker_is_sealed_on_the_journal() {
     use crate::root::durability::{build_for_node, DurabilityConfig};
-    use busbar_contract::caps::{Grant, DurableWrite, KernelSeal, StepName};
+    use busbar_contract::caps::{DurableWrite, Grant, KernelSeal, StepName};
     use busbar_kernel_wal::{NullShipper, RecordClass};
 
     let rows = rows();

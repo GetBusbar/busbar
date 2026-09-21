@@ -161,19 +161,15 @@ impl super::relay::DelegationGate for LiveGate {
             // THE ONE ORDERED GATE, reached from the third of this plane's paths. It can only ever
             // be more closed than admission was, never differently closed, because it is the same
             // function admission called.
-            busbar_kernel::trust::validate::validate_request(
-                &busbar_kernel::trust::validate::Ask {
-                    principal: None,
-                    now: 0,
-                    grants: &[],
-                    approval: &reg.approval,
-                    sighting: &reg.sighting,
-                    capability: None,
-                    generation: busbar_kernel::trust::validate::Generations::since(
-                        admitted, live,
-                    ),
-                },
-            )
+            busbar_kernel::trust::validate::validate_request(&busbar_kernel::trust::validate::Ask {
+                principal: None,
+                now: 0,
+                grants: &[],
+                approval: &reg.approval,
+                sighting: &reg.sighting,
+                capability: None,
+                generation: busbar_kernel::trust::validate::Generations::since(admitted, live),
+            })
             .map_err(|refusal| super::relay::NotDelegable {
                 agent_id: agent_id.to_string(),
                 state: reg.trust_state(),

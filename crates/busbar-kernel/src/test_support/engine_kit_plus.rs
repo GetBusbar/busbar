@@ -13,11 +13,11 @@
 use super::engine_kit::CoreEngineKit;
 use super::TestApp;
 use busbar_api::SecretResolve;
-use busbar_plugin::cold::endpoint::RouteAuth;
 use busbar_kernel::plane::PlaneAdmission;
 use busbar_kernel::testkit::engine_kit_plus::{
     AppBuilder, EngineAppPlus, EngineTestKitPlus, NamedMapSectionFacts, TestAppKitPlus,
 };
+use busbar_plugin::cold::endpoint::RouteAuth;
 use std::sync::Arc;
 
 impl EngineTestKitPlus for CoreEngineKit {

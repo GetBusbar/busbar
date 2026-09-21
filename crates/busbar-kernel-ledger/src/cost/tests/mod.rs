@@ -8,9 +8,11 @@
 //! older release's derivation at a pinned card against the sum of the stored nano-units.
 
 use busbar_contract::caps::step::MeterClassId;
-use busbar_contract::caps::{Grant, KernelSeal, QuantitySource, Usage, UsageLine, Consumption};
+use busbar_contract::caps::{Consumption, Grant, KernelSeal, QuantitySource, Usage, UsageLine};
 
-use crate::cost::{price, CurrencyCode, History, LaneClass, Posting, Priced, RateCard, Unpriceable};
+use crate::cost::{
+    price, CurrencyCode, History, LaneClass, Posting, Priced, RateCard, Unpriceable,
+};
 
 mod currency_tests;
 mod derive_tests;

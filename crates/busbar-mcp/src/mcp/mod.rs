@@ -246,12 +246,12 @@ mod test_app_reads {
 
     /// See the module-level note: the snapshot-typed read of the always-present runtime slot.
     pub fn runtime<S: PlaneSlots + ?Sized>(app: &S) -> &McpRuntime {
-        app.plane_slot(busbar_kernel::plane_host::runtime_slot_key(
-            PLANE_DECL.key,
-        ))
-        .expect("the mcp runtime slot is present on every generation the plane is compiled into")
-        .downcast_ref::<McpRuntime>()
-        .expect("the mcp runtime slot is an McpRuntime")
+        app.plane_slot(busbar_kernel::plane_host::runtime_slot_key(PLANE_DECL.key))
+            .expect(
+                "the mcp runtime slot is present on every generation the plane is compiled into",
+            )
+            .downcast_ref::<McpRuntime>()
+            .expect("the mcp runtime slot is an McpRuntime")
     }
 }
 
@@ -631,8 +631,8 @@ pub(crate) fn mcp_hydrate(
 pub(crate) fn mcp_routes(
     slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
-    use busbar_plugin_loader::{RouteAuth, RouteMethod};
     use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
+    use busbar_plugin_loader::{RouteAuth, RouteMethod};
     let resource = slot
         .downcast_ref::<McpResource>()
         .expect("the mcp plane's routes slot is an McpResource");
@@ -687,10 +687,10 @@ pub(crate) fn mcp_admin_routes(
     _slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::admin_verbs::AdminRouteSpec> {
     use crate::mcp::admin_view::McpServers;
-    use busbar_plugin::cold::endpoint::RouteMethod;
     use busbar_kernel::admin_verbs::{
         connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
     };
+    use busbar_plugin::cold::endpoint::RouteMethod;
     vec![
         // `connect` is the SHARED audited verb: resolve, look, and the core adapter records the
         // applied/rejected row. `Full` scope (a POST that reaches the network and can quarantine).

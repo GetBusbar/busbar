@@ -25,9 +25,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{Grant, 
-    Admittance, Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId,
-    StepName, UnitKey,
+use busbar_contract::caps::{
+    Admittance, Grant, Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId, StepName,
+    UnitKey,
 };
 
 use busbar_contract::Framing;

@@ -126,7 +126,8 @@ fn the_at_capacity_floor_matches_the_breaker_units_own() {
 fn an_empty_candidate_set_gets_the_floor_too() {
     let node = Node::with_lanes(&[]);
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-    let token: busbar_contract::caps::Pass<busbar_contract::caps::Route> = busbar_contract::caps::Pass::mint(&seal);
+    let token: busbar_contract::caps::Pass<busbar_contract::caps::Route> =
+        busbar_contract::caps::Pass::mint(&seal);
     let wait = crate::exhaustion::retry_after_secs(
         node.breaker.as_ref(),
         &[],

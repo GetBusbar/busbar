@@ -21,7 +21,7 @@
 //!   with the number — the adapter maps one namespaced code onto the other, and folds the coarse
 //!   class down to a representative HTTP-shaped code only when no number was reported at all.
 
-use busbar_contract::caps::{KernelSeal, Route, Pass};
+use busbar_contract::caps::{KernelSeal, Pass, Route};
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::WireStatusClass;
@@ -116,13 +116,7 @@ impl Breaker for BreakerAdapter {
         }
     }
 
-    fn ready(
-        &self,
-        pool: &str,
-        destination: DestinationId,
-        now: u64,
-        token: &Pass<Route>,
-    ) -> bool {
+    fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
         matches!(
             self.0.state(pool, destination, now, token),
             busbar_kernel_breaker::LaneState::Ready

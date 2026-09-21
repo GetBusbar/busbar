@@ -56,11 +56,11 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::caps::MeterClassId;
 use crate::cost::{
     price, CurrencyCode, History, HistorySeq, HistoryView, Posting as CostPosting, Priced,
     Quantity, Unpriceable,
 };
+use busbar_contract::caps::MeterClassId;
 
 use crate::totals::TotalsKey;
 

@@ -129,6 +129,9 @@ fn a_currency_the_card_does_not_name_refuses_rather_than_converting() {
 #[test]
 fn the_cent_projection_is_the_minor_projection_at_usd() {
     for nanos in [0u128, 1, 9_999_999, 10_000_000, 123_456_789, u128::MAX] {
-        assert_eq!(crate::cost::cents_of(nanos), minor_of(nanos, CurrencyCode::USD));
+        assert_eq!(
+            crate::cost::cents_of(nanos),
+            minor_of(nanos, CurrencyCode::USD)
+        );
     }
 }

@@ -171,8 +171,7 @@ impl Resolver for TokioResolver {
 /// every tick is a private key crossing the resolver seam on every tick, and a key that fails to
 /// resolve at 03:00 would silently stop a registration being re-verified rather than stopping the
 /// operator at boot.
-pub(crate) type ClientIdentities =
-    BTreeMap<String, busbar_kernel::egress::engine::ClientIdentity>;
+pub(crate) type ClientIdentities = BTreeMap<String, busbar_kernel::egress::engine::ClientIdentity>;
 
 /// RESOLVE EVERY `agents.<name>.client_identity` INTO A USABLE CLIENT CERTIFICATE. FAIL-CLOSED.
 ///

@@ -37,7 +37,10 @@ pub(super) fn identity_provider_view(
 /// trust ceiling nor a credential FIELD, so those are omitted from the body entirely — but its
 /// `settings:` bag routinely carries one (a `generic-webhook`'s `auth_header.value`), so the bag is
 /// projected as KEY NAMES exactly as the identity-provider view projects it.
-pub(super) fn export_def_view(name: &str, cfg: &busbar_kernel::config::ExportDefCfg) -> NamedDefView {
+pub(super) fn export_def_view(
+    name: &str,
+    cfg: &busbar_kernel::config::ExportDefCfg,
+) -> NamedDefView {
     NamedDefView {
         name: name.to_string(),
         module: cfg.module.clone(),

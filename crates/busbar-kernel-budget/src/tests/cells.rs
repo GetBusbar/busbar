@@ -9,8 +9,8 @@
 //! slots, and the under-sized hold that tops up rather than refusing. They are written as tables
 //! here so adding a window word or a cap kind adds a row, not a copied test.
 
-use busbar_contract::caps::{Grant, 
-    step::Admit, Accrual, Admittance, Hold, KernelSeal, PrincipalId, ReasonCode, Pass,
+use busbar_contract::caps::{
+    step::Admit, Accrual, Admittance, Grant, Hold, KernelSeal, Pass, PrincipalId, ReasonCode,
 };
 
 use super::*;
@@ -804,8 +804,11 @@ fn the_door_opens_the_arrival_hold_and_it_reserves_nothing() {
     let _ = busbar_contract::caps::Posted::settle(
         hold,
         0,
-        &busbar_contract::caps::Usage::report(&busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal), Vec::new())
-            .expect("an empty report is within the bound"),
+        &busbar_contract::caps::Usage::report(
+            &busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal),
+            Vec::new(),
+        )
+        .expect("an empty report is within the bound"),
         &busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal),
     );
 }

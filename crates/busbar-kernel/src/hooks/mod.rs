@@ -1690,7 +1690,6 @@ mod tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
-
 /// A resolved GLOBAL (all-pools) tap: `(per-hook deadline, prompt-grant, transport, caller-group
 /// scope)`. The 4th element is the hook's `groups:` SELECTION scope (1.5.3) — the firing site fires
 /// the tap only for a caller in that scope (empty = every caller).

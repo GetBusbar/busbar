@@ -47,7 +47,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 
-use busbar_contract::caps::{Grant, DurabilityLost, DurableWrite, StepName};
+use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
 
 use crate::backend::{DirectoryFactory, MemoryFactory, SegmentFactory};
 use crate::record::Record;

@@ -16,9 +16,9 @@
 //! captured red/green output.
 
 use busbar_api::{ModelTokensDelta, UsageDelta, UsageLedger};
-use busbar_contract::caps::{Grant, 
-    Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId, QuantitySource,
-    Usage, UsageLine, Consumption,
+use busbar_contract::caps::{
+    Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId, QuantitySource,
+    Usage, UsageLine, WriteMoney,
 };
 use busbar_kernel_ledger::settle::Ledger;
 use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
@@ -76,8 +76,14 @@ fn settle_through_the_seam_matches_the_direct_ledger() {
 
     // Direct: the shipped call, by name.
     let mut direct = primed(&k, 600);
-    let direct_settlement =
-        direct.settle_recording(&k, 1, hold("alice", 600), 450, &usage("tokens", 450), &ledger_token());
+    let direct_settlement = direct.settle_recording(
+        &k,
+        1,
+        hold("alice", 600),
+        450,
+        &usage("tokens", 450),
+        &ledger_token(),
+    );
 
     // Seam: the same act, through the pass-through.
     let mut seam_ledger = primed(&k, 600);
@@ -121,7 +127,14 @@ fn settle_records_the_overdraft_through_the_seam() {
     let k = key("od");
 
     let mut direct = primed(&k, 100);
-    let d = direct.settle_recording(&k, 1, hold("carol", 100), 250, &usage("tokens", 250), &ledger_token());
+    let d = direct.settle_recording(
+        &k,
+        1,
+        hold("carol", 100),
+        250,
+        &usage("tokens", 250),
+        &ledger_token(),
+    );
 
     let mut seam_ledger = primed(&k, 100);
     let s = PassThroughBook.settle(
@@ -144,10 +157,18 @@ fn settle_records_the_overdraft_through_the_seam() {
 #[test]
 fn post_through_the_seam_matches_the_direct_ledger() {
     let k = key("p");
-    let posted =
-        busbar_contract::caps::Posted::settle(hold("dave", 500), 400, &usage("tokens", 400), &ledger_token());
-    let posted2 =
-        busbar_contract::caps::Posted::settle(hold("dave", 500), 400, &usage("tokens", 400), &ledger_token());
+    let posted = busbar_contract::caps::Posted::settle(
+        hold("dave", 500),
+        400,
+        &usage("tokens", 400),
+        &ledger_token(),
+    );
+    let posted2 = busbar_contract::caps::Posted::settle(
+        hold("dave", 500),
+        400,
+        &usage("tokens", 400),
+        &ledger_token(),
+    );
 
     let mut direct = primed(&k, 500);
     let d = direct.post(&k, 1, posted);

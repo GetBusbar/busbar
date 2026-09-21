@@ -557,10 +557,8 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         String,
         busbar_kernel::config::sections::RateEntryCfg,
     > = std::collections::BTreeMap::new();
-    let billed_groups: std::collections::BTreeMap<
-        String,
-        busbar_kernel::config::groups::GroupCfg,
-    > = std::collections::BTreeMap::new();
+    let billed_groups: std::collections::BTreeMap<String, busbar_kernel::config::groups::GroupCfg> =
+        std::collections::BTreeMap::new();
     let app = test_app()
         .mcp(&mcp_cfg())
         // A UNIQUE server+tool for THIS test, so the `mcp_tool.call` row it audits carries a
@@ -661,10 +659,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         })
         .expect("the call must have audited an `mcp_tool.call` row of its own");
     assert_eq!(row.resource, "mcp_tool:meter_probe");
-    assert_eq!(
-        row.outcome,
-        busbar_contract::vocab::OUTCOME_REJECTED
-    );
+    assert_eq!(row.outcome, busbar_contract::vocab::OUTCOME_REJECTED);
     assert_eq!(row.principal, "test-principal");
 }
 

@@ -194,7 +194,12 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_refused_units_status_is_the_one_its_ending_earned() {
-    let status = |reason| answer_for(Outcome::Refused(busbar_contract::caps::StepName::Admit, reason));
+    let status = |reason| {
+        answer_for(Outcome::Refused(
+            busbar_contract::caps::StepName::Admit,
+            reason,
+        ))
+    };
     assert_eq!(status(ReasonCode::DecodeFailed).status, 400);
     assert_eq!(status(ReasonCode::NoDestination).status, 404);
     assert_eq!(status(ReasonCode::InFlightCap).status, 429);
@@ -1068,7 +1073,9 @@ fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_n
 /// the loop resolves it. Returns the binding and the context every later step reads the unit
 /// through, so a cell drives the real steps rather than a table it filled in by hand.
 #[cfg(feature = "root-admin")]
-fn a_bound_unit(request: AdminRequest) -> (AdminBinding, UnitCtx, busbar_contract::caps::KernelSeal) {
+fn a_bound_unit(
+    request: AdminRequest,
+) -> (AdminBinding, UnitCtx, busbar_contract::caps::KernelSeal) {
     let binding = AdminBinding::new(Arc::new(AnsweringDispatch));
     let key = UnitKey::new(1);
     binding.units.open(key, request);
@@ -1676,7 +1683,10 @@ fn exactly_three_verbs_land_on_the_store() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn an_unresolved_unit_is_sealed_by_the_method_it_asked_with() {
-    let refused = &Outcome::Refused(busbar_contract::caps::StepName::Decode, ReasonCode::DecodeFailed);
+    let refused = &Outcome::Refused(
+        busbar_contract::caps::StepName::Decode,
+        ReasonCode::DecodeFailed,
+    );
     let read = busbar_contract::OpClassId::new(OP_UNRESOLVED_READ);
     let write = busbar_contract::OpClassId::new(OP_UNRESOLVED_WRITE);
 
@@ -2274,9 +2284,9 @@ impl LegacyRowsRead for RowsThatLose {
 /// path settles through — so what the views read is what a served request would have left.
 #[cfg(feature = "root-admin")]
 fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: u64) {
-    use busbar_contract::caps::{Grant, 
-        Admittance, Hold, KernelSeal, WriteMoney, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, Consumption,
+    use busbar_contract::caps::{
+        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, WriteMoney,
     };
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
@@ -2872,7 +2882,10 @@ fn a_seeded_history() -> crate::root::kernel::RootHistory {
     let opening = busbar_kernel_ledger::cost::RateCard::from_micro_rates_in(
         busbar_kernel_ledger::cost::CurrencyCode::USD,
         [(
-            busbar_kernel_ledger::cost::LaneClass::new("gpt", busbar_kernel_ledger::cost::CLASS_INPUT),
+            busbar_kernel_ledger::cost::LaneClass::new(
+                "gpt",
+                busbar_kernel_ledger::cost::CLASS_INPUT,
+            ),
             2.0,
         )],
         0,
@@ -2994,8 +3007,10 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
 
     // AN INVOICE CUT BEFORE THE AMENDMENT RE-DERIVES UNCHANGED: an older snapshot never sees the
     // correction, so money already booked stays booked.
-    let old =
-        crate::root::kernel::PinnedHistory::for_test_at(&after, busbar_kernel_ledger::cost::HistorySeq(0));
+    let old = crate::root::kernel::PinnedHistory::for_test_at(
+        &after,
+        busbar_kernel_ledger::cost::HistorySeq(0),
+    );
     let (old_seq, _) = old
         .view()
         .card_at(instant)

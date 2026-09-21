@@ -307,8 +307,8 @@ const WEBHOOK_PATH: &str = "/v1/llm/webhooks/openai";
 pub fn webhook_routes(
     _slot: &dyn std::any::Any,
 ) -> Vec<busbar_kernel::plane_routes::PlaneRouteSpec> {
-    use busbar_plugin::cold::endpoint::{RouteAuth, RouteMethod};
     use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
+    use busbar_plugin::cold::endpoint::{RouteAuth, RouteMethod};
 
     // Read once at mount time; a route is contributed only when a secret is configured.
     let Ok(secret) = std::env::var(SECRET_ENV) else {

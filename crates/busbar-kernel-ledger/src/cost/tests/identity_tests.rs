@@ -165,7 +165,10 @@ fn the_two_projections_agree_at_every_generated_total_below_the_saturation_point
         let raw = u128::from(seq.next()) * u128::from(seq.below(1_000_000) + 1);
         let nanos = raw % (MICRO_PROJECTION_CEILING_NANOS + 1);
         largest = largest.max(nanos);
-        assert_eq!(cents_of(nanos), micros_of(nanos) / crate::cost::MICROS_PER_CENT);
+        assert_eq!(
+            cents_of(nanos),
+            micros_of(nanos) / crate::cost::MICROS_PER_CENT
+        );
     }
     assert!(
         largest <= MICRO_PROJECTION_CEILING_NANOS,

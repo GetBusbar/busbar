@@ -321,9 +321,9 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
     // store only through the dispatcher.
     {
         let store = open_plugin(&cfg);
-        engine().aim_call_sink(Some(
-            busbar_kernel::plane::store::PlaneStoreView::narrow(store),
-        ));
+        engine().aim_call_sink(Some(busbar_kernel::plane::store::PlaneStoreView::narrow(
+            store,
+        )));
     }
 
     let (status, body) = call_as(
@@ -407,9 +407,9 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
 
     {
         let store = open_plugin(&cfg);
-        engine().aim_call_sink(Some(
-            busbar_kernel::plane::store::PlaneStoreView::narrow(store),
-        ));
+        engine().aim_call_sink(Some(busbar_kernel::plane::store::PlaneStoreView::narrow(
+            store,
+        )));
     }
 
     let (status, _body) = call_as(
@@ -525,9 +525,9 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
 
     {
         let store = open_plugin(&cfg);
-        engine().aim_call_sink(Some(
-            busbar_kernel::plane::store::PlaneStoreView::narrow(store),
-        ));
+        engine().aim_call_sink(Some(busbar_kernel::plane::store::PlaneStoreView::narrow(
+            store,
+        )));
     }
 
     // ── LEG 1: THE UPSTREAM ANSWERS BADLY. A JSON-RPC error from the registered server. ──────────

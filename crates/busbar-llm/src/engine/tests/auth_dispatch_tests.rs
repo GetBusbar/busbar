@@ -110,9 +110,9 @@ fn dp_gov_with_key() -> (
     std::sync::Arc<dyn busbar_kernel::testkit::engine_kit::GovKit>,
     String,
 ) {
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
@@ -307,8 +307,8 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
 async fn test_disabled_virtual_key_is_rejected_401() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -438,8 +438,8 @@ async fn test_disabled_virtual_key_is_rejected_401() {
 async fn test_governance_accepts_vendor_carriers_and_native_401() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -581,8 +581,8 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
 async fn test_governance_revoked_signed_token_key_rejected() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -684,8 +684,8 @@ async fn test_governance_revoked_signed_token_key_rejected() {
 async fn test_governance_inert_without_admin_token_static_token_admitted() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -783,8 +783,8 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
 async fn test_governance_inert_without_admin_token_open_relay_admits() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -854,8 +854,8 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
 async fn test_governance_active_with_admin_token_enforces_minted_key() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -978,8 +978,8 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use busbar_api::{Store, VirtualKey};
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1010,7 +1010,9 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     store
         .put_key(&VirtualKey {
             id: "kold".to_string(),
-            generation_hash: busbar_substrate_values::sigv4::sha256_hex(persisted_secret.as_bytes()),
+            generation_hash: busbar_substrate_values::sigv4::sha256_hex(
+                persisted_secret.as_bytes(),
+            ),
             name: "kold".to_string(),
             allowed_scopes: Some(vec![ScopeRef::pool("restricted")]),
             enabled: true,
@@ -1111,8 +1113,8 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
 async fn test_active_governance_persisted_key_is_enforced() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1405,9 +1407,9 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
 async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_store_memory::MemoryStore;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
     let state = std::sync::Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {

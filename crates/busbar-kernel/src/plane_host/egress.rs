@@ -859,10 +859,7 @@ fn run_http_stream(
     https: bool,
     policy: crate::net_guard::GuardPolicy,
     spec: &ReqSpec,
-    identity: (
-        u64,
-        Option<busbar_kernel::egress::engine::ClientIdentity>,
-    ),
+    identity: (u64, Option<busbar_kernel::egress::engine::ClientIdentity>),
     extra_roots: (u64, Vec<rustls_pki_types::CertificateDer<'static>>),
     pinned: Option<std::net::SocketAddr>,
     timeout: Duration,
@@ -991,28 +988,27 @@ fn run_http_stream(
             bytes::Bytes::from(spec.body.clone()),
         );
         let deadline = tokio::time::Instant::now() + timeout;
-        let resp =
-            match busbar_kernel::egress::engine::send_bounded(&client, req, deadline).await {
-                Ok(resp) => resp,
-                Err(hop) => {
-                    // The real transport failure, already classified (connect vs everything that
-                    // reached the wire — a deadline is the latter, reqwest's own timeout class) and
-                    // already URL-FREE (hyper errors never carry the URL; that was only ever
-                    // reqwest's addition) — the url is surfaced SEPARATELY, so a plane includes or
-                    // strips it as it chooses (mcp uses the url-free cause directly; a2a re-inserts
-                    // the url).
-                    let class = if hop.is_connect() {
-                        EgressFailClass::Connect
-                    } else {
-                        EgressFailClass::Io
-                    };
-                    let _ = head_tx.send(HeadMsg::Fault {
-                        class,
-                        cause: hop.into_cause(),
-                    });
-                    return;
-                }
-            };
+        let resp = match busbar_kernel::egress::engine::send_bounded(&client, req, deadline).await {
+            Ok(resp) => resp,
+            Err(hop) => {
+                // The real transport failure, already classified (connect vs everything that
+                // reached the wire — a deadline is the latter, reqwest's own timeout class) and
+                // already URL-FREE (hyper errors never carry the URL; that was only ever
+                // reqwest's addition) — the url is surfaced SEPARATELY, so a plane includes or
+                // strips it as it chooses (mcp uses the url-free cause directly; a2a re-inserts
+                // the url).
+                let class = if hop.is_connect() {
+                    EgressFailClass::Connect
+                } else {
+                    EgressFailClass::Io
+                };
+                let _ = head_tx.send(HeadMsg::Fault {
+                    class,
+                    cause: hop.into_cause(),
+                });
+                return;
+            }
+        };
         let status = resp.status().as_u16();
         // READ THE CERTIFICATE BEFORE THE BODY — it belongs to THIS connection.
         let spki = observed_identity(&resp);

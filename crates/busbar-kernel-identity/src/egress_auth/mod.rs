@@ -34,7 +34,7 @@
 
 pub mod sigv4;
 
-use busbar_contract::caps::{Grant, AuthDecoration, Sign, SecretSlot, VerifiedDestination};
+use busbar_contract::caps::{AuthDecoration, Grant, SecretSlot, Sign, VerifiedDestination};
 
 /// The outbound request the egress-auth unit decorates. Everything the schemes below need to
 /// compute a decoration, and nothing else — no plane, no transport, no framework header type.

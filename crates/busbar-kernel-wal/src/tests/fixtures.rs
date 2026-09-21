@@ -6,7 +6,7 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{Grant, DurableWrite, KernelSeal};
+use busbar_contract::caps::{DurableWrite, Grant, KernelSeal};
 
 use crate::backend::{MemoryFactory, SegmentBackend, SegmentFactory};
 use crate::record::Record;

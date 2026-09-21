@@ -3,8 +3,8 @@
 
 //! What a unit used, as the usage unit reports it.
 
-use crate::caps::step::MeterClassId;
 use crate::caps::capability::Consumption;
+use crate::caps::step::MeterClassId;
 use crate::caps::token::Grant;
 use crate::ClassDirection;
 

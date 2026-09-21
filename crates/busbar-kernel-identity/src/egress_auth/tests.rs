@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::caps::{Grant, KernelSeal, LaneId, Dial};
+use busbar_contract::caps::{Dial, Grant, KernelSeal, LaneId};
 
 fn token() -> Grant<Sign> {
     Grant::<Sign>::mint(&KernelSeal::acquire_for_kernel())
@@ -393,7 +393,7 @@ fn substitute_touches_only_the_field_the_slot_names() {
 /// sealed, or the unit refuses with `EnvelopeDivergedFromVerifiedDestination`.
 #[test]
 fn lane_cross_check_catches_envelope_divergence_after_decoration() {
-    use busbar_contract::caps::{Grant, LaneId, Dial};
+    use busbar_contract::caps::{Dial, Grant, LaneId};
     let seal = KernelSeal::acquire_for_kernel();
     let trust = Grant::<Dial>::mint(&seal);
     let verified =
@@ -418,7 +418,7 @@ fn lane_cross_check_catches_envelope_divergence_after_decoration() {
 /// is the authority, and a mismatch against it is a refusal.
 #[test]
 fn lane_cross_check_is_against_the_sealed_lane_not_the_callers_belief() {
-    use busbar_contract::caps::{Grant, LaneId, Dial};
+    use busbar_contract::caps::{Dial, Grant, LaneId};
     let seal = KernelSeal::acquire_for_kernel();
     let trust = Grant::<Dial>::mint(&seal);
     let verified = VerifiedDestination::seal(&trust, LaneId::new("bedrock-us-east-1"));

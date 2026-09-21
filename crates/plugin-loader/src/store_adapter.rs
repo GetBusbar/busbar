@@ -81,13 +81,13 @@ use busbar_api::Store as AbiStore;
 use busbar_api::{StoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use busbar_contract::caps::{AdminVerb, Grant};
 use busbar_contract::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
+use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
 use busbar_kernel_ledger::legacy::{LegacyHead, LegacyMigrationSource};
 use busbar_kernel_ledger::migration::{
     LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows, MigrationError, MigrationMarker,
     MigrationRecords,
 };
 use busbar_kernel_ledger::totals::CapDimension;
-use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
 use busbar_kernel_wal::{Record, ShipError, Shipper};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -817,7 +817,11 @@ impl VerbStore for StoreAdapter {
     /// that a restore was taken and reseal the node-local state that depends on it.
     ///
     /// The sealed replay cache deliberately survives — see the module preamble.
-    fn store_restore(&self, _admin: &Grant<AdminVerb>, backup_ref: &str) -> Result<(), VerbStoreError> {
+    fn store_restore(
+        &self,
+        _admin: &Grant<AdminVerb>,
+        backup_ref: &str,
+    ) -> Result<(), VerbStoreError> {
         let mut recovery = self.inner.shim.recovery();
         recovery.restores = recovery.restores.saturating_add(1);
         recovery.last_restore = Some(backup_ref.to_string());

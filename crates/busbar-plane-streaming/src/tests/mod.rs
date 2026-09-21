@@ -89,7 +89,7 @@ mod route {
     use crate::claims::Dialect;
     use crate::tests::harness::{ctx_with_session, EmptyConfig, LeakArena, PairedSession, WsStack};
     use crate::{StreamingPlane, Upstream};
-    use busbar_contract::bounded::{Facts, FactValue, Ir, Labels};
+    use busbar_contract::bounded::{FactValue, Facts, Ir, Labels};
     use busbar_contract::dest::DestinationFacts;
     use busbar_contract::ids::{LaneId, OpClassId};
     use busbar_contract::plane::Plane;
@@ -154,11 +154,8 @@ mod route {
         let session = PairedSession::new(Dialect::OpenaiRealtime.name(), 1);
         let cx = ctx_with_session(&arena, &config, &transport, &labels, &session);
 
-        let u = crate::tests::harness::unit(
-            OpClassId::new("duplex_turn"),
-            Ir::empty(),
-            Facts::new(),
-        );
+        let u =
+            crate::tests::harness::unit(OpClassId::new("duplex_turn"), Ir::empty(), Facts::new());
 
         match plane.verify(&u, &cx) {
             DestinationFacts::SessionUpstream { upstream, lane, .. } => {
