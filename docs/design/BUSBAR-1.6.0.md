@@ -1737,8 +1737,8 @@ filesystem path: the host opens the destination and hands the plugin a write sin
 
 ## Traps this tree has already sprung — do not re-learn them
 
-**THE SIZE RATIO HAS BEEN MEASURED FOUR TIMES AND REPORTED WRONG FOUR TIMES. DO NOT QUOTE ONE UNTIL
-`cargo xtask loc` LANDS.**
+**THE SIZE RATIO WAS MEASURED FOUR TIMES AND REPORTED WRONG FOUR TIMES. `cargo xtask loc` HAS NOW
+LANDED AND THE ANSWER IS BELOW — quote it, and nothing else.**
 
 | # | figure | method | why it was wrong |
 |---|---|---|---|
@@ -1763,8 +1763,48 @@ amount of averaging or cross-checking would have found the truth. The resolution
 estimate — it is `cargo xtask loc` being the only thing that counts lines, with fixtures for every
 trap above and `--ref v1.5.5` so the baseline is recomputable rather than transcribed.
 
-**Until it lands, the honest statement is: production grew substantially, by an unknown factor.**
-That sentence is worth more than a fifth wrong number.
+### THE MEASURED ANSWER (`cargo xtask loc`, 2026-09-22)
+
+The counter landed: Rust, `syn::parse_file` for `#[cfg(test)]` item spans at any nesting depth,
+`proc-macro2` token spans for which lines carry tokens, five buckets that partition every line
+exactly once. `scripts/loc-surface.py` is DELETED — the last Python on this path. 13 self-test
+fixtures, each paired with a deliberately broken rule named after the defect it reproduces
+(`first-cfg(test)-to-EOF`, `only-top-level-src/tests`, `block-comments-do-not-nest`,
+`literal-blind-brace-counting`, `test-as-a-substring`, …), asserting both the truth AND that the
+broken rule misses it. `--ref <rev>` reads any ref out of the object store, so the baseline is
+RECOMPUTABLE rather than transcribed.
+
+| | v1.5.5 | trunk | ratio |
+|---|--:|--:|--:|
+| **production code** | **62,956** | **191,462** | **3.04×** |
+| **…excluding the four new planes** | **62,956** | **153,945** | **2.44×** |
+| tests | 121,275 | 326,420 | 2.69× |
+
+**None of 2.08× / 2.90× / 2.60× / 2.19× was right, and the true figure is HIGHER than all four.**
+The dominant error was the v1.5.5 baseline itself: it had been carried as **102,995** production
+lines, from a counter that billed test code as production. The real baseline is **62,956**, which
+means every earlier ratio was divided by a denominator ~64% too large.
+
+**VERIFIED INDEPENDENTLY of the tool, because four confident wrong answers earned that:**
+- At v1.5.5 the five buckets sum to **253,746**, which is EXACTLY the raw `crates/` line count
+  (`git ls-tree -r v1.5.5` → 253,921 total, minus the 175-line `examples/` file). Zero parse errors.
+- The scoping is SYMMETRIC, which is what killed measurement #2. The counter reads `crates/` only.
+  Trunk also holds **90,104 lines of `xtask`** — build and gate tooling, not the shipped app — and
+  v1.5.5 has NO `xtask` at all. Counting it would have inflated trunk by 10.7% against a baseline
+  that structurally could not contain it.
+
+**AGAINST THE OWNER'S STANDARD THIS IS A FAILING NUMBER, AND THAT IS THE POINT OF HAVING IT.** The
+standard is *"LOC between 1.5.5 should be same or less, if you don't include the 4 new planes"* —
+not as a rule to be met for its own sake, but as a SIGNAL: *"if the same app takes 2x the code
+something is wrong."* Excluding the four new planes, the same application now takes **2.44×** the
+production code — roughly **91,000 excess lines**. The owner's own hypothesis is the thing to test
+first: *"i bet the 2x is from having 54 [crates] and major duplication."*
+
+Tests moved the way they are supposed to: 121,275 → 326,420. The owner's rule is that tests SHOULD
+increase for the same app, which is why every test lives in `_tests.rs`/`tests/` — so it is trivially
+excludable from exactly this measurement.
+
+**One counter, one number, recomputable on demand.** `cargo xtask loc --ref v1.5.5 --format table`.
 
 
 **THE ORACLE'S BLINDNESS TO PLANE MONEY IS NOW A NUMBER, NOT AN IMPRESSION.** Measured 2026-09-22
