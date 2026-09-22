@@ -67,6 +67,14 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 [gate.plugin_kinds]
 plane = [
   "crates/busbar-plane-a2a",
+  # The DECISION plane (jev, #48) -- the fifth plane, and it was in NO kind list at all.
+  # PROVEN 2026-09-22 with a positive control: the same `use std::net::TcpStream` planted in
+  # busbar-plane-decision scored `PASS denylist:hits - no banned transitive source in any pure
+  # plugin kind`, while the identical plant in busbar-plane-streaming scored `RED denylist:hits`.
+  # One caught, one invisible, the only difference being membership in this list. The fifth plane
+  # could open a socket, read the filesystem, spawn a process or read env and the purity gate
+  # reported green over it.
+  "crates/busbar-plane-decision",
   "crates/busbar-plane-llm",
   "crates/busbar-plane-mcp",
   "crates/busbar-plane-streaming",
@@ -118,7 +126,6 @@ abi = ["crates/busbar-contract"]
 # `gate.plugin_kinds.plane` — so there is no second source root to fold in.
 [gate.plane_codec_crates]
 busbar-llm = ["busbar-llm-codec"]
-busbar-a2a = ["busbar-a2a-codec"]
 busbar-voice = ["busbar-voice-codec"]
 
 # ── DECLARED CEILING RAISES ──────────────────────────────────────────────────────────────────────
@@ -648,7 +655,7 @@ consulted when present to widen the same check to transitive path/workspace deps
 # closed JSON span grammar the contract itself is written on and re-exports as `spans`, so naming it
 # directly is naming a piece of the contract rather than reaching past it; the rest are ordinary
 # third-party crates.
-reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-a2a-codec", "busbar-voice-codec", "busbar-grammar"]
+reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-voice-codec", "busbar-grammar"]
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
@@ -675,7 +682,9 @@ reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", 
 store-example-plugin = ["libc"]
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
-busbar-plane-a2a = ["busbar-a2a"]
+# busbar-plane-a2a HAS NO ROW, for the same reason busbar-plane-mcp lost its one: the codec fold
+# left its manifest at `busbar-contract` plus two third-party crates, and it names no engine crate
+# in either spelling. The edge that exists now runs the other way.
 # busbar-plane-mcp HAS NO ROW: the codec fold left its manifest at `busbar-contract` + `busbar-api`
 # + three third-party crates, and it names no engine crate in either spelling. The edge that exists
 # now runs the other way — `busbar-mcp` reads the plane's wire dialect — which is the direction a
