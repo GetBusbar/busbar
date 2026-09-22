@@ -55,7 +55,14 @@ fn transcription_usage_duration_round_trips() {
     let wire = br#"{"text":"Hello there?","usage":{"type":"duration","seconds":1}}"#;
     let ir = super::super::super::leaf_codec::transcription_read_response("openai", wire).unwrap();
     let r = &ir;
-    assert!(matches!(r.usage, Some(Billing::Duration { seconds }) if (seconds - 1.0).abs() < 1e-9));
+    // WAS an epsilon comparison — `(seconds - 1.0).abs() < 1e-9` — which is what a test has to
+    // write when the quantity is a double. The quantity is exact now, so the assertion is equality.
+    assert_eq!(
+        r.usage,
+        Some(Billing::Duration {
+            seconds: busbar_substrate_values::billing::Count::parse("1").expect("1 is exact"),
+        })
+    );
     let back: Value = serde_json::from_slice(
         &super::super::super::leaf_codec::transcription_write_response("openai", &ir).bytes,
     )

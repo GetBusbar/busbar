@@ -181,3 +181,60 @@ fn an_absent_count_still_reads_as_zero_and_no_usage_object_still_reads() {
     let wire = br#"{"data":[{"b64_json":"aGk="}]}"#;
     crate::openai_chat::handler::read_image_response(wire).expect("a usage-less image response reads");
 }
+
+// ── THE BILLABLE DURATION IS READ FROM DECIMAL TEXT, NOT THROUGH A DOUBLE (#81) ─────────────────
+
+/// A WHISPER DURATION READS EXACTLY, AND ECHOES BACK THE BYTES IT ARRIVED AS.
+///
+/// `12.1` seconds is not representable in binary floating point. The reader takes it from the
+/// wire's own digits, so the carrier holds `12.1` and not `12.0999999999999996447…`, and the usage
+/// object busbar echoes to the caller is unchanged.
+#[test]
+fn a_whisper_duration_reads_exactly_and_echoes_the_same_bytes() {
+    let wire = br#"{"text":"hi","usage":{"type":"duration","seconds":12.1}}"#;
+    let r = crate::openai_chat::handler::read_transcription_response(wire)
+        .expect("a duration usage reads");
+    match &r.usage {
+        Some(busbar_substrate_values::billing::Billing::Duration { seconds }) => {
+            assert_eq!(seconds.micros(), 12_100_000, "held as an exact decimal");
+            assert_eq!(seconds.to_decimal_string(), "12.1");
+        }
+        other => panic!("expected a duration, got {other:?}"),
+    }
+    // The echo carries the same number it arrived as.
+    let wb = crate::leaf_codec::transcription_write_response("openai", &r);
+    let v: serde_json::Value = serde_json::from_slice(&wb.bytes).expect("valid json");
+    assert_eq!(v["usage"]["type"], "duration");
+    assert_eq!(v["usage"]["seconds"], serde_json::json!(12.1));
+    assert!(
+        String::from_utf8_lossy(&wb.bytes).contains("\"seconds\":12.1"),
+        "the wire bytes are unchanged: {}",
+        String::from_utf8_lossy(&wb.bytes)
+    );
+}
+
+/// A DURATION FINER THAN THE SCALE REFUSES RATHER THAN BEING ROUNDED (#81).
+///
+/// PARKED FOR THE OWNER: this is a behaviour change on real provider input. OpenAI types
+/// `TranscriptTextUsageDuration.seconds` as `number, format: double`, so a provider may legitimately
+/// report more than six decimal places, and such a response is accepted today and refused here.
+/// #81 is explicit that a value which will not fit the scale EXACTLY is a refusal and never a
+/// rounded guess — but the consequence is the owner's to sign, not a reader's to decide quietly.
+#[test]
+fn a_duration_finer_than_the_scale_refuses_rather_than_being_rounded() {
+    let wire = br#"{"text":"hi","usage":{"type":"duration","seconds":2.7755575615628914}}"#;
+    let err = crate::openai_chat::handler::read_transcription_response(wire)
+        .expect_err("a seventh decimal place does not fit the scale");
+    assert!(
+        format!("{err:?}").contains("seconds"),
+        "the refusal names the field: {err:?}"
+    );
+}
+
+/// AN ABSENT OR NULL DURATION IS STILL NOT A BILLING, exactly as before.
+#[test]
+fn an_absent_duration_is_still_not_a_billing() {
+    let wire = br#"{"text":"hi","usage":{"type":"duration"}}"#;
+    let r = crate::openai_chat::handler::read_transcription_response(wire).expect("reads");
+    assert_eq!(r.usage, None, "no seconds means no duration billing");
+}

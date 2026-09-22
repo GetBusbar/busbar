@@ -594,7 +594,9 @@ fn openai_whisper_duration_carries_through_gemini_transcription_write() {
     // `usage.type == "duration"`; feed it to the gemini response writer and assert it is not dropped.
     let ir = TranscriptionResp {
         text: "hi".into(),
-        usage: Some(busbar_substrate_values::billing::Billing::Duration { seconds: 12.5 }),
+        usage: Some(busbar_substrate_values::billing::Billing::Duration {
+            seconds: busbar_substrate_values::billing::Count::parse("12.5").expect("12.5 is an exact decimal"),
+        }),
         ..Default::default()
     };
     let out = super::write_transcription_response(&ir).bytes;
@@ -794,7 +796,9 @@ fn transcription_transcribe_round_trips_as_transcribe() {
 fn transcription_response_round_trips_audio_duration() {
     let resp = crate::ir::audio::TranscriptionResp {
         text: "hello".into(),
-        usage: Some(busbar_substrate_values::billing::Billing::Duration { seconds: 12.5 }),
+        usage: Some(busbar_substrate_values::billing::Billing::Duration {
+            seconds: busbar_substrate_values::billing::Count::parse("12.5").expect("12.5 is an exact decimal"),
+        }),
         ..Default::default()
     };
     let wb = write_transcription_response(&resp);
@@ -807,7 +811,9 @@ fn transcription_response_round_trips_audio_duration() {
     let back = read_transcription_response(&wb.bytes).expect("re-read");
     assert_eq!(
         back.usage,
-        Some(busbar_substrate_values::billing::Billing::Duration { seconds: 12.5 }),
+        Some(busbar_substrate_values::billing::Billing::Duration {
+            seconds: busbar_substrate_values::billing::Count::parse("12.5").expect("12.5 is an exact decimal"),
+        }),
         "duration must round-trip as Duration, not collapse to Tokens{{0,0}}"
     );
 }

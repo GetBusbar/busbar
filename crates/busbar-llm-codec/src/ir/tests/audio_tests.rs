@@ -32,7 +32,9 @@ fn transcription_translation_folds_via_target_language() {
 fn transcription_billing_is_model_dependent() {
     let whisper = TranscriptionResp {
         text: "hi".into(),
-        usage: Some(Billing::Duration { seconds: 3.2 }),
+        usage: Some(Billing::Duration {
+            seconds: busbar_substrate_values::billing::Count::parse("3.2").expect("3.2 is an exact decimal"),
+        }),
         ..Default::default()
     };
     assert!(matches!(whisper.billing(), Some(Billing::Duration { .. })));

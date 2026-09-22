@@ -242,6 +242,9 @@ pub fn write_transcription_response(r: &crate::ir::audio::TranscriptionResp) -> 
         // seconds through under an explicit duration field so the billable quantity is not dropped
         // on an openai->gemini transcription hop (the closest faithful representation).
         Some(busbar_substrate_values::billing::Billing::Duration { seconds }) => {
+            // The one render boundary — byte-identical to what this wrote before the quantity
+            // became exact (see `billing::duration_seconds_to_wire`).
+            let seconds = busbar_substrate_values::billing::duration_seconds_to_wire(*seconds);
             body["usageMetadata"] = json!({ "audioDurationSeconds": seconds });
         }
         _ => {}
@@ -645,7 +648,19 @@ pub fn read_transcription_response(
             // back as Duration preserves the billable seconds; forcing Tokens{0,0} — as the old
             // reader did — silently discarded the duration. Real Gemini upstreams emit only the
             // token fields, which take the Tokens branch as before.
-            if let Some(seconds) = u.get("audioDurationSeconds").and_then(Value::as_f64) {
+            // THE DURATION IS A MEASUREMENT, so it is read from the wire's DECIMAL TEXT and never
+            // through an `f64` (#81): a quantity that transits a double has already lost the
+            // exactness no later conversion can give back. `u.get(..)` would hand back a `Value`
+            // whose number is already a double, so the read goes to the ORIGINAL BYTES by pointer.
+            if u.get("audioDurationSeconds").is_some() {
+                let seconds = busbar_substrate_values::billing::Count::read_at(
+                    wire,
+                    "/usageMetadata/audioDurationSeconds",
+                )
+                .map_err(|e| CodecError::Malformed(format!("audioDurationSeconds: {e}")))?
+                .ok_or_else(|| {
+                    CodecError::Malformed("audioDurationSeconds: located then lost".to_string())
+                })?;
                 return Ok(busbar_substrate_values::billing::Billing::Duration { seconds });
             }
             // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42). The old

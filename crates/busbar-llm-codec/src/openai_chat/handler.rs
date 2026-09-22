@@ -471,6 +471,9 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
     // Surface the billable usage in OpenAI's own transcription shape — duration or tokens.
     match &r.usage {
         Some(Billing::Duration { seconds }) => {
+            // The one render boundary — byte-identical to what this wrote before the quantity
+            // became exact (see `billing::duration_seconds_to_wire`).
+            let seconds = busbar_substrate_values::billing::duration_seconds_to_wire(*seconds);
             body["usage"] = json!({ "type": "duration", "seconds": seconds });
         }
         Some(Billing::Tokens(t)) => {
@@ -488,12 +491,23 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
 /// A token field is PRESENT and cannot be read as a count (#81/#42). Absence still means no token
 /// billing at all — the presence of `input_tokens` is what says this response is token-metered, and
 /// that gating is unchanged.
-fn parse_transcription_usage(u: &Value) -> Result<Option<Billing>, CodecError> {
+fn parse_transcription_usage(wire: &[u8], u: &Value) -> Result<Option<Billing>, CodecError> {
     match u.get("type").and_then(Value::as_str) {
-        Some("duration") => Ok(u
-            .get("seconds")
-            .and_then(Value::as_f64)
-            .map(|seconds| Billing::Duration { seconds })),
+        // THE DURATION IS A MEASUREMENT, so it is read from the wire's DECIMAL TEXT and never
+        // through an `f64` (#81). `u.get("seconds")` would hand back a `Value` whose number is
+        // already a double and has already lost the exactness no later conversion can give back, so
+        // the read goes to the ORIGINAL BYTES by pointer and `u` only says whether it is there.
+        Some("duration") => {
+            if u.get("seconds").is_none() {
+                return Ok(None);
+            }
+            let seconds = busbar_substrate_values::billing::Count::read_at(wire, "/usage/seconds")
+                .map_err(|e| CodecError::Malformed(format!("usage.seconds: {e}")))?
+                .ok_or_else(|| {
+                    CodecError::Malformed("usage.seconds: located then lost".to_string())
+                })?;
+            Ok(Some(Billing::Duration { seconds }))
+        }
         // BILLED COUNTS: absent is not billed, UNREADABLE IS A REFUSAL (#81/#42). `.unwrap_or(0)`
         // on the output leg used to record "no output tokens" for a count the provider really sent
         // and this build could not read — a ledger row that is faithfully wrong all the way down.
@@ -1086,7 +1100,7 @@ pub fn read_transcription_response(
         segments,
         words,
         usage: match v.get("usage") {
-            Some(u) => parse_transcription_usage(u)?,
+            Some(u) => parse_transcription_usage(wire, u)?,
             None => None,
         },
         ..Default::default()
