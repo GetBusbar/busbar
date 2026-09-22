@@ -541,8 +541,18 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     // `root` are all granted `-> contract` below, on ARCHITECTURE.md 1.2's own words that
     // busbar-contract "is the face every kind is written against". `api` was absent from that list
     // only because `busbar-api` had never named the contract — not because the architecture said it
-    // may not. The edge dies with the crate when #35/W5.b retires `busbar-api`; until then this is
-    // the direction the architecture wants it pointing.
+    // may not.
+    //
+    // THIS GRANT IS TRANSITIONAL, AND SAYING SO IS THE POINT OF THIS PARAGRAPH. #84's end state is
+    // that `busbar-contract` and the plugin-facing half of `busbar-api` MERGE — "`busbar-plugin`'s
+    // ABI declarations and the plugin-facing half of `busbar-api` fold INTO it" — so `busbar-api`
+    // CEASES TO EXIST (#35/W5.b) and the `api` kind loses its only member. The edge then disappears
+    // with the crate rather than being drained: there is no `api` left to name anything. Struck at
+    // that point, not kept.
+    //
+    // Written out because an `allowed` row reads as permanent, and the next person to audit this
+    // table will otherwise preserve this one out of caution. It is here because a crate is on its
+    // way out, and it goes when the crate does.
     ("api", "contract"),
     // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
