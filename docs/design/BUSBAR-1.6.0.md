@@ -2285,6 +2285,62 @@ the rig must keep reporting both figures side by side.
 A future read that prices flat is a failing test, not a review note — which is the direct answer to
 *enrolment is the gap no count detects*: this roster detects its own omissions.
 
+#### THE GOVERNING DESIGN, RESTATED 2026-09-22 — three open questions dissolve into it
+
+Asked directly: *"forget the past, what's the right 1.6.0 design."* It is already the Laws; what
+follows is what they IMPLY for the three questions that were blocking work. None of the three needed
+a new decision — each was a place where the tree had drifted from the design and the drift had been
+mistaken for a trade-off.
+
+**MONEY — the enforcement book must stop storing a price.**
+
+The rule is already locked: *"ledger ≠ money; planes write ledger, money is a view on the ledger ×
+rate card"*, and #77(3) — **price is NEVER stored**. `UsageLedger.spend_cents` is a stored price. It
+is the defect, and "two price eras" is only its symptom.
+
+The book stores COUNTS, each carrying the instant it was earned. Then there is exactly ONE money
+function
+
+```
+price(ledger_slice, card_history) -> Money
+```
+
+called by the admin reads AND by the budget gate. The owner's words: *"money is just a function"*,
+*"one test and it works or doesn't"*. **Two reads cannot disagree when there is one function** —
+today they disagree because `f` is implemented ~20 times across 5 crates.
+
+"Eras" then stop being a concept. Each posting prices against the card in force at its own
+`arrived_ms` (#79); a window spanning a card edit is simply the function doing its job. This is also
+the only answer that holds for the `total` window (`governance/mod.rs:902`, sentinel `0`, all-time) —
+which has NO boundary, and therefore kills every "apply card changes at the next boundary" scheme.
+
+**THE PRICE, stated honestly:** the budget gate must PRICE on the hot path instead of comparing a
+precomputed number. That is the one real cost of this design and it is the owner's to weigh.
+
+**KERNEL AND PLANE — there is no engine to drain, so no edge is missing.**
+
+The reported blocker was that `ARCHITECTURE_ALLOWED` grants only `("root","plane")`, so a
+`busbar-mcp`/`busbar-a2a` drain into `busbar-kernel` is unlandable. **The premise is wrong.** #20(c)
+sends "the engine-proper" to the kernel and ENUMERATES it: App, state, session, secret,
+plane-registry, cost, governance. **Not one of those names a protocol.**
+
+The fat engine crates do not DRAIN into the kernel — they SPLIT three ways and die:
+- protocol logic (dialects, codecs, wire constants, dispatch) → the ONE plane crate (#21, #39)
+- socket/pool/TLS/transport I/O → the transport plugin (#7/#40)
+- generic loop/state/governance machinery, naming no protocol → `busbar-kernel`
+
+**There is no `("kernel","plane")` edge because nothing protocol-shaped may cross into core.** Law 1.
+The missing class is not a gap in the config — it is the config correctly refusing an illegal move.
+Anyone who hits that wall has put protocol logic on the kernel side of the split.
+
+**SIZE — the yardstick is 1.5.5 + four planes + the plugin seam.**
+
+1.6.0 from a user's seat is *"1.5.5 + 4 new planes; drop in the binary and all runs the same or
+better."* The ABI, loader and contract work is NOT scope creep — core+plugins IS the release. So
+production code divides into exactly three buckets: 1.5.5 parity, the four planes, the plugin seam.
+**Anything in a fourth bucket owes a reason, item by item** — the honest test is per-item, never
+against a total.
+
 #### OWNER RULING 2026-09-22 — `cpufeatures -> libc` IS NOT AN I/O REACH (settles the row below)
 
 **RULED: it is a property of the EDGE, stated once, not a waiver minted per crate.**
