@@ -1276,6 +1276,34 @@ the `units_*_leg.rs`/`plane_mount.rs` shape (#28 chose the gauntlet-kernel-rider
 `Arena` fixed-cap model (#41). These appear as survivors because their symbols are absent from
 trunk. Absent because they were **decided against**.
 
+## Branch collapse — where it actually stands, and the 39 that matter
+
+**817 remote branches.** Git-provable deletion is EXHAUSTED: 38 provable ancestors were deleted, and
+a scan for branches whose source tree under `crates/ xtask/ scripts/ conformance/ testing/` is
+already byte-identical to trunk's returned **zero**. So every remaining branch differs in source and
+no further deletion can be justified by git alone — the rest needs the content proof.
+
+**83 branches have been adjudicated** by symbol-harvest (extract the identifiers, string literals
+and test names a branch ADDS vs its merge-base, then grep the enriched trunk for each — patch-id is
+useless here because the rename waves moved every path, but symbols survive a rename). Verdicts:
+
+| Verdict | Count | Meaning |
+|---|---|---|
+| `survivor` | **43 (≈39 unique)** | symbols absent from trunk — **may hold code the trunk does not have** |
+| `harvested` | 39 | every unique symbol found in trunk, superseded under reworded names |
+| `empty` | 1 | no source content the trunk lacks |
+
+**The 39 survivors are the point, not the 40 deletions.** Deleting branches saves nothing — there is
+no `on: delete` trigger, so keeping them costs zero job-minutes. Losing code costs everything. The
+survivor list includes `r5-money-m3` (money), `r5-auth-resolvedkey` (auth), seven
+`codeaudit-fix/transport-*` branches, and `integration/reland`, which the safety-net pass found to be
+**reachable from no other ref at all**.
+
+The adjudication record — one row per branch with its sha, merge-base date, verdict and the evidence
+behind it — is preserved at **`~/Downloads/busbar-branch-harvest-ledger-2026-09-21.tsv`**, beside the
+all-refs bundle. It was produced in `~/Developer/tmp/harvest-ledger/`, which is not durable; if that
+directory is cleared, the copy in `~/Downloads` is the record.
+
 ## Conformance is the LAST gate, not a task — measured 2026-09-21
 
 `cargo xtask conformance check --musts` is RED with **17 rows**, and the split matters more than the
