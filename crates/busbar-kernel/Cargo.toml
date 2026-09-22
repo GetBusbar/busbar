@@ -32,10 +32,6 @@ busbar-api = { path = "../api" }
 # (`busbar-grammar`); it folded into `busbar-contract` (DECISIONS #40) and is now named via
 # `busbar_contract::spans`, which this crate already depends on below.
 bumpalo = { workspace = true }
-# The CONFIG home carved out of busbar-core (DECISIONS #19). Core depends on IT (never the reverse
-# — that edge is the cycle Cargo refuses) and re-exports its neutral config helpers at their
-# historical `crate::config::…` paths. First reconciled-in helper: `config::parse`.
-busbar-core-config = { path = "../busbar-core-config" }
 # The PURE half of the neutral substrate (value families a codec/plane names). 1.6.0 W4.b P2 drains
 # the substrate ENGINE up into this crate and deletes `busbar-substrate`, but this pure crate STAYS a
 # kernel dependency — kernel names its value modules (breaker/eventstream/json/lossless/media/profile/

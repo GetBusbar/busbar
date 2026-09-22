@@ -20,11 +20,12 @@ pub mod named_map;
 /// `admin::`/`admin::v1::contract` (1.6.0 de-vocab): both are consumed by `config_validate` and
 /// `named_map`, not the admin HTTP API. See the module doc.
 ///
-/// LANDED in `busbar-core-config` (DECISIONS #5/#19 config neutral-half wave): the helpers name
-/// only the neutral spine, so they moved byte-identically to `busbar_core_config::parse` and are
-/// RE-EXPORTED here so every `crate::config::parse::…` / `busbar_kernel::config::parse::…` caller is
-/// unchanged.
-pub use busbar_core_config::parse;
+/// BACK HERE as a real module, 2026-09-22: `busbar-core-config` — the wave-0 scaffold this was
+/// parked in — is KILLED by DECISIONS #37 (`busbar-core-{hooks,config,caps,grammar,timing}`), so
+/// its one landed helper file comes home to the only crate that ever called it. The path
+/// `crate::config::parse::…` / `busbar_kernel::config::parse::…` is byte-identical to what the
+/// re-export served, so no call site moves.
+pub mod parse;
 /// The secret-reference type: `{ module, settings }` + the `{env}`/`{file}` sugar.
 pub mod patch;
 /// The 1.6.0-only key PRE-PASS: lift the additive keys off a document before the frozen

@@ -524,17 +524,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-core-config"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
-]
-
-[[package]]
-name = "busbar-core-hooks"
-version = "1.6.0"
-
-[[package]]
 name = "busbar-core-transport"
 version = "1.6.0"
 dependencies = [
@@ -590,7 +579,6 @@ dependencies = [
  "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-contract",
- "busbar-core-config",
  "busbar-hooks-ranking",
  "busbar-llm",
  "busbar-mcp",

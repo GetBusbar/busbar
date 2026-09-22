@@ -120,12 +120,17 @@
 //! ## A CRATE THAT IS LANDING IS ANNOUNCED, NOT DISCOVERED
 //!
 //! The registry row refuses a crate that resolves to no kind, which is correct and which bites the
-//! wrong way on the day a crate lands: the agent adding `crates/busbar-core-config` would red a gate
-//! it never touched. So the kind is taught FIRST — `core` is in the table below — and
+//! wrong way on the day a crate lands: the agent adding `crates/busbar-<kind>-<name>` would red a
+//! gate they never touched. So the kind is taught FIRST — the kind is in the table below — and
 //! [`REGISTRY_FILE`]'s `[[announced]]` table is what keeps that teaching from being scored as a dead
 //! kind row (and its accepted name as a dead waiver) in the window before the crates exist. Landing
 //! them is GREEN on the per-push gate, which is the entire purpose; the ship twin is what refuses an
 //! announcement that has outlived its landing.
+//!
+//! The table is EMPTY today: its two rows (`busbar-core-config`, `busbar-core-hooks`) were struck on
+//! 2026-09-22 when DECISIONS #37 killed both crates. The RULES did not go with them — the selftest
+//! plants its own announcement ([`registry_announcing`]) rather than borrowing a live row, because a
+//! case whose subject is a live row goes dark the day that row lands or dies.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -280,16 +285,21 @@ static KINDS: &[KindDef] = &[
         family: Family::Neutral,
         matchers: &["=busbar-kernel", "busbar-kernel-"],
     },
-    // THE ENGINE SURFACES BEING CARVED OUT OF `busbar-core` — `busbar-core-config`,
-    // `busbar-core-hooks`, and whatever the drain names next. A `core` crate is NEUTRAL on exactly
-    // the terms `kernel` and `caps` are: it may carry no plane and no transport instance in its
-    // name, and it reaches only the neutral spine ([`PENDING_EDGES`]), so an edge to a plane, a
-    // dialect, a transport or a unit is a NEW class and is refused like any other.
+    // THE COMPILED-IN SCAFFOLDING AROUND THE LOOP — `busbar-core-admin`, `busbar-core-oauth2`,
+    // `busbar-core-substrate` (DECISIONS #37's core-3), plus `busbar-core-transport`. A `core` crate
+    // is NEUTRAL on exactly the terms `kernel` and `caps` are: it may carry no plane and no
+    // transport instance in its name, and it reaches only the neutral spine ([`PENDING_EDGES`]), so
+    // an edge to a plane, a dialect, a transport or a unit is a NEW class and is refused like any
+    // other.
     //
-    // A PREFIX, not two exact names: an exact matcher yields an EMPTY remainder, which would mean
-    // `busbar-core-mcp` was never read for a plane instance at all — the kind would be a hole the
-    // shape of every name it accepted. The prefix costs one reviewed accepted-name entry
-    // (`busbar-core-hooks`, below) and buys the name rule over every future member.
+    // NO `busbar-core-<kind>` EVER (#37: "a kind is a plugin, never a core crate"). That rule is
+    // what killed `busbar-core-hooks` — deleted 2026-09-22 along with `busbar-core-config`, whose
+    // one landed helper folded back into `busbar-kernel::config::parse`.
+    //
+    // A PREFIX, not a list of exact names: an exact matcher yields an EMPTY remainder, which would
+    // mean `busbar-core-mcp` was never read for a plane instance at all — the kind would be a hole
+    // the shape of every name it accepted. The prefix costs one reviewed accepted-name entry
+    // (`busbar-core-transport`, below) and buys the name rule over every future member.
     KindDef {
         kind: "core",
         family: Family::Neutral,
@@ -476,7 +486,7 @@ const CONSTRUCTION_KIND_KEYS: &[(&str, &str)] = &[
     ("abi", "contract"),
 ];
 
-/// The three crate names whose remainder trips a naming rule for a reason the owner has read.
+/// The two crate names whose remainder trips a naming rule for a reason the owner has read.
 ///
 /// Every one is a REVIEWED sentence, not a shrug, and every one EXPIRES: a waiver whose crate is
 /// gone is RED, so the list cannot become a set of holes nobody re-reads.
@@ -487,13 +497,6 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
          unit's keys are for, never a transport instance — no transport is named, and the crate \
          depends on busbar-contract (contract-transport folded into it) as every unit on that path \
          does.",
-    ),
-    (
-        "busbar-core-hooks",
-        "the engine's HOOK DISPATCH, carved out of busbar-core. `hooks` here is the thing core \
-         dispatches, not the hooks-plugin kind: a hook plugin is `busbar-hook-<name>` and \
-         implements the hook ABI, while this crate is the neutral caller that runs them. It is \
-         `core` kind on the same terms as kernel and caps, and reaches only the neutral spine.",
     ),
     (
         "busbar-core-transport",
@@ -526,10 +529,12 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("codec", "grammar"),
     ("contract", "grammar"),
     ("kernel", "contract"),
-    // `busbar-kernel` names `busbar-core-config`, the config surface carved out of the retiring
-    // `busbar-core` (DECISIONS #19). The `core` kind's neutral spine is the sink set PENDING_EDGES
-    // grants it; `kernel` naming a `core` crate for its config is the same shape as `kernel`
-    // naming `contract` or `grammar` — a neutral surface the loop is written against.
+    // The loop naming a `core` crate — a compiled-in cleanliness surface on the neutral spine — is
+    // the same shape as `kernel` naming `contract` or `grammar`. The instance that produced this
+    // grant (`busbar-kernel` -> `busbar-core-config`) is GONE: #37 killed that crate and its one
+    // helper came home to `busbar_kernel::config::parse`, so the class currently has no edge under
+    // it. The grant stays because this list is the READ OF THE ARCHITECTURE, not a measurement of
+    // the tree (see this const's own doc) — striking it would be an architecture change.
     ("kernel", "core"),
     // `busbar-kernel` (the loop) names the closed span grammar directly; the folded capability
     // vocabulary now lives in `busbar-contract`, so the former `kernel -> caps` edge is gone (W2.c).
@@ -6760,16 +6765,25 @@ impl Gate for KindIsolationGate {
 
         // A CORE CRATE REACHES THE NEUTRAL SPINE AND NOTHING ELSE — the same sink set `kernel` and
         // `caps` have. A unit is not on it, so the edge is a new class.
+        //
+        // THE ANNOUNCEMENT IS PLANTED, not borrowed. This case used to lean on the real
+        // `[[announced]] busbar-core-config` row; that row and its crate were struck on 2026-09-22
+        // when DECISIONS #37 killed `busbar-core-{config,hooks}`. A case whose subject is a live row
+        // goes dark the day that row lands or dies, so it plants its own: `busbar-core-planted`
+        // exists nowhere but here.
+        let mut ov = registry_announcing(cx, "busbar-core-planted", "core");
+        ov.set(
+            "crates/busbar-core-planted/Cargo.toml",
+            "[package]\nname = \"busbar-core-planted\"\nversion = \"0.0.0\"\n\n\
+             [dependencies]\nbusbar-substrate = { workspace = true }\n\
+             busbar-unit-audit = { workspace = true }\n",
+        );
         report.push(prove_rows_red(
             cx,
             self,
             "a core crate reaching a unit is a class the architecture grants nothing to",
             &[ROW_DEPS],
-            manifest_plant(
-                "crates/busbar-core-config",
-                "busbar-core-config",
-                &["busbar-substrate", "busbar-unit-audit"],
-            ),
+            ov,
             &["announced-edge-class", "core -> unit"],
         ));
 
@@ -6786,17 +6800,13 @@ impl Gate for KindIsolationGate {
             &["dead-kind", "core"],
         ));
 
-        // …and the same on the waiver side: `busbar-core-hooks`'s reviewed sentence is a review
-        // arriving BEFORE its crate, and the announcement is the only thing that distinguishes that
-        // from a hole nobody re-reads.
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "an accepted name for an unannounced crate that does not exist is a dead waiver",
-            &[ROW_NAME],
-            registry_plant(""),
-            &["dead-waiver", "busbar-core-hooks"],
-        ));
+        // …and the same on the waiver side. This case named `busbar-core-hooks`: a reviewed
+        // sentence that arrived BEFORE its crate, where the announcement was the only thing
+        // distinguishing it from a hole nobody re-reads. DECISIONS #37 deleted that crate on
+        // 2026-09-22 ("a kind is a plugin, never a core crate") and its waiver went with it, so the
+        // pairing has no subject left in the tree. The RULE keeps its proof: the dead-waiver case
+        // above (`busbar-unit-transport-key`, reached by removing the crate rather than the
+        // announcement) is the one that fires it, and it is unchanged.
 
         // ── THE STRICT STEP LIST, AND THE WIRE REGISTRY ──────────────────────────────────────────
 
@@ -6965,23 +6975,19 @@ impl Gate for KindIsolationGate {
                 ov,
             ));
 
-            // THE TWO CORE CRATES LANDING IS GREEN — no unknown kind, no dead kind, no dead waiver,
-            // no new edge class. This is the case the announcement exists to make true: the agent
-            // who lands them reds nothing.
-            let mut ov = manifest_plant(
-                "crates/busbar-core-config",
-                "busbar-core-config",
-                &["busbar-substrate"],
-            );
+            // AN ANNOUNCED CRATE LANDING IS GREEN — no unknown kind, no dead kind, no new edge
+            // class. This is the case the announcement exists to make true: the agent who lands it
+            // reds nothing. Planted, not borrowed, for the reason on the edge-class case above.
+            let mut ov = registry_announcing(cx, "busbar-core-planted", "core");
             ov.set(
-                "crates/busbar-core-hooks/Cargo.toml",
-                "[package]\nname = \"busbar-core-hooks\"\nversion = \"0.0.0\"\n\n[dependencies]\n\
-                 busbar-api = { workspace = true }\n",
+                "crates/busbar-core-planted/Cargo.toml",
+                "[package]\nname = \"busbar-core-planted\"\nversion = \"0.0.0\"\n\n\
+                 [dependencies]\nbusbar-substrate = { workspace = true }\n",
             );
             report.push(prove_rows_green(
                 cx,
                 self,
-                "the two announced core crates landing red nothing",
+                "an announced core crate landing reds nothing",
                 &[ROW_NAME, ROW_DEPS, ROW_REGISTRY],
                 ov,
             ));
@@ -7058,17 +7064,14 @@ impl Gate for KindIsolationGate {
             ov,
         ));
 
-        // AN ANNOUNCEMENT DOES NOT SURVIVE ITS LANDING PAST A RELEASE. Landing the two core crates
+        // AN ANNOUNCEMENT DOES NOT SURVIVE ITS LANDING PAST A RELEASE. Landing an announced crate
         // is green on the per-push gate (proven above); on the ship sha the spent row is collected.
-        let mut ov = manifest_plant(
-            "crates/busbar-core-config",
-            "busbar-core-config",
-            &["busbar-substrate"],
-        );
+        // Planted, not borrowed, for the reason on the edge-class case above.
+        let mut ov = registry_announcing(cx, "busbar-core-planted", "core");
         ov.set(
-            "crates/busbar-core-hooks/Cargo.toml",
-            "[package]\nname = \"busbar-core-hooks\"\nversion = \"0.0.0\"\n\n[dependencies]\n\
-             busbar-api = { workspace = true }\n",
+            "crates/busbar-core-planted/Cargo.toml",
+            "[package]\nname = \"busbar-core-planted\"\nversion = \"0.0.0\"\n\n\
+             [dependencies]\nbusbar-substrate = { workspace = true }\n",
         );
         report.push(prove_rows_red(
             cx,
@@ -7076,7 +7079,7 @@ impl Gate for KindIsolationGate {
             "an announcement whose crate has landed is collected at ship time",
             &[ROW_REGISTRY],
             ov,
-            &["announced-landed", "busbar-core-config"],
+            &["announced-landed", "busbar-core-planted"],
         ));
 
         // THE SHIP ROWS. Each plant makes a NAMED, NEW deviation, because both rows are already
@@ -7444,6 +7447,31 @@ fn kind_gone(cx: &Ctx, marker: &str) -> Overlay {
             ov.remove(rel);
         }
     }
+    ov
+}
+
+/// The REAL registry file with one `[[announced]]` row APPENDED — the landing window, planted.
+///
+/// The two real announcements (`busbar-core-config`, `busbar-core-hooks`) were struck on 2026-09-22
+/// when DECISIONS #37 killed both crates, leaving the table empty. The announcement RULES did not go
+/// with them, so the cases that exercise them plant their own row instead of borrowing whatever the
+/// tree happens to be announcing that week — which is the more honest fixture either way: a case
+/// whose subject is a live row goes dark the day that row lands or dies, and says nothing while it
+/// does.
+///
+/// Appended to the whole file rather than planted alone, for the same reason [`registry_with`] gives:
+/// a ledger of 220 rows is not something a plant of one row can stand in for.
+fn registry_announcing(cx: &Ctx, name: &str, kind: &str) -> Overlay {
+    let text = cx.read(REGISTRY_FILE).unwrap_or_default();
+    let mut ov = Overlay::new();
+    ov.set(
+        REGISTRY_FILE,
+        format!(
+            "{}\n\n[[announced]]\ncrate = \"{name}\"\nkind = \"{kind}\"\nreason = \"planted by \
+             the kind-isolation selftest: the announcement window, owning no real crate\"\n",
+            text.trim_end()
+        ),
+    );
     ov
 }
 

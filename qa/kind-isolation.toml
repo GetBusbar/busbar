@@ -59,9 +59,17 @@ reason = "legacy drain"
 #
 # A crate that appears under `crates/` and resolves to no kind is RED, which is the point of the
 # registry row. That rule bites the WRONG WAY on the day a crate lands: the agent adding
-# `crates/busbar-core-config` would red a gate it never touched, and the fix would be to weaken the
-# registry. So the kind is taught FIRST — the kind table already carries `core` — and this table is
-# what keeps the teaching from being scored as dead weight in the window before the crates exist.
+# `crates/busbar-<kind>-<name>` would red a gate they never touched, and the fix would be to weaken
+# the registry. So the kind is taught FIRST — the kind table already carries the kind — and this
+# table is what keeps the teaching from being scored as dead weight in the window before the crates
+# exist.
+#
+# THE TABLE IS EMPTY TODAY, and empty is a legitimate state: the two rows it carried
+# (`busbar-core-config`, `busbar-core-hooks`) were struck on 2026-09-22 when DECISIONS #37 KILLED
+# both crates — an announcement is a claim that a crate is ARRIVING, and a crate that was deleted
+# instead is not arriving. The gate's own selftest no longer borrows a real row for the announcement
+# rules; it plants its own (`registry_announcing`), which is the more honest fixture: a case whose
+# subject is a live row goes dark the day that row lands or dies.
 #
 # An announced row says: this crate is being created right now, it is kind `<kind>`, and until it
 # lands the kind's row (and any accepted-name entry for it) is not a dead row.
@@ -91,16 +99,6 @@ reason = "legacy drain"
 # EXPIRY, AND IT IS AUTOMATIC. The moment the crate's name resolves to the kind the row registers,
 # the row is REDUNDANT and the gate is RED for it. So the rename lands and the row goes in the same
 # commit; there is no window in which the tree carries both.
-
-[[announced]]
-crate = "busbar-core-config"
-kind = "core"
-reason = "the configuration surface being carved out of busbar-core; core kind, neutral spine only"
-
-[[announced]]
-crate = "busbar-core-hooks"
-kind = "core"
-reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"
 
 # ------------------------------------------------------------------------------------------------
 # [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
@@ -1173,36 +1171,6 @@ count = "5"
 crate = "busbar-contract"
 kind = "transport"
 count = "345"
-
-[[cell]]
-crate = "busbar-core-config"
-kind = "cleanliness"
-count = "2"
-
-[[cell]]
-crate = "busbar-core-config"
-kind = "contract"
-count = "6"
-
-[[cell]]
-crate = "busbar-core-config"
-kind = "core"
-count = "4"
-
-[[cell]]
-crate = "busbar-core-config"
-kind = "transport"
-count = "2"
-
-[[cell]]
-crate = "busbar-core-hooks"
-kind = "cleanliness"
-count = "2"
-
-[[cell]]
-crate = "busbar-core-hooks"
-kind = "core"
-count = "4"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -3834,26 +3802,6 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
 why     = "busbar-plane-mcp-host names busbar-substrate-values: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-substrate-values dependency from busbar-plane-mcp-host's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-core-config"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE.md 1.1 — core -> contract is a granted PENDING_EDGES class (the core kind's neutral spine names the ABI contract directly, DECISIONS #19)."
-why     = "busbar-core-config names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-kernel"
-to      = "busbar-core-config"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE.md 1.1 — kernel -> core is a granted class (the loop names the config surface carved out of the retiring busbar-core, DECISIONS #19)."
-why     = "busbar-kernel names busbar-core-config: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 # busbar-core-transport is the core-side connection-security seam carved out of busbar-kernel
 # (DECISIONS #40). It is `core` kind (its name resolves through the busbar-core- prefix; the

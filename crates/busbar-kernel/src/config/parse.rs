@@ -5,6 +5,16 @@
 //! de-vocab): both are consumed by `config_validate` and `config::named_map` (boot/validate-time
 //! config checks), not the admin HTTP API. Byte-identical rename: only the Rust binding path
 //! moves — every parsed VALUE and error-message TEXT is unchanged.
+//!
+//! HOME, 2026-09-22 (DECISIONS #37): this file came back from `busbar-core-config`, the wave-0
+//! scaffold #37 kills along with `busbar-core-{hooks,caps,grammar,timing}`. It lands in the KERNEL
+//! and not in `busbar-contract` because `busbar-contract::authz`'s own module doc rules it out by
+//! name — *"What is deliberately NOT here: the ceiling-token parser (`parse_ceiling`, whose error
+//! text is wire-pinned to a surface-specific config key)"* — and because every caller is already
+//! inside this crate (`config::named_map`, `config_validate`, `governance::mint_policy`,
+//! `appbuild`), reaching it at `crate::config::parse::…`. `busbar-core-admin` reaches it at
+//! `busbar_kernel::config::parse::parse_duration_secs`, which is the path it already used through
+//! the re-export. No call site moves; the generic `Scope` lattice it builds on stays in contract.
 
 /// The `<n><unit>` duration parser lives in the neutral substrate (`busbar_contract::duration`) so
 /// the plane crates name it without reaching into busbar-core; re-exported here so every
