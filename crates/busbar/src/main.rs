@@ -1122,6 +1122,136 @@ fn main() {
     }
 }
 
+/// THE BOOT BOOK, COMPOSED — the extracted seam [`open_boot_book`] calls, wired against a store
+/// adapter so its behaviour can be proved without a bound listener or a loaded plugin behind it.
+///
+/// Three decisions, made together here because they are ONE value and a caller that made them
+/// separately would have a node whose halves disagree:
+///
+/// 1. **The journal ships to the CONFIGURED STORE'S shipper.** A batch is offered to that shipper
+///    and its answer is part of the commit — committed-before-ack — and it is written to this
+///    node's own disk as well when a data directory was resolved. Read
+///    [`root::durability`]'s preamble for what "the store" answers with TODAY: on every store this
+///    binary can load, the record verbs are answered by the adapter's node-local shim, which
+///    acknowledges and never fails. So this line buys the WIRING, not new bytes at rest — the
+///    moment a store speaks the record ABI the batches land in it, with no change here. The
+///    durability a node gains today from this function is the on-disk half, and the honesty of the
+///    other half is that the previous release kept nothing there either.
+/// 2. **The ledger dual-writes onto the in-memory reconciliation rows.** That half stays memory: it
+///    is the cross-check the reconciliation identity is read from, not the acknowledgement path.
+/// 3. **The OPENING IS SEALED, here, before this function returns.** The previous release's rows are
+///    read through the same adapter and sealed as the opening figures, with the marker written onto
+///    THIS journal rather than the adapter's node-local shim — which could only ever hold it for the
+///    life of a process.
+///
+/// **THE ORDER IS THE WHOLE POINT.** The seal happens before the composed book is handed back, so it
+/// is impossible for a caller to reach a settlement path with an unopened book: the first accepted
+/// connection can settle, and a settlement posted before the opening was sealed would measure its
+/// residual from a checkpoint that did not exist when it happened. An opening sealed after traffic
+/// has begun is worse than no opening at all, because it looks authoritative.
+///
+/// It returns the wired stack, the rows a view reads them back from, and what the migration did.
+/// `secret: None` seals an unsigned opening, which the ledger unit accepts.
+///
+/// # Errors
+///
+/// The journal could not be opened (a configured data directory that could not be read), or the
+/// opening could not be sealed — the two boot conditions [`root::migration::run`] returns where
+/// continuing would be worse than refusing. A store that merely would not answer for some rows is
+/// NOT one of them; see that module's preamble.
+#[cfg(any(feature = "root-admin", feature = "root-llm"))]
+fn compose_boot_book(
+    adapter: &busbar_plugin_loader::store_adapter::StoreAdapter,
+    data_dir: Option<std::path::PathBuf>,
+    mig: &root::migration::MigrationConfig,
+    now: u64,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+) -> Result<
+    (
+        root::durability::Durability,
+        Arc<busbar_kernel_ledger::legacy::RecordingRows>,
+        root::migration::Migration,
+    ),
+    String,
+> {
+    let rows = Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
+    let mut durability = root::durability::build_for_node(
+        &root::durability::DurabilityConfig { data_dir },
+        mig.node,
+        adapter.shipper(),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::clone(&rows)),
+    )
+    .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
+    let migration = {
+        let mut records =
+            durability.migration_records(token, busbar_contract::caps::StepName::Meter);
+        root::migration::run(adapter, &mut records, mig, now, None)
+            .map_err(|e| format!("the boot ledger could not seal its opening balances: {e}"))?
+    };
+    Ok((durability, rows, migration))
+}
+
+/// THE PROCESS'S ONE BOOK, opened over the deployment's configured store with its balances sealed.
+///
+/// A node with a governance store ships its book to that store and opens it from the rows the
+/// previous release left there; a node with none keeps the previous release's memory-only book,
+/// because a store the batches were never going to reach cannot be the one they are shipped to.
+///
+/// The data directory is the one [`busbar_kernel::preflight::fleet_data_dir`] resolves — the SAME
+/// accessor the plugin anti-downgrade floor persists under, so the two can never disagree about
+/// where this node keeps its own files. Absent, the branch in
+/// [`root::durability::build_for_node`] is the unset one and nothing is probed, nothing is opened
+/// and no file appears: this wiring gives a node with a CONFIGURED directory somewhere to write, and
+/// deliberately does not make writing unconditional.
+#[cfg(any(feature = "root-admin", feature = "root-llm"))]
+fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook {
+    let Some(gov) = app.governance.as_ref() else {
+        return root::durability::node_book();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let adapter = busbar_plugin_loader::store_adapter::StoreAdapter::native(gov.store());
+    let mig = root::migration::config_from(&app.cost, now);
+    let token = root::kernel::new_kernel().durability_token();
+    let data_dir = busbar_kernel::preflight::fleet_data_dir();
+    match compose_boot_book(&adapter, data_dir, &mig, now, &token) {
+        Ok((durability, rows, migration)) => {
+            // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
+            // boot log's INFO+ line set is part of what "LLM-only ≡ 1.5.5" means — it is pinned
+            // by `tests/boot_lines_neutrality.rs` and recorded by the oracle's
+            // `hazard|no-data-dir|logs` cell — so a new line here is a user-visible byte change
+            // on a surface that must not move. The seal is an internal fact an operator can ask
+            // for; it is not news a 1.5.5 deployment ever printed.
+            if migration.sealed_now() {
+                tracing::debug!(
+                    node = mig.node,
+                    rate_card_version = mig.rate_card_version,
+                    "the boot ledger sealed its opening balances from the configured store"
+                );
+            }
+            // THIS ONE STAYS A WARN, and the asymmetry is deliberate: it fires only when the store
+            // would not list its key rows, which means the opening is INCOMPLETE — sealed over the
+            // buckets configuration named and missing the ones the store would have. A money fact
+            // that degraded silently to keep a log shape would be the wrong trade. It cannot fire
+            // on the neutral shape: it takes a store that fails to answer, not a store with
+            // nothing in it.
+            if let Some(reason) = &migration.key_rows_unreadable {
+                tracing::warn!(
+                    reason = %reason,
+                    "the boot ledger could not list the store's key rows, so the opening was sealed \
+                     over the buckets the configuration named"
+                );
+            }
+            root::durability::NodeBook {
+                durability: Arc::new(std::sync::Mutex::new(durability)),
+                rows,
+            }
+        }
+        Err(e) => die(e),
+    }
+}
+
 async fn run(data_workers: usize) {
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
     // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
@@ -1486,11 +1616,18 @@ async fn run(data_workers: usize) {
     // THE PROCESS'S ONE BOOK. Every plane's exit arm settles onto it and the administrative ledger
     // views read it, which is a property of there being ONE: a mount that opened its own would post
     // onto books nothing serves and serve books nothing posts to, and both halves of that would look
-    // healthy, because an empty ledger reconciles. It is memory-buffered and reads no data
-    // directory, so nothing appears beside a configuration that asked for none, and it is built
-    // before either listener binds because the first accepted connection can settle.
+    // healthy, because an empty ledger reconciles. Its records ship to the deployment's CONFIGURED
+    // STORE (committed-before-ack, and onto this node's own disk as well when a data directory was
+    // resolved) and its OPENING BALANCES are SEALED at start-of-book from the rows the previous
+    // release left in that store — see `open_boot_book`. A configuration that named no data
+    // directory still probes nothing and opens nothing; the branch that decides is unchanged.
+    //
+    // It is built HERE — before either listener binds — because the first accepted connection can
+    // settle, and it must settle against a book whose opening is ALREADY sealed. `open_boot_book`
+    // returns only after the seal, so there is no window in which a settlement could be measured
+    // from a checkpoint that was not written yet.
     #[cfg(any(feature = "root-admin", feature = "root-llm"))]
-    let book = root::durability::node_book();
+    let book = open_boot_book(&app_handle.load());
 
     // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
     // and handed back a posting; what this line adds is somewhere for the posting to go. Off, the

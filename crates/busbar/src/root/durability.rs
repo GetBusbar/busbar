@@ -696,9 +696,16 @@ pub struct NodeBook {
 /// dual write is keeping up — would answer over a book nothing settles into. That is not a
 /// hypothetical shape; it is what a node has when each mount builds its own.
 ///
-/// Memory-buffered, with no data directory read and no shipper of its own, which is the previous
-/// release's shape: nothing is probed, nothing is opened, and no file appears beside a configuration
-/// that asked for none.
+/// THE NO-STORE FALLBACK, and it is that rather than the boot path. Memory-buffered, keeping
+/// nothing: a node with no configured store has nowhere to ship a batch to, so it takes the null
+/// shipper and reads no data directory, which is the previous release's behaviour for that
+/// deployment and not a silent data loss — there was nowhere the records were ever going.
+///
+/// **A DEPLOYMENT WITH A STORE DOES NOT COME THROUGH HERE.** It is composed by the binary's
+/// `compose_boot_book`, which takes the CONFIGURED data directory and the configured store's
+/// shipper and seals the opening before it hands the book back. This constructor hard-codes both
+/// answers, which is correct only because the one caller that reaches it has already established
+/// that there is no store to make either decision against.
 #[must_use]
 pub fn node_book() -> NodeBook {
     let rows = std::sync::Arc::new(RecordingRows::new());
