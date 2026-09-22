@@ -261,6 +261,22 @@ else:
     print(sum(int(r.get(k) or 0) for k in ('tokens_input','tokens_output','tokens_cache_read','tokens_cache_creation')))"
 }
 
+# One scalar off `GET /api/v1/admin/usage`'s `total` block — the OTHER admin money read, and since
+# `root/kernel.rs:497` it is the only one that resolves through the dated rate-card history
+# (`install_usage_rate_history`). `GET /keys/<id>/usage` does NOT: `busbar-core-admin/src/keys.rs`
+# names `rate_history` nowhere and still derives through `CostModel::derive_spend_cents` against the
+# CURRENT card. So after a card change the two reads answer different money for the same window, and
+# `h2-card-epoch.sh` prints both rather than picking one — a disagreement between two readings of one
+# ledger is a defect in one of them, not a threshold to tune.
+h2_admin_usage_total() {
+  local field="$1"
+  curl -sS -m 10 -H "Authorization: Bearer $H2_ADMIN_TOKEN" \
+    "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/usage" \
+    | python3 -c "import json,sys
+d=json.load(sys.stdin)
+print((d.get('total') or {}).get('$field', '-'))"
+}
+
 # APPEND A DATED RATE CARD (#79) by applying live config. `RootHistory::apply`
 # (crates/busbar/src/root/kernel.rs:249-278) dates the entry at the instant the apply lands: the
 # FIRST card a node resolves is effective from 0 (`HistorySeq::OPENING`) and every later one from

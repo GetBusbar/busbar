@@ -91,6 +91,12 @@ read -r b_status _ <<<"$(h2_call "$bound" "under-card-1")"
 [ "$b_status" = "200" ] || { failures=$((failures+1)); detail="${detail}call_B_status=${b_status}(want 200); "; }
 
 total="$(h2_usage_field "$kid" spend_cents)"
+# THE OTHER READ, always taken, never asserted here. Since `root/kernel.rs:497` installs the dated
+# history for `GET /api/v1/admin/usage` and NOT for `GET /keys/<id>/usage`, the two admin money reads
+# can now answer different money for the same window. Both figures go in the failure text so a reader
+# does not have to guess which one moved. Units differ by construction: cents here, micro-units there
+# (1 cent = 10000 micro-units), so 8 cents is 80000 micros.
+other="$(h2_admin_usage_total spend_micros)"
 if [ "$total" -ne 8 ]; then
   failures=$((failures+1))
   case "$total" in
@@ -98,7 +104,7 @@ if [ "$total" -ne 8 ]; then
     2)  why="every posting priced at HistorySeq::OPENING, forever" ;;
     *)  why="neither of the two named wrong answers (14 = newest-card reprice, 2 = opening-forever)" ;;
   esac
-  detail="${detail}two calls either side of a dated card total ${total}(want 8 = 1 + 7, each call at the card in force at its own arrived_ms): ${why}; "
+  detail="${detail}two calls either side of a dated card total ${total} cents on GET /keys/<id>/usage (want 8 = 1 + 7, each call at the card in force at its own arrived_ms): ${why}. The OTHER admin money read, GET /admin/usage, says ${other} micro-units for the same window (80000 == 8 cents would agree); "
 fi
 
 if [ "$failures" -eq 0 ]; then
