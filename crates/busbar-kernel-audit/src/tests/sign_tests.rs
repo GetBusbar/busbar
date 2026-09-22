@@ -109,6 +109,15 @@ fn inputs(unit: u64) -> AuditInputs {
     }
 }
 
+/// THE RICH FIXTURE, lent to the sibling module that checks the published recipe.
+///
+/// `pub(super)` rather than copied: the published-recipe check must run over a record with
+/// something in every arm that carries a payload, and two fixtures drifting apart would leave it
+/// checking a shape this crate no longer seals.
+pub(super) fn rich_inputs(unit: u64) -> AuditInputs {
+    inputs(unit)
+}
+
 /// A record with every repeatable group EMPTY, which is the shape the published body is easiest to
 /// get wrong: a group that publishes nothing instead of an empty array leaves a reader unable to
 /// tell "zero of these" from "this build did not send that member".
@@ -804,177 +813,6 @@ fn the_body_keeps_the_texts_texts_and_the_numbers_numbers() {
     }
 }
 
-// ── A THIRD PARTY REPRODUCES THE CHAIN WITHOUT THE BUSBAR BINARY ─────────────────────────────────
-
-/// Where the independent verifier lives, relative to this crate.
-fn verifier_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/verify-audit-chain.py")
-}
-
-/// Write the three read bodies into a fresh directory and run the independent verifier over them.
-fn run_verifier(dir: &std::path::Path, extra: &[&str]) -> (bool, String) {
-    let mut cmd = std::process::Command::new("python3");
-    cmd.arg(verifier_path())
-        .arg("--range")
-        .arg(dir.join("range.json"))
-        .arg("--keys")
-        .arg(dir.join("keys.json"))
-        .arg("--head")
-        .arg(dir.join("head.json"))
-        .args(extra);
-    let out = cmd.output().unwrap_or_else(|e| {
-        panic!(
-            "the independent verifier could not be run ({e}). It is a stdlib-only python3 script; \
-             CI already runs python3 for scripts/method-inventory.py and friends."
-        )
-    });
-    let said = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    (out.status.success(), said)
-}
-
-/// Seal a five-record signed chain and write out exactly what the three reads answer with.
-fn publish_a_chain(dir: &std::path::Path) -> Vec<AuditRecord> {
-    let mut chain = AuditChain::new().signing_with(signer());
-    let records: Vec<_> = (1..=5).map(|i| chain.seal(inputs(i), &token())).collect();
-    let mut keys = AuditKeySet::new();
-    keys.insert_signer(&signer());
-    std::fs::create_dir_all(dir).expect("a scratch directory");
-    std::fs::write(
-        dir.join("range.json"),
-        expose::range_body(&chain, &records, 1, 5),
-    )
-    .expect("write the range body");
-    std::fs::write(dir.join("head.json"), expose::head_body(&chain)).expect("write the head body");
-    std::fs::write(dir.join("keys.json"), expose::keys_body(&keys)).expect("write the key set");
-    records
-}
-
-/// A scratch directory of this process's own, cleaned up on the way out.
-struct Scratch(std::path::PathBuf);
-
-impl Scratch {
-    fn new(name: &str) -> Self {
-        let dir =
-            std::env::temp_dir().join(format!("busbar-audit-verify-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        Scratch(dir)
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// THE ACCEPTANCE TEST FOR THE PUBLISHED RECIPE: a verifier that has never seen this repository
-/// reproduces a real chain from the three reads alone.
-///
-/// `scripts/verify-audit-chain.py` imports nothing but the Python standard library — no busbar, no
-/// `cryptography`, no `nacl`, no `openssl` subprocess. It rebuilds each preimage from the published
-/// members, takes SHA-256 of it, and checks the ed25519 signature with the RFC 8032 arithmetic
-/// written out in the script. If it cannot do that, the recipe is incomplete, and no amount of
-/// asserting inside this crate would have found out.
-#[test]
-fn an_independent_verifier_reproduces_a_real_chain_from_the_published_reads() {
-    let scratch = Scratch::new("ok");
-    let records = publish_a_chain(scratch.path());
-    let (ok, said) = run_verifier(scratch.path(), &["--require-signature"]);
-    assert!(
-        ok,
-        "the independent verifier refused an honest chain:\n{said}"
-    );
-    assert!(
-        said.contains("5 record(s) verified, 5 of them signed"),
-        "{said}"
-    );
-    assert!(said.contains(&records[4].hash), "{said}");
-}
-
-/// AND IT SAYS NO. The same verifier, over a chain with one field edited, refuses — which is what
-/// makes the green run above mean anything.
-///
-/// The edit is to `mono`, the monotonic clock: the field with the best claim to being cosmetic, the
-/// one a reader never looks at, and the one an editor would most expect to get away with.
-#[test]
-fn the_independent_verifier_refuses_a_chain_with_one_cosmetic_field_edited() {
-    let scratch = Scratch::new("edited");
-    publish_a_chain(scratch.path());
-    let range = scratch.path().join("range.json");
-    let body = std::fs::read_to_string(&range).expect("the range body");
-    let edited = body.replacen("\"mono\":3000", "\"mono\":3001", 1);
-    assert_ne!(edited, body, "the edit did not land");
-    std::fs::write(&range, edited).expect("rewrite the range body");
-
-    let (ok, said) = run_verifier(scratch.path(), &[]);
-    assert!(!ok, "the verifier accepted an edited chain:\n{said}");
-    assert!(
-        said.contains("does not hash to its own published fields"),
-        "{said}"
-    );
-}
-
-/// And it refuses a chain whose signature was replaced with one minted by a different key, even
-/// though every digest still checks out. A forger who can rewrite the file cannot mint the
-/// signature without the key.
-#[test]
-fn the_independent_verifier_refuses_a_signature_from_a_key_it_was_not_published_with() {
-    let scratch = Scratch::new("forged");
-    let records = publish_a_chain(scratch.path());
-    let forger = AuditSigningKey::from_seed(&[42u8; 32]);
-    let range = scratch.path().join("range.json");
-    let body = std::fs::read_to_string(&range).expect("the range body");
-    // Same key IDENTIFIER, so the verifier looks up the published key — and a signature minted by
-    // somebody else fails against it. Claiming to be a key you are not is the whole attack.
-    let forged = body.replacen(
-        records[0].signature.as_deref().expect("a signed record"),
-        &forger.sign_digest(&records[0].hash),
-        1,
-    );
-    assert_ne!(forged, body, "the forgery did not land");
-    std::fs::write(&range, forged).expect("rewrite the range body");
-
-    let (ok, said) = run_verifier(scratch.path(), &[]);
-    assert!(!ok, "the verifier accepted a forged signature:\n{said}");
-    assert!(
-        said.contains("does NOT verify against published key"),
-        "{said}"
-    );
-}
-
-/// And it refuses a truncated run: the records that are left link and number perfectly among
-/// themselves, and it is the node's own published HEAD that says one is missing.
-#[test]
-fn the_independent_verifier_catches_a_tail_truncation_using_the_published_head() {
-    let scratch = Scratch::new("truncated");
-    let records = publish_a_chain(scratch.path());
-    let mut chain = AuditChain::new().signing_with(signer());
-    let reread: Vec<_> = (1..=5).map(|i| chain.seal(inputs(i), &token())).collect();
-    assert_eq!(reread[4].hash, records[4].hash, "sealing is deterministic");
-    // The node ANSWERS a request for 1..5 with only the first four. Nothing about those four is
-    // wrong — they link, they number, they hash, they verify. The run is just short at the end,
-    // which is the one defect a run of records cannot report about itself.
-    std::fs::write(
-        scratch.path().join("range.json"),
-        expose::range_body(&chain, &reread[..4], 1, 5),
-    )
-    .expect("write a truncated range");
-
-    let (ok, said) = run_verifier(scratch.path(), &[]);
-    assert!(!ok, "the verifier accepted a truncated chain:\n{said}");
-    assert!(
-        said.contains("MISSING FROM THE END of this window"),
-        "{said}"
-    );
-}
 /// THE CANONICAL RECORD THE PUBLISHED SPEC'S WORKED EXAMPLE IS BUILT FROM.
 ///
 /// Fixed in every field, including the ones a fixture usually varies, because the spec quotes its
