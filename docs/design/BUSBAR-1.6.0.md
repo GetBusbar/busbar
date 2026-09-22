@@ -1627,6 +1627,50 @@ harness. Its `tests/conformance.rs` is a trait-shape battery and never mentions 
 The real harness is `testing/ws-conformance/`, now buildable but still with **zero coverage and no
 verdict** — closing that needs a real Docker run, not a branch revival.
 
+## SECURITY — every TLS private-key read in production is UNAUDITED
+
+**Found by the survivor review of `origin/queue-rebased-A3plus`, verified directly.** The audit seam
+for secret access is fully built, unit-tested, and **connected to nothing**.
+
+- `AccessJournal` / `AccessPurpose` exist in `crates/busbar-unit-transport-key/src/lib.rs:67,90` —
+  an audit trail meant to record every read of TLS/secret key material.
+- `busbar_kernel::teller::transport_key_token()` is the capability token required to call
+  `provision_server`/`provision_servers`. `git grep -n transport_key_token` finds it in **exactly
+  two files: its own definition, and `crates/busbar/src/root/tests/transports.rs`.** Zero
+  production callers.
+- Trunk's own doc comment says so in the present tense (`teller.rs:141-145`): *"without this the
+  unit's `provision_server` and `provision_client` have a parameter no caller in the tree can
+  supply, **which is why the only thing that ever registered a listener's TLS config was the
+  transport's own tests**."*
+- The REAL serving path — `main.rs`'s `serve_listener` → `busbar_core_transport::prepare` →
+  `build_server_config` (`busbar-core-transport/src/lib.rs:291,149`) — resolves secrets straight
+  through `SecretResolver`. `git grep -c "AccessJournal\|record_access"` on that file → **0**.
+
+### Why this one stings
+
+It contradicts an explicit owner ruling. From the design session: *"that way we lock down plugins
+cant touch secretes and **kernel is in charge of auditing secrets already**."* The kernel is supposed
+to be the one auditing every secret read — that is the justification for taking secret handling away
+from the transport plugin at all. On the live TLS path it audits nothing.
+
+So the property holds on paper (the seam exists), holds in tests (they mint the token), and does not
+hold in production (nothing mints it). That is the most dangerous shape a security control can take:
+it looks present to a reader, passes its own tests, and is absent where it matters.
+
+### The fix
+
+`origin/queue-rebased-A3plus` wires it: mint `transport_key_token()` at boot, construct a
+`BookAccessJournal` (one `Access`-class WAL entry per secret read), and call `provision_servers(...)`.
+The symbol is absent from trunk AND from `origin/integration/reland`. Every seam it binds to —
+`AccessJournal`, `SecretSource`, `transport_key_token` — already exists on trunk in the same shape,
+so this is a port, not a re-implementation. Its posture on failure (warn, not refuse boot) matches
+trunk's existing fail-open stance on that slot.
+
+**Note the interaction with the owner's secret ruling:** `busbar-transport-key` was killed as a crate
+precisely because *"plugins can never touch secrets"* and secret handling is kernel-side. Wiring the
+journal is the other half of that ruling — the half that makes the kernel actually audit what it took
+custody of.
+
 ## SECURITY — root's A2A leg authorizes the OPERATION but never the AGENT
 
 **Found by the survivor review of `origin/wip/mount-chain-auth-bindings`, and verified directly.**
