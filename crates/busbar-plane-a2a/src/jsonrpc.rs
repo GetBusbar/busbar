@@ -51,21 +51,14 @@ pub const PTR_ERROR: &str = "/error";
 /// The member carrying an error's code.
 pub const PTR_ERROR_CODE: &str = "/error/code";
 
-/// The typed marker the codec stamps on an error's detail entry. Read by identity from the codec,
-/// which is where the one spelling lives.
-pub const ERROR_INFO_TYPE: &str = crate::ERROR_INFO_TYPE;
-
-/// The domain the codec stamps on an error's detail entry. The codec's, likewise.
-pub const ERROR_INFO_DOMAIN: &str = crate::ERROR_INFO_DOMAIN;
-
-/// The error codes this protocol defines, with the word each one is reported under.
-///
-/// THE CODEC'S TABLE, read by identity rather than copied. It was a copy checked by searching the
-/// server half's source text for each code and each word — which needed this crate to read a
-/// sibling its manifest does not name, and which could only ever say the number 32001 occurs
-/// somewhere in that file. There is one table now, and `busbar-a2a`'s own `A2aError` is pinned
-/// against it row for row in the crate that owns the enum.
-pub const ERRORS: &[(i64, &str)] = crate::ERRORS;
+// THE ERROR BAND AND ITS DETAIL TAGS ARE THE DIALECT'S, AND THERE IS ONE OF EACH.
+//
+// Until the codec fold these lived in a crate this one could only READ, so they were restated here
+// and pinned to the originals by construction. The dialect came home (#39), and a value restated
+// inside the crate that defines it is a second name for one value — the shape a divergence hides
+// in, and one a re-export cannot grow. The engine's own `A2aError` is still pinned against the
+// table row for row, in the crate that owns that enum.
+pub use crate::{ERRORS, ERROR_INFO_DOMAIN, ERROR_INFO_TYPE};
 
 /// The request was not well formed.
 pub const CODE_INVALID_REQUEST: i64 = -32600;

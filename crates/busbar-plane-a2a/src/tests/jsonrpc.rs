@@ -216,13 +216,12 @@ fn a_standard_error_carries_no_detail_entry() {
 
 /// Every code and word here is the codec's own, and so is the detail entry they are carried in.
 ///
-/// A copy that is checked is not a second opinion; a copy that is not checked is. There is no
-/// copy left to check: [`ERRORS`] IS the codec's table, and what remains for this to say is
-/// that the whole band this plane may write is A2A-specific — a standard JSON-RPC code with a
-/// reason word attached would be a word the specification does not define, put on the wire.
+/// There is no copy left to check — this module re-exports the one table rather than restating it,
+/// so an identity assertion would read `X == X`. What remains, and is real, is that the whole band
+/// this plane may write is A2A-SPECIFIC: a standard JSON-RPC code with a reason word attached would
+/// be a word the specification does not define, put on the wire.
 #[test]
 fn the_error_table_is_the_codecs_own() {
-    assert_eq!(ERRORS.as_ptr(), crate::ERRORS.as_ptr());
     assert!(!ERRORS.is_empty());
     for (code, reason) in ERRORS {
         assert!(
@@ -230,11 +229,6 @@ fn the_error_table_is_the_codecs_own() {
             "{code} is outside the A2A-specific band and carries the reason {reason}"
         );
     }
-    assert_eq!(
-        super::ERROR_INFO_TYPE,
-        crate::ERROR_INFO_TYPE,
-        "the detail entry is tagged with the codec's own type URL"
-    );
 }
 
 /// The reader is deterministic over the same bytes.
