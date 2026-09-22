@@ -76,7 +76,7 @@ async fn ask(addr: SocketAddr, path: &str) -> Answer {
 #[tokio::test]
 async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
     busbar_kernel::metrics::init();
-    busbar_admin::install();
+    busbar_core_admin::install();
     // An OPEN admin posture, so that a path which DID exist would reach its handler rather than an
     // authentication refusal. Without this the test would pass on a surface that had grown all five
     // routes and simply refused the credential.
@@ -127,7 +127,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
 #[tokio::test]
 async fn the_pinned_document_gained_no_ledger_path() {
     busbar_kernel::metrics::init();
-    busbar_admin::install();
+    busbar_core_admin::install();
     let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();

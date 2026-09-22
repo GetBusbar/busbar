@@ -3,7 +3,7 @@
 
 //! The derivation artifact: proves [`crate::verb::LEGACY_VERBS`] matches
 //! `testing/shadow-oracle/fixtures/openapi-1.5.5.json` byte-for-byte — same 49 paths, same 66
-//! operations, same required scope for each (PB-62). Fails the build (not just the test) intent:
+//! operations, same required scope for each. Fails the build (not just the test) intent:
 //! an operation missing from the table, an extra operation in the table, or a scope disagreement
 //! are each a distinct assertion failure naming the offending path+method, so a drift is never
 //! reported as a single opaque "mismatch".

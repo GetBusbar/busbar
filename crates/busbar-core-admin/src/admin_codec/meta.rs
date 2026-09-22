@@ -6,12 +6,12 @@
 use busbar_contract::ids::{AdminVerbId, MeterClassDecl, OpClassId, RecordSchemaId};
 use busbar_contract::plane::PlaneMeta;
 
-use crate::claims;
-use crate::verbs::{OP_READ, OP_WRITE};
-use crate::AdminPlane;
+use crate::admin_codec::claims;
+use crate::admin_codec::verbs::{OP_READ, OP_WRITE};
+use crate::admin_codec::AdminPlane;
 
 /// The two operation classes a unit of this plane can be: a read that reaches nothing but the
-/// journal, and a mutation. See [`crate::verbs::OP_READ`]/[`crate::verbs::OP_WRITE`] for why the
+/// journal, and a mutation. See [`crate::admin_codec::verbs::OP_READ`]/[`crate::admin_codec::verbs::OP_WRITE`] for why the
 /// closed 66+17 table collapses to two classes rather than one per verb: pricing is uniform across
 /// the whole admin surface (a flat, kernel-reserved `count` class — see `METER_CLASSES` below), so
 /// the only thing an operation class needs to preserve here is the design's own `ReadOnly`/`Full`

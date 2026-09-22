@@ -171,7 +171,7 @@ pub(crate) struct ExitPath {
 #[cfg(feature = "root-admin")]
 impl Drop for ExitPath {
     fn drop(&mut self) {
-        busbar_admin::restart::UnitDrain::of_unit(self.unit).release();
+        busbar_core_admin::restart::UnitDrain::of_unit(self.unit).release();
     }
 }
 
@@ -356,7 +356,7 @@ pub(crate) fn error_answer_with_message(status: u16, code: &str, message: &str) 
     AdminAnswer {
         status,
         headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: busbar_core_admin::refusal::envelope_of(code, message).into_bytes(),
+        body: busbar_core_admin::admin_codec::refusal::envelope_of(code, message).into_bytes(),
     }
 }
 
@@ -411,7 +411,7 @@ impl RouterDispatch {
                     // handler, which knows nothing about the composition it is answering under —
                     // so the composition says, here, which unit the handler's ask belongs to.
                     let unit = request.unit;
-                    let answer = busbar_admin::restart::UnitDrain::of_unit(unit)
+                    let answer = busbar_core_admin::restart::UnitDrain::of_unit(unit)
                         .scoping(call(inner, &request))
                         .await;
                     let _ = reply.send(answer);
@@ -586,7 +586,7 @@ pub fn mount(
     // response — the restart — hands that effect to it instead of starting it mid-flight. Declared
     // here because this is where the loop is put in front of the surface: the operation's own
     // surface is unchanged and does not know which composition it is answering under.
-    busbar_admin::restart::drain_released_at_exit();
+    busbar_core_admin::restart::drain_released_at_exit();
     let dispatch: Arc<dyn AdminDispatch> = Arc::new(RouterDispatch::new(inner.clone(), &runtime));
     let node = Arc::new(AdminNode::new(kernel, build_units(dispatch)));
 
@@ -614,7 +614,7 @@ pub fn mount(
                 // this plane never claimed would be the root inventing an answer it has no basis
                 // for, and the whole point of the seam is that it never does that.
                 let declared =
-                    busbar_core_admin::verbs::resolve(req.method().as_str(), &path).is_some();
+                    busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), &path).is_some();
                 if !claimed || !declared {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }

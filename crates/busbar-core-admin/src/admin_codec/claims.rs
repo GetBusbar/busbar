@@ -11,7 +11,7 @@ use busbar_contract::grammar::{Claim, PathSeg, Selector};
 use busbar_contract::surface::ADMIN_PREFIX;
 
 /// The transport this plane's one claim is made against: plain HTTP request/response, never a
-/// session transport (see [`crate::meta`] for why this plane does not implement `SessionPlane`).
+/// session transport (see [`crate::admin_codec::meta`] for why this plane does not implement `SessionPlane`).
 pub const TRANSPORT: &str = "http";
 
 /// The credential scheme this plane's claim authenticates under.

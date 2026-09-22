@@ -19,9 +19,9 @@ use busbar_contract::unit::{
 };
 use busbar_contract::wire::{Decode, Encode, Frame, FrameCursor};
 
-use crate::meta::FACT_VERB;
-use crate::verbs::{self, VerbEntry, OP_READ, OP_WRITE, VERB_OPENAPI_JSON};
-use crate::{refusal, AdminPlane};
+use crate::admin_codec::meta::FACT_VERB;
+use crate::admin_codec::verbs::{self, VerbEntry, OP_READ, OP_WRITE, VERB_OPENAPI_JSON};
+use crate::admin_codec::{refusal, AdminPlane};
 
 /// What decoding one admin frame's envelope resolved to.
 struct Decoded<'u> {

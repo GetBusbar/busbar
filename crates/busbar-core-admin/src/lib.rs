@@ -1,86 +1,169 @@
-//! busbar-plane-admin — the HTTP codec for busbar's own admin surface.
-//!
-//! ## What this crate is
-//!
-//! One implementation of the plugin contract's plane kind, for the closed table of 66 operations the
-//! 1.5.5 admin API tag defines (mechanically extracted into `generated::verb_table_1_5_5`, 49
-//! paths, 34 read-only and 32 full) plus the 17 additional 1.6.0 money-governance verbs the design
-//! names by name (`verify`, `plane_facts`, `plane_record_write`, `set_operator_key`, `set_escrow`,
-//! `chain_break`, `store_restore`, `reseal_epoch_floor`, `set_dual_control`, `set_overdraft_ceiling`,
-//! `set_dispute_max_age`, `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust`,
-//! `export_keyset`, `approve`), and the 5 1.6.0 ledger views (the read-only
-//! `/api/v1/admin/ledger/*` surface). Every one of those operations is a `KernelVerb` destination this
-//! plane names; none of them is EXECUTED here. `busbar-unit-verbs`, on the far side of the kernel
-//! from this plane, holds the admin credential and mints every one-time secret this surface ever
-//! reveals (a rotated key, an exported keyset); this crate never sees one.
-//!
-//! ## What this crate is NOT — an explicit scope boundary
-//!
-//! The design's admin section pins the closed 66+17+5 table AND separately names five 1.5.5 surfaces
-//! that live outside it, each pinned by its own handler rather than by this table: the self-serve
-//! token exchange (`POST /auth/token` and its browser-facing `GET` twin), the governance-scoped
-//! model listings (`GET /v1/models`, `/v1beta/models`), `/stats`, the unconditional-bypass
-//! `/healthz`, and the conditionally-present `/metrics` / `/metrics/hooks`. **This plane decodes
-//! NONE of them.** They are not admin verbs in the sense this crate's table declares them, they carry
-//! their own auth posture (several bypass admin auth entirely), and reaching them here would blur
-//! exactly the line the design draws. A future plane or a future claim on this same crate may take
-//! them on; until then, treat their absence here as a boundary, not a gap.
-//!
-//! This plane also never dials an upstream (see `codec::AdminPlane`'s `route`, which always answers
-//! an empty plan) and never opens a `SessionPlane` half: its one claim is plain HTTP request/response
-//! ([`claims::CLAIMS`]), and the registry only requires `SessionPlane` when a claimed transport
-//! declares itself session-shaped. `http` here does not.
-//!
-//! ## What this crate is not, continued: no governance, no secrets
-//!
-//! There is no dual-control arithmetic, no scope decision and no ledger arithmetic in this crate.
-//! `approve` states which resource an operation touches; the scope unit is what compares that against
-//! a principal's held grant. Every "mints via `SecretOnce`" note in the design's admin row belongs to
-//! `busbar-unit-verbs`, never to this codec: this plane renders whatever bytes the verb execution
-//! produced, and a `SecretOnce` placeholder that appeared in this crate's own logic would be a defect,
-//! not a feature.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
 
-#![forbid(unsafe_code)]
-#![deny(missing_docs)]
+//! THE ADMIN API SERVICE (`/api/v1/admin/*`), extracted out of busbar-core (1.6.0).
+//!
+//! This crate owns the admin route table, every handler (keys, groups, hooks, plugins, config,
+//! overlay, openapi), the committed `openapi.json`, the transport port and the test-support
+//! recording layer. It depends on busbar-core ONE-WAY (Cargo refuses the reverse edge).
+//!
+//! busbar-core mounts this service through the fn-pointer seam
+//! `busbar_kernel::admin::seam::AdminMountSeam`; [`install`] registers this crate's implementation,
+//! and the composition root (`crates/busbar`'s `main`) calls it once, unconditionally — this crate
+//! is a MANDATORY, always-linked sibling, not a plugin.
+//!
+//! What STAYED in busbar-core: `admin::v1::contract` (the frozen `AdminError`/`PATH_*` surface),
+//! `admin::v1::json` (the `err_json`/`ok_json`/`err_json_cond` envelope primitives),
+//! `admin::planeverbs` (`CorePlaneAdminEnvelope`), and `admin::versions` (the `VersionLog` state).
 
-pub mod claims;
-pub mod codec;
-pub mod generated;
-pub mod meta;
+pub mod keys;
+pub mod restart;
+pub mod transport;
+pub mod v1;
+
+// THE HTTP CODEC (folded in from the former `busbar-core-admin`/`busbar-plane-admin` crate, #37/#34:
+// the roster carries exactly one `busbar-core-admin`, and this crate — the admin service, formerly
+// `busbar-admin` — is its survivor). Nested rather than flattened to crate root because this module
+// and this crate each independently declare a `verbs` and a `refusal` — see `admin_codec::verbs` /
+// `admin_codec::refusal` vs. the service's own `crate::verbs` / `crate::refusal` below. Named
+// `admin_codec` rather than `codec` because the codec's own internal `codec.rs` (the `Plane`
+// implementation) would otherwise have the same name as its containing module
+// (`clippy::module_inception`).
+pub mod admin_codec;
+
+// ── KERNEL-VERB EXECUTION (absorbed from busbar-unit-verbs, W4.b #36) ────────────────────────────
+// The admin plane decodes a request into a `KernelVerb` and hands it here; this is the only place a
+// kernel verb's SEMANTICS live. The store face (`Store`/`StoreError`) and the idempotency window
+// (`IDEMPOTENCY_TTL_SECS`) it binds against now live on `busbar_contract::verb_store` (DECISIONS
+// #38/#40), so this unit and `busbar-plugin-loader`'s store adapter reach one face rather than
+// naming each other's crate.
+pub mod governance;
+pub mod idempotency;
+pub mod mint;
+pub mod posture;
+pub mod rate;
 pub mod refusal;
-#[cfg(test)]
-mod tests;
+pub mod verb;
 pub mod verbs;
 
-use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
+pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
+pub use idempotency::ReplayEncoder;
+pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
+pub use rate::ConfigClassRule;
+pub use refusal::{ReasonCode, Refusal, RefusalStep};
+pub use verb::{
+    KernelVerb, VerbScope, IRREDUCIBLE_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
+    NEW_VERBS, READ_ONLY_NEW_VERBS,
+};
+pub use verbs::{required_scope, MintOutcome, MintedKeyOutcome, NonceSource, Verbs};
 
-/// The admin plane.
-///
-/// No fields: every one of this plane's answers is a pure function of its inputs (the verb table,
-/// the frame bytes, the unit) and of nothing this plane owns across calls. The purity/determinism
-/// tests in `codec::tests` and the closed-loop table test both rely on that being literally true —
-/// a plane that held state here would fail them the same way a plane that performed I/O would.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AdminPlane;
+#[cfg(test)]
+#[path = "tests/table_matches_openapi.rs"]
+mod table_matches_openapi;
 
-impl AdminPlane {
-    /// A new admin plane. There is nothing to configure: see `meta::CONFIG_SCHEMA`.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
+pub use v1::service::mark_start;
+
+/// Register this crate's implementation of the admin-service mount seam
+/// (`busbar_kernel::admin::seam::AdminMountSeam`). Called EXACTLY ONCE, by the composition root
+/// (`crates/busbar`'s `main`), unconditionally — the admin API carries no feature flag at the
+/// composition root; it is always mounted.
+pub fn install() {
+    busbar_kernel::admin::seam::install_admin_mount_seam(
+        busbar_kernel::admin::seam::AdminMountSeam { mount: seam_mount },
+    );
 }
 
-impl Plugin for AdminPlane {
-    fn key(&self) -> &'static str {
-        <Self as busbar_contract::plane::PlaneMeta>::KEY
-    }
-
-    fn kind(&self) -> Kind {
-        Kind::Plane
-    }
-
-    fn abi(&self) -> AbiVersion {
-        AbiVersion(1)
-    }
+/// The mount the seam calls: nest the JSON v1 admin surface onto `router` at `/api/v1/admin`.
+fn seam_mount(
+    router: axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>>,
+) -> axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>> {
+    crate::transport::mount(router, &crate::v1::json::JsonV1)
 }
+
+/// TEST/TEST-SUPPORT router builder: register this crate's admin mount seam (idempotently, once per
+/// process) and delegate to `busbar_kernel::build_router`. busbar-core's own `build_router` mounts the
+/// admin surface through the seam, which is unregistered until the composition root (production) or
+/// this helper (tests) installs it — so every moved test that wants the admin routes builds through
+/// here instead of naming `busbar_kernel::build_router` directly.
+/// Install the process-wide test environment exactly once: the admin mount seam PLUS the LLM/MCP/A2A
+/// plane+protocol test seams (protocols/codecs, plane runtimes, ingress hooks). busbar-core's own
+/// unit-test binary auto-registers these from its `cfg(test)` builtins, but a test-support CONSUMER
+/// (this crate) has `cfg(test)` false for its busbar-core dependency, so it must install them
+/// explicitly — the same three `install_test_seams()` calls busbar-core's `tests/plane_integration.rs`
+/// makes. All are idempotent (first-wins), so calling this from every router builder is safe.
+#[cfg(test)]
+fn ensure_seam() {
+    static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
+    SEAM_ONCE.call_once(|| {
+        busbar_llm::testkit::install_test_seams();
+        busbar_mcp::testkit::install_test_seams();
+        busbar_a2a::testkit::install_test_seams();
+        // Having registered the MCP plane above, seed its always-present default runtime for every
+        // `TestApp` — the test-support analogue of busbar-core's own `cfg(test)` seeding.
+        busbar_kernel::test_support::install_test_mcp_runtime_factory(
+            busbar_mcp::testkit::default_mcp_runtime,
+        );
+        install();
+    });
+}
+
+/// Build a `TestApp` after ensuring the process-wide test seams (planes, protocols, runtimes, mount
+/// seam) are installed — moved admin tests use this in place of `TestApp::new()` so the seams are in
+/// place BEFORE `.build()` resolves providers/planes.
+#[cfg(test)]
+pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
+    ensure_seam();
+    busbar_kernel::test_support::TestApp::new()
+}
+#[cfg(all(not(test), feature = "test-support"))]
+fn ensure_seam() {
+    static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
+    SEAM_ONCE.call_once(install);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn build_router(app: std::sync::Arc<busbar_kernel::state::App>) -> axum::Router {
+    ensure_seam();
+    busbar_kernel::build_router(app)
+}
+
+/// TEST/TEST-SUPPORT split-router builder: register the admin mount seam (once) and delegate to
+/// `busbar_kernel::router::build_split_routers_with_limits`, so the moved split-listener test mounts
+/// the admin surface on the admin router.
+#[cfg(any(test, feature = "test-support"))]
+pub fn build_split_routers_with_limits(
+    app: std::sync::Arc<busbar_kernel::state::App>,
+    request_body_max_bytes: usize,
+    max_inbound_concurrent: usize,
+    server_timing_enabled: bool,
+) -> (
+    axum::Router,
+    axum::Router,
+    std::sync::Arc<busbar_kernel::state::AppHandle>,
+) {
+    ensure_seam();
+    busbar_kernel::router::build_split_routers_with_limits(
+        app,
+        request_body_max_bytes,
+        max_inbound_concurrent,
+        server_timing_enabled,
+    )
+}
+
+// The config-transaction behavior suite drives this crate's admin mutation handlers; it moved here
+// with the service from `busbar_kernel::config::transaction`'s tests (busbar-core can no longer name
+// the handlers). Wired at the crate root, the direct analogue of its old `#[path]` wiring.
+#[cfg(all(test, feature = "auth-admin-tokens"))]
+#[path = "tests/txn_tests.rs"]
+mod txn_tests;
+
+// The key-revoke tombstone suite drives the admin key-revoke HTTP surface; it moved here from
+// busbar-core with the service.
+#[cfg(all(test, feature = "auth-admin-tokens"))]
+#[path = "tests/key_revoke_tombstone_tests.rs"]
+mod key_revoke_tombstone_tests;
+
+// Admin-surface HTTP tests moved from busbar-core (auth-token behavior + split-listener exposure).
+#[cfg(all(test, feature = "auth-admin-tokens"))]
+#[path = "tests/core_moved_tests.rs"]
+mod core_moved_tests;

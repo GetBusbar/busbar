@@ -47,7 +47,7 @@ const STD: base64::engine::general_purpose::GeneralPurpose =
 /// idempotent (first-wins `OnceLock`), so every fixture may call this.
 fn install_admin_mount() {
     #[cfg(test)]
-    busbar_admin::install();
+    busbar_core_admin::install();
 }
 
 fn key() -> SigningKey {

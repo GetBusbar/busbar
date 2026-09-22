@@ -172,4 +172,4 @@ busbar-plugin-sign = { path = "../plugin-sign" }
 # what keeps the real build graph one-directional: dev-deps are compiled only when testing THIS crate,
 # never when busbar-admin (which itself dev-depends on this crate) links it as a library, so no reverse
 # edge exists in any non-test build.
-busbar-admin = { path = "../busbar-admin" }
+busbar-core-admin = { path = "../busbar-core-admin" }

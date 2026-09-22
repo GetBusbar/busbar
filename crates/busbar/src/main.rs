@@ -695,7 +695,7 @@ fn register_planes() {
     // root is the one place entitled to name `busbar-admin`, exactly as it names `busbar-oauth2`
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
     // through the seam whenever this (mandatory) sibling is linked, which is every real build.
-    busbar_admin::install();
+    busbar_core_admin::install();
 
     // THE MCP PLANE'S KERNEL BINDINGS, SEALED. Behind `root-mcp`, which is default-ON: the bindings
     // are built and checked against the real unit traits before any byte is served through them, so
@@ -1259,7 +1259,7 @@ async fn run(data_workers: usize) {
         );
     }
     // Stamp process start for the `GET /api/v1/admin/info` uptime read.
-    busbar_admin::mark_start();
+    busbar_core_admin::mark_start();
 
     // Resolve deployment + definitions into resolved RootCfg (semantic validation runs inside
     // build_app_from_config — the one construction path).
@@ -1569,7 +1569,7 @@ async fn run(data_workers: usize) {
     // Publish the sender so `POST /admin/restart` can trigger the SAME drain a signal does. A
     // process-global is the honest home: restarting is a process-wide act, not a property of an
     // `App` snapshot, and `AppHandle` is built before this channel exists.
-    busbar_admin::restart::publish_shutdown(shutdown_tx.clone());
+    busbar_core_admin::restart::publish_shutdown(shutdown_tx.clone());
     {
         let shutdown_tx = shutdown_tx.clone();
         tokio::spawn(async move {

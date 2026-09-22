@@ -40,7 +40,7 @@ const DESCRIPTION: &str = "reads a file from disk";
 /// idempotent (first-wins `OnceLock`), so every fixture may call this.
 fn install_admin_mount() {
     #[cfg(test)]
-    busbar_admin::install();
+    busbar_core_admin::install();
 }
 
 fn schema() -> serde_json::Value {

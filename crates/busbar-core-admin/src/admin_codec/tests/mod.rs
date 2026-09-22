@@ -12,8 +12,8 @@ use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};
 use busbar_contract::wire::{Direction, Frame, FrameCursor, FrameMeta};
 
-use crate::verbs::{self, VERB_COUNT};
-use crate::AdminPlane;
+use crate::admin_codec::verbs::{self, VERB_COUNT};
+use crate::admin_codec::AdminPlane;
 
 // ── a minimal, leak-based test arena ─────────────────────────────────────────────────────────────
 //
@@ -251,7 +251,7 @@ fn decode_ingress_matches_the_pinned_1_5_5_fixture_for_every_operation() {
 /// walk above (this is the same invariant, checked a second, cheaper way).
 #[test]
 fn generated_table_has_the_pinned_read_only_full_split() {
-    let rows = &crate::generated::verb_table_1_5_5::VERB_TABLE_1_5_5;
+    let rows = &crate::admin_codec::generated::verb_table_1_5_5::VERB_TABLE_1_5_5;
     assert_eq!(rows.len(), 66);
     let read_only = rows.iter().filter(|(_, _, _, ro)| *ro).count();
     assert_eq!(read_only, 34);

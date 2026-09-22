@@ -111,8 +111,9 @@ fn replay_expires_after_the_ttl_and_a_fresh_mint_is_then_allowed() {
 
 #[test]
 fn create_and_rotate_scoped_keys_never_replay_each_other() {
-    // PB-21: a create's cache key is (actor, header); a rotate's is
-    // (actor, "rotate:{id}:{k}") — the same header value for both must never collide.
+    // A create's cache key is (actor, header); a rotate's is (actor, "rotate:{id}:{k}"). The same
+    // header value presented to both verbs must never collide, or one verb replays the other's
+    // cached response — and a rotate's response carries secret material.
     let cache: IdempotencyCache<String> = IdempotencyCache::new();
     let create_key = key("alice", "shared-header");
     let rotate_key = key("alice", "rotate:key-42:shared-header");
