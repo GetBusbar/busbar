@@ -1759,6 +1759,37 @@ precisely because *"plugins can never touch secrets"* and secret handling is ker
 journal is the other half of that ruling — the half that makes the kernel actually audit what it took
 custody of.
 
+## Survivor-review scorecard — what was recovered, and what it cost to find
+
+Six branches' worth of "lost" work adjudicated against trunk. **Every item below had been written
+before, reviewed, and lost.** Deleting those branches unexamined would have destroyed all of it.
+
+**FIXED this session:**
+
+| Recovered | Severity | What it allowed |
+|---|---|---|
+| grpc ignores the operator's message cap | HIGH | an operator who set `limits.request_body_max_bytes` got a capped ws listener and an uncapped 4 MiB grpc one — the knob worked where they tested it and not where they didn't |
+| http egress forwards a smuggled framing | MED | chunked + `Content-Length` together was de-chunked, stripped of both framing headers, and forwarded quietly disambiguated — the next hop may disambiguate the other way |
+| TLS truncation reads as a clean close | MED | a peer dropping the stream mid-session reported identically to an orderly `close_notify` — the one signal distinguishing "finished" from "cut off, possibly hiding truncated content" |
+| `MAX_TOOL_NAME_BYTES` | MED-HIGH | the call log opened with the caller's raw name BEFORE any check, writing attacker-chosen bytes verbatim into a **durable hash-chain row**, on every refused call, permanently |
+| `MAX_TASK_ANSWERS` | MED | one task's answer map had no bound; a caller parked in `input_required` invented fresh keys forever |
+| `MAX_SUBSCRIBED_URIS` + dedup | MED | no cap and no dedup; a repeated URI was both a memory and a duplicate-delivery multiplier |
+| A2A approves the operation but never the agent | latent | not reachable today — but the file exists to BECOME a serving path, and the next person to wire it will assume approve authorizes what it approves |
+
+**STILL OPEN, verified, not yet fixed:**
+
+- **Every TLS private-key read in production is unaudited.** `AccessJournal` is built and tested;
+  `transport_key_token()` has callers in exactly two files — its own definition and the test file.
+  Trunk admits it: *"the only thing that ever registered a listener's TLS config was the transport's
+  own tests."* This one contradicts an explicit owner ruling that the kernel audits secret access,
+  and every seam it needs already exists, so it is a port rather than a re-implementation.
+
+**What the exercise cost, stated honestly.** Two of my own escalations were wrong — I verified a
+check was missing and never verified the code was reachable. Both were caught by a second review.
+Against that: seven real defects recovered that no gate in the tree was catching, three of them
+previously written and lost **three separate times** across stale branches. The ratio argues for
+running the review on the remaining survivors, and for always asking the second question.
+
 ## #40's REAL blocker, named: the ABI seams live in the wrong crates
 
 Three separate measurements this session converge on one root cause, and it is not "somebody forgot
