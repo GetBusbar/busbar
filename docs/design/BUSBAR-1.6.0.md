@@ -1670,6 +1670,48 @@ numbers are given rather than one picked.
     it*, which is the half a v2 sink structurally cannot express. Disjointness asserted on the bytes.
     That is the owed cell's PURPOSE without the pin surgery.
 
+18c. **A DURATION FINER THAN SIX DECIMALS IS NOW A REFUSAL RATHER THAN A ROUNDED GUESS.**
+    `Billing::Duration` moved from `f64` to the exact-decimal `Count` at scale 6 (microseconds).
+    #81 is explicit that a value which will not fit the scale exactly is refused — but OpenAI types
+    `TranscriptTextUsageDuration.seconds` as `number, format: double`, so a provider **may
+    legitimately report more precision**, and such a response is accepted today and refused after.
+    No golden and no in-tree fixture exercises it, so nothing moves now; a real deployment could meet
+    it. Yours to sign — the test that pins the refusal says so in its own doc comment.
+
+    **CORRECTION TO AN EARLIER CLAIM IN THIS SESSION, made by the assistant and repeated as fact:**
+    this was described as the *last LIVE money-path float, reaching the ledger through
+    `ledger_and_meter`*. **It does not reach the ledger.** Traced per site: the five production sites
+    are two producers, two wire echoes, and `busbar-llm/src/engine/attempt/buffered.rs:69`, which
+    returns `None` for it **deliberately** — its comment says a duration is not a token count and
+    inventing one would put a number the provider never reported into the ledger. Nothing in
+    `kernel/src/cost.rs`, `busbar-kernel-ledger` or `busbar-kernel-budget` prices a Duration.
+    **It was LATENT, not live. Nothing has been mis-billed.** The reachability was asserted, not
+    proven — the failure this document warns about, committed by its own author.
+
+    It was fixed anyway, for a reason that is better than the wrong one: **a duration is unpriced
+    today, so changing its representation has zero ledger impact and zero oracle exposure** (measured:
+    no golden carries a duration field in any spelling). That is the cheapest this change will ever
+    be, and #71/#77(1) already name audio-seconds as a priced meter class — the day it is priced, the
+    float becomes a wrong-ledger defect with money behind it.
+
+    **The damage, measured rather than argued:** the provider says `12.1` seconds and the carrier held
+    `12.099999999999999644728632119950`. Across 400,000 realistic `duration × rate` pairs **more than
+    one in eight** products already differed from the exact answer. 10,000 calls of `0.1s` summed to
+    `1000.0000000001588` as a double and exactly `1000` as a decimal. And a test that had to change is
+    its own evidence: `openai_chat/tests/handler_tests.rs` asserted `(seconds - 1.0).abs() < 1e-9` —
+    an epsilon comparison is what you write when you know the quantity is a double.
+
+18d. **FIVE MORE FLOATS SIT ON THE BILLING CARRIER, AND THE GATE CANNOT SEE THEM YET.**
+    `RawTierRates`'s four `f64` tier fields plus `blended_per_mtok()`. These are the documented **S2a
+    config boundary**, not a runtime path — their own doc comment says floats live only there, and
+    #44 permits it. But `no-float-money`'s scan does not cover `billing.rs`, and extending it flags
+    all five immediately. Covering the carrier requires relocating `RawTierRates` to a boundary file
+    first, the way #44's card-build conversion already is — a separate decision in a crate another
+    agent is editing. **The agent that found this reverted its own gate extension and file split
+    rather than widen scope**, which was right. The mechanism is already proven (two exempt boundary
+    files, presence-checked, RED-provable); it needs its own commit, and it is the thing that stops
+    the NEXT carrier float.
+
 19. **THE CRATE COUNT MOVES 33 → 39, WHICH IS OUTSIDE YOUR ±3-5 BAND.** The six ABI fixtures were
     HOMELESS; defining them is what un-homes them (row 35-40) and the definition is clean. Recorded
     rather than absorbed, per this document's own rule that a move over ~5 is evidence the DEFINITIONS
