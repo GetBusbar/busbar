@@ -1682,6 +1682,34 @@ than accidental: no 1.5.5 golden can exist for a post-1.5.5 plane, and the gener
 has no `tools:` section, so the mcp plane never even loads for a recorded cell. Of the golden's 916
 PASS rows, **zero are mcp** — all 912 read `SKIP UNSUPPORTED`.
 
+**OWNER'S FRAMING, 2026-09-22, AND IT IS THE RIGHT ONE — MONEY IS NOT A THING TO WITNESS.**
+
+> *"oracle being blind to money isnt a problem so long as its not blind to ledger and rate card
+> right? … money is just a function … one test and it works or doesnt"*
+
+**money = f(ledger, rate_card).** So nothing needs to witness money. Witness the two INPUTS and the
+output is determined:
+
+1. **the LEDGER** — did a served call write the row, with the right counts per declared class?
+2. **the RATE CARD** — does the card in force at the posting's `arrived_ms` resolve correctly (#79)?
+3. **the FUNCTION — ONE test.** Known ledger × known card → known figure. It works or it does not.
+   A pure function does not need N tests; it needs one, and N tests of it is the duplication problem
+   wearing a different hat.
+
+**That is three witnesses, not 912 cells.** And all three already exist as gating rig legs:
+`h2-ledger-unconditional` (does a served call ledger, card or no card), `h2-card-epoch` (does the
+card resolve by date), `h2-class-price` (does count x rate produce the figure). Two of the three are
+RED today and correctly so — they name real defects.
+
+**This also corrects the reason the ruling below is right.** It is not "the oracle cannot see plane
+money, so use rigs instead." It is that **money was never the thing to observe.** The earlier
+framing would have had someone try to make the oracle witness a derivation; this one says observe
+the ledger and the card and stop.
+
+**The gap it DOES expose, and it is narrower and more actionable:** for mcp and a2a the corpus is
+blind to **ledger and rate card as well** — 912 and 468 cells, zero touching either. Under this
+framing that is the finding, and the fix is the three legs, not a corpus expansion.
+
 **RULING — DO NOT CLOSE THIS GAP BY ADDING CELLS.** An agent asked whether the corpus should gain
 mcp/a2a money cells. It should not, and the reason is what the oracle IS:
 
