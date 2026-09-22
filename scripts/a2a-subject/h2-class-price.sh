@@ -100,9 +100,7 @@ fi
 # Reported as blocked while either factor is unavailable. The flat fee is read anyway, so the leg
 # still says what the deployment DID charge.
 spend_micros="$(h2_meter_row_field "agent:probe" "a2a" spend_micros)"
-if [ "$failures" -eq 0 ]; then
-  : # both factors available -- a future revision of this leg computes and asserts the product here.
-else
+if [ "$failures" -ne 0 ]; then
   detail="${detail}(3) price = Σ count × rate is BLOCKED BY the above; the row charged spend_micros=${spend_micros}, which is the flat per-request fee (1 cent = 10000 micro-units) and nothing else; "
 fi
 
