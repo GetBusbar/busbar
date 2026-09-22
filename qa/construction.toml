@@ -489,7 +489,7 @@ kernel_crate = "busbar-kernel"
 # busbar-substrate engine INTO busbar-kernel (DECISIONS #19/#37) and deleted both source crates.
 # This is the mechanical consequence of that owner-approved, oracle-proven move, not new kernel
 # growth; pinned at today's own-files measurement, per `ceiling-slack`. See the declared raise above.
-kernel_ceiling = 54211
+kernel_ceiling = 54623
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 # RAISED 3480 -> 3545 for the upstream status table's contract face, pinned at what it MEASURES
@@ -504,7 +504,7 @@ contract_crate = "busbar-contract"
 # RAISED AGAIN 5230 -> 5238: busbar-core-transport (DECISIONS #40) added the opaque
 # `ConnectionSecurity` transport face to busbar-contract's src tree (~8 lines). busbar-caps stays
 # empty (0). Pinned at today's measurement. See the declared raise above.
-caps_contract_ceiling = 5238
+caps_contract_ceiling = 5652
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
 # declaring their own copies), measured against whatever unit_total_ceiling read when the line was
@@ -528,7 +528,7 @@ verbs_ceiling = 1431
 # RAISED AGAIN 23347 -> 59711: kernel 5379 -> 54211 and caps/contract 3545 -> 5230 both rise (see
 # the two declared raises above); the unit-* term is unchanged. 54211 + 5230 + 270 = 59711, pinned
 # at today's measurement. See the declared raise above.
-union_ceiling = 59711
+union_ceiling = 60545
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -541,7 +541,7 @@ patterns = ["teller.rs"]
 # small amount of plumbing into the loop file even though its nine-step body and single-loop
 # invariant are unchanged (see the teller-step-order repoint in this same commit for proof). Pinned
 # to today's measurement.
-ceiling = 648
+ceiling = 667
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -551,7 +551,7 @@ ceiling = 453
 [rules.loc-ceilings.kernel_files.inflight]
 label = "in-flight/sessions"
 patterns = ["inflight.rs"]
-ceiling = 564
+ceiling = 575
 
 [rules.loc-ceilings.kernel_files.recovery]
 label = "recovery"
@@ -570,7 +570,7 @@ patterns = ["registry.rs"]
 # 54, plane/registry.rs 516); the latter two are absorbed from busbar-substrate's plane and proto
 # registries in W4.b P2 (5fa320208) and did not exist as busbar-kernel files before that landing.
 # Pinned to today's measurement.
-ceiling = 883
+ceiling = 887
 
 [rules.loc-ceilings.kernel_files.grammars]
 label = "grammars incl. JSON span scanner"
@@ -1485,3 +1485,63 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# ── ceiling raises, 2026-09-22 unattended wave ──────────────────────────────────────────────────
+# Each of these is a line that had to justify itself, which is what the "no headroom" pins above
+# were for. Every raise below is pinned to today's measurement with no headroom, so the NEXT line
+# that grows any of them is the next line that has to argue.
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
+from = 648
+to = 667
+because = """Verify sealed a destination set and then dropped it, so Route re-derived its own and \
+the thing that was checked was not provably the thing that was used. The sealed set is now threaded \
+from open_to_door through under_hold into route_leg and meter, which is the whole point of a sealed \
+capability: a later step CONSUMES what an earlier step proved rather than recomputing and hoping the \
+two agree. +19 lines, all of it signature and hand-off; no quantity and no arithmetic changed."""
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_files.inflight.ceiling"]
+from = 564
+to = 575
+because = """InFlight::insert silently overwrote a duplicate unit key, orphaning the displaced \
+entry's HoldCell -- a hold nothing would ever release, so budget stayed reserved forever -- and \
+permanently inflating the in-flight count. It now refuses under the same shard lock that would do \
+the write, before claim_slot runs, so there is nothing to roll back and no TOCTOU window, and it \
+hands the caller's hold back rather than dropping it. +11 lines."""
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_files.registry.ceiling"]
+from = 883
+to = 887
+because = """transport_overlaps compared SNI byte-wise. DNS names are case-insensitive, so two \
+genuinely overlapping transport claims were judged disjoint and the boot's disjointness proof \
+cleared a configuration with two listeners fighting for one name. SNI and ALPN now fold case the way \
+header names already did in the same function; client-cert subject, stream name and port keep exact \
+comparison, so this is not a blanket lowercase. +4 lines."""
+
+[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
+from = 5238
+to = 5652
+because = """busbar-grammar folded INTO busbar-contract (#40). This is deliberately the inverse of \
+D29, which carved grammar OUT of contract to get under this same ceiling -- and that carve-out is \
+exactly what #40 forbids, because contract's public API re-exported grammar's types through \
+bounded.rs and spans.rs, so every plugin compiling against the contract dragged a second busbar \
+crate into its dependency closure. The choice is between a smaller contract that violates the \
+plugin closure rule and a larger one that satisfies it; #40 is owner-locked and the ceiling is not. \
++414 lines, which is the 568-line grammar module net of the re-export shims it replaced."""
+
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+from = 54211
+to = 54623
+because = """The sum of the three named kernel-file raises above plus core's no-plane refusal. That \
+last one is a Law fix, not a feature: #1 requires core to name zero planes and #3/#11 make planes \
+plugins that may be absent, so a build with no plane registered is legal -- and it PANICKED, in \
+config resolution, because fallback_key() documents an intentional empty answer and plane_decl() \
+panics on an unknown key. It now refuses with a named diagnostic instead, per #42: an unknown is \
+refused, never silently defaulted."""
+
+[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
+from = 59711
+to = 60545
+because = """The arithmetic consequence of the kernel and caps/contract raises above; this row adds \
+no growth of its own. Raised in the same commit as both, per this file's own rule that a union \
+ceiling moves with its members rather than drifting behind them."""
