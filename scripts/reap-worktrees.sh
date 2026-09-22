@@ -326,9 +326,15 @@ reap_runaways() {
 reap_runaways
 
 # Report REAL load, not the three names that happened to be checked first.
-printf 'load: %s | rustc %s, cargo %s, test-bins %s, product %s\n' \
+# The `tool-bins` column exists because a 2026-09-22 housekeeping run reported
+# rustc/cargo/test-bins/product ALL ZERO while `target/debug/xtask` burned 15.8%
+# of a core. A gate binary is not rustc, not cargo, not under target/*/deps/ and
+# not release/busbar -- four patterns, and the thing actually running matched
+# none of them. Same lesson as the test-bins column, one layer out.
+printf 'load: %s | rustc %s, cargo %s, test-bins %s, tool-bins %s, product %s\n' \
   "$(uptime | sed 's/.*load averages*: //')" \
   "$(pgrep -c rustc 2>/dev/null || echo 0)" \
   "$(pgrep -c cargo 2>/dev/null || echo 0)" \
   "$(pgrep -fc 'target/[a-z]*/deps/' 2>/dev/null || echo 0)" \
+  "$(pgrep -fc 'target/[a-z]*/[a-z_-]*$' 2>/dev/null || echo 0)" \
   "$(pgrep -fc 'release/busbar' 2>/dev/null || echo 0)"
