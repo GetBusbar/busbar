@@ -18,7 +18,7 @@
 //!    clock), never to a permissive one;
 //! 3. translates POD ↔ primitive by pointer, writing any out-param only on the `Ok` path.
 
-use super::{recover, trust, HostState};
+use super::{recover, trust};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{
     AuthQuery, AuthResolved, Decision, EgressDesc, EgressId, EgressOpen, Facts, GovRefusal,
@@ -161,7 +161,9 @@ extern "C-unwind" fn card_sign(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if input_ptr.is_null() || out.is_null() {
             return StatusClass::Refused;
         }
@@ -195,7 +197,9 @@ extern "C-unwind" fn card_sign(
 extern "C-unwind" fn clock_now(host: HostCtx) -> u64 {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: the host passes a live `HostState` ptr for the dispatch duration (see `recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return 0;
+        };
         busbar_kernel::store::now_ms().saturating_mul(1_000_000)
     }))
     .unwrap_or(0) // fail-closed: a panicked clock reads 0, never a wild value.
@@ -207,7 +211,9 @@ extern "C-unwind" fn clock_now(host: HostCtx) -> u64 {
 extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if sample.is_null() {
             return StatusClass::Refused;
         }
@@ -237,7 +243,9 @@ extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) ->
 extern "C-unwind" fn govern_admit(host: HostCtx, facts: *const Facts) -> Decision {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return Decision::Deny;
+        };
         if facts.is_null() {
             return Decision::Deny;
         }
@@ -306,7 +314,9 @@ extern "C-unwind" fn govern_admit_reason(
         // SAFETY: ABI out-param discipline (writable/aligned or null; see `write_gov_refusal`).
         unsafe { write_gov_refusal(out, 0, 0) };
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return Decision::Deny;
+        };
         if facts.is_null() {
             return Decision::Deny;
         }
@@ -339,7 +349,9 @@ extern "C-unwind" fn govern_admit_reason(
 extern "C-unwind" fn meter_charge(host: HostCtx, usage: *const Usage) -> MeterOutcome {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return MeterOutcome::Rejected;
+        };
         if usage.is_null() {
             return MeterOutcome::Rejected;
         }
@@ -409,7 +421,9 @@ extern "C-unwind" fn auth_resolve(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if query.is_null() {
             return StatusClass::Refused;
         }

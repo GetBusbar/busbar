@@ -313,7 +313,7 @@ pub fn provision_dial(
 /// It runs the loop and maps the ending. It does NOT yet call the plane, so the answers it returns
 /// carry no body. Two things upstream of it are missing, and neither is this file's to fix:
 ///
-/// 1. **There is no per-unit arena that ships.** `busbar_contract::Arena` is `Send + Sync` and its
+/// 1. **There is no per-unit arena that ships.** `busbar_contract::PlaneAlloc` is `Send + Sync` and its
 ///    allocators take `&self` and hand back a slice borrowed from it; those two together have no
 ///    safe implementation, and every implementor in this tree is a test double that leaks. A plane
 ///    call needs one, so there is nothing to build a `Ctx` around.

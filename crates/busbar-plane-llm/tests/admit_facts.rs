@@ -91,7 +91,7 @@ fn admitting(
     check: impl FnOnce(&Dialect, &busbar_contract::unit::Unit<'_>, &AdmitFacts),
 ) {
     let plane = LlmPlane::new(&[]);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for(request.dialect), &[]);
     let labels = Labels::new();

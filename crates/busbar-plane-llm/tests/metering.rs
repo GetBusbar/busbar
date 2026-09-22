@@ -34,7 +34,7 @@ const REQUEST: &str =
 /// Meter one answer and return the lines as (class, quantity) pairs.
 fn meter(answer: &str) -> Vec<(String, Option<u64>)> {
     let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("openai"), &[]);
     let labels = Labels::new();
@@ -76,7 +76,7 @@ fn meter(answer: &str) -> Vec<(String, Option<u64>)> {
 /// whole document. Nothing else about the unit changes: same request, same upstream, same dialect.
 fn meter_event(event: &str) -> Vec<(String, Option<u64>)> {
     let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("openai"), &[]);
     let labels = Labels::new();
@@ -153,7 +153,7 @@ fn an_unreported_class_is_absent_rather_than_zero() {
 fn every_line_is_a_locator_for_a_declared_class() {
     use busbar_contract::plane::PlaneMeta;
     let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("openai"), &[]);
     let labels = Labels::new();
@@ -257,7 +257,7 @@ const ADDITIVE_UPSTREAMS: &[Upstream] = &[Upstream {
 fn every_declared_class_is_a_class_the_metering_step_emits() {
     use busbar_contract::plane::PlaneMeta;
     let plane = LlmPlane::new(ADDITIVE_UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("anthropic"), &[]);
     let labels = Labels::new();

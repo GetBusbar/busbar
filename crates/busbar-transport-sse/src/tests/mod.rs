@@ -79,7 +79,7 @@ async fn request_plus_n_response_frames_over_a_real_stream() {
     sse.write(
         &conn,
         StreamId(0),
-        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
     )
     .await
     .unwrap();
@@ -228,7 +228,7 @@ async fn byte_at_a_time_delivery_segments_identically_to_one_shot_delivery() {
         sse.write(
             &conn,
             StreamId(0),
-            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
         )
         .await
         .unwrap();
@@ -303,7 +303,7 @@ async fn a_never_closing_event_stream_delivers_its_events_as_they_arrive() {
         sse.write(
             &conn,
             StreamId(0),
-            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
         ),
     )
     .await
@@ -373,7 +373,7 @@ async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
     sse.write(
         &conn,
         StreamId(0),
-        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
     )
     .await
     .unwrap();
@@ -431,7 +431,7 @@ async fn an_upstream_error_body_reaches_the_plane_with_its_status_leg() {
     sse.write(
         &conn,
         StreamId(0),
-        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
     )
     .await
     .unwrap();
@@ -577,7 +577,7 @@ async fn a_success_body_that_is_not_an_event_stream_reaches_the_plane() {
     sse.write(
         &conn,
         StreamId(0),
-        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
     )
     .await
     .unwrap();
@@ -645,7 +645,7 @@ async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     sse.write(
         &conn,
         StreamId(0),
-        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
     )
     .await
     .unwrap();
@@ -860,7 +860,7 @@ async fn an_event_stream_that_ends_mid_event_is_a_framing_error() {
     sse.write(
         &conn,
         StreamId(0),
-        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
     )
     .await
     .unwrap();
@@ -914,7 +914,7 @@ async fn a_trailer_frame_from_the_layer_below_is_not_read_as_an_event() {
     sse.write(
         &conn,
         StreamId(0),
-        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
     )
     .await
     .unwrap();

@@ -59,51 +59,10 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     );
 }
 
-/// EVERY section the grammar declares is refused BY BOTH PLANES' production validators, and the two
-/// refusals differ in nothing but the caller's own label for the site.
-///
-/// This is the whole point of the unit expressed as a test: it iterates the DERIVATION, so a plane
-/// or a section added to either table is covered here the moment it is added, with no edit to this
-/// test and none to either protocol's config module.
-#[test]
-fn every_section_the_grammar_declares_is_refused_on_both_planes() {
-    // Both planes' validators judge a hook reference against the PROCESS section registry, read through
-    // the neutral `plane_sections` provider seam — so every plane must be registered for them to
-    // recognise every OTHER plane's declared section as a cross-plane reach. Two of the planes under
-    // test register their own decls (and bind the provider) through their test-kits; one plane's
-    // declaration still lives in `busbar-core` (its declared config section key predates the
-    // extracted-crate shape), so it has no crate test-kit to register it and must be registered here.
-    // Without this the provider would omit that plane's declared section key and its sibling's
-    // validator would refuse a reference onto it as merely not-bare rather than a cross-plane
-    // reach. Registration is idempotent by key, so this is a no-op past the first run.
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
-    busbar_kernel::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
-
-    for section in config_sections() {
-        let hook = format!("{section}.some-hook");
-
-        let a2a = busbar_a2a::a2a::config::validate_agent("x", &agent_with_hook(&hook))
-            .expect_err(&format!("the `agents:` plane must refuse `{hook}`"));
-        let mcp = busbar_mcp::mcp::config::validate_server("x", &server_with_hook(&hook))
-            .expect_err(&format!("the `tools:` plane must refuse `{hook}`"));
-
-        let a2a_body = a2a
-            .strip_prefix("`agents.x`")
-            .expect("the a2a plane keeps its own wording for WHERE");
-        let mcp_body = mcp
-            .strip_prefix("`tools.x`")
-            .expect("the mcp plane keeps its own wording for WHERE");
-        assert_eq!(
-            a2a_body, mcp_body,
-            "one rule, one sentence: the planes may differ only in the site they name"
-        );
-        assert!(
-            a2a_body.contains(&format!("reaches onto the `{section}:` plane")),
-            "the refusal must NAME the section reached onto, got: {a2a}"
-        );
-    }
-}
+/// EVERY section the grammar declares is refused BY BOTH PLANES' production validators MOVED to
+/// `tests/plane_config_cross_plane.rs::every_section_the_grammar_declares_is_refused_on_both_planes`
+/// — it registers the REAL busbar_llm/busbar_mcp/busbar_a2a planes, which only type-checks with
+/// ONE `busbar_kernel` in the graph. See that file's header.
 
 // ══ 2. A THIRD PLANE COSTS A SECTION NAME AND NOTHING ELSE ═══════════════════════════════════════
 
@@ -241,37 +200,4 @@ fn every_refusal_arm_has_a_sentence_of_its_own() {
             rest: "planner".to_string(),
         })
     );
-}
-
-// ══ fixtures ═════════════════════════════════════════════════════════════════════════════════════
-
-/// A minimal, otherwise-VALID `agents:` entry carrying one hook reference — so the only thing that
-/// can fail the validator is the hook.
-fn agent_with_hook(hook: &str) -> busbar_a2a::a2a::config::AgentDefCfg {
-    serde_yaml::from_str::<busbar_a2a::a2a::config::AgentsCfg>(
-        "x:\n  url: \"https://a2a.vendor/x\"\n  pin: { mechanism: unpinned }\n",
-    )
-    .expect("the fixture entry must parse")
-    .agents
-    .shift_remove("x")
-    .map(|mut def| {
-        def.hooks = vec![hook.to_string()];
-        def
-    })
-    .expect("the fixture entry must be present")
-}
-
-/// The same, for the `tools:` plane.
-fn server_with_hook(hook: &str) -> busbar_mcp::mcp::config::McpServerDefCfg {
-    serde_yaml::from_str::<busbar_mcp::mcp::config::ToolsCfg>(
-        "x:\n  url: \"https://mcp.internal/x\"\n  pin: { mechanism: unpinned }\n",
-    )
-    .expect("the fixture entry must parse")
-    .servers
-    .shift_remove("x")
-    .map(|mut def| {
-        def.hooks = vec![hook.to_string()];
-        def
-    })
-    .expect("the fixture entry must be present")
 }

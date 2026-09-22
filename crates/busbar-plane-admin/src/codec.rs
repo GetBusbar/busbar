@@ -8,7 +8,7 @@
 //! read the bytes; a later step re-deriving the same answer from the same bytes is a second reading
 //! of one closed grammar, and two readings can drift.
 
-use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir, Span};
+use busbar_contract::bounded::{ScratchBytes, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::AdminVerbId;
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -189,7 +189,7 @@ impl Plane for AdminPlane {
         _dest: &VerifiedDestination,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // Every admin unit is `OneShot` (see `decode_ingress`): there is no open unit whose later
         // frames this method would relay onward to a destination. Unreachable for the same reason
         // as `encode_egress`.
@@ -213,7 +213,7 @@ impl Plane for AdminPlane {
         r: &Response<'u>,
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         let body = r.ir.body();
         // The one documented exception: the `openapi.json` blob is served verbatim by
         // `busbar-unit-verbs` (this plane computes no result), EXCEPT that `info.version` is
@@ -245,7 +245,7 @@ impl Plane for AdminPlane {
                 }
             }
         }
-        Ok(ArenaBytes::new(body))
+        Ok(ScratchBytes::new(body))
     }
 
     fn encode_refusal<'u>(
@@ -254,11 +254,11 @@ impl Plane for AdminPlane {
         _draft: Option<&UnitDraft<'u>>,
         _st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         let body = refusal::envelope(refused.reason);
         ctx.arena()
             .alloc_bytes(body.as_bytes())
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_end<'u>(
@@ -267,7 +267,7 @@ impl Plane for AdminPlane {
         _end: &UnitEnd,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // A one-shot request/response dialect has no ending frame of its own to write beyond the
         // response or refusal already rendered; the kernel's own minimal ending covers it.
         Ok(None)

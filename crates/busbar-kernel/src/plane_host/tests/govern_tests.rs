@@ -297,7 +297,8 @@ fn govern_admit_reason_admits_and_registers_grant() {
             "an admit renders no reason"
         );
         // SAFETY: live HostState from `with_dispatch_scope`.
-        let state: &crate::plane_host::HostState = unsafe { crate::plane_host::recover(host) };
+        let state: &crate::plane_host::HostState = unsafe { crate::plane_host::recover(host) }
+            .expect("host generation still live inside with_dispatch_scope");
         assert_eq!(
             state.scope.registered(),
             1,

@@ -2721,7 +2721,7 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
     let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
     let cache = crate::auth_cache::CredentialCache::new();
     let now = busbar_kernel::store::now();
-    let verdict = mw.run_chain_cached(Some(secret), Some(&cache), Some(&gov), None);
+    let verdict = mw.run_chain_cached(Some(secret), Some(&cache), Some(&gov), now, None);
     assert!(
         matches!(
             verdict,

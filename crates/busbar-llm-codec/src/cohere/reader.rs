@@ -11,11 +11,11 @@ impl ProtocolReader for CohereReader {
             crate::ir::IrUsage {
                 input_tokens: tokens
                     .and_then(|t| t.get("input_tokens"))
-                    .and_then(|x| x.as_u64())
+                    .and_then(read_count_u64)
                     .unwrap_or(0),
                 output_tokens: tokens
                     .and_then(|t| t.get("output_tokens"))
-                    .and_then(|x| x.as_u64())
+                    .and_then(read_count_u64)
                     .unwrap_or(0),
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
@@ -927,11 +927,11 @@ impl ProtocolReader for CohereReader {
                         crate::ir::IrUsage {
                             input_tokens: tokens_map
                                 .get("input_tokens")
-                                .and_then(|v| v.as_u64())
+                                .and_then(read_count_u64)
                                 .unwrap_or(0),
                             output_tokens: tokens_map
                                 .get("output_tokens")
-                                .and_then(|v| v.as_u64())
+                                .and_then(read_count_u64)
                                 .unwrap_or(0),
                             cache_creation_input_tokens: None,
                             cache_read_input_tokens: None,
@@ -945,7 +945,7 @@ impl ProtocolReader for CohereReader {
                                 search_units: u
                                     .get("billed_units")
                                     .and_then(|b| b.get("search_units"))
-                                    .and_then(|v| v.as_u64()),
+                                    .and_then(read_count_u64),
                                 // Cohere's `billed_units.{input,output}_tokens`/`classifications`
                                 // ride the STREAM's terminal `message-end.delta.usage` exactly as
                                 // `search_units` does; reading them only on the buffered path meant
@@ -953,15 +953,15 @@ impl ProtocolReader for CohereReader {
                                 billed_input_tokens: u
                                     .get("billed_units")
                                     .and_then(|b| b.get("input_tokens"))
-                                    .and_then(|v| v.as_u64()),
+                                    .and_then(read_count_u64),
                                 billed_output_tokens: u
                                     .get("billed_units")
                                     .and_then(|b| b.get("output_tokens"))
-                                    .and_then(|v| v.as_u64()),
+                                    .and_then(read_count_u64),
                                 billed_classifications: u
                                     .get("billed_units")
                                     .and_then(|b| b.get("classifications"))
-                                    .and_then(|v| v.as_u64()),
+                                    .and_then(read_count_u64),
                                 ..Default::default()
                             },
                         }
@@ -1228,12 +1228,12 @@ impl ProtocolReader for CohereReader {
             input_tokens: tokens_val
                 .and_then(|t| t.as_object())
                 .and_then(|t_obj| t_obj.get("input_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(read_count_u64)
                 .unwrap_or(0),
             output_tokens: tokens_val
                 .and_then(|t| t.as_object())
                 .and_then(|t_obj| t_obj.get("output_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(read_count_u64)
                 .unwrap_or(0),
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
@@ -1244,7 +1244,7 @@ impl ProtocolReader for CohereReader {
                 search_units: usage_val
                     .and_then(|u| u.get("billed_units"))
                     .and_then(|b| b.get("search_units"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(read_count_u64),
                 // Cohere reports a raw `tokens` bucket AND a separately-metered `billed_units`
                 // bucket. The raw totals populate `input_tokens`/`output_tokens` above; carry the
                 // billed attribution here so a Cohere->Cohere read->write does not drop it (the raw
@@ -1253,15 +1253,15 @@ impl ProtocolReader for CohereReader {
                 billed_input_tokens: usage_val
                     .and_then(|u| u.get("billed_units"))
                     .and_then(|b| b.get("input_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(read_count_u64),
                 billed_output_tokens: usage_val
                     .and_then(|u| u.get("billed_units"))
                     .and_then(|b| b.get("output_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(read_count_u64),
                 billed_classifications: usage_val
                     .and_then(|u| u.get("billed_units"))
                     .and_then(|b| b.get("classifications"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(read_count_u64),
                 ..Default::default()
             },
         };

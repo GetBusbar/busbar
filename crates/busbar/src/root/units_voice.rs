@@ -1691,7 +1691,7 @@ impl Units for VoiceUnit<'_> {
             // class list makes the arm unreachable from the declarations — which is exactly why it
             // is an honest refusal rather than an unwrap: the day a class is added is the day the
             // assertion, not this arm, is what says so.
-            Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ArenaBudget)),
+            Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ScratchExhausted)),
         }
     }
 

@@ -3,7 +3,7 @@
 //! facts and locators only — never an amount, a decision, a credential, a price or a scheme
 //! outside its claim. Pure over its inputs; no default bodies (see `docs/design/contract-notes.md`).
 
-use crate::bounded::{ArenaBytes, Facts, Ir};
+use crate::bounded::{Facts, Ir, ScratchBytes};
 use crate::dest::{EgressBody, RoutePlan, VerifiedDestination};
 use crate::grammar::Claim;
 use crate::ids::{AdminVerbId, CorrelationRef, MeterClassDecl, OpClassId, RecordSchemaId};
@@ -134,7 +134,7 @@ pub enum Ingress<'u> {
         /// Which unit it belongs to.
         for_: Option<CorrelationRef<'u>>,
         /// The bytes to relay.
-        relay: ArenaBytes<'u>,
+        relay: ScratchBytes<'u>,
         /// The facts the plane read off it.
         facts: Box<Facts<'u>>,
     },
@@ -221,7 +221,7 @@ pub trait Plane: Plugin + Send + Sync + 'static {
         dest: &VerifiedDestination,
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode>;
+    ) -> Result<Option<ScratchBytes<'u>>, Encode>;
 
     /// Read bytes coming back from an upstream.
     fn decode_response<'u>(
@@ -238,7 +238,7 @@ pub trait Plane: Plugin + Send + Sync + 'static {
         r: &Response<'u>,
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode>;
+    ) -> Result<ScratchBytes<'u>, Encode>;
 
     /// Write a refusal in this dialect's shape. The codec state is borrowed immutably on purpose:
     /// a refusal must not advance codec state, or a sequence-numbered protocol that incremented
@@ -249,7 +249,7 @@ pub trait Plane: Plugin + Send + Sync + 'static {
         draft: Option<&UnitDraft<'u>>,
         st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode>;
+    ) -> Result<ScratchBytes<'u>, Encode>;
 
     /// Write the end of a unit, where the dialect has one to write.
     fn encode_end<'u>(
@@ -258,7 +258,7 @@ pub trait Plane: Plugin + Send + Sync + 'static {
         end: &UnitEnd,
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode>;
+    ) -> Result<Option<ScratchBytes<'u>>, Encode>;
 
     /// Say where the credential is, and narrow the claim's scheme if the dialect narrows it.
     ///

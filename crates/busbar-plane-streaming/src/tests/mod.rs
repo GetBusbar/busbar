@@ -87,7 +87,7 @@ mod purity {
 /// provider's lane.
 mod route {
     use crate::claims::Dialect;
-    use crate::tests::harness::{ctx_with_session, EmptyConfig, LeakArena, PairedSession, WsStack};
+    use crate::tests::harness::{ctx_with_session, EmptyConfig, LeakPlaneAlloc, PairedSession, WsStack};
     use crate::{StreamingPlane, Upstream};
     use busbar_contract::bounded::{FactValue, Facts, Ir, Labels};
     use busbar_contract::dest::DestinationFacts;
@@ -115,7 +115,7 @@ mod route {
     #[test]
     fn a_paired_turn_routes_to_the_dialed_upstream_not_the_first() {
         let plane = StreamingPlane::new(UPSTREAMS);
-        let arena = LeakArena;
+        let arena = LeakPlaneAlloc;
         let config = EmptyConfig;
         let transport = WsStack::new("/openai/realtime");
         let labels = Labels::new();
@@ -147,7 +147,7 @@ mod route {
     #[test]
     fn a_paired_openai_turn_still_routes_to_the_openai_upstream() {
         let plane = StreamingPlane::new(UPSTREAMS);
-        let arena = LeakArena;
+        let arena = LeakPlaneAlloc;
         let config = EmptyConfig;
         let transport = WsStack::new("/openai/realtime");
         let labels = Labels::new();

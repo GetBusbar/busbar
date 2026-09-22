@@ -15,7 +15,7 @@ use busbar_contract::wire::FrameCursor;
 use serde_json::json;
 
 use crate::claims::Dialect;
-use crate::tests::harness::{ctx, destination, frame, EmptyConfig, LeakArena, WsStack};
+use crate::tests::harness::{ctx, destination, frame, EmptyConfig, LeakPlaneAlloc, WsStack};
 use crate::{Upstream, VoicePlane};
 
 fn openai_plane() -> VoicePlane {
@@ -68,7 +68,7 @@ fn session_update_fixture() -> Vec<u8> {
 #[test]
 fn session_update_opens_a_turn_and_names_the_dialect() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -96,7 +96,7 @@ fn session_update_opens_a_turn_and_names_the_dialect() {
 #[test]
 fn a_second_frame_of_the_same_turn_relays_rather_than_reopens() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -133,7 +133,7 @@ fn a_second_frame_of_the_same_turn_relays_rather_than_reopens() {
 #[test]
 fn client_truncate_writes_the_declared_interrupt_fact() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -166,7 +166,7 @@ fn client_truncate_writes_the_declared_interrupt_fact() {
 #[test]
 fn upstream_speech_started_synthesizes_the_interrupt_fact_from_playback_position() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -225,7 +225,7 @@ fn upstream_speech_started_synthesizes_the_interrupt_fact_from_playback_position
 #[test]
 fn downlink_audio_frames_carry_the_declared_pacing_fact() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -270,7 +270,7 @@ fn downlink_audio_frames_carry_the_declared_pacing_fact() {
 #[test]
 fn a_tool_call_dispatches_on_close_with_its_arguments() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -359,7 +359,7 @@ fn a_tool_call_dispatches_on_close_with_its_arguments() {
 #[test]
 fn two_open_tool_calls_wait_on_two_different_correlations() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -443,7 +443,7 @@ fn two_open_tool_calls_wait_on_two_different_correlations() {
 #[test]
 fn a_client_tool_reply_names_the_call_it_answers() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -504,7 +504,7 @@ fn a_client_tool_reply_names_the_call_it_answers() {
 #[test]
 fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -595,7 +595,7 @@ fn twilio_media_after_start_admits_a_ulaw_audio_frame() {
         dialect: Dialect::OpenaiRealtime,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/twilio/call-123");
     let labels = Labels::new();
@@ -646,7 +646,7 @@ fn twilio_media_with_a_forged_stream_sid_is_discarded() {
         dialect: Dialect::OpenaiRealtime,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/twilio/call-123");
     let labels = Labels::new();
@@ -701,7 +701,7 @@ fn twilio_dtmf_decodes_and_is_discarded_as_unsupported() {
         dialect: Dialect::OpenaiRealtime,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/twilio/call-123");
     let labels = Labels::new();
@@ -745,7 +745,7 @@ fn twilio_unknown_event_is_dropped_and_a_non_carrier_frame_is_still_refused() {
         dialect: Dialect::OpenaiRealtime,
     }];
     let plane = VoicePlane::new(UPSTREAMS);
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/twilio/call-123");
     let labels = Labels::new();
@@ -787,7 +787,7 @@ fn twilio_unknown_event_is_dropped_and_a_non_carrier_frame_is_still_refused() {
 #[test]
 fn an_upstream_error_still_meters_the_turn_it_ended() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -887,7 +887,7 @@ fn an_upstream_error_still_meters_the_turn_it_ended() {
 #[test]
 fn uplink_audio_meters_on_the_half_the_upstream_answer_arrives_on() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -961,7 +961,7 @@ fn uplink_audio_meters_on_the_half_the_upstream_answer_arrives_on() {
 #[test]
 fn admitted_milliseconds_meter_as_seconds() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let cfg = EmptyConfig;
     let stack = WsStack::new("/v1/realtime");
     let labels = Labels::default();
@@ -1007,7 +1007,7 @@ fn admitted_milliseconds_meter_as_seconds() {
 #[test]
 fn a_one_shot_text_to_speech_unit_meters_the_text_it_was_asked_to_speak() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/audio/speech");
     let labels = Labels::new();
@@ -1060,7 +1060,7 @@ fn a_one_shot_text_to_speech_unit_meters_the_text_it_was_asked_to_speak() {
 #[test]
 fn a_one_shot_transcription_meters_the_text_it_returned() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/audio/transcriptions");
     let labels = Labels::new();
@@ -1143,7 +1143,7 @@ mod base64_stdlib {
 #[test]
 fn ws_frame_with_invalid_utf8_fails_closed_rather_than_hanging_on_need_more() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -1162,7 +1162,7 @@ fn ws_frame_with_invalid_utf8_fails_closed_rather_than_hanging_on_need_more() {
 #[test]
 fn ws_frame_with_an_unrecognised_event_is_dropped_never_left_pending() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -1190,7 +1190,7 @@ fn ws_frame_with_an_unrecognised_event_is_dropped_never_left_pending() {
 #[test]
 fn ws_frame_carrying_no_bytes_yet_is_genuinely_need_more() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -1215,7 +1215,7 @@ fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
     use busbar_contract::unit::{Refusal, RefusalReason, Step};
 
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -1277,7 +1277,7 @@ fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
 #[test]
 fn a_barge_in_on_an_open_turn_opens_the_turn_that_supersedes_it() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();

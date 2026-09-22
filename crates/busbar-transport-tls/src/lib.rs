@@ -46,7 +46,7 @@ use busbar_contract::transport::wire::Listener;
 use busbar_contract::transport::wire::ListenerHandle;
 use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{
-    ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    ScratchBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 use futures::Stream;
@@ -651,7 +651,7 @@ impl Transport for TlsTransport {
         &'a self,
         conn: &'a Conn,
         _stream: StreamId,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
@@ -681,11 +681,11 @@ impl Transport for TlsTransport {
         &self,
         _fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)
     }
 
     /// The in-band upgrade, from this side: the STARTTLS-shaped handoff the transports table names.
@@ -787,7 +787,7 @@ impl Transport for TlsTransport {
         // `tls` inherits `tcp`'s single stream; the connection is the whole of what can be refused.
         _stream: Option<StreamId>,
         _refusal: &'a Refusal,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;

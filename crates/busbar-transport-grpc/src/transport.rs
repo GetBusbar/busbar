@@ -21,7 +21,7 @@ use busbar_contract::transport::AbiVersion;
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::Frame;
 use busbar_contract::{
-    grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, StreamId, Transport, TransportConfigView,
+    grammar::SelectorForm, ScratchBytes, Fut, Kind, Plugin, StreamId, Transport, TransportConfigView,
     TransportKeyHandle, TransportMeta,
 };
 
@@ -294,7 +294,7 @@ impl Transport for GrpcTransport {
         &'a self,
         conn: &'a Conn,
         stream: StreamId,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize> {
         let id = conn.id();
         Box::pin(async move {
@@ -372,11 +372,11 @@ impl Transport for GrpcTransport {
         &self,
         _fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)
     }
 
     fn adopt<'a>(
@@ -433,7 +433,7 @@ impl Transport for GrpcTransport {
         conn: Conn,
         stream: Option<StreamId>,
         _refusal: &'a Refusal,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let id = conn.id();

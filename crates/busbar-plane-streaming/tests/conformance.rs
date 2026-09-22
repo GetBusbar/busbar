@@ -22,7 +22,7 @@ use busbar_contract::wire::FrameCursor;
 use serde_json::json;
 
 use busbar_plane_streaming::{Dialect, StreamingPlane, Upstream};
-use harness::{ctx, destination, frame, EmptyConfig, LeakArena, WsStack};
+use harness::{ctx, destination, frame, EmptyConfig, LeakPlaneAlloc, WsStack};
 
 /// A streaming plane configured with one openai-realtime (voice-dialect) upstream.
 fn streaming_plane() -> StreamingPlane {
@@ -73,7 +73,7 @@ fn a_realtime_voice_session_reserves_takes_turns_and_settles() {
     );
     assert_eq!(Dialect::OpenaiRealtime.name(), "openai-realtime");
 
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();

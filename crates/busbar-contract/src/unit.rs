@@ -5,7 +5,7 @@
 //! of their identity. Everything below is read-only from a plugin's side.
 
 use crate::bounded::{
-    ArenaBytes, BoundedVec, Facts, Ir, Labels, MAX_RESPONSE_PTRS, MAX_USAGE_LINES,
+    BoundedVec, Facts, Ir, Labels, ScratchBytes, MAX_RESPONSE_PTRS, MAX_USAGE_LINES,
 };
 use crate::grammar::Location;
 use crate::ids::{
@@ -135,8 +135,8 @@ pub enum RefusalReason {
     TierMismatch,
     /// The node-global body-spill budget was reached.
     SpillBudget,
-    /// The per-unit arena was exhausted.
-    ArenaBudget,
+    /// The per-call scratch pad hit its abuse ceiling.
+    ScratchExhausted,
     /// The source is over its arrival rate.
     RateLimited,
     /// The plane could not make sense of the bytes.
@@ -188,8 +188,8 @@ pub enum FailureReason {
     PluginTimeout,
     /// A plane call panicked.
     PlanePanic,
-    /// The per-unit arena was exhausted.
-    ArenaBudget,
+    /// The per-call scratch pad hit its abuse ceiling.
+    ScratchExhausted,
     /// The session fact map is at its key ceiling.
     SessionFactsExhausted,
     /// A minted secret's placeholder did not appear exactly once.
@@ -479,7 +479,7 @@ pub struct Ctx<'u> {
     session: Option<&'u dyn SessionView>,
     transport: &'u dyn TransportView,
     labels: &'u Labels<'u>,
-    arena: &'u dyn crate::bounded::Arena,
+    arena: &'u dyn crate::bounded::PlaneAlloc,
 }
 
 impl<'u> Ctx<'u> {
@@ -491,7 +491,7 @@ impl<'u> Ctx<'u> {
         session: Option<&'u dyn SessionView>,
         transport: &'u dyn TransportView,
         labels: &'u Labels<'u>,
-        arena: &'u dyn crate::bounded::Arena,
+        arena: &'u dyn crate::bounded::PlaneAlloc,
     ) -> Self {
         Self {
             clock,
@@ -535,7 +535,7 @@ impl<'u> Ctx<'u> {
 
     /// The per-unit arena — the one resource handle.
     #[must_use]
-    pub fn arena(&self) -> &'u dyn crate::bounded::Arena {
+    pub fn arena(&self) -> &'u dyn crate::bounded::PlaneAlloc {
         self.arena
     }
 }
@@ -556,7 +556,7 @@ pub struct LegResult<'u> {
     /// Which leg, by position in the route plan.
     pub leg: u8,
     /// The reply's body, where the leg produced one.
-    pub body: Option<ArenaBytes<'u>>,
+    pub body: Option<ScratchBytes<'u>>,
     /// The facts the plane read off the reply.
     pub facts: Facts<'u>,
 }

@@ -59,7 +59,7 @@
 //!   implemented; a future pass that wants server-side tool EXECUTION (rather than delivering the call
 //!   to whatever session member answers it) is the one that should add the `NestedPlane` path.
 
-use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir};
+use busbar_contract::bounded::{ScratchBytes, FactValue, Facts, Ir};
 use busbar_contract::dest::{
     ClientMode, DestinationFacts, EgressBody, RoutePlan, VerifiedDestination,
 };
@@ -186,7 +186,7 @@ fn write_up_to_arena<'u>(
     event: IrClientEvent,
     state: &mut VoiceSessionState,
     ctx: &Ctx<'u>,
-) -> Result<Option<ArenaBytes<'u>>, Encode> {
+) -> Result<Option<ScratchBytes<'u>>, Encode> {
     let writer = writer_for(upstream_dialect);
     let Some(out) = writer.write_up(event, &mut state.codec) else {
         return Ok(None);
@@ -194,7 +194,7 @@ fn write_up_to_arena<'u>(
     ctx.arena()
         .alloc_bytes(&out.0)
         .map(Some)
-        .map_err(|_| Encode::ArenaExhausted)
+        .map_err(|_| Encode::ScratchExhausted)
 }
 
 impl StreamingPlane {
@@ -274,14 +274,14 @@ impl Plane for StreamingPlane {
                     Some(event) => write_up_to_arena(upstream_dialect, event, state, ctx)?
                         // The upstream dialect has no verb for this opening concept: nothing is
                         // relayed, the same answer `encode_ingress_frame` gives a dropped later frame.
-                        .unwrap_or_else(|| ArenaBytes::new(&[])),
-                    None => ArenaBytes::new(&[]),
+                        .unwrap_or_else(|| ScratchBytes::new(&[])),
+                    None => ScratchBytes::new(&[]),
                 }
             }
             None => ctx
                 .arena()
                 .alloc_bytes(u.body().body())
-                .map_err(|_| Encode::ArenaExhausted)?,
+                .map_err(|_| Encode::ScratchExhausted)?,
         };
         Ok(EgressBody {
             envelope: TransportEnvelope::default(),
@@ -297,7 +297,7 @@ impl Plane for StreamingPlane {
         dest: &VerifiedDestination,
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         let state = st
             .ok_or(Encode::Poisoned)?
             .get_mut::<VoiceSessionState>()
@@ -420,12 +420,12 @@ impl Plane for StreamingPlane {
         r: &Response<'u>,
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         // See the module doc comment's `encode_response` note: `decode_response` already rendered
         // client-dialect bytes into `r.ir`; this is the passthrough.
         ctx.arena()
             .alloc_bytes(r.ir.body())
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_refusal<'u>(
@@ -434,7 +434,7 @@ impl Plane for StreamingPlane {
         _draft: Option<&UnitDraft<'u>>,
         _st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         let (code, message) = refusal_render(refusal.reason);
         let event = IrServerEvent::Error {
             code: code.to_string(),
@@ -457,7 +457,7 @@ impl Plane for StreamingPlane {
             .0;
         ctx.arena()
             .alloc_bytes(&bytes)
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_end<'u>(
@@ -466,7 +466,7 @@ impl Plane for StreamingPlane {
         _end: &UnitEnd,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // A turn's own ending is always rendered as a `Progress::Terminal` `Response` through
         // `encode_response` (the upstream's `response.done`/error IS the ending); there is no further
         // trailer this dialect writes at the unit's own close.
@@ -1042,7 +1042,7 @@ fn ingress_from_client_event<'u>(
                 fact_key: FACT_TOOL_CORRELATION,
                 value: CorrelationValue::Str(id),
             }),
-            relay: ArenaBytes::new(&[]),
+            relay: ScratchBytes::new(&[]),
             facts: Box::new(facts),
         });
     }
@@ -1060,8 +1060,8 @@ fn ingress_from_client_event<'u>(
         }
         IrClientEvent::Control(IrDuplexControl::ItemTruncate {
             audio_played_ms, ..
-        }) => (ArenaBytes::new(&[]), Some(*audio_played_ms), None),
-        IrClientEvent::Control(_) | IrClientEvent::Tool(_) => (ArenaBytes::new(&[]), None, None),
+        }) => (ScratchBytes::new(&[]), Some(*audio_played_ms), None),
+        IrClientEvent::Control(_) | IrClientEvent::Tool(_) => (ScratchBytes::new(&[]), None, None),
     };
     open_or_relay(state, dialect, wire, relay, interrupt_ms, audio_ms, ctx)
 }
@@ -1078,7 +1078,7 @@ fn open_or_relay<'u>(
     state: &mut VoiceSessionState,
     dialect: Dialect,
     open_wire: &'u [u8],
-    relay: ArenaBytes<'u>,
+    relay: ScratchBytes<'u>,
     interrupt_ms: Option<u64>,
     audio_ms: Option<u64>,
     ctx: &Ctx<'u>,

@@ -1514,44 +1514,12 @@ fn test_resolve_provider_from_def() {
     );
 }
 
-/// THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B). `resolve`'s provider merge now
-/// runs through `PlaneDecl::resolve_provider` when the LLM plane is installed (the shipped default —
-/// core's own `#[cfg(test)]` binary always registers it, so `test_resolve_provider_from_def` above
-/// already exercises this path) and through core's own `merge_provider_fallback` when no plane
-/// implements the hook. This test proves the two produce the IDENTICAL `ProviderCfg` for the same
-/// inputs, so an llm-plane-absent build's merge is byte-identical to the shipped one — the guarantee
-/// `merge_provider_fallback`'s doc comment claims.
-#[test]
-fn resolve_provider_hook_and_core_fallback_agree() {
-    let mut def = provider_def(DEFAULT_PROTOCOL, "https://api.z.ai/api/model-1");
-    def.error_map
-        .insert("1113".to_string(), "billing".to_string());
-    def.error_map
-        .insert("1302".to_string(), "rate_limit".to_string());
-    let deploy_cfg = provider_deploy("ZAI_KEY");
-
-    let hook = busbar_llm::PLANE_DECL
-        .resolve_provider
-        .expect("the LLM plane declares `resolve_provider`");
-    let via_hook = hook(&def, &deploy_cfg);
-    let via_fallback = merge_provider_fallback(&def, &deploy_cfg);
-
-    assert_eq!(via_hook.protocol, via_fallback.protocol);
-    assert_eq!(via_hook.base_url, via_fallback.base_url);
-    assert_eq!(via_hook.api_key.env_var(), via_fallback.api_key.env_var());
-    assert_eq!(via_hook.error_map, via_fallback.error_map);
-    assert_eq!(via_hook.health.is_some(), via_fallback.health.is_some());
-    assert_eq!(via_hook.path, via_fallback.path);
-    assert_eq!(via_hook.path_base, via_fallback.path_base);
-    assert_eq!(via_hook.token_url, via_fallback.token_url);
-    assert_eq!(via_hook.scope, via_fallback.scope);
-    assert_eq!(via_hook.subject, via_fallback.subject);
-    assert_eq!(via_hook.auth, via_fallback.auth);
-    assert_eq!(
-        via_hook.allow_metadata_hosts,
-        via_fallback.allow_metadata_hosts
-    );
-}
+/// THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B) MOVED to
+/// `tests/config_cross_plane.rs::resolve_provider_hook_and_core_fallback_agree` — it calls the REAL
+/// `busbar_llm::PLANE_DECL.resolve_provider` hook, which only type-checks against core's OWN
+/// `ProviderDef`/`ProviderDeploy` when there is ONE `busbar_kernel` in the graph (an integration-test
+/// target), not the two copies busbar-kernel's own `#[cfg(test)]` dev-dependency back-edge onto
+/// busbar-llm produces. See that file's header for the full rationale.
 
 /// A provider credential is a SECRET REFERENCE, never an inline literal. A plain-string
 /// `api_key:` (the pre-1.0 inline-key shape) is REJECTED AT PARSE (SecretRef deserializes only
@@ -3723,58 +3691,10 @@ fn root_settings_doc_lists_only_fields_that_exist() {
     }
 }
 
-/// THE PUBLISHED-NAME COLLISION IS A `resolve` ERROR, which is what makes it a `--validate` error.
-///
-/// `busbar --validate`, boot, the admin config-apply rebuild and the admin dry-run validate
-/// endpoint all reach `resolve`, and none of them reaches `mcp::config::validate_published_names`
-/// any other way. If the check were wired only into the `ToolsCfg` `Deserialize` it would never see
-/// a server the admin API applied, and a config that validated would not be the config that boots.
-/// So the wiring itself is the thing under test here, not the rule.
-#[test]
-fn resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree() {
-    // The SUBTLE collision — an override against a namespaced default nobody typed — because it is
-    // the one that survives a partial implementation of the rule.
-    let tools: busbar_mcp::mcp::config::ToolsCfg = serde_yaml::from_str(
-        r#"
-foo:
-  url: "https://foo/"
-  pin: { mechanism: unpinned }
-  tools_allow: { bar: {} }
-other:
-  url: "https://other/"
-  pin: { mechanism: unpinned }
-  tools_allow: { anything: { publish_as: foo_bar } }
-"#,
-    )
-    .expect("both servers are individually valid");
-
-    let mut deploy = base_deploy();
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
-    let errors = resolve(&deploy, &HashMap::new())
-        .expect_err("resolve must refuse a config whose published names are not unique");
-    assert!(
-        errors.iter().any(|e| e.contains("published as `foo_bar`")),
-        "{errors:?}"
-    );
-
-    // GREEN, same shape, one name changed: the refusal is about the collision and nothing else.
-    let ok: busbar_mcp::mcp::config::ToolsCfg = serde_yaml::from_str(
-        r#"
-foo:
-  url: "https://foo/"
-  pin: { mechanism: unpinned }
-  tools_allow: { bar: {} }
-other:
-  url: "https://other/"
-  pin: { mechanism: unpinned }
-  tools_allow: { anything: { publish_as: other_name } }
-"#,
-    )
-    .unwrap();
-    let mut deploy = base_deploy();
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(ok));
-    resolve(&deploy, &HashMap::new()).expect("distinct published names must resolve");
-}
+/// THE PUBLISHED-NAME COLLISION IS A `resolve` ERROR MOVED to
+/// `tests/config_cross_plane.rs::resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree`
+/// — it constructs a REAL `busbar_mcp::mcp::config::ToolsCfg` and hands it to core's `resolve`,
+/// which only type-checks with ONE `busbar_kernel` in the graph. See that file's header.
 
 // ══ THE FAILOVER POOLS' CROSS-REFERENCES ═════════════════════════════════════════════════════════
 //
@@ -3797,87 +3717,16 @@ fn failover_pools_are_absent_by_default() {
     );
 }
 
-/// A member naming nothing is an operator believing a request has somewhere to go when it does not.
-/// 1.6.0: the pool lives in the ONE neutral `pools:` map; kind is INFERRED from the resolvable
-/// member (`search-eu` → a `tools:` server), so the dangling `search-us` is named against `tools:`.
-#[test]
-fn a_tool_pool_member_that_names_no_server_is_refused() {
-    let mut deploy = base_deploy();
-    let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
-    tools.servers.insert(
-        "search-eu".to_string(),
-        serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
-            .expect("a minimal server"),
-    );
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
-    deploy.pools.pools.insert(
-        "search".to_string(),
-        serde_yaml::from_str::<crate::config::PoolCfg>("{members: [search-eu, search-us]}")
-            .expect("a bare-name pool"),
-    );
-    let errs = resolve(&deploy, &HashMap::new()).expect_err("a dangling member must refuse boot");
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("search-us") && e.contains("`tools:`")),
-        "the message names the missing entry and the section it belongs in: {errs:?}"
-    );
-}
+/// A member naming nothing... MOVED to
+/// `tests/config_cross_plane.rs::a_tool_pool_member_that_names_no_server_is_refused` (needs a
+/// real `busbar_mcp::mcp::config::ToolsCfg`). See that file's header.
 
-/// KIND IS INFERRED, SO A POOL MUST BE HOMOGENEOUS: a pool whose members span two nouns cannot be
-/// assigned a single plane and is refused with the homogeneity error.
-#[test]
-fn a_pool_may_not_straddle_two_planes() {
-    let mut deploy = base_deploy();
-    let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
-    agents.agents.insert(
-        "planner".to_string(),
-        serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
-            .expect("a minimal agent"),
-    );
-    deploy.agents = crate::plane::config::AgentsSection(Box::new(agents));
-    let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
-    tools.servers.insert(
-        "search-eu".to_string(),
-        serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
-            .expect("a minimal server"),
-    );
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
-    deploy.pools.pools.insert(
-        "mixed".to_string(),
-        serde_yaml::from_str::<crate::config::PoolCfg>("{members: [planner, search-eu]}")
-            .expect("a bare-name pool"),
-    );
-    let errs =
-        resolve(&deploy, &HashMap::new()).expect_err("a cross-plane member must refuse boot");
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("more than one plane") && e.contains("same kind")),
-        "the message says the pool's members are not all one kind: {errs:?}"
-    );
-}
+/// KIND IS INFERRED... MOVED to `tests/config_cross_plane.rs::a_pool_may_not_straddle_two_planes`
+/// (needs real `busbar_mcp`/`busbar_a2a` config types). See that file's header.
 
-/// A one-member pool changes nothing, so writing one is a mistake and is named as one.
-#[test]
-fn a_failover_pool_needs_two_members() {
-    let mut deploy = base_deploy();
-    let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
-    agents.agents.insert(
-        "only-one".to_string(),
-        serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
-            .expect("a minimal agent"),
-    );
-    deploy.agents = crate::plane::config::AgentsSection(Box::new(agents));
-    deploy.pools.pools.insert(
-        "planner".to_string(),
-        serde_yaml::from_str::<crate::config::PoolCfg>("{members: [only-one]}")
-            .expect("a bare-name pool"),
-    );
-    let errs = resolve(&deploy, &HashMap::new()).expect_err("a one-member pool must refuse boot");
-    assert!(
-        errs.iter().any(|e| e.contains("at least TWO members")),
-        "{errs:?}"
-    );
-}
+/// A one-member pool changes nothing... MOVED to
+/// `tests/config_cross_plane.rs::a_failover_pool_needs_two_members` (needs a real
+/// `busbar_a2a::a2a::config::AgentsCfg`). See that file's header.
 
 /// `repeatable:` IS THE SAFETY DECLARATION, and the default is that nothing is repeatable. Asserted
 /// here rather than only in the seam's own tests because this is where an operator's document is

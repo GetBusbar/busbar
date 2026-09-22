@@ -21,7 +21,7 @@ pub mod transport;
 pub mod trust;
 pub mod wire;
 
-use crate::bounded::ArenaBytes;
+use crate::bounded::ScratchBytes;
 use crate::dest::{TransportKeyHandle, VerifiedDestination};
 use crate::ids::StreamId;
 use crate::plugin::Plugin;
@@ -197,7 +197,7 @@ pub trait Transport: Plugin + Send + Sync + 'static {
         &'a self,
         conn: &'a Conn,
         stream: StreamId,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize>;
 
     /// Render an outbound envelope and body as this transport's own wire bytes.
@@ -223,8 +223,8 @@ pub trait Transport: Plugin + Send + Sync + 'static {
         &self,
         fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn crate::bounded::Arena,
-    ) -> Result<crate::bounded::ArenaBytes<'a>, crate::wire::Encode>;
+        arena: &'a dyn crate::bounded::PlaneAlloc,
+    ) -> Result<crate::bounded::ScratchBytes<'a>, crate::wire::Encode>;
 
     /// Adopt a connection a lower layer is handing up, becoming the new top of the stack.
     ///
@@ -278,6 +278,6 @@ pub trait Transport: Plugin + Send + Sync + 'static {
         conn: Conn,
         stream: Option<StreamId>,
         refusal: &'a Refusal,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, ()>;
 }

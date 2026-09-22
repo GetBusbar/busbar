@@ -30,7 +30,7 @@
 //! also unconditionally: a value spelled so the check cannot read it is refused rather than guessed
 //! at. Internal addressing last, because that is the one a target can legitimately opt into.
 
-use super::{recover, with_borrowed_host, DispatchScope, HostState};
+use super::{recover, with_borrowed_host, DispatchScope};
 use crate::config_validate::{
     extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
 };

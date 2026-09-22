@@ -356,6 +356,32 @@ fn clamp_frame_index(data: &serde_json::Value) -> usize {
         .min(MAX_TOOL_FRAME_INDEX) as usize
 }
 
+/// Read a JSON NUMBER as an exact, non-negative integer — the single seam every Cohere
+/// usage/billing count read goes through.
+///
+/// Cohere's API *specs* `usage`/`billed_units` counts as plain JSON numbers, but its actual wire
+/// responses carry them as FLOATS (`"input_tokens": 27.0`), not bare integers. `Value::as_u64()`
+/// returns `None` for ANY float-backed `Number` — even `27.0`, which is exactly representable as
+/// an integer — so a bare `.as_u64()` on a real Cohere response silently reads a genuine count of
+/// 27 as `None`, and every call site that then does `.unwrap_or(0)` bills the customer for zero
+/// tokens of work actually done. Try the integer representation first (the cheap, common path for
+/// a hand-built or already-integer payload), and only fall back to the float representation,
+/// accepting it ONLY when it is finite, non-negative, and has no fractional part (an actual
+/// fractional token count, e.g. `27.5`, is not a valid count and is correctly rejected, not
+/// rounded). The result is always a plain integer — the float is only how the wire happened to
+/// spell it.
+fn read_count_u64(v: &serde_json::Value) -> Option<u64> {
+    if let Some(u) = v.as_u64() {
+        return Some(u);
+    }
+    let f = v.as_f64()?;
+    if f.is_finite() && f >= 0.0 && f.fract() == 0.0 && f <= u64::MAX as f64 {
+        Some(f as u64)
+    } else {
+        None
+    }
+}
+
 /// Normalize Cohere v2's native `tool_choice` (a top-level enum STRING) into the IR's tool-choice
 /// union so a forced directive survives the cross-protocol seam instead of degrading to `auto`.
 /// Cohere v2 models only `REQUIRED` (must call some tool) and `NONE` (no tool); it has no

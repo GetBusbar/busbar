@@ -14,7 +14,7 @@
 //! Nothing below names a module path. That is the whole assertion.
 
 use busbar_contract::{
-    AbiVersion, ArenaBytes, AuthDecoration, BoundedVec, ConfigView, EgressAuthScheme, EgressBody,
+    AbiVersion, AuthDecoration, BoundedVec, ConfigView, EgressAuthScheme, EgressBody, ScratchBytes,
     EnvelopeFields, FactValue, Facts, FactsExhausted, FrameStream, IrEdit, IrPatch, Kind, Overflow,
     Plugin, SignFailed, Signer, MAX_KEYS,
 };
@@ -76,7 +76,7 @@ fn a_patch_and_both_full_answers_are_reachable_from_the_crate_root() {
         .edits
         .push(IrEdit {
             pointer: "/messages/0/content",
-            replacement: ArenaBytes::new(b"redacted"),
+            replacement: ScratchBytes::new(b"redacted"),
         })
         .expect("one edit fits");
     assert_eq!(patch.edits.len(), 1);

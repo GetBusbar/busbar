@@ -2058,7 +2058,7 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
 /// llm-plane-absent build must keep merging providers exactly as every prior release has rather than
 /// silently dropping configured providers out of `RootCfg::providers`. See
 /// `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for why this section never evicts.
-fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ProviderCfg {
+pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ProviderCfg {
     // Merge error_map: def's map with deployment override taking precedence
     let mut error_map = def.error_map.clone();
     if let Some(override_map) = &deploy_cfg.error_map {

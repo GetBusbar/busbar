@@ -5,7 +5,7 @@
 //! its own rule per kind, and only a verified destination can be dialled. A plane never holds a
 //! connection and never names a lane outside the set its claim's configuration declares.
 
-use crate::bounded::{ArenaBytes, BoundedVec, MAX_LEGS};
+use crate::bounded::{BoundedVec, ScratchBytes, MAX_LEGS};
 use crate::ids::{LaneId, OpClassId, RecordSchemaId, SchemeKey, StreamId, UpstreamIdx};
 use crate::plugin::KernelSeal;
 use crate::wire::TransportEnvelope;
@@ -333,7 +333,7 @@ pub struct EgressBody<'u> {
     /// The transport-level envelope.
     pub envelope: TransportEnvelope<'u>,
     /// The body bytes.
-    pub body: ArenaBytes<'u>,
+    pub body: ScratchBytes<'u>,
     /// Which egress-auth scheme decorates it.
     pub auth: SchemeKey,
 }
@@ -405,7 +405,7 @@ pub enum AuthDecoration<'u> {
         /// Envelope fields to set, from the closed allow-list; never a lane-locator field.
         envelope_fields: crate::kinds::EnvelopeFields<'u>,
         /// A signature over the body, where the scheme signs one.
-        body_signature: Option<ArenaBytes<'u>>,
+        body_signature: Option<ScratchBytes<'u>>,
         /// Placeholders the egress-auth unit substitutes secrets into.
         slots: BoundedVec<SecretSlot, { crate::bounded::MAX_KEYS }>,
     },

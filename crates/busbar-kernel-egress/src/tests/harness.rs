@@ -30,7 +30,7 @@ use busbar_contract::transport::wire::TransportError;
 use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::{
-    AdmitFacts, ArenaBytes, AuditFacts, ContentFacts, CredentialLocator, Ctx, DestinationFacts,
+    AdmitFacts, ScratchBytes, AuditFacts, ContentFacts, CredentialLocator, Ctx, DestinationFacts,
     EgressBody, Frame, Ingress, Ir, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress, Refusal,
     RoutePlan, ScopeFacts, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle, Unit,
     UnitEnd, UsageLocators, VerifiedDestination,
@@ -918,7 +918,7 @@ impl busbar_contract::Transport for TestTransport {
         &'a self,
         _conn: &'a Conn,
         _stream: StreamId,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> busbar_contract::Fut<'a, usize> {
         let len = bytes.len();
         Box::pin(async move {
@@ -938,8 +938,8 @@ impl busbar_contract::Transport for TestTransport {
         &self,
         fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<busbar_contract::ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
         // The fixture's own wire shape, standing in for a real transport's: every field, then the
         // body. What the tests assert is that the cross-check and the write see the SAME bytes,
         // and one buffer is what makes that true whatever the layout is.
@@ -954,7 +954,7 @@ impl busbar_contract::Transport for TestTransport {
         out.extend_from_slice(body);
         let encoded = arena
             .alloc_bytes(&out)
-            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)?;
+            .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)?;
         self.encoded_at
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -988,7 +988,7 @@ impl busbar_contract::Transport for TestTransport {
         _conn: Conn,
         _stream: Option<busbar_contract::StreamId>,
         _refusal: &'a Refusal,
-        _bytes: ArenaBytes<'a>,
+        _bytes: ScratchBytes<'a>,
     ) -> busbar_contract::Fut<'a, ()> {
         Box::pin(async { Ok(()) })
     }
@@ -1061,20 +1061,20 @@ impl busbar_contract::Plane for TestPlane {
             let name = ctx
                 .arena()
                 .alloc_str(&field)
-                .map_err(|_| Encode::ArenaExhausted)?;
+                .map_err(|_| Encode::ScratchExhausted)?;
             let value = ctx
                 .arena()
                 .alloc_bytes(lane.as_str().as_bytes())
-                .map_err(|_| Encode::ArenaExhausted)?;
+                .map_err(|_| Encode::ScratchExhausted)?;
             envelope
                 .fields
                 .push(busbar_contract::EnvelopeField { name, value })
-                .map_err(|_| Encode::ArenaExhausted)?;
+                .map_err(|_| Encode::ScratchExhausted)?;
         }
         let body = ctx
             .arena()
             .alloc_bytes(b"request")
-            .map_err(|_| Encode::ArenaExhausted)?;
+            .map_err(|_| Encode::ScratchExhausted)?;
         Ok(EgressBody {
             envelope,
             body,
@@ -1089,7 +1089,7 @@ impl busbar_contract::Plane for TestPlane {
         _dest: &VerifiedDestination,
         _st: Option<&mut busbar_contract::PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         Ok(None)
     }
 
@@ -1131,8 +1131,8 @@ impl busbar_contract::Plane for TestPlane {
         _r: &busbar_contract::Response<'u>,
         _st: Option<&mut busbar_contract::PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
-        Ok(ArenaBytes::new(&[]))
+    ) -> Result<ScratchBytes<'u>, Encode> {
+        Ok(ScratchBytes::new(&[]))
     }
 
     fn encode_refusal<'u>(
@@ -1141,8 +1141,8 @@ impl busbar_contract::Plane for TestPlane {
         _draft: Option<&busbar_contract::UnitDraft<'u>>,
         _st: Option<&busbar_contract::PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
-        Ok(ArenaBytes::new(&[]))
+    ) -> Result<ScratchBytes<'u>, Encode> {
+        Ok(ScratchBytes::new(&[]))
     }
 
     fn encode_end<'u>(
@@ -1151,7 +1151,7 @@ impl busbar_contract::Plane for TestPlane {
         _end: &UnitEnd,
         _st: Option<&mut busbar_contract::PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         Ok(None)
     }
 
@@ -1219,24 +1219,24 @@ impl busbar_contract::Plane for TestPlane {
 /// An arena that leaks. Every allocation lives for the process, which is exactly right for a test
 /// and exactly wrong for a node — the real arena is fixed-size and reset per unit.
 #[derive(Debug, Default)]
-pub struct LeakArena;
+pub struct LeakPlaneAlloc;
 
-impl busbar_contract::Arena for LeakArena {
+impl busbar_contract::PlaneAlloc for LeakPlaneAlloc {
     fn alloc_bytes<'a>(
         &'a self,
         src: &[u8],
-    ) -> Result<ArenaBytes<'a>, busbar_contract::ArenaBudget> {
-        Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+    ) -> Result<ScratchBytes<'a>, busbar_contract::PlaneAllocBudget> {
+        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }
 
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, busbar_contract::ArenaBudget> {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, busbar_contract::PlaneAllocBudget> {
         Ok(Box::leak(src.to_string().into_boxed_str()))
     }
 
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, busbar_contract::Span)],
-    ) -> Result<&'a [(&'a str, busbar_contract::Span)], busbar_contract::ArenaBudget> {
+    ) -> Result<&'a [(&'a str, busbar_contract::Span)], busbar_contract::PlaneAllocBudget> {
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
@@ -1283,7 +1283,7 @@ impl busbar_contract::TransportView for TestTransportView {
 
 /// Everything the plane is called with, owned so a test can hold it for the length of a walk.
 pub struct PlaneContext {
-    pub arena: LeakArena,
+    pub arena: LeakPlaneAlloc,
     pub config: EmptyConfig,
     pub transport: TestTransportView,
     pub labels: Labels<'static>,
@@ -1298,7 +1298,7 @@ impl Default for PlaneContext {
 impl PlaneContext {
     pub fn new() -> Self {
         Self {
-            arena: LeakArena,
+            arena: LeakPlaneAlloc,
             config: EmptyConfig,
             transport: TestTransportView,
             labels: Labels::new(),

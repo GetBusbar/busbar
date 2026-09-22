@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Labels};
+use busbar_contract::bounded::{PlaneAlloc, PlaneAllocBudget, ScratchBytes, Labels};
 use busbar_contract::bounded::{SlabBytes, Span};
 use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};
@@ -17,25 +17,25 @@ use crate::AdminPlane;
 
 // ── a minimal, leak-based test arena ─────────────────────────────────────────────────────────────
 //
-// The `Arena` trait's only two allocators hand back byte/str slices, never a typed slice — see
+// The `PlaneAlloc` trait's only two allocators hand back byte/str slices, never a typed slice — see
 // `verbs.rs`'s and the crate report's note on why `Ir.spans` stays empty in this plane. A test
-// double for `Arena` has the same shape problem the plane itself does, minus the "never leak"
+// double for `PlaneAlloc` has the same shape problem the plane itself does, minus the "never leak"
 // requirement production code is held to: this is TEST-ONLY code, run a bounded number of times
 // per process, and a short-lived leak here trades a small amount of test-process memory for a
 // simple, honest double instead of unsafe code (which this crate forbids even in its own tests).
-struct TestArena;
+struct TestPlaneAlloc;
 
 /// One arena that outlives every unit a test builds, because a span table handed to a `Unit<'u>`
 /// has to live at least as long as the unit does and a test's own local arena does not.
-static LEAK_ARENA: TestArena = TestArena;
+static LEAK_ARENA: TestPlaneAlloc = TestPlaneAlloc;
 
-impl Arena for TestArena {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
+impl PlaneAlloc for TestPlaneAlloc {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
         let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
-        Ok(ArenaBytes::new(leaked))
+        Ok(ScratchBytes::new(leaked))
     }
 
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
         let leaked: &'static str = Box::leak(src.to_string().into_boxed_str());
         Ok(leaked)
     }
@@ -43,7 +43,7 @@ impl Arena for TestArena {
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget> {
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
@@ -96,7 +96,7 @@ fn test_ctx<'u>(
     config: &'u TestConfig,
     transport: &'u TestTransport,
     labels: &'u Labels<'u>,
-    arena: &'u TestArena,
+    arena: &'u TestPlaneAlloc,
 ) -> Ctx<'u> {
     let clock = Clock {
         unix_secs: 0,
@@ -151,7 +151,7 @@ fn decode_ingress_matches_the_pinned_1_5_5_fixture_for_every_operation() {
     let config = TestConfig;
     let transport = TestTransport;
     let labels = Labels::new();
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
 
     let mut seen = 0usize;
     let mut read_only_count = 0usize;
@@ -315,7 +315,7 @@ fn encode_refusal_renders_the_1_5_5_error_envelope_for_common_codes() {
     let config = TestConfig;
     let transport = TestTransport;
     let labels = Labels::new();
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     let ctx = test_ctx(&config, &transport, &labels, &arena);
 
     let cases = [
@@ -386,7 +386,7 @@ fn a_request_still_arriving_asks_for_the_next_frame() {
     let config = TestConfig;
     let transport = TestTransport;
     let labels = Labels::new();
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     let ctx = test_ctx(&config, &transport, &labels, &arena);
 
     let empty: Vec<Frame> = Vec::new();
@@ -425,7 +425,7 @@ fn decode_ingress_is_deterministic_over_repeated_calls() {
     let config = TestConfig;
     let transport = TestTransport;
     let labels = Labels::new();
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     let ctx = test_ctx(&config, &transport, &labels, &arena);
 
     let text = envelope("GET", "/api/v1/admin/keys/abc", "{}");
@@ -538,35 +538,35 @@ fn the_binding_scan_sees_a_citation_that_ends_a_line() {
 // ── the response pass-through does not go through the arena ────────────────────────────────────
 
 /// An arena the size the design pins production's at, and a bump cursor that refuses past it.
-/// `TestArena` above leaks and so has room for anything, which is what a test that needs a span
+/// `TestPlaneAlloc` above leaks and so has room for anything, which is what a test that needs a span
 /// table wants and exactly what a test about the arena's BUDGET must not have.
-struct TinyArena {
+struct TinyPlaneAlloc {
     used: std::sync::atomic::AtomicUsize,
 }
 
-impl TinyArena {
+impl TinyPlaneAlloc {
     fn used(&self) -> usize {
         self.used.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
-impl Arena for TinyArena {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
+impl PlaneAlloc for TinyPlaneAlloc {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
         let used = self.used() + src.len();
-        if used > busbar_contract::ARENA_BYTES {
-            return Err(ArenaBudget {
+        if used > busbar_contract::SCRATCH_BASE_BYTES {
+            return Err(PlaneAllocBudget {
                 wanted: src.len(),
                 remaining: self.remaining(),
             });
         }
         self.used.store(used, std::sync::atomic::Ordering::Relaxed);
-        Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }
 
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
         let used = self.used() + src.len();
-        if used > busbar_contract::ARENA_BYTES {
-            return Err(ArenaBudget {
+        if used > busbar_contract::SCRATCH_BASE_BYTES {
+            return Err(PlaneAllocBudget {
                 wanted: src.len(),
                 remaining: self.remaining(),
             });
@@ -578,12 +578,12 @@ impl Arena for TinyArena {
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget> {
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
     fn remaining(&self) -> usize {
-        busbar_contract::ARENA_BYTES - self.used()
+        busbar_contract::SCRATCH_BASE_BYTES - self.used()
     }
 }
 
@@ -599,7 +599,7 @@ fn a_response_larger_than_the_arena_encodes_verbatim() {
     let config = TestConfig;
     let transport = TestTransport;
     let labels = Labels::new();
-    let arena = TinyArena {
+    let arena = TinyPlaneAlloc {
         used: std::sync::atomic::AtomicUsize::new(0),
     };
     let clock = Clock {
@@ -609,7 +609,7 @@ fn a_response_larger_than_the_arena_encodes_verbatim() {
     let session: Option<&dyn SessionView> = None;
     let ctx = Ctx::new(clock, &config, session, &transport, &labels, &arena);
 
-    let big = vec![b'x'; busbar_contract::ARENA_BYTES * 4];
+    let big = vec![b'x'; busbar_contract::SCRATCH_BASE_BYTES * 4];
     let response = busbar_contract::plane::Response {
         ir: busbar_contract::bounded::Ir::new(&big, &[]),
         finish: busbar_contract::unit::FinishClass::Complete,
@@ -621,7 +621,7 @@ fn a_response_larger_than_the_arena_encodes_verbatim() {
     assert_eq!(encoded.as_slice(), big.as_slice());
     assert_eq!(
         arena.remaining(),
-        busbar_contract::ARENA_BYTES,
+        busbar_contract::SCRATCH_BASE_BYTES,
         "the pass-through must not spend a byte of the arena"
     );
 }

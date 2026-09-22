@@ -41,7 +41,7 @@
 //! | `DurabilityUnavailable` | `unavailable` | the journal cannot be written: the textbook `unavailable` case |
 //! | `TierMismatch` | `internal` | a configuration inconsistency across a bucket chain: not the caller's fault and not a normal request outcome |
 //! | `SpillBudget` | `unavailable` | a node-global spill ceiling: transient and node-side, same family as `SessionBudget` |
-//! | `ArenaBudget` | `unavailable` | the per-unit arena ran out: a node-side resource, not a property of the request |
+//! | `ScratchExhausted` | `unavailable` | the per-call scratch pad hit its abuse ceiling: a node-side resource, not a property of the request |
 //! | `RateLimited` | `rate_limited` | the source is over its arrival rate: the code exists for exactly this |
 //! | `DecodeFailed` | `invalid_request` | the bytes could not be read: a property of THIS request |
 //! | `ChallengeExhausted` | `unauthorized` | the exchange ran out before authority was established |
@@ -98,7 +98,7 @@ pub(crate) fn code_for(reason: RefusalReason) -> &'static str {
         RefusalReason::DurabilityUnavailable => "unavailable",
         RefusalReason::TierMismatch => "internal",
         RefusalReason::SpillBudget => "unavailable",
-        RefusalReason::ArenaBudget => "unavailable",
+        RefusalReason::ScratchExhausted => "unavailable",
         RefusalReason::RateLimited => "rate_limited",
         RefusalReason::DecodeFailed => "invalid_request",
         RefusalReason::ChallengeExhausted => "unauthorized",
@@ -149,7 +149,7 @@ pub(crate) fn message_for(reason: RefusalReason) -> &'static str {
         RefusalReason::DurabilityUnavailable => "the journal is unavailable",
         RefusalReason::TierMismatch => "bucket chain tier mismatch",
         RefusalReason::SpillBudget => "the node's spill budget is exhausted",
-        RefusalReason::ArenaBudget => "the unit's working memory is exhausted",
+        RefusalReason::ScratchExhausted => "the unit's working memory is exhausted",
         RefusalReason::RateLimited => "too many requests",
         RefusalReason::DecodeFailed => "the request could not be read",
         RefusalReason::ChallengeExhausted => "the authentication exchange was exhausted",

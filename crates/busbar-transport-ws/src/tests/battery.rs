@@ -12,7 +12,7 @@ use futures::StreamExt;
 use busbar_contract::transport::wire::CloseReason;
 use busbar_contract::transport::wire::Direction;
 use busbar_contract::transport::wire::TransportError;
-use busbar_contract::{ArenaBytes, StreamId, Transport};
+use busbar_contract::{ScratchBytes, StreamId, Transport};
 
 use crate::WsTransport;
 
@@ -48,7 +48,7 @@ async fn upgrade_then_round_trip_byte_exact() {
 
     let payload = b"the quick brown fox \xE2\x9C\x93".to_vec();
     let n = t
-        .write(&a, StreamId(0), ArenaBytes::new(&payload))
+        .write(&a, StreamId(0), ScratchBytes::new(&payload))
         .await
         .unwrap();
     assert_eq!(n, payload.len());
@@ -111,7 +111,7 @@ async fn an_in_band_upgrade_over_http_with_cleared_facts() {
     ws.write(
         &upgraded,
         StreamId(0),
-        ArenaBytes::new(b"after the upgrade"),
+        ScratchBytes::new(b"after the upgrade"),
     )
     .await
     .unwrap();
@@ -161,7 +161,7 @@ async fn a_composed_round_trip_over_the_layers_below() {
         .write(
             &client_conn,
             StreamId(0),
-            ArenaBytes::new(b"hello over the layers below"),
+            ScratchBytes::new(b"hello over the layers below"),
         )
         .await
         .unwrap();
@@ -281,7 +281,7 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
     let (a, b) = (dialled.unwrap(), accepted.unwrap());
 
     let oversized = vec![b'w'; 2 * CAP];
-    peer.write(&a, StreamId(0), ArenaBytes::new(&oversized))
+    peer.write(&a, StreamId(0), ScratchBytes::new(&oversized))
         .await
         .expect("the uncapped peer puts the oversized message on the wire");
 
@@ -323,7 +323,7 @@ async fn a_dial_only_instance_holds_the_ceiling_its_root_named() {
 
     // At the ceiling the message is a message, so this is a ceiling and not a smaller default.
     let at_cap = vec![b'k'; CAP];
-    peer.write(&theirs, StreamId(0), ArenaBytes::new(&at_cap))
+    peer.write(&theirs, StreamId(0), ScratchBytes::new(&at_cap))
         .await
         .unwrap();
     let mut frames = t.frames(mine);
@@ -331,7 +331,7 @@ async fn a_dial_only_instance_holds_the_ceiling_its_root_named() {
     assert_eq!(frame.bytes.len(), CAP);
 
     let oversized = vec![b'w'; 2 * CAP];
-    peer.write(&theirs, StreamId(0), ArenaBytes::new(&oversized))
+    peer.write(&theirs, StreamId(0), ScratchBytes::new(&oversized))
         .await
         .expect("the uncapped upstream puts the oversized message on the wire");
     let outcome = tokio::time::timeout(Duration::from_secs(5), frames.next())
@@ -367,7 +367,7 @@ async fn a_no_lower_instance_holds_the_ceiling_its_constructor_named() {
 
     // At the ceiling a message is a message — this is a ceiling, not a smaller default.
     let at_cap = vec![b'k'; CAP];
-    peer.write(&theirs, StreamId(0), ArenaBytes::new(&at_cap))
+    peer.write(&theirs, StreamId(0), ScratchBytes::new(&at_cap))
         .await
         .unwrap();
     let mut frames = capped.frames(mine);
@@ -375,7 +375,7 @@ async fn a_no_lower_instance_holds_the_ceiling_its_constructor_named() {
     assert_eq!(frame.bytes.len(), CAP);
 
     let oversized = vec![b'w'; 2 * CAP];
-    peer.write(&theirs, StreamId(0), ArenaBytes::new(&oversized))
+    peer.write(&theirs, StreamId(0), ScratchBytes::new(&oversized))
         .await
         .expect("the uncapped peer puts the oversized message on the wire");
     let outcome = tokio::time::timeout(Duration::from_secs(5), frames.next())
@@ -400,7 +400,7 @@ async fn a_no_lower_instance_holds_the_ceiling_its_constructor_named() {
     let (mine2, theirs2) = (accepted2.unwrap(), dialled2.unwrap());
     let large = vec![b'z'; 2 * CAP];
     peer2
-        .write(&theirs2, StreamId(0), ArenaBytes::new(&large))
+        .write(&theirs2, StreamId(0), ScratchBytes::new(&large))
         .await
         .unwrap();
     let mut frames2 = uncapped.frames(mine2);
@@ -590,7 +590,7 @@ impl Transport for StubLower {
         &'a self,
         _conn: &'a busbar_contract::transport::wire::Conn,
         _stream: StreamId,
-        _bytes: ArenaBytes<'a>,
+        _bytes: ScratchBytes<'a>,
     ) -> busbar_contract::Fut<'a, usize> {
         Box::pin(async { Err(TransportError::Closed) })
     }
@@ -599,11 +599,11 @@ impl Transport for StubLower {
         &self,
         _fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)
     }
 
     fn adopt<'a>(
@@ -643,7 +643,7 @@ impl Transport for StubLower {
         _conn: busbar_contract::transport::wire::Conn,
         _stream: Option<StreamId>,
         _refusal: &'a busbar_contract::unit::Refusal,
-        _bytes: ArenaBytes<'a>,
+        _bytes: ScratchBytes<'a>,
     ) -> busbar_contract::Fut<'a, ()> {
         Box::pin(async { Err(TransportError::Closed) })
     }
@@ -695,7 +695,7 @@ async fn an_upgrade_the_peer_never_answers_expires_on_the_handshake_budget() {
 async fn half_close_is_the_ws_closing_handshake() {
     let t = WsTransport::new();
     let (a, b) = pair(&t, 64 * 1024).await;
-    t.write(&a, StreamId(0), ArenaBytes::new(b"last words"))
+    t.write(&a, StreamId(0), ScratchBytes::new(b"last words"))
         .await
         .unwrap();
     // `close` sends the WS Close control frame — the initiator's half of the closing handshake.
@@ -713,12 +713,12 @@ async fn cancel_mid_frame_fences_the_connection() {
     let t = WsTransport::new();
     let (a, _b) = pair(&t, 8).await;
     let big = vec![b'x'; 1_000_000];
-    let write_fut = t.write(&a, StreamId(0), ArenaBytes::new(&big));
+    let write_fut = t.write(&a, StreamId(0), ScratchBytes::new(&big));
     let raced = tokio::time::timeout(Duration::from_millis(1), write_fut).await;
     assert!(raced.is_err(), "the write did not have time to complete");
 
     let err = t
-        .write(&a, StreamId(0), ArenaBytes::new(b"x"))
+        .write(&a, StreamId(0), ScratchBytes::new(b"x"))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::Framing);
@@ -739,7 +739,7 @@ async fn cancel_mid_frame_fences_the_connection() {
             "the read must still be suspended when dropped"
         );
     }
-    t.write(&a, StreamId(0), ArenaBytes::new(b"after the cancel"))
+    t.write(&a, StreamId(0), ScratchBytes::new(b"after the cancel"))
         .await
         .unwrap();
     let mut frames = t.frames(b);
@@ -764,7 +764,7 @@ async fn a_write_dropped_while_queued_on_the_writer_does_not_fence_the_connectio
     let state = t.state_of(a.id()).expect("the connection is live");
     let held = state.writer.lock().await;
     {
-        let queued = t.write(&a, StreamId(0), ArenaBytes::new(b"never sent"));
+        let queued = t.write(&a, StreamId(0), ScratchBytes::new(b"never sent"));
         tokio::pin!(queued);
         let raced = tokio::time::timeout(Duration::from_millis(20), queued.as_mut()).await;
         assert!(raced.is_err(), "the write must still be queued on the lock");
@@ -772,7 +772,7 @@ async fn a_write_dropped_while_queued_on_the_writer_does_not_fence_the_connectio
     drop(held);
 
     // Nothing was written, so nothing was torn: the connection carries the next frame.
-    t.write(&a, StreamId(0), ArenaBytes::new(b"after the queue"))
+    t.write(&a, StreamId(0), ScratchBytes::new(b"after the queue"))
         .await
         .expect("a write that never reached the socket must not fence the connection");
     let mut frames = t.frames(b);
@@ -806,7 +806,7 @@ async fn a_frame_arriving_after_the_close_ends_the_pump_rather_than_being_delive
     t.close(b, CloseReason::Normal);
 
     // The peer writes anyway — a message already in flight when the close was decided.
-    t.write(&a, StreamId(0), ArenaBytes::new(b"after the close"))
+    t.write(&a, StreamId(0), ScratchBytes::new(b"after the close"))
         .await
         .unwrap();
 
@@ -828,7 +828,7 @@ async fn backpressure_is_bidirectional() {
     let t2 = t.clone();
     let payload2 = payload.clone();
     let writer =
-        tokio::spawn(async move { t2.write(&a, StreamId(0), ArenaBytes::new(&payload2)).await });
+        tokio::spawn(async move { t2.write(&a, StreamId(0), ScratchBytes::new(&payload2)).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(
         !writer.is_finished(),
@@ -851,7 +851,7 @@ async fn k_writers_serialise_without_interleaving() {
         let a = a.clone();
         handles.push(tokio::spawn(async move {
             let line = format!("writer-{i:02}");
-            t.write(&a, StreamId(0), ArenaBytes::new(line.as_bytes()))
+            t.write(&a, StreamId(0), ScratchBytes::new(line.as_bytes()))
                 .await
                 .unwrap();
         }));
@@ -905,7 +905,7 @@ async fn unit0_refusal_writes_then_closes() {
     let mut refused_side = t.frames(a.clone());
     let refusal = test_refusal();
 
-    t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused"))
+    t.unit0_refusal(a, None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .unwrap();
 
@@ -954,7 +954,7 @@ async fn a_refusal_that_could_not_be_written_is_reported_rather_than_claimed() {
         correlates: None,
     };
     let err = t
-        .unit0_refusal(a.clone(), None, &refusal, ArenaBytes::new(b"refused"))
+        .unit0_refusal(a.clone(), None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .expect_err("a refusal that could not be written must not report success");
     assert_eq!(err, TransportError::Reset);
@@ -963,7 +963,7 @@ async fn a_refusal_that_could_not_be_written_is_reported_rather_than_claimed() {
 
     // A connection this transport no longer holds cannot carry a refusal at all, and says so.
     let err = t
-        .unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused"))
+        .unit0_refusal(a, None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .expect_err("a refusal over a connection that is gone must not report success");
     assert_eq!(err, TransportError::Closed);
@@ -985,7 +985,7 @@ async fn a_refusal_cancelled_mid_send_fences_the_connection() {
     let refusal = test_refusal();
     let big = vec![b'x'; 1_000_000];
     {
-        let refuse = t.unit0_refusal(a.clone(), None, &refusal, ArenaBytes::new(&big));
+        let refuse = t.unit0_refusal(a.clone(), None, &refusal, ScratchBytes::new(&big));
         tokio::pin!(refuse);
         let raced = tokio::time::timeout(Duration::from_millis(20), refuse.as_mut()).await;
         assert!(
@@ -1002,7 +1002,7 @@ async fn a_refusal_cancelled_mid_send_fences_the_connection() {
     );
     // And the fence is observable through the public write path, the way every other torn write is.
     let err = t
-        .write(&a, StreamId(0), ArenaBytes::new(b"after the torn refusal"))
+        .write(&a, StreamId(0), ScratchBytes::new(b"after the torn refusal"))
         .await
         .unwrap_err();
     assert_eq!(
@@ -1100,7 +1100,7 @@ async fn close_gives_up_on_a_peer_that_never_reads() {
     let t2 = t.clone();
     let a2 = a.clone();
     let stuffer =
-        tokio::spawn(async move { t2.write(&a2, StreamId(0), ArenaBytes::new(&stuffing)).await });
+        tokio::spawn(async move { t2.write(&a2, StreamId(0), ScratchBytes::new(&stuffing)).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!stuffer.is_finished(), "the duplex must be full");
     stuffer.abort();
@@ -1140,7 +1140,7 @@ async fn a_peer_that_pings_and_then_stops_reading_does_not_park_the_pump_forever
     // fenced connection ends the pump before it ever reads the Ping. This one stays parked on the
     // full socket, which is exactly the peer this cell is about.
     let stuffer =
-        tokio::spawn(async move { t2.write(&a2, StreamId(0), ArenaBytes::new(&stuffing)).await });
+        tokio::spawn(async move { t2.write(&a2, StreamId(0), ScratchBytes::new(&stuffing)).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!stuffer.is_finished(), "the duplex must be full");
 

@@ -238,7 +238,7 @@ async fn byte_exact_round_trip_over_a_real_handshake() {
 
     let payload = b"tls says hello, byte for byte";
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(payload))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(payload))
         .await
         .unwrap();
 
@@ -263,7 +263,7 @@ async fn half_close_and_cancel_mid_frame() {
     let server_conn = accept_fut.await.unwrap();
 
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"bye"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"bye"))
         .await
         .unwrap();
     client.close(client_conn, CloseReason::Normal);
@@ -307,7 +307,7 @@ async fn half_close_and_cancel_mid_frame() {
         let _ = futures::poll!(fut.as_mut());
     }
     client2
-        .write(&client_conn2, StreamId(0), ArenaBytes::new(b"still alive"))
+        .write(&client_conn2, StreamId(0), ScratchBytes::new(b"still alive"))
         .await
         .unwrap();
     let mut frames2 = server2.frames(server_conn2);
@@ -334,7 +334,7 @@ async fn a_close_sends_the_alert_the_peer_is_owed() {
     let server_conn = accept_fut.await.unwrap();
 
     server
-        .write(&server_conn, StreamId(0), ArenaBytes::new(b"last word"))
+        .write(&server_conn, StreamId(0), ScratchBytes::new(b"last word"))
         .await
         .unwrap();
     let mut client_frames = client.frames(client_conn);
@@ -368,7 +368,7 @@ async fn close_ends_a_live_frame_stream() {
 
     let mut frames = server.frames(server_conn.clone());
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"first"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -378,7 +378,7 @@ async fn close_ends_a_live_frame_stream() {
     // stream must drop: bytes the peer writes afterwards are never yielded.
     server.close(server_conn, CloseReason::Normal);
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after close"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after close"))
         .await
         .unwrap();
     assert!(
@@ -540,7 +540,7 @@ async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
     let mut client_tls = client_task.await.unwrap().unwrap();
 
     let payload = b"upgraded mid-life";
-    tls.write(&upgraded, StreamId(0), ArenaBytes::new(payload))
+    tls.write(&upgraded, StreamId(0), ScratchBytes::new(payload))
         .await
         .unwrap();
 
@@ -706,7 +706,7 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
 
     let payload = b"served under a key the unit resolved";
     server
-        .write(&server_conn, StreamId(0), ArenaBytes::new(payload))
+        .write(&server_conn, StreamId(0), ScratchBytes::new(payload))
         .await
         .unwrap();
     let mut frames = client.frames(client_conn.clone());
@@ -1371,7 +1371,7 @@ async fn a_unit0_refusal_reaches_a_healthy_peer() {
         correlates: None,
     };
     server
-        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .unit0_refusal(server_conn, None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .unwrap();
 
@@ -1405,7 +1405,7 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
     // A pump that is live before the refusal, holding its own clone of the state.
     let mut frames = server.frames(server_conn.clone());
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"first"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -1431,7 +1431,7 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
         correlates: None,
     };
     let err = server
-        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .unit0_refusal(server_conn, None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .expect_err("a refusal that never left this host is not a delivered refusal");
     assert!(
@@ -1453,7 +1453,7 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
 
     // The pump ends, which is what the flag exists for.
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after refusal"))
         .await
         .ok();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
@@ -1542,7 +1542,7 @@ async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_fra
     let mut frames = server.frames(server_conn.clone());
     let long = vec![b'L'; 4096];
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(&long))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(&long))
         .await
         .unwrap();
     let mut got = Vec::new();
@@ -1554,7 +1554,7 @@ async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_fra
     let first_buffer = server.scratch_addr(server_conn.id()).await.unwrap();
 
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"short"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"short"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -1595,7 +1595,7 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
     // A pump that is live before the refusal: it already holds the connection state.
     let mut frames = server.frames(server_conn.clone());
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"first"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -1609,13 +1609,13 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
         correlates: None,
     };
     server
-        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .unit0_refusal(server_conn, None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .unwrap();
 
     // The peer keeps writing, as a peer that has not yet read the refusal will.
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after refusal"))
         .await
         .unwrap();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())

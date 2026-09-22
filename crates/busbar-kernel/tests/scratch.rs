@@ -45,7 +45,7 @@ fn the_pad_hands_back_the_exact_bytes_it_was_given() {
 
 /// The pad grows past its starting size for one big request — the jev ~5 KB case #41 exists to fix.
 ///
-/// On the old fixed-4-KiB arena this was `ArenaExhausted`; here it is a heap grow and a served
+/// On the old fixed-4-KiB arena this was `ScratchExhausted`; here it is a heap grow and a served
 /// request. The bytes come back whole, and the pad's backing capacity is now larger than the start.
 #[test]
 fn a_request_bigger_than_the_start_grows_the_pad_instead_of_refusing() {

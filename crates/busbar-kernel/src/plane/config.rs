@@ -394,7 +394,7 @@ pub fn config_sections() -> Vec<&'static str> {
 /// [`super::registry::plane_decls`]; the plane sections come off each decl's
 /// [`super::registry::PlaneDecl::config_section`] rather than an enum `match`, which is what lets a
 /// registered plane's section into the hook-reference grammar.
-pub(crate) fn config_sections_from(
+pub fn config_sections_from(
     decls: &[&'static super::registry::PlaneDecl],
 ) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();

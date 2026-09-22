@@ -26,7 +26,7 @@
 //! process-lifetime durable registry, NOT the per-dispatch [`DispatchScope`](super::DispatchScope)
 //! arena that reclaims at future-drop. Reclaiming a durable handle at future-drop was the v4 arena bug.
 
-use super::{recover, HostState};
+use super::recover;
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
     CallerRef, ContentChunk, GateDecision, GateSubjectRef, GateVerdictOut, OpDesc, OpResult,

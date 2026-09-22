@@ -9,7 +9,7 @@
 //! no-default-bodies rule the same way a reviewer would: the fixture below names every method,
 //! because leaving one out does not compile.
 
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, Span};
+use busbar_contract::bounded::{PlaneAlloc, PlaneAllocBudget, ScratchBytes, Facts, Ir, Labels, Span};
 use busbar_contract::dest::{
     AuthDecoration, DestinationFacts, EgressBody, RoutePlan, TransportKeyHandle,
     VerifiedDestination,
@@ -53,26 +53,26 @@ const _EXPORT: Option<&dyn Export> = None;
 const _ANCHOR: Option<&dyn Anchor> = None;
 const _PLUGIN: Option<&dyn Plugin> = None;
 const _SIGNER: Option<&dyn Signer> = None;
-const _ARENA: Option<&dyn Arena> = None;
+const _PLANE_ALLOC: Option<&dyn PlaneAlloc> = None;
 const _CONFIG: Option<&dyn ConfigView> = None;
 const _SESSION_VIEW: Option<&dyn SessionView> = None;
 const _TRANSPORT_VIEW: Option<&dyn TransportView> = None;
 
 // ── the borrowed views a call needs, in their smallest honest form ────────────────────────────
 
-/// An arena that never has room. Enough to build a context; nothing here allocates.
-struct NoArena;
+/// An allocator that never has room. Enough to build a context; nothing here allocates.
+struct NoPlaneAlloc;
 
-impl Arena for NoArena {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
-        Err(ArenaBudget {
+impl PlaneAlloc for NoPlaneAlloc {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
+        Err(PlaneAllocBudget {
             wanted: src.len(),
             remaining: 0,
         })
     }
 
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
-        Err(ArenaBudget {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
+        Err(PlaneAllocBudget {
             wanted: src.len(),
             remaining: 0,
         })
@@ -81,8 +81,8 @@ impl Arena for NoArena {
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
-        Err(ArenaBudget {
+    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget> {
+        Err(PlaneAllocBudget {
             wanted: std::mem::size_of_val(src),
             remaining: 0,
         })
@@ -188,7 +188,7 @@ impl Plane for FixturePlane {
     ) -> Result<EgressBody<'u>, Encode> {
         Ok(EgressBody {
             envelope: busbar_contract::wire::TransportEnvelope::default(),
-            body: ArenaBytes::new(&[]),
+            body: ScratchBytes::new(&[]),
             auth: SchemeKey::new("none"),
         })
     }
@@ -200,7 +200,7 @@ impl Plane for FixturePlane {
         _dest: &VerifiedDestination,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         Ok(None)
     }
 
@@ -221,8 +221,8 @@ impl Plane for FixturePlane {
         _r: &Response<'u>,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
-        Ok(ArenaBytes::new(&[]))
+    ) -> Result<ScratchBytes<'u>, Encode> {
+        Ok(ScratchBytes::new(&[]))
     }
 
     fn encode_refusal<'u>(
@@ -231,8 +231,8 @@ impl Plane for FixturePlane {
         _draft: Option<&UnitDraft<'u>>,
         _st: Option<&PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
-        Ok(ArenaBytes::new(b"refused"))
+    ) -> Result<ScratchBytes<'u>, Encode> {
+        Ok(ScratchBytes::new(b"refused"))
     }
 
     fn encode_end<'u>(
@@ -241,7 +241,7 @@ impl Plane for FixturePlane {
         _end: &UnitEnd,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         Ok(None)
     }
 
@@ -384,7 +384,7 @@ impl Transport for FixtureTransport {
         &'a self,
         _conn: &'a Conn,
         _stream: StreamId,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize> {
         let n = bytes.len();
         Box::pin(async move { Ok(n) })
@@ -394,9 +394,9 @@ impl Transport for FixtureTransport {
         &self,
         _fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn Arena,
-    ) -> Result<ArenaBytes<'a>, Encode> {
-        arena.alloc_bytes(body).map_err(|_| Encode::ArenaExhausted)
+        arena: &'a dyn PlaneAlloc,
+    ) -> Result<ScratchBytes<'a>, Encode> {
+        arena.alloc_bytes(body).map_err(|_| Encode::ScratchExhausted)
     }
 
     fn adopt<'a>(
@@ -423,7 +423,7 @@ impl Transport for FixtureTransport {
         _conn: Conn,
         _stream: Option<StreamId>,
         _refusal: &'a Refusal,
-        _bytes: ArenaBytes<'a>,
+        _bytes: ScratchBytes<'a>,
     ) -> Fut<'a, ()> {
         Box::pin(async { Ok(()) })
     }
@@ -530,7 +530,7 @@ fn every_kind_is_object_safe() {
 /// A plane call runs, with a real context, and the borrow story holds.
 #[test]
 fn a_plane_call_runs_under_a_context() {
-    let arena = NoArena;
+    let arena = NoPlaneAlloc;
     let config = EmptyConfig;
     let stack = OneShotStack;
     let labels = Labels::new();
@@ -597,7 +597,7 @@ fn the_remaining_kinds_shapes_are_constructible() {
         stream: "journal",
         from: 0,
         to: 1,
-        bytes: ArenaBytes::new(&[]),
+        bytes: ScratchBytes::new(&[]),
     };
     let _ = Ack::Durable;
     let _: Option<AuthDecoration<'static>> = None;
@@ -611,21 +611,21 @@ fn the_remaining_kinds_shapes_are_constructible() {
 /// needs interior mutability this crate forbids. Leaking gives the same borrow with no unsafe code,
 /// and the whole point here is only that a scheme CAN build a decoration out of arena bytes — which
 /// is the thing an unbound lifetime made impossible to express at all.
-struct LeakArena;
+struct LeakPlaneAlloc;
 
-impl Arena for LeakArena {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
-        Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+impl PlaneAlloc for LeakPlaneAlloc {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
+        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }
 
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
         Ok(Box::leak(src.to_string().into_boxed_str()))
     }
 
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget> {
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
@@ -701,7 +701,7 @@ impl EgressAuthScheme for FixtureEgressAuth {
 /// — every real multi-round scheme was unrepresentable, so no such scheme could ever be written.
 #[test]
 fn a_continued_handshake_can_decorate_with_arena_bytes() {
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let stack = OneShotStack;
     let labels = Labels::new();

@@ -32,7 +32,7 @@ use busbar_contract::transport::wire::FrameMeta;
 use busbar_contract::transport::wire::Listener;
 use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{
-    ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    ScratchBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 use busbar_transport_http::HttpTransport;
@@ -375,7 +375,7 @@ impl Transport for SseTransport {
         &'a self,
         conn: &'a Conn,
         stream: StreamId,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize> {
         self.http.write(conn, stream, bytes)
     }
@@ -384,8 +384,8 @@ impl Transport for SseTransport {
         &self,
         fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<busbar_contract::ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
         // `sse` is a reading of an `http` response, and an outbound request on it is an HTTP one.
         self.http.encode_envelope(fields, body, arena)
     }
@@ -418,7 +418,7 @@ impl Transport for SseTransport {
         conn: Conn,
         stream: Option<StreamId>,
         refusal: &'a Refusal,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, ()> {
         self.http.unit0_refusal(conn, stream, refusal, bytes)
     }

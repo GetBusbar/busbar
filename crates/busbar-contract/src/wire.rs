@@ -15,7 +15,7 @@ pub use crate::transport::wire::{
     RawStream, StatusAt, TransportError, Unit0Trigger, WireStatus, WireStatusClass,
 };
 
-use crate::bounded::{ArenaBytes, BoundedVec, SlabBytes, MAX_CURSOR_BYTES, MAX_KEYS};
+use crate::bounded::{BoundedVec, ScratchBytes, SlabBytes, MAX_CURSOR_BYTES, MAX_KEYS};
 use crate::ids::StreamId;
 
 /// Transport bytes with a direction, a stream and meta. It has no meaning.
@@ -108,7 +108,7 @@ pub struct EnvelopeField<'u> {
     /// The field's name.
     pub name: &'u str,
     /// The field's bytes.
-    pub value: ArenaBytes<'u>,
+    pub value: ScratchBytes<'u>,
 }
 
 /// The transport-level shape of an outbound request.

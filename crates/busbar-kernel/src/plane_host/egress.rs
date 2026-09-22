@@ -47,8 +47,8 @@
 //! `Pending` collapses into a BLOCKING per-chunk `recv`: each [`egress_poll`] returns the next
 //! network chunk or EOF, so a crossing happens per NETWORK CHUNK — never per token.
 
+use super::recover;
 use super::scope::{DispatchScope, EgressFaultDetail};
-use super::{recover, HostState};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::EgressFault;
 use busbar_plugin::hot::pod::POD_VERSION;

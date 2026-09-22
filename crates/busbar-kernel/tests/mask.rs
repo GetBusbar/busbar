@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The per-frame arena, and the masking that hides a credential in the read cursor.
+//! The dead per-frame fixed scratch allocator, and the masking that hides a credential in the
+//! read cursor.
 //!
 //! Masking is decided by the location grammar rather than per plane, so every form is asked here
 //! what it does — including the one that does nothing, because it was never in the bytes.
 
-use busbar_kernel::arena::{Arena, CredentialSlab, ARENA_BYTES, CURSOR_CAP_BYTES, FILL_BYTE};
+use busbar_kernel::mask::{CredentialSlab, CURSOR_CAP_BYTES, FILL_BYTE, FIXED_SCRATCH_BYTES};
+use busbar_kernel::mask::FixedScratch;
 use busbar_kernel::grammar::{ArrivalLocation, MaskKind, SignedOver, Span};
 use busbar_kernel::inflight::MAX_SESSION_UPSTREAMS;
 
@@ -19,7 +21,7 @@ use busbar_kernel::inflight::MAX_SESSION_UPSTREAMS;
 /// at a limit it was never told about the first time one of them moves.
 #[test]
 fn the_kernels_ceilings_are_the_contracts_own() {
-    assert_eq!(ARENA_BYTES, busbar_contract::ARENA_BYTES);
+    assert_eq!(FIXED_SCRATCH_BYTES, busbar_contract::SCRATCH_BASE_BYTES);
     assert_eq!(CURSOR_CAP_BYTES, busbar_contract::MAX_CURSOR_BYTES);
     assert_eq!(
         MAX_SESSION_UPSTREAMS,
@@ -212,33 +214,33 @@ fn a_client_certificate_masks_nothing_because_it_was_never_in_the_bytes() {
 }
 
 #[test]
-fn the_arena_is_four_kibibytes_and_is_reset_per_frame() {
-    let mut arena = Arena::new();
-    assert_eq!(arena.remaining(), ARENA_BYTES);
-    let span = arena.push(b"a frame's worth of bytes").expect("room");
-    assert_eq!(arena.read(span), b"a frame's worth of bytes");
-    assert_eq!(arena.used(), 24);
+fn the_fixed_scratch_is_four_kibibytes_and_is_reset_per_frame() {
+    let mut fixed = FixedScratch::new();
+    assert_eq!(fixed.remaining(), FIXED_SCRATCH_BYTES);
+    let span = fixed.push(b"a frame's worth of bytes").expect("room");
+    assert_eq!(fixed.read(span), b"a frame's worth of bytes");
+    assert_eq!(fixed.used(), 24);
 
-    // On the relay path the arena is reset per frame, so a session that relays all day uses the
+    // On the relay path this was reset per frame, so a session that relays all day would use the
     // same four kibibytes it used at its first frame.
     for _ in 0..1_000 {
-        arena.reset();
-        arena.push(b"another frame").expect("room, every time");
+        fixed.reset();
+        fixed.push(b"another frame").expect("room, every time");
     }
-    assert_eq!(arena.used(), 13);
-    assert_eq!(arena.resets(), 1_000);
+    assert_eq!(fixed.used(), 13);
+    assert_eq!(fixed.resets(), 1_000);
 }
 
 #[test]
-fn asking_the_arena_for_more_than_it_has_is_an_answer_not_a_panic() {
-    let mut arena = Arena::new();
-    let full = arena.take(ARENA_BYTES).expect("all of it");
-    assert_eq!(full.len(), ARENA_BYTES);
-    let refused = arena.push(b"one more byte").expect_err("nothing left");
+fn asking_the_fixed_scratch_for_more_than_it_has_is_an_answer_not_a_panic() {
+    let mut fixed = FixedScratch::new();
+    let full = fixed.take(FIXED_SCRATCH_BYTES).expect("all of it");
+    assert_eq!(full.len(), FIXED_SCRATCH_BYTES);
+    let refused = fixed.push(b"one more byte").expect_err("nothing left");
     assert_eq!(refused.remaining, 0);
     assert_eq!(
         refused.reason(),
-        busbar_contract::caps::ReasonCode::ArenaBudget
+        busbar_contract::caps::ReasonCode::ScratchExhausted
     );
 }
 
@@ -250,24 +252,24 @@ fn asking_the_arena_for_more_than_it_has_is_an_answer_not_a_panic() {
 /// The promise is now kept where it is made.
 #[test]
 fn a_short_write_after_a_reset_shows_nothing_of_the_last_frame() {
-    let mut arena = Arena::new();
+    let mut fixed = FixedScratch::new();
     let secret = b"authorization: Bearer swordfish";
-    let first = arena.push(secret).expect("the arena has room");
-    assert_eq!(arena.read(first), secret);
+    let first = fixed.push(secret).expect("the fixed scratch has room");
+    assert_eq!(fixed.read(first), secret);
 
     // The frame ends and the next one begins.
-    arena.reset();
-    let span = arena.take(secret.len()).expect("the arena has room");
+    fixed.reset();
+    let span = fixed.take(secret.len()).expect("the fixed scratch has room");
     assert!(
-        arena.read(span).iter().all(|byte| *byte == 0),
+        fixed.read(span).iter().all(|byte| *byte == 0),
         "the span still held the last frame"
     );
 
     // And a unit that writes less than it asked for exposes no tail.
-    arena.write(span, b"ok").expect("within the span");
-    assert_eq!(&arena.read(span)[..2], b"ok");
+    fixed.write(span, b"ok").expect("within the span");
+    assert_eq!(&fixed.read(span)[..2], b"ok");
     assert!(
-        arena.read(span)[2..].iter().all(|byte| *byte == 0),
+        fixed.read(span)[2..].iter().all(|byte| *byte == 0),
         "the tail of the span leaked the last frame"
     );
 }

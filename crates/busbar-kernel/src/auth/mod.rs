@@ -378,7 +378,7 @@ impl AuthMiddleware {
     /// matched a presented credential) denies — fail-closed for a configured chain. Constant-time
     /// within each module; the loop order is config order.
     pub fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
-        self.run_chain_cached(candidate, None, None, None)
+        self.run_chain_cached(candidate, None, None, busbar_kernel::store::now(), None)
     }
 
     /// [`run_chain`] with the CREDENTIAL CACHE consulted around each `cacheable()` module.
@@ -391,11 +391,18 @@ impl AuthMiddleware {
     /// `Some(uri)` for an audience-bound ingress (which rejects a token whose audience is absent or
     /// different). It is threaded here rather than read from a handler because the check belongs to
     /// the VERIFIER: a route added to an audience-bound plane later inherits it and cannot forget.
+    ///
+    /// `now` is taken as an explicit clock, not read internally, for the same reason
+    /// [`crate::governance::GovState::verify_token`] and [`crate::auth_cache::CredentialCache::get`]
+    /// / `put` do: a TTL boundary is untestable against the live wall clock without sleeping, and a
+    /// caller (the `keys` engine arm's `exp` check, the cache's own expiry sweep) must all agree on
+    /// one instant for one chain run rather than each reading the clock separately mid-flight.
     pub fn run_chain_cached(
         &self,
         candidate: Option<&str>,
         cache: Option<&crate::auth_cache::CredentialCache>,
         gov: Option<&crate::governance::GovState>,
+        now: u64,
         expected_aud: Option<&str>,
     ) -> ChainVerdict {
         // The OPEN front door: no boxed chain modules AND no built-in `keys` engine arm → admit
@@ -405,13 +412,12 @@ impl AuthMiddleware {
         if self.chain.is_empty() && !self.keys_in_chain {
             return ChainVerdict::Open;
         }
-        let now = busbar_kernel::store::now();
         // `Pass` puts are BUFFERED, not admitted, until the chain identifies. An all-`Pass` chain
         // ends `Denied` (below), so admitting them eagerly let an unauthenticated caller fill the
         // cache with entries that then evict real `Identify` rows under the oldest-inserted
         // eviction rule (`auth_cache.rs:106-119`). Committing only on the `Identified` return means
         // unauthenticated traffic causes no admissions at all. A cache HIT is never re-`put`: doing
-        // so would refresh its TTL and quietly extend the revocation window.
+        // so would refresh its TTL and quietly extend the revocation window — see `was_hit` below.
         let mut pending_pass: Vec<&str> = Vec::new();
         // The FLUSH GENERATION as of BEFORE the first module is consulted. Every `put` below carries
         // it, so an admin cache flush that lands anywhere inside this chain run drops every verdict
@@ -429,7 +435,9 @@ impl AuthMiddleware {
             // providers backed by the same module are DIFFERENT verifiers with different settings, so
             // sharing a cache row between them would let one provider's verdict admit the other's
             // credential. The name is the instance, so the cache key must be the name.
-            let outcome = match cache_here.and_then(|(c, cred)| c.get(provider, cred, now)) {
+            let cache_hit = cache_here.and_then(|(c, cred)| c.get(provider, cred, now));
+            let was_hit = cache_hit.is_some();
+            let outcome = match cache_hit {
                 Some(hit) => hit,
                 None => {
                     let o = module.authenticate(candidate);
@@ -445,7 +453,15 @@ impl AuthMiddleware {
                         for name in &pending_pass {
                             c.put(name, cred, &AuthOutcome::Pass, now, g);
                         }
-                        if cache_here.is_some() {
+                        // Only a MISS commits, exactly like the buffered `Pass`es above. A HIT
+                        // re-`put` here would reset this row's `expires_at` on every request, so a
+                        // credential presented more often than its own TTL would NEVER be
+                        // re-verified against the module — an upstream revocation would never land.
+                        // The TTL bounds how stale an admission decision may be; refreshing it on
+                        // every use makes that bound unreachable. See
+                        // `busbar-kernel-identity/src/chain.rs` for the sibling implementation this
+                        // mirrors.
+                        if cache_here.is_some() && !was_hit {
                             c.put(
                                 provider,
                                 cred,
@@ -528,6 +544,7 @@ impl AuthMiddleware {
                 candidate.as_deref(),
                 Some(cache),
                 gov.as_deref(),
+                busbar_kernel::store::now(),
                 expected_aud.as_deref(),
             );
         }
@@ -565,11 +582,16 @@ impl AuthMiddleware {
             }
         };
         let (auth, cache) = (auth.clone(), cache.clone());
+        // Captured HERE, before the blocking hop, not inside the closure: the clock the chain
+        // reasons about should be the instant the request reached this decision, not whenever the
+        // offload happened to get scheduled onto a blocking-pool thread.
+        let now = busbar_kernel::store::now();
         let joined = tokio::task::spawn_blocking(move || {
             let verdict = auth.run_chain_cached(
                 candidate.as_deref(),
                 Some(&cache),
                 gov.as_deref(),
+                now,
                 expected_aud.as_deref(),
             );
             // The permit is released when the blocking work is DONE, not when the awaiting future

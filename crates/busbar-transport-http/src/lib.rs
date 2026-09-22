@@ -83,7 +83,7 @@ use busbar_contract::transport::wire::TransportError;
 use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::{
-    ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    ScratchBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 use bytes::Bytes;
@@ -923,7 +923,7 @@ impl Transport for HttpTransport {
         &'a self,
         conn: &'a Conn,
         _stream: StreamId,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
@@ -1099,8 +1099,8 @@ impl Transport for HttpTransport {
         &self,
         fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
         let field = |name: &str| {
             fields
                 .iter()
@@ -1147,7 +1147,7 @@ impl Transport for HttpTransport {
         out.extend_from_slice(body);
         arena
             .alloc_bytes(&out)
-            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)
     }
 
     fn adopt<'a>(
@@ -1210,7 +1210,7 @@ impl Transport for HttpTransport {
         // One request per connection here, so a refusal is always the whole of it.
         _stream: Option<StreamId>,
         _refusal: &'a Refusal,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;

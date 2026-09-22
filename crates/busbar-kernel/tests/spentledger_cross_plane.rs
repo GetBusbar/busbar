@@ -3,6 +3,14 @@
 
 //! ONE APPROVAL, REDEEMED ONCE — across a restart, and across a fleet.
 //!
+//! Relocated here VERBATIM from `src/plane/tests/spentledger_tests.rs` (the A6/HostCtx
+//! dev-dependency-cycle cleanup): every case drives `busbar_mcp::mcp::callerask::decide` — the real
+//! MCP plane's gate — over a real `busbar_kernel::plane_host::engine_host`, which only type-checks
+//! with ONE `busbar_kernel` in the graph (an integration-test target links it as an ordinary
+//! dependency, the same instance the plane crates link), never the two copies busbar-kernel's own
+//! `#[cfg(test)]` dev-dependency back-edge onto busbar-mcp produces. See `plane_integration.rs`'s
+//! header for the same rationale, first written there.
+//!
 //! ## The two shapes an in-process ledger cannot refuse
 //!
 //! Everything about a sealed `requestState` except single use rides inside the blob: who it was
@@ -34,8 +42,8 @@
 //! at all, which is precisely how ten store methods were dropped at this seam earlier in the same
 //! release.
 
-use crate::plane::approvals::Sealer;
-use crate::test_support::plugin_store::{durable_cfg, open_plugin};
+use busbar_kernel::plane::approvals::Sealer;
+use busbar_kernel::test_support::plugin_store::{durable_cfg, open_plugin};
 use busbar_mcp::mcp::callerask::{decide, Approvals, AskDecision, Bind, Refusal, Retry};
 use busbar_mcp::mcp::config::{AskEntryCfg, AskRoundCfg};
 
@@ -86,8 +94,8 @@ fn all_capabilities() -> serde_json::Value {
 /// ONE NODE of a deployment: a real in-core App with its own in-process spent-approval ledger
 /// (`App::spent_token_ledger`, which the redemption edge now reaches host-side), and its own `dlopen` of
 /// the shared store when there is one. `None` is a node that configures no durable store.
-fn node(cfg: Option<&str>) -> std::sync::Arc<crate::state::App> {
-    let mut app = crate::test_support::TestApp::new();
+fn node(cfg: Option<&str>) -> std::sync::Arc<busbar_kernel::state::App> {
+    let mut app = busbar_kernel::test_support::TestApp::new();
     if let Some(cfg) = cfg {
         app = app.mcp_durable_store(open_plugin(cfg));
     }
@@ -96,9 +104,9 @@ fn node(cfg: Option<&str>) -> std::sync::Arc<crate::state::App> {
 
 /// Ask this node for an approval — the opening round, which mints the sealed state. Opens a host over
 /// the node's App so the decision reaches the same spent-approval ledger the redemption will.
-fn ask(app: &std::sync::Arc<crate::state::App>) -> String {
+fn ask(app: &std::sync::Arc<busbar_kernel::state::App>) -> String {
     let rounds = confirm_round();
-    let engine = crate::plane_host::engine_host(app);
+    let engine = busbar_kernel::plane_host::engine_host(app);
     let decision = decide(
         &rounds,
         3,
@@ -119,10 +127,10 @@ fn ask(app: &std::sync::Arc<crate::state::App>) -> String {
 
 /// Present `state` to this node as the answered confirmation — the redemption, spent through the
 /// node's own host against the ledger that App carries.
-fn redeem(app: &std::sync::Arc<crate::state::App>, state: &str) -> AskDecision {
+fn redeem(app: &std::sync::Arc<busbar_kernel::state::App>, state: &str) -> AskDecision {
     let rounds = confirm_round();
     let responses = serde_json::json!({ "confirm": { "action": "accept", "content": {} } });
-    let engine = crate::plane_host::engine_host(app);
+    let engine = busbar_kernel::plane_host::engine_host(app);
     decide(
         &rounds,
         3,
@@ -147,7 +155,7 @@ fn refused_as_spent(d: &AskDecision) -> bool {
     matches!(
         d,
         AskDecision::Refuse(Refusal::StateRejected(
-            crate::plane::approvals::Rejected::AlreadySpent
+            busbar_kernel::plane::approvals::Rejected::AlreadySpent
         ))
     )
 }
@@ -292,10 +300,10 @@ fn two_nodes_sharing_no_store_each_redeem_once_which_is_the_documented_ram_postu
 /// already-signed store plugin built before this method existed.
 #[test]
 fn the_memory_store_shares_no_ledger_which_is_the_documented_contract() {
-    let node_a = crate::test_support::TestApp::new()
+    let node_a = busbar_kernel::test_support::TestApp::new()
         .mcp_durable_store(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()))
         .build();
-    let node_b = crate::test_support::TestApp::new()
+    let node_b = busbar_kernel::test_support::TestApp::new()
         .mcp_durable_store(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()))
         .build();
 

@@ -23,7 +23,7 @@ use busbar_contract::transport::AbiVersion;
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::Frame;
 use busbar_contract::{
-    grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
+    grammar::SelectorForm, ScratchBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 use tokio_tungstenite::tungstenite::Message;
@@ -664,7 +664,7 @@ impl Transport for WsTransport {
         &'a self,
         conn: &'a Conn,
         _stream: StreamId,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize> {
         let id = conn.id();
         Box::pin(async move {
@@ -674,12 +674,12 @@ impl Transport for WsTransport {
             if state.is_poisoned() {
                 return Err(TransportError::Framing);
             }
-            // ONE copy, and it is the floor. `bytes` is an `ArenaBytes<'a>` — a borrow into the
+            // ONE copy, and it is the floor. `bytes` is an `ScratchBytes<'a>` — a borrow into the
             // caller's arena, which owns the storage and outlives nothing here — and tungstenite's
             // `Message::Binary` takes owned `Bytes` it holds until the frame is flushed. `Vec ->
             // Bytes` is itself zero-copy (the allocation is reused), so this `to_vec` is the single
             // unavoidable copy. Removing it would mean handing the sink an `Arc`-backed `Bytes` that
-            // shares the payload's storage, which the borrowed `ArenaBytes` cannot supply without
+            // shares the payload's storage, which the borrowed `ScratchBytes` cannot supply without
             // widening `Transport::write`'s ABI to pass owned/shared bytes — a change to the one
             // contract every transport implements, out of proportion to one memcpy. Left as is.
             let payload = bytes.as_slice().to_vec();
@@ -709,11 +709,11 @@ impl Transport for WsTransport {
         &self,
         _fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)
     }
 
     /// The `http` → `ws` upgrade, from the side that owns what comes out.
@@ -785,7 +785,7 @@ impl Transport for WsTransport {
         // A WebSocket connection carries one message stream; refusing it refuses all of it.
         _stream: Option<StreamId>,
         _refusal: &'a Refusal,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let id = conn.id();

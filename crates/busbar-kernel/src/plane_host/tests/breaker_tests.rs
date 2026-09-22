@@ -6,7 +6,7 @@
 use super::*;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
 use busbar_kernel::store::BreakerState;
-use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
+use busbar_plugin::hot::host::{HostCtx, HostGeneration, PlaneHostVtable};
 use busbar_plugin::hot::{RawFault, RawStatus, Signal, POD_VERSION};
 
 const POOL: &[u8] = b"tool:fs";
@@ -173,9 +173,14 @@ fn durable_host_route_settles_through_breaker_settle() {
             app: &app,
             scope: &disp,
         };
-        let host: HostCtx = (&state as *const HostState)
+        // Mint a handle exactly like a real dispatch guard would: without an open `HostGeneration`
+        // this handle is BORN DEAD — `recover`'s liveness check would refuse it before `breaker_admit`
+        // ever touches `state`.
+        let generation = HostGeneration::open();
+        let ptr = (&state as *const HostState)
             .cast_mut()
             .cast::<std::os::raw::c_void>();
+        let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
         let k = key(0);
         let id = breaker_admit(host, &k as *const Key);
         assert!(!id.is_none(), "admit wins the half-open probe");
@@ -228,9 +233,13 @@ fn task_admit_bears_the_probe_in_the_durable_scope_and_settles() {
             app: &app,
             scope: durable.arena(),
         };
-        let host: HostCtx = (&state as *const HostState)
+        // Mint like a real dispatch guard would (see the twin comment above): no open `HostGeneration`
+        // ⇒ a born-dead handle `recover` would refuse.
+        let generation = HostGeneration::open();
+        let ptr = (&state as *const HostState)
             .cast_mut()
             .cast::<std::os::raw::c_void>();
+        let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
         let k = key(0);
         let id = breaker_admit(host, &k as *const Key);
         assert!(!id.is_none(), "the task admit wins the half-open probe");
@@ -281,9 +290,12 @@ fn task_admit_releases_the_probe_when_the_durable_scope_drops_unsettled() {
             app: &app,
             scope: durable.arena(),
         };
-        let host: HostCtx = (&state as *const HostState)
+        // Mint like a real dispatch guard would (see the twin comments above).
+        let generation = HostGeneration::open();
+        let ptr = (&state as *const HostState)
             .cast_mut()
             .cast::<std::os::raw::c_void>();
+        let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
         let k = key(0);
         let id = breaker_admit(host, &k as *const Key);
         assert!(
@@ -372,7 +384,8 @@ fn breaker_admit_reason_admits_and_leaves_reason_unspecified() {
             Unavailability::Unspecified
         );
         // SAFETY: live HostState from `with_dispatch_scope`.
-        let state: &HostState = unsafe { recover(host) };
+        let state: &HostState = unsafe { recover(host) }
+            .expect("host generation still live inside with_dispatch_scope");
         assert_eq!(
             state.scope.registered(),
             1,
@@ -421,7 +434,8 @@ fn settle_failure_folds_a_transient_signal() {
         let id = (vt.breaker_admit.unwrap())(host, &k as *const Key);
         assert!(!id.is_none());
         // SAFETY: live HostState from `with_dispatch_scope`.
-        let _state: &HostState = unsafe { recover(host) };
+        let _state: &HostState = unsafe { recover(host) }
+            .expect("host generation still live inside with_dispatch_scope");
         let fault = signal(StatusClass::Fault);
         assert_eq!(
             (vt.breaker_settle.unwrap())(host, id, &fault as *const Signal),

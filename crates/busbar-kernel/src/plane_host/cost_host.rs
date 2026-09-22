@@ -24,7 +24,7 @@
 //! [`StatusClass::Fault`], never a permissive value), and writes its out-param ONLY on the `Ok` path
 //! (init-only-on-Ok, tolerating a null slot via [`busbar_plugin::write_out`]).
 
-use super::{recover, HostState};
+use super::recover;
 use crate::plane::cost::{CostAmount, CostHold};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{CostLeaseId, CostSettleOut, StatusClass};

@@ -135,7 +135,7 @@ pub mod store;
 /// before any reader runs, and core's own test binary carries it in `registry::builtin_plane_decls`,
 /// so exactly one fallback is always present. Core expresses "which plane handles unmatched routes"
 /// by ASKING the declared fallback plane, never by hard-coding which plane that is.
-pub(crate) fn fallback_key() -> &'static str {
+pub fn fallback_key() -> &'static str {
     let decls = registry::plane_decls();
     // The fallback is FIRST-WINS: with two fallback decls the `find` below would silently pick one
     // and the other's paths would fall through nowhere. At most one plane may flag itself fallback.
@@ -181,7 +181,7 @@ pub(crate) fn is_fallback(key: &str) -> bool {
 /// no built-in declaration, so it must not be iterated here — every [`plane_decl`] on it would
 /// fault. This is the successor to the old `Plane::ALL`, and the source of the LAYERING iteration
 /// order every map walk must borrow rather than reinvent from a map's own key order.
-pub(crate) fn plane_keys() -> impl Iterator<Item = &'static str> {
+pub fn plane_keys() -> impl Iterator<Item = &'static str> {
     registry::plane_decls().iter().map(|d| d.key)
 }
 
@@ -189,7 +189,7 @@ pub(crate) fn plane_keys() -> impl Iterator<Item = &'static str> {
 /// accessors now read through. Callers wanting a decl FIELD (`config_section`, `subject_noun`,
 /// `audit_kind`, `scope_kinds`) read it straight off this; the free fns below are the accessors
 /// that COMPUTED something rather than reading a field.
-pub(crate) fn plane_decl(key: &str) -> &'static registry::PlaneDecl {
+pub fn plane_decl(key: &str) -> &'static registry::PlaneDecl {
     registry::plane_decl_for(key)
         .unwrap_or_else(|| panic!("no built-in plane declared for key `{key}`"))
 }
@@ -221,7 +221,7 @@ pub(crate) fn sole_wire_format(key: &str) -> Option<&'static str> {
 /// [`wire_format_names`] rather than written as a second literal, so a plane cannot gain a dialect
 /// in one place and keep its old count in the other — which would silently keep [`has_superset_ir`]
 /// answering the pre-change question.
-pub(crate) fn wire_formats(key: &str) -> usize {
+pub fn wire_formats(key: &str) -> usize {
     wire_format_names(key).len()
 }
 

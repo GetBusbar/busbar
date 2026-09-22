@@ -14,7 +14,7 @@
 //! > could hit — and on trip it cleanly refuses THAT ONE request, never panics.
 //!
 //! It replaces the fixed-4-KiB `arena::Arena` (kept beside it while the shipped per-call seam is
-//! cut over), whose `ArenaExhausted` size-refusal was the live jev bug #41 exists to fix: a ~5 KB
+//! cut over), whose `ScratchExhausted` size-refusal was the live jev bug #41 exists to fix: a ~5 KB
 //! response threw on the fixed 4 KiB cap. Here it is a single heap grow and a served request.
 //!
 //! ## Why bumpalo, and why `forbid(unsafe_code)` still holds

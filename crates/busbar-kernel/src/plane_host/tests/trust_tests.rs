@@ -14,7 +14,8 @@ fn with_test_state<R>(f: impl FnOnce(HostCtx, &PlaneHostVtable, &DispatchScope) 
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
         // SAFETY: `host` is the live HostState minted by `with_dispatch_scope`.
-        let state: &HostState = unsafe { recover(host) };
+        let state: &HostState = unsafe { recover(host) }
+            .expect("host generation still live inside with_dispatch_scope");
         let scope = state.scope;
         f(host, vt, scope)
     })

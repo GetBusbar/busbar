@@ -6,7 +6,7 @@
 //! Fallibility: every fallible method below returns its trait's own error enum; see the trait doc
 //! for what a failure means, rather than repeating it per method.
 
-use crate::bounded::{ArenaBytes, BoundedVec, Facts, IrPatch, MAX_KEYS, MAX_RECORD_BYTES};
+use crate::bounded::{BoundedVec, Facts, IrPatch, ScratchBytes, MAX_KEYS, MAX_RECORD_BYTES};
 use crate::dest::{
     AuthDecoration, CandidateSet, EgressBody, Permutation, VerifiedDestination, VetoCode,
 };
@@ -639,7 +639,7 @@ pub enum ExportItem<'u> {
         /// The last sequence in the run.
         to: u64,
         /// The sealed bytes.
-        bytes: ArenaBytes<'u>,
+        bytes: ScratchBytes<'u>,
     },
 }
 

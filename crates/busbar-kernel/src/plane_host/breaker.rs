@@ -33,8 +33,8 @@
 //! `Key.scope` field. A lane past the fixed [`MAX_POOL_MEMBERS`] table, a null/empty key, or
 //! non-UTF-8 key bytes all fail closed to a refusal rather than risk indexing the lane table.
 
+use super::recover;
 use super::scope::SettleAdmission;
-use super::{recover, HostState};
 use crate::breaker::{CanonicalSignal, StatusClass as BreakerClass};
 use crate::store::{PlaneAdmission, PlaneBreakers, MAX_POOL_MEMBERS};
 use busbar_plugin::hot::host::HostCtx;

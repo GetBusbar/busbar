@@ -14,14 +14,14 @@
 //! This is the trait; the kernel owns the one implementation ([`ScratchPad`] in
 //! `busbar-kernel::scratch`), backed by an audited chunk-chaining bump allocator. Planes are
 //! size-blind: they allocate, and the allocation succeeds unless the caller is an attacker. The
-//! deliberately-dead `Arena` trait beside this one is the fixed-4-KiB-cap-that-refuses design #41
+//! deliberately-dead `PlaneAlloc` trait beside this one is the fixed-4-KiB-cap-that-refuses design #41
 //! replaces; it is kept only while the shipped per-call seam is cut over.
 //!
 //! [`ScratchPad`]: https://docs.rs/busbar-kernel
 
 use core::fmt;
 
-use crate::bounded::{ArenaBytes, Span};
+use crate::bounded::{ScratchBytes, Span};
 
 /// Per-call scratch memory that grows on demand and never refuses a request for being too large.
 ///
@@ -33,7 +33,7 @@ use crate::bounded::{ArenaBytes, Span};
 ///
 /// The trait is intentionally NOT `Send + Sync`: the runtime is `!Send`, thread-per-core, one pad
 /// per worker on its own `LocalSet`, so the bump allocator behind it never crosses a thread and
-/// need not synchronise. That is the one bound difference from the retired `Arena` trait.
+/// need not synchronise. That is the one bound difference from the retired `PlaneAlloc` trait.
 pub trait Scratch {
     /// Copy bytes into the pad and hand back a borrowed view of where they landed.
     ///
@@ -43,7 +43,7 @@ pub trait Scratch {
     /// # Errors
     /// [`ScratchRefused`] when honouring the request would carry the pad past its abuse ceiling —
     /// a size only a runaway or an attack reaches.
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ScratchRefused>;
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, ScratchRefused>;
 
     /// Copy a string into the pad and hand back a borrowed view of it.
     ///
@@ -75,7 +75,7 @@ pub trait Scratch {
 
 /// The scratch pad refused ONE request because honouring it would cross the abuse-only ceiling.
 ///
-/// This is not the dead `ArenaBudget` size refusal: the pad grows for any legitimate request. It
+/// This is not the dead `PlaneAllocBudget` size refusal: the pad grows for any legitimate request. It
 /// is the runaway/attack backstop, set absurdly high, and a trip refuses only the single request
 /// that asked — the pad is untouched and the worker serves the next call normally. It is carried,
 /// never panicked, so the loop ends that one unit at the step that asked and posts.

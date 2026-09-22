@@ -951,7 +951,7 @@ fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None, None);
+    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None, busbar_kernel::store::now(), None);
 
     assert_eq!(verdict, ChainVerdict::Denied);
     assert_eq!(
@@ -982,7 +982,7 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None, None);
+    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None, busbar_kernel::store::now(), None);
 
     assert_eq!(verdict, ChainVerdict::Denied);
     assert_eq!(
@@ -1025,7 +1025,7 @@ fn pass_churn_cannot_evict_an_identity() {
 
     for i in 0..4096u64 {
         let junk = format!("junk-{i}");
-        let _ = auth.run_chain_cached(Some(&junk), Some(&cache), None, None);
+        let _ = auth.run_chain_cached(Some(&junk), Some(&cache), None, now, None);
     }
 
     assert!(
@@ -1059,7 +1059,7 @@ fn an_identified_chain_still_caches_the_leading_pass() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("good"), Some(&cache), None, None);
+    let verdict = auth.run_chain_cached(Some("good"), Some(&cache), None, busbar_kernel::store::now(), None);
 
     assert!(matches!(verdict, ChainVerdict::Identified { .. }));
     assert_eq!(

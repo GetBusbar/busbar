@@ -231,7 +231,7 @@ fn every_decode_and_encode_failure_renders_as_itself() {
     }
     let encodes = [
         (Encode::Unrepresentable, "Unrepresentable"),
-        (Encode::ArenaExhausted, "ArenaExhausted"),
+        (Encode::ScratchExhausted, "ScratchExhausted"),
         (Encode::SecretPlaceholder, "SecretPlaceholder"),
         (Encode::Poisoned, "Poisoned"),
     ];
@@ -239,7 +239,7 @@ fn every_decode_and_encode_failure_renders_as_itself() {
         assert_eq!(code.to_string(), name);
         let _: bool = match code {
             Encode::Unrepresentable
-            | Encode::ArenaExhausted
+            | Encode::ScratchExhausted
             | Encode::SecretPlaceholder
             | Encode::Poisoned => true,
         };

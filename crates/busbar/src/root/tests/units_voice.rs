@@ -2040,22 +2040,22 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
 
 /// A leaking arena. Test-only, run a bounded number of times per process: the trait's
 /// allocators hand back borrowed slices, so an honest double either leaks or is unsafe.
-struct CellArena;
+struct CellPlaneAlloc;
 
-impl busbar_contract::bounded::Arena for CellArena {
+impl busbar_contract::bounded::PlaneAlloc for CellPlaneAlloc {
     fn alloc_bytes<'a>(
         &'a self,
         src: &[u8],
-    ) -> Result<busbar_contract::bounded::ArenaBytes<'a>, busbar_contract::bounded::ArenaBudget>
+    ) -> Result<busbar_contract::bounded::ScratchBytes<'a>, busbar_contract::bounded::PlaneAllocBudget>
     {
         let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
-        Ok(busbar_contract::bounded::ArenaBytes::new(leaked))
+        Ok(busbar_contract::bounded::ScratchBytes::new(leaked))
     }
 
     fn alloc_str<'a>(
         &'a self,
         src: &str,
-    ) -> Result<&'a str, busbar_contract::bounded::ArenaBudget> {
+    ) -> Result<&'a str, busbar_contract::bounded::PlaneAllocBudget> {
         Ok(Box::leak(src.to_string().into_boxed_str()))
     }
 
@@ -2064,7 +2064,7 @@ impl busbar_contract::bounded::Arena for CellArena {
         src: &[(&'a str, busbar_contract::bounded::Span)],
     ) -> Result<
         &'a [(&'a str, busbar_contract::bounded::Span)],
-        busbar_contract::bounded::ArenaBudget,
+        busbar_contract::bounded::PlaneAllocBudget,
     > {
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
@@ -2137,7 +2137,7 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     use busbar_plane_voice::session::VoiceSessionState;
 
     let seal = KernelSeal::acquire_for_kernel();
-    let arena = CellArena;
+    let arena = CellPlaneAlloc;
     let config = CellConfig;
     let transport = CellTransport;
     let labels = Labels::new();

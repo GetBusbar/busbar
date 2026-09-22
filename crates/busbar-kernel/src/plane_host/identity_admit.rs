@@ -18,7 +18,7 @@
 //! byte-identical to the in-process resolution, with the gov key never crossing as bytes, only the
 //! bare `u64` handle. A refusal stashes nothing and names [`IdentityId::NONE`].
 
-use super::{recover, HostState};
+use super::recover;
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
     IdentityAdmitted, IdentityId, IdentityOutcome, IdentityQuery, StatusClass, POD_VERSION,

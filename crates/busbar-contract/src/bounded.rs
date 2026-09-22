@@ -1,11 +1,11 @@
 //! The bounded types every other module is built out of. Every ceiling below is pinned by the
 //! crate-graph section of the design and enforced at the type, not by a runtime check buried in a
-//! handler; the one resource a plugin is handed is the per-unit arena, and every byte a plugin
-//! produces comes out of it. See `docs/design/contract-notes.md`.
+//! handler; the one resource a plugin is handed is the per-unit scratch pad, and every byte a
+//! plugin produces comes out of it. See `docs/design/contract-notes.md`.
 
 use core::fmt;
 
-/// The most keys any arena-backed fact map may carry.
+/// The most keys any scratch-backed fact map may carry.
 ///
 /// The crate-graph section of the design pins this at thirty-two.
 pub const MAX_KEYS: usize = 32;
@@ -56,11 +56,11 @@ pub const MAX_LEG_REPLIES: usize = 2;
 /// can write a client for.
 pub const MAX_RESPONSE_PTRS: usize = 2;
 
-/// The per-unit arena size in bytes.
+/// The per-unit scratch pad's starting size, in bytes.
 ///
-/// The arena is reset per frame on the relay path of an open unit and at unit end otherwise.
-/// Relay and egress bodies live in the connection slab, never here.
-pub const ARENA_BYTES: usize = 4 * 1024;
+/// The pad is reset per frame on the relay path of an open unit and at unit end otherwise. Relay
+/// and egress bodies live in the connection slab, never here.
+pub const SCRATCH_BASE_BYTES: usize = 4 * 1024;
 
 /// A fixed-capacity list.
 ///
@@ -197,18 +197,18 @@ impl<T> fmt::Display for Overflow<T> {
     }
 }
 
-/// Bytes borrowed from the per-unit arena.
+/// Bytes borrowed from the per-unit scratch pad.
 ///
 /// The crate-graph section of the design bans the `bytes` crate's reference-counted buffer from
 /// the plugin surface: a plugin that could clone a buffer handle could hold bytes past the unit
-/// that paid for them. Arena bytes borrow, so they cannot outlive the unit.
+/// that paid for them. Scratch bytes borrow, so they cannot outlive the unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ArenaBytes<'u> {
+pub struct ScratchBytes<'u> {
     bytes: &'u [u8],
 }
 
-impl<'u> ArenaBytes<'u> {
-    /// Wrap a slice the arena handed out.
+impl<'u> ScratchBytes<'u> {
+    /// Wrap a slice the scratch pad handed out.
     #[must_use]
     pub const fn new(bytes: &'u [u8]) -> Self {
         Self { bytes }
@@ -235,8 +235,8 @@ impl<'u> ArenaBytes<'u> {
 
 /// Bytes owned by a connection slab.
 ///
-/// Frames arrive from a transport and outlive the arena reset that happens between relayed frames,
-/// so they cannot borrow the arena. This is the one owning byte handle on the plugin surface, and
+/// Frames arrive from a transport and outlive the scratch-pad reset that happens between relayed
+/// frames, so they cannot borrow the pad. This is the one owning byte handle on the plugin surface, and
 /// it is deliberately a plain shared slice rather than the banned reference-counted buffer type:
 /// it can be cloned cheaply but it carries no writable view and no split-off cursor.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -284,22 +284,26 @@ impl SlabBytes {
 
 /// The one resource handle a plugin is given.
 ///
-/// The contract section of the design says the context carries exactly one resource — the per-unit
-/// arena — and that everything else on the context is a borrowed read-only view. Allocation is
-/// fallible because the arena is fixed size: exhaustion ends the unit at the step that asked, it
-/// does not grow the arena.
+/// DEAD-BY-DESIGN, kept only while the shipped per-call seam described in DECISIONS #41 is cut
+/// over: its `Send + Sync` bound and its `&self`-returns-a-borrow allocator shape together have no
+/// safe implementation, so every implementor anywhere in this tree is a test double that leaks
+/// (see `busbar_contract::scratch::Scratch` for the replacement #41 mandates, and
+/// `busbar-kernel::scratch::ScratchPad` for its one real implementation). This trait predates that
+/// decision: it modelled the contract section's "the context carries exactly one resource" rule
+/// with a FIXED-size, refusing allocator, where [`Scratch`](crate::scratch::Scratch) grows on
+/// demand and never refuses for size.
 ///
 /// # Errors
-/// Both allocation methods return [`ArenaBudget`] when the request does not fit in what is left
-/// of the arena.
-pub trait Arena: Send + Sync {
-    /// Copy bytes into the arena.
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget>;
+/// Both allocation methods return [`PlaneAllocBudget`] when the request does not fit in what is
+/// left of the fixed allocation.
+pub trait PlaneAlloc: Send + Sync {
+    /// Copy bytes into the allocator.
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget>;
 
-    /// Copy a string into the arena.
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget>;
+    /// Copy a string into the allocator.
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget>;
 
-    /// Copy a resolved span table into the arena.
+    /// Copy a resolved span table into the allocator.
     ///
     /// The one thing a plane could not build before this existed. An [`Ir`] borrows its body AND
     /// its span table for the unit's lifetime, and a plane holds neither: the body is the frame
@@ -309,38 +313,47 @@ pub trait Arena: Send + Sync {
     /// the one the loop reads.
     ///
     /// The pointers are already `'a` because they are the plane's declared pointers — static
-    /// strings or arena strings — so only the pairs themselves are copied.
+    /// strings or scratch strings — so only the pairs themselves are copied.
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], ArenaBudget>;
+    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget>;
 
     /// How many bytes remain before the next allocation fails.
     fn remaining(&self) -> usize;
 }
 
-/// The arena said no.
+/// The fixed-size allocator said no.
 ///
-/// The loop turns this into a failure at the step that asked for the bytes.
+/// Distinct from [`ReasonCode::ScratchExhausted`](crate::caps::ReasonCode::ScratchExhausted) and
+/// its contract-side twin
+/// [`RefusalReason::ScratchExhausted`](crate::unit::RefusalReason::ScratchExhausted), which were
+/// renamed in 1.6.0 from their prior arena-model identifier and its matching wire spelling: unlike
+/// this struct, those two are a
+/// closed reason VOCABULARY, but the whole `ReasonCode` wire vocabulary is NEW in 1.6.0 — the
+/// 1.5.5 golden ledger (`testing/shadow-oracle/golden/1.5.5/ledger.tsv`) and
+/// `testing/shadow-oracle/cells.json` contain none of these codes, so there is no shipped byte to
+/// preserve and the rename is clean. This struct is a plain, never-persisted Rust error type for
+/// the dead [`PlaneAlloc`] trait and carries none of that weight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ArenaBudget {
+pub struct PlaneAllocBudget {
     /// How many bytes were asked for.
     pub wanted: usize,
     /// How many bytes were left.
     pub remaining: usize,
 }
 
-impl fmt::Display for ArenaBudget {
+impl fmt::Display for PlaneAllocBudget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "arena exhausted: wanted {} bytes, {} remain",
+            "fixed allocation exhausted: wanted {} bytes, {} remain",
             self.wanted, self.remaining
         )
     }
 }
 
-impl std::error::Error for ArenaBudget {}
+impl std::error::Error for PlaneAllocBudget {}
 
 /// One value in a fact map.
 ///
@@ -358,11 +371,11 @@ pub enum FactValue<'u> {
     Bool(bool),
 }
 
-/// An arena-backed bounded map from declared key to fact value.
+/// A scratch-backed bounded map from declared key to fact value.
 ///
 /// Keys are declared by the plugin up front, the map is pre-sized from that declaration, and
 /// writes are last-write-wins. The map never allocates: it is a fixed array of at most
-/// [`MAX_KEYS`] entries whose strings and bytes borrow the arena.
+/// [`MAX_KEYS`] entries whose strings and bytes borrow the scratch pad.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Facts<'u> {
     entries: [Option<(&'u str, FactValue<'u>)>; MAX_KEYS],
@@ -552,7 +565,7 @@ pub struct IrEdit<'u> {
     /// The pointer whose span is replaced.
     pub pointer: &'u str,
     /// The bytes that replace it.
-    pub replacement: ArenaBytes<'u>,
+    pub replacement: ScratchBytes<'u>,
 }
 
 /// A bounded set of edits a gate hook asks the kernel to apply to the spooled body.

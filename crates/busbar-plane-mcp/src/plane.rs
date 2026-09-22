@@ -532,7 +532,7 @@ impl Plane for McpPlane {
         let content_type = ctx
             .arena()
             .alloc_bytes(CONTENT_TYPE_JSON)
-            .map_err(|_| Encode::ArenaExhausted)?;
+            .map_err(|_| Encode::ScratchExhausted)?;
         let _ = envelope.fields.push(busbar_contract::wire::EnvelopeField {
             name: FIELD_CONTENT_TYPE,
             value: content_type,
@@ -544,7 +544,7 @@ impl Plane for McpPlane {
             let value = ctx
                 .arena()
                 .alloc_bytes(version.as_bytes())
-                .map_err(|_| Encode::ArenaExhausted)?;
+                .map_err(|_| Encode::ScratchExhausted)?;
             let _ = envelope.fields.push(busbar_contract::wire::EnvelopeField {
                 name: FIELD_PROTOCOL_VERSION,
                 value,
@@ -728,7 +728,7 @@ impl Plane for McpPlane {
             return ctx
                 .arena()
                 .alloc_bytes(body)
-                .map_err(|_| Encode::ArenaExhausted);
+                .map_err(|_| Encode::ScratchExhausted);
         }
         // An answer this node composed itself arrives as a bare result and is wrapped here, with
         // the identifier the decode step recorded and the discriminator this node chose.
@@ -743,7 +743,7 @@ impl Plane for McpPlane {
         let bytes = jsonrpc::success(id.as_ref(), body, kind)?;
         ctx.arena()
             .alloc_bytes(&bytes)
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_refusal<'u>(
@@ -766,7 +766,7 @@ impl Plane for McpPlane {
         let bytes = jsonrpc::error(id.as_ref(), code, message, data)?;
         ctx.arena()
             .alloc_bytes(&bytes)
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_end<'u>(

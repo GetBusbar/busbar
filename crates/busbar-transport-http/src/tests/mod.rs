@@ -106,7 +106,7 @@ async fn the_envelopes_own_method_and_path_are_what_reach_the_upstream() {
         .unwrap();
     let req = b"POST /v1/messages HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
     transport
-        .write(&conn, StreamId(0), ArenaBytes::new(req))
+        .write(&conn, StreamId(0), ScratchBytes::new(req))
         .await
         .unwrap();
 
@@ -140,7 +140,7 @@ async fn a_second_egress_exchange_with_nowhere_to_answer_is_reported_not_swallow
         .unwrap();
     let req = b"POST /first HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
     transport
-        .write(&conn, StreamId(0), ArenaBytes::new(req))
+        .write(&conn, StreamId(0), ScratchBytes::new(req))
         .await
         .expect("the first exchange has a sender and answers normally");
 
@@ -148,7 +148,7 @@ async fn a_second_egress_exchange_with_nowhere_to_answer_is_reported_not_swallow
     // anyone.
     let again = b"POST /second HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
     let err = transport
-        .write(&conn, StreamId(0), ArenaBytes::new(again))
+        .write(&conn, StreamId(0), ScratchBytes::new(again))
         .await
         .expect_err("an exchange whose answer is unreachable must not report success");
     assert_eq!(
@@ -168,7 +168,7 @@ async fn a_status_line_is_not_a_request_this_transport_can_send() {
         .unwrap();
     let msg = b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n";
     let err = transport
-        .write(&conn, StreamId(0), ArenaBytes::new(msg))
+        .write(&conn, StreamId(0), ScratchBytes::new(msg))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::Framing);
@@ -184,7 +184,7 @@ async fn egress_round_trip_reports_status_class_on_the_first_frame() {
         .unwrap();
     let req = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n";
     transport
-        .write(&conn, StreamId(0), ArenaBytes::new(req))
+        .write(&conn, StreamId(0), ScratchBytes::new(req))
         .await
         .unwrap();
 
@@ -221,7 +221,7 @@ async fn egress_maps_4xx_and_5xx_status_classes() {
             .write(
                 &conn,
                 StreamId(0),
-                ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+                ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
             )
             .await
             .unwrap();
@@ -251,7 +251,7 @@ async fn egress_reports_the_exact_upstream_status_on_the_first_frame() {
             .write(
                 &conn,
                 StreamId(0),
-                ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+                ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
             )
             .await
             .unwrap();
@@ -280,7 +280,7 @@ async fn egress_carries_the_upstreams_retry_after_on_the_first_frame() {
         .write(
             &conn,
             StreamId(0),
-            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
         )
         .await
         .unwrap();
@@ -305,7 +305,7 @@ async fn egress_reports_no_retry_after_when_the_upstream_asked_for_none() {
         .write(
             &conn,
             StreamId(0),
-            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
         )
         .await
         .unwrap();
@@ -489,7 +489,7 @@ async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
     // Chunked, so no declared total: only the accumulator itself can refuse this.
     let head = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n";
     transport
-        .write(&conn, StreamId(0), ArenaBytes::new(head))
+        .write(&conn, StreamId(0), ScratchBytes::new(head))
         .await
         .unwrap();
     let mut err = None;
@@ -498,7 +498,7 @@ async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
             .write(
                 &conn,
                 StreamId(0),
-                ArenaBytes::new(b"10\r\naaaaaaaaaaaaaaaa\r\n"),
+                ScratchBytes::new(b"10\r\naaaaaaaaaaaaaaaa\r\n"),
             )
             .await
         {
@@ -863,7 +863,7 @@ async fn a_cancelled_egress_write_ends_the_frame_stream_rather_than_hanging_it()
     let write_fut = transport.write(
         &conn,
         StreamId(0),
-        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
     );
     let cancelled = tokio::time::timeout(std::time::Duration::from_millis(50), write_fut).await;
     assert!(
@@ -1012,7 +1012,7 @@ async fn an_egress_body_accumulates_across_calls_until_the_declared_length() {
     let pieces: [&[u8]; 3] = [head, b"hello ", b"world"];
     for piece in pieces {
         transport
-            .write(&conn, StreamId(0), ArenaBytes::new(piece))
+            .write(&conn, StreamId(0), ScratchBytes::new(piece))
             .await
             .unwrap();
     }
@@ -1041,7 +1041,7 @@ async fn an_egress_body_accumulates_across_calls_until_the_declared_length() {
 #[test]
 fn the_envelope_encodes_as_an_http_message() {
     let transport = HttpTransport::new(ClientSettings::default());
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     let bytes = transport
         .encode_envelope(
             &[
@@ -1085,7 +1085,7 @@ fn the_envelope_encodes_as_an_http_message() {
 #[test]
 fn a_field_cannot_smuggle_a_line_ending_into_the_header_block() {
     let transport = HttpTransport::new(ClientSettings::default());
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     let poisoned: &[(&str, &[u8])] = &[
         ("x-note", b"ok\r\nauthorization: bearer stolen".as_slice()),
         ("x-note", b"ok\nauthorization: bearer stolen".as_slice()),
@@ -1115,26 +1115,26 @@ fn a_field_cannot_smuggle_a_line_ending_into_the_header_block() {
 
 /// A test arena that hands back what it was given. The real one is the kernel's per-unit one;
 /// what this stands in for is only "the bytes come back with the arena's lifetime".
-struct TestArena;
+struct TestPlaneAlloc;
 
-impl busbar_contract::Arena for TestArena {
+impl busbar_contract::PlaneAlloc for TestPlaneAlloc {
     fn alloc_bytes<'a>(
         &'a self,
         src: &[u8],
-    ) -> Result<busbar_contract::ArenaBytes<'a>, busbar_contract::ArenaBudget> {
-        Ok(busbar_contract::ArenaBytes::new(Box::leak(
+    ) -> Result<busbar_contract::ScratchBytes<'a>, busbar_contract::PlaneAllocBudget> {
+        Ok(busbar_contract::ScratchBytes::new(Box::leak(
             src.to_vec().into_boxed_slice(),
         )))
     }
 
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, busbar_contract::ArenaBudget> {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, busbar_contract::PlaneAllocBudget> {
         Ok(Box::leak(src.to_string().into_boxed_str()))
     }
 
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, busbar_contract::Span)],
-    ) -> Result<&'a [(&'a str, busbar_contract::Span)], busbar_contract::ArenaBudget> {
+    ) -> Result<&'a [(&'a str, busbar_contract::Span)], busbar_contract::PlaneAllocBudget> {
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
@@ -1192,7 +1192,7 @@ async fn every_transport_error_is_mapped_on_dial() {
         .write(
             &conn,
             StreamId(0),
-            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
         )
         .await
         .unwrap_err();
@@ -1321,7 +1321,7 @@ async fn a_streamed_upstream_yields_frames_before_it_closes() {
         transport.write(
             &conn,
             StreamId(0),
-            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
         ),
     )
     .await
@@ -1399,7 +1399,7 @@ async fn a_response_body_past_the_cap_ends_the_stream_rather_than_accumulating()
         .write(
             &conn,
             StreamId(0),
-            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
         )
         .await
         .unwrap();
@@ -1456,7 +1456,7 @@ async fn a_chunked_upstream_response_head_carries_no_framing_headers() {
         .write(
             &conn,
             StreamId(0),
-            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
         )
         .await
         .unwrap();
@@ -1862,7 +1862,7 @@ async fn a_non_ascii_response_header_value_reaches_the_head_frame_as_its_own_byt
         .write(
             &conn,
             StreamId(0),
-            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
         )
         .await
         .unwrap();
@@ -1991,7 +1991,7 @@ async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
         .write(
             &conn,
             StreamId(0),
-            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
         )
         .await
         .unwrap();
@@ -2166,7 +2166,7 @@ async fn upstream_response_trailers_reach_the_caller_as_a_final_frame() {
         .write(
             &conn,
             StreamId(0),
-            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            ScratchBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
         )
         .await
         .unwrap();

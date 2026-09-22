@@ -19,7 +19,8 @@ fn with_test_state<R>(f: impl FnOnce(HostCtx, &PlaneHostVtable, &DispatchScope) 
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
         // SAFETY: `host` is the live HostState minted by `with_dispatch_scope`.
-        let state: &HostState = unsafe { recover(host) };
+        let state: &HostState = unsafe { recover(host) }
+            .expect("host generation still live inside with_dispatch_scope");
         let scope = state.scope;
         f(host, vt, scope)
     })
@@ -119,7 +120,8 @@ fn wired_govern_admit_drives_the_real_limit_engine() {
     let app = crate::test_support::TestApp::new().governance(gov).build();
     with_dispatch_scope(&app, |host, vt| {
         // SAFETY: live HostState from `with_dispatch_scope`.
-        let state: &HostState = unsafe { recover(host) };
+        let state: &HostState = unsafe { recover(host) }
+            .expect("host generation still live inside with_dispatch_scope");
         let admit = Facts::new(5, 50, 3, 0, 0, b"pool-a");
         assert_eq!(
             (vt.govern_admit.unwrap())(host, &*admit as *const Facts),
@@ -305,7 +307,11 @@ async fn host_dispatch_guard_reclaims_across_an_await() {
         }));
         // Materialize the HostCtx synchronously and recover a live HostState through it.
         host.with_host(|ctx, vt| {
-            assert!(ctx as usize != 0, "a live HostCtx is minted");
+            assert!(!ctx.is_null(), "a live HostCtx is minted");
+            assert!(
+                HostGeneration::is_live(ctx.generation()),
+                "the minting dispatch's generation is live for the duration of `with_host`"
+            );
             assert!(vt.clock_now.is_some());
         });
         // The guard is held ACROSS this await — the scope must not reclaim yet.
@@ -355,7 +361,8 @@ fn dispatch_scope_reclaims_a_registered_handle_on_scope_end() {
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, _vt| {
         // SAFETY: live HostState from `with_dispatch_scope`.
-        let state: &HostState = unsafe { recover(host) };
+        let state: &HostState = unsafe { recover(host) }
+            .expect("host generation still live inside with_dispatch_scope");
         let f = flag.clone();
         state.scope.register_egress(Box::new(move || {
             f.fetch_add(1, Ordering::SeqCst);
@@ -365,4 +372,48 @@ fn dispatch_scope_reclaims_a_registered_handle_on_scope_end() {
     });
     // The dispatch scope ended → the registered handle was reclaimed exactly once.
     assert_eq!(reclaimed.load(Ordering::SeqCst), 1);
+}
+
+// ── A6 use-after-free hardening: a STALE `HostCtx` (its minting dispatch has ended, so its
+// `HostGeneration` is no longer live) must be REFUSED at the recovery site, never dereferenced. ──
+
+/// `recover` refuses a `HostCtx` copied out of a dispatch that has already ended — the exact A6
+/// shape: a plane that stashed the handle and replayed it after the `HostState` it addressed went
+/// out of scope. Before the generation guard, `recover` had no way to detect this and would hand back
+/// a dangling `&HostState`; now the generation check catches it BEFORE the pointer is ever read.
+#[test]
+fn stale_host_ctx_is_refused_not_dereferenced() {
+    let app = crate::test_support::TestApp::new().build();
+    // `HostCtx` is `Copy`; copy it out of the dispatch that minted it. When `with_dispatch_scope`
+    // returns, its `HostGeneration` token has already dropped and popped off this thread's live set.
+    let stale_host = with_dispatch_scope(&app, |host, _vt| host);
+    assert!(
+        !HostGeneration::is_live(stale_host.generation()),
+        "the minting dispatch has ended; its generation must no longer be live"
+    );
+    // SAFETY: `recover` checks the generation BEFORE dereferencing; a stale handle is refused, never
+    // read — so calling it here with an ended dispatch's handle is not itself unsound.
+    let recovered = unsafe { recover(stale_host) };
+    assert!(
+        recovered.is_none(),
+        "a stale HostCtx (generation no longer live) must be refused, never dereferenced"
+    );
+}
+
+/// The end-to-end ABI shape of the same guard: a real vtable slot (`clock_now`) handed a stale
+/// `HostCtx` fails closed to its documented sentinel (`0`) rather than reading freed stack memory —
+/// proving the guard is live on the actual dispatch path a plane calls, not just at the `recover` unit.
+#[test]
+fn stale_host_ctx_through_a_real_vtable_slot_fails_closed() {
+    let app = crate::test_support::TestApp::new().build();
+    let stale_host = with_dispatch_scope(&app, |host, _vt| host);
+    assert!(!HostGeneration::is_live(stale_host.generation()));
+    // A freshly built vtable (not the one the ended dispatch minted) so this call exercises only
+    // the stale `HostCtx`, never a stale vtable reference.
+    let vt = build_plane_host_vtable();
+    let now = (vt.clock_now.unwrap())(stale_host);
+    assert_eq!(
+        now, 0,
+        "a stale handle reads the fail-closed clock, never a dereference"
+    );
 }

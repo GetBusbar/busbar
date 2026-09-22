@@ -35,7 +35,7 @@ const ALL_REFUSAL_REASONS: [RefusalReason; 42] = [
     RefusalReason::DurabilityUnavailable,
     RefusalReason::TierMismatch,
     RefusalReason::SpillBudget,
-    RefusalReason::ArenaBudget,
+    RefusalReason::ScratchExhausted,
     RefusalReason::RateLimited,
     RefusalReason::DecodeFailed,
     RefusalReason::ChallengeExhausted,

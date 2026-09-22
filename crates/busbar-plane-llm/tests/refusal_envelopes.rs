@@ -25,7 +25,7 @@ const DIALECTS: &[&str] = &[
 /// Render one refusal in one dialect.
 fn refuse(dialect: &str, reason: RefusalReason) -> Vec<u8> {
     let plane = LlmPlane::EMPTY;
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for(dialect), &[]);
     let labels = Labels::new();
@@ -125,7 +125,7 @@ fn the_minted_identifier_keeps_its_native_shape() {
 fn the_minted_identifier_follows_the_entropy_it_is_handed() {
     let at = |unix_secs: u64| -> Vec<u8> {
         let plane = LlmPlane::EMPTY;
-        let arena = harness::LeakArena;
+        let arena = harness::LeakPlaneAlloc;
         let config = harness::EmptyConfig;
         let transport = harness::HttpStack::new(harness::path_for("anthropic"), &[]);
         let labels = Labels::new();

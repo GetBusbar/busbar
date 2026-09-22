@@ -38,7 +38,7 @@
 //!     match code {
 //!         OverBudget | OverdraftCeiling | Unpriced | NoRate => true,
 //!         InFlightCap | CursorBudget | CredentialBudget | SessionBudget | SpillBudget
-//!         | ArenaBudget | RateLimited | BodyTooLarge | OpenSlotBusy | DecodeFailed
+//!         | ScratchExhausted | RateLimited | BodyTooLarge | OpenSlotBusy | DecodeFailed
 //!         | SchemeNotDeclared | SessionUnbound | Unauthenticated | ChallengeExhausted | Revoked
 //!         | ScopeDenied | PoolNotPermitted | HookVeto | NoDestination | GroupFrozen
 //!         | StaleSlice | DurabilityUnavailable | TierMismatch | Replayed | InFlight
@@ -122,8 +122,8 @@ reasons! {
     SessionBudget => "session_budget", SessionBudget,
     /// The node-global body-spill budget is exhausted.
     SpillBudget => "spill_budget", SpillBudget,
-    /// The per-unit arena is exhausted.
-    ArenaBudget => "arena_budget", ArenaBudget,
+    /// The per-call scratch pad hit its abuse ceiling.
+    ScratchExhausted => "scratch_exhausted", ScratchExhausted,
     /// The source is over its arrival rate.
     RateLimited => "rate_limited", RateLimited,
     /// The request body is larger than the configured maximum.

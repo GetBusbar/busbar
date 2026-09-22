@@ -366,7 +366,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
 /// arena never saw — the arena is where the hot path allocates, so these bytes go out from where
 /// they were built.
 struct Wire<'a> {
-    bytes: busbar_contract::ArenaBytes<'a>,
+    bytes: busbar_contract::ScratchBytes<'a>,
 }
 
 /// Build the outbound request, decorate it, and check the lane on what came out.
