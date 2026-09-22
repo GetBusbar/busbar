@@ -614,7 +614,8 @@ pub fn mount(
                 // this plane never claimed would be the root inventing an answer it has no basis
                 // for, and the whole point of the seam is that it never does that.
                 let declared =
-                    busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), &path).is_some();
+                    busbar_core_admin::admin_codec::verbs::resolve(req.method().as_str(), &path)
+                        .is_some();
                 if !claimed || !declared {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }
@@ -686,3 +687,13 @@ pub fn mount(
         },
     ))
 }
+
+/// Cells for THE ADMIN REQUEST CHAIN as a whole, end to end over this mount.
+///
+/// A file of their own rather than more rows in `tests/units_admin.rs`, because what they measure
+/// is different in kind: that file drives the steps, and these drive the WHOLE chain — a real verb
+/// in at the listener, every step, the mounted surface, and the answer back — which is the only
+/// shape that can say the surface still works now that `busbar-core-admin` carries no `Plane`.
+#[cfg(test)]
+#[path = "tests/admin_path_without_plane_face.rs"]
+mod admin_path_without_plane_face;

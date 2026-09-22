@@ -4,19 +4,48 @@
 
 use super::*;
 
+/// The frozen wire shape, from the one place it is written.
+///
+/// Two keys and no third, in that order, around whatever code and message the caller brought. This
+/// used to be asserted through the deleted `RefusalReason` renderer, which meant the SHAPE was only
+/// ever checked on a path nothing took; it is asserted here through `envelope_of`, which is the
+/// function the administrative listener's every error answer is built with
+/// (`units_admin::error_answer_with_message`).
 #[test]
 fn envelope_shape_matches_the_1_5_5_error_contract() {
-    let rendered = envelope(RefusalReason::ScopeMissing);
+    let rendered = envelope_of("forbidden", "insufficient scope");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");
-    assert_eq!(parsed.as_object().unwrap().len(), 1);
-    let error = parsed.get("error").expect("error key").as_object().unwrap();
+    assert_eq!(parsed.as_object().expect("an object").len(), 1);
+    let error = parsed
+        .get("error")
+        .expect("error key")
+        .as_object()
+        .expect("an object");
     assert_eq!(error.len(), 2);
     assert_eq!(error["code"], "forbidden");
-    assert!(error["message"].is_string());
+    assert_eq!(error["message"], "insufficient scope");
 }
 
+/// Byte-for-byte, not merely shaped right once parsed.
+///
+/// A client pinned to this surface reads bytes, and a renderer that gained a space after a colon,
+/// reordered the two keys or appended a newline would still parse to the same document while
+/// changing every admin error body on the wire. The oracle compares bytes; so does this.
 #[test]
-fn every_reason_maps_to_one_of_the_ten_frozen_codes() {
+fn the_envelope_is_the_frozen_bytes_and_not_merely_the_frozen_document() {
+    assert_eq!(
+        envelope_of("not_found", "not_found"),
+        r#"{"error":{"code":"not_found","message":"not_found"}}"#
+    );
+}
+
+/// Every one of the ten frozen codes renders, and renders only itself.
+///
+/// The ten are `busbar-core`'s own `AdminError` set, which is what an operator's tooling matches
+/// on. The assertion is that the envelope is transparent to the code it was handed — it neither
+/// normalises one code onto another nor carries a default of its own.
+#[test]
+fn all_ten_frozen_codes_render_verbatim() {
     const FROZEN_CODES: &[&str] = &[
         "not_found",
         "unauthorized",
@@ -29,144 +58,11 @@ fn every_reason_maps_to_one_of_the_ten_frozen_codes() {
         "internal",
         "unavailable",
     ];
-    let all = [
-        RefusalReason::InFlightCap,
-        RefusalReason::CursorBudget,
-        RefusalReason::CredentialBudget,
-        RefusalReason::SessionBudget,
-        RefusalReason::BodyTooLarge,
-        RefusalReason::OpenSlotBusy,
-        RefusalReason::SchemeNotDeclared,
-        RefusalReason::CredentialRejected,
-        RefusalReason::SessionUnbound,
-        RefusalReason::Revoked,
-        RefusalReason::ScopeMissing,
-        RefusalReason::Vetoed,
-        RefusalReason::NoDestination,
-        RefusalReason::OverBudget,
-        RefusalReason::GroupFrozen,
-        RefusalReason::Unpriced,
-        RefusalReason::OverdraftCeiling,
-        RefusalReason::StaleSlice,
-        RefusalReason::DurabilityUnavailable,
-        RefusalReason::TierMismatch,
-        RefusalReason::SpillBudget,
-        RefusalReason::ScratchExhausted,
-        RefusalReason::RateLimited,
-        RefusalReason::DecodeFailed,
-        RefusalReason::ChallengeExhausted,
-        RefusalReason::PoolNotPermitted,
-        RefusalReason::NoRate,
-        RefusalReason::Replayed,
-        RefusalReason::InFlight,
-        RefusalReason::DestinationBudgetExhausted,
-        RefusalReason::BreakerOpen,
-        RefusalReason::DestinationUnreachable,
-        RefusalReason::MeterDisputed,
-        RefusalReason::HandoffMismatch,
-        RefusalReason::PlanePanic,
-        RefusalReason::TaskLost,
-        RefusalReason::SecretPlaceholder,
-        RefusalReason::Stalled,
-        RefusalReason::Drain,
-        RefusalReason::Superseded,
-        RefusalReason::ClientGone,
-        RefusalReason::DeadlineExceeded,
-    ];
-    // The whole closed set, not a sample of it: `code_for` matches exhaustively, so a reason
-    // added to the contract fails to compile there and this count says the walk saw it too.
-    assert_eq!(
-        all.len(),
-        42,
-        "the contract's reason set changed and this walk did not"
-    );
-    for reason in all {
-        assert!(
-            FROZEN_CODES.contains(&code_for(reason)),
-            "{reason:?} mapped to a code outside the frozen ten"
-        );
-    }
-}
-
-/// Every row of the ratified table is what the documentation says AND what the code does.
-///
-/// The mapping is lossy on purpose and the table is where that is decided, so a row that exists
-/// in code and not in the table is a decision nobody agreed to — and a row in the table that
-/// `code_for` does not render is a promise to an operator that the wire breaks. Both directions
-/// are checked off the same twenty rows: the documented row is read out of this file's own
-/// source, and the rendered code is read out of `code_for` for the very same reason value.
-#[test]
-fn every_ratified_row_is_documented_and_rendered() {
-    // `../refusal.rs`, not `refusal.rs`: this file is reached through `#[path = "tests/refusal.rs"]`
-    // from `src/refusal.rs`, so `include_str!` resolves against `src/tests/` — the directory THIS
-    // file lives in — and the bare name reads this test file back into itself. The ratified table is
-    // in the IMPLEMENTATION module's header, one directory up. Read against itself the split still
-    // found the marker (the marker is spelled out just below, in this file's own source) and handed
-    // back this file's tail, so the check ran against a haystack that can never contain a table row.
-    let source = include_str!("../refusal.rs");
-    let table = source
-        .split("//! | `RefusalReason` | `code` | Why |")
-        .nth(1)
-        .expect("the ratified table is still in the module header");
-    let rows = [
-        (RefusalReason::InFlightCap, "rate_limited"),
-        (RefusalReason::CursorBudget, "invalid_request"),
-        (RefusalReason::CredentialBudget, "invalid_request"),
-        (RefusalReason::SessionBudget, "unavailable"),
-        (RefusalReason::BodyTooLarge, "invalid_request"),
-        (RefusalReason::OpenSlotBusy, "conflict"),
-        (RefusalReason::SchemeNotDeclared, "unauthorized"),
-        (RefusalReason::CredentialRejected, "unauthorized"),
-        (RefusalReason::SessionUnbound, "unauthorized"),
-        (RefusalReason::Revoked, "forbidden"),
-        (RefusalReason::ScopeMissing, "forbidden"),
-        (RefusalReason::Vetoed, "forbidden"),
-        (RefusalReason::NoDestination, "not_found"),
-        (RefusalReason::OverBudget, "rate_limited"),
-        (RefusalReason::GroupFrozen, "forbidden"),
-        (RefusalReason::Unpriced, "invalid_request"),
-        (RefusalReason::OverdraftCeiling, "rate_limited"),
-        (RefusalReason::StaleSlice, "unavailable"),
-        (RefusalReason::DurabilityUnavailable, "unavailable"),
-        (RefusalReason::TierMismatch, "internal"),
-        (RefusalReason::SpillBudget, "unavailable"),
-        (RefusalReason::ScratchExhausted, "unavailable"),
-        (RefusalReason::RateLimited, "rate_limited"),
-        (RefusalReason::DecodeFailed, "invalid_request"),
-        (RefusalReason::ChallengeExhausted, "unauthorized"),
-        (RefusalReason::PoolNotPermitted, "forbidden"),
-        (RefusalReason::NoRate, "invalid_request"),
-        (RefusalReason::Replayed, "conflict"),
-        (RefusalReason::InFlight, "conflict"),
-        (RefusalReason::DestinationBudgetExhausted, "unavailable"),
-        (RefusalReason::BreakerOpen, "unavailable"),
-        (RefusalReason::DestinationUnreachable, "unavailable"),
-        (RefusalReason::MeterDisputed, "internal"),
-        (RefusalReason::HandoffMismatch, "internal"),
-        (RefusalReason::PlanePanic, "internal"),
-        (RefusalReason::TaskLost, "internal"),
-        (RefusalReason::SecretPlaceholder, "internal"),
-        (RefusalReason::Stalled, "unavailable"),
-        (RefusalReason::Drain, "unavailable"),
-        (RefusalReason::Superseded, "conflict"),
-        (RefusalReason::ClientGone, "conflict"),
-        (RefusalReason::DeadlineExceeded, "unavailable"),
-    ];
-    assert_eq!(
-        rows.len(),
-        42,
-        "the contract's reason set changed and this table did not"
-    );
-    for (reason, code) in rows {
-        let row = format!("| `{reason:?}` | `{code}` |");
-        assert!(
-            table.contains(&row),
-            "the ratified table has no row reading {row}"
-        );
-        assert_eq!(
-            code_for(reason),
-            code,
-            "{reason:?} renders a code the ratified table does not promise"
-        );
+    assert_eq!(FROZEN_CODES.len(), 10, "the frozen set is ten and only ten");
+    for code in FROZEN_CODES {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&envelope_of(code, code)).expect("valid json");
+        assert_eq!(parsed["error"]["code"], *code);
+        assert_eq!(parsed["error"]["message"], *code);
     }
 }

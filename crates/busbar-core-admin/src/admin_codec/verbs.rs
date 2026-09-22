@@ -1,4 +1,4 @@
-//! The closed 66+17+5 kernel-verb table, and the pure `(method, path) -> verb` match this plane runs.
+//! The closed 66+17+5 kernel-verb table, and the pure `(method, path) -> verb` match over it.
 //!
 //! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
 //! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 17 are the
@@ -10,11 +10,11 @@
 //!
 //! **Judgment call, flagged for review**: the design does not state an HTTP binding for the 17. This
 //! module assigns each one a `POST /api/v1/admin/<kebab-case-verb>` binding — the same shape every
-//! other mutating admin operation in the 1.5.5 table uses — purely so this plane has *something*
-//! coherent to decode against in the closed-loop tests below. `verify` and `plane_facts` are marked
+//! other mutating admin operation in the 1.5.5 table uses — purely so the table has *something*
+//! coherent to resolve against in the closed-loop tests below. `verify` and `plane_facts` are marked
 //! read-only (they are checks/introspection, not mutations); every other 1.6.0 verb is marked `full`,
 //! matching the design's statement that the irreducible/dual-controlled set is entirely mutating.
-//! If the real HTTP binding differs, only this table's literals need to change — the codec logic
+//! If the real HTTP binding differs, only this table's literals need to change — the match logic
 //! (`find_verb`, path-pattern matching) does not know these are synthetic.
 
 use crate::admin_codec::generated::verb_table_1_5_5::VERB_TABLE_1_5_5;
@@ -195,21 +195,17 @@ const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
 /// views.
 pub(crate) const VERB_COUNT: usize = 66 + 18 + 5;
 
-/// The verb the `openapi.json` blob is served under, where `encode_response` applies the one
-/// documented exception (an `info.version` substitution over an otherwise verbatim body).
-pub(crate) const VERB_OPENAPI_JSON: &str = "get_openapi_json";
-
 /// The operation class every read-only verb prices under.
 ///
 /// The design's admin row prices every verb the same (a flat, zero-priced `count` class, itself
 /// kernel-reserved — see `meta.rs`), so the read/write split exists only to keep the audit step's
-/// dispute check meaningful (a verb whose scope tier changed between decode and audit is a real
+/// dispute check meaningful (a verb whose scope tier changed between resolution and audit is a real
 /// finding, not noise) and to mirror the closed 34/32 `ReadOnly`/`Full` split the design pins.
 pub(crate) const OP_READ: OpClassId = OpClassId::new("admin_read");
 /// The operation class every mutating verb prices under. See [`OP_READ`].
 pub(crate) const OP_WRITE: OpClassId = OpClassId::new("admin_write");
 
-/// Every verb this plane decodes, generated rows first, then the 1.6.0 additions.
+/// Every verb the admin surface declares, generated rows first, then the 1.6.0 additions.
 ///
 /// A `const fn`-free concatenation would need `[T; N]` const generics arithmetic this table does not
 /// need to pay for: the table is built once, at first use, by `std::sync::LazyLock`, which keeps the
@@ -232,15 +228,6 @@ pub(crate) fn all_verbs() -> &'static [VerbEntry] {
         v.extend_from_slice(LEDGER_VERBS_1_6_0);
         v
     })
-}
-
-/// The table row a verb NAME belongs to.
-///
-/// This is how a step after `decode_ingress` gets back to the static row: the draft's fact map
-/// carries the verb the decode step resolved, and this turns that name into the one row that owns
-/// it. A lookup in one closed table, not a second reading of the body's bytes.
-pub(crate) fn verb_named(verb: &str) -> Option<&'static VerbEntry> {
-    all_verbs().iter().find(|e| e.verb == verb)
 }
 
 /// Whether a concrete path segment satisfies a template segment, capturing the template's `{name}`
@@ -295,17 +282,17 @@ fn match_path<'p>(
 /// The part of a request target that names an operation: everything before the first `?` or `#`.
 ///
 /// A query string and a fragment are arguments TO an operation, never part of its identity, so the
-/// cut belongs at the one place both callers reach rather than at each of them. It lived at
-/// `resolve` alone for a release, which meant the plane's own decode matched a paged read's raw
-/// target against the templates and found no row at all.
+/// cut belongs at the one place every caller reaches rather than at each of them. It lived at
+/// `resolve` alone for a release, which meant a second caller matched a paged read's raw target
+/// against the templates and found no row at all.
 fn operation_target(target: &str) -> &str {
     target.split(['?', '#']).next().unwrap_or(target)
 }
 
-/// Find the verb a method and concrete path decode to, and the path parameters it carries.
+/// Find the verb a method and concrete path resolve to, and the path parameters it carries.
 ///
 /// Total over the closed table: a linear scan of at most [`VERB_COUNT`] rows, each a handful of segment
-/// comparisons. This is a decode-time cost paid once per admin unit, not a hot per-byte path.
+/// comparisons. This is a cost paid once per admin unit, not a hot per-byte path.
 pub(crate) fn find_verb<'p>(
     method: &str,
     path: &'p str,
@@ -321,8 +308,8 @@ pub(crate) fn find_verb<'p>(
 
 /// One row of the closed table, as the composition root reads it.
 ///
-/// The plane's own [`VerbEntry`] stays crate-private because the plane is entitled to change how it
-/// stores a row; what a root binds against is what a row MEANS. Four fields, all `&'static`: the
+/// This module's own [`VerbEntry`] stays crate-private because the table is entitled to change how
+/// it stores a row; what a root binds against is what a row MEANS. Four fields, all `&'static`: the
 /// operation's name, the method and templated path it was extracted under, and which side of the
 /// closed read-only/full split it falls on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,14 +339,15 @@ impl ResolvedVerb {
 
 /// Resolve a concrete request line to the closed table's row for it.
 ///
-/// The same lookup [`find_verb`] runs at decode, exposed for the one caller entitled to ask it
-/// outside a decode: the composition root, which has to know which kernel verb a unit is a
-/// destination for before the unit's own decode has produced a draft. A query string is not part of
-/// the operation's identity — `GET /audit?limit=4` and `GET /audit` are one row — so [`find_verb`]
-/// cuts it before the match rather than carrying it in, for this caller and for the plane's own
-/// decode alike.
+/// THE ONE ENTRY POINT. This is how the administrative listener's mount asks which row a method
+/// and path name — twice per request, once to decide whether the closed table declares the pair at
+/// all (a pair it does not declare goes straight to the surface that already answers it, never to
+/// the loop) and once, at the admin units' own decode step, to name the kernel verb the unit is a
+/// destination for. A query string is not part of the operation's identity — `GET /audit?limit=4`
+/// and `GET /audit` are one row — so [`find_verb`] cuts it before the match rather than carrying it
+/// in.
 ///
-/// `None` means the table does not declare the pair, which is the plane's own answer for an
+/// `None` means the table does not declare the pair, which is this surface's answer for an
 /// unsupported operation and never an invitation to guess one.
 #[must_use]
 pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
@@ -371,7 +359,7 @@ pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
     })
 }
 
-/// Every row the closed table declares, in the order the plane holds them.
+/// Every row the closed table declares, in the order the table holds them.
 ///
 /// The generated 1.5.5 rows first, then the 1.6.0 additions — so a caller counting them sees the
 /// 66, the 17 and the 5 as three runs rather than as one undifferentiated list.
@@ -386,42 +374,6 @@ pub fn table() -> Vec<ResolvedVerb> {
             read_only: entry.read_only,
         })
         .collect()
-}
-
-/// The representative body fields this plane extracts into `Facts` for the documented subset of
-/// mutation verbs — key-management, group, config, hook, identity-provider and export operations.
-/// See the crate-root doc comment for the honest boundary: this is ONE representative field per
-/// listed verb, not full per-field schema validation of every body every operation accepts. Any
-/// verb absent from this table still decodes correctly (method+path -> verb+path-params always
-/// works); it simply carries no extra body-derived fact, which is a safe, visible omission rather
-/// than a silently wrong one — nothing downstream trusts a body fact that decode did not set.
-///
-/// Every field named here is a member the pinned `openapi-1.5.5.json` request schema for that
-/// operation actually declares, and the test below reads the fixture to say so. Seven rows used to
-/// name a member no schema had (`parent` on `PutGroupsName`, `url` on `PutHooksName`, `issuer`,
-/// `sink`, `module`, `filename`, and `settings` on a body that is a free-form object): a fact key
-/// that can never be populated is a promise decode cannot keep, so those rows are either corrected
-/// to the member the schema does declare or dropped where the schema declares no named member at
-/// all (`PutConfigSettings`, `PutIdentityProvidersName`, `PutExportName` all take an open object).
-pub(crate) fn documented_body_field(verb: &str) -> Option<&'static str> {
-    Some(match verb {
-        "post_keys" => "name",
-        "patch_keys_id" => "group",
-        "post_groups" => "name",
-        "put_groups_name" => "config",
-        "patch_groups_name" => "parent",
-        "post_config_apply" => "config",
-        "post_config_rollback" => "version",
-        "post_hooks" => "name",
-        "put_hooks_name" => "config",
-        "patch_hooks_name_settings" => "settings",
-        "patch_identity_providers_name_settings" => "settings",
-        "patch_export_name_settings" => "settings",
-        "put_admin_auth" => "admin_auth",
-        "post_plugins" => "file",
-        "post_plugins_rollback" => "file",
-        _ => return None,
-    })
 }
 
 #[cfg(test)]
