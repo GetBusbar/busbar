@@ -313,3 +313,41 @@ async fn the_production_fetch_refuses_the_addresses_the_guard_exists_for() {
         );
     }
 }
+
+/// POSITIVE CONTROL (call site 3/5: `busbar-oauth2/src/cimd.rs`, the CIMD document fetch).
+///
+/// The sibling above planted `metadata.google.internal` — one of the TWO names the dialing guard
+/// already knew, which is why it passed throughout the drift. These are the four it did NOT, plus
+/// CGNAT. Driven through the REAL `GuardedFetch`, the production door.
+#[tokio::test]
+async fn planted_blocked_targets_are_refused_by_the_cimd_fetch() {
+    for (client_id, expected) in [
+        (
+            "https://metadata.platformequinix.com/metadata",
+            "cloud-metadata name",
+        ),
+        (
+            "https://metadata.tencentyun.com/latest/meta-data/",
+            "cloud-metadata name",
+        ),
+        (
+            "https://instance-data/latest/meta-data/",
+            "cloud-metadata name",
+        ),
+        (
+            "https://instance-data.ec2.internal/latest/meta-data/",
+            "cloud-metadata name",
+        ),
+        ("https://100.64.1.1/oauth-client", "internal address"),
+    ] {
+        let why = GuardedFetch
+            .fetch(client_id)
+            .await
+            .expect_err("the authorization server fetched a planted blocked target");
+        assert!(
+            why.contains(expected),
+            "`{client_id}` was refused, but not as `{expected}`: {why}"
+        );
+        println!("oauth2::cimd::GuardedFetch       REFUSED  {client_id}  -> {why}");
+    }
+}

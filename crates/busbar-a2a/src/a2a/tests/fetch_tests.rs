@@ -871,3 +871,61 @@ fn the_default_policy_still_refuses_the_loopback_family_by_name() {
         );
     }
 }
+
+/// POSITIVE CONTROL (call site 1/5: `busbar-a2a/src/a2a/fetch.rs`, the agent-card fetch).
+///
+/// Every planted target is refused at `guard_hop`, the card fetch's door onto the shared guard.
+///
+/// The stance column is the point. The metadata NAMES are driven under the PERMISSIVE stance
+/// (`allow_private: true`) because the metadata arm is unconditional — `allow_private` speaks for
+/// the internal RANGES and never for IMDS. They are also answered with a PUBLIC address on purpose:
+/// no address predicate can save them, so a refusal here is the NAME arm and nothing else.
+/// The address literals are driven under the DEFAULT stance, which is the population the knob does
+/// legitimately speak for.
+#[test]
+fn planted_blocked_targets_are_refused_by_the_card_fetch() {
+    let permissive = FetchPolicy {
+        allow_private: true,
+        ..FetchPolicy::default()
+    };
+    for (target, host, answer, policy) in [
+        (
+            "https://169.254.169.254/.well-known/agent-card.json",
+            "169.254.169.254",
+            None,
+            FetchPolicy::default(),
+        ),
+        (
+            "https://100.64.1.1/.well-known/agent-card.json",
+            "100.64.1.1",
+            None,
+            FetchPolicy::default(),
+        ),
+        (
+            "https://metadata.platformequinix.com/.well-known/agent-card.json",
+            "metadata.platformequinix.com",
+            Some(vec![ip([147, 75, 1, 1])]),
+            permissive.clone(),
+        ),
+        (
+            "https://metadata.tencentyun.com/.well-known/agent-card.json",
+            "metadata.tencentyun.com",
+            Some(vec![ip(PUBLIC)]),
+            permissive.clone(),
+        ),
+        (
+            "https://instance-data.ec2.internal/.well-known/agent-card.json",
+            "instance-data.ec2.internal",
+            Some(vec![ip(PUBLIC)]),
+            permissive.clone(),
+        ),
+    ] {
+        let r = match answer {
+            Some(a) => ScriptedResolver::new().always(host, a),
+            None => ScriptedResolver::new(),
+        };
+        let err = guard_hop(target, &r, &policy)
+            .expect_err("the card fetch must refuse this planted target");
+        println!("a2a::fetch::guard_hop            REFUSED  {target}  -> {err:?}");
+    }
+}

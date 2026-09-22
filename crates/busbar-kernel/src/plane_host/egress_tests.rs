@@ -793,3 +793,33 @@ fn egress_refuses_a_credential_bound_to_a_different_destination() {
         );
     });
 }
+
+/// POSITIVE CONTROL (call site 4/5: `plane_host/egress.rs`, the FFI egress chokepoint).
+///
+/// Driven through the REAL `egress_open` vtable slot, which is the door a plane uses. Every planted
+/// target must come back `Refused` — including the metadata NAMES the dialing guard could not see
+/// before the one-list fix.
+#[test]
+fn planted_blocked_targets_are_refused_at_the_egress_chokepoint() {
+    let app = crate::test_support::TestApp::new().build();
+    for target in [
+        "http://169.254.169.254/latest/meta-data/",
+        "https://metadata.platformequinix.com/metadata",
+        "http://100.64.1.1/",
+        "https://metadata.tencentyun.com/latest/meta-data/",
+        "https://instance-data.ec2.internal/latest/meta-data/",
+    ] {
+        let url = target.as_bytes().to_vec();
+        let desc = http_desc(&url);
+        with_dispatch_scope(&app, |host, vt| {
+            let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+            let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
+            assert_eq!(
+                class,
+                StatusClass::Refused,
+                "egress chokepoint did NOT refuse planted target {target}"
+            );
+        });
+        println!("plane_host::egress_open          REFUSED  {target}");
+    }
+}
