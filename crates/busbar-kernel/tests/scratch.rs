@@ -13,11 +13,12 @@ use busbar_kernel::scratch::{ScratchPad, SCRATCH_ABUSE_CEILING_BYTES, SCRATCH_ST
 ///
 /// #41 requires the start be MEASURED and reported, not guessed. It is a perf hint — the common
 /// per-call footprint across the planes — not a cap. The kernel's constant is the contract's
-/// `ARENA_BYTES` so a plane sized against one and a pad sized against the other can never disagree.
+/// `SCRATCH_BASE_BYTES` so a plane sized against one and a pad sized against the other can never
+/// disagree.
 #[test]
 fn the_measured_starting_size_is_four_kibibytes() {
     assert_eq!(SCRATCH_START_BYTES, 4 * 1024, "the measured start is 4 KiB");
-    assert_eq!(SCRATCH_START_BYTES, busbar_contract::ARENA_BYTES);
+    assert_eq!(SCRATCH_START_BYTES, busbar_contract::SCRATCH_BASE_BYTES);
 }
 
 /// The pad hands back the exact bytes it was given, for each of the three allocation shapes.

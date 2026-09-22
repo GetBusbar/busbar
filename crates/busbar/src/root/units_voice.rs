@@ -154,7 +154,14 @@ const _: () = assert!(
 /// Nano-units in a cent, for the one place this file turns the rate card's flat fee into the unit a
 /// reservation is taken in. Spelled here rather than reached for so the root's arithmetic is the
 /// root's; the plane never sees a fee at all.
+///
+/// It stays `u64` deliberately: the fee math below saturates at `u64::MAX`, and borrowing the
+/// ledger's `u128` would silently move that ceiling on a money path. The value is still not allowed
+/// to drift from the ledger's — two copies of one money constant is how a request gets judged at one
+/// rate and billed at another — so the agreement is asserted at COMPILE TIME instead. Edit either
+/// copy and the build stops; neither the arithmetic nor a single emitted byte changes.
 const NANOS_PER_CENT: u64 = 10_000_000;
+const _: () = assert!(NANOS_PER_CENT as u128 == busbar_kernel_ledger::cost::NANOS_PER_CENT);
 
 /// The operation class a turn is audited and priced under.
 const OP_DUPLEX_TURN: &str = "duplex_turn";

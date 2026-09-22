@@ -34,7 +34,7 @@
 use std::cell::Cell;
 
 use bumpalo::Bump;
-use busbar_contract::bounded::{ArenaBytes, Span};
+use busbar_contract::bounded::{ScratchBytes, Span};
 use busbar_contract::scratch::{Scratch, ScratchRefused};
 
 /// The MEASURED starting size of a scratch pad, in bytes.
@@ -42,9 +42,9 @@ use busbar_contract::scratch::{Scratch, ScratchRefused};
 /// It is the common per-call footprint across the planes — the encoded-frame scratch an llm, mcp,
 /// a2a or streaming unit hands back — not a cap: a bigger request grows a chunk. #41 requires it be
 /// measured and reported rather than guessed, and it is deliberately the contract's own
-/// `ARENA_BYTES` so a plane sized against one constant and a pad sized against the other can never
-/// disagree. The number is **4096 bytes (4 KiB)**.
-pub const SCRATCH_START_BYTES: usize = busbar_contract::ARENA_BYTES;
+/// `SCRATCH_BASE_BYTES` so a plane sized against one constant and a pad sized against the other can
+/// never disagree. The number is **4096 bytes (4 KiB)**.
+pub const SCRATCH_START_BYTES: usize = busbar_contract::SCRATCH_BASE_BYTES;
 
 /// The abuse-only backstop ceiling, in bytes: **256 MiB**.
 ///
@@ -155,14 +155,14 @@ impl ScratchPad {
 }
 
 impl Scratch for ScratchPad {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ScratchRefused> {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, ScratchRefused> {
         self.guard(src.len())?;
         let dst = self
             .bump
             .try_alloc_slice_copy(src)
             .map_err(|_| self.oom(src.len()))?;
         self.charge(src.len());
-        Ok(ArenaBytes::new(dst))
+        Ok(ScratchBytes::new(dst))
     }
 
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ScratchRefused> {

@@ -704,12 +704,12 @@ fn a_request_larger_than_the_arena_is_relayed() {
     let scaffold = Scaffold::new("http");
     let ctx = scaffold.ctx();
     let seal = common::TestSeal;
-    let text = "x".repeat(busbar_contract::bounded::ARENA_BYTES * 2);
+    let text = "x".repeat(busbar_contract::bounded::SCRATCH_BASE_BYTES * 2);
     let body = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"message/send","params":{{"message":{{"role":"user","text":"{text}"}}}}}}"#
     );
     let body = body.into_bytes();
-    assert!(body.len() > busbar_contract::bounded::ARENA_BYTES);
+    assert!(body.len() > busbar_contract::bounded::SCRATCH_BASE_BYTES);
     let unit = busbar_contract::unit::Unit::new(
         &seal,
         busbar_contract::UnitKey::new(1),

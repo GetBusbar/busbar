@@ -1042,7 +1042,13 @@ fn plan_fits(legs: &[Leg]) -> bool {
 const UNPRICED_MESSAGE: &str = "no agent is configured under that name";
 
 /// How many nano-units one cent is.
+///
+/// `u64` on purpose, and pinned to the ledger's canonical figure at COMPILE TIME rather than
+/// imported: the fee math below saturates at `u64::MAX` and must keep doing so, but two independent
+/// copies of a money constant is exactly the drift that lets a request be judged at one rate and
+/// billed at another. Edit either copy and the build stops.
 const NANOS_PER_CENT: u64 = 10_000_000;
+const _: () = assert!(NANOS_PER_CENT as u128 == busbar_kernel_ledger::cost::NANOS_PER_CENT);
 
 /// The audit unit's spelling of a finish class.
 ///
