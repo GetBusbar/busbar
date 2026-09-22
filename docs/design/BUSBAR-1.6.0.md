@@ -1387,59 +1387,123 @@ sitting inside a rename commit is exactly what an auditor fails. Every commit af
 stages explicit paths and deliberately leaves files belonging to still-running agents alone. **The
 habit is the defect, not the one commit.**
 
-## The crate roster, named — 59 today (was 61), 28 at the end
+## THE CRATE ROSTER — OWNER-LOCKED 2026-09-22, 35 crates
 
-The owner asked whether the locked ~30 crates are named right anywhere. They were not. They are
-below, and the list is **derived, not invented**: #39 is owner-locked and states the repo's contents
-exactly, and the owner's 2026-09-21 ruling settles the one place #19 and #39 disagree ("**~30** —
-#19's number wins over #39's 16").
+**This supersedes every earlier count in this document.** It is the owner's own roster, recovered
+verbatim from the 2026-09-20 transcript where he pasted it himself, re-presented to him on
+2026-09-22 and locked: *"OTHER than substrate I agree 100% so keep it and figure it out later"* →
+*"lock it in"*.
 
-Those two reconcile cleanly. #39 names sixteen crates for the `busbar` repo — the binary,
-`busbar-kernel` + the 8, `busbar-core-{admin,oauth2,substrate}`, `busbar-contract`,
-`busbar-plugin-sdk`, `busbar-plugin-loader`. The remaining gap to ~30 is exactly the **5 planes and
-7 transports**, which are plugin kinds by #3 but stay in-tree for 1.6.0 rather than moving to their
-own repos. 16 + 5 + 7 = **28**. Everything else — store, secret, auth, hook and export instances —
-leaves, per #31/#39.
+| # | Group | n | Crates |
+|---|---|---|---|
+| 1 | Binary | 1 | `busbar` |
+| 2–10 | Engine | 9 | `busbar-kernel` + `-identity` `-scope` `-budget` `-ledger` `-egress` `-breaker` `-wal` `-audit` |
+| 11–13 | Core | 3 | `busbar-core-admin` · `busbar-core-oauth2` · `busbar-core-substrate` |
+| 14–16 | Contract + machinery | 3 | `busbar-contract` · `busbar-plugin-sdk` · `busbar-plugin-loader` |
+| 17–21 | Planes | 5 | `busbar-plane-llm` `-mcp` `-a2a` `-streaming` `-decision` |
+| 22–28 | Transports | 7 | `busbar-transport-grpc` `-http` `-sse` `-stdio` `-tcp` `-tls` `-ws` |
+| 29–35 | Compiled-in plugin instances | 7 | `busbar-store-memory` · `busbar-auth-static` · `busbar-hook-ranking` · `busbar-export-{prometheus,webhook,file,otlp}` |
 
-| # | Crate | Note |
-|---|---|---|
-| 1 | `busbar` | the binary |
-| 2 | `busbar-kernel` | the loop |
-| 3–10 | `busbar-kernel-{audit,breaker,budget,egress,identity,ledger,scope,wal}` | "the 8", exactly as #19 says |
-| 11–12 | `busbar-core-admin`, `busbar-core-oauth2` | **surfaces ABOVE** — cleanliness crates, depend on kernel one-way, off the hot path (#3/#37) |
-| 13 | `busbar-core-substrate` | **foundation BELOW — the kernel must NOT depend on it (#37). It does today; see the violation below.** Not a cleanliness crate. |
-| 14 | `busbar-contract` | the plugin dependency closure, and nothing else (#40) |
-| 15–16 | `busbar-plugin-{sdk,loader}` | |
-| 17–21 | `busbar-plane-{llm,mcp,a2a,streaming,decision}` | exactly 5 (#39); decision = jev (#48) |
-| 22–28 | `busbar-transport-{grpc,http,sse,stdio,tcp,tls,ws}` | |
+**35 in-tree crates**, plus the external plugin repos (store {postgres,mysql,sqlite,valkey}, secret
+{vault}, auth {github,ldap,oidc}, hook {headroom,webrequest}).
 
-**Progress: 61 → 59.** Both `-host` crates are folded into the planes they served, done as #19's
-byte-identical LOC move. Test counts went UP rather than down — `busbar-mcp` 492 → 499 and
-`busbar-a2a` 586 → 593 — because each host crate's own tests travelled with it. That is the shape
-every remaining fold should have: if a fold loses tests, it lost code.
+### Three things this roster settles, and one it does not
 
-**The 8 kernel crates already exist and are already correct** — `audit`, `breaker`, `budget`,
-`egress`, `identity`, `ledger`, `scope`, `wal`. That part of the roster is done.
+**1. `busbar-transport-key` is DEAD — killed twice, for two different reasons.** The owner first
+caught the packaging dodge: *"we are hiding 2 creates as 1 to bypass some rule."* Then he went
+further and killed the design itself: *"plugins can never ever do x y z"*, *"we said all plugins ONLY
+communicate over abi, this would violate that and we need to make it impossible to do so."* Secret
+handling is kernel-side; the TLS plugin receives an **opaque config handle** over the ABI and never
+sees a key byte. Transports are therefore **7**, not 8.
 
-### How the other 33 crates go away
+**2. The plugin instances stay IN-TREE.** `store-memory`, `auth-static`, `hook-ranking` and the four
+exports are the default distribution's compiled-in set and they live in the busbar repo. This is the
+group an earlier derivation dropped, which is exactly why that derivation came out at 28 instead of
+35.
 
-Nothing here is a rewrite. Every row is a fold or a move, and #19 requires the moves be
-byte-identical and oracle-proven.
+**3. #39's "16" does NOT carry the owner's signature.** #39's literal text — *"The `busbar` repo
+contains ONLY: the binary, `busbar-kernel` + the 8, `busbar-core-{admin,oauth2,substrate}`,
+`busbar-contract`, `busbar-plugin-sdk`, `busbar-plugin-loader`"* — is 16 crates, and it traces to an
+assistant **correcting the owner's pasted list** mid-conversation by moving planes, transports and
+instances out to their own repos. **The owner never affirmed that correction**, and it contradicts
+the number he did affirm twice: *"you say we have 64 right now and need to get to ~30, i agree."*
+Where #39's count and this roster disagree, **this roster wins** — it is the owner's own list, read
+back to him and locked.
 
-| Today | Becomes | Why |
-|---|---|---|
-| `busbar-llm` (60k), `busbar-llm-codec` (103k) | `busbar-plane-llm` | #39: codecs and dialects fold INTO the plane crate; no `busbar-*-codec` survives |
-| `busbar-mcp` (48k), `busbar-mcp-codec`, ~~`busbar-plane-mcp-host`~~ | `busbar-plane-mcp` | **`-host` FOLDED** — #39 named it for deletion explicitly |
-| `busbar-a2a` (47k), `busbar-a2a-codec`, ~~`busbar-plane-a2a-host`~~ | `busbar-plane-a2a` | **`-host` FOLDED** |
-| `busbar-plane-voice`, `busbar-voice` (12k), `busbar-voice-codec` | `busbar-plane-streaming` | #18: voice is a dialect, not a plane; ALL logic lives in the one plane crate |
-| `busbar-admin` (38k), `busbar-plane-admin` | `busbar-core-admin` | admin is a cleanliness crate, never a plane (#3) — `busbar-plane-admin` is a category error by its own name |
-| `busbar-oauth2` | `busbar-core-oauth2` | rename only |
-| `busbar-substrate-values` | `busbar-core-substrate` | **NOT a rename only.** #37 deletes the fat 30k runtime shell, drains its runtime half into the kernel-8, deletes `plane_host/`, and sends the pure-value leaves (civil/duration/clock/config-enums/audit-vocab) to `busbar-contract`. What survives under the new name is the pure half — json/eventstream/media/sigv4 codecs, proto registry, catalogue, diagnostics, breaker helpers, ~13–15k LOC. |
-| `busbar-core-{config,hooks,transport}` | fold into kernel / contract | vestigial stubs from the core dissolve — `busbar-core-hooks` is **31 lines** with one dependent |
-| `busbar-plugin`, `plugin-pack`, `plugin-sign`, `plugin-testkit` | `busbar-plugin-{sdk,loader}` | #39 names only sdk and loader |
-| `plugin-sdk`, `plugin-loader` | `busbar-plugin-{sdk,loader}` | rename to the locked names |
-| `api`, `busbar-grammar`, `busbar-timing`, `busbar-unit-transport-key` | fold into their one consumer | none is named in #39 |
-| `auth-admin-tokens`, `auth-static-plugin`, `export-example-plugin`, `hook-test-plugin`, `hooks-ranking`, `plane-example`, `secret-example-plugin`, `secret-ref`, `store-example-plugin`, `store-memory` | **leave the repo** | #39: "the busbar repo holds NO plugin source… There is no in-tree plugin" |
+**4. `busbar-core-substrate` is KEPT, with an open question the owner deliberately left open.**
+His words: *"OTHER than substrate I agree 100% so keep it and figure it out later."* He has now
+questioned it three separate times — *"what is busbar-core-substrate? it feels off"*, *"these two
+smell still but you even say they may dissolve… Post-drain it may be a near-empty shell that folds
+into kernel, or a real foundation crate. Fire the measure agent?"*, and again on 2026-09-22. The
+measure was never run. It is in the roster; whether it survives the drain is not settled.
+
+### ONE DISCREPANCY, FLAGGED NOT RESOLVED
+
+The owner's 2026-09-20 paste listed **4 planes**. Earlier on 2026-09-22 he said
+*"busbar-plane-llm, -mcp, -a2a, -streaming, -decision AGREED"*, and #48 makes `decision` (jev) the
+fifth plane. This roster carries **5** on the strength of that later explicit agreement, which is why
+the total reads 35 rather than 34. **If the decisions plane is not a 1.6.0 crate, this roster is 34
+and row 21 comes out.**
+
+### Provenance — what the owner ACTUALLY said, and three rows that claim more authority than they hold
+
+A full extraction of all 1,031 owner messages from the 2026-09-20 transcript, separating owner
+speech (`role: user`) from assistant assertion, found the roster is **substantially owner-authored** —
+more so than the doc credited:
+
+- **The kernel-8 names are his.** *"identity and scope. i think if we do auth it should be authz and
+  authn which i agree i hate so drop both"*; asked to choose between `admission`/`budget` and
+  `money`/`ledger` he answered *"budget and ledger"*; and *"audit and ledger are both records using
+  wal"* is his rationale for the shared primitive.
+- **Core-3 is his own proposal, near-verbatim:** *"My lean: 3 durable core crates —
+  busbar-core-admin, busbar-core-oauth2, busbar-core-substrate — plus the neutral vocab living in
+  busbar-contract."*
+- **admin/oauth2 are not planes, emphatically:** *"You ask me this every 6 hrs. admin and oauth ARE
+  NOT PLANES!!!!!! They are creates and key to ther kernel just in crates for segregation
+  cleanliness."*
+- **The plugin-isolation law is his:** *"so my bigger question is, how do you prevent that? in code,
+  compile time. plugins can never ever do x y z"* → *"we said all plugins ONLY communicate over abi…
+  we need to make it impossible to do so."*
+- **Scheme A ratified:** *"I like A best. show me A everywhere."*
+
+**Three rows carry more authority than the record supports. Flagged, not changed:**
+
+1. **#33's "There is NO testkit (dead — not a crate and not a feature)" rests on nothing he ruled.**
+   His complete words on testkit are *"plugin-testkit feels wrong to have"*, *"either eay testkit
+   feels very wrong"*, *"testkit we discuss next, i dont see why it exists anywhere"*, *"testkit i
+   still hate"*, *"the mystery testkit im going to fight about"*. He never delivered a kill. The very
+   roster he approved with *"SOLID design"* still reads `busbar-plugin-sdk (author machinery +
+   **testkit feature**)`, unrebutted. He tolerated it while hating it; the row states it is dead.
+
+2. **#19 and #39 contradict each other, and that contradiction is what caused the 9/20 blow-up.**
+   #19 says *"~30-crate **in-tree** end state (#39)"*, but #39 as written yields exactly 16 in-tree.
+   "~30" only works as a whole-topology count (in-tree + external repos). When the assistant
+   correctly recited "16", the owner said *"this is not what we locked"* — his memory of ~30 collided
+   with the doc's own inconsistent framing of what ~30 counts. **The roster above resolves this: the
+   number is in-tree, and it is 35.**
+
+3. **The "~30" figure originated with the ASSISTANT, not the owner.** He said *"total was like 30 not
+   60"* from memory, then *"you say we have 64 right now and need to get to ~30, i agree"* — agreeing
+   to a number he was handed. Not a defect, but the doc should not cite ~30 as his independent
+   derivation. **What he authored is the LIST; the count follows from it.** That is why this roster
+   leads with names and derives 35, rather than leading with a number.
+
+**Also: the `~31` tally was never recomputed after `busbar-transport-key` died.** The count that
+produced it included transport-key as an 8th transport; fifteen minutes later his own catch removed
+it, and no one re-tallied. So every later citation of "~30/~31" is one crate stale at minimum —
+another reason the list, not the number, is authoritative.
+
+**One caution about calling anything final.** The 9/20 session ended with him saying *"nothng final
+no final status until all agents say yes"*, with three audit agents still running. That refusal
+applied to THAT session's roster. **This roster is locked on a fresh 2026-09-22 reading-back**, where
+he reviewed the table group by group and said *"OTHER than substrate I agree 100%"* then *"lock it
+in"*. That is the sign-off; the earlier refusal is superseded, not ignored.
+
+### What the tree looks like against it
+
+**58 crates on disk today; 35 is the target, so 23 still go.** The `-host` crates and
+`busbar-grammar` are already folded. The largest single remaining move is `busbar-llm-codec`
+(103k lines) into `busbar-plane-llm`.
 
 ### #37's tier rule is violated: the kernel DOES depend on substrate
 
