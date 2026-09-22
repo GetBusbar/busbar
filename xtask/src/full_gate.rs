@@ -328,6 +328,26 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
         Excuse::XtaskTest("run(&[\"gate\", \"hot-path-alloc\"])"),
     ),
     (
+        "plane-pricing-blindness",
+        "DECISION #87's witness - planes always ledger, and the money acts (resolve a card, price, \
+         mint a unit key, arithmetic a hold) are kernel-side. It is RED ON HEAD BY DESIGN, and the \
+         #83 roster said so before this gate ever measured it: the SPLIT row for \
+         busbar-{llm,mcp,a2a,voice} reads `Session, turn and dialect rules -> 16-20. But \
+         unit/{admit,approve,meter,route} and runtime/metering.rs decide admission and price - \
+         that is defs 5/6, not a plane.` This gate is that sentence made mechanical. It reds on 11 \
+         files across busbar-llm and busbar-voice - including `engine/usage.rs`'s \
+         `if host.cost_pricing_enabled(..)`, which is the literal branch #87 outlaws - and is \
+         GREEN on all five EXTRACTED busbar-plane-* crates, whose 125 `rate_card|nanos|price|spend` \
+         grep hits are prose. That separation is its red-before-green proof. Excused from ci.yml \
+         because a gate that is red every push is a gate somebody puts a `|| true` in front of; \
+         MOVE IT TO ci.yml when qa/plane-pricing-blindness.toml is empty. Unlike its release-time \
+         siblings the coverage route is a per-push one: the SELFTEST - the proof the scanner can \
+         still be driven red, and still ignores prose, string literals and a clock spelled in \
+         nanos - runs in xtask/tests/plane_pricing_blindness.rs under `cargo test --workspace \
+         --locked` on every push.",
+        Excuse::XtaskTest("run(&[\"gate\", \"plane-pricing-blindness\", \"--selftest\"])"),
+    ),
+    (
         "instance-noun-neutrality",
         "the plane/transport instance-noun burndown census. It is GREEN only when NO crate names a \
          concrete instance outside its own crate family, and the plane extraction is in flight, so \

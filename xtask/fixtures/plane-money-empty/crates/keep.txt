@@ -1,0 +1,1 @@
+keep — this tree's crates/ exists and holds no Rust, so the scan floor refuses it

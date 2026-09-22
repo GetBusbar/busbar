@@ -44,6 +44,7 @@ pub mod no_float_money;
 pub mod no_self_filed_issues;
 pub mod no_tracked_ignored;
 pub mod plane_abi_neutrality;
+pub mod plane_pricing_blindness;
 pub mod plane_purity;
 pub mod plane_transport_neutrality;
 pub mod population;
@@ -134,6 +135,20 @@ pub const REPORT_ONLY: &[Posture] = &[
               so a NEW coupling or a stale ledger row is scored under `--all` exactly like any \
               other regression.",
         excuse: Excused::OnlyAbout("tracked known-debt"),
+    },
+    Posture {
+        name: "plane-pricing-blindness",
+        why: "DECISION #87's WITNESS - planes always ledger, and the money acts are kernel-side. \
+              RED BY DESIGN on HEAD: the #83 roster's own SPLIT row says of busbar-{llm,mcp,a2a,\
+              voice} that `unit/{admit,approve,meter,route}` and `runtime/metering.rs` decide \
+              admission and price, `that is defs 5/6, not a plane` - so the debt is named in the \
+              roster before this gate ever measured it, and every live file is a row in \
+              qa/plane-pricing-blindness.toml. The five EXTRACTED busbar-plane-* crates are \
+              already clean and the gate is what keeps them that way. It goes green when the \
+              baseline is empty. Every census row names the needle below; the `:undocumented` and \
+              `:stale-baseline` rows do NOT, so a NEW money reference landing in a plane, or a \
+              ledger row that outlived its debt, is scored under `--all` like any regression.",
+        excuse: Excused::OnlyAbout("tracked money debt"),
     },
     Posture {
         name: "ship-ready",
@@ -2091,6 +2106,14 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(instance_noun_neutrality::InstanceNounNeutralityGate),
         summary:
             "no crate names a concrete plugin instance outside that instance's own crate family",
+    },
+    Registration {
+        name: "plane-pricing-blindness",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(plane_pricing_blindness::PlanePricingBlindnessGate),
+        summary:
+            "no plane crate resolves a card, prices, mints a unit key or arithmetics a hold (#43/#71/#87)",
     },
     Registration {
         name: "structure-lint",
