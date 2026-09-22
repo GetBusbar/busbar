@@ -3298,7 +3298,24 @@ fn plugin_kind_keys(text: &str) -> Vec<String> {
 
 /// The kind's ENTRY TRAIT, derived from the kind's own name rather than tabled beside it:
 /// `plane` → `Plane`, `transport` → `Transport`, `unit` → `Unit`.
+///
+/// ONE KIND IS NOT DERIVABLE, and the reason is a NAME COLLISION rather than an exception.
+///
+/// `export` → `Export` picks `busbar_contract::kinds::Export`, which is **a different kind of
+/// thing wearing the same word**: it is WAL/JOURNAL shipping — `ExportItem::{JournalEntry, Content,
+/// Segment}` acknowledged at-least-once with an `Ack` — and has nothing to do with telemetry
+/// export. It also has ZERO implementors anywhere in the tree, including its own crate's tests, so
+/// deriving the name pointed this rule at a trait no loadable plugin could ever satisfy while the
+/// trait a loadable export MUST implement (`busbar_plugin_sdk::ExportHandler`: `streams` /
+/// `deliver` / `routes` / `handle_http` / `drain_observations`, behind the six C symbols, the signed
+/// manifest and the loader's `[2, 3]` window) went unchecked.
+///
+/// Spelled here so the false friend does not come back: two kinds, one word, and the one with the
+/// riders wins. `kinds::Export` is an unimplemented specification slated for deletion.
 fn entry_trait(kind: &str) -> String {
+    if kind == "export" {
+        return "ExportHandler".to_string();
+    }
     let mut c = kind.chars();
     match c.next() {
         Some(first) => format!("{}{}", first.to_ascii_uppercase(), c.as_str()),

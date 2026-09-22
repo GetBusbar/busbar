@@ -80,7 +80,13 @@ hook = ["crates/hook*"]
 # kinds: the auth PLUGINS live at crates/auth-*; the outbound-scheme units (busbar-kernel-identity's egress_auth module,
 # …) are `unit` kind, scoped by `unit` below.
 auth = ["crates/auth-*"]
-export = ["crates/export-*"]
+# BOTH spellings, and the second is the one that matters. #34 names every plugin instance
+# `busbar-<kind>-<name>`, so the roster's export sinks land at `crates/busbar-export-*` — a path the
+# bare `export-*` glob does not match. It matched the one crate that predates the naming rule
+# (`crates/export-example-plugin`) and would have gone on printing a green row while every real
+# export crate sat outside the family, unscanned. A glob that stops matching its own kind is the
+# same failure class as a census row that stops counting.
+export = ["crates/export-*", "crates/busbar-export-*"]
 # NON-PLUGIN-KIND infra families: unit (core governance steps), loader and abi (TCB crates).
 unit = ["crates/busbar-unit-*"]
 loader = ["crates/plugin-loader"]
