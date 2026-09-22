@@ -24,6 +24,17 @@
 #            billing". An unbilled plane still gets admission and breaker enforcement, which is why
 #            the call is expected to succeed rather than to be turned away.
 #
+#            THE FIGURE THIS ARM ASSERTS IS THE SHIPPED ONE, NOT A SETTLED ONE, and that is stated
+#            rather than hidden. #42's own words say an uncarded node should "serve free, no
+#            metering, no ledger charge", which reads as spend 0; the code says otherwise in terms
+#            (`root/kernel.rs`'s `card_from_config`: "absent prices every class at nothing and STILL
+#            CHARGES THE FLAT FEE, which is exactly what the previous release bills for that
+#            deployment", and `RateCard::absent_in` carries the fee by construction,
+#            `kernel-ledger/src/cost/rate.rs:184`). Measured: 1. A second ruling is owed
+#            (`docs/design/BUSBAR-1.6.0.md` Part 7 section 13); until it lands this arm asserts what
+#            the tree ships rather than picking a side, so a change in EITHER direction is visible
+#            here instead of silent.
+#
 #   ARM 2 -- BILLING ON with a card that does not price the class the call hits. This plane declares
 #            exactly one class, `bytes` (`crates/busbar-plane-a2a/src/meta.rs:33-42`), and the card
 #            carries no entry for it -- it cannot, since `rate_card:` keys are validated against

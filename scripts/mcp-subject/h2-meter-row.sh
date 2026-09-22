@@ -22,6 +22,12 @@
 # both settings (`method.rs:2510` posts `UsageComponent::Queries` with amount 0), so the fee is the
 # whole figure either way.
 #
+# THIS LEG ASSERTS THE ROW UNDER A CARD, WHICH IS THE WEAKER HALF. That the row exists AT ALL —
+# with the card present and absent alike — is the owner's actual invariant (*"planes always ledger"*)
+# and it is asserted by `h2-ledger-unconditional.sh` beside this one, which is RED today because
+# `plane_host/govern.rs:226` gates the write on the card. Keep the two apart: this leg is one boot
+# and one claim, and the unconditional form needs two boots to say anything.
+#
 # WHAT DID CHANGE is the row's EXISTENCE -- the meter proving it ran, rather than the admission
 # counter standing in for it, and the money surface the two legs beside this one read.
 set -uo pipefail

@@ -22,6 +22,12 @@
 # all. Its `spend_cents` is `Σ counts × rates + per_request_fee × billable_requests`, and this
 # plane's counts are empty on both settings, so the fee is the whole figure either way.
 #
+# THIS LEG ASSERTS THE ROW UNDER A CARD, WHICH IS THE WEAKER HALF. That the row exists AT ALL —
+# with the card present and absent alike — is the owner's actual invariant (*"planes always ledger"*)
+# and it is asserted by `h2-ledger-unconditional.sh` beside this one, which is RED today because
+# `plane_host/govern.rs:226` gates the write on the card. Keep the two apart: this leg is one boot
+# and one claim, and the unconditional form needs two boots to say anything.
+#
 # WHAT DID CHANGE is the row's EXISTENCE. Under the old config the assertion below could not have
 # been written; under this one it gates. That is the meter proving it ran, rather than the admission
 # counter standing in for it -- and it is also why the two legs beside this one (h2-class-price.sh,

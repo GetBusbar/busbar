@@ -2116,6 +2116,21 @@ jobs:
         run: ./scripts/a2a-subject/h2-card-epoch.sh
       - name: a2a.rig unpriced-refuses
         run: ./scripts/a2a-subject/h2-unpriced-refuses.sh
+      # ── THE UNCONDITIONAL-LEDGER LEGS, both planes ───────────────────────────────────────────
+      # RULED 2026-09-22: the metering write is UNCONDITIONAL and `plane_host/govern.rs:226` is the
+      # defect. The card decides whether a READ turns counts into money; it may not decide whether
+      # the counts are RECORDED (#43/#71 "plugins are pricing-blind, pricing is a read-time view",
+      # #77(3) "price is NEVER stored"). #42 is unchanged — rate_card presence IS the billing
+      # switch, because billing is the read, not the write.
+      #
+      # Each leg boots TWICE against one binary with the card as the only difference: card present
+      # is the CONTROL that proves the read works, card absent is the CLAIM. RED today; GREEN when
+      # the kernel fix lands, with no edit to the leg. Do not soften it to green while the defect
+      # stands — the fix is owed in `busbar-kernel/src/plane_host/`, not in these scripts.
+      - name: mcp.rig ledger-unconditional
+        run: ./scripts/mcp-subject/h2-ledger-unconditional.sh
+      - name: a2a.rig ledger-unconditional
+        run: ./scripts/a2a-subject/h2-ledger-unconditional.sh
   # ── WHERE THE OTHER FORTY NON-DEFAULT FEATURES ARE BUILT ──────────────────────────────────────
   # `cargo xtask gate feature-sets` requires EVERY non-default feature in the tree to appear either
   # in the matrix above or on one of these lines, and requires every line to name a feature that
