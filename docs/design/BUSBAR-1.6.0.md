@@ -2285,6 +2285,42 @@ the rig must keep reporting both figures side by side.
 A future read that prices flat is a failing test, not a review note — which is the direct answer to
 *enrolment is the gap no count detects*: this roster detects its own omissions.
 
+#### OWNER RULING 2026-09-22 — `cpufeatures -> libc` IS NOT AN I/O REACH (settles the row below)
+
+**RULED: it is a property of the EDGE, stated once, not a waiver minted per crate.**
+
+The owner's condition was *"iff cpufeatures is needed and that's the right crate for this solution."*
+Both halves measured and satisfied:
+
+- **NEEDED — it cannot be switched off.** In `sha2` 0.10.9 (our pin) `cpufeatures` is a TARGET-GATED
+  hard dependency: `[target.'cfg(any(target_arch = "aarch64", target_arch = "x86_64", target_arch =
+  "x86"))'.dependencies.cpufeatures]` — every platform busbar ships on. It is behind NO feature; the
+  complete list is `asm, asm-aarch64, compress, default, force-soft, force-soft-compact,
+  loongarch64_asm, oid, std`. **`force-soft` does not help** — it forces the software hash path, but
+  the dependency edge is declared unconditionally for the target, so `cargo metadata` still resolves
+  it. You would lose SHA-NI/ARMv8 acceleration AND stay red.
+- **RIGHT CRATE** — it is RustCrypto's standard runtime detector for selecting hardware SHA
+  acceleration. Without it, hashing takes the portable path on every platform we ship.
+- **ITS ENTIRE libc SURFACE, enumerated from its source:** `getauxval`, `sysctlbyname`, plus the type
+  aliases `c_ulong`/`c_void`. **Two function calls, both CPU-capability queries.** The ban's own
+  `why` forbids *"no socket, no file, no process, no OS handle, no environment read, no HTTP
+  client."* cpufeatures reaches **none of those six**.
+
+**WHY THE EDGE AND NOT A WAIVER.** Four `[[allow]]` rows already state this same reasoning, per
+crate, for `busbar-plane-{a2a,llm,mcp,streaming}`. Enrolling the auth kind produced a fifth and sixth
+demand for it. A rule restated once per rediscovery is not a rule — it is the tree losing the ability
+to say what its own policy is, and two of those four rows are ALREADY red as stale because the
+offenders they excused are gone.
+
+**SCOPE, and these limits are load-bearing:**
+1. The exemption is keyed on the EDGE `(dep=libc, via=cpufeatures)`, for the pure kinds, full stop.
+2. It exempts **that path only**. A crate reaching `libc` by any OTHER route is still a hit — the
+   existing waivers' own words, *"re-review if any other path to libc appears"*, survive as the rule.
+3. **`getrandom -> libc` IS NOT RULED ON.** The llm and mcp waivers cover cpufeatures AND `getrandom`
+   (entropy drawn by the codec rather than arriving through `Ctx`). That is a different edge with a
+   different argument and it keeps its per-crate waiver until someone rules on it. Collapsing it here
+   by accident would bless a thing nobody examined.
+
 #### PARKED FOR THE OWNER — `sha2 -> cpufeatures -> libc` NOW BLOCKS THREE LANDINGS
 
 **The same edge has been hit from three directions in one day, and it cannot be repointed away.**
