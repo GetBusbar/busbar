@@ -1441,9 +1441,32 @@ that bought, and what it exposed, was measured end-to-end against the release bi
    tier 0. #42 sanctions this in terms (*"rate_card ABSENT ⇒ … no metering, no ledger charge"*). The
    owner's later ruling does not: *planes always ledger* — a plane emits raw counts per declared
    class unconditionally, and pricing is a READ-TIME view (#71/#43), which a write-time card lookup
-   contradicts. **OWNER CALL OWED:** is the card allowed to decide whether counts are RECORDED, or
-   only whether they are PRICED? The rigs are written for the second reading and say nothing about
-   the first, because picking a side here is not a witness's job.
+   contradicts. ~~**OWNER CALL OWED:**~~ **RULED 2026-09-22 — THE LEDGER WRITE IS UNCONDITIONAL AND
+   `govern.rs:226` IS THE DEFECT.** The card decides only whether a READ can turn counts into money.
+   #42 stays true exactly as written — rate_card presence IS the billing switch — because **billing
+   is the read, not the write**; a plane whose ledger write depends on a card is a plane that knows
+   about money, which is what #43/#71 forbid and what #77(3) ("price is NEVER stored") rules out.
+   The owner's words the ruling applies: *"planes always ledger"*; *"its a kernal default all planes
+   run though. no tunring things on or off by plane"*; *"Billing is OPTIONAL per plane; rate_card
+   PRESENCE is the switch… AGREED. but its not an on off in the plane."* **The fix is owed in
+   `busbar-kernel/src/plane_host/`, not here**, and it WILL move oracle cells — a deployment with no
+   card starts producing metering rows where it produced none — so every moved cell is PARKED, not
+   blessed. **The witness is written and gates now:**
+   `scripts/{a2a,mcp}-subject/h2-ledger-unconditional.sh` makes the same assertion twice against one
+   binary with the card as the only difference (card present = the control that proves the read
+   works; card absent = the claim), so it is RED today on the defect and goes GREEN when the fix
+   lands, with no edit to the leg.
+
+   **ONE THING THE RULING DOES NOT SETTLE, and the leg deliberately does not assert:** whether an
+   UNCARDED deployment should nonetheless bill #44's flat fee. Measured: with `rate_card:` absent,
+   `GET /keys/<id>/usage` reports **`spend_cents: 1`** — the configured `per_request_fee`. #42's own
+   words say an uncarded node should *"serve free, no metering, no ledger charge"*, which reads as
+   **0**; but `root/kernel.rs`'s `card_from_config` states the opposite in terms — *"absent prices
+   every class at nothing and still charges the flat fee, which is exactly what the previous release
+   bills for that deployment"* — and `RateCard::absent_in` carries the fee by construction
+   (`kernel-ledger/src/cost/rate.rs:184`). Both figures, both authorities: **0 by #42's wording, 1 by
+   the 1.5.5-compatibility design and the shipped code.** A second ruling is owed; until it lands
+   `h2-unpriced-refuses.sh` asserts the SHIPPED figure (1) rather than picking a side, and says so.
 
 ### ON THE CRITICAL PATH — each costs the owner ~60 seconds and unblocks ~2 agent-days
 
@@ -1544,8 +1567,19 @@ prepared; only the word is missing.
 > **DRIFT BOUND, owner's words: "it may change but only ±3-5, not 20."** Under #83 the count is an
 > OUTPUT of the definitions, not a target — but a proposal that moves it by more than ~5 is evidence
 > the DEFINITIONS are wrong, not that the number should follow. Bring that to the owner, do not absorb it.
-> Still unsettled and inside that band: 12 HOMELESS crates (fit no definition ⇒ owner conversation,
+> Still unsettled and inside that band: 6 HOMELESS crates (fit no definition ⇒ owner conversation,
 > #83 step 3) and 4 roster slots with no crate (`busbar-export-*`; `otlp` has no implementation anywhere).
+> **A fifth row writes the same cheque:** def 29 `busbar-auth-static` is described as an instance the
+> default distribution SHIPS, and the only thing on disk is `auth-static-plugin`, which is test-only —
+> no manifest in the tree names it, not even as a dev-dependency. Either def 29 is really row 35–40's
+> kind, or a shipped instance is owed and does not exist. Owner's to resolve; measured, not acted on.
+>
+> **OUTSIDE the band, flagged not absorbed: row 35–40 takes the count 33 → 39, which is +6.** The six
+> ABI fixtures were HOMELESS; defining them is what un-homes them, and the definition is clean (see
+> the row). But this file's own rule is that a move of more than ~5 is evidence the DEFINITIONS are
+> wrong rather than a number to follow, so it is recorded here for the owner rather than treated as
+> settled. The counter-argument, for that conversation: the six are ONE definition, exactly as rows
+> 21–27 are one definition over seven crates — on a per-DEFINITION basis the roster moves 24 → 25.
 
 **This supersedes every earlier count in this document.** It is the owner's own roster, recovered
 verbatim from the 2026-09-20 transcript where he pasted it himself, re-presented to him on
@@ -1577,17 +1611,90 @@ home is decided by asking which definition it fits. Nothing fits ⇒ owner conve
 | 28 | `busbar-store-memory` | The in-process `store` instance the default distribution ships. |
 | 29 | `busbar-auth-static` | The static-token `auth` instance the default distribution ships. |
 | 30 | `busbar-hook-ranking` | The ranking `hook` instance the default distribution ships. |
-| 31–34 | `busbar-export-{prometheus,webhook,file,otlp}` | One `export` instance per delivery backend, reaching the engine only over the ABI. |
+| 31–34 | `busbar-export-{prometheus,webhook,file,otlp}` | One `export` instance per destination format. **It renders; it never decides.** See the six properties below. |
+| 35–40 | `plane-example` · `store-example-plugin` · `auth-static-plugin` · `secret-example-plugin` · `export-example-plugin` · `hook-test-plugin` | **One fixture per plugin kind: the in-tree proof that the kind's ABI loads and behaves identically BOTH WAYS** — linked as an `rlib` and `dlopen`'d as a `cdylib`, one source, two artifacts. `crate-type = ["rlib", "cdylib"]`. Carries no product behaviour and ships in no distribution; its kind-purity rules are read from its DIRECTORY, which is why it is a crate and not a file. |
+
+**THE `export` KIND — OWNER-LOCKED 2026-09-22 ("AGREED 100%"), six properties.** The roster rows
+above name the INSTANCES; this names the KIND, and the absence of a kind definition is precisely how
+`otlp` drifted into being a `tracing-subscriber` layer in `init_logging` rather than an export.
+
+> **export** — the kind that turns busbar's observations into another system's format.
+
+1. **Read-only on the observation stream.** It cannot change what busbar does, refuse a request, or
+   alter a record. If it can, it is a HOOK, not an exporter.
+2. **It owns the destination's format** — Prometheus text, OTLP protobuf, JSONL. Core owns none of
+   them. That is the whole point of it being a plugin.
+3. **Its failure is never the request's problem.** Down, slow or broken must not touch a served
+   request: off the hot path, buffered, shed under pressure.
+4. **Money-blind and pricing-blind**, exactly like planes (#43/#71). It reports what happened; it
+   never computes what it cost.
+5. **Both ABIs, compiled-in or dropped-in** — the two universal rules of #3, no exception for this kind.
+6. **It declares its carrier; it does not open one — through the SAME mechanism a plane uses.**
+   Owner, 2026-09-22: *"treat exports very similar to planes in transport sense. how they request and
+   manage should be identical."* **IDENTICAL, NOT ANALOGOUS.** An exporter declares needs as
+   **(transport, auth) per direction** through the one declaration shape and the one lifecycle the
+   kernel already offers planes — not a second, export-flavoured copy of it. If a reader can tell
+   from the kernel code whether a carrier was requested by a plane or by an exporter, the seam is
+   wrong. Push or pull is the EXPORTER's choice — that is a format-and-destination decision and
+   belongs where the knowledge is — but the carrier is the kernel's to provide. An exporter that
+   opens its own socket is doing a transport's job, and the SSRF/pin/breaker chokepoint stays where
+   Part 4 Axis 3 puts it.
+
+   *Consequence, stated so it is not discovered later:* a second consumer of the carrier seam means
+   that seam can no longer be shaped around one kind's needs. Whatever `kind: transport` becomes, it
+   answers to planes and exporters on the same terms.
+
+**Property 6 makes `kind: transport` load-bearing for a fifth consumer, which changes how its absence
+reads.** Measured 2026-09-22: `transport` was never built as a plugin kind on EITHER ABI generation
+— no cold lane, no hot lane, no `load_transport`/`open_transport`; `busbar-contract/src/transport/registry.rs:19`
+says so in its own words (*"Transports are in-tree and never dynamically loaded, so there is no loader
+window to police"*). Meanwhile 4 of 4 protocols wrote their own private dial stack instead: MCP's
+`mcp/client/*` (8,233 lines, **36% of that crate**), LLM's own `Hop`/`attempt` with no dependency on
+`busbar-kernel-egress` at all, A2A's private `pub(crate) trait Transport` in `fetch.rs`, and Voice's
+`ProviderDial`/`Detached`. Four independent implementations routing around an interface is evidence
+about the interface — but the reading changes with a fifth consumer that has not yet had the chance
+to route around it: not "the abstraction does not fit", but "nobody finished it, so everyone went
+around it." **That is the open question, and it is the owner's scope call, not an agent's.**
+
+
+**Why row 35–40 is a definition and not scaffolding.** The release's central claim is that each
+plugin can be compiled into the binary OR dropped into `plugins/` — *same contract, same loading
+path*. A claim with no witness is a hope, and these fixtures are the witness. `export-example-plugin`
+is the proof that this is load-bearing: its consumer,
+`plugin-loader/src/tests/export_conformance_tests.rs`, calls itself **"THE #11 TEST — one crate,
+built BOTH ways, must be observationally identical"**, and it exists because the two builds were
+NOT. A `cdylib` statically links its own copy of the `metrics` facade, so *"every counter a
+dropped-in sink incremented went into a registry nobody ever scrapes"*, while the same source
+compiled in linked the host's recorder and worked. Two builds, two observable behaviours, and
+nothing in the tree said so.
+
+That witness needs BOTH artifacts from ONE source, which is why these stay crates rather than
+becoming `busbar-plugin-sdk/examples/*`. The move was considered and refused on evidence: an example
+target can never be a Cargo dependency, so the rlib half of the proof cannot survive it; and a
+fixture that moves into the SDK is scanned as TCB, so the `store`/`secret`/`hook` purity rules stop
+reading it — `forbid-unsafe:hook-test-plugin`, `forbid-unsafe:secret-example-plugin` and
+`forbid-unsafe-deny:store-example-plugin` pass today only because the fixture is a crate DIRECTORY
+matched by its kind glob. Trading `#![forbid(unsafe_code)]` on plugin fixtures for four fewer
+directory entries is a bad trade, and `ceiling-census` would have called it correctly.
+
+**Only `plane` and `export` hold that witness today.** Measured 2026-09-22: those two are the only
+fixtures anything links the rlib of. The blocker for the rest is upstream of the fixtures —
+`busbar_plugin_sdk::dispatch_export_enveloped` is the SDK's ONLY enveloped dispatch (#85 covered
+`export` and no other kind), and the envelope is what makes "observationally identical" testable at
+all. `auth-static-plugin` gained its `rlib` on 2026-09-22 so it CAN carry one; `dispatch_auth` is
+still un-enveloped, so it does not yet.
 
 ### THE 57 ON DISK, AGAINST THOSE DEFINITIONS — measured at `1cc110dbd`, 2026-09-22
 
 `git ls-files 'crates/*/Cargo.toml'` = **57**. Closure measured at **6** (`busbar-grammar` already folded).
-**22 CLEAN + 4 FOLD + 12 SPLIT + 4 MERGE + 12 HOMELESS + 3 no-content = 57.** Every crate is placed.
+**28 CLEAN + 4 FOLD + 12 SPLIT + 4 MERGE + 6 HOMELESS + 3 no-content = 57.** Every crate is placed.
 
 **CLEAN — one definition, contents fit (22).** `busbar-kernel-{identity,scope,budget,egress,breaker,wal}`
 (defs 3,4,5,7,8,9) · `busbar-oauth2` (12, rename only) · `busbar-contract` (13) · `plugin-sdk` (14) ·
 `plugin-loader` (15) · `busbar-plane-{llm,mcp,a2a}` (16–18) · the 7 `busbar-transport-*` (21–27) ·
-`store-memory` (28) · `hooks-ranking` (30).
+`store-memory` (28) · `hooks-ranking` (30) · the six ABI fixtures `plane-example`,
+`store-example-plugin`, `auth-static-plugin`, `secret-example-plugin`, `export-example-plugin`,
+`hook-test-plugin` (35–40 — moved out of HOMELESS 2026-09-22 when the definition landed).
 
 **FOLD — clean, one definition, destination already known (4).** `busbar-llm-codec` (63,070 surf) ·
 `busbar-mcp-codec` · `busbar-a2a-codec` · `busbar-voice-codec` → each is a WIRE DIALECT, which def
@@ -1601,7 +1708,7 @@ home is decided by asking which definition it fits. Nothing fits ⇒ owner conve
 | `busbar-kernel-ledger` | Record SHAPES / ledger SEMANTICS | `records.rs` (604 surf) → 13, **less** its `scope_kinds` `RwLock` registry (~30), which is runtime state ⇒ 2. `settle` `checkpoint` `recompute` `cost/*` `usage/*` `totals` `verify` `identity` `migration` `legacy` stay (def 6). |
 | `api` | Plugin contracts / I-O machinery / migration logic / shim | `auth` `hooks` `secret` `operation` `signal` `redacted` (727) → 13. `durable.rs` (110, real `fsync` path) → 2. `usage_migration.rs` (66) → 6. `store.rs` (9) is a pure `pub use` shim → delete. Crate dies. |
 | `busbar-kernel` | ≥6 kinds | Residual grab-bag: `config/`+`config_validate/` (31k), `plane_host/` (18k), `governance/` (12k), `auth/` (11k, duplicates def 3's territory), `plane/` (11k), `egress/` (9k, duplicates def 7's). Def 2 is `teller.rs` + the seams; the rest is owed a home. |
-| `busbar-core-admin` | Wire codec / HTTP surface / verb semantics | `admin_codec/` carries `impl Plane for AdminPlane` (`admin_codec/codec.rs:103`) — that is def 16–20's face on a crate that is def 11. `v1/` (12.8k) = def 11. Top-level `keys/verb/rate/restart/posture/…` (4.7k) = verb-execution semantics. This is the `KIND-ISOLATION` red. |
+| `busbar-core-admin` | HTTP surface / verb semantics | **CLOSED 2026-09-22 — the plane entry face is DELETED, not re-homed.** `admin_codec/codec.rs` (the `Plane` impl) and its exclusive tails are gone: that trait is how TRAFFIC enters the dispatch loop and this crate serves operators, never traffic (#3/#5/#83 def 11). It was never dispatched through — an admin request arrives on `admin_listen`, is matched against `admin_codec::verbs::resolve`, and walks the loop as the ADMIN UNITS (`crates/busbar/src/root/units_admin`). `kind-isolation:faces` FAIL → PASS; `construction:kernel-seal-impls` FAIL → PASS with it (the deleted test harness held the tree's last untracked `KernelSeal` forgery). `admin_codec/` is now the closed verb table, the one claim and the frozen error envelope — DECLARATIONS, no entry face. `v1/` (12.8k) = def 11. Top-level `keys/verb/rate/restart/posture/…` (4.7k) = verb-execution semantics, still owed a home; the crate split is a later wave. |
 | `busbar-llm` · `busbar-mcp` · `busbar-a2a` · `busbar-voice` | Protocol orchestration / plane entry face | Session, turn and dialect rules → 16–20. But `unit/{admit,approve,meter,route}` and `runtime/metering.rs` decide admission and price — that is defs 5/6, not a plane. |
 | `busbar-plane-decision` | Adapter / codec / kernel-side `PlaneDecl` builder | Adapter+codec = def 20 (#39 ruled the 113-LOC codec too small to split out). `registry.rs` names `busbar-kernel` — its own header calls it a #40 violation. |
 | `busbar-kernel-audit` | Record shape / a second chain mechanism | `record.rs`+`amend.rs` = def 10. `legacy/{chain,entry}.rs` (1,019) is a self-contained hash chain — def 9's KIND, kept only so 1.5.5 digests still verify. |
@@ -1616,7 +1723,7 @@ home is decided by asking which definition it fits. Nothing fits ⇒ owner conve
 | `secret-ref` ↔ `busbar-contract` | def 13 | `busbar-contract`. `SecretRef{module,settings}` + its hand-written grammar + the schema mirror. Pure shape, `serde`+`serde_json` only. **Name collision to de-conflict on the move:** `busbar_contract::kinds::SecretRef` is already a different type (`pub struct SecretRef(pub String)`) — do what #35 did with `Store`→`RecordStore`. |
 | `busbar_contract::kinds::Store` ↔ `busbar_kernel_ledger::records::RecordStore` | def 13 | One crate, two traits, one plugin kind. Both are the persistence face a store plugin implements. Resolve on the `records.rs` move. |
 
-**HOMELESS — fits no definition. #83 step 3: owner conversation, NOT an agent's new crate (12).**
+**HOMELESS — fits no definition. #83 step 3: owner conversation, NOT an agent's new crate (6).**
 
 | Crate | Surf | What it is | Why nothing fits |
 |---|---|---|---|
@@ -1626,7 +1733,6 @@ home is decided by asking which definition it fits. Nothing fits ⇒ owner conve
 | `plugin-sign` | 451 | Manifest schema + canonical signing bytes + trust-policy evaluation. | Split by #83(d): the manifest/canonical-bytes half is SHAPE, the trust policy is not. But the shape half drags `ed25519-dalek`+`sha2` ⇒ barred from 13 by downside (b). |
 | `plugin-pack` | 383 | `[[bin]]` CLI that packs/signs a plugin tarball — for third-party authors, not this build. | Not def 1 (that is the busbar binary). No tooling slot in the roster. |
 | `auth-admin-tokens` | 29 | Live, default-on: `kernel/src/auth/mod.rs:978` dispatches `"admin-tokens"` to it. Constant-time both-carrier admin credential compare. | **It DOES fit def 3** — "a presented credential resolved to a principal" — and `kernel-identity/admin.rs` already holds the admin chain's no-module posture. So MERGE into 3, *unless* the owner holds that an auth module is always an INSTANCE (def 29's kind), in which case the roster owes a second auth-instance slot. **That is the ruling needed.** |
-| `plane-example` · `store-example-plugin` · `auth-static-plugin` · `secret-example-plugin` · `export-example-plugin` · `hook-test-plugin` | 128/656/59/39/11/183 | Six hermetic `cdylib` ABI-crossing conformance FIXTURES. Each self-describes as "used only as TEST support"; none has a production dep edge. | One coherent kind — *the in-tree fixture that proves the ABI loads* — with no roster slot. **`auth-static-plugin` is the sharp one:** the roster names `busbar-auth-static` a shipped instance (def 29), but on disk it is test-only. Either the roster row is a fixture, or a real instance is owed. |
 
 **Not homeless, no content:** `busbar-core-hooks` (31 LOC of doc comment, **0 surface, 0 dependents**) —
 an announced empty namespace; delete. `busbar-core-config` (12 surf) — a fragment of def 2's config
