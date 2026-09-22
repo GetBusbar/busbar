@@ -638,3 +638,137 @@ fn the_admin_write_path_refuses_a_malformed_publish_as_exactly_as_the_file_does(
         .expect_err("the API must reject exactly what the file rejects");
     assert!(err.contains("publish_as"), "{err}");
 }
+
+/// A MISSPELLED ASK METHOD REFUSES BOOT RATHER THAN REMOVING THE GATE.
+///
+/// `ask_caller[].method` is a free string in the grammar, and at dispatch a method outside the
+/// closed three-method set is silently DROPPED: `callerask::CallerAsk::capability_key` answers
+/// `None` and the round's filter removes the entry. So an operator who typed `elicitation/created`
+/// did not get a broken confirmation gate — they got NO confirmation gate, and the destructive tool
+/// the gate was written for dispatches unconfirmed. The only visible symptom was a refusal blaming
+/// the CALLER for declaring no capabilities, and once the typo is the round's only entry even that
+/// disappears, because an emptied round is dropped.
+///
+/// Under #42 an unknown is REFUSED, never silently defaulted, and boot is the only place an operator
+/// is present to be told.
+#[test]
+fn an_ask_naming_a_method_outside_the_closed_set_refuses_boot_with_a_diagnostic() {
+    let err = parse(
+        r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  tools_allow:
+    delete_everything:
+      ask_caller:
+        - confirm: { method: "elicitation/created" }
+"#,
+    )
+    .expect_err(
+        "a method outside the closed set is dropped at dispatch, so accepting it at boot means a \
+         one-character typo silently deletes an operator's confirmation gate",
+    );
+    assert!(
+        err.contains("elicitation/created"),
+        "the diagnostic must quote what the operator wrote: {err}"
+    );
+    assert!(
+        err.contains("ask_caller[0].confirm.method"),
+        "and locate it precisely enough to fix without searching: {err}"
+    );
+    assert!(
+        err.contains("elicitation/create")
+            && err.contains("sampling/createMessage")
+            && err.contains("roots/list"),
+        "and name the legal set, read from `callerask::ASK_METHODS` rather than re-spelled: {err}"
+    );
+}
+
+/// EVERY ask list is validated, and the three legal methods still parse.
+///
+/// Three operator-written lists reach the same dispatch filter — `tools_allow.*.ask_caller`,
+/// `tools_allow.*.task_ask_caller` and `prompts_allow.*.ask_caller` — so leaving any one of them
+/// unvalidated leaves the same hole in a different key. The final half is the control: the rule
+/// refuses typos, not asks.
+#[test]
+fn every_ask_list_is_validated_and_the_three_legal_methods_still_parse() {
+    for field in ["ask_caller", "task_ask_caller"] {
+        let err = parse(&format!(
+            r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: {{ mechanism: cert_spki, key: "sha256/PIN==" }}
+  tools_allow:
+    wipe:
+      task_support: optional
+      {field}:
+        - confirm: {{ method: "roots/lists" }}
+"#
+        ))
+        .expect_err(&format!(
+            "`{field}` reaches the same dispatch filter as `ask_caller`, so leaving it unvalidated \
+             leaves the same hole"
+        ));
+        assert!(err.contains("roots/lists"), "{field}: {err}");
+        assert!(
+            err.contains(field),
+            "{field}: the path must name the list: {err}"
+        );
+    }
+    let err = parse(
+        r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  prompts_allow:
+    summarise:
+      template: "hi"
+      ask_caller:
+        - confirm: { method: "sampling/createmessage" }
+"#,
+    )
+    .expect_err("a prompt's ask reaches the same filter and is refused by the same rule");
+    assert!(err.contains("sampling/createmessage"), "{err}");
+    assert!(err.contains("prompts_allow"), "{err}");
+
+    let cfg = parse(
+        r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  prompts_allow:
+    summarise:
+      template: "hi"
+      ask_caller:
+        - a: { method: "elicitation/create" }
+        - b: { method: "sampling/createMessage" }
+        - c: { method: "roots/list" }
+"#,
+    )
+    .expect("all three legal methods must still parse — the rule refuses typos, not asks");
+    assert_eq!(
+        cfg.servers["filesystem"].prompts_allow["summarise"]
+            .ask_caller
+            .len(),
+        3
+    );
+}
+
+/// ONE GRAMMAR, TWO PATHS: the admin write path refuses an unknown ask method exactly as the file
+/// does, because both reach `validate_server`. Without this half an operator locked out of the file
+/// could still install the gate-deleting typo through the API.
+#[test]
+fn the_admin_write_path_refuses_an_unknown_ask_method_exactly_as_the_file_does() {
+    crate::testkit::install_test_seams();
+    let def = serde_json::json!({
+        "url": "https://x/",
+        "pin": { "mechanism": "unpinned" },
+        "tools_allow": {
+            "wipe": { "ask_caller": [ { "confirm": { "method": "elicitation/created" } } ] }
+        },
+    });
+    let err = engine()
+        .validate_named_def(crate::mcp::PLANE_DECL.config_section, "gh", &def)
+        .expect_err("the API must reject exactly what the file rejects");
+    assert!(err.contains("elicitation/created"), "{err}");
+}
