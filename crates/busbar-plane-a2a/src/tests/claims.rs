@@ -103,19 +103,14 @@ fn every_mounted_route_is_claimed() {
         );
     }
     // The two well-known paths are properties of the ORIGIN and so are not under the mount.
-    for path in [
-        crate::METADATA_PATH,
-        crate::WELL_KNOWN_CARD_PATH,
-    ] {
+    for path in [crate::METADATA_PATH, crate::WELL_KNOWN_CARD_PATH] {
         assert!(
             claims_match(path),
             "the codec mounts {path} and this plane claims nothing that matches it"
         );
     }
     // busbar's own push callback: the mount joined to the suffix a delivery is posted to.
-    assert!(claims_match(&crate::mounted_route(
-        crate::PUSH_PATH_SUFFIX
-    )));
+    assert!(claims_match(&crate::mounted_route(crate::PUSH_PATH_SUFFIX)));
     // The framed binding is one service and one method segment, composed from the same constant.
     assert!(claims_match(&format!(
         "{}/{{method}}",

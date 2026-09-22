@@ -910,8 +910,10 @@ async fn backpressure_is_bidirectional() {
     let payload = vec![b'y'; 65536];
     let t2 = t.clone();
     let payload2 = payload.clone();
-    let writer =
-        tokio::spawn(async move { t2.write(&a, StreamId(0), ScratchBytes::new(&payload2)).await });
+    let writer = tokio::spawn(async move {
+        t2.write(&a, StreamId(0), ScratchBytes::new(&payload2))
+            .await
+    });
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(
         !writer.is_finished(),
@@ -1085,7 +1087,11 @@ async fn a_refusal_cancelled_mid_send_fences_the_connection() {
     );
     // And the fence is observable through the public write path, the way every other torn write is.
     let err = t
-        .write(&a, StreamId(0), ScratchBytes::new(b"after the torn refusal"))
+        .write(
+            &a,
+            StreamId(0),
+            ScratchBytes::new(b"after the torn refusal"),
+        )
         .await
         .unwrap_err();
     assert_eq!(
@@ -1182,8 +1188,10 @@ async fn close_gives_up_on_a_peer_that_never_reads() {
     let stuffing = vec![b'z'; 1_000_000];
     let t2 = t.clone();
     let a2 = a.clone();
-    let stuffer =
-        tokio::spawn(async move { t2.write(&a2, StreamId(0), ScratchBytes::new(&stuffing)).await });
+    let stuffer = tokio::spawn(async move {
+        t2.write(&a2, StreamId(0), ScratchBytes::new(&stuffing))
+            .await
+    });
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!stuffer.is_finished(), "the duplex must be full");
     stuffer.abort();
@@ -1222,8 +1230,10 @@ async fn a_peer_that_pings_and_then_stops_reading_does_not_park_the_pump_forever
     // Left running rather than aborted: a write abandoned mid-send fences the connection, and a
     // fenced connection ends the pump before it ever reads the Ping. This one stays parked on the
     // full socket, which is exactly the peer this cell is about.
-    let stuffer =
-        tokio::spawn(async move { t2.write(&a2, StreamId(0), ScratchBytes::new(&stuffing)).await });
+    let stuffer = tokio::spawn(async move {
+        t2.write(&a2, StreamId(0), ScratchBytes::new(&stuffing))
+            .await
+    });
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!stuffer.is_finished(), "the duplex must be full");
 

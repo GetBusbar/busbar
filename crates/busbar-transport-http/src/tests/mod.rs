@@ -1563,13 +1563,19 @@ fn egress_refuses_a_chunked_body_declared_with_a_content_length() {
          than silently disambiguated and forwarded"
     );
 
-    let clean = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n";
+    let clean =
+        b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n";
     let mut clean_cache = EgressHead::default();
     let done = complete_message(clean, &mut clean_cache, usize::MAX)
         .unwrap()
-        .expect("a normal chunked body with no Content-Length still completes — this refuses the \
-                 smuggling PAIR, not chunked encoding on its own");
-    assert_eq!(done.body, b"abc", "the clean chunked body still decodes byte-exact");
+        .expect(
+            "a normal chunked body with no Content-Length still completes — this refuses the \
+                 smuggling PAIR, not chunked encoding on its own",
+        );
+    assert_eq!(
+        done.body, b"abc",
+        "the clean chunked body still decodes byte-exact"
+    );
 }
 
 /// One wrapping layer, standing in for the connector and pool layers a real client error arrives

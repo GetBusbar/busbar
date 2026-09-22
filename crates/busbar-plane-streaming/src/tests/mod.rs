@@ -88,7 +88,9 @@ mod purity {
 /// provider's lane.
 mod route {
     use crate::claims::Dialect;
-    use crate::tests::harness::{ctx_with_session, EmptyConfig, LeakPlaneAlloc, PairedSession, WsStack};
+    use crate::tests::harness::{
+        ctx_with_session, EmptyConfig, LeakPlaneAlloc, PairedSession, WsStack,
+    };
     use crate::{StreamingPlane, Upstream};
     use busbar_contract::bounded::{FactValue, Facts, Ir, Labels};
     use busbar_contract::dest::DestinationFacts;

@@ -11,10 +11,7 @@ use super::{operations_for, OPERATIONS, RECORD_SCHEMAS, SCHEMA_TASK, SCHEMA_TASK
 #[test]
 fn the_durable_schemas_are_the_codecs_own_kinds() {
     assert_eq!(SCHEMA_TASK.as_str(), crate::records::KIND_TASK);
-    assert_eq!(
-        SCHEMA_TASK_EVENT.as_str(),
-        crate::records::KIND_TASK_EVENT
-    );
+    assert_eq!(SCHEMA_TASK_EVENT.as_str(), crate::records::KIND_TASK_EVENT);
 }
 
 /// Every schema declares at least one operation, and every operation it declares is a known one.

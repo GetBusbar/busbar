@@ -27,14 +27,8 @@ fn every_target_is_the_codec_route_it_claims_to_be() {
         T_MESSAGE_STREAM,
         crate::mounted_route(crate::ROUTE_MESSAGE_STREAM)
     );
-    assert_eq!(
-        T_TASKS,
-        crate::mounted_route(crate::ROUTE_TASKS)
-    );
-    assert_eq!(
-        T_TASK,
-        crate::mounted_route(crate::ROUTE_TASK)
-    );
+    assert_eq!(T_TASKS, crate::mounted_route(crate::ROUTE_TASKS));
+    assert_eq!(T_TASK, crate::mounted_route(crate::ROUTE_TASK));
     assert_eq!(
         T_PUSH_CONFIGS,
         crate::mounted_route(crate::ROUTE_PUSH_CONFIGS)
@@ -47,16 +41,10 @@ fn every_target_is_the_codec_route_it_claims_to_be() {
         T_EXTENDED_CARD,
         crate::mounted_route(crate::ROUTE_EXTENDED_AGENT_CARD)
     );
-    assert_eq!(
-        T_PUSH,
-        crate::mounted_route(crate::PUSH_PATH_SUFFIX)
-    );
+    assert_eq!(T_PUSH, crate::mounted_route(crate::PUSH_PATH_SUFFIX));
     assert_eq!(T_CARD, crate::WELL_KNOWN_CARD_PATH);
     assert_eq!(T_METADATA, crate::METADATA_PATH);
-    assert_eq!(
-        SERVICE,
-        crate::GRPC_MOUNT_PATH.trim_start_matches('/')
-    );
+    assert_eq!(SERVICE, crate::GRPC_MOUNT_PATH.trim_start_matches('/'));
 }
 
 /// The surface passes the contract's own boot check.

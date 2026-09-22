@@ -25,7 +25,7 @@ use busbar_contract::transport::AbiVersion;
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::Frame;
 use busbar_contract::{
-    grammar::SelectorForm, ScratchBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
+    grammar::SelectorForm, Fut, Kind, Plugin, ScratchBytes, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 

@@ -262,7 +262,8 @@ impl MemoryStore {
     }
     fn metering_read(
         &self,
-    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, u64, String, String, u64), MeteringRow>> {
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, u64, String, String, u64), MeteringRow>>
+    {
         self.metering.read().unwrap_or_else(|e| e.into_inner())
     }
     fn next_revision(&self) -> u64 {

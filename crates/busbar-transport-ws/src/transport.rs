@@ -23,7 +23,7 @@ use busbar_contract::transport::AbiVersion;
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::Frame;
 use busbar_contract::{
-    grammar::SelectorForm, ScratchBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
+    grammar::SelectorForm, Fut, Kind, Plugin, ScratchBytes, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
@@ -820,7 +820,8 @@ impl Transport for WsTransport {
             tokio::spawn(async move {
                 let _ = tokio::time::timeout(CLOSE_BUDGET, async {
                     let mut w = state.writer.lock().await;
-                    let _ = futures::SinkExt::send(&mut *w, Message::Close(Some(close_frame))).await;
+                    let _ =
+                        futures::SinkExt::send(&mut *w, Message::Close(Some(close_frame))).await;
                 })
                 .await;
             });

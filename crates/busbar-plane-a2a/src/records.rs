@@ -54,8 +54,7 @@ pub const KIND_TASK_EVENT: &str = "task_event";
 pub const SCHEMA_TASK: RecordSchemaId = RecordSchemaId::new(KIND_TASK);
 
 /// The task event rows: the hash-linked history behind each task.
-pub const SCHEMA_TASK_EVENT: RecordSchemaId =
-    RecordSchemaId::new(KIND_TASK_EVENT);
+pub const SCHEMA_TASK_EVENT: RecordSchemaId = RecordSchemaId::new(KIND_TASK_EVENT);
 
 /// The push-notification configurations a caller registered against a task.
 pub const SCHEMA_PUSH_CONFIG: RecordSchemaId = RecordSchemaId::new("push_config");

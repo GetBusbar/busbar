@@ -225,7 +225,6 @@ pub const ERROR_INFO_TYPE: &str = "type.googleapis.com/google.rpc.ErrorInfo";
 /// reason tokens above are the specification's vocabulary and the domain says so.
 pub const ERROR_INFO_DOMAIN: &str = "a2a-protocol.org";
 
-
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
 

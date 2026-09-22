@@ -636,7 +636,11 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
 
     // The pump ends, which is what the flag exists for.
     client
-        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after refusal"))
+        .write(
+            &client_conn,
+            StreamId(0),
+            ScratchBytes::new(b"after refusal"),
+        )
         .await
         .unwrap();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
@@ -738,7 +742,11 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_socket() {
 
     // The peer keeps writing, as a peer that has not yet read the refusal will.
     client
-        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after refusal"))
+        .write(
+            &client_conn,
+            StreamId(0),
+            ScratchBytes::new(b"after refusal"),
+        )
         .await
         .unwrap();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())

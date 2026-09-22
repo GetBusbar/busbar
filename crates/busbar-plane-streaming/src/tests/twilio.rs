@@ -118,7 +118,11 @@ enum Outcome {
 /// Decode one Twilio wire frame against `state`, over a fresh arena/transport/labels local to this
 /// call. `state` is the one thing carried BETWEEN calls — the session half a real connection would
 /// hold across frames — exactly what the `streamSid` binding this module is testing depends on.
-fn decode_one(plane: &StreamingPlane, state: &mut PlaneSessionState, json: &str) -> Result<Outcome, Decode> {
+fn decode_one(
+    plane: &StreamingPlane,
+    state: &mut PlaneSessionState,
+    json: &str,
+) -> Result<Outcome, Decode> {
     let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/twilio/inbound");
@@ -138,7 +142,11 @@ fn decode_one(plane: &StreamingPlane, state: &mut PlaneSessionState, json: &str)
 fn a_start_with_an_empty_stream_sid_refuses_the_whole_session_at_the_plane_entrypoint() {
     let plane = StreamingPlane::EMPTY;
     let mut state = fresh_twilio_state();
-    let result = decode_one(&plane, &mut state, &start_json("", "audio/x-mulaw", 8_000, 1));
+    let result = decode_one(
+        &plane,
+        &mut state,
+        &start_json("", "audio/x-mulaw", 8_000, 1),
+    );
     assert_eq!(
         result,
         Err(Decode::Malformed),

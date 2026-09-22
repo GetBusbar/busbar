@@ -9,8 +9,8 @@
 use super::*;
 use busbar_contract::unit::ConfigView;
 use busbar_contract::{
-    PlaneAlloc, PlaneAllocBudget, ScratchBytes as ContractScratchBytes, Plugin, Transport, TransportConfigView,
-    TransportMeta,
+    PlaneAlloc, PlaneAllocBudget, Plugin, ScratchBytes as ContractScratchBytes, Transport,
+    TransportConfigView, TransportMeta,
 };
 
 /// A trivial arena, leaking rather than tracking a budget: this crate's `encode_envelope` battery
@@ -245,9 +245,13 @@ async fn a_line_of_exactly_the_maximum_is_still_a_frame() {
     let t = StdioTransport::new();
     let (a, b) = pair(&t, 256 * 1024);
     let payload = vec![b'z'; crate::transport::MAX_LINE_BYTES];
-    t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&payload))
-        .await
-        .expect("a line of exactly the maximum byte count is still one frame");
+    t.write(
+        &a,
+        busbar_contract::StreamId(0),
+        ScratchBytes::new(&payload),
+    )
+    .await
+    .expect("a line of exactly the maximum byte count is still one frame");
 
     let mut frames = t.frames(b);
     let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())

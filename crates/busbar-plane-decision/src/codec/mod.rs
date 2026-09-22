@@ -15,7 +15,7 @@
 //! the whole document; `Ir::pointer()` is a read into a handful of declared members of it, and
 //! nothing this plane does discards or rewrites the rest.
 
-use busbar_contract::bounded::{PlaneAlloc, Ir};
+use busbar_contract::bounded::{Ir, PlaneAlloc};
 use busbar_contract::unit::Ctx;
 use busbar_contract::wire::Decode;
 

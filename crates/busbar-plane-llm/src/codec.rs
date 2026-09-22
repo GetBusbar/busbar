@@ -6,7 +6,7 @@
 //! units. What is here is the wiring, and it is meant to stay boring enough to check by eye.
 
 use busbar_contract::bounded::{
-    ScratchBytes, BoundedVec, FactValue, Facts, Ir, Span, MAX_RESPONSE_PTRS,
+    BoundedVec, FactValue, Facts, Ir, ScratchBytes, Span, MAX_RESPONSE_PTRS,
 };
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::grammar::{ArrivalLocation, Location};

@@ -32,7 +32,7 @@ use busbar_contract::transport::wire::FrameMeta;
 use busbar_contract::transport::wire::Listener;
 use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{
-    ScratchBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    Frame, Fut, Kind, Plugin, Refusal, ScratchBytes, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 use busbar_transport_http::HttpTransport;

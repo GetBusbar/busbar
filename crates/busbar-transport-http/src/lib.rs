@@ -84,7 +84,7 @@ use busbar_contract::transport::wire::TransportError;
 use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::{
-    ScratchBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    Frame, Fut, Kind, Plugin, Refusal, ScratchBytes, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 use bytes::Bytes;
