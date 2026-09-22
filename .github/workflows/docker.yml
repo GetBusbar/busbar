@@ -516,6 +516,63 @@ jobs:
           path: target/pgo/${{ matrix.target }}/release/busbar
           if-no-files-found: error
 
+      # ── plugin runtime libs: a property of THIS image, not of any one plugin ──────────────────
+      # `aarch64-unknown-linux-musl` drops `cdylib` output entirely under Rust's default
+      # (crt-static-on) linking — see the "VERIFIED FAILURE" writeup on the headroom-hook build
+      # step below for the full detail. The fix, `RUSTFLAGS="-C target-feature=-crt-static"`, is
+      # something EVERY plugin cdylib for that target needs, first-party or third-party, whichever
+      # of the 7 kinds (auth/secret/store/hook/plane/...) — not something specific to headroom. It
+      # switches the cdylib to dynamically link musl libc/libgcc_s/libstdc++, which a `FROM
+      # scratch` image otherwise has none of, so `dlopen()` fails at runtime with those libs
+      # missing regardless of which plugin is being loaded.
+      #
+      # crates/plugin-loader/src/lib.rs's `dlopen_on_worker` (dlopen_on_worker -> `libloading::
+      # Library::new`, which libloading's unix backend implements as `dlopen(path, RTLD_LAZY |
+      # RTLD_LOCAL)` — see libloading-0.9.0 src/os/unix/mod.rs) does no LD_LIBRARY_PATH override
+      # and no rpath manipulation, and nothing else in this repo (Dockerfile, docker/config.yaml,
+      # or the plugin-loader crate) sets one either. Resolution of the plugin's DT_NEEDED entries
+      # therefore falls through entirely to the dynamic linker's compiled-in default search path —
+      # `/lib` in a from-scratch image with no `/etc/ld-musl-*.path` to redirect it (confirmed by
+      # this repo's own history: an earlier Dockerfile revision shipped exactly
+      # `COPY plugins/${TARGETARCH}/lib/ /lib/` for this reason, before it was dropped as collateral
+      # damage when a since-removed first-party plugin stopped shipping pre-installed).
+      #
+      # Extracted HERE, from the base `rust:alpine@sha256:...` container alone — no plugin source
+      # is checked out or built for this step — so busbar's own core image never depends on any
+      # one plugin repo's availability or build health to get its runtime libs. Gated on
+      # `matrix.headroom` purely to run once per distinct musl target (true on exactly the amd64
+      # and arm64 legs — the two distinct `matrix.target` values; see the matrix comment above):
+      # that flag name predates this step and no longer describes it precisely, but introducing a
+      # second per-target matrix flag for one extraction step was judged not worth the wider diff.
+      #
+      # Same digest pin as the headroom-hook build below, and for the same reason — see that
+      # step's "PINNED BY DIGEST" comment. Never a floating tag on a release-path input.
+      - name: Extract musl plugin runtime libs (image property — independent of any one plugin build)
+        if: ${{ matrix.headroom }}
+        run: |
+          set -euo pipefail
+          mkdir -p plugin-runtime-libs
+          docker run --rm \
+            -v "$PWD/plugin-runtime-libs":/out \
+            rust:alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce sh -exc '
+              apk add --no-cache gcc g++
+              cp /usr/lib/libstdc++.so.6 /usr/lib/libgcc_s.so.1 /out/
+              cp /lib/libc.musl-*.so.1 /out/
+              chmod -R a+rwX /out
+            '
+          ls -l plugin-runtime-libs
+        shell: bash
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: ${{ matrix.headroom }}
+        with:
+          name: busbar-plugin-runtime-libs-${{ matrix.arch }}
+          path: |
+            plugin-runtime-libs/libstdc++.so.6
+            plugin-runtime-libs/libgcc_s.so.1
+            plugin-runtime-libs/libc.musl-*.so.1
+          if-no-files-found: error
+
       # ── headroom-hook: build + sign for this same musl target, so the image below can ship it
       # pre-installed (see the Dockerfile). Same first-party source repo and checkout as
       # .github/workflows/release.yml's hook-plugins job — see the comments there for the full
@@ -724,23 +781,33 @@ jobs:
           # headroom-hook, pre-installed into the image (see Dockerfile) — one signed tarball per arch,
           # built by build-binaries above. webrequest-hook is intentionally NOT bundled: see the
           # comment on the "headroom-hook" build steps in build-binaries for why.
+          # headroom-hook's signed tarball is staged here for CI-artifact continuity only — the
+          # Dockerfile no longer pre-installs any one plugin ("a plugin is a plugin"); nothing
+          # COPYs plugins/${arch}/busbar-headroom.tar.gz into the image.
           mv staged/busbar-headroom-amd64/busbar-headroom-amd64.tar.gz plugins/amd64/busbar-headroom.tar.gz
           mv staged/busbar-headroom-arm64/busbar-headroom-arm64.tar.gz plugins/arm64/busbar-headroom.tar.gz
-          # Runtime libs the plugin cdylib needs at dlopen time (musl libc/libgcc_s/libstdc++, built
-          # in the SAME musl-native container as the plugin — see build-binaries' "Build headroom-hook
-          # cdylib..." step for why these are required and how this was verified end to end).
-          mv staged/busbar-headroom-libs-amd64/* plugins/amd64/lib/
-          mv staged/busbar-headroom-libs-arm64/* plugins/arm64/lib/
+          # Runtime libs ANY dynamically-linked (`-crt-static` disabled) plugin cdylib needs at
+          # dlopen() time — musl libc/libgcc_s/libstdc++, extracted from the pinned rust:alpine
+          # container alone by build-binaries' "Extract musl plugin runtime libs" step,
+          # independent of any one plugin's build (see that step for the full rationale). The
+          # Dockerfile COPYs this into the image at /lib, the dynamic linker's compiled-in default
+          # search path — this is a property of the IMAGE, not of headroom or any other plugin.
+          mv staged/busbar-plugin-runtime-libs-amd64/* plugins/amd64/lib/
+          mv staged/busbar-plugin-runtime-libs-arm64/* plugins/arm64/lib/
           # armv8.0 compat image: its OWN build context directory, mirroring exactly what the
-          # Dockerfile COPYs (Dockerfile + providers.yaml + docker/config.yaml + the binary),
-          # with the BASELINE binary sitting at binaries/arm64/ — the same TARGETARCH path the
-          # unmodified Dockerfile reads, so the compat image is the same image in every respect
-          # except which arm64 binary it carries.
-          mkdir -p compat-armv8.0/binaries/arm64 compat-armv8.0/docker
+          # Dockerfile COPYs (Dockerfile + providers.yaml + docker/config.yaml + the binary +
+          # plugins/arm64/lib), with the BASELINE binary sitting at binaries/arm64/ — the same
+          # TARGETARCH path the unmodified Dockerfile reads, so the compat image is the same image
+          # in every respect except which arm64 binary it carries. The runtime libs are the SAME
+          # arm64 bytes as the default image's (same `aarch64-unknown-linux-musl` target, same
+          # pinned rust:alpine container — the armv8.0 leg doesn't rebuild them, see the matrix
+          # comment above), just copied into this separate build context too.
+          mkdir -p compat-armv8.0/binaries/arm64 compat-armv8.0/docker compat-armv8.0/plugins/arm64/lib
           mv staged/busbar-arm64-armv8.0/busbar compat-armv8.0/binaries/arm64/busbar
           chmod +x compat-armv8.0/binaries/arm64/busbar
           cp Dockerfile providers.yaml compat-armv8.0/
           cp docker/config.yaml compat-armv8.0/docker/config.yaml
+          cp plugins/arm64/lib/* compat-armv8.0/plugins/arm64/lib/
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
