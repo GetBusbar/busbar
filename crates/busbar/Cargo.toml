@@ -115,7 +115,7 @@ busbar-plane-llm = { path = "../busbar-plane-llm" }
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 busbar-plane-voice = { path = "../busbar-plane-voice" }
-busbar-plane-admin = { path = "../busbar-plane-admin" }
+busbar-core-admin = { path = "../busbar-core-admin" }
 # The seven transports. Composition is an edge that does not exist as a Cargo dependency — a
 # transport may not name the layer beneath it — so the root supplies each composing transport its
 # lower layer as a constructor argument, which is why every one of them is named here.
