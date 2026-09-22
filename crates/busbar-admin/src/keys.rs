@@ -1477,17 +1477,25 @@ pub(crate) async fn rotate_key(
         resource: &resource,
         actor: &actor,
     };
+    if let Some(resp) = reject_overlong_id(who, &id) {
+        return resp;
+    }
     // IDEMPOTENT ROTATE (optional `Idempotency-Key`): rotate is the one other
     // destructive, secret-bearing POST — a network-level retry without this mints TWICE and the
     // first (lost) response's secret is silently dead. Same mechanics as create's idempotent mint
     // (principal-scoped cache + in-flight reservation), with the cache key additionally scoped by
     // operation + key id so a create and a rotate sharing a header value can never replay each
-    // other's response.
+    // other's response. Built through `verbs::rotate_replay_key` rather than a raw
+    // `format!("rotate:{id}:{k}")`: `id` and `k` are both caller-controlled free text, and an
+    // unescaped colon join lets two DIFFERENT `(id, k)` pairs produce the SAME string (e.g.
+    // `id="x", k="b:c"` and `id="x:b", k="c"` both join to `"rotate:x:b:c"`), which would let one
+    // caller be served another's cached (and secret-bearing) rotate response. The length-prefixed
+    // encoding `rotate_replay_key` uses makes every such join unambiguous.
     let idem_ckey: Option<(String, String)> = headers
         .get(IDEMPOTENCY_KEY_HEADER)
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty())
-        .map(|k| (actor.clone(), format!("rotate:{id}:{k}")));
+        .map(|k| (actor.clone(), crate::verbs::rotate_replay_key(&id, k)));
     if let Some(ref ck) = idem_ckey {
         let now = busbar_kernel::store::now();
         let mut cache = app

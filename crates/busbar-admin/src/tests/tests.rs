@@ -2572,6 +2572,119 @@ async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete(
     handle.abort();
 }
 
+/// SECURITY REGRESSION: rotate's idempotency cache key used to be built by an UNESCAPED colon
+/// join of two caller-controlled strings — the `{id}` path segment and the `Idempotency-Key`
+/// header, `format!("rotate:{id}:{k}")`. Two DIFFERENT `(id, header)` pairs can join to the
+/// IDENTICAL string: `id="{victim_id}", header="b:c"` and `id="{victim_id}:b", header="c"` both
+/// produce `"rotate:{victim_id}:b:c"`. Because the idempotency cache lookup happens BEFORE the
+/// governance existence check, a caller who names the colliding (nonexistent) id is answered from
+/// the OTHER pair's cache entry — served a stranger's freshly-rotated secret — without ever
+/// holding a valid id of their own. Fixed by routing through `verbs::rotate_replay_key`, which
+/// length-prefixes each half so no two distinct pairs can join to the same string.
+#[tokio::test]
+async fn test_admin_v1_rotate_idempotency_cache_key_does_not_collide_across_colon_joined_ids() {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let (addr, handle) = serve_with_gov(gov).await;
+    let client = reqwest::Client::new();
+    let keys_url = format!("http://{addr}/api/v1/admin/keys");
+
+    // Mint the "victim" key.
+    let created: serde_json::Value = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "victim"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let victim_id = created["id"].as_str().unwrap().to_string();
+    assert!(
+        !victim_id.contains(':'),
+        "a real minted key id is not expected to contain a colon; if that ever changes this \
+         test's crafted collision needs revisiting: {victim_id}"
+    );
+
+    // The victim rotates with an Idempotency-Key that itself contains a colon — a legitimate, if
+    // unusual, client-chosen token (e.g. a compound "region:reqid" value). The OLD join computes
+    // `rotate:{victim_id}:b:c` for this call.
+    let victim_header = "b:c";
+    let victim_resp: serde_json::Value = client
+        .post(format!("{keys_url}/{victim_id}/rotate"))
+        .header("x-admin-token", "admintok")
+        .header("idempotency-key", victim_header)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let victim_token = victim_resp["token"]
+        .as_str()
+        .filter(|t| !t.is_empty())
+        .expect("victim rotate must return a real, non-empty token")
+        .to_string();
+
+    // The COLLIDING request: an id that does NOT exist at all (`{victim_id}:b`), paired with
+    // header `c`. Under the vulnerable join this computes the IDENTICAL cache key string as the
+    // victim's call above. If the collision is live, this request never reaches governance at
+    // all — it is answered straight from the victim's cache entry, a 200 carrying the VICTIM's
+    // token, even though the id named here is not a real key and would 404 entirely on its own.
+    let colliding_id = format!("{victim_id}:b");
+    let colliding_header = "c";
+    let colliding = client
+        .post(format!("{keys_url}/{colliding_id}/rotate"))
+        .header("x-admin-token", "admintok")
+        .header("idempotency-key", colliding_header)
+        .send()
+        .await
+        .unwrap();
+    let status = colliding.status().as_u16();
+    let body: serde_json::Value = colliding.json().await.unwrap_or(serde_json::Value::Null);
+    // Identity check ONLY — never interpolate `body`/the token itself into an assertion message,
+    // or a failed assertion would print the secret material into test output.
+    let colliding_returned_victim_token =
+        body.get("token").and_then(|t| t.as_str()) == Some(victim_token.as_str());
+
+    // SAFE behavior: the two pairs must map to DIFFERENT cache entries, so the colliding request
+    // is judged on its own (nonexistent) id and never carries the victim's token.
+    assert!(
+        !colliding_returned_victim_token,
+        "a request naming a DIFFERENT (id, Idempotency-Key) pair must never be served another \
+         key's cached rotate response, even when the two pairs collide under an unescaped colon \
+         join (status={status})"
+    );
+    assert_eq!(
+        status, 404,
+        "the colliding id does not name a real key and must 404 on its own merits, not be \
+         answered from the victim's cache entry"
+    );
+
+    // ORDINARY CASE, unbroken by the fix: the SAME (id, Idempotency-Key) pair still replays the
+    // cached response — idempotency itself must keep working.
+    let replay: serde_json::Value = client
+        .post(format!("{keys_url}/{victim_id}/rotate"))
+        .header("x-admin-token", "admintok")
+        .header("idempotency-key", victim_header)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let replay_matches_victim_token =
+        replay.get("token").and_then(|t| t.as_str()) == Some(victim_token.as_str());
+    assert!(
+        replay_matches_victim_token,
+        "the SAME (id, Idempotency-Key) pair must still replay the original rotation verbatim"
+    );
+
+    handle.abort();
+}
+
 /// `PUT /api/v1/admin/hooks/{name}`: replaces an overlay hook live; 404 for an unknown name;
 /// 409 for a grant change (immutability) and for a stale If-Match.
 #[tokio::test]
@@ -11317,6 +11430,14 @@ async fn drive_keys_error_surface() {
             None,
         ),
         // ── POST /keys/{id}/rotate ────────────────────────────────────────────────────────────
+        c(
+            "rotate_overlong_id",
+            KeysFixture::Signing,
+            "POST",
+            "/keys/{overlong}/rotate",
+            &[],
+            None,
+        ),
         c(
             "rotate_unknown",
             KeysFixture::Signing,

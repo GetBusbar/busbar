@@ -88,7 +88,7 @@ pub const MAX_GROUP_NAME_LEN: usize = 256;
 ///
 /// The lengths are BYTE lengths, not character counts: the key is compared as bytes, and a count of
 /// characters would put the boundary somewhere other than where the reader would find it.
-fn rotate_replay_key(id: &str, header: &str) -> String {
+pub(crate) fn rotate_replay_key(id: &str, header: &str) -> String {
     format!("rotate:{}:{}:{}:{}", id.len(), id, header.len(), header)
 }
 
