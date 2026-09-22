@@ -1541,6 +1541,57 @@ side; a careless "keep the correctly-named one" deletes the working plane. It al
 Do the folds **after** the current fix wave lands, not during: these are whole-crate moves and they
 will conflict with every in-flight edit.
 
+## Survivor review — transport hardening that was audited, then lost
+
+Seven `codeaudit-fix/transport-*` branches reviewed against trunk. **Six are LOST, one superseded.**
+These came from a code audit, so they are disproportionately real hardening — bounds, refusals,
+parser limits — and that is exactly the class that goes missing quietly and is noticed only when
+exploited. Ranked:
+
+**HIGH — grpc silently ignores the operator's configured message cap.**
+`busbar-transport-grpc/src/codec.rs:24` hardcodes `MAX_MESSAGE_BYTES = 4 MiB` and applies it
+unconditionally at `client.rs:123` and `server.rs:130`. `busbar-transport-ws` DOES read the operator
+key `limits.request_body_max_bytes` (`transport.rs:110`); grpc has zero references to it. So an
+operator who sets that key expecting it to bound every transport gets a grpc listener still accepting
+4 MiB per message — a silently-larger attack surface on a deployment they believe is capped. The
+inconsistency is the danger: the knob works where you test it and not where you don't.
+
+**MEDIUM — the http egress forwards a request-smuggling shape instead of refusing it.**
+`busbar-transport-http/src/lib.rs:1470` `complete_message()` refuses a non-chunked
+`Transfer-Encoding` but NOT the chunked-body + `Content-Length` co-presence case — which the INGRESS
+reader already refuses. It de-chunks, rebuilds with both framing headers stripped, and forwards a
+quietly-disambiguated message downstream. Two headers naming two different lengths for one body is
+the canonical smuggling primitive; resolving the ambiguity and passing it on is worse than refusing,
+because the next hop may resolve it the other way.
+
+**MEDIUM — a TLS truncation attack is indistinguishable from a clean close.**
+`busbar-transport-tls/src/lib.rs:387-392` `map_session_err` has no `io::ErrorKind::UnexpectedEof`
+arm, so it falls through to `TransportError::Closed` — the identical value an orderly
+`close_notify` shutdown produces. A peer that drops the TCP stream mid-session is reported exactly
+like an honest close, erasing the one signal that distinguishes "the exchange finished" from "it was
+cut off, possibly hiding truncated content." One match arm.
+
+**LOW — billing-honesty test coverage exists for 2 of 7 transports.**
+`frame_meta_honesty_catches_inflating_and_deflating_fixtures` exists only in
+`busbar-transport-sse` and `busbar-transport-tcp`. grpc, http, stdio, tls and ws have no red-capable
+fixture proving `FrameMeta.bytes` — **a billing figure** — cannot drift from the real payload size.
+A metering bug in any of those five would ship undetected. Given tonight's float-count defect, a
+money quantity with no red-capable test in five of seven transports deserves more weight than "LOW"
+suggests.
+
+**LOW — two SSE parsing edge cases.** `proto.rs:110,127`: `SSE_FIELDS` is colon-suffixed and matched
+with `starts_with`, so a legal bare field-name line is dropped as a comment while `datastream:` is
+wrongly admitted as a field; `proto.rs:153` over-trims `event_type` where the grammar strips only one
+leading space.
+
+**Superseded:** `transport-ws` (base) — its PoisonGuard fence, `with_max_message_bytes` and the loud
+panic on concurrent `frames()` are all landed verbatim.
+
+**On Autobahn, answered explicitly:** `transport-conformance-skeleton` does NOT hold an Autobahn
+harness. Its `tests/conformance.rs` is a trait-shape battery and never mentions Autobahn or fuzzing.
+The real harness is `testing/ws-conformance/`, now buildable but still with **zero coverage and no
+verdict** — closing that needs a real Docker run, not a branch revival.
+
 ## PARKED — CRITICAL: the budget cap is bypassed on every restart
 
 **Found by the survivor-branch review of `origin/r5-money-m3`. This is the single most serious
