@@ -2115,7 +2115,6 @@ jobs:
   # feature-covered: busbar-mcp/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
-  # feature-covered: busbar-plugin-testkit/store -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-admin with the feature named
   # feature-covered: busbar-contract/dispatch -- check -- reached from busbar-substrate-values/dispatch in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
   # feature-covered: busbar-contract/runtime -- check -- reached from busbar-substrate-values/runtime in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
@@ -3323,30 +3322,39 @@ jobs:
     # goes green and the list is stale. So this job can block without blocking on the standing work.
     outputs:
       verdict: ${{ steps.verdict.outputs.verdict }}
+    # THE BASE `ceiling-rose` MEASURES AGAINST, STATED RATHER THAN GUESSED.
+    #
+    # On a `push` this is EMPTY, and empty means absent: the gate derives the base itself as the
+    # remote tip of the line HEAD is on, which on a push checkout is this branch at the commit
+    # before the pushed one — exactly "what this push changed".
+    #
+    # On a `pull_request` there is no line to derive from: `actions/checkout` leaves HEAD DETACHED
+    # at `refs/remotes/pull/N/merge`, so `git symbolic-ref HEAD` fails and the gate refuses to
+    # invent a base (it is RED, never a silent fall-back — see ceilings.rs::base_ref). The honest
+    # base for a PR is the commit it would merge into, which GitHub already knows, so it is passed
+    # in rather than reconstructed. `fetch-depth: 0` is what makes that sha present in the clone.
+    env:
+      XTASK_CEILING_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # THE `ceiling-rose` ROW READS HISTORY. It compares every integer in qa/construction.toml
-          # and qa/kind-isolation.toml against the same integer at this branch's base, which it
-          # resolves as the merge-base with the integration line (or HEAD~1 where that is HEAD). A
-          # shallow clone has neither, and the row is RED when it cannot establish a base — a
-          # ratchet that switches itself off on the runner where it is cheapest to switch off is not
-          # a ratchet. So the history is fetched.
+          # and qa/kind-isolation.toml against the same integer at this branch's base. A shallow
+          # clone has no history to compare against, and the row is RED when it cannot establish a
+          # base — a ratchet that switches itself off on the runner where it is cheapest to switch
+          # off is not a ratchet. So the history is fetched.
           #
-          # `fetch-depth: 0` ONLY DEEPENS THIS RUN'S OWN REF. It does not fetch the integration
-          # line's branch itself into `refs/remotes/origin/*` — that needs the explicit fetch step
-          # below, the same one `ship-ready` and `gate-mutants.yml` already carry. Without it,
-          # `INTEGRATION_REF` never resolves in this job specifically, and — before this file's
-          # DEFECT 1 fix — the gate silently measured one commit instead of the whole branch on
-          # every run of exactly the check named `construction gate (…)` in branch protection.
+          # `fetch-depth: 0` ALSO DEEPENS `refs/remotes/origin/<branch>`, which is what the gate
+          # derives its base from on a push, and makes the PR's base sha reachable on a
+          # `pull_request`. It used to be paired with an explicit fetch of `predev`, because the
+          # gate measured against a merge-base with that branch; it no longer does. `predev` had
+          # DIVERGED — 88 commits ahead of a 178-commit-old fork point — and the row was reporting
+          # four days of the whole team's ceiling movement as the pushed commit's own raises, which
+          # is the second time a hardcoded branch name in that constant silently mismeasured this
+          # gate. The base is derived from the checkout now; there is no branch name to keep
+          # fetching. (`gate-mutants.yml` still fetches `predev` for `GM_DEFAULT_BASE`, which is a
+          # different instrument with a different base and is unaffected.)
           fetch-depth: 0
-      - name: Fetch the line the branch is measured against
-        # See the identical step in the `ship-ready` job below for the full rationale (predev,
-        # BUSBAR-1.6.0.md Part 2 #67, and why the fetch is resilient but the gate itself is not).
-        run: |
-          git fetch --no-tags --quiet origin +refs/heads/predev:refs/remotes/origin/predev || \
-            echo "::warning::could not fetch origin/predev -- INTEGRATION_REF will not resolve, \
-          and ceiling-rose now goes RED rather than silently falling back to HEAD~1"
       - name: Construction gate self-test (every rule proves it sees its planted violation)
         # THE HANG CEILING IS A CEILING, NOT A BUDGET, AND THIS SELF-TEST IS LEGITIMATELY LONG.
         # `gates::DEFAULT_GATE_CEILING` is 300s, which is the right number for a gate RUN and the
@@ -3435,24 +3443,18 @@ jobs:
     runs-on: latchkey-large
 
     timeout-minutes: 30
+    # The same base `construction-gate` uses, for the same reason — this job mirrors that gate's
+    # `ceiling-rose` row (`ship-ready:ceiling-rose`), so it has to measure against the same commit
+    # or the two would disagree about whether a ceiling rose. See that job's comment.
+    env:
+      XTASK_CEILING_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Full history: `ceiling-rose` compares against a base commit, and a shallow clone has
+          # none. The explicit `predev` fetch that used to stand here is GONE with the hardcoded
+          # branch name it served — see the `construction-gate` job for why that base was wrong.
           fetch-depth: 0
-      - name: Fetch the line the branch is measured against
-        # `ceiling-rose` (xtask/src/gates/construction/ceilings.rs::INTEGRATION_REF) and the
-        # mutation verdict (scripts/gate-mutants.sh::GM_DEFAULT_BASE) are both measured against the
-        # merge-base with `predev`, the permanent WIP branch every repo's in-flight work lands on
-        # and forks from (BUSBAR-1.6.0.md Part 2 #67). RESILIENT ON PURPOSE: a `git fetch` that cannot find
-        # the ref (network blip, the ref moved again, a checkout with a stale remote) must not crash
-        # this job outright -- the gate can still render an honest verdict once it runs. But it must
-        # not go quiet either: `base_ref()` treats an unresolved ref as RED, never as "nothing
-        # changed" (see ceilings.rs), so a failed fetch here surfaces downstream as a real red row
-        # instead of a raw `git` exit 128 that says nothing about the tree.
-        run: |
-          git fetch --no-tags --quiet origin +refs/heads/predev:refs/remotes/origin/predev || \
-            echo "::warning::could not fetch origin/predev -- INTEGRATION_REF will not resolve, \
-          and ceiling-rose / the mutation base now go RED rather than silently falling back to HEAD~1"
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
         uses: ./.github/actions/cargo-home

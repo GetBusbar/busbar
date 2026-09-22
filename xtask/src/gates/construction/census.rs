@@ -151,9 +151,9 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
 
     // ── the floors themselves, against the base ──────────────────────────────────────────────────
     if let Ok(base) = base_ref(cx) {
-        if let Ok(was) = cx.git_show(&base, CEILINGS) {
+        if let Ok(was) = cx.git_show(&base.sha, CEILINGS) {
             if let Ok(doc) = crate::toml_doc::parse_str(&was) {
-                bad.extend(lowered_floors(&cfg.doc, &doc, &base[..base.len().min(10)]));
+                bad.extend(lowered_floors(&cfg.doc, &doc, base.short()));
             }
         }
     }

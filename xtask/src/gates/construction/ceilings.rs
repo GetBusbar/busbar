@@ -40,38 +40,37 @@ use crate::gates::construction::{CEILINGS, SURFACE};
 /// across two gates would give a landing that edits both a row in each and a reader neither.
 pub const KIND_CEILINGS: &str = "qa/kind-isolation.toml";
 
-/// The line the branch is measured against. The merge-base with it is the BASE.
+/// THE BASE IS NOT A HARDCODED BRANCH NAME ANY MORE, AND THAT IS THE WHOLE POINT.
 ///
-/// `predev`, NOT `dev` AND NOT WHATEVER BRANCH THIS FILE HAPPENS TO BE CHECKED OUT ON. The former
-/// value here, `origin/integration/oracle-phase0`, was the phase-0 integration line; it was renamed
-/// to `delete/integration/oracle-phase0` and stopped resolving, and because [`base_ref`] used to
-/// treat "does not resolve" as "fall back to HEAD~1" (see its history), every row that reads this
-/// constant silently started measuring one commit instead of the whole branch, on every push, with
-/// nothing red to say so — exactly the failure `ceiling_rose`'s own doc comment already disclaimed.
+/// This constant used to be one. It was `origin/integration/oracle-phase0`, which was renamed to
+/// `delete/integration/oracle-phase0` and stopped resolving; [`base_ref`] treated "does not
+/// resolve" as "fall back to `HEAD~1`" and every row that read it silently measured one commit
+/// instead of a branch. The repair was to name a different fixed branch, `origin/predev`, on the
+/// reasoning that it is "the ref every in-flight branch forks from and lands back on". That
+/// reasoning is sound for a FORK-AND-LAND branch and it was wrong here, measurably:
 ///
-/// The replacement has to be the ref every in-flight branch forks from and lands back on, because
-/// that is the only thing that makes `merge-base(HEAD, ref)` mean "where did THIS branch's work
-/// start" rather than "where did the whole team's work start":
-/// * `predev` is exactly that ref — BUSBAR-1.6.0.md Part 2 #67 (owner-locked): "`predev` is the permanent WIP
-///   branch; `dev` is release-train-write-only... All work-in-progress lands on `predev` in every
-///   repo." Measured on this very branch the day this was written: merge-base with `predev` is 77
-///   commits back; merge-base with `dev` is 2 421 commits back, three weeks earlier.
-/// * `origin/dev` is disqualified for that reason: the release train, not individual branches,
-///   writes it (#32, #67), so it is promoted rarely and a branch's merge-base with it is commonly
-///   thousands of commits and weeks stale — comparing against it would report the WHOLE team's
-///   accumulated ceiling movement as "this branch's work", which is not what `ceiling-rose` claims
-///   to measure.
-/// * The branch this constant's own file happens to live on (`consolidated/1.6.0` at the time of
-///   writing) is disqualified for a sharper reason: it is not a fixed line at all, it is itself one
-///   more branch that other work merges INTO. A gate running there would compute
-///   `merge-base(HEAD, HEAD)`, fall straight into the `mb == head` arm of [`base_ref`], and silently
-///   measure only `HEAD~1` — the exact shim [`base_ref`]'s doc comment names as correct ONLY for the
-///   integration line itself, not for every branch that happens to be checked out when the gate
-///   runs.
+/// * `origin/predev` last moved three days before this was written and had DIVERGED — 88 commits on
+///   it that HEAD does not carry — so `merge-base(HEAD, origin/predev)` was a fork point 178
+///   commits and four days in the past.
+/// * The branch the work is actually on, `consolidated/1.6.0`, is not a fork of predev that will be
+///   merged back as a unit. It is a SHARED LINE that roughly eighteen agents commit directly onto.
+///   So `merge-base..HEAD` was not "this change" — it was four days of the whole team's work, and
+///   `ceiling-rose` reported every ceiling any of them had moved as an undeclared raise of the
+///   commit in front of it.
+/// * Worse, the `[gate.ceiling_raises]` transaction stopped working. Its own doc ([`raises`]) says
+///   a declaration "EXPIRES BY ITSELF, because the moment its commit lands the base carries the new
+///   number". Against a base that never advances, nothing ever expires and every raise must be
+///   declared from a four-day-old number instead of the one it actually moved.
 ///
-/// `predev` is the one ref that is (a) permanent, (b) upstream of every WIP branch, and (c) never
-/// itself the branch under test.
-pub const INTEGRATION_REF: &str = "origin/predev";
+/// So the base is DERIVED FROM THE CHECKOUT: the remote tip of the line `HEAD` is on, and `HEAD~1`
+/// when `HEAD` already is that tip. That is the ref that cannot go stale, because it is not a name
+/// anybody has to remember to update — rename the branch and the derivation renames with it, which
+/// is the failure mode this constant has now had twice. See [`base_ref`].
+///
+/// [`BASE_ENV`] overrides it for a caller that genuinely knows better (CI measuring a merge target,
+/// a self-test pointing at a planted ref). An override that does not resolve is RED like any other
+/// base that cannot be established — it is not a way to turn the ratchet off.
+pub const BASE_ENV: &str = "XTASK_CEILING_BASE";
 
 pub const ROW_ROSE: &str = "ceiling-rose";
 pub const ROW_SLACK: &str = "ceiling-slack";
@@ -349,52 +348,165 @@ pub fn set_int(text: &str, table: &str, key: &str, value: i64) -> Option<String>
 
 // ── ceiling-rose ─────────────────────────────────────────────────────────────────────────────────
 
-/// THE BASE THIS BRANCH IS MEASURED AGAINST.
+/// THE BASE, AND THE DERIVATION THAT PRODUCED IT.
 ///
-/// The merge-base with the integration line, because that is the commit the branch's own edits are
-/// diffed from; and `HEAD~1` when the merge-base IS `HEAD`, which is the case on the integration
-/// line itself, where "what this branch changed" is what the last commit changed.
+/// `how` is not decoration. The bug this type exists to prevent was never a base that was WRONG in
+/// a way anybody could see — it was a base that was UNSAID. `ceiling-rose` printed "the base
+/// dc7bb323" and nothing anywhere printed which ref that came from or how far back it was, so a
+/// ref that had stopped resolving, and later a ref that had gone four days stale, both read exactly
+/// like a working gate. Every row that establishes a base now states the derivation in its own
+/// detail, so "measuring the wrong thing" is a sentence a reader can disagree with.
+#[derive(Debug, Clone)]
+pub struct Base {
+    /// The commit itself.
+    pub sha: String,
+    /// How it was arrived at, in words, for the row detail.
+    pub how: String,
+}
+
+impl Base {
+    /// The abbreviated sha every finding quotes.
+    pub fn short(&self) -> &str {
+        &self.sha[..8.min(self.sha.len())]
+    }
+}
+
+impl std::fmt::Display for Base {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.sha)
+    }
+}
+
+/// THE BASE THIS RUN IS MEASURED AGAINST: the remote tip of the line `HEAD` is on, or `HEAD~1` when
+/// `HEAD` already is that tip.
 ///
-/// AN UNRESOLVABLE REF IS RED, NEVER A SILENT FALL-BACK. This function used to guard the merge-base
-/// lookup with `if cx.git_ref_resolves(INTEGRATION_REF)` and fall through to the `HEAD~1` case on
-/// `false` — the same shim reserved for "HEAD is the integration line" — which meant a ref that
-/// stopped resolving (a rename, a fetch nobody wired up, a shallow clone) read exactly like "this
-/// commit's parent is the whole branch's base" and every caller measured one commit instead of the
-/// branch. That is precisely what [`ceiling_rose`]'s own doc comment disclaims: "a base that cannot
-/// be established is RED, never green." So the two cases are no longer conflated: a ref that does
-/// not resolve, or that resolves but yields no merge-base, is `Err` and stops here; only a merge-base
-/// that resolves AND equals `HEAD` — the one legitimate "we are standing on the integration line"
-/// case — falls back to `HEAD~1`.
-pub fn base_ref(cx: &Ctx) -> Result<String, String> {
+/// WHY THE LINE'S OWN REMOTE TIP AND NOT A NAMED UPSTREAM. See [`BASE_ENV`] for the history; the
+/// short form is that `merge-base(HEAD, <some fixed branch>)` answers "where did this branch fork"
+/// and that is only the right question when HEAD is a fork. Every place this gate actually runs, it
+/// is not: CI runs it on a pushed branch, and the agents run it on a shared integration line they
+/// commit directly onto. In both, the unit of judgement is the COMMIT — which is exactly what
+/// `[gate.ceiling_raises]` already says it is ("in the same commit as the change", expiring by
+/// itself the moment that commit lands) — and the commits under judgement are precisely the ones
+/// this checkout has that the line's remote tip does not.
+///
+/// THE FOUR WAYS THIS RETURNS RED, none of which used to be red:
+/// 1. `HEAD` is detached and no [`BASE_ENV`] was given, so there is no line to take a tip from.
+/// 2. The ref does not resolve — a rename, an unfetched remote, a shallow clone. This is the
+///    original failure: it used to fall through to `HEAD~1` and measure one commit forever.
+/// 3. `git merge-base` prints nothing: unrelated histories.
+/// 4. THE REF HAS DIVERGED FROM `HEAD` — the merge-base is neither `HEAD` nor the ref's own tip, so
+///    the ref carries commits `HEAD` does not and the merge-base is a fork point in the past. This
+///    is the second failure, and it is the generalisation of the first: a base that RESOLVES can
+///    still be unestablishable. `origin/predev` was 88 commits ahead of a 178-commit-old fork
+///    point, and the gate reported four days of the whole team's ceiling movement as the work of
+///    the commit in front of it. "Cannot be established" has to mean this too, or the next stale
+///    ref is as silent as the last one.
+///
+/// Only case (4)'s complement — the merge-base IS the ref's tip, or IS `HEAD` — is a base, and in
+/// both the span it names is a contiguous run of commits every one of which is on this line.
+pub fn base_ref(cx: &Ctx) -> Result<Base, String> {
     let head = cx.git(&["rev-parse", "HEAD"])?.trim().to_string();
-    if !cx.git_ref_resolves(INTEGRATION_REF) {
+    let (r, why) = base_line(cx)?;
+    if !cx.git_ref_resolves(&r) {
         return Err(format!(
-            "the base ref '{INTEGRATION_REF}' does not resolve in this checkout -- fetch it (see \
-             the workflow steps that fetch it before this gate runs), because a base that cannot \
-             be established is RED, never a silent fall-back to the last commit"
+            "the base ref '{r}' does not resolve in this checkout -- fetch it, push this line, or \
+             set {BASE_ENV}. A base that cannot be established is RED, never a silent fall-back to \
+             the last commit"
         ));
     }
     let mb = cx
-        .git(&["merge-base", "HEAD", INTEGRATION_REF])
-        .map_err(|e| {
-            format!("'{INTEGRATION_REF}' resolves but HEAD has no merge-base with it: {e}")
-        })?
+        .git(&["merge-base", "HEAD", &r])
+        .map_err(|e| format!("'{r}' resolves but HEAD has no merge-base with it: {e}"))?
         .trim()
         .to_string();
     if mb.is_empty() {
         return Err(format!(
-            "'{INTEGRATION_REF}' resolves but `git merge-base` printed nothing -- unrelated \
-             histories, most likely"
+            "'{r}' resolves but `git merge-base` printed nothing -- unrelated histories, most \
+             likely"
         ));
     }
     if mb == head {
-        // HEAD IS the integration line itself: "what this branch changed" is what the last
-        // commit changed.
-        return cx
-            .git(&["rev-parse", "HEAD~1"])
-            .map(|s| s.trim().to_string());
+        // HEAD IS the tip of its own line: "what is under judgement here" is the last commit.
+        let sha = cx.git(&["rev-parse", "HEAD~1"])?.trim().to_string();
+        return Ok(Base {
+            sha,
+            how: format!("HEAD~1, because HEAD is at or behind {r} ({why})"),
+        });
     }
-    Ok(mb)
+    let tip = cx
+        .git(&["rev-parse", &format!("{r}^{{commit}}")])?
+        .trim()
+        .to_string();
+    if mb != tip {
+        let (ahead, behind) = (
+            cx.git(&["rev-list", "--count", &format!("{mb}..{head}")])
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            cx.git(&["rev-list", "--count", &format!("{mb}..{tip}")])
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+        );
+        return Err(format!(
+            "'{r}' has DIVERGED from HEAD: their merge-base {} is {ahead} commit(s) behind HEAD \
+             and {behind} commit(s) behind '{r}', so it is a fork point in the past rather than \
+             this line's base. Measuring against it would report every ceiling anyone moved in \
+             those {ahead} commits as this change's own raise. Rebase onto '{r}', fetch it, or set \
+             {BASE_ENV}. A base that cannot be established is RED, never a silent fall-back",
+            &mb[..8.min(mb.len())]
+        ));
+    }
+    let ahead = cx
+        .git(&["rev-list", "--count", &format!("{mb}..{head}")])
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Ok(Base {
+        sha: mb,
+        how: format!("{why}, {ahead} commit(s) behind HEAD"),
+    })
+}
+
+/// THE REF [`base_ref`] WILL MEASURE AGAINST, and the words for how it was chosen — resolved or
+/// not, merge-based or not.
+///
+/// Separate from [`base_ref`] so the self-test can ask which ref this checkout would use and then
+/// plant THAT ref as unresolvable. The alternative is a case that hardcodes a branch name, which is
+/// the same mistake as the constant this function replaced: it would prove the arm on the machine
+/// it was written on and quietly stop exercising it everywhere else.
+pub fn base_line(cx: &Ctx) -> Result<(String, String), String> {
+    if let Some(r) = base_override() {
+        let why = format!("{BASE_ENV}={r}");
+        return Ok((r, why));
+    }
+    let branch = cx
+        .git(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .map_err(|_| {
+            format!(
+                "HEAD is detached, so there is no line to take a remote tip from and no base can \
+                 be derived. Set {BASE_ENV} to the commit this checkout should be measured \
+                 against. A base that cannot be established is RED, never a silent fall-back to \
+                 the last commit."
+            )
+        })?
+        .trim()
+        .to_string();
+    let r = format!("origin/{branch}");
+    let why = format!("the remote tip of the line HEAD is on, {r}");
+    Ok((r, why))
+}
+
+/// [`BASE_ENV`], trimmed, with an empty value read as absent.
+///
+/// A direct `std::env::var` rather than a field on [`Ctx`]'s environment struct because this is an
+/// ESCAPE HATCH for a caller who knows better, not a mode the gate has: nothing in the ordinary run
+/// sets it, and an override that does not resolve is refused by [`base_ref`] like any other base.
+fn base_override() -> Option<String> {
+    std::env::var(BASE_ENV)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// No ceiling in either qa ceilings file is higher than it was at the base.
@@ -446,7 +558,7 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
                 continue;
             }
         };
-        let was = match cx.git_show(&base, file) {
+        let was = match cx.git_show(&base.sha, file) {
             Ok(t) => t,
             // A file the base did not carry is a file this branch ADDED; every number in it is new
             // and none of them rose.
@@ -503,12 +615,12 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
                 "{key}: a declared raise {} -> {} that is not a raise at the base {}. Either the                  commit that needed it has landed — strike the entry — or it names a ceiling that                  never moved.",
                 r.from,
                 r.to,
-                &base[..8.min(base.len())]
+                base.short()
             ));
         }
     }
 
-    let short = &base[..8.min(base.len())];
+    let short = base.short();
     let ok = risen.is_empty() && unreadable.is_empty();
     let detail = if ok && allowed.is_empty() {
         format!(
@@ -535,6 +647,12 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
             risen.join("; ")
         )
     };
+    // THE DERIVATION IS PART OF THE FINDING, always, pass or fail. A base this row does not name
+    // is a base nobody audits, and this row has now twice spent weeks comparing against a commit
+    // that was not the one it claimed to be measuring — once because the ref had been renamed away,
+    // once because it had gone stale. Printing "the base dc7bb323" told a reader nothing; printing
+    // where dc7bb323 came from and how far back it is, is the sentence a reader can call wrong.
+    let detail = format!("{detail}. Base {short} derived as: {}", base.how);
     let mut offenders = risen.clone();
     offenders.extend(unreadable.clone());
     vec![plain(
@@ -618,19 +736,98 @@ pub fn raises(cx: &Ctx) -> BTreeMap<String, Raise> {
 /// at zero ceilings: the whole file was re-pinnable by hand with this row printing PASS. How a
 /// number is spelled is a matter of the file's own style, and a ratchet that a change of quoting
 /// switches off is not a ratchet.
+/// AN `[[array]]` ENTRY IS KEYED BY WHAT IT IS, NEVER BY WHERE IT SITS, and that is the second bug
+/// this reader had.
+///
+/// `[[cell]]` entries register as `cell.0`, `cell.1`, …, so the path a count was filed under was
+/// its ORDINAL. Delete a row from the middle of `qa/kind-isolation.toml` and every row after it
+/// slides down one — and this function then compared each surviving row against whatever unrelated
+/// row used to occupy its new index. Measured on the tree this comment was written on: 70 rows had
+/// been struck, and `ceiling-rose` reported 117 raises, of which ZERO were raises. `cell.100` was
+/// `busbar-llm`/`timing` = 12 at the base and `busbar-mcp`/`transport` = 1104 in the tree, and the
+/// row dutifully reported "12 -> 1104". Every one of the 117 was a comparison between two different
+/// crates. That is not a false positive in a rule, it is a rule reading a different file than it
+/// thinks it is, and it drowned the six findings that were real.
+///
+/// THE IDENTITY IS DERIVED, NOT TABLED. An entry's identity is its own non-numeric string fields —
+/// for `[[cell]]` that is `crate` and `kind`, which is exactly the pair that names the cell, but
+/// nothing here knows the word "cell". A table of "which keys identify which array" is the thing
+/// the next array added to a ceilings file would forget to join, and this row's whole design is
+/// that it reads every number in the file without being told where they are.
+///
+/// IT FALLS BACK TO THE ORDINAL, DELIBERATELY, in the two cases where an identity would be a
+/// FICTION: an entry with no non-numeric string field at all, and an identity that is not unique
+/// within its array. In both, two entries would collapse onto one key and the last one parsed would
+/// silently win — which is the same class of bug as the one being fixed. The ordinal is at least
+/// honest about being positional. Both sides of the comparison run this identical rule, so a
+/// document that falls back on one side and not the other simply yields no common key, and a
+/// ceiling with no counterpart is skipped rather than guessed at.
+///
+/// WHAT THIS MEANS FOR A DELETED ROW: nothing is reported. The base's key has no counterpart in the
+/// tree, [`ceiling_rose`] skips it, and a struck row can no longer manufacture a raise in the rows
+/// beneath it. A row that is genuinely raised — same crate, same kind, bigger count — is still
+/// caught, which is the only thing this rule ever claimed to catch.
+fn array_identity(doc: &crate::toml_doc::Document, path: &str) -> Option<String> {
+    let (base, idx) = path.rsplit_once('.')?;
+    let i: usize = idx.parse().ok()?;
+    let n = doc.array_len(base);
+    if i >= n {
+        return None;
+    }
+    let ident = |t: &crate::toml_doc::Table| -> Option<String> {
+        let mut parts: Vec<String> = t
+            .keys()
+            .iter()
+            .filter(|k| t.int_of(k).is_none())
+            .filter_map(|k| {
+                let s = t.str_of(k)?;
+                // A NUMBER SPELLED AS A STRING IS A CEILING, NOT A NAME — the whole reason this
+                // reader reads quoted numbers at all. It must not also become part of the identity,
+                // or raising a count would change the key the count is filed under and the raise
+                // would vanish instead of being reported.
+                (s.trim().parse::<i64>().is_err()).then(|| format!("{k}={s}"))
+            })
+            .collect();
+        (!parts.is_empty()).then(|| {
+            parts.sort();
+            parts.join(",")
+        })
+    };
+    let mine = ident(doc.table(path)?)?;
+    let unique = (0..n)
+        .filter(|j| *j != i)
+        .filter_map(|j| doc.table(&format!("{base}.{j}")))
+        .all(|t| ident(t).as_deref() != Some(mine.as_str()));
+    unique.then(|| format!("{base}[{mine}]"))
+}
+
+/// Every integer in a TOML document, by dotted path — WHETHER IT IS WRITTEN AS A TOML INTEGER OR
+/// AS A QUOTED STRING. The reader this crate has refuses a document it does not understand, which
+/// is the behaviour wanted here too: a ceilings file that cannot be parsed is a comparison that
+/// cannot be made.
+///
+/// THE STRING FALLBACK IS NOT A CONVENIENCE. Every one of the `[[cell]] count` numbers in
+/// `qa/kind-isolation.toml` is written `count = "122"`, and an integer-only reader scores that file
+/// at zero ceilings: the whole file was re-pinnable by hand with this row printing PASS. How a
+/// number is spelled is a matter of the file's own style, and a ratchet that a change of quoting
+/// switches off is not a ratchet.
+///
+/// THE PATH OF AN `[[array]]` ENTRY IS ITS IDENTITY, NOT ITS INDEX — see [`array_identity`] for the
+/// 117 raises that were not raises.
 fn ints_of(text: &str) -> Result<BTreeMap<String, i64>, String> {
     let doc = crate::toml_doc::parse_str(text)?;
     let mut out = BTreeMap::new();
     for (path, table) in doc.tables() {
+        let keyed = array_identity(&doc, path).unwrap_or_else(|| path.to_string());
         for key in table.keys() {
             if let Some(v) = table
                 .int_of(key)
                 .or_else(|| table.str_of(key).and_then(|s| s.trim().parse::<i64>().ok()))
             {
-                let dotted = if path.is_empty() {
+                let dotted = if keyed.is_empty() {
                     key.clone()
                 } else {
-                    format!("{path}.{key}")
+                    format!("{keyed}.{key}")
                 };
                 out.insert(dotted, v);
             }
@@ -660,10 +857,74 @@ mod tests {
     fn a_count_written_as_a_quoted_string_is_still_a_ceiling() {
         let doc = "[[cell]]\ncrate = \"busbar\"\nkind = \"api\"\ncount = \"122\"\n";
         let ints = ints_of(doc).expect("the fixture parses");
-        assert_eq!(ints.get("cell.0.count"), Some(&122));
+        assert_eq!(
+            ints.get("cell[crate=busbar,kind=api].count"),
+            Some(&122),
+            "an array entry is keyed by what it is"
+        );
         // The neighbouring strings are words, not numbers, and must not become ceilings.
-        assert_eq!(ints.get("cell.0.crate"), None);
-        assert_eq!(ints.get("cell.0.kind"), None);
+        assert_eq!(ints.get("cell[crate=busbar,kind=api].crate"), None);
+        assert_eq!(ints.get("cell[crate=busbar,kind=api].kind"), None);
+    }
+
+    /// THE 117 RAISES THAT WERE NOT RAISES. Striking one row from an array used to slide every row
+    /// below it down one index, and the reader compared each survivor against whatever unrelated
+    /// entry had previously occupied its new ordinal — `busbar-llm`/`timing` = 12 against
+    /// `busbar-mcp`/`transport` = 1104, reported as "12 -> 1104".
+    #[test]
+    fn striking_an_array_row_does_not_renumber_the_rows_beneath_it() {
+        let row = |c: &str, n: i64| format!("[[cell]]\ncrate = \"{c}\"\nkind = \"api\"\ncount = \"{n}\"\n");
+        let was = ints_of(&format!("{}{}{}", row("a", 1), row("b", 2), row("c", 3)))
+            .expect("the fixture parses");
+        // `b` is struck; `c` slides from index 2 to index 1 and NOTHING about `c` changed.
+        let now = ints_of(&format!("{}{}", row("a", 1), row("c", 3))).expect("the fixture parses");
+        for (path, before) in &was {
+            if let Some(after) = now.get(path) {
+                assert_eq!(after, before, "{path} must not appear to have moved");
+            }
+        }
+        // The struck row's key is simply absent, which `ceiling_rose` skips.
+        assert!(now.get("cell[crate=b,kind=api].count").is_none());
+        // …and `c` is still found, under the same key, at the same number.
+        assert_eq!(now.get("cell[crate=c,kind=api].count"), Some(&3));
+    }
+
+    /// A GENUINE RAISE OF AN ARRAY ROW IS STILL CAUGHT — the identity is the entry's NAMES, and the
+    /// count is deliberately not part of it, or raising a count would re-key the row and the raise
+    /// would vanish instead of being reported.
+    #[test]
+    fn a_count_that_actually_rose_is_still_reported() {
+        let was = ints_of("[[cell]]\ncrate = \"a\"\nkind = \"api\"\ncount = \"1\"\n").unwrap();
+        let now = ints_of("[[cell]]\ncrate = \"a\"\nkind = \"api\"\ncount = \"9\"\n").unwrap();
+        let k = "cell[crate=a,kind=api].count";
+        assert_eq!((was.get(k), now.get(k)), (Some(&1), Some(&9)));
+    }
+
+    /// AN IDENTITY THAT IS NOT UNIQUE IS A FICTION, and the ordinal — honest about being positional
+    /// — is used instead. Two entries collapsing onto one key would let the last one parsed win,
+    /// which is the same class of bug as the one identity keying fixes.
+    #[test]
+    fn a_duplicate_identity_falls_back_to_the_ordinal() {
+        let ints = ints_of("[[c]]\nname = \"x\"\nn = 1\n\n[[c]]\nname = \"x\"\nn = 2\n").unwrap();
+        assert_eq!(ints.get("c.0.n"), Some(&1));
+        assert_eq!(ints.get("c.1.n"), Some(&2));
+        assert_eq!(ints.get("c[name=x].n"), None);
+    }
+
+    /// An entry with NO non-numeric string field has no identity to be keyed by, and keeps its
+    /// ordinal rather than being given one that does not exist.
+    #[test]
+    fn an_entry_with_no_names_keeps_its_ordinal() {
+        let ints = ints_of("[[c]]\nn = 1\n\n[[c]]\nn = 2\n").unwrap();
+        assert_eq!(ints.get("c.0.n"), Some(&1));
+        assert_eq!(ints.get("c.1.n"), Some(&2));
+    }
+
+    /// An ordinary `[table.0]` that is NOT an array-of-tables entry must not be mistaken for one.
+    #[test]
+    fn a_plain_table_whose_last_segment_is_a_number_is_left_alone() {
+        let ints = ints_of("[t.0]\nname = \"x\"\nn = 5\n").unwrap();
+        assert_eq!(ints.get("t.0.n"), Some(&5));
     }
 
     /// A string that is not a number is not a ceiling, and must not make the file unreadable
