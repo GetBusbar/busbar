@@ -1544,6 +1544,123 @@ prepared; only the word is missing.
     `busbar-plugin-sdk (author machinery + testkit feature)`. Deleting shipped code on an
     over-claiming doc row is the failure mode this section exists to prevent.
 
+### ADDED 2026-09-22 — the unattended session's batch. Items 11-20.
+
+Ordered by what a wrong answer costs. Everything here is MEASURED; where a figure is contested both
+numbers are given rather than one picked.
+
+11. **THE PLANE KIND FAILS BOTH UNIVERSAL PLUGIN RULES, AND THIS IS THE RELEASE-SHAPED ONE.**
+    `GauntletPlane` — the trait that actually serves traffic — has **no cold (JSON) lane and cannot
+    have one without a rewrite**: it takes borrowed refs and a `std::time::Instant` and returns an
+    `axum::Response`, none of which crosses a process boundary. It has **no hot POD lane** (zero hits
+    against `busbar-plugin/src/hot/`). And **a third party cannot drop in a plane cdylib today**:
+    `open_plane` — the only function turning a discovered tarball into a loadable plane — has **zero
+    callers anywhere in the repo**, and `plugin-loader` has no `Kind::Plane` awareness at all. There
+    are THREE plane abstractions: gen-1 `busbar-api`, gen-2 `busbar-contract::kinds::Plane` (complete,
+    zero live call paths), and `GauntletPlane` (what serves, implemented by the LEGACY crates).
+    **Two directions, both large.** (A) Wire gen-2 for real — but `drive()` IS the protocol engine as
+    one coarse call and gen-2 wants it decomposed into fixed single-pass methods; MCP and LLM both run
+    per-round metering INSIDE a retry loop, which that shape has no slot for. A2A does NOT (single-shot,
+    one-target, no retry) and Voice's `drive()` is documented dead code — so it is 2 mismatched, 1
+    fitting, 1 not applicable, not a uniform four-engine redesign. (B) Declare `GauntletPlane` the ABI
+    and build it two lanes plus a loader path from nothing. **Precedents for sizing (B):** the existing
+    cold lane for the five narrower kinds is 2,513 LOC; the hot lane 4,148.
+    **Related and unavoidable either way:** the seven `busbar-transport-*` crates (8,757 raw / 5,527
+    code) are registered, composition-checked, key-provisioned and serve **ZERO production bytes** —
+    four independent proofs, incl. `main.rs:893` saying so itself.
+
+12. **TWO CUSTOMER-VISIBLE DRIFTS ON THE HOOK KIND, WHICH #86 FROZE.** Found while verifying the
+    freeze, and the freeze otherwise HOLDS (`scrape.rs` differs from v1.5.5 by two crate-path
+    qualifications; `scrape_tests.rs` is byte-identical). (a) `PromptProjection` is now built from the
+    **normalized IR**, not pristine ingress JSON — its own doc says `message_count` can be **one lower**
+    than the wire array. A hook sees different turns than in 1.5.5. (b) `TransformOutcome::Failed` is a
+    **new arm**: a `prompt: rw` gate's transport failure used to collapse to `Abstain` and fail **OPEN**;
+    it now resolves the operator's `on_error` chain, whose terminal can be `reject` — so it can fail
+    **CLOSED**. Both read as deliberate bug fixes and (b) is a security improvement. Both are behaviour
+    changes to a kind you said was untouched.
+    **(c) A THIRD, found later:** `hooks/scrape.rs:191-372` is a **second, hand-rolled Prometheus 0.0.4
+    renderer** (141 code LOC) with no shared code with the library that renders `/metrics`. It emits **no
+    `_sum`** on histograms or summaries, so `rate(x_sum[5m])/rate(x_count[5m])` — the standard average-
+    latency panel — returns **data on one endpoint and nothing on the other**; `HookMetric` has no `sum`
+    member, so it is a contract gap, not a renderer gap. It also re-spells `PROMETHEUS_CONTENT_TYPE`
+    **differently** (`; charset=utf-8`), so the two `/metrics*` endpoints answer with different
+    content-types.
+
+13. **THE RATE CARD CAN ONLY PRICE LLM TOKEN TIERS.** Every `rate_card:` key is validated against
+    `models:` and an entry's only members are the four tiers (`RateEntryCfg`, `deny_unknown_fields`).
+    Confirmed against the binary: `rate_card: { bytes: { input_utok: 2 } }` fails `--validate` with
+    *"rate_card names model 'bytes', which is not defined under models:"*. So `rate(bytes)` and
+    `rate(tool_calls)` **are not numbers any operator can set**, and a billing-ON deployment of a
+    non-LLM plane is `rate_card: {}` — present and empty, which is the honest maximum. **#47's per-plane
+    reserved keys are the design answer and are NOT implemented.**
+    **Status: LATENT, not live** — measured: not one of the fourteen non-LLM declared meter classes is
+    emitted on any live path; MCP/A2A reach the money seam once each with amount 0, and voice's codec
+    folds its five classes onto the reserved four before they leave. **What IS live is narrower and
+    sharper: the declared vocabulary and the emitted vocabulary are two disjoint sets that no gate
+    compares.** `METER_CLASSES` is read in production by nothing. A plane can declare `tokens_in` while
+    the binary bills `input` and every gate stays green — which is exactly how llm came to declare two
+    class names its own shipped path never uses. The history structure would need **no change**; the
+    fix is three things and none of them is the history: a config grammar that can express a class rate,
+    a producer that writes class-keyed counts on a live path, and a read that carries them.
+
+14. **#81a(f) — a fractional count against an older-schema store.** That store has four `i64`
+    whole-unit columns and **refuses**. Under #81a absent scale means whole units and present means
+    scale 6, branching at the read with no rescale, so already-persisted counts are safe — but a
+    fractional count arriving for an old-schema store has nowhere to go.
+
+15. **THE PROMETHEUS SCRAPE DRIVES A REPRICE — a live money-blindness violation.**
+    `refresh_scrape_gauges` walks every virtual key, queries spend per key, and runs
+    `derived_bucket_usage`, whose own comment reads *"Spend derives fresh from the ledger x the CURRENT
+    rate card (reprice-on-read), fee included."* **An external monitoring system's poll interval is an
+    input to the billing path.** Violates the export kind's property 4 (money-blind) and property 3
+    (failure never the request's problem) on the same evidence.
+
+16. **`MeteringLease` — a session-scoped money primitive with no kernel counterpart.** The voice plane
+    owns `price_usage` → `settle(nanos)` → `settled_nanos`, a **second money concept** beside the
+    per-unit hold. #71's model is per-unit; there is no kernel-side session lease. This is the only
+    genuinely NEW seam in the plane-money census — everything else there is a port.
+
+17. **BILLING-OFF: does an uncarded node charge the flat fee? Two authorities, two figures.**
+    #42's own words say an uncarded node should *"serve free, no metering, no ledger charge"* → **0**.
+    `root/kernel.rs`'s `card_from_config` says the opposite in terms — *"absent prices every class at
+    nothing and **still charges the flat fee**, which is exactly what the previous release bills for
+    that deployment"* — and `RateCard::absent_in` carries the fee by construction. The shipped code
+    reports **`spend_cents: 1`**. The rig leg asserts what the tree ships and says so, so a change in
+    either direction is visible rather than silent.
+
+18. **TWO ROSTER ROWS WRITE CHEQUES THE TREE DOES NOT CASH.** `busbar-auth-static` (def 29) is
+    described as an instance the default distribution SHIPS; the only thing on disk is
+    `auth-static-plugin`, which is test-only and **named by no manifest in the tree, not even as a
+    dev-dependency**. And `busbar-export-otlp` — **CORRECTED**: otlp is not "not a sink", it is an
+    export that is **MISPLACED**. It is a first-class `export:` module constant whose own section doc
+    says *"`export:` is now the single telemetry-egress surface"*, and `main.rs:1465` hands its URL
+    straight to `init_logging`. Against the roster's bar ("reaching the engine only over the ABI") the
+    score is **0 of 4, not 3 of 4** — `prometheus`/`webhook`/`file` are equally not crates. Strike
+    nothing, or strike all four.
+
+19. **THE CRATE COUNT MOVES 33 → 39, WHICH IS OUTSIDE YOUR ±3-5 BAND.** The six ABI fixtures were
+    HOMELESS; defining them is what un-homes them (row 35-40) and the definition is clean. Recorded
+    rather than absorbed, per this document's own rule that a move over ~5 is evidence the DEFINITIONS
+    are wrong. **The counter-argument for that conversation:** the six are ONE definition, exactly as
+    rows 21-27 are one definition over seven crates — on a per-DEFINITION basis the roster moves
+    **24 → 25**. +6 crates, +1 definition; which is the real measure is yours under #83.
+
+20. **ONE FIXTURE RE-BLESSED, NEEDS A SIGNATURE.** `busbar-llm-codec/src/tests/proto/golden/
+    resp_a2b_plain.json` gains `"cacheDetails":[{"inputTokens":3,"ttl":"1h"},{"inputTokens":4,"ttl":"5m"}]`.
+    A unit-test translate-parity fixture; **zero shadow-oracle golden cells touched**; **no ledgered
+    count changes** (`to_token_usage` ignores the 5m/1h split — it is attribution, not a billed
+    quantity). Root cause: the Bedrock writer now re-emits the split the reader learned to read, and
+    3+4 reconciles against the existing `cacheWriteInputTokens:7`.
+
+**RULED BY THE ASSISTANT, recorded so you can overturn rather than rediscover:** the export namespace
+conflict dissolves — `busbar_file_logs_*` are the SINK's own telemetry, not busbar's, so they move to
+the plugin's namespace on the #85 envelope and nothing needs renaming or trust-gating (**one real gap
+survives: the host owns the admission gate, so when it sheds a plugin's batch the plugin must be told,
+and #85's envelope is plugin→host only**). The `govern.rs:226` gating of the LEDGER WRITE on the rate
+card is a defect — the write is unconditional, the card decides only whether a READ can turn counts
+into money. The file sink is not exempt from property 6 and "transport" is not stretched to cover a
+filesystem path: the host opens the destination and hands the plugin a write sink.
+
 ## Traps this tree has already sprung — do not re-learn them
 
 - **`git grep -E` does NOT honour `\b`.** Use `-P`. And never grep a concatenated `git archive`
