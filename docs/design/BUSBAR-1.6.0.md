@@ -2285,6 +2285,56 @@ the rig must keep reporting both figures side by side.
 A future read that prices flat is a failing test, not a review note — which is the direct answer to
 *enrolment is the gap no count detects*: this roster detects its own omissions.
 
+#### WHAT A GREEN ORACLE PROVES — measured 2026-09-22, and it is narrower than assumed
+
+The oracle is the release's central safety claim (#10: *"prove no user-visible byte changed"*).
+Nobody had measured its COVERAGE, only its pass rate. Full census: `docs/design/1.6.0-oracle-coverage.md`.
+
+**THE SAFETY NET IS 916 CELLS, NOT 2,318.** The owed set is exactly the golden's `PASS` rows, and the
+exit code is set only by `owed.is_empty()` or `diverging_total > 0` — **gaps never touch the
+verdict**. So 1,402 corpus cells CANNOT FAIL, 1,380 of them mcp/a2a. The streaming and decision
+planes are absent from the corpus at any status.
+
+**545 of the 916 carry a pre-authorised change** under 41 register entries. The register is
+**CLASS-WISE, NOT VALUE-WISE** — verified against its own schema, whose complete field set is
+`by, cells, changelog, changelog_reason, classes, description_corrections, expected_cells, id, kind,
+rationale, text_list_growth, transform`. **No field pins an expected monetary value.** On those cells
+the honest claim is *"changed only in ways already written down"*, never *"byte-identical"*.
+
+**THE FINDING THAT MATTERS MOST — the money bytes 1.6.0 changes are the money bytes the register
+lets move.** 131 of the 916 owed cells carry a real monetary amount. Four have every amount-bearing
+class pre-waived, and **three of those four are exactly the mid-window rate-card cells**:
+
+```
+billing|rate-card|epoch-mid-window     kind=breaking  classes=[effects.usage, body]
+billing|rate-card|history-mid-window   kind=breaking  classes=[effects.usage, body]
+ledger|rate-history|as-of              kind=breaking  classes=[effects.usage, body]
+```
+
+`effects.usage` is where the spend figure lives and `body` is the response. Both waived. **These
+cells prove the change was DECLARED. They cannot prove it is RIGHT.**
+
+**AND THE CLOCK FIELDS ARE NORMALISED AWAY.** `normalize.rs`'s `TS_KEYS` includes **`as_of`**, and
+`USAGE_WINDOW_KEYS` is `["start", "end"]` — every one flattened to `0` before comparison. **So a
+wrong billing window or a wrong rate-card epoch is STRUCTURALLY INVISIBLE to the oracle.** That is
+precisely the class of the two-clocks defect found today; that one was caught only because it also
+moved a spend VALUE. A defect that moves only the window would not have been.
+
+Also measured: the money cells read the book being REPLACED — `keys.rs:1789` says in the product's
+own words that `spend_cents` derives off the CURRENT card, and `service_tests.rs:2827` already
+records both reads as `resolves: false`. And `403` is declared on all 81 admin operations and
+recorded on NONE; likewise `500`. Six of 20 served (dialect, op) pairs have a cell, all `op=chat`;
+refusals exist only on the 6 diagonal dialect pairs, none of the 30 cross-dialect pairs.
+
+> **A GREEN ORACLE RUN PROVES:** that 916 recorded cells reproduce their 1.5.5 bytes, except on 545
+> where the change falls inside a class an owner signed off. **IT DOES NOT PROVE:** that the 1,402
+> gap cells behave at all; that a pre-authorised class changed by the RIGHT amount; that any billing
+> window, rate-card epoch or `as_of` is correct; that the four new planes work; or anything about
+> timing, concurrency, resource exhaustion or plugin-load failure.
+>
+> **Do not cite a green oracle as proof of the money path.** On the three cells that exercise the
+> behaviour 1.6.0 actually changes, it is green BY CONSTRUCTION.
+
 #### THE GOVERNING DESIGN, RESTATED 2026-09-22 — three open questions dissolve into it
 
 Asked directly: *"forget the past, what's the right 1.6.0 design."* It is already the Laws; what
