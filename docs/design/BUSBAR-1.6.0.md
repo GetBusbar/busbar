@@ -2082,6 +2082,65 @@ ever leaves `NATIVE_PLANES`.
 > everyone reading the ledger spends their time on a product bug that does not exist.
 
 
+#### A NEEDLE GATE CANNOT SEE AN UNNAMED THING — shape blindness, not spelling blindness
+
+`scripts/secret-hygiene-gate.sh` Check 1 scans STRUCT FIELDS for secret-ish NAMES. Widening the
+needles from equality to tail-matching (`fname == N || fname ends_with _N`) was measured strictly
+better on both axes — **+7 true positives, +0 false** — because the qualifier in a Rust field name is
+a PREFIX, so the secret-ness lives in the SUFFIX: `*_token` IS a token, `token_*` is something ABOUT
+one (`token_url`, `token_hash`, `subject_token_type` — all correctly not flagged). That closed 14
+fields the equality set structurally could not see, `aws_secret_access_key` among them.
+
+**But the real AWS secret is not a struct field at all.** Verified:
+
+```rust
+// busbar-kernel/src/governance/state.rs:313
+pub fn mint_signed_with_aws(…) -> StoreResult<(VirtualKey, String, String, String)>
+// busbar-core-admin/src/keys.rs:1042
+if let Some((access_key_id, secret_access_key)) = aws {   // -> straight into a json! body
+```
+
+Three bare `String`s in an unnamed tuple. **A tuple element has no name to spell, so NO needle set of
+ANY width will ever reach it.** Widening the needles fixed a SPELLING blind spot; the SHAPE blind spot
+is untouched and unfixable by that method. This is the sharpest available proof of the rule already
+recorded above — *a green source-scanning gate is evidence about SPELLINGS, not about BEHAVIOUR* —
+and it is why `license_key` and three PKCE `code_verifier` fields remain uncaught: every new spelling
+is another needle, forever. The property wants to hold BY CONSTRUCTION (a type the gate recognises
+structurally), not by vocabulary.
+
+**Current exposure is NIL, and that was checked rather than assumed** (#10: "a missing check is not a
+vulnerability until you show the line executes"). Every bare-credential struct was examined for an
+actual egress — a derived `Debug`, a derived `Serialize`, a sink. `ArrivalPayload`/`NativePlane`/
+`RouteInput`/`WalkArrival`/`VoiceUnit` derive NOTHING; `Walk`, `DeliveryAuth` and both `CallerToken`s
+hand-write redacting `Debug`s. Check 2 (`.expose_secret()` at a sink) is 0 before and after. **Type
+debt, not a vulnerability.**
+
+#### THE SAFETY LOGIC IS WRITTEN TWICE — `CallerToken` and `Principal` are each defined in TWO crates
+
+Measured 2026-09-22: `busbar-api/src/auth.rs:69` and `busbar-kernel-identity/src/carrier.rs:42` BOTH
+declare `pub struct CallerToken(pub Option<String>)`, and each carries its OWN hand-written redacting
+`Debug`. `Principal` is duplicated across the same two crates. These are independent definitions, not
+re-exports.
+
+**A security property implemented twice is a security property that can be fixed once.** Redact one
+`Debug` and the other still prints the caller's bearer token — and nothing in the tree forces the two
+to agree, the same shape as the closed verb table joined by `_ => ""` and the two hand-written plane
+rigs. `busbar-api` is already slated to retire into `busbar-contract` (#84), which is where this
+resolves: ONE definition, one redaction, one thing to get right.
+
+#### A STALE EXCEPTION CAN PASS AN EXISTENCE CHECK — the file lived, the struct moved
+
+`check_allowlist_paths` hard-fails any exception row whose path names nothing on disk. Two rows slip
+past it anyway: both are scoped to `crates/api/src/store.rs`, which still EXISTS (39 lines) but is now
+a re-export shim containing **zero** occurrences of `secret` — `CredentialSecret` moved to
+`busbar-contract/src/records.rs`. The rows suppress nothing and look perfectly alive.
+
+**The weak half of staleness ("does the path exist?") cannot catch a row whose SUBJECT moved out of a
+file that stayed.** The strong half — *did this row actually suppress anything?* — is the one that
+catches it, and `plane-grep-gate.sh` already implements that form. An exception that suppresses
+nothing is dead weight; one that suppresses a real finding is the defect itself. Neither is
+distinguishable from a working row by looking at the path.
+
 - **`git grep -E` does NOT honour `\b`.** Use `-P`. And never grep a concatenated `git archive`
   blob — that produced a false CRITICAL SSRF finding.
 - **A missing check is not a vulnerability until you show the line executes.** Two findings were
