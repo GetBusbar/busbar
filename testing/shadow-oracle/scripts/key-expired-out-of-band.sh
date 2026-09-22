@@ -28,6 +28,12 @@ repo="$(cd "${here}/../.." && pwd)"
 # shellcheck source=../../fleet-fixtures/lib.sh
 source "${repo}/testing/fleet-fixtures/lib.sh"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
+# The oracle ENGINE. DECISION #80: the judge is Rust, and the leaf tools these drivers used to
+# shell out to as `python3 $BUSBAR_ORACLE_TOOL_DIR/<tool>.py` are its subcommands (mock /
+# capture / capture-exec / fetch-plugin / config). `:?` on purpose: an engine this driver cannot
+# find is a HARNESS failure that must stop the cell loudly. Degrading here instead is exactly how
+# 33 script cells recorded nothing while the ledger still read green.
+ORACLE_BIN="${BUSBAR_ORACLE_BIN:?the Rust oracle engine must be published as BUSBAR_ORACLE_BIN}"
 LP="${EXPIRED_OOB_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49201}}" AP="${EXPIRED_OOB_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-49202}}" MP="${EXPIRED_OOB_MOCK_PORT:-${SCRIPT_MOCK_PORT:-49211}}"
 # Same knob as record.sh's boot_busbar / scripts/store-persist.sh: this cell boots busbar TWICE, so
 # a bound sized for an idle laptop reads a saturated host's second boot as "never came up".
@@ -39,12 +45,12 @@ for p in "$LP" "$AP" "$MP"; do
 done
 command -v sqlite3 >/dev/null 2>&1 || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"sqlite3 not installed"}}' >"$RAW/captured.json"; exit 0; }
 
-tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" store-sqlite)" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
+tarball="$("$ORACLE_BIN" fetch-plugin store-sqlite)" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
 cp "$tarball" "$W/plugins/"
 alias_="$(tar -xzOf "$tarball" manifest.json | jq -r .alias)"
 DB="$W/governance.db"
 
-python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
+"$ORACLE_BIN" mock "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
 # CHECKED: an unchecked wait here let the cell run with NO upstream and record whatever busbar
 # answers to that as the contract. fail() is defined further down (it needs $eff), so refuse in
 # the same -1 shape the port-busy guard above uses -- record.sh reads it as UNSUPPORTED, not a pass.

@@ -47,6 +47,12 @@ source "${repo}/testing/fleet-fixtures/lib.sh"
 
 MODE="${1:?mode: governance-init|budget-hydration|dangling-group|inert-keys}"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
+# The oracle ENGINE. DECISION #80: the judge is Rust, and the leaf tools these drivers used to
+# shell out to as `python3 $BUSBAR_ORACLE_TOOL_DIR/<tool>.py` are its subcommands (mock /
+# capture / capture-exec / fetch-plugin / config). `:?` on purpose: an engine this driver cannot
+# find is a HARNESS failure that must stop the cell loudly. Degrading here instead is exactly how
+# 33 script cells recorded nothing while the ledger still read green.
+ORACLE_BIN="${BUSBAR_ORACLE_BIN:?the Rust oracle engine must be published as BUSBAR_ORACLE_BIN}"
 LP="${GOV_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49751}}" AP="${GOV_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-49752}}"
 # Same knob as record.sh's boot_busbar / scripts/store-persist.sh: this cell boots busbar TWICE, so
 # a bound sized for an idle laptop reads a saturated host's second boot as "never came up".
@@ -66,7 +72,7 @@ rm -rf "$W"; mkdir -p "$W/plugins" "$W/tmp"
 export TMPDIR="$W/tmp"
 for p in "$LP" "$AP"; do assert_port_free "$p" || fail "port $p busy"; done
 
-tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" store-sqlite)" || fail "store-sqlite plugin fetch failed"
+tarball="$("$ORACLE_BIN" fetch-plugin store-sqlite)" || fail "store-sqlite plugin fetch failed"
 cp "$tarball" "$W/plugins/"
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
 [ -s "$W/signing.key" ] || fail "--generate-signing-key produced no key"
@@ -190,9 +196,9 @@ else
 fi
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 
-python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/capture-exec.py" "$rc" "$RAW/stdout" "$RAW/stderr" \
+"$ORACLE_BIN" capture-exec "$rc" "$RAW/stdout" "$RAW/stderr" \
   --strip-path "$W" --strip-path "$RAW" --strip-path "$repo" --strip-path "$BIN" >"$RAW/captured.json" 2>"$RAW/capture.err" \
-  || fail "capture-exec.py failed: $(tail -c 300 "$RAW/capture.err")"
+  || fail "capture-exec failed: $(tail -c 300 "$RAW/capture.err")"
 
 # The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
 # out loud on the success path rather than inheriting whatever the last command happened to return.

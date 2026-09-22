@@ -20,6 +20,12 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
+# The oracle ENGINE. DECISION #80: the judge is Rust, and the leaf tools these drivers used to
+# shell out to as `python3 $BUSBAR_ORACLE_TOOL_DIR/<tool>.py` are its subcommands (mock /
+# capture / capture-exec / fetch-plugin / config). `:?` on purpose: an engine this driver cannot
+# find is a HARNESS failure that must stop the cell loudly. Degrading here instead is exactly how
+# 33 script cells recorded nothing while the ledger still read green.
+ORACLE_BIN="${BUSBAR_ORACLE_BIN:?the Rust oracle engine must be published as BUSBAR_ORACLE_BIN}"
 LP="${TELLER_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49611}}" AP="${TELLER_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-49612}}" MP="${TELLER_MOCK_PORT:-${SCRIPT_MOCK_PORT:-49621}}"
 W="$RAW/teller-work"; mkdir -p "$W"
 # EMPTY, not just present: the mock drops one capture file per upstream request in here and
@@ -31,7 +37,7 @@ for p in "$LP" "$AP" "$MP"; do
   assert_port_free "$p" || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"port $p busy\"}}" >"$RAW/captured.json"; exit 0; }
 done
 
-ORACLE_MOCK_CAPTURE_DIR="$W/egress" python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
+ORACLE_MOCK_CAPTURE_DIR="$W/egress" "$ORACLE_BIN" mock "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
 # CHECKED: an unchecked wait here let the cell run with NO upstream and record whatever busbar
 # answers to that as the contract. fail() is defined further down (it needs $eff), so refuse in
 # the same -1 shape the port-busy guard above uses -- record.sh reads it as UNSUPPORTED, not a pass.

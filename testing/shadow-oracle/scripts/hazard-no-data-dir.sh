@@ -34,6 +34,12 @@ MODE="${1:?mode: files|logs}"
 # The binary is launched from a DIFFERENT working directory (that directory's file set is half the
 # contract), so a relative --bin path must be resolved here or the exec would miss it.
 BIN="${BUSBAR_BIN:?}"; case "$BIN" in /*) ;; *) BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")" ;; esac
+# The oracle ENGINE. DECISION #80: the judge is Rust, and the leaf tools these drivers used to
+# shell out to as `python3 $BUSBAR_ORACLE_TOOL_DIR/<tool>.py` are its subcommands (mock /
+# capture / capture-exec / fetch-plugin / config). `:?` on purpose: an engine this driver cannot
+# find is a HARNESS failure that must stop the cell loudly. Degrading here instead is exactly how
+# 33 script cells recorded nothing while the ledger still read green.
+ORACLE_BIN="${BUSBAR_ORACLE_BIN:?the Rust oracle engine must be published as BUSBAR_ORACLE_BIN}"
 RAW="${RAW:?}"; mkdir -p "$RAW"; RAW="$(cd "$RAW" && pwd)"   # absolute for the same reason as BIN
 ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
 LP="${SCRIPT_LISTEN_PORT:-48831}" AP="${SCRIPT_ADMIN_PORT:-48832}" MP="${SCRIPT_MOCK_PORT:-48791}"
@@ -72,7 +78,7 @@ for p in "$LP" "$AP" "$MP"; do
   assert_port_free "$p" || fail -1 "port $p busy"
 done
 
-python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
+"$ORACLE_BIN" mock "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
 wait_for_http "http://127.0.0.1:${MP}/" 5 || fail -1 "mock upstream did not come up"
 
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null || fail -1 "could not generate a signing key"

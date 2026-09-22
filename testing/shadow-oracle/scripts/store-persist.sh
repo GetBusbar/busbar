@@ -20,6 +20,12 @@ repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
 PLUGIN="${1:?plugin name}"; SETTINGS="${2:-}"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
+# The oracle ENGINE. DECISION #80: the judge is Rust, and the leaf tools these drivers used to
+# shell out to as `python3 $BUSBAR_ORACLE_TOOL_DIR/<tool>.py` are its subcommands (mock /
+# capture / capture-exec / fetch-plugin / config). `:?` on purpose: an engine this driver cannot
+# find is a HARNESS failure that must stop the cell loudly. Degrading here instead is exactly how
+# 33 script cells recorded nothing while the ledger still read green.
+ORACLE_BIN="${BUSBAR_ORACLE_BIN:?the Rust oracle engine must be published as BUSBAR_ORACLE_BIN}"
 # ONE KNOB, shared with record.sh's own boot_busbar: this cell does a REAL double boot of a
 # published plugin, and a bound sized for an idle laptop reads a saturated host's boot latency as
 # "never came up" -- a harness timing limit recorded as a product divergence. record.sh already
@@ -29,7 +35,7 @@ BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracl
 BOOT_BOUND="${ORACLE_BOOT_BOUND_SECS:-60}"
 LP="${STORE_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48831}}" AP="${STORE_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48832}}" MP="${STORE_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48791}}"
 W="$RAW/store-work"; mkdir -p "$W/plugins"
-tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
+tarball="$("$ORACLE_BIN" fetch-plugin "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
 cp "$tarball" "$W/plugins/"
 alias_="$(tar -xzOf "$tarball" manifest.json | jq -r .alias)"
 # The store's fixture. sqlite's lives in the tree (a path under this cell's own work dir). Every
@@ -55,7 +61,7 @@ if [ -z "$SETTINGS" ] && [ -n "$URL_VAR" ]; then
 fi
 [ -n "$SETTINGS" ] || case "$alias_" in sqlite) SETTINGS="{ db_path: \"${W}/governance.db\" }" ;; *) SETTINGS="{}" ;; esac
 for p in "$LP" "$AP" "$MP"; do assert_port_free "$p" || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"port $p busy\"}}" >"$RAW/captured.json"; exit 0; }; done
-python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
+"$ORACLE_BIN" mock "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
 # CHECKED: an unchecked wait here let the cell run with NO upstream and record whatever busbar
 # answers to that as the contract. fail() is defined further down (it needs $eff), so refuse in
 # the same -1 shape the port-busy guard above uses -- record.sh reads it as UNSUPPORTED, not a pass.
