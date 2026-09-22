@@ -1806,6 +1806,142 @@ excludable from exactly this measurement.
 
 **One counter, one number, recomputable on demand.** `cargo xtask loc --ref v1.5.5 --format table`.
 
+### WHERE THE 90,667 EXCESS LINES ARE — THE CENSUS, 2026-09-22
+
+**Full evidence: [`docs/design/1.6.0-duplication-census.md`](1.6.0-duplication-census.md).** Every
+line below is from `cargo xtask loc --ref HEAD` / `--ref v1.5.5` at `d63fcd55e`. Do not re-derive
+these; cite the census.
+
+Every v1.5.5 file and every trunk file outside the new-plane group was mapped onto the same
+subsystem names. **Both sides balance exactly — 62,956 and 153,623 — with zero unassigned files.**
+The top of that table:
+
+| subsystem | v1.5.5 | trunk | delta | ratio |
+|---|--:|--:|--:|--:|
+| proxy engine / egress / trust | 5,667 | 21,255 | **+15,588** | 3.75× |
+| *NEW*: plane host + plane registry + llm plane | 0 | 10,883 | **+10,883** | NEW |
+| composition root / binary | 3,017 | 13,093 | **+10,076** | 4.34× |
+| LLM protocol codec | 17,053 | 24,594 | **+7,541** | 1.44× |
+| money (cost/limits/ledger/audit) | 569 | 7,604 | **+7,035** | 13.36× |
+| neutral ABI / contract types | 1,035 | 7,691 | **+6,656** | 7.43× |
+| transports | 420 | 6,459 | **+6,039** | 15.38× |
+| *(18 further rows)* | | | | |
+
+**THE OWNER'S HYPOTHESIS, SCORED.** *"i bet the 2x is from having 54 and major duplication."*
+
+- **"Having 54 crates" — REFUTED, and measurably so.** The entire per-crate wiring tax (`use`,
+  `pub use`, `mod x;`) is **5,827** lines against v1.5.5's **1,326**; only **438** production lines
+  sit in files that are >75% re-export shim, the largest being `busbar-contract/src/lib.rs` at 83.
+  Held at v1.5.5's density the split costs **~2,500–4,500 lines: 3–5% of the excess.** Where the
+  cost *does* land is the composition root — boot/wiring went 2,514 → ~11,770 lines, of which
+  **6,403 is one hand-written binding file per plane.** That is a pattern, not a crate count, and
+  it is this document's own "one leg set, parameterised by plane" rule applied to wiring.
+- **"Major duplication" — CONFIRMED IN KIND, CORRECTED IN SIZE.** Mechanical near-identical-file
+  duplication is **~4,000–4,500** lines (found by an unbiased line-signature sweep over the 545
+  production files carrying 40+ substantive lines — no hypothesis; the pairs were found, not
+  looked for); same-job-written-twice adds **~1,800**; dead and
+  pre-switch code is **9,126**. **Call it ~12,000–14,000, not 91,000.**
+- **23.8% — 21,620 lines — is capability v1.5.5 had no counterpart for, already outside the
+  four-new-planes exclusion**: the plane host, the kernel unit loop, the WAL, the OAuth2
+  authorization server, the `BUSBAR-NNNN` diagnostics catalog, the owned HTTP egress stack. Whether
+  those are worth having is an architecture question. They are not waste.
+
+**THE FINDING THAT OUTRANKS ITS LINE COUNT, AND THE RULE IT PROPOSES.**
+
+`crates/busbar-kernel/src/net_guard.rs` (716) and `crates/busbar-kernel-egress/src/trust/net.rs`
+(877) are a verbatim fork of the SSRF guard — **625 of 722 non-comment lines identical after
+substituting only the error type name.** Their `dns_name_is_internal` bodies are byte-identical.
+They differ in one constant:
+
+| | `METADATA_HOSTS` |
+|---|---|
+| `net_guard.rs:19` — **the live copy** | 2 entries |
+| `trust/net.rs:75-82` — the pre-switch copy | 6 entries (adds `metadata.tencentyun.com`, `metadata.platformequinix.com`, `instance-data`, `instance-data.ec2.internal`) |
+
+**The hardening is in the tree and is not on the path that dials.** The two-entry copy is what the
+A2A card fetch (`busbar-a2a/src/a2a/fetch.rs:364`), the OAuth2 CIMD fetch
+(`busbar-oauth2/src/cimd.rs:109`) and the MCP client precheck
+(`busbar-mcp/src/mcp/client/ssrf.rs:235`) all call.
+
+`trust/net.rs:9-13` — *the file's own header, in the copy that has the hardening*:
+
+> *"This check was written three times over… **Two implementations of one security control is the
+> shape that produces a metadata bypass: somebody hardens one and the other keeps the hole.**"*
+
+**It predicted its own defect and then became the fourth copy.** And
+`crates/busbar/tests/net_guard_extraction_parity.rs` exists to assert the two agree — its header
+records that they *already* drifted once, producing a real denylist bypass, because *"both copies
+had tests; neither suite could see the difference, because neither suite could see the other copy."*
+
+**THE RULE THIS ADDS TO THIS DOCUMENT: a duplicate that encodes a SECURITY or MONEY property
+outranks any duplicate that is merely bigger, and a PARITY TEST is not a fix — it is the admission
+that a fix is owed.** Three more in that class, all already diverged, all under 200 lines each:
+
+1. `crates/busbar-kernel/src/cost.rs:138-144` is a **third** rate conversion missing the
+   `v <= u64::MAX as f64` clamp that `busbar-kernel-ledger/src/cost/rate.rs:40-47` carries — reached
+   in production at `cost.rs:446`, and **invisible to the agreement test written for this exact
+   bug**, which compares `nano_rate` against a `RateNanos` that now delegates to `nano_rate`.
+2. `canonicalize_header_value` exists twice in the SigV4 signer
+   (`busbar-substrate-values/src/sigv4.rs:146-170` tracks quoted-string state,
+   `busbar-kernel-identity/src/egress_auth/sigv4/mod.rs:110-125` does not) — **a quoted header value
+   signs to a different signature on the two paths.**
+3. `CallerToken` and `Principal` are each defined twice as independent structs
+   (`crates/api/src/auth.rs:16,69` and `busbar-kernel-identity/src/{principal,carrier}.rs`), each
+   with its **own** hand-written redacting `Debug`. #84's `busbar-api` → `busbar-contract` fold is
+   the landing place.
+
+**THE STRUCTURAL ENABLER, IN ONE COMMAND.** `grep "busbar-kernel-" crates/busbar-kernel/Cargo.toml`
+returns **nothing**. `busbar-kernel` depends on **none** of its eight satellites — they are a
+parallel stack beside it, wired only at `crates/busbar` through `root/units_*.rs`. That is why the
+kernel keeps its own copy of every concern a satellite covers, and why a hardening lands on one side
+and not the other. **~2,360 lines of the kernel are the same job as a satellite**, and it is the
+2,360 that decides whether a request is admitted, billed, dialled or audited.
+
+**TWO CLAIMS IN THIS DOCUMENT ARE MEASURED FALSE, AND THE RATIO NEEDS A THIRD CAVEAT.** The two are
+left in place rather than edited out — eight agents share this checkout and this census is
+read-mostly — so each is cited by its wording so the correction can be applied deliberately.
+**Do not quote them; quote this.**
+
+1. **"Two Prometheus renderers"** — asserted at the kind-census table row *"`hooks/scrape.rs:191-372`
+   — a 2nd Prometheus renderer … CONFIRMED exactly"*, and again in the witness ruling's *"one
+   Prometheus renderer (not two)"* / *"and the two Prometheus renderers"*. There is **one**, and
+   there was one at v1.5.5 too:
+   `crates/busbar-kernel/src/hooks/scrape.rs:190-390` (153 lines). `metrics.rs:1334` is an 11-line
+   delegation to `PrometheusHandle::render()`; `export/prometheus.rs` emits **zero** exposition
+   bytes. A tree-wide grep for `# HELP` / `# TYPE` / `quantile=` hits exactly one production file.
+   The row's line count (141) is right; its word *"2nd"* is not — there is no first one to be
+   second to, and `scrape.rs` is not duplicable in principle: it renders *hook-reported* metrics
+   that never enter the recorder registry, because `busbar_`-prefixed names are dropped so a hook
+   cannot impersonate a first-party series.
+2. **"Four money functions"** — asserted in the witness ruling (*"exactly like the four money
+   functions and the two Prometheus renderers"*) and in its rule (*"one money function (not
+   four)"*). There are **~20 distinct money-computing functions in 5 crates**, enumerated in the
+   census §6.5. **The undercount, not the count, was the problem** — and the rule it draws ("one
+   money function") is still right, just aimed at a target four times too small.
+3. **The 2.44× is quoted without its test-scaffolding caveat, and needs one.** `test_support` does
+   not ship — `#[cfg(any(test, feature = "test-support"))]`, and
+   every enabler is a `[dev-dependencies]` edge under `resolver = "2"`. But the counter scores it
+   as `code` (correctly, by its own rule: that is not `#[cfg(test)]`), so **5,718 in-scope
+   production lines are test scaffolding that never ships** — against v1.5.5's 1,214, which
+   genuinely did. **Quote the 2.44× with that caveat beside it.**
+
+**THE HONEST NEGATIVES, because an inflated estimate is worth less than a small true one.** Five
+subsystems everyone assumed had ballooned did not, and chasing them would have been wasted work:
+**admin 1.21×** (`core-admin/src/keys.rs` is a *move* — `git grep 'async fn create_key' v1.5.5`
+returns one hit — and `v1/service.rs` **shrank by 1,581 lines**); **config+validation 1.22×** (a
+file split: `config/mod.rs` −797, `overlay.rs` −763, and `config_validate/mod.rs` **shrank** while
+gaining six validators); **governance 1.23×** (two files whose headers say *"byte-identical move"*
+out of `admin/`); **ingress 1.29×** (and `ingress/jsonrpc.rs` exists to *remove* a duplication);
+**auth 1.40×**. `pack_header_records` is confirmed **not** framing duplication, exactly as ruled.
+**No stream tee exists in the tree at all.** And the plane abstraction holds: nine plane-name
+references across 52,948 kernel lines, every one a frozen wire key with a purity marker.
+
+**THE RECOVERABLE TOTAL IS ~8,500 LINES — 9% of the excess** (~4,200 of foldable duplication plus
+4,268 of provably dead code that can simply go). The other ~9,000 in `busbar-kernel-egress` /
+`busbar-kernel-breaker` and the unwired `plane_host/` scaffold are a **switchover decision, not a
+refactor** — finish it or abandon it, but counting it as collapsible would be the inflated number.
+
+
 
 **THE ORACLE'S BLINDNESS TO PLANE MONEY IS NOW A NUMBER, NOT AN IMPRESSION.** Measured 2026-09-22
 over the committed 2,318-cell corpus, by grepping every cell for money/billing/usage/ledger/
@@ -2149,6 +2285,55 @@ the rig must keep reporting both figures side by side.
 A future read that prices flat is a failing test, not a review note — which is the direct answer to
 *enrolment is the gap no count detects*: this roster detects its own omissions.
 
+#### PARKED FOR THE OWNER — `sha2 -> cpufeatures -> libc` NOW BLOCKS THREE LANDINGS
+
+**The same edge has been hit from three directions in one day, and it cannot be repointed away.**
+
+| who | needs | blocked on |
+|---|---|---|
+| `busbar-substrate-values` split (#83a) | `busbar_api::sha256_hex` in `ir/facts.rs` | contract may not take `sha2` |
+| `auth-static-plugin` | `busbar_api::{sha256_hex, constant_time_eq}` | same |
+| `auth-admin-tokens` | same | same |
+
+`sha256_hex` has **27 consumers** across kernel-audit, kernel-identity, kernel-ledger, plugin-loader,
+plugin-sdk, the planes and the auth plugins. It is a load-bearing primitive, not a stray import.
+
+**Repointing cannot fix it, and this is the load-bearing point.** The violation is `libc`, not
+`busbar-api`. A plugin that took `sha2` DIRECTLY instead would drag exactly the same
+`cpufeatures -> libc` edge. Hashing a presented credential is the AUTH KIND'S ENTIRE JOB, so under
+the ban as written every auth plugin is permanently red for doing the one thing it exists to do.
+
+**THE BAN'S OWN STATED PURPOSE DOES NOT COVER THIS EDGE.** `[rules.source-denylist].why`:
+
+> *"The pure kinds do no I/O by construction: no socket, no file, no process, no OS handle, no
+> environment read, no HTTP client."*
+
+`cpufeatures` uses `libc` for **CPU feature detection** — `getauxval`/`sysctl`. It is not a socket,
+file, process, handle, env read or HTTP client. **Two owner-signed waivers already concede exactly
+this reasoning**, per-crate, for `busbar-plane-a2a` and `busbar-plane-mcp`:
+*"cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is
+reachable through this edge."*
+
+So the tree has already ruled this edge acceptable **twice**, case by case, and is now rediscovering
+it a third and fourth time because the ruling was recorded as two per-crate exceptions rather than as
+a property of the edge.
+
+**RECOMMENDATION (owner's call — this WIDENS a security ban, so #10/#59 applies):** make the existing
+per-crate reasoning a property of the edge — `cpufeatures -> libc` is not an I/O reach — rather than
+minting a fifth and sixth copy of the same waiver. That closes all three landings at once and deletes
+two stale waivers instead of adding to them. **The alternative the owner may prefer is narrower:**
+keep the ban absolute and give the pure kinds a hash that does not route through `cpufeatures`, which
+is a real cost (a second SHA-256 implementation) paid to keep one bright line bright.
+
+**What must NOT happen, and it is the tempting move:** adding two more per-crate `libc` waivers. That
+is the fifth repetition of a decision nobody has made once, and `denylist:stale-waivers` is ALREADY
+red on the two that exist because the offenders they excused are gone. A waiver set that grows by one
+row per rediscovery is how the tree stopped being able to say what its own rule is.
+
+**Part 7's `sha2` REFUSE does not settle this.** It reads *"plugin-sign manifest half |
+ed25519-dalek, sha2 | REFUSE"* — a SIGNATURE VERIFIER in contract, a far larger surface than a hash.
+Whether it extends to a bare `sha256_hex` is precisely the question, and it is the owner's.
+
 #### THE FIFTH PLANE WAS IN NO KIND LIST — and a positive control is what proved it
 
 `busbar-plane-decision` (the jev plane, #48) appeared in NO `[gate.plugin_kinds]` list. Absence from
@@ -2229,6 +2414,7 @@ crate went invisible again is the exact failure this closes.
 `denylist:stale-waivers` remains RED and is a SEPARATE, older finding: the `busbar-plane-a2a` and
 `busbar-plane-mcp` `libc` waivers now match no hit. Unchanged by this work, and named here so it is
 not read as fallout from it.
+
 
 > **A CRATE THAT IS IN NO LIST IS IN NO GATE.** Every kind-scoped instrument here takes its
 > population from a roster, and a roster is maintained by hand. The census rows (`[gate.census]`)
