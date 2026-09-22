@@ -251,7 +251,14 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
             .collect(),
     ));
 
-    let has_verbs = unit_crates.iter().any(|c| c == verbs_crate);
+    // ASKED OF THE SCANNED TREE, NOT OF A DIRECTORY GLOB, and the difference is whether this row
+    // can go red at all. `unit_crates` comes from `dirs_for_globs`, which reads the FILESYSTEM;
+    // `crates/busbar-unit-verbs` went with the W2.c unit fold, so the glob missed it, `has_verbs`
+    // was false, the row reported a vacuous 0 against its ceiling and PASSED — and no self-test
+    // plant could change that, because an overlay cannot put a directory on disk. A row no plant
+    // can red is not a gate. The tree IS overlay-aware, and "did we measure any file of this
+    // crate" is the same question the note wanted to ask.
+    let has_verbs = !tree.crate_files(verbs_crate).is_empty();
     let verbs_total = if has_verbs {
         crate_total(verbs_crate)
     } else {
