@@ -1012,6 +1012,34 @@ async fn invoke_inner(
     .await
 }
 
+/// THE `params` A COMMITTED REWRITE PRODUCED, or the reason they cannot be used. The A2A twin of
+/// the MCP plane's `committed_arguments`, with the same signature for the same reason.
+///
+/// Its own function so the fail-open it replaces can be driven by a test without arranging a host
+/// that emits unreadable bytes — the plane cannot make the seam misbehave, and the rule the plane
+/// owns is what happens when it does.
+///
+/// A rewrite verdict reporting `applied` is a hook saying "these bytes are the `params` now". The
+/// plane read them with `if let Ok(v) = …`, so bytes it could not read left `rewritten_params` at
+/// `None` and the submission was relayed carrying the caller's ORIGINAL `params`. For the hook class
+/// this seam exists for that is fail-OPEN in the precise sense: a redaction hook says it removed the
+/// secret from the submission, its output is unreadable, and the message WITH the secret goes to the
+/// backend agent. There is no safe fallback — proceeding with the original is the defect and the
+/// unreadable bytes are not `params` — so the answer is `Err`, and the submission is refused.
+///
+/// A JSON-RPC `params` member is a STRUCTURED value by section 4.2 and an OBJECT for every A2A
+/// method, so a well-formed JSON scalar is refused here too: the write-back at the relay-body site
+/// inserts this value under `"params"`, and admitting `7` would put a malformed envelope on the hop
+/// after telling the hook its rewrite landed.
+pub(super) fn committed_params(args_json: &[u8]) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(args_json).map_err(|e| format!("the output is not JSON: {e}"))?;
+    if !value.is_object() {
+        return Err("the output is JSON but not a params object".to_string());
+    }
+    Ok(value)
+}
+
 /// EVERYTHING AFTER THE ENVELOPE: this plane's own vocabulary and its verb dispatch — steps 9 to
 /// 12 of the measurement in `busbar_kernel::ingress::protocol`.
 ///
@@ -1339,13 +1367,54 @@ async fn admitted(
                     .into_response();
             }
             busbar_kernel::plane_host::TransformVerdict::Proceed { applied, args_json } => {
+                // AN OUTPUT THAT WILL NOT PARSE REFUSES THE SUBMISSION. This was
+                // `if let Ok(v) = serde_json::from_slice(…) { … }`, so a hook that COMMITTED a
+                // rewrite and then produced bytes busbar could not read left `rewritten_params` at
+                // `None` and the relay forwarded the caller's ORIGINAL `params`. For the hook class
+                // this seam exists for that is fail-OPEN in the precise sense: a redaction hook says
+                // "I have removed the secret from this submission", its output is unreadable, and
+                // busbar sends the message WITH the secret still in it to the backend agent. The
+                // operator wrote a hook that ran, said it applied, and was silently undone.
+                //
+                // There is no safe fallback available here. Proceeding with the original IS the
+                // defect; the unreadable bytes are not `params`. So the submission is refused — the
+                // same answer the hook's own `Reject` gets, because a rewrite that cannot be read is
+                // a rewrite that did not happen, and this seam's whole contract is that a committed
+                // rewrite is the `params` that go out. The MCP twin (`mcp/method.rs`,
+                // `committed_arguments`) answers the identical question the identical way.
                 if applied {
-                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&args_json) {
+                    match committed_params(&args_json) {
                         // Stash the rewritten params; the write-back into `envelope` happens at the
                         // relay-body site (deferred past `context_id`'s borrow). The relay re-serializes
                         // the envelope ONLY when this landed, so the passthrough stays byte-identical
                         // absent a committed rewrite.
-                        rewritten_params = Some(v);
+                        Ok(v) => rewritten_params = Some(v),
+                        Err(e) => {
+                            engine_host.audit_emit(
+                                AUDIT_ACTION,
+                                &resource,
+                                busbar_contract::vocab::OUTCOME_REJECTED,
+                                &actor,
+                            );
+                            tracing::error!(
+                                agent = %admitted.dispatch.agent_id,
+                                error = %e,
+                                "a rewrite (prompt: rw) hook committed a rewrite whose output \
+                                 busbar could not read back; the submission is refused rather than \
+                                 relayed with the params the hook said it had replaced"
+                            );
+                            return (
+                                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                axum::Json(super::rpcerror::body(
+                                    &rpc_id,
+                                    super::rpcerror::A2aError::Internal,
+                                    "a rewrite hook attached to this agent committed a rewrite that \
+                                     busbar could not read back. The submission is refused rather \
+                                     than relayed with the params the hook said it had replaced.",
+                                )),
+                            )
+                                .into_response();
+                        }
                     }
                 }
             }
