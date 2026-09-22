@@ -29,8 +29,29 @@
 # NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same shape as the
 # previous two pins; re-pin to the integration/merge commit when that branch lands.
 #
+# 2026-09-22: moved to the commit that lands the three oracle-baseline owner rulings, which together
+# change what a GREEN oracle run is allowed to claim. (1) The clock fields stop normalising: `as_of`,
+# `window.start` and `window.end` flattened to `0` before comparison, so a response carrying a wrong
+# rate-card epoch over a wrong billing window was byte-identical to a right one — measured with the
+# shipped binary on the shape of `ledger|rate-history|as-of`, spend figure identical to the byte. A
+# cell may now declare `"clock": {...}`; the recorder binds it into the request as `{CLOCK:<path>}`
+# (the seam that already binds minted key ids and listener addrs) so busbar is DRIVEN to the instant
+# and the echo is compared EXACTLY, with a fixed `<CLOCK-PIN-MISS:...>` marker keeping the red
+# deterministic. `latency_ms` stays masked and is refused as a pin. An UNPINNED cell normalizes
+# byte-identically to before, so no golden moves and none is re-recorded here. (2) A cell with no
+# prior golden reports UNBASELINED, never PASS: measured over this corpus, 1402 of 2318 cells used to
+# produce no ledger row at all and could not be told from a success; they now carry their own row,
+# `unbaselined.txt`, `totals.unbaselined` and a summary line, and reach the turnstile as NoGolden.
+# It does NOT set the exit code — making gaps red is a separate ruling. (3) The golden is a dated
+# history: `--baseline-version <V>` resolves `golden/<V>` and REFUSES a version that does not exist,
+# naming it and listing what the history holds, instead of silently falling back; `golden_version`
+# is no longer the literal "1.5.5", so `golden/1.6.0` can land at the cut and 1.6.1 be judged
+# against it. `--golden-dir` still works and reads the version off the recording's own meta.json.
+# NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same shape as the
+# previous three pins; re-pin to the integration/merge commit when that branch lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=89718d8
+release_ref=7e00b54
 crate=busbar-release-oracle
 bin=busbar-oracle
