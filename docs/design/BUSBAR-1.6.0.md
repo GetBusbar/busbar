@@ -1642,17 +1642,38 @@ above name the INSTANCES; this names the KIND, and the absence of a kind definit
    per-request lifecycle. The resemblance is the CARRIER REQUEST and nothing else. Writing "like a
    plane" without that fence is how a reader concludes an exporter is metered.
 
-   **OPEN — whether one kind-agnostic seam serves every kind. Assistant to analyse; NOT owner-ruled.**
-   Owner: *"it could be it could not be. you analyze. it could be `kernel.getTransport('http', out)`
-   and thats both planes and exporters and plugin Y in the future."* The candidate is one
-   kind-agnostic acquisition seam — carrier id plus direction in, a `(transport, auth)` pair out —
-   with no kind in its signature. Three things argue for it: #3 says a plugin is a plugin, so a
-   per-kind carrier API contradicts the law; Part 4 Axis 3 puts the SSRF/pin/breaker chokepoint in the
-   host, and one seam is one place to enforce it rather than N places to get it wrong; and the
-   measured history is that 4 of 4 protocols built their own dial stack, which is what a
-   kind-shaped API produces. The honest complication: this seam does not exist yet in any form, so
-   "one seam or two" is downstream of whether `kind: transport` gets built at all — which is the
-   owner's open scope call, not a thing to settle here.
+   **THE CARRIER SEAM IS ONE SEAM — kind-agnostic AND role-agnostic. Assistant ruling 2026-09-22,
+   on the owner's sketch** (*"it could be `kernel.getTransport('http', out)` and thats both planes and
+   exporters and plugin Y in the future"*) **and his third case** (*"admin i assume also asks for
+   transports in same way? http/rest etc — so thats 3 use cases of asking kernel for a transport"*).
+
+   Three consumer classes, spanning both directions:
+
+   | consumer | direction(s) | what it does TODAY |
+   |---|---|---|
+   | planes | inbound (serve) + outbound (dial upstreams) | 4 of 4 wrote private dial stacks |
+   | exporters | outbound (push) or inbound (scraped) | 4 of 4 open their own carrier |
+   | admin / oauth2 | inbound (serve HTTP/REST) | `serve_listener` binds raw `tokio::net::TcpListener` + axum |
+
+   **Admin is what makes the seam ROLE-agnostic, and that is the load-bearing half.** Admin and oauth2
+   are NOT plugins (#3 — cleanliness crates, always compiled in). So this is not a plugin API: it is a
+   **kernel service that core crates and dropped-in plugins call identically**. If admin asks for its
+   listener the same way a third-party export cdylib asks for its push carrier, the seam is neutral in
+   the strongest available sense. A carrier API with a KIND in its signature contradicts #3; one with a
+   ROLE in it (core vs plugin) contradicts it harder.
+
+   Shape: carrier id + direction in, a `(transport, auth)` pair out, no kind and no role in the
+   signature. The RESULT is direction-typed — inbound yields bind/accept/a connection stream, outbound
+   yields dial/a connection — which is one seam with two result shapes, not two seams.
+
+   **AND THIS RE-READS THE EVIDENCE.** "4 of 4 protocols wrote their own" looked like selective
+   rejection of an abstraction that did not fit. Counting all three classes, the tally is: every
+   protocol, every export sink, AND core's own admin and data listeners bypass `Transport::listen`/
+   `dial`. That is not rejection — it is **universal improvisation around something that was never
+   built**. Nobody could route through it, so everybody routed around it.
+
+   **Still the owner's scope call:** whether `kind: transport` gets built for 1.6.0 at all. The seam's
+   SHAPE is settled here; its EXISTENCE is not.
 
 **Property 6 makes `kind: transport` load-bearing for a fifth consumer, which changes how its absence
 reads.** Measured 2026-09-22: `transport` was never built as a plugin kind on EITHER ABI generation
