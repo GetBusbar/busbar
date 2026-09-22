@@ -164,7 +164,7 @@ pub fn valid_metric_name(name: &str) -> bool {
 /// over-cap name/label/help/unit string is never mistaken for the complete, real value once it
 /// reaches an admin API reader or a Prometheus scrape — the truncation is observable in the
 /// value itself, not silent. Total length stays ≤ `n` chars.
-fn sanitize_cap(raw: &str, n: usize) -> String {
+pub(crate) fn sanitize_cap(raw: &str, n: usize) -> String {
     let sanitized = sanitize_reject_message(raw);
     let chars: Vec<char> = sanitized.chars().collect();
     if chars.len() > n {

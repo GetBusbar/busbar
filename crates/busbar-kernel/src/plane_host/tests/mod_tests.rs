@@ -254,21 +254,29 @@ fn wired_auth_resolve_writes_pod_only_on_ok() {
     });
 }
 
+/// Build a `MetricSample` over a borrowed name and a value — the POD a plane hands `metrics_emit`.
+fn sample_of(name: &[u8], value: f64) -> MetricSample {
+    MetricSample {
+        size: core::mem::size_of::<MetricSample>() as u32,
+        version: busbar_plugin::hot::POD_VERSION,
+        _reserved: 0,
+        _reserved2: 0,
+        value_bits: value.to_bits(),
+        name_ptr: name.as_ptr(),
+        name_len: name.len(),
+        labels_ptr: core::ptr::null(),
+        labels_len: 0,
+    }
+}
+
 #[test]
 fn wired_metrics_emit_reaches_the_recorder() {
     with_test_state(|host, vt, _scope| {
-        let name = b"busbar_plane_host_test";
-        let sample = MetricSample {
-            size: core::mem::size_of::<MetricSample>() as u32,
-            version: busbar_plugin::hot::POD_VERSION,
-            _reserved: 0,
-            _reserved2: 0,
-            value_bits: 1.5f64.to_bits(),
-            name_ptr: name.as_ptr(),
-            name_len: name.len(),
-            labels_ptr: core::ptr::null(),
-            labels_len: 0,
-        };
+        // An ADMISSIBLE name: within the charset and outside the reserved `busbar_` namespace.
+        // (It was `busbar_plane_host_test` before the host started bounding this slot — which is
+        // the point: the old wiring let a plane write into the first-party namespace, and the test
+        // that "proved the sample reaches the recorder" was itself doing it.)
+        let sample = sample_of(b"plane_host_test", 1.5);
         assert_eq!(
             (vt.metrics_emit.unwrap())(host, &sample as *const MetricSample),
             StatusClass::Ok
@@ -279,6 +287,74 @@ fn wired_metrics_emit_reaches_the_recorder() {
             StatusClass::Refused
         );
     });
+}
+
+/// THE HOST BOUNDS THE HOT LANE TOO (DECISIONS #85). A plane REPORTS a sample; what it is allowed to
+/// have said is the host's decision, and it is the SAME decision the cold lane's envelope fold makes
+/// — `crate::metrics::observe::admits_metric_name`, asked once and answered once.
+///
+/// Every rejection here was reachable before: the slot took the name verbatim, invented
+/// `busbar_plane_metric` when given none, and never looked at the value. So a plane could shadow a
+/// first-party series, emit a name Prometheus cannot parse (which costs the WHOLE exposition, not
+/// the sample), or push a `NaN` straight into the recorder.
+#[test]
+fn metrics_emit_refuses_what_the_host_does_not_admit() {
+    with_test_state(|host, vt, _scope| {
+        let emit = vt.metrics_emit.unwrap();
+        // The RESERVED namespace: a plane cannot impersonate a first-party series.
+        let reserved = sample_of(b"busbar_http_requests_total", 1.0);
+        assert_eq!(
+            emit(host, &reserved as *const MetricSample),
+            StatusClass::Refused
+        );
+        // Outside the Prometheus identifier charset.
+        for bad in [
+            &b"Bad-Name"[..],
+            &b"1leading"[..],
+            &b"has space"[..],
+            &b"UPPER"[..],
+        ] {
+            let s = sample_of(bad, 1.0);
+            assert_eq!(
+                emit(host, &s as *const MetricSample),
+                StatusClass::Refused,
+                "{:?} must not reach the recorder",
+                String::from_utf8_lossy(bad)
+            );
+        }
+        // NON-FINITE values. `f64::from_bits` hands these back for bit patterns a plane can produce.
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let s = sample_of(b"plane_host_test", v);
+            assert_eq!(emit(host, &s as *const MetricSample), StatusClass::Refused);
+        }
+        // NO NAME is not a metric. The old wiring invented `busbar_plane_metric` here — a reserved
+        // name no plane chose and no operator could attribute.
+        let unnamed = MetricSample {
+            size: core::mem::size_of::<MetricSample>() as u32,
+            version: busbar_plugin::hot::POD_VERSION,
+            _reserved: 0,
+            _reserved2: 0,
+            value_bits: 1.0f64.to_bits(),
+            name_ptr: core::ptr::null(),
+            name_len: 0,
+            labels_ptr: core::ptr::null(),
+            labels_len: 0,
+        };
+        assert_eq!(
+            emit(host, &unnamed as *const MetricSample),
+            StatusClass::Refused
+        );
+    });
+}
+
+/// ONE RULE, BOTH LANES. The predicate the hot slot asks is the predicate the cold envelope fold
+/// asks — asserted directly, so the two can never be "fixed" apart.
+#[test]
+fn both_abi_lanes_ask_the_same_metric_name_question() {
+    assert!(crate::metrics::observe::admits_metric_name("plane_host_test"));
+    assert!(!crate::metrics::observe::admits_metric_name("busbar_anything"));
+    assert!(!crate::metrics::observe::admits_metric_name("Bad-Name"));
+    assert!(!crate::metrics::observe::admits_metric_name(""));
 }
 
 /// The async guard is `Send` (so a future holding it across `.await` stays `Send`) and the Send
