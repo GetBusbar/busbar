@@ -311,7 +311,7 @@ reap_runaways() {
       printf 'runaway test binary: WOULD KILL pid %s after %dm — %s\n' "$pid" "$((secs / 60))" "$cmd"
     fi
   done < <(ps -eo pid,etime,command 2>/dev/null \
-             | grep -E 'target/[a-z]+/deps/[a-z_]+-[0-9a-f]{8,}' | grep -v grep \
+             | grep -E '/(debug|release)/deps/[a-z_]+-[0-9a-f]{8,}' | grep -v grep \
              | awk '{ n=split($2, t, /[-:]/);
                       if (n==2)      secs = t[1]*60 + t[2];
                       else if (n==3) secs = t[1]*3600 + t[2]*60 + t[3];
@@ -335,6 +335,6 @@ printf 'load: %s | rustc %s, cargo %s, test-bins %s, tool-bins %s, product %s\n'
   "$(uptime | sed 's/.*load averages*: //')" \
   "$(pgrep -c rustc 2>/dev/null || echo 0)" \
   "$(pgrep -c cargo 2>/dev/null || echo 0)" \
-  "$(pgrep -fc 'target/[a-z]*/deps/' 2>/dev/null || echo 0)" \
-  "$(pgrep -fc 'target/[a-z]*/[a-z_-]*$' 2>/dev/null || echo 0)" \
+  "$(pgrep -fc '/(debug|release)/deps/' 2>/dev/null || echo 0)" \
+  "$(pgrep -fc '/(debug|release)/[a-z_-]*$' 2>/dev/null || echo 0)" \
   "$(pgrep -fc 'release/busbar' 2>/dev/null || echo 0)"
