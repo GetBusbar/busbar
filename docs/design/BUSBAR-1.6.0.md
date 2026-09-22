@@ -1663,6 +1663,38 @@ filesystem path: the host opens the destination and hands the plugin a write sin
 
 ## Traps this tree has already sprung — do not re-learn them
 
+**A GREP CANNOT SEE DATA-DRIVEN CODE, AND EVERY SOURCE-SCANNING GATE HERE IS A GREP.** Demonstrated
+2026-09-22, by an agent proving its own method wrong rather than trusting it. It swept
+`crates/busbar-kernel/src/plane_host/egress.rs` for `TcpStream|connect(|HttpsConnector|ClientConfig|
+read_until|fill_buf|# HELP|Authorization|Bearer|signing_key|hmac|base64` — two hits, both comments —
+then read the file and found a **live credential builder it had just missed**, `inject_credential`
+at `:426-478`:
+
+```rust
+let value = format!("{scheme}{}", String::from_utf8_lossy(&secret));
+spec.headers.push((header_name, value));
+```
+
+The header NAME arrives from the ABI descriptor; the SCHEME is a borrowed string. There is no
+literal `Authorization`, no `Bearer`, no `base64`, no `hmac` anywhere near it. **A grep over the
+exact file, for the exact thing, returned nothing.**
+
+This is not one agent's mistake — it is a property every instrument in this tree shares.
+`instance-noun-neutrality`, `plane-pricing-blindness`, `plane-purity`, the money-path scans and the
+LOC censuses are all source scans, and **all of them are blind to any act assembled from variables
+rather than spelled as a literal.** The `\x6d` escape in `plane/approvals.rs` is the same blindness
+reached deliberately from the other side: identical bytes, invisible spelling.
+
+Two consequences to hold on to:
+
+- **A green source-scanning gate is evidence about SPELLINGS, not about BEHAVIOUR.** Say so when
+  citing one. "plane-purity passes" means no plane named a kernel crate *in a way the scanner can
+  see*.
+- **Where a rule must be true of bytes rather than of text, test the bytes.** The neutrality rule is
+  the clearest case: it is about what core NAMES, and a hex escape defeats it while changing nothing
+  about what the binary contains.
+
+
 - **`git grep -E` does NOT honour `\b`.** Use `-P`. And never grep a concatenated `git archive`
   blob — that produced a false CRITICAL SSRF finding.
 - **A missing check is not a vulnerability until you show the line executes.** Two findings were
