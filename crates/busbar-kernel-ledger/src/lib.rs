@@ -69,19 +69,21 @@ pub mod checkpoint;
 // rates+usage+ledger as three modules).
 pub mod cost;
 pub mod usage;
-// The money-path DURABLE RECORDS, relocated BYTE-IDENTICALLY from the retiring `busbar-api` under
-// DECISIONS #35 (W3.a). `#[allow(missing_docs)]` because the module is a verbatim module-path-only
-// move of the `busbar-api` store contract (which did not enforce `missing_docs`); documenting the
-// handful of self-evident required trait methods (`get_key`/`list_keys`/…) would EDIT the moved
-// surface, and the sacred constraint here is that the move changes nothing. The oracle proves the
-// wire bytes; the crate's own record tests prove the serde round-trips.
+// THE MONEY-PATH DURABLE RECORDS ARE NOT HERE. They were relocated BYTE-IDENTICALLY into the ONE
+// contract crate's `records` module under DECISIONS #83/#84 — #83 draws the seam (contract =
+// SHAPES, the data and its wire encoding; this crate = SEMANTICS, what the shapes MEAN and what may
+// be done with them) and #84 is why it is urgent: while they sat here, every third-party plugin's
+// compile closure ran plugin → the author SDK → the retiring api shim → THIS CRATE → the contract,
+// so a store plugin transitively linked THE MONEY ONE-BOOK and a ledger type change forced every
+// third-party plugin to rebuild. Nothing in this crate ever named the `records` module: it sat here
+// only because #35 staged it out of the api shim, and it leaves without touching a single line of
+// ledger arithmetic. The book still settles, still posts, still seals — it just no longer ships its
+// own definition of settlement into a plugin author's build.
 pub mod digest;
 pub mod identity;
 pub mod legacy;
 pub mod migration;
 pub mod recompute;
-#[allow(missing_docs)]
-pub mod records;
 pub mod settle;
 pub mod totals;
 pub mod verify;

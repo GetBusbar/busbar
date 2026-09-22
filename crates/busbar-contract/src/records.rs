@@ -1,19 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The MONEY-PATH DURABLE RECORDS — the data types a `db` plugin (SQLite built-in, Postgres,
-//! Valkey, …) reads and writes, plus the [`RecordStore`] trait itself and its error type. The plain
-//! records that cross the seam live here too, so a plugin crate can name them without depending on
-//! the engine.
+//! The MONEY-PATH DURABLE RECORD SHAPES — the data types a `db` plugin (SQLite built-in, Postgres,
+//! Valkey, …) reads and writes, their wire encoding, plus the [`RecordStore`] trait itself and its
+//! error type. The plain records that cross the seam live here too, so a plugin crate can name them
+//! without depending on the engine.
 //!
-//! These are the same records the admin API and governance enforcement speak. They RELOCATED here
-//! from the retiring `busbar-api` crate under DECISIONS #35 (W3.a — the money one-book): the move is
-//! module-path-ONLY, BYTE-IDENTICAL on the wire (serde field names / wire bytes UNCHANGED, the
-//! hand-written `virtual_key_wire` mirror travels verbatim, oracle-proven). The five false-friend
-//! api-side names de-collide on the move — `Store`→[`RecordStore`], `StoreError`→[`RecordStoreError`],
-//! `StoreResult`→[`RecordStoreResult`] — so nothing here can ever collide with `busbar-contract`'s
-//! same-spelled ABI types. `busbar-api` re-exports these under their original names for staged
-//! back-compat until it retires (W5.b). No I/O, no engine state: pure data.
+//! ## Why the SHAPES live in the contract and the SEMANTICS do not (DECISIONS #83/#84)
+//!
+//! #83 fixes the global definition: **this crate holds the SHAPE of anything — the data and its
+//! wire encoding — and the money one-book holds the SEMANTICS, what the shapes MEAN and what may
+//! be done with them.** A store plugin must agree on the shape of what it persists; it must never
+//! participate in what the book *means*. So the record shapes are contract; settlement, postings,
+//! totals, the balance identity, the recompute and the checkpoint chain are the book's, and stay
+//! there.
+//!
+//! #84 is why it matters rather than merely tidies: before this module moved, every third-party
+//! plugin's compile closure ran plugin → the author SDK → the retiring api shim → THE MONEY
+//! ONE-BOOK → here, so **a store plugin transitively linked the book** and any change to a ledger
+//! type forced every third-party plugin to rebuild, even though nothing it names moved. Owner's
+//! rule: *"plugins use sdk, sdk uses nothing busbar-*"*. The book leaves the plugin path here.
+//!
+//! ## Provenance, and the byte-identity guard
+//!
+//! These are the same records the admin API and governance enforcement speak. They were relocated
+//! out of the retiring api shim into the money one-book under DECISIONS #35 (W3.a), and from there
+//! to here under #83/#84. Both moves are module-path-ONLY and BYTE-IDENTICAL on the wire (serde
+//! field names / wire bytes UNCHANGED, the hand-written [`virtual_key_wire`] mirror travels
+//! verbatim, oracle-proven).
+//!
+//! The five false-friend names de-collided on the FIRST move — `Store`→[`RecordStore`],
+//! `StoreError`→[`RecordStoreError`], `StoreResult`→[`RecordStoreResult`] — and that de-collision
+//! is now load-bearing rather than merely tidy: [`crate::kinds::Store`] (the 22-method
+//! `Plugin`-bound journal ABI) and [`RecordStore`] (the 31-method domain-record CRUD a `db` plugin
+//! implements) are DIFFERENT contracts that now live in ONE crate, and they must never be spelled
+//! the same. The api shim re-exports these under their original names for staged back-compat until
+//! it retires (W5.b). No I/O, no engine state: pure data.
 
 /// A kind-tagged scope reference — e.g. `{ kind: "pool", value: "fast" }`. The generic
 /// admission-topology substrate: everywhere busbar used
@@ -591,7 +613,7 @@ pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ,
 /// compile-fail below is proven to fail for the right reason and not a bad path):
 ///
 /// ```rust,no_run
-/// fn counts_for(row: &busbar_kernel_ledger::records::MeteringRow) -> u64 {
+/// fn counts_for(row: &busbar_contract::records::MeteringRow) -> u64 {
 ///     // The class-keyed raw counts #71 requires — these fields exist.
 ///     row.tokens_input + row.tokens_output + row.requests
 /// }
@@ -601,7 +623,7 @@ pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ,
 /// compile:
 ///
 /// ```compile_fail
-/// fn per_plugin_price(row: &busbar_kernel_ledger::records::MeteringRow) -> u64 {
+/// fn per_plugin_price(row: &busbar_contract::records::MeteringRow) -> u64 {
 ///     // #77(1): the money record carries no per-plugin pricing field. There is nothing to key a
 ///     // price on, so this does not compile — per-plugin pricing is unrepresentable, not banned.
 ///     row.plugin_price_nanos
@@ -1460,5 +1482,5 @@ impl PlaneRequestCtx {
 }
 
 #[cfg(test)]
-#[path = "records_tests.rs"]
+#[path = "tests/records_tests.rs"]
 mod tests;

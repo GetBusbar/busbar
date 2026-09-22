@@ -525,6 +525,25 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
 /// [`PENDING_EDGES`] joins it: those are classes the DESIGN grants ahead of the tree, which is the
 /// same kind of statement made about a crate that does not exist yet.
 const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
+    // `busbar-api` REACHES THE CONTRACT FACE, and that is the #84 fix rather than a widening.
+    //
+    // Every plugin in the tree names `busbar-api`, so whatever `busbar-api` names is in every
+    // third-party plugin's compile closure. What it named was `busbar-kernel-ledger` — THE MONEY
+    // ONE-BOOK — for one re-export shim and nothing else, so a store plugin transitively linked
+    // settlement and a ledger type change forced every third-party plugin to rebuild. DECISIONS #84
+    // (owner-locked 2026-09-22) calls that "the nightmare" by name and rules that nothing on the
+    // plugin path may link a crate holding SEMANTICS; DECISIONS #83 draws the seam the record
+    // shapes move along (contract = SHAPES, ledger = SEMANTICS).
+    //
+    // So this grant REPLACES a `not-allowed` row (`busbar-api -> busbar-kernel-ledger`, struck in
+    // qa/kind-isolation.toml in the same commit) with the class every other kind already has:
+    // `kernel`, `legacy`, `plane`, `store`, `substrate`, `transport`, `unit`, `cleanliness` and
+    // `root` are all granted `-> contract` below, on ARCHITECTURE.md 1.2's own words that
+    // busbar-contract "is the face every kind is written against". `api` was absent from that list
+    // only because `busbar-api` had never named the contract — not because the architecture said it
+    // may not. The edge dies with the crate when #35/W5.b retires `busbar-api`; until then this is
+    // the direction the architecture wants it pointing.
+    ("api", "contract"),
     // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
     ("contract", "grammar"),

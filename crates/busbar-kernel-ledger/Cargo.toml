@@ -32,14 +32,12 @@ path = "src/lib.rs"
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 sha2 = { workspace = true }
-# The money-path durable records (`records` module, relocated from `busbar-api` under #35) are serde
-# wire types — VirtualKey carries a HAND-written serde impl (`virtual_key_wire`) whose bytes the
-# oracle pins. Records are the ONLY serde in this crate; the ledger arithmetic itself writes no bytes.
-serde = { workspace = true }
+# NO `serde`. The money-path durable record SHAPES left for the contract crate's `records` module
+# under DECISIONS #83/#84, and they were the ONLY serde in this crate — the ledger arithmetic itself
+# writes no bytes. The book states what money MEANS; it does not define what money LOOKS LIKE on a
+# disk, and it is no longer in a plugin author's compile closure because it does not.
 
 [dev-dependencies]
-# The relocated record tests round-trip the wire types through real JSON to prove byte-identity.
-serde_json = { workspace = true }
 # The folded `cost` module's rate-conversion agreement test cross-checks against the budget crate's
 # `RateNanos` (former busbar-unit-cost dev-dep on busbar-unit-admission, #36). Dev-only, so the
 # budget -> ledger production edge is not made cyclic.

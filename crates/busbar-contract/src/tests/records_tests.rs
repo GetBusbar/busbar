@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/api/src/store.rs`.
+//! Tests for `crates/busbar-contract/src/records.rs` — the money-path durable record shapes.
 
 use super::*;
 

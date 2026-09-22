@@ -4,7 +4,8 @@
 //! `cargo xtask gate money-invariants` — THE W3.b MONEY-MODEL INVARIANTS, ENFORCED.
 //!
 //! This is the wave-W3.b proof (arm-gate-per-wave). DECISIONS #77 locks the money model; W3.a
-//! relocated the money-path durable records into `busbar-kernel-ledger/src/records.rs`. The read-time
+//! relocated the money-path durable records out of `busbar-api`; #83/#84 landed their SHAPES in
+//! `busbar-contract/src/records.rs`, which is where this gate reads them. The read-time
 //! pricing VIEW (`cost/project.rs derive_spend_*`) and the class-keyed usage COUNTS
 //! (`usage/meter.rs`) already exist — what was missing were the GATES that keep the invariants from
 //! silently regressing. This gate holds three of #77's structural claims, each red-before-green.
@@ -18,7 +19,7 @@
 //! ## Scoping the #77(1) rule correctly — the routing record is NOT a money record
 //!
 //! #77(1) forbids keying money AMOUNTS by plugin/plane. It does NOT forbid a routing record from
-//! naming a plane: [`busbar_kernel_ledger::records::PlaneRecord`]'s `kind` is exactly that — the
+//! naming a plane: [`busbar_contract::records::PlaneRecord`]'s `kind` is exactly that — the
 //! neutral routing selector that replaces a protocol-named store method, carrying an OPAQUE body and
 //! no money figure at all. So `PlaneRecord`/`PlaneSelector`/`PlaneDisposition` are deliberately
 //! OUTSIDE the money-record set this gate scans: the rule is "money amounts aren't keyed by plugin",
@@ -65,8 +66,10 @@ const PRICE_TOKENS: &[&str] = &[
 /// it today.
 const PRICE_ALLOW: &[&str] = &["pricing_version"];
 
-/// The one records file W3.a relocated the money-path durable records into.
-const RECORDS_PATH: &str = "crates/busbar-kernel-ledger/src/records.rs";
+/// The one records file the money-path durable record SHAPES live in. W3.a relocated them out of
+/// `busbar-api` into `busbar-kernel-ledger`; #83/#84 relocated them on into `busbar-contract` (shapes
+/// are contract, ledger semantics are not, and nothing on the plugin path may link semantics).
+const RECORDS_PATH: &str = "crates/busbar-contract/src/records.rs";
 
 /// The facts-line constructors (#77(2) / `busbar-contract` `Posted`). One sealed line per unit.
 const SEAL_MARKERS: &[&str] = &["Posted::settle(", "Posted::settle_late("];

@@ -24,6 +24,16 @@ pub(crate) mod json_grammar;
 pub mod kinds;
 pub mod plane;
 pub mod plugin;
+// The money-path durable record SHAPES (DECISIONS #83: contract = shapes, ledger = semantics;
+// DECISIONS #84: nothing on the plugin path may link a crate holding semantics). The module is a
+// module-path-ONLY, byte-identical relocation of the store contract that used to sit in
+// the retiring api shim and then in the money one-book; `#[allow(missing_docs)]` travels with
+// it for the same reason it did there — documenting the handful of self-evident required trait
+// methods (`get_key`/`list_keys`/…) would EDIT the moved surface, and the sacred constraint is that
+// the move changes nothing. The oracle proves the wire bytes; the module's own record tests prove
+// the serde round-trips.
+#[allow(missing_docs)]
+pub mod records;
 pub mod scratch;
 pub mod slice;
 pub mod spans;

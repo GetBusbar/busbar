@@ -1795,11 +1795,12 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
     }
 
     // The Store trait relocated to `busbar-kernel-ledger` (de-collided to `RecordStore`) under #35
-    // (W3.a); `busbar-api` re-exports it as `Store`. The completeness gate reads the trait at its
-    // real home.
+    // (W3.a) and on to `busbar-contract` under #83/#84 — the record SHAPES are contract, the
+    // ledger's SEMANTICS are not, and a plugin may name only the former; `busbar-api` re-exports it
+    // as `Store`. The completeness gate reads the trait at its real home.
     let trait_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../busbar-kernel-ledger/src/records.rs"
+        "/../busbar-contract/src/records.rs"
     ));
     let abi_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

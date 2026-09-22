@@ -149,6 +149,13 @@ drain = "delete the auth name from the api crate: a api reaches auth through the
 
 [[edge]]
 from = "api"
+to = "contract"
+cite = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against; DECISIONS #83/#84 point busbar-api's one re-export shim at the record SHAPES there rather than at the money one-book. Unlike every other row in this table the number here is NOT debt: it is the coupling the architecture wants."
+why = "crates of kind api naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none while busbar-api stands. The hits go to zero when #35/W5.b retires busbar-api and every dependent names busbar_contract::records directly; the ratchet here IS that retirement."
+
+[[edge]]
+from = "api"
 to = "legacy"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind api naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -3420,13 +3427,13 @@ drain   = "unknown until the ruling. If the edge is granted, this row becomes `a
 
 [[dep]]
 from    = "busbar-api"
-to      = "busbar-kernel-ledger"
+to      = "busbar-contract"
 half    = "shipped"
 count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-api names busbar-kernel-ledger: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-kernel-ledger dependency from busbar-api's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against. DECISIONS #83 (contract = SHAPES, ledger = SEMANTICS) and #84 (nothing on the plugin path may link a crate holding semantics) are what pointed this edge here."
+why     = "busbar-api names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. THIS ROW REPLACES `busbar-api -> busbar-kernel-ledger`, which was `not-allowed` and which this commit drained: every plugin names busbar-api, so that edge put THE MONEY ONE-BOOK in every third-party plugin's compile closure and a ledger type change forced every third-party plugin to rebuild (#84, owner-locked 2026-09-22). The re-export shim now reaches the record SHAPES in the contract instead, and the book's semantics are not nameable from the plugin path at all. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none while busbar-api stands: ARCHITECTURE.md grants this class. The edge dies with the crate — #35/W5.b retires busbar-api and its re-exports with it, at which point this row is struck as dead."
 
 [[dep]]
 from    = "busbar-admin"
