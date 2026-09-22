@@ -598,6 +598,16 @@ pub(crate) struct Runner {
     /// decision about THIS field as much as about retention.
     pub(crate) authorised: super::upstream::Authorised,
     pub(crate) arguments: serde_json::Value,
+    /// THE OPERATOR'S APPROVED SCHEMA for this tool, carried so the argument guard can run AGAIN on
+    /// the merged answers.
+    ///
+    /// `upstream::authorise` screens arguments once, at ingress, against this same schema. The task
+    /// path does not go through `authorise` — it dispatches via `upstream::call` — so without this
+    /// the guard saw only the PRE-merge arguments and a `tasks/update` answer reached the upstream
+    /// unjudged. Carried rather than re-read from the catalogue at dispatch time: the document the
+    /// walk reads must be the one the operator signed off when the task was created, not whatever a
+    /// refresh has since replaced it with.
+    pub(crate) input_schema: Option<serde_json::Value>,
     pub(crate) server_id: String,
     pub(crate) max_rounds: u32,
     /// The rounds of input busbar asks its caller for from inside the task, already filtered to
@@ -760,6 +770,38 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
     // gate means by it, and what makes the gathered answer observable in the task's own result
     // rather than discarded at busbar.
     let arguments = merge_answers(&runner.arguments, &task.answers());
+
+    // THE GUARD, RUN AGAIN, on what is actually about to be dispatched.
+    //
+    // The arguments were screened once at ingress, against the arguments as they were THEN. The
+    // answers just merged in are caller-supplied and were never screened at all, so screening only
+    // the pre-merge value is a time-of-check/time-of-use hole: a caller creates the task with a
+    // benign `url`, clears the ingress screen, then rewrites that same key to an internal address
+    // through `tasks/update` and the walk never looks again. Re-running here judges the bytes that
+    // actually travel.
+    //
+    // The same schema and the same policy `upstream::authorise` used, for the same reason it gives:
+    // an absent schema is walked as `{"type": "object"}` rather than skipped, because skipping would
+    // make "declare no schema" the way past the check.
+    {
+        let schema = runner
+            .input_schema
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
+        if let Err(refusal) =
+            super::client::argguard::guard(&schema, &arguments, runner.authorised.policy)
+        {
+            // The same terminal shape a refusal from inside the loop takes, so a caller cannot tell
+            // from the task's own record whether the screen caught it before the first round or
+            // during one -- and either way no byte reached the upstream.
+            task.fail(
+                TASK_PROTOCOL_ERROR_CODE,
+                refusal.to_string(),
+                host.clock_now_ms(),
+            );
+            return;
+        }
+    }
 
     // (3) THE UPSTREAM LEG, through the SAME bounded, per-round-gated loop the synchronous path
     // uses. Not a second dispatcher: an upstream's own `input_required` must terminate at busbar on

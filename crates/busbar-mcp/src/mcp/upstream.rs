@@ -189,6 +189,33 @@ impl SetupRefusal {
             SetupRefusal::Trust(r) => r.reason(),
         }
     }
+
+    /// The CALLER-FACING rendering — the text `refuse_setup` puts VERBATIM into the JSON-RPC error
+    /// returned to the calling MCP client. Deliberately NOT [`std::fmt::Display`], which stays the
+    /// OPERATOR's full-detail rendering (the server log, via `refuse_setup`'s `diag_debug!`): the
+    /// two audiences need different information from the SAME refusal.
+    ///
+    /// `Credential` is the one arm that differs. Its `Display` message is built from
+    /// `busbar_api::resolve_builtin_string`'s error, whose own doc requires it to "name the source,
+    /// not the value" — correct when the reader is the operator, who must know WHICH env var or
+    /// file is missing to fix it, and wrong when the reader is the calling client: it is not the
+    /// operator, and the secret's SOURCE (`env:VAR_NAME`, `file:/path/to/secret`) is a targeting
+    /// aid — it tells an attacker exactly what to go after next, even though the secret's VALUE
+    /// stays protected. So this arm alone is redacted to a generic refusal that points at the log
+    /// the detail actually lives in, and every other arm — a malformed id, a grant refusal, an
+    /// argument violation, the ordered validator's own already-public reason — carries no secret
+    /// material and passes through [`Display`](std::fmt::Display) unchanged.
+    pub(crate) fn client_message(&self) -> String {
+        match self {
+            SetupRefusal::Credential(_) => "the upstream credential for this server could not be \
+                                             resolved; see the server log for detail"
+                .to_string(),
+            SetupRefusal::Malformed(_)
+            | SetupRefusal::Egress(_)
+            | SetupRefusal::Argument(_)
+            | SetupRefusal::Trust(_) => self.to_string(),
+        }
+    }
 }
 
 /// THE GATE. Synchronous, reaches no network, and runs before the loop is entered.

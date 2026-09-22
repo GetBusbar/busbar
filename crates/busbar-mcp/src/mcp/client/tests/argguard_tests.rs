@@ -433,29 +433,27 @@ fn a_url_smuggled_into_a_bare_host_field_is_judged_on_its_real_host() {
 }
 
 /// The NAT64/RFC 6052 form of the same smuggle: `http://[64:ff9b::a9fe:a9fe]/...` is the DNS64
-/// synthesis of the IMDS target `169.254.169.254`. Once S4 routes the value through
-/// `judge_absolute`, the host judgement is whatever `busbar_kernel::net_guard::host_is_private_or_loopback`
-/// / `ssrf_blocked_host` decide for that literal — this pins the CURRENT behavior of those shared
-/// predicates for a NAT64 literal rather than asserting a stronger guarantee this crate does not
-/// own. See the report: as of this change, those two predicates unwrap an embedded IPv4 with
-/// `Ipv6Addr::to_ipv4()`, not the NAT64-aware `embedded_ipv4` that `ipv6_is_internal` /
-/// `ip_is_cloud_metadata` use, so this literal is NOT yet caught — this assertion documents that
-/// fact so it fails loudly (rather than silently) the day someone wires the NAT64-aware unwrap into
-/// the string-based host predicates and this test is the one that should flip to `is_err()`.
+/// synthesis of the IMDS target `169.254.169.254`, and it is REFUSED.
+///
+/// This test was written asserting `is_ok()` — a deliberate canary pinning the then-current
+/// behavior, because `host_is_private_or_loopback`/`ssrf_blocked_host` unwrapped an embedded IPv4
+/// with `Ipv6Addr::to_ipv4()` rather than the NAT64-aware `embedded_ipv4` their sibling predicates
+/// already used, so this literal was NOT caught. Its own note said to flip it to `is_err()` the day
+/// someone wired the NAT64-aware unwrap into the string-based host predicates.
+///
+/// That happened: the host-string guards now call `embedded_ipv4`, so a NAT64 spelling of an
+/// internal target is judged exactly like the bare form. The canary did its job and is now the
+/// assertion it was always waiting to become — and it matters most HERE, because this crate's
+/// caller is an LLM tool-call argument, the classic injection vector.
 #[test]
-fn nat64_smuggled_host_reflects_current_shared_predicate_behavior() {
+fn a_nat64_smuggled_host_is_refused() {
     let schema = json!({
         "type": "object",
         "properties": { "host": {"type": "string", "format": "hostname"} }
     });
     let args = json!({"host": "http://[64:ff9b::a9fe:a9fe]/latest/meta-data/"});
-    let result = guard(&schema, &args, public());
-    assert!(
-        result.is_ok(),
-        "if this now fails, `host_is_private_or_loopback`/`ssrf_blocked_host` in busbar-kernel \
-         gained NAT64 unwrapping — flip this assertion to `is_err()` and drop this note; got: \
-         {result:?}"
-    );
+    guard(&schema, &args, public())
+        .expect_err("the NAT64 spelling of the IMDS target reaches the same address as the bare form and must be refused");
 }
 
 /// THE UNDECLARED CASE, and the decision it encodes. Most real MCP tools take a URL in a plain

@@ -2203,6 +2203,7 @@ async fn create_task(
             // roots lookups must read the deployment the task actually runs against.
             server_id: member_id,
             max_rounds: server.max_input_required_rounds,
+            input_schema: selected.input_schema.clone(),
             task_asks: super::tasks::task_ask_rounds(selected, ctx.capabilities),
         },
     );
@@ -2425,17 +2426,22 @@ fn refuse_setup(
         busbar_contract::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
+    // OPERATOR-FACING: the full, UNREDACTED detail — `diag_debug!` is a `tracing::debug!` that
+    // lands in the server's own log, never on the wire. For a `Credential` refusal this `detail`
+    // is the only place the secret's source (which env var / file) still appears; see
+    // `SetupRefusal::client_message`'s doc for why the wire rendering below must redact it.
     busbar_substrate_values::diag_debug!(
         crate::diagnostics::MCP_TOOLCALL_REFUSED_PRE_UPSTREAM,
         tool = %namespaced,
         reason = denied.audit_reason(),
+        detail = %denied,
         "mcp tools/call refused before the upstream"
     );
     error(
         StatusCode::FORBIDDEN,
         id,
         CODE_REFUSED,
-        &denied.to_string(),
+        &denied.client_message(),
         Some(serde_json::json!({ "reason": denied.audit_reason() })),
     )
 }
