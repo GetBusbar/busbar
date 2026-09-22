@@ -55,8 +55,8 @@ use crate::root::kernel::{ProductionUnits, RegisteredUnits};
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_core_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
 use busbar_core_admin::{
-    ApprovalState, KernelVerb, PostureCtx, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
-    NEW_VERBS,
+    ApprovalState, KernelVerb, PostureCtx, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS,
+    NAMED_SURFACES, NEW_VERBS,
 };
 
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
@@ -1798,6 +1798,7 @@ pub fn kernel_verb(resolved: &ResolvedVerb) -> Option<KernelVerb> {
     NEW_VERBS
         .iter()
         .chain(LEDGER_VERBS.iter())
+        .chain(AUDIT_VERBS.iter())
         .chain(NAMED_SURFACES.iter())
         .copied()
         .find(|verb| verb_name(*verb) == resolved.verb)
@@ -1834,6 +1835,9 @@ fn verb_name(verb: KernelVerb) -> &'static str {
         KernelVerb::GetLedgerReconciliation => "get_ledger_reconciliation",
         KernelVerb::GetLedgerMigration => "get_ledger_migration",
         KernelVerb::GetLedgerOpenapiJson => "get_ledger_openapi_json",
+        KernelVerb::GetAuditHead => "get_audit_head",
+        KernelVerb::GetAuditRange => "get_audit_range",
+        KernelVerb::GetAuditKeys => "get_audit_keys",
         _ => "",
     }
 }

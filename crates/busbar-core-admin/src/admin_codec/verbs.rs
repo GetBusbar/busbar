@@ -1,4 +1,4 @@
-//! The closed 66+17+5 kernel-verb table, and the pure `(method, path) -> verb` match over it.
+//! The closed 66+18+5+3 kernel-verb table, and the pure `(method, path) -> verb` match over it.
 //!
 //! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
 //! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 17 are the
@@ -190,10 +190,50 @@ const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
     },
 ];
 
+/// THE THREE AUDIT-CHAIN READS, and their paths are not a judgment call either.
+///
+/// A chain that is signed but that nobody outside can fetch is a chain only we can check, which is
+/// a claim rather than evidence. These three are how somebody else checks it: where the chain is
+/// now, what is in a window of it, and which keys signed it.
+///
+/// PULL, NEVER PUSH. The node ANSWERS these; it opens no outbound connection, holds no cloud
+/// credential and phones nobody. That is what lets an airgapped operator `curl` their own evidence
+/// and a firewalled node be audited at all. The counter-signing and publishing half is a separate
+/// product, definitionally — a node cannot anchor to itself.
+///
+/// All three are `GET` and all three are read-only, which puts them on the same rung as the legacy
+/// `GET /audit` they sit beside: the credential that may read what the admin chain recorded may
+/// read what the record chain sealed, and neither may write anything. A full-scope gate here would
+/// mean the only party who can check the evidence is the party the evidence is about.
+///
+/// The range read takes its window as a query string (`?from=&to=`) rather than as path segments,
+/// because a query names ARGUMENTS to an operation and `from`/`to` are arguments — the same reason
+/// `GET /audit?limit=4` and `GET /audit` are one row here (see [`operation_target`]).
+const AUDIT_VERBS_1_6_0: &[VerbEntry] = &[
+    VerbEntry {
+        method: "GET",
+        path: "/api/v1/admin/audit/head",
+        verb: "get_audit_head",
+        read_only: true,
+    },
+    VerbEntry {
+        method: "GET",
+        path: "/api/v1/admin/audit/range",
+        verb: "get_audit_range",
+        read_only: true,
+    },
+    VerbEntry {
+        method: "GET",
+        path: "/api/v1/admin/audit/keys",
+        verb: "get_audit_keys",
+        read_only: true,
+    },
+];
+
 /// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 18 1.6.0
-/// money-governance verbs (the seventeen plus `amend_rate_history`), and the 5 1.6.0 ledger
-/// views.
-pub(crate) const VERB_COUNT: usize = 66 + 18 + 5;
+/// money-governance verbs (the seventeen plus `amend_rate_history`), the 5 1.6.0 ledger
+/// views, and the 3 audit-chain reads.
+pub(crate) const VERB_COUNT: usize = 66 + 18 + 5 + 3;
 
 /// The operation class every read-only verb prices under.
 ///
@@ -226,6 +266,7 @@ pub(crate) fn all_verbs() -> &'static [VerbEntry] {
         );
         v.extend_from_slice(NEW_VERBS_1_6_0);
         v.extend_from_slice(LEDGER_VERBS_1_6_0);
+        v.extend_from_slice(AUDIT_VERBS_1_6_0);
         v
     })
 }
