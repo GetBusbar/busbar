@@ -333,8 +333,8 @@ reap_runaways
 # none of them. Same lesson as the test-bins column, one layer out.
 printf 'load: %s | rustc %s, cargo %s, test-bins %s, tool-bins %s, product %s\n' \
   "$(uptime | sed 's/.*load averages*: //')" \
-  "$(pgrep -c rustc 2>/dev/null || echo 0)" \
-  "$(pgrep -c cargo 2>/dev/null || echo 0)" \
-  "$(pgrep -fc '/(debug|release)/deps/' 2>/dev/null || echo 0)" \
-  "$(pgrep -fc '/(debug|release)/[a-z_-]*$' 2>/dev/null || echo 0)" \
+  "$(ps -eo command 2>/dev/null | grep -cE '/bin/rustc$')" \
+  "$(ps -eo command 2>/dev/null | grep -cE '/bin/cargo ')" \
+  "$(ps -eo command 2>/dev/null | grep -cE '/(debug|release)/deps/[a-z_]+-[0-9a-f]{8,}')" \
+  "$(ps -eo command 2>/dev/null | grep -cE '/(debug|release)/[a-z_-]+$')" \
   "$(pgrep -fc 'release/busbar' 2>/dev/null || echo 0)"
