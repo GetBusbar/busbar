@@ -1031,7 +1031,7 @@ pub fn host_is_private_or_loopback(host: &str) -> bool {
                 || is_cgnat_shared_v4(&v4) // 100.64.0.0/10 (RFC 6598 CGNAT, Tailscale)
         }
         Ok(IpAddr::V6(v6)) => {
-            let embedded = v6.to_ipv4();
+            let embedded = embedded_ipv4(&v6);
             v6.is_loopback()        // ::1
                 || v6.is_unspecified() // ::
                 || is_unique_local_v6(&v6) // fc00::/7
@@ -1096,7 +1096,7 @@ fn host_matches_any(host: &str, entries: &[String]) -> bool {
     match host.parse::<IpAddr>() {
         Ok(IpAddr::V4(v4)) => entry_v4.contains(&v4),
         Ok(IpAddr::V6(v6)) => {
-            let embedded = v6.to_ipv4();
+            let embedded = embedded_ipv4(&v6);
             entry_v6.contains(&v6) || embedded.is_some_and(|m| entry_v4.contains(&m))
         }
         Err(_) => false,
@@ -1317,7 +1317,7 @@ pub fn ssrf_blocked_host(
             // An IPv6 literal embedding an IPv4 address reaches the same v4 target as the bare form,
             // so apply the IDENTICAL metadata predicate to the embedded v4 (covers `[::ffff:a.b.c.d]`
             // mapped AND `[::a.b.c.d]` compatible via `to_ipv4()`).
-            let embedded = v6.to_ipv4();
+            let embedded = embedded_ipv4(&v6);
             v6 == imds_v6 || embedded.is_some_and(|m| is_metadata_v4(&m))
         }
         Err(_) => false,

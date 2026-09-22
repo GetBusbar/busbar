@@ -300,3 +300,61 @@ fn nat64_embedded_ipv4_is_judged_by_the_shared_predicates() {
         None,
     );
 }
+
+/// THE HOST-STRING GUARDS MUST JUDGE THE NAT64 EMBEDDING TOO, not just the address predicates.
+///
+/// [`ip_is_cloud_metadata`] and [`ip_is_internal`] take an already-parsed `IpAddr` and were fixed
+/// first. The three guards below take a HOST STRING and parse it themselves, and each kept its own
+/// `to_ipv4()` unwrap — so `64:ff9b::a9fe:a9fe` parsed clean, matched no v6 range, and read as an
+/// ordinary public address. That gap was live after the address-level fix landed, which is exactly
+/// why this test exists separately from
+/// `nat64_embedded_ipv4_is_judged_by_the_shared_predicates`: fixing the predicate does NOT fix the
+/// callers that never call it.
+///
+/// [`ssrf_blocked_host`] is the pre-flight guard for OAuth token-endpoint URLs and for MCP
+/// tool-call ARGUMENT hosts — attacker-influenced input on the classic SSRF injection path — so a
+/// bypass here is reachable without any DNS answer at all.
+#[test]
+fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
+    // Every spelling of the IMDS target 169.254.169.254 that a caller can hand us.
+    for meta in [
+        "169.254.169.254",             // bare v4
+        "::ffff:169.254.169.254",      // v4-mapped
+        "64:ff9b::a9fe:a9fe",          // NAT64 well-known (RFC 6052)
+        "64:ff9b:1::a9fe:a9fe",        // NAT64 local-use (RFC 8215), zero middle
+        "64:ff9b:1:fffe::a9fe:a9fe",   // NAT64 local-use, non-zero middle
+    ] {
+        let url = format!("http://[{meta}]/latest/meta-data/");
+        let url = if meta.contains(':') { url } else { format!("http://{meta}/latest/meta-data/") };
+        assert!(
+            ssrf_blocked_host(&url, &[], false, &[]).is_some(),
+            "{meta} reaches the cloud-metadata service and must be refused pre-flight; \
+             a NAT64 spelling is the same target as the bare form"
+        );
+    }
+
+    // The private/loopback host predicate must see through the embedding as well.
+    for internal in [
+        "64:ff9b::7f00:1",         // 127.0.0.1
+        "64:ff9b::a01:203",        // 10.1.2.3
+        "64:ff9b:1:fffe::c0a8:1",  // 192.168.0.1 via local-use NAT64
+    ] {
+        assert!(
+            host_is_private_or_loopback(internal),
+            "{internal} is a NAT64 embedding of an internal target and must read as internal"
+        );
+    }
+
+    // An operator denylist entry written in the bare v4 form must also catch the NAT64 spelling —
+    // otherwise the denylist is trivially evaded by re-encoding the same address.
+    assert!(
+        host_matches_any("64:ff9b::a9fe:a9fe", &["169.254.169.254".to_string()]),
+        "a denylist entry naming the v4 address must match its NAT64 embedding"
+    );
+
+    // Public addresses are unaffected: 8.8.8.8 embedded in NAT64 is still public.
+    assert!(
+        !host_is_private_or_loopback("64:ff9b::808:808"),
+        "64:ff9b::808:808 embeds public 8.8.8.8 and must NOT read as internal"
+    );
+}
