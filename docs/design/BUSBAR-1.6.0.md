@@ -1276,6 +1276,69 @@ the `units_*_leg.rs`/`plane_mount.rs` shape (#28 chose the gauntlet-kernel-rider
 `Arena` fixed-cap model (#41). These appear as survivors because their symbols are absent from
 trunk. Absent because they were **decided against**.
 
+## The crate roster, named — 61 today, 28 at the end
+
+The owner asked whether the locked ~30 crates are named right anywhere. They were not. They are
+below, and the list is **derived, not invented**: #39 is owner-locked and states the repo's contents
+exactly, and the owner's 2026-09-21 ruling settles the one place #19 and #39 disagree ("**~30** —
+#19's number wins over #39's 16").
+
+Those two reconcile cleanly. #39 names sixteen crates for the `busbar` repo — the binary,
+`busbar-kernel` + the 8, `busbar-core-{admin,oauth2,substrate}`, `busbar-contract`,
+`busbar-plugin-sdk`, `busbar-plugin-loader`. The remaining gap to ~30 is exactly the **5 planes and
+7 transports**, which are plugin kinds by #3 but stay in-tree for 1.6.0 rather than moving to their
+own repos. 16 + 5 + 7 = **28**. Everything else — store, secret, auth, hook and export instances —
+leaves, per #31/#39.
+
+| # | Crate | Note |
+|---|---|---|
+| 1 | `busbar` | the binary |
+| 2 | `busbar-kernel` | the loop |
+| 3–10 | `busbar-kernel-{audit,breaker,budget,egress,identity,ledger,scope,wal}` | "the 8", exactly as #19 says |
+| 11–13 | `busbar-core-{admin,oauth2,substrate}` | cleanliness crates, not plugins (#3) |
+| 14 | `busbar-contract` | the plugin dependency closure, and nothing else (#40) |
+| 15–16 | `busbar-plugin-{sdk,loader}` | |
+| 17–21 | `busbar-plane-{llm,mcp,a2a,streaming,decision}` | exactly 5 (#39); decision = jev (#48) |
+| 22–28 | `busbar-transport-{grpc,http,sse,stdio,tcp,tls,ws}` | |
+
+**The 8 kernel crates already exist and are already correct** — `audit`, `breaker`, `budget`,
+`egress`, `identity`, `ledger`, `scope`, `wal`. That part of the roster is done.
+
+### How the other 33 crates go away
+
+Nothing here is a rewrite. Every row is a fold or a move, and #19 requires the moves be
+byte-identical and oracle-proven.
+
+| Today | Becomes | Why |
+|---|---|---|
+| `busbar-llm` (60k), `busbar-llm-codec` (103k) | `busbar-plane-llm` | #39: codecs and dialects fold INTO the plane crate; no `busbar-*-codec` survives |
+| `busbar-mcp` (48k), `busbar-mcp-codec`, `busbar-plane-mcp-host` | `busbar-plane-mcp` | #39 names `busbar-plane-mcp-host` for deletion explicitly |
+| `busbar-a2a` (47k), `busbar-a2a-codec`, `busbar-plane-a2a-host` | `busbar-plane-a2a` | same |
+| `busbar-plane-voice`, `busbar-voice` (12k), `busbar-voice-codec` | `busbar-plane-streaming` | #18: voice is a dialect, not a plane; ALL logic lives in the one plane crate |
+| `busbar-admin` (38k), `busbar-plane-admin` | `busbar-core-admin` | admin is a cleanliness crate, never a plane (#3) — `busbar-plane-admin` is a category error by its own name |
+| `busbar-oauth2` | `busbar-core-oauth2` | rename only |
+| `busbar-substrate-values` | `busbar-core-substrate` | rename only |
+| `busbar-core-{config,hooks,transport}` | fold into kernel / contract | vestigial stubs from the core dissolve — `busbar-core-hooks` is **31 lines** with one dependent |
+| `busbar-plugin`, `plugin-pack`, `plugin-sign`, `plugin-testkit` | `busbar-plugin-{sdk,loader}` | #39 names only sdk and loader |
+| `plugin-sdk`, `plugin-loader` | `busbar-plugin-{sdk,loader}` | rename to the locked names |
+| `api`, `busbar-grammar`, `busbar-timing`, `busbar-unit-transport-key` | fold into their one consumer | none is named in #39 |
+| `auth-admin-tokens`, `auth-static-plugin`, `export-example-plugin`, `hook-test-plugin`, `hooks-ranking`, `plane-example`, `secret-example-plugin`, `secret-ref`, `store-example-plugin`, `store-memory` | **leave the repo** | #39: "the busbar repo holds NO plugin source… There is no in-tree plugin" |
+
+### Ordering, and the one real hazard
+
+The plane folds are the bulk of it and they are independent of each other, so llm / mcp / a2a /
+streaming can run in parallel. **The streaming fold is the dangerous one** and should not be run
+concurrently with anything else: `busbar-plane-streaming` (4,750 lines) and `busbar-plane-voice`
+(4,396) are near-duplicates — 7 of 14 files byte-identical, 3 substantially diverged — and the
+**dead** one is `busbar-plane-streaming` (registered in `registry.rs` zero times) while the **live**
+one is `busbar-plane-voice`. So the correctly-named crate is the empty shell and the working code is
+in the crate whose name #18 forbids. A careless "keep the one that builds" collapses to the wrong
+side; a careless "keep the correctly-named one" deletes the working plane. It also touches
+`units_voice.rs`, which is a money file.
+
+Do the folds **after** the current fix wave lands, not during: these are whole-crate moves and they
+will conflict with every in-flight edit.
+
 ## PARKED FOR THE OWNER — a billed-byte change I may not self-approve (#10/#59)
 
 **One item. It is the most serious finding of the session and it needs a human call, not because it
