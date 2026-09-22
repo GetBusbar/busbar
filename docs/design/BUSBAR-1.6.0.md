@@ -1682,6 +1682,41 @@ than accidental: no 1.5.5 golden can exist for a post-1.5.5 plane, and the gener
 has no `tools:` section, so the mcp plane never even loads for a recorded cell. Of the golden's 916
 PASS rows, **zero are mcp** — all 912 read `SKIP UNSUPPORTED`.
 
+**AND THE WITNESS IS OWED TO THE KIND, NOT TO AN INSTANCE. OWNER-RULED 2026-09-22.**
+
+> *"again we should be thinking planes. a plane with is blind or not … no 1 plane should be any
+> different or its not a plane."*
+
+Every coverage statement in this document up to that point named INSTANCES — "mcp is blind, a2a is
+blind, llm has 14 cells" — and read as a coverage table with uneven rows. **It is not a coverage
+table. It is evidence that the plane KIND has no witness**, and that one plane carries inherited
+coverage from a previous life: llm's 14 cells are legacy 1.5.5 surface from when it WAS the product,
+not plane-kind witnesses. Reading them as "llm is better covered" invites topping the others up to
+match, which is the wrong move.
+
+**Measured the same day, and it indicts the rigs harder than the corpus:**
+
+| | |
+|---|---|
+| planes | **5** |
+| planes with a rig at all | **2** (`scripts/a2a-subject/`, `scripts/mcp-subject/`) |
+| leg names written TWICE, once per instance | **10** |
+| legs that exist for ONE plane only | **2** (`h2-route-failover.sh`, `h2-authenticate-refusal.sh`) |
+
+That last row is the whole argument. **Two rigs for one kind, testing different things, and nothing
+anywhere says so.** A witness hand-written per instance cannot make its instances uniform, because
+no mechanism forces it to — the divergence is free and silent, exactly like the four money functions
+and the two Prometheus renderers.
+
+**THE RULE:** the plane kind gets **ONE leg set, parameterised by plane, run against all five.** Not
+five rigs; one rig, five subjects. **A plane that cannot pass it is not a plane** — that is what the
+kind means, and it is the only way "a plugin is a plugin" (#3) is checkable rather than aspirational.
+
+The same test applies to every kind's witness, and this tree fails it in more than one place: one
+money function (not four), one carrier seam (not per-kind), one Prometheus renderer (not two), one
+plane rig (not per instance). **Wherever a witness is written per instance, the instances are free to
+diverge and nothing will report it.**
+
 **OWNER'S FRAMING, 2026-09-22, AND IT IS THE RIGHT ONE — MONEY IS NOT A THING TO WITNESS.**
 
 > *"oracle being blind to money isnt a problem so long as its not blind to ledger and rate card
