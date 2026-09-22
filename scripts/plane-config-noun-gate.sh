@@ -107,7 +107,14 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 #
 # A root that stops existing is a LOUD failure (`require_root`, below), not a silent narrowing of the
 # set — exactly the failure mode that let `crates/busbar-core` disappear under this gate unnoticed.
-CORE_ROOTS="crates/busbar-kernel/src crates/busbar-core-config/src"
+#
+# `crates/busbar-core-config/src` WAS the second root and is DELETED HERE, in the reviewed diff this
+# paragraph is, with the crate's disappearance as its stated reason. DECISIONS #37 rules "no
+# `busbar-core-<kind>` ever"; commit 1059d3c36 took the directory off disk and 50d14fd44 finished the
+# kill, bringing its one landed file home as `crates/busbar-kernel/src/config/parse.rs`. That file is
+# UNDER the root below, so the scan loses nothing by dropping the dead entry — it is the same bytes,
+# reached through the surviving root rather than through a path that stopped existing.
+CORE_ROOTS="crates/busbar-kernel/src"
 
 # Resolve the four section nouns from each plane crate's DECLARED PlaneDecl.config_section — never a
 # restated literal. `<key> -> crates/busbar-<key>/src`; read the `config_section: "<noun>",` line.

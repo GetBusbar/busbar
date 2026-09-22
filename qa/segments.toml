@@ -75,12 +75,12 @@ tier   = "fast"
 # The filter is the module-and-name substring `export`, not an enumerated case list, deliberately:
 # a substring filter picks up newly added export tests automatically, whereas a written-out list is
 # one more thing that drifts quietly. The streams the projection tests exercise are named in
-# crates/busbar-core/src/export/tests/projection_tests.rs (produced streams, the refused `audit` stream,
+# crates/busbar-kernel/src/export/tests/projection_tests.rs (produced streams, the refused `audit` stream,
 # the unknown-stream vocabulary error, the producerless-stream boot error).
 #
 # The webhook/scrape rows that need a REAL receiver are not in this fast segment; they belong to the
 # live-mock cadence and are covered by core-data-plane's release-check soak.
-run    = "cargo test --release -p busbar -p busbar-core --bins --lib -- export"
+run    = "cargo test --release -p busbar -p busbar-kernel --bins --lib -- export"
 
 [[segment]]
 id     = "hook-bindings"
@@ -99,15 +99,19 @@ tier   = "fast"
 #   config::tests::test_hook_definition_unknown_key_rejected     the closed definition grammar
 #   config::tests::test_caller_in_hook_groups_scope              `groups:` scoping
 #   config::named_map::named_map_tests::referents_finds_every_bare_name_reference_site
-#   admin::v1::service::tests::build_with_registry_rejects_a_dangling_global_hook_reference
-#                                                                fail-closed: bare name, no definition
+#   (`admin::v1::service::tests::build_with_registry_rejects_a_dangling_global_hook_reference`, the
+#    fail-closed bare-name-with-no-definition case, is NO LONGER SELECTED BY THIS SEGMENT: the #37
+#    admin fold moved it to `busbar-core-admin`
+#    (crates/busbar-core-admin/src/v1/tests/service_tests.rs), which this selector does not name.
+#    Listed here rather than quietly dropped -- adding `-p busbar-core-admin` would put a whole
+#    extra release test binary in the fast tier and is the segment owner's call, not a repoint's.)
 #   config::tests::test_pools_reserved_hooks_key                 fail-closed: a pool NAMED `hooks`
 #   config::tests::pools_reserved_section_keys_are_frozen        the reserved `pools:` section keys
 #   config_validate::tests::test_hook_reserved_name_rejected / _nonreserved_name_ok
 #   hooks::* (the wire/plugin/scrape hook seam)
 #
 # Same reasoning as `export` for the substring filter over an enumerated list.
-run    = "cargo test --release -p busbar -p busbar-core --bins --lib -- hook"
+run    = "cargo test --release -p busbar -p busbar-kernel --bins --lib -- hook"
 
 [[segment]]
 id     = "config-stability"

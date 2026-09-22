@@ -1076,7 +1076,7 @@ jobs:
   # if the committed `openapi.json` — the file the runtime serves via `include_str!` — no longer
   # matches what the code generates, and the COVERAGE LOCK proves every operation has a typed body.
   # Regenerate a stale file with:
-  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-kernel -p busbar-admin --features openapi-schema openapi_json_matches_committed_file
+  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema openapi_json_matches_committed_file
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -1115,7 +1115,7 @@ jobs:
             ${{ env.CARGO_HOME }}/git
             target
       - name: Clippy (--features openapi-schema)
-        run: cargo clippy -p busbar -p busbar-kernel -p busbar-admin --all-targets --features openapi-schema --locked -- -D warnings
+        run: cargo clippy -p busbar -p busbar-kernel -p busbar-core-admin --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
         run: |
           set -euo pipefail
@@ -1123,7 +1123,7 @@ jobs:
           # prints "running 0 tests / test result: ok" and EXITS 0. The floor is not 1 — this step
           # claims to run the drift guard AND the coverage lock AND their neighbours, so a filter
           # that quietly collapsed to a single surviving test would still be a coverage hole.
-          out="$(cargo test -p busbar -p busbar-kernel -p busbar-admin --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
+          out="$(cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
           n="$(echo "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')"
           if [ "$n" -lt 8 ]; then
             echo "::error::the OpenAPI suite ran only ${n} tests, expected >= 8."
@@ -1648,7 +1648,7 @@ jobs:
   # THE DELETION-TEST BUILD MATRIX — the enforcement gate (weak form).
   #
   # THE DELETION TEST: for each plane P, with busbar-<P> absent the NEUTRAL crates —
-  # busbar-core, busbar-substrate, busbar-api — must still COMPILE (and the binary boots serving no P
+  # busbar-kernel, busbar-substrate-values, busbar-api — must still COMPILE (and the binary boots serving no P
   # protocol). This job is the WEAK form of that test, expressed at the neutral-crate level and made a
   # PERMANENT, ASSERTED property: build ONLY the three neutral crates with one plane's feature OFF (the
   # other planes kept ON), and with ALL planes off. It is the compile-only complement to the
@@ -1659,8 +1659,8 @@ jobs:
   # removable, so each removal is an independent fact about the tree and gets its own matrix leg — a
   # leg that goes red names exactly which plane the neutral crates still can't compile without.
   #
-  # LLM: there is NO `plane-llm` feature YET — the LLM PLANE_DECL is still compiled into core
-  # unconditionally and the busbar-core↔busbar-llm backwards dependency is live. So the
+  # LLM: there is NO `plane-llm` feature YET — the LLM PLANE_DECL is still compiled into the kernel
+  # unconditionally and the busbar-kernel↔busbar-llm backwards dependency is live. So the
   # per-plane "llm off" leg cannot be expressed until a `plane-llm` feature lands; TODO: add an
   # `llm` matrix leg (features "plane-mcp,plane-a2a") the moment that feature exists. Until then the
   # ALL-PLANES-OFF leg (`--no-default-features`) is the closest expressible "serves no protocols"
@@ -1720,17 +1720,23 @@ jobs:
             target
       - name: Build neutral crates — ${{ matrix.name }}
         # The three NEUTRAL crates only, no default features, with just the kept plane(s). cargo
-        # applies `--features` to the packages that declare it (busbar-core / busbar-substrate);
-        # busbar-api carries no plane features and is simply built neutral alongside. A red here means
-        # a neutral crate still needs the removed plane crate to compile — a deletion-test failure.
+        # applies `--features` to the packages that declare it (busbar-kernel, which absorbed both
+        # busbar-core at 673ecdaaa and busbar-substrate's engine at 5fa320208 and is where the
+        # plane-<P> features are declared today); busbar-substrate-values (the substrate's pure value
+        # leaves) and busbar-api carry no plane features and are simply built neutral alongside. The
+        # crate NAMES here are the deletion test's subject: while they read `busbar-core`/
+        # `busbar-substrate` after the absorptions, this job could not have gone green at all.
+        # A red here means a neutral crate still needs the removed plane crate to compile — a
+        # deletion-test failure. The same three are single-sourced for the shell and Rust gates in
+        # scripts/plane-keys.sh (NEUTRAL_ROOTS_LIST) and xtask/src/planes.rs (neutral_src_roots).
         run: |
           set -euo pipefail
           FEATS="${{ matrix.features }}"
           if [ -n "$FEATS" ]; then
-            cargo build -p busbar-core -p busbar-substrate -p busbar-api \
+            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-api \
               --no-default-features --features "$FEATS" --locked --verbose
           else
-            cargo build -p busbar-core -p busbar-substrate -p busbar-api \
+            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-api \
               --no-default-features --locked --verbose
           fi
       - name: Latchkey Fast Cache (cargo registry + target, save)
@@ -1803,34 +1809,25 @@ jobs:
           - name: llm webhook-receiver
             features: busbar-llm/webhook-receiver
             tests: -p busbar-llm
-          - name: mcp-codec test-support
-            features: busbar-mcp-codec/test-support
-            tests: -p busbar-mcp-codec
           # duplex-ws is reachable from the root binary's default `plane-voice` TODAY. It is in this
           # matrix anyway, because reachability is a property of a DEFAULT and a default moving is
           # the exposure this whole job is about. A row that NAMES the feature survives the flip.
           - name: core duplex-ws
             features: busbar-kernel/duplex-ws
             tests: -p busbar-kernel
-          # admin/oauth2 test-support are non-default forwards no sibling edge enables (busbar-admin's
-          # dev-deps deliberately do NOT turn on its own test-support), so nothing builds the
-          # `cfg(all(not(test), feature = "test-support"))` surface behind them. Each row builds and
-          # tests the owning crate with the feature on, exactly like `mcp-codec test-support` above.
+          # admin/oauth2 test-support are non-default forwards no sibling edge enables
+          # (busbar-core-admin's dev-deps deliberately do NOT turn on its own test-support), so nothing
+          # builds the `cfg(all(not(test), feature = "test-support"))` surface behind them. Each row
+          # builds and tests the owning crate with the feature on, exactly like `mcp-codec
+          # test-support` above. The crate is `busbar-core-admin` since #37 folded busbar-admin and
+          # busbar-plane-admin into it; a row naming a crate that is not in the workspace is caught by
+          # `feature-sets:declaration-names-a-live-feature`, which is how this one was found.
           - name: admin test-support
-            features: busbar-admin/test-support
-            tests: -p busbar-admin
+            features: busbar-core-admin/test-support
+            tests: -p busbar-core-admin
           - name: oauth2 test-support
             features: busbar-oauth2/test-support
             tests: -p busbar-oauth2
-          # The author-side packaging CLI (roster def 14) is a `[[bin]]` behind `required-features`
-          # ON PURPOSE: DECISIONS #84 makes the SDK's own busbar closure the thing every plugin
-          # links, so `busbar-plugin-pack`'s edge to the host-facing loader -- which carries the
-          # ledger -- must not be a plain dependency. `required-features` means the DEFAULT build
-          # never type-checks pack.rs, which is precisely the rot this job exists to catch, so the
-          # feature earns its own row rather than a declaration line.
-          - name: sdk pack
-            features: busbar-plugin-sdk/pack
-            tests: -p busbar-plugin-sdk
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
@@ -1900,7 +1897,6 @@ jobs:
             plane:
               - 'crates/busbar-plane-*/**'
               - 'crates/busbar-mcp/**'
-              - 'crates/busbar-mcp-codec/**'
               - 'crates/busbar-a2a/**'
               - 'crates/busbar-a2a-codec/**'
               - 'crates/busbar-kernel/**'
@@ -2171,7 +2167,7 @@ jobs:
   # feature-covered: busbar-mcp/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
-  # feature-covered: busbar-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-admin with the feature named
+  # feature-covered: busbar-core-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-core-admin with the feature named
   # feature-covered: busbar-contract/dispatch -- check -- reached from busbar-substrate-values/dispatch in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
   # feature-covered: busbar-contract/runtime -- check -- reached from busbar-substrate-values/runtime in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
 

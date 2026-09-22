@@ -222,14 +222,19 @@ cmd_build() {
   log "build once (3/4): link the plugin-loader test binaries"
   DEV_GATE=1 cargo test --release -p busbar-plugin-loader --no-run
 
-  # (4/4) The FAST TIER's test binary. Its segments run `cargo test --release -p busbar -p busbar-core
+  # (4/4) The FAST TIER's test binary. Its segments run `cargo test --release -p busbar -p busbar-kernel
   # ...`, so without this they link the harness themselves on the far side of the hydrate.
+  # THE PACKAGE SET MUST MATCH `qa/segments.toml` (the `export` and `hook-bindings` rows) EXACTLY: a
+  # selection that differs by even one package resolves different features and shares nothing, so a
+  # stale package name here does not red, it just silently stops prebuilding and the segments pay
+  # for the link themselves. It read `-p busbar-core` until the W4.a absorption (673ecdaaa) deleted
+  # that crate.
   # PROFILE MUST MATCH THE SEGMENTS. The first two gate runs failed here: the segments ran in DEBUG
   # while everything prebuilt here is RELEASE, so they shared nothing (export rebuilt from scratch,
   # 138s) AND the hook-test cdylib built above into target/release was invisible to a debug test
   # looking in target/debug/deps, which is what starved `hook-bindings` of its plugin.
   log "build once (4/4): link the busbar test binary the fast tier runs"
-  cargo test --release -p busbar -p busbar-core --no-run
+  cargo test --release -p busbar -p busbar-kernel --no-run
 
   # (5/5) THE `plane-plugin-suites` SEGMENT's three cargo invocations, prebuilt VERBATIM for the
   # reason the header states: a selection that differs by even one package resolves different

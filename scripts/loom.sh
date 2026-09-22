@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The targeted loom model of the config-mutation swap invariant
-# (crates/busbar-core/src/admin/v1/json/tests/txn_loom.rs). Loom explores thread interleavings
+# (crates/busbar-kernel/src/config/tests/txn_loom.rs). Loom explores thread interleavings
 # exhaustively, so it is SLOW and deliberately NOT part of `cargo test --workspace`: the module sits
 # behind the optional `loom-model` feature and only this script turns it on.
 set -euo pipefail
@@ -24,7 +24,8 @@ cd "$(dirname "$0")/.."
 # An explicit LOOM_MAX_PREEMPTIONS in the environment is still honoured, for bisecting a failure
 # down to its shallowest interleaving; it is a debugging aid, not the gate's setting.
 # BOTH packages, unit targets of each (`--bins --lib`): the txn_loom module lives in
-# `admin/v1/json/tests/`, which the core split (step 3.7) moves into `busbar-core`'s lib. A
+# `config/tests/`, which the core split (step 3.7) moved into the engine lib -- `busbar-core`'s at
+# the time, and `busbar-kernel`'s since the W4.a absorption (673ecdaaa) deleted that crate. A
 # selector naming only the bin target would come back GREEN AND EMPTY on the far side of that
 # move — the classic vacuous gate — so the selector names both sides of the seam and the count
 # floor below refuses a run that executed zero models.
@@ -53,7 +54,7 @@ if [ "${1:-}" = "--selftest" ]; then
     || say FAIL "a zero-test run counted $(loom_ran_count "$vacuous")"
 
   # BOTH HARNESSES. The models live behind a crate split, so the selector names busbar AND
-  # busbar-core and the count is the SUM — a floor read off one harness would be met by the side
+  # busbar-kernel and the count is the SUM — a floor read off one harness would be met by the side
   # that still carries them while the other silently emptied.
   two=$'test result: ok. 1 passed; 0 failed; 0 ignored\ntest result: ok. 2 passed; 0 failed; 0 ignored\n'
   [ "$(loom_ran_count "$two")" -eq 3 ] \
@@ -77,13 +78,13 @@ if [ "${1:-}" = "--selftest" ]; then
   echo "loom gate selftest: RED (${fails}/${cases} cases failed)"; exit 1
 fi
 
-out=$(cargo test --release -p busbar -p busbar-core --bins --lib --features loom-model txn_loom -- --nocapture "$@" 2>&1) && status=0 || status=$?
+out=$(cargo test --release -p busbar -p busbar-kernel --bins --lib --features loom-model txn_loom -- --nocapture "$@" 2>&1) && status=0 || status=$?
 printf '%s\n' "$out"
 [ "$status" -eq 0 ] || exit "$status"
 
 ran=$(loom_ran_count "$out")
 if [ "${ran:-0}" -lt 1 ]; then
-  echo "loom gate VACUOUS: the txn_loom filter matched ${ran:-0} test(s) across busbar + busbar-core." >&2
+  echo "loom gate VACUOUS: the txn_loom filter matched ${ran:-0} test(s) across busbar + busbar-kernel." >&2
   echo "The models moved or were renamed; point this script at their new home. A green run that" >&2
   echo "executed nothing is not a pass." >&2
   exit 1

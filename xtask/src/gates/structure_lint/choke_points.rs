@@ -185,7 +185,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             id: "C-config-mutation".into(),
             tag: "MUTATION-BYPASS".into(),
             owner: format!("{core}/config/transaction.rs (config_transaction)"),
-            class_test: "crates/busbar-admin/src/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap".into(),
+            class_test: "crates/busbar-core-admin/src/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap".into(),
             remedy: "route through config::transaction::config_transaction".into(),
             rules: vec![
                 BanRule::new(
@@ -231,7 +231,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             id: "D-openapi-taxonomy".into(),
             tag: "TAXONOMY-BYPASS".into(),
             owner: format!("{core}/admin/v1/contract/taxonomy.rs (declared_errors)"),
-            class_test: "crates/busbar-admin/src/tests/tests.rs::declared_error_set_is_exactly_what_the_handlers_emit".into(),
+            class_test: "crates/busbar-core-admin/src/tests/tests.rs::declared_error_set_is_exactly_what_the_handlers_emit".into(),
             remedy: "declare the ErrKind in contract::taxonomy::declared_errors".into(),
             rules: Vec::new(),
             why: "openapi.json must be a PROJECTION of one declaration, never a hand-maintained parallel list".into(),

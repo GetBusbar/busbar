@@ -34,11 +34,22 @@ pub const MAX_LINES_IMPL: usize = 2500;
 const EXCLUDE_TESTS: &str = "/tests/";
 
 /// PRE-EXISTING DEBT, GRANDFATHERED. Most entries are MOVED files whose debt travelled with them:
-/// the admin read path (`admin/v1/json/handlers.rs`) was extracted out of the engine into its own
-/// `busbar-admin` crate, and `config/mod.rs` / `config/migrate.rs` rode the `busbar-core` ->
-/// `busbar-kernel` absorption, so they are named at their current homes rather than deleted. The
-/// former `admin/v1/service.rs` entry has come OFF the list: the extraction to `busbar-admin`
-/// carried the config-mutation-builder shrink with it and the file now sits under the cap (2491).
+/// the admin read path (`v1/json/handlers.rs`) was extracted out of the engine into its own admin
+/// crate, and `config/mod.rs` / `config/migrate.rs` rode the `busbar-core` -> `busbar-kernel`
+/// absorption, so they are named at their current homes rather than deleted.
+///
+/// AN ENTRY NAMING NO FILE IS THE SILENT FAILURE THIS LIST HAS. The handlers row read
+/// `crates/busbar-admin/src/v1/json/handlers.rs` until the #37 fold put the two admin crates into
+/// `busbar-core-admin`; a grandfather entry matching nothing does not red, it just stops
+/// grandfathering, and the file it was written for came back as a NEW oversized finding under its
+/// new name while the row that excused it sat there looking live.
+///
+/// The former `admin/v1/service.rs` entry came OFF this list when the extraction carried the
+/// config-mutation-builder shrink with it and the file sat under the cap at 2491. It is NOT put
+/// back here: that file is over the cap again today, and so is `busbar/src/main.rs` (no line count
+/// is quoted, because a count written into a comment is the next thing to go stale — run the gate).
+/// Those are live findings for their owners to shrink or to grandfather in a diff that argues for
+/// it — repointing a stale row is not a licence to absorb the reds that row was never written for.
 ///
 /// The last two entries are the same class as the retired `service.rs` one — a structural MANDATE
 /// pushed an under-cap file over, not new behaviour:
@@ -52,7 +63,7 @@ const EXCLUDE_TESTS: &str = "/tests/";
 ///     per-verb install blocks, split to sibling modules once the drain lands in full.
 pub fn grandfathered(a: &Addresses) -> Vec<String> {
     vec![
-        "crates/busbar-admin/src/v1/json/handlers.rs".to_string(),
+        "crates/busbar-core-admin/src/v1/json/handlers.rs".to_string(),
         format!("{}/config/mod.rs", a.core),
         format!("{}/config/migrate.rs", a.core),
         "crates/busbar-llm/src/engine/pipeline.rs".to_string(),

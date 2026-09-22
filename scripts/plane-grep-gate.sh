@@ -114,7 +114,12 @@ NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL"
 # historical crate name and shed its pure half into a `-codec` crate a PURE kind may name. The gate
 # scans sources, not manifests, so both halves are named or the moved files stop being scanned —
 # which is the failure mode a split invites and the reason these are lists.
-MCP_ROOT="crates/busbar-mcp/src crates/busbar-mcp-codec/src"
+# MCP IS ONE ROOT AGAIN: `busbar-mcp-codec` dissolved (#39). The cells stayed at
+# `crates/busbar-mcp/src/codec/`, inside the root below; the wire dialect went to
+# `busbar-plane-mcp`, which this needle gate does not read — a plane-kind crate is held to
+# the plugin-kind rules instead, and reading it here would judge it by the legacy engine's
+# cross-plane ban rather than by its own.
+MCP_ROOT="crates/busbar-mcp/src"
 MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"
 A2A_ROOT="crates/busbar-a2a/src crates/busbar-a2a-codec/src"
 A2A_NEEDLES="$DIALECTS $(plane_keys_other a2a)"
@@ -141,26 +146,45 @@ OPERATION_EXCLUDE="crates/api/src/operation.rs"
 # is a fact about the frozen contract itself, so it travels with the declaration when the declaration
 # moves and stops matching when the declaration is actually gone — which is when the row should go too.
 #
+# THE PATH-PREFIXES WERE REPOINTED AFTER THE W4 ABSORPTIONS, and the dead-row check below is what
+# named them. `busbar-core` went into `busbar-kernel` (673ecdaaa) and `busbar-substrate`'s engine
+# followed (5fa320208); four rows kept pointing at the deleted crates. The rot stayed INVISIBLE for as
+# long as it did because the gate died EARLIER — on `neutral_src_roots()` listing those same two dead
+# crates as scan roots — and a gate that refuses to start never reaches its own dead-row check.
+# Repointing the roots (scripts/plane-keys.sh) is what let this check finally speak. Every declaration
+# is at the same TEXT under `busbar-kernel`; only the crate in the path changed.
+#
 # AND A ROW THAT MATCHES NOTHING IS REPORTED AS DEAD (see the dead-row check in run_report), because a
 # dead row is not harmless: it is a standing hole waiting for something to land where it points.
 #   responses : the OpenAPI-3 response-object key + MCP `inputResponses` wire field — frozen contract
-#               vocabulary, allowlisted ONLY under the admin / mcp / a2a wire crates (a stray
-#               `responses` elsewhere still trips). Whole-prefix rows: no text pin. The two `-codec`
-#               crates had rows here too; the dead-row check below found they suppress nothing (the
-#               word does not occur in either crate at all), so they were holes rather than
-#               allowances and are deleted. If a codec crate ever carries the frozen key, add the row
-#               back with the diff that puts it there.
+#               vocabulary, allowlisted ONLY under the mcp / a2a wire crates (a stray `responses`
+#               elsewhere still trips). Whole-prefix rows: no text pin. The two `-codec` crates had
+#               rows here too; the dead-row check below found they suppress nothing (the word does
+#               not occur in either crate at all), so they were holes rather than allowances and are
+#               deleted. If a codec crate ever carries the frozen key, add the row back with the diff
+#               that puts it there.
+#
+#               THE ADMIN ROW IS DELETED FOR THE SAME REASON, AND THIS IS THE DIFF THAT SAYS SO. It
+#               read `crates/busbar-core/src/admin/`; repointed at the kernel's admin after the W4
+#               absorption it STILL suppressed nothing, because the frozen key is no longer spelled
+#               anywhere the neutral scan reaches. Two independent things moved it out of range: the
+#               admin HTTP surface that carried it went to `busbar-core-admin` (#37), which is not a
+#               neutral root and is not scanned; and the one neutral site that still attaches the key
+#               — `set_response_schema` in crates/busbar-kernel/src/api.rs — assembles it as
+#               `concat!("respon", "ses")` precisely so it does not read as a bare dialect token. A
+#               row that suppresses nothing is a scoped hole waiting for an unrelated line to land
+#               where it points, so it goes. A bare `responses` appearing under the kernel's admin
+#               now TRIPS, which is the correct answer: put the row back with the diff that needs it.
 #   anthropic : the frozen `DEFAULT_PROTOCOL = "anthropic"` providers.yaml config-grammar default —
 #               its own comment declares it frozen-wire. Pinned to that declaration's own text.
 #   mcp       : the public frozen `mcp:` deploy-config key (the `mcp: McpEndpointSection` field and the
 #               `deploy.mcp.0` read). Pinned to the two declarations' own text — the unrelated `mcp`
 #               import at the top of that file matches neither and still trips.
-ALLOWLIST="responses|crates/busbar-core/src/admin/|
-responses|crates/busbar-mcp/src/|
+ALLOWLIST="responses|crates/busbar-mcp/src/|
 responses|crates/busbar-a2a/src/|
-anthropic|crates/busbar-substrate/src/config/providers.rs|DEFAULT_PROTOCOL
-mcp|crates/busbar-core/src/config/mod.rs|mcp: McpEndpointSection
-mcp|crates/busbar-core/src/config/mod.rs|deploy.mcp.0"
+anthropic|crates/busbar-kernel/src/config/providers.rs|DEFAULT_PROTOCOL
+mcp|crates/busbar-kernel/src/config/mod.rs|mcp: McpEndpointSection
+mcp|crates/busbar-kernel/src/config/mod.rs|deploy.mcp.0"
 
 # ── THE TEST-SUPPORT MODULE PREPASS ────────────────────────────────────────────────────────────────
 # Emits the file/subtree prefixes of every brace-less `mod NAME;` whose `#[cfg(…)]` predicate NAMES

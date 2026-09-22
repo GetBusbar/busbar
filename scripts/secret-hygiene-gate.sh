@@ -60,15 +60,41 @@ SINKS="tracing:: log:: println! eprintln! print! dbg! panic! info! warn! error! 
 # doc's "*Token*-struct" rule catches by construction: `IrTokenLogprob.token` is a generated LLM
 # output token's logprob entry, NOT a credential. Per the doc, false positives are silenced by the
 # allowlist, never by weakening the rule.
+#
+# THIS ALLOWLIST HAS NO STALE-ENTRY DETECTION, AND THAT IS HOW THESE ROTTED. A row whose PATH-PREFIX
+# names a file that no longer exists suppresses nothing, reports nothing, and reads exactly like a
+# row that is doing its job — the same silent-zero failure class the rest of this tree's gates arm
+# `require_root` against. Two crate folds moved two of the four paths below out from under it:
+#   * `crates/busbar-core/src/admin/v1/contract/schema.rs` -> `crates/busbar-kernel/src/...`
+#     (W4.a core absorption, 673ecdaaa). FOUR rows pointed there. While they were dead, the design's
+#     documented "once-shown mint response (CreatedKeyView)" exception was NOT excused, and its
+#     three fields (`token` x2, `secret`) were counted as Check-1 debt — an intentional exception
+#     silently reclassified as a violation.
+#   * `crates/busbar-llm/src/ir/types.rs` -> `crates/busbar-llm-codec/src/ir/types.rs`
+#     (the wire-codec split). While that row was dead, `IrTokenLogprob.token` — the type-name FALSE
+#     POSITIVE this allowlist exists to silence — was reported as a real bare-secret field.
+#
+# AUDITED ROW BY ROW WHEN THE PATHS WERE REPOINTED, so the vacuous ones are named rather than left to
+# look live. A row suppresses a hit iff `needle == NEEDLE` where `needle` IS the field name (the
+# scanner calls `allowlisted(fname, fname)`), so the match is EXACT on the field name:
+#   * `secret_access_key|...schema.rs|` and `access_token|...schema.rs|` suppress NOTHING and never
+#     have, at either path: that struct's field is `aws_secret_access_key`, which is not equal to
+#     `secret_access_key` and is in neither needle set, so the scanner never raises a hit for there
+#     to be excused. They are kept, repointed, as the design's written intent for that field rather
+#     than struck — but they are NOT load-bearing today, and a scanner change that starts matching
+#     `aws_`-prefixed names would need the needle corrected, not just the path.
+#   * `token|crates/busbar-plugin/src/cold/auth.rs|` and `secret|...same...|` are likewise vacuous
+#     today: that file's fields are `token_response` and `secret_form_field`, neither of which is an
+#     exact needle. The PATH is live, so they are left exactly as written.
 ALLOWLIST_C1="secret|crates/api/src/store.rs|secret
 credential_secret|crates/api/src/store.rs|
-token|crates/busbar-core/src/admin/v1/contract/schema.rs|token
-secret_access_key|crates/busbar-core/src/admin/v1/contract/schema.rs|
-access_token|crates/busbar-core/src/admin/v1/contract/schema.rs|
-secret|crates/busbar-core/src/admin/v1/contract/schema.rs|secret
+token|crates/busbar-kernel/src/admin/v1/contract/schema.rs|token
+secret_access_key|crates/busbar-kernel/src/admin/v1/contract/schema.rs|
+access_token|crates/busbar-kernel/src/admin/v1/contract/schema.rs|
+secret|crates/busbar-kernel/src/admin/v1/contract/schema.rs|secret
 token|crates/busbar-plugin/src/cold/auth.rs|
 secret|crates/busbar-plugin/src/cold/auth.rs|
-token|crates/busbar-llm/src/ir/types.rs|token"
+token|crates/busbar-llm-codec/src/ir/types.rs|token"
 
 # ── THE FIELD SCANNER (Check 1) ────────────────────────────────────────────────────────────────────
 # Emits one TSV line per violation:  FIELD<TAB>file:line<TAB>trimmed-source
@@ -232,6 +258,51 @@ prod_files() {
   find "$@" -name '*.rs' 2>/dev/null | grep -v '/tests/' | grep -Ev '_tests?\.rs$' | grep -v '^$' | sort
 }
 
+# ── ALLOWLIST LIVENESS — a row that excuses nothing must be LOUD, not invisible ────────────────────
+# THE FAILURE THIS EXISTS FOR. A row is `NEEDLE|PATH-PREFIX|FIELD` and suppresses a hit only when the
+# violating file's path STARTS WITH PATH-PREFIX. When a crate fold moves that file, the row keeps its
+# shape, keeps its place in the list, and suppresses nothing — and nothing anywhere said so. Two folds
+# did exactly that here (busbar-core -> busbar-kernel, busbar-llm -> busbar-llm-codec): five rows went
+# dead, four of the design's documented intentional exceptions silently became counted violations, and
+# the gate's own output could not tell you. "Measured nothing" and "measured everything and it passed"
+# must never be the same output, least of all in a SECURITY gate.
+#
+# THE RULE: every PATH-PREFIX must name something that exists on disk. That is deliberately the WEAK
+# half of the question — it catches the whole moved-file class, which is the one that has actually
+# bitten, and it is green on a correct tree, so it can be a HARD failure rather than another
+# report-only number nobody reads. It fails INDEPENDENTLY of SECRET_GATE_REPORT_ONLY: a debt count is
+# a thing to burn down, but an allowlist that cannot be trusted is a broken instrument, and a broken
+# instrument is not "report-only".
+#
+# THE STRONG HALF IS NOT ARMED HERE, and this is the honest statement of why. "Did this row suppress
+# a real hit on this run?" would also catch the four rows audited above the allowlist as vacuous for
+# a different reason (an exact-match needle that matches no field at a live path). Arming it today
+# would red the gate on four pre-existing rows whose owners have not yet ruled on whether to correct
+# the needle or strike the row. Arm it in the commit that resolves them.
+check_allowlist_paths() {
+  local row prefix stale=0
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    prefix="$(printf '%s' "$row" | cut -d'|' -f2)"
+    if [ -z "$prefix" ]; then
+      red "secret-hygiene gate: FAIL — allowlist row \`$row\` has an EMPTY path prefix."
+      note "A path-scoped allowlist with no path is a global one, which this gate does not have."
+      stale=1
+      continue
+    fi
+    if [ ! -e "$prefix" ]; then
+      red "secret-hygiene gate: FAIL — allowlist row \`$row\` names a path that is not in this tree."
+      note "\`$prefix\` does not exist, so this row suppresses nothing and says nothing while doing it."
+      note "If the file MOVED, repoint the row. If the exception is genuinely gone, DELETE the row."
+      note "Do not leave it: a stale allowlist row reads exactly like a live one."
+      stale=1
+    fi
+  done <<EOF
+$ALLOWLIST_C1
+EOF
+  return "$stale"
+}
+
 # ── SELF-TEST — the scanner cannot be lied to ─────────────────────────────────────────────────────
 run_selftest() {
   hdr "secret-hygiene-gate SELF-TEST (the field/sink scanner cannot be lied to)"
@@ -320,11 +391,35 @@ GREEN2
     fail=1; note "GREEN c2 FAILED: expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
   fi
 
+  # ── THE ALLOWLIST-LIVENESS DETECTOR, red then green. A detector that cannot go red is the same
+  #    silent instrument it was written to replace, so it is proven on a planted stale row first and
+  #    on the REAL list second — which also means every run of this self-test re-asserts that the
+  #    shipped allowlist still names only live paths.
+  local real_allowlist="$ALLOWLIST_C1"
+  ALLOWLIST_C1="token|crates/busbar-this-crate-does-not-exist/src/x.rs|token"
+  if check_allowlist_paths >/dev/null 2>&1; then
+    fail=1; note "RED allowlist FAILED: a row at a path that does not exist was accepted"
+  else
+    note "RED allowlist: a row whose PATH-PREFIX names no path on disk is REFUSED"
+  fi
+  ALLOWLIST_C1="token|scripts/secret-hygiene-gate.sh|token"
+  if check_allowlist_paths >/dev/null 2>&1; then
+    note "GREEN allowlist: a row whose PATH-PREFIX exists is accepted"
+  else
+    fail=1; note "GREEN allowlist FAILED: a row at a real path was refused — the detector over-fires"
+  fi
+  ALLOWLIST_C1="$real_allowlist"
+  if check_allowlist_paths >/dev/null 2>&1; then
+    note "GREEN allowlist: every row of the SHIPPED allowlist names a path in this tree"
+  else
+    fail=1; note "GREEN allowlist FAILED: the shipped allowlist has a stale row (run --check to see it)"
+  fi
+
   if [ "$fail" -ne 0 ]; then
     red "secret-hygiene-gate SELF-TEST FAILED — the scanner would let a bare secret / a logged secret through"
     return 1
   fi
-  grn "secret-hygiene-gate self-test: ALL GREEN (Check-1 field RED/GREEN + Check-2 sink RED/GREEN proven)"
+  grn "secret-hygiene-gate self-test: ALL GREEN (Check-1 field RED/GREEN + Check-2 sink RED/GREEN + allowlist-liveness RED/GREEN proven)"
   return 0
 }
 
@@ -367,6 +462,10 @@ case "${1:-}" in
     run_selftest; exit $?
     ;;
   --report | --check | "")
+    # BEFORE the scan, never after: a stale allowlist means the numbers below are the wrong numbers,
+    # and printing them first invites reading them as the verdict. Hard-fails regardless of
+    # SECRET_GATE_REPORT_ONLY (see check_allowlist_paths for why).
+    check_allowlist_paths || exit 1
     run_report
     hdr "verdict"
     report_only="${SECRET_GATE_REPORT_ONLY:-1}"
