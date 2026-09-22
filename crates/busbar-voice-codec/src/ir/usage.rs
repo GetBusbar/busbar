@@ -77,3 +77,50 @@ impl IrDuplexUsage {
         busbar_substrate_values::billing::Usage { usage_units }
     }
 }
+
+/// THE ONE SEAM every BILLED count read in this crate goes through.
+///
+/// # Why this exists here, beside the carrier it fills
+///
+/// [`serde_json::Value::as_u64`] returns `None` for ANY float-backed `Number` — including `27.0`,
+/// which is exactly an integer. The house idiom in the duplex dialects was
+/// `.and_then(Value::as_u64).unwrap_or_default()`, so a provider that spells a count as a float
+/// turned a real count of 27 into a recorded count of ZERO. That is not a money bug, it is a
+/// LEDGER bug, which is worse: money is a view over `ledger × ratecard` and cannot be wrong on its
+/// own, so a zeroed count is faithfully reported as nothing at every layer below and is invisible
+/// everywhere except here, at the read.
+///
+/// The LLM codec crate carries the identical seam (`busbar_llm_codec::usage_count::read_count_u64`)
+/// and this is deliberately a SEPARATE copy, not an import: the two crates are per-plane codecs and
+/// a codec→codec edge is a lateral plugin edge (BUSBAR-1.6.0 Law 2), which no convenience justifies.
+/// The honest single home for both is a neutral crate, and consolidating them there is OWED — it is
+/// tracked with the decimal-count work (decision #81), which replaces the `u64` return type here
+/// with an exact fixed-point decimal read from the JSON number's TEXT. Until that lands this
+/// function is the one place in this crate a count is read, so that swap is a one-function change
+/// rather than a hunt through five call sites.
+///
+/// # What is rejected, and why
+///
+/// A fractional value, a negative value, a non-finite value, and anything at or above 2^53 (past
+/// which an `f64` no longer represents consecutive integers, so the integrality test stops carrying
+/// information) all read as `None`. Rounding would invent a quantity the provider never reported.
+///
+/// CAVEAT, STATED PLAINLY: every caller in this crate currently ends in `unwrap_or_default()`, so a
+/// refused value still lands as ZERO. Decision #81 rules that a refused count is a REFUSAL, never a
+/// zero; implementing that refusal is the decimal-count work's, not this seam's.
+#[must_use]
+pub fn read_count_u64(v: &serde_json::Value) -> Option<u64> {
+    if let Some(u) = v.as_u64() {
+        return Some(u);
+    }
+    let f = v.as_f64()?;
+    // 2^53 — the largest magnitude at which an f64 still represents every integer distinctly, and
+    // therefore the largest at which `fract() == 0.0` still proves anything. `contains` also
+    // rejects NaN and both infinities, since neither compares inside any range.
+    const EXACT_INTEGER_LIMIT: f64 = 9_007_199_254_740_992.0;
+    if (0.0..EXACT_INTEGER_LIMIT).contains(&f) && f.fract() == 0.0 {
+        Some(f as u64)
+    } else {
+        None
+    }
+}

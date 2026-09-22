@@ -363,7 +363,11 @@ fn modality_tokens(details: Option<&Value>, modality: &str) -> u64 {
                 .map(str::to_ascii_uppercase)
                 == Some(modality.to_string())
         })
-        .and_then(|d| d.get("tokenCount").and_then(Value::as_u64))
+        // A BILLED COUNT: through the crate's one count seam, never a bare `as_u64`.
+        .and_then(|d| {
+            d.get("tokenCount")
+                .and_then(crate::ir::usage::read_count_u64)
+        })
         .unwrap_or_default()
 }
 
@@ -381,7 +385,12 @@ fn modality_tokens(details: Option<&Value>, modality: &str) -> u64 {
 fn usage_from_metadata(u: &Value) -> IrDuplexUsage {
     let pd = u.get("promptTokensDetails");
     let rd = u.get("responseTokensDetails");
-    let stated_total = |key: &str| u.get(key).and_then(Value::as_u64).unwrap_or_default();
+    // BILLED COUNTS: through the crate's one count seam — see `ir::usage::read_count_u64`.
+    let stated_total = |key: &str| {
+        u.get(key)
+            .and_then(crate::ir::usage::read_count_u64)
+            .unwrap_or_default()
+    };
     let (audio_in, text_in) = {
         let (a, t) = (modality_tokens(pd, "AUDIO"), modality_tokens(pd, "TEXT"));
         if a.saturating_add(t) == 0 {
@@ -405,7 +414,7 @@ fn usage_from_metadata(u: &Value) -> IrDuplexUsage {
         text_out,
         cached: u
             .get("cachedContentTokenCount")
-            .and_then(Value::as_u64)
+            .and_then(crate::ir::usage::read_count_u64)
             .unwrap_or_default(),
     }
 }

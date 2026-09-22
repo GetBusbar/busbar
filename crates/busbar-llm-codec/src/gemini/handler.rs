@@ -648,13 +648,15 @@ pub fn read_transcription_response(
         } else {
             busbar_substrate_values::billing::Billing::Tokens(
                 busbar_substrate_values::billing::TokenUsage {
+                    // BILLED COUNTS: through the one seam, never a bare `as_u64` (which reads a
+                    // float-spelled count as `None` and then ledgers zero).
                     input: u
                         .get("promptTokenCount")
-                        .and_then(Value::as_u64)
+                        .and_then(crate::usage_count::read_count_u64)
                         .unwrap_or(0),
                     output: u
                         .get("candidatesTokenCount")
-                        .and_then(Value::as_u64)
+                        .and_then(crate::usage_count::read_count_u64)
                         .unwrap_or(0),
                     ..Default::default()
                 },
@@ -875,13 +877,14 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, C
     let usage = v
         .get("usageMetadata")
         .map(|u| busbar_substrate_values::billing::TokenUsage {
+            // BILLED COUNTS: through the one seam — see `usage_count::read_count_u64`.
             input: u
                 .get("promptTokenCount")
-                .and_then(Value::as_u64)
+                .and_then(crate::usage_count::read_count_u64)
                 .unwrap_or(0),
             output: u
                 .get("candidatesTokenCount")
-                .and_then(Value::as_u64)
+                .and_then(crate::usage_count::read_count_u64)
                 .unwrap_or(0),
             ..Default::default()
         });
@@ -977,7 +980,8 @@ pub fn read_embeddings_response(
     let usage = v
         .get("usageMetadata")
         .and_then(|u| u.get("promptTokenCount"))
-        .and_then(Value::as_u64)
+        // BILLED COUNT: through the one seam — see `usage_count::read_count_u64`.
+        .and_then(crate::usage_count::read_count_u64)
         .map(|n| busbar_substrate_values::billing::TokenUsage {
             input: n,
             ..Default::default()

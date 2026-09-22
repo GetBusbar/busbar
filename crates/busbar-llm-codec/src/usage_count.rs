@@ -192,4 +192,142 @@ mod tests {
             offenders.join("\n  ")
         );
     }
+
+    /// THE SAME RULE, FOR THE OTHER SPELLING — the one that let the defect come back.
+    ///
+    /// The sibling test above bans the METHOD form (`x.as_u64().unwrap_or(0)`). The house idiom has
+    /// a second spelling, the PATH form — `.and_then(Value::as_u64).unwrap_or(0)` — which reads
+    /// identically, defaults identically, and was invisible to that scan. It is not a hypothetical
+    /// gap: the leaf-op handlers were fixed once, the fix was lost, and sixteen live billed reads
+    /// came back in the path form precisely because nothing was watching it.
+    ///
+    /// A BLANKET ban on the path form would be wrong — `.and_then(Value::as_u64)` is the correct,
+    /// unremarkable way to read `dimensions`, `n`, `seed`, `top_n`, an array `index` or an image
+    /// width, none of which are money. So this scans a VOCABULARY instead: the wire field names that
+    /// are counts busbar bills on, across all six dialects. A bare read of one of THOSE is a defect;
+    /// a bare read of anything else is not this test's business.
+    ///
+    /// Adding a dialect with a new count field means adding its wire name here. That is the point:
+    /// the list is the explicit, reviewable statement of what busbar considers a billed count.
+    #[test]
+    fn no_dialect_reads_a_billed_count_field_with_a_bare_as_u64() {
+        use std::path::Path;
+
+        /// Wire field names that carry a BILLED count, in every dialect's own spelling.
+        const BILLED_COUNT_FIELDS: &[&str] = &[
+            // OpenAI Chat / Responses / images / embeddings / transcription
+            "prompt_tokens",
+            "completion_tokens",
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "audio_tokens",
+            "accepted_prediction_tokens",
+            "rejected_prediction_tokens",
+            // Anthropic
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+            "ephemeral_5m_input_tokens",
+            "ephemeral_1h_input_tokens",
+            "web_search_requests",
+            "thinking_tokens",
+            // Gemini
+            "promptTokenCount",
+            "candidatesTokenCount",
+            "thoughtsTokenCount",
+            "cachedContentTokenCount",
+            "toolUsePromptTokenCount",
+            "totalTokenCount",
+            // Bedrock
+            "inputTokens",
+            "outputTokens",
+            "totalTokens",
+            "cacheReadInputTokens",
+            "cacheWriteInputTokens",
+            "inputTextTokenCount",
+            // Cohere
+            "search_units",
+            "classifications",
+            "billed_units",
+        ];
+
+        fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    // A test may spell a wire value however it likes; this rule is about the
+                    // production readers.
+                    if p.file_name().is_some_and(|n| n == "tests") {
+                        continue;
+                    }
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs")
+                    && !p.file_name().is_some_and(|n| {
+                        let n = n.to_string_lossy();
+                        n.ends_with("_tests.rs") || n == "usage_count.rs"
+                    })
+                {
+                    out.push(p);
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        walk(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), &mut files);
+        assert!(
+            files.len() > 20,
+            "the scan found only {} source files, so it is not actually looking at the dialects",
+            files.len()
+        );
+
+        let mut offenders = Vec::new();
+        for f in &files {
+            let Ok(text) = std::fs::read_to_string(f) else {
+                continue;
+            };
+            // Flatten non-comment code so rustfmt's line breaks cannot hide the pair, and so the
+            // prose in this file's own siblings is never scanned.
+            let code: String = text
+                .lines()
+                .map(|l| {
+                    let t = l.trim_start();
+                    if t.starts_with("//") { "" } else { l }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let flat: String = code.split_whitespace().collect::<Vec<_>>().join(" ");
+            for field in BILLED_COUNT_FIELDS {
+                let needle = format!("\"{field}\")");
+                let mut from = 0;
+                while let Some(hit) = flat[from..].find(&needle) {
+                    let at = from + hit;
+                    from = at + needle.len();
+                    // The read follows the key closely; a generous window still cannot reach the
+                    // NEXT field lookup, because that lookup would contain its own `get("…")`.
+                    let window = &flat[from..flat.len().min(from + 120)];
+                    let stop = window.find(".get(").unwrap_or(window.len());
+                    let window = &window[..stop];
+                    if window.contains("as_u64") || window.contains("as_i64") {
+                        offenders.push(format!("{}: {field}", f.display()));
+                    }
+                }
+            }
+        }
+        offenders.sort();
+        offenders.dedup();
+        assert!(
+            offenders.is_empty(),
+            "these BILLED count fields are read with a bare `as_u64`/`as_i64` instead of \
+             `read_count_u64`. A provider that spells the count as a float (Cohere types every one \
+             of its counts as JSON `number`) then reads as `None`, and the `unwrap_or(0)` beside it \
+             ledgers real, billed work as ZERO:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
 }

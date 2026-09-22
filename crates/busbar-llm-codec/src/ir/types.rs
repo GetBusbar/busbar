@@ -1095,10 +1095,33 @@ impl IrUsage {
     /// (`billed_classifications` → `classifications`, `search_units` → `search`) are attribution
     /// that will ride `usage_units` once the ledger population lands (a designed later-milestone
     /// residual); today they remain on `IrUsageDetail` and are re-emitted by the Cohere writer.
+    ///
+    /// THE BILLED INPUT IS NETTED AGAINST THE CACHE READ, for the same reason the raw total is.
+    /// The billed-wins exception above was written when Cohere reported no cache accounting at all,
+    /// so `billed_input_tokens` and `cache_read_input_tokens` could never both be present and the
+    /// exception never had to say which convention it followed. Now that the Cohere reader carries
+    /// `usage.cached_tokens`, they can — and the raw path subtracts the cached prefix out of
+    /// `input_tokens` (the ADDITIVE convention this struct documents) while the billed path did
+    /// not, so the two lanes summed to the provider's stated input PLUS the cached share. A turn
+    /// Cohere states as 11 input tokens, 4 of them cached, ledgered `input: 11` beside
+    /// `cache_read: 4` — 15 charged for 11 reported. This netting restores the one invariant the
+    /// projection exists to keep: `input + cache_read` equals what the provider said, whichever
+    /// bucket won. `saturating_sub` floors at zero rather than wrapping, matching every other
+    /// cache normalization in this crate.
+    ///
+    /// OWNER-PARKED, and deliberately the conservative direction: the repo holds no captured Cohere
+    /// response carrying BOTH `billed_units.input_tokens` and `cached_tokens`, so whether Cohere's
+    /// billed count is already cache-exclusive is unconfirmed. If it is, this under-attributes the
+    /// input lane by the cached share (visible, recoverable); without it busbar over-charges
+    /// (silent, not recoverable). Money-sacred cuts one way — never bill more than was reported.
     pub fn to_token_usage(&self) -> busbar_substrate_values::billing::TokenUsage {
         busbar_substrate_values::billing::TokenUsage {
             // Billed wins over raw when the provider reported it (Cohere); else the raw total.
-            input: self.detail.billed_input_tokens.unwrap_or(self.input_tokens),
+            input: self
+                .detail
+                .billed_input_tokens
+                .map(|billed| billed.saturating_sub(self.cache_read_input_tokens.unwrap_or(0)))
+                .unwrap_or(self.input_tokens),
             output: self
                 .detail
                 .billed_output_tokens

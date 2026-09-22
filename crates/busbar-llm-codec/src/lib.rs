@@ -203,6 +203,14 @@ mod decode_native_tool_id_tests;
 #[path = "tests/leaf_write_dispatch_tests.rs"]
 mod leaf_write_dispatch_tests;
 
+/// THE CACHE-TIER READ TESTS, anchored to the REAL recorded upstream bodies committed under
+/// `testing/shadow-oracle/golden/1.5.5/cells/` and `testing/llm-conformance/fixtures/`. Crate-level
+/// rather than per-dialect because the four providers share one loader for that recorded evidence,
+/// and the point of the suite is that the four are the SAME defect.
+#[cfg(test)]
+#[path = "tests/cache_tier_capture_tests.rs"]
+mod cache_tier_capture_tests;
+
 /// THE CODEC/IR TEST SUITES: the detection, translate-parity, streaming, round-trip and IR goldens
 /// that name the dialects and the concrete wire codecs. See the module header for the `super::*`
 /// prelude reconstruction.

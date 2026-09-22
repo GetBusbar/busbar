@@ -1030,6 +1030,113 @@ fn cached_input_tokens_are_not_billed_twice() {
     );
 }
 
+// ── usage: the modality breakdown is a REFINEMENT, not the only source ──────────────────────────
+//
+// The two tests below are anchored to `testing/voice-conformance/fixtures/openai/response.done.json`
+// — the committed capture of a real OpenAI Realtime `response.done` — rather than to a literal typed
+// here. The defect was "the reader ignores the stated totals", and a hand-written fixture cannot
+// distinguish a reader that consults them from one that does not: it would be testing the test. The
+// capture supplies the shape; each test states exactly what it varies and why.
+
+/// Load the committed OpenAI Realtime `response.done` capture.
+///
+/// It lives in the voice-conformance fixture tree, not beside this file, because that is where it was
+/// recorded and where the conformance battery judges against it. Copying it in here would fork the
+/// evidence into two copies that can quietly disagree.
+fn captured_response_done() -> Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testing/voice-conformance/fixtures/openai/response.done.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the captured response.done is missing at {path:?} ({e})"));
+    serde_json::from_str(&text).expect("the capture is JSON")
+}
+
+/// A turn that states only its TOTALS is billed those totals, not ZERO.
+///
+/// `extract_usage` read only the per-modality breakdown (`input_token_details`/`output_token_details`)
+/// and defaulted a missing one to `0`. The breakdown is a REFINEMENT of the stated
+/// `input_tokens`/`output_tokens`, never their sole source — OpenAI Realtime can state the totals and
+/// omit the split — so a real, answered turn METERED AT ZERO. That is silent under-billing: no error,
+/// no warning, a ledger row faithfully reporting that nothing happened.
+///
+/// The Gemini Live dialect in this same crate already had this fallback (`usage_from_metadata`, D26).
+/// Only the OpenAI twin was missing it, so the identical session metered correctly on one dialect and
+/// at zero on the other — which is why this is an oversight, not a decision.
+///
+/// VARIED FROM THE CAPTURE: the two `*_token_details` members are REMOVED, and nothing else. That is
+/// precisely the wire case the capture cannot show (it is a breakdown-present recording) and the one
+/// the defect lived in. The stated totals are the capture's own.
+#[test]
+fn usage_falls_back_to_stated_totals_when_the_modality_breakdown_is_absent() {
+    let mut src = captured_response_done();
+    let usage = src
+        .pointer_mut("/response/usage")
+        .and_then(Value::as_object_mut)
+        .expect("the capture carries a usage object");
+    let stated_in = usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .expect("the capture states an input total");
+    let stated_out = usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .expect("the capture states an output total");
+    assert!(
+        usage.remove("input_token_details").is_some()
+            && usage.remove("output_token_details").is_some(),
+        "the capture must HAVE the breakdown for its removal to be the thing under test"
+    );
+
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage")
+    };
+    assert_eq!(
+        u.text_in, stated_in,
+        "the stated input total is billed, not zero: {u:?}"
+    );
+    assert_eq!(
+        u.text_out, stated_out,
+        "the stated output total is billed, not zero: {u:?}"
+    );
+    assert_eq!(u.audio_in, 0, "the split is unknown, so nothing claims audio");
+    assert_eq!(u.audio_out, 0, "the split is unknown, so nothing claims audio");
+
+    // The lane the billing fold sums onto is what actually decides the invoice.
+    let billed = u.to_billing_usage();
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        Some(stated_in),
+        "the input lane bills the stated total, never zero"
+    );
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
+        Some(stated_out),
+        "the output lane bills the stated total, never zero"
+    );
+}
+
+/// When the breakdown IS present it WINS — the stated totals are a fallback, never an override.
+///
+/// Driven by the capture EXACTLY AS RECORDED, no variation at all: this is the ordinary wire case,
+/// and the fallback must be invisible on it.
+#[test]
+fn a_present_breakdown_is_not_overridden_by_the_stated_totals() {
+    let src = captured_response_done();
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage")
+    };
+    assert_eq!(u.audio_in, 100, "the captured audio-in slice: {u:?}");
+    assert_eq!(u.text_in, 40, "the captured text-in slice: {u:?}");
+    assert_eq!(u.audio_out, 60, "the captured audio-out slice: {u:?}");
+    assert_eq!(u.text_out, 20, "the captured text-out slice: {u:?}");
+}
+
 // ── barge-in signals & session lifecycle ─────────────────────────────────────────────────────────
 
 #[test]
