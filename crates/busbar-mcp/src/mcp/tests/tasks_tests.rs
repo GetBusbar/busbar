@@ -447,3 +447,90 @@ fn the_detached_runner_discloses_its_frozen_principal_and_the_bound_it_trades_on
         "the freeze is no longer disclosed as a freeze"
     );
 }
+
+// ── MAX_TASK_ANSWERS: one task's answer map is bounded on ATTACKER-CHOSEN KEYS ──────────────────
+//
+// `MAX_RETAINED_TASKS` bounds how many TASKS the registry keeps; nothing bounded how many ANSWER
+// KEYS one of them accumulates. A caller parked in `input_required` could repeat `tasks/update`
+// under freshly-invented keys forever, growing one task's map without bound. These cases pin the
+// cap, that it counts DISTINCT keys rather than writes, and that a refused batch applies nothing.
+
+/// THE 257th distinct key is refused; 256 are accepted; and a REPEAT of an already-held key still
+/// updates in place instead of being counted as new — proving the cap counts distinct keys, not
+/// writes.
+#[test]
+fn a_tasks_answer_map_is_capped_at_max_task_answers_distinct_keys() {
+    let task = TASKS.create("key-answers-cap", busbar_kernel::store::now_ms());
+    for i in 0..MAX_TASK_ANSWERS {
+        let mut batch = serde_json::Map::new();
+        batch.insert(format!("k{i}"), serde_json::json!(i));
+        assert!(
+            task.deliver(&batch, busbar_kernel::store::now_ms()),
+            "key {i} of {MAX_TASK_ANSWERS} must be accepted"
+        );
+    }
+    assert_eq!(task.answers().len(), MAX_TASK_ANSWERS);
+
+    // AT THE CEILING: a repeat of an existing key is not a new key and must still be accepted, and
+    // it must actually update the stored value rather than being a no-op ack over a refusal.
+    let mut repeat = serde_json::Map::new();
+    repeat.insert("k0".to_string(), serde_json::json!("updated"));
+    assert!(
+        task.deliver(&repeat, busbar_kernel::store::now_ms()),
+        "a repeat of an existing key must not be refused merely because the task is at its ceiling"
+    );
+    assert_eq!(
+        task.answers().get("k0"),
+        Some(&serde_json::json!("updated")),
+        "the repeat must actually have updated the stored answer in place"
+    );
+    assert_eq!(
+        task.answers().len(),
+        MAX_TASK_ANSWERS,
+        "a repeat must not grow the map: the cap counts distinct keys, not writes"
+    );
+
+    // THE 257th DISTINCT KEY is refused, and refusing it must not partially apply it.
+    let mut overflow = serde_json::Map::new();
+    overflow.insert("overflow".to_string(), serde_json::json!("no"));
+    assert!(
+        !task.deliver(&overflow, busbar_kernel::store::now_ms()),
+        "a task already holding MAX_TASK_ANSWERS distinct keys must refuse a new one"
+    );
+    assert!(
+        task.answers().get("overflow").is_none(),
+        "a refused key must not be stored — refuse, never silently partially apply"
+    );
+    assert_eq!(task.answers().len(), MAX_TASK_ANSWERS);
+}
+
+/// A batch that mixes an already-held key with enough NEW keys to cross the ceiling is refused
+/// WHOLE: none of the new keys in that batch land, not even the ones that would have fit. Refusing
+/// only the excess would still be a silent partial application of a single caller request.
+#[test]
+fn a_batch_that_would_cross_the_ceiling_is_refused_whole_not_truncated() {
+    let task = TASKS.create("key-answers-batch", busbar_kernel::store::now_ms());
+    let mut batch = serde_json::Map::new();
+    for i in 0..(MAX_TASK_ANSWERS - 1) {
+        batch.insert(format!("k{i}"), serde_json::json!(i));
+    }
+    assert!(task.deliver(&batch, busbar_kernel::store::now_ms()));
+    assert_eq!(task.answers().len(), MAX_TASK_ANSWERS - 1);
+
+    // One more distinct key would land exactly AT the ceiling and is fine; two more would cross it.
+    let mut over = serde_json::Map::new();
+    over.insert("k0".to_string(), serde_json::json!("repeat, not new"));
+    over.insert("new-a".to_string(), serde_json::json!("new"));
+    over.insert("new-b".to_string(), serde_json::json!("new"));
+    assert!(
+        !task.deliver(&over, busbar_kernel::store::now_ms()),
+        "two new keys on top of MAX_TASK_ANSWERS - 1 held crosses the ceiling and must be refused"
+    );
+    assert_eq!(
+        task.answers().len(),
+        MAX_TASK_ANSWERS - 1,
+        "a refused batch must apply NOTHING — not even the keys that would individually have fit"
+    );
+    assert!(task.answers().get("new-a").is_none());
+    assert!(task.answers().get("new-b").is_none());
+}

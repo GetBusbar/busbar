@@ -347,12 +347,25 @@ fn tasks_update(
         .and_then(|v| v.as_object())
         .cloned()
         .unwrap_or_default();
-    super::tasks::TASKS.update(
+    // `Some(false)` is `MAX_TASK_ANSWERS` refusing this batch WHOLE — see
+    // `tasks::McpTask::deliver`. `None` cannot happen here: `resolve_task` above already proved the
+    // id resolves for this caller, and nothing between there and here can make it stop resolving.
+    if let Some(false) = super::tasks::TASKS.update(
         &task.id,
         task_principal(ctx),
         &responses,
         ctx.host.clock_now_ms(),
-    );
+    ) {
+        return invalid_params(
+            id,
+            &format!(
+                "this task already holds {} answer keys, the most one task retains. \
+                 `inputResponses` may still update any of its existing keys, but adding a new one \
+                 past that ceiling is refused.",
+                super::tasks::MAX_TASK_ANSWERS
+            ),
+        );
+    }
     result(id, serde_json::json!({}))
 }
 
@@ -1253,6 +1266,23 @@ async fn tools_call_via_gauntlet(
         .await
 }
 
+/// THE CEILING ON `params.name`, IN BYTES, CHECKED BEFORE THE DURABLE PER-CALL LOG EVER OPENS.
+///
+/// [`CallLog::open`] seeds the record's `tool` field with the caller's OWN, unvalidated name —
+/// right, for an ordinary bad name: a refusal that matched no registration still has to say what
+/// was asked for. Wrong for an UNBOUNDED one, because that field is written verbatim into
+/// `McpCallRecord` (`busbar_mcp_codec::record::McpCallRecord::tool`), a DURABLE, HASH-CHAINED row
+/// the instant any terminal fires — refusal included — and the row then participates in chain
+/// verification forever. Bounding the field on some later terminal is not enough: whatever `open`
+/// was called with is already the value every terminal after it writes. So the ordering IS the fix
+/// — this check sits BEFORE [`CallLog::open`] runs at all, never after, so an oversized name never
+/// has a `CallLog` to be written through in the first place.
+///
+/// 256, matching the ceilings this crate already enforces at comparable doors:
+/// `stdio_serve::MAX_RESOURCE_SUBS` (a session's retained resource-subscription set) and
+/// `stdio_serve::MAX_RESOURCE_SUB_URI_BYTES` (one retained subscription uri).
+const MAX_TOOL_NAME_BYTES: usize = 256;
+
 /// `tools/call` — DISPATCH. See the module header for the ordering and why it is that ordering.
 async fn tools_call(
     ctx: &Ctx<'_>,
@@ -1270,6 +1300,22 @@ async fn tools_call(
             invalid_params(id, "`params.name` is required and must be a string."),
         );
     };
+    // THE LENGTH GATE. Refused outright, never truncated — a truncated name is a DIFFERENT tool
+    // name, and silently renaming a caller's request is worse than refusing it (#42: an unknown is
+    // refused, never silently defaulted). And refused with NO `CallLog` in scope: see the constant's
+    // doc for why opening the log first would still land the oversized bytes in the durable chain
+    // even though this same function goes on to refuse the call.
+    if name.len() > MAX_TOOL_NAME_BYTES {
+        return invalid_params(
+            id,
+            &format!(
+                "`params.name` is {} bytes, longer than the {MAX_TOOL_NAME_BYTES} this deployment \
+                 retains for a tool name. Refused before it reached the per-call log: a name this \
+                 long would be written verbatim into a durable, hash-chained record.",
+                name.len()
+            ),
+        );
+    }
     let mut log = CallLog::open(ctx, name, selected_gen);
     let mut arguments = params
         .and_then(|p| p.get("arguments"))

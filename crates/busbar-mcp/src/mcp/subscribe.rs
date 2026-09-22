@@ -123,6 +123,38 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// `a_revoked_key_keeps_being_served_until_the_lifetime_bound`, which pins today's behaviour.
 const MAX_LIFETIME: Duration = Duration::from_secs(300);
 
+/// THE CEILING ON DISTINCT URIS ONE `subscriptions/listen` CALL MAY NAME under
+/// `resourceSubscriptions`.
+///
+/// The list is entirely client-written and, once accepted, is retained for the WHOLE life of the
+/// stream ([`MAX_LIFETIME`], up to five minutes), re-walked against the catalogue on every
+/// generation move and tested against every relayed upstream event. Nothing bounded its size: a
+/// caller entitled to a large catalogue could name an unbounded number of uris and have every one
+/// of them retained for the stream's life, across as many concurrently open streams as it cared to
+/// hold. Checked on the RAW requested count, before entitlement narrows it, so the bound is a
+/// property of the request's own shape rather than of what the caller happens to be entitled to —
+/// and refused, never truncated: silently keeping the first 64 of a caller's own list would watch
+/// uris it did not ask to watch over ones it did.
+///
+/// The ceiling itself is 64. Deduplicated first (see [`dedup_uris`]) — a repeated uri is both a
+/// memory multiplier (one retained entry per COPY, absent dedup) and a duplicate-delivery
+/// multiplier, so the cap counts DISTINCT uris, exactly as `tasks::MAX_TASK_ANSWERS` counts
+/// distinct answer keys rather than writes.
+const MAX_SUBSCRIBED_URIS: usize = 64;
+
+/// Deduplicate a caller's requested uri list, preserving first-seen order (order is not otherwise
+/// meaningful here, but a stable one keeps a refusal message and a test's expectations reproducible).
+fn dedup_uris(uris: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::with_capacity(uris.len());
+    let mut out = Vec::with_capacity(uris.len());
+    for uri in uris {
+        if seen.insert(uri.clone()) {
+            out.push(uri);
+        }
+    }
+    out
+}
+
 /// How often a stream that has nothing to say writes an SSE comment. Not a protocol message —
 /// comment lines carry no `data:` and every SSE reader drops them — but the bytes are what stops an
 /// idle proxy between busbar and its caller from reclaiming a connection that is working correctly.
@@ -551,11 +583,37 @@ pub(crate) fn listen(
     // `busbar_substrate_values::handlers::mcp` states: a hand-read `params.notifications.toolsListChanged` accepts
     // shapes the specification does not, and each acceptance is a difference between what busbar
     // serves and what the protocol says.
-    let requested: SubscriptionFilter = params
+    let mut requested: SubscriptionFilter = params
         .and_then(|p| p.get("notifications"))
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
+    // MAX_SUBSCRIBED_URIS, CHECKED ON THE RAW REQUEST — before entitlement narrows it, so this is a
+    // property of what the caller ASKED for rather than of what it happens to be entitled to. See
+    // the constant's doc for why: a caller entitled to a large catalogue could otherwise retain an
+    // unbounded uri list for the stream's whole life. DEDUPLICATED FIRST, so a caller repeating one
+    // uri pays for one entry rather than however many times it wrote it, and so the cap that follows
+    // counts DISTINCT uris rather than list length — matching what test 2 in the fix's own red-green
+    // ledger requires: the 65th DISTINCT uri is refused, and a list containing duplicates dedups
+    // rather than consuming budget per copy.
+    if let Some(uris) = requested.resource_subscriptions.take() {
+        let deduped = dedup_uris(uris);
+        if deduped.len() > MAX_SUBSCRIBED_URIS {
+            return super::envelope::error_response(
+                StatusCode::BAD_REQUEST,
+                id,
+                super::envelope::code::INVALID_PARAMS,
+                &format!(
+                    "`params.notifications.resourceSubscriptions` names {} distinct uris; a \
+                     `subscriptions/listen` call may watch at most {MAX_SUBSCRIBED_URIS} at once. \
+                     Open a second subscription for the rest.",
+                    deduped.len()
+                ),
+                None,
+            );
+        }
+        requested.resource_subscriptions = Some(deduped);
+    }
     // The entitlement AT OPEN, for the acknowledgement's narrowing: the same ordered gate
     // `resources/read` asks, under this caller's grant against the live snapshot. Re-asked per
     // poll at delivery — this read only decides what the acknowledgement may NAME.
