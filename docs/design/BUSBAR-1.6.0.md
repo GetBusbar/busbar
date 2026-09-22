@@ -1318,7 +1318,54 @@ structural limit of the oracle as a money witness, and no amount of re-recording
 corpus is OWED money cells for every post-1.5.5 plane, authored rather than recorded — and until they
 exist, "oracle green" on a plane money path is an absence of evidence, not evidence of absence.
 
-**AND THE CONFORMANCE RIGS DO NOT COVER THE GAP — checked, second independent route.** The obvious
+**CORRECTED 2026-09-22 — I OVERCLAIMED THIS AND THE SECOND LEG FALLS.** §12's own caveat said *"if
+someone finds a positive money assertion in a rig, the second leg falls."* It fell, twice, and the
+grep that missed them looked only under `testing/`:
+- **`scripts/a2a-subject/h2-meter-row.sh` and `scripts/mcp-subject/h2-meter-row.sh` assert positive
+  money and GATE IN CI TODAY.** They boot the real release binary, serve a real `message/send` /
+  `tools/call`, read `GET /api/v1/admin/keys/<kid>/usage` before and after, and assert
+  `req_delta -eq 1` and `spend_delta -eq 1`. Gating steps at `ci.yml:2060` and `:2073`
+  (`plane-rigs`, no `continue-on-error`), on every PR and on dev/qa/main.
+- **The voice rig asserts an exact amount and gates:** `legs/metering-lease.sh` →
+  `voice-conform.rs:probe_metering_lease` fails unless `cap == Some(4_000)` and
+  `lease.settled_nanos() == 4_000`.
+
+**THE TRUE GAP, verified and narrower: NO witness anywhere — corpus, rig or test — PRICES a
+post-1.5.5 plane THROUGH A RATE CARD.** The structural reason is one line of rig config:
+`scripts/a2a-subject/h2-lib.sh:85-94` sets `per_request_fee: 1` and **has no `rate_card:` key at
+all** — which under #42 is a BILLING-OFF deployment. So the a2a/mcp rigs assert the flat fee (#44)
+only and *cannot* exercise a priced class by construction. The voice rig's `price_usage` is a harness
+stub (`voice-conform.rs:1057`, flat 1 nano/unit over a `FixtureHost`), also not a card.
+
+Uncovered on a2a, mcp, streaming and decision: per-declared-class counts (a2a `bytes`; mcp
+`tool_calls`+`bytes`; streaming's seven; decision `decision`); price = Σ count × rate (#71); the card
+in force at `arrived_ms` (#79); an unpriced class REFUSING rather than billing zero (#42); a
+nanos/spend budget biting at the right quantity (the existing `h2-admit-refusal` bites on a
+`requests:1/day` COUNT budget — a different quantity). **The refusal half IS genuinely covered** by
+`h2-admit-refusal` (a2a+mcp) and `admit-refusal` (voice) — reuse those shapes, do not rewrite them.
+
+**THE SINGLE HIGHEST-LEVERAGE EDIT IN THIS ENTIRE FINDING:** add a `rate_card:` block to both
+`h2-lib.sh` files. One edit converts two already-gating rigs from billing-off to billing-on and makes
+every subsequent pricing leg possible.
+
+**AND THE ORACLE CANNOT BE MADE TO HELP — measured in the engine, three independent locks.** (1) The
+diff loop iterates only cells the GOLDEN LEDGER marks PASS (`run.rs:1464-1482`); a cell with no golden
+row never reaches `compare()` — it is not even `missing.golden`. (2) Gaps do not touch the verdict:
+`rc` is set only by `owed.is_empty()` or `diverging_total > 0` (`run.rs:2223`), so **an authored money
+cell added to the corpus today is a silent no-op that can never fail**. (3) `run.rs:1021` hard-refuses
+any accepted-difference naming `missing.golden`. There is also **no assertion field in the cell
+schema** — every key across all 2318 cells was enumerated; `why` is prose the engine reads once and
+never evaluates. Ledger: 916 PASS / 1402 SKIP; all 468 a2a and all 912 mcp cells are SKIP with one
+verbatim reason (*"proven by its conformance rig, not recorded here"*); **zero streaming and zero
+decision cells exist at any status.** So the oracle's role IS bounded to 1.5.5 parity by construction —
+that is the design, not a defect, and the witness belongs in the rigs.
+
+**ONE SAFE-DIRECTION NOTE:** `missing.candidate` IS in the money class set (`differ.rs:70-84`, weight
+10) while `missing.golden` is not — so the port-band collision manifests as a money-class RED, never a
+false green. But it means any money-class red seen on 2026-09-22 should be re-checked against the port
+collision before it is believed.
+
+**THE ORIGINAL SECOND LEG, kept for the record:** The obvious
 rebuttal is that the oracle was only ever a 1.5.5 PARITY net and new-plane correctness belongs to the
 conformance rigs. Measured: it does not. The a2a harness and supplement contain **zero** mentions of
 `spend`/`billing`/`ledger`/`rate_card` (an earlier 9-of-27 count was matching `usage`/`meter` in
