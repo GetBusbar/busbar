@@ -39,6 +39,7 @@ pub mod highwater;
 pub mod hook;
 mod hostlog;
 mod legacy_usage;
+pub mod observe;
 pub mod plane;
 pub mod registry;
 // The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
@@ -213,6 +214,16 @@ struct RawPlugin {
     close: CloseFn,
     /// The plugin name/path, for diagnostics.
     path: String,
+    /// The KIND bound at load (cross-checked against the signed manifest before this is built).
+    ///
+    /// Held so the ONE generic wire call can tell the host's observer which kind reported, WITHOUT
+    /// the plugin ever sending it: a kind on the wire would be a kind a plugin could claim, and
+    /// [`crate::observe::PluginObserver`] applies per-kind policy. `&'static str` because it is
+    /// always one of `busbar_plugin::cold::kind`'s constants.
+    kind: &'static str,
+    /// Which response shape THIS plugin speaks — see [`response_shape`] and
+    /// [`RawPlugin::decode_response`]. Latched on the first successful decode and never revisited.
+    shape: std::sync::atomic::AtomicU8,
     /// The mapped library. `Option` only so `Drop` can TAKE it and unload it on a plugin worker
     /// (`dlclose` runs the image's `.fini_array`); it is always `Some` until then. Declared BEFORE
     /// `_backing` so the unload still happens first — the UNLOAD-then-REMOVE order Windows requires.
@@ -297,8 +308,7 @@ impl RawPlugin {
         };
         free_guarded(self.free, &self.path, out, out_len);
         if status == STATUS_OK {
-            serde_json::from_slice(&bytes)
-                .map_err(|e| TransportError::engine(format!("plugin response decode failed: {e}")))
+            self.decode_response(&bytes)
         } else {
             // Classify the plugin-returned `status` into a SEMANTIC kind OUT OF BAND. The fallback
             // decision keys on the kind, never on a bare status integer, and a caught PANIC
@@ -308,6 +318,88 @@ impl RawPlugin {
             Err(TransportError::from_status(status, &body, &self.path))
         }
     }
+
+    /// Decode ONE `STATUS_OK` response body into `Resp`, folding the observability envelope
+    /// (DECISIONS #85) on the way through.
+    ///
+    /// **Two accepted shapes, and they cannot be confused for one another.** A plugin built against
+    /// the envelope answers `{"result":<kind response>,"metrics":[…],"diagnostics":[…]}`; a plugin
+    /// built before it answers the kind's response BARE. Every kind's response enum is externally
+    /// tagged by its Rust VARIANT name — `{"Streams":…}`, `{"Key":…}`, `{"Reply":…}`, or a bare
+    /// string like `"Delivered"` — and not one of them has a variant named `result`, so the two
+    /// forms are disjoint and the discrimination is total rather than a guess.
+    ///
+    /// **Why an adapter and not a floor raise.** Refusing the bare form would refuse every published
+    /// first-party plugin at load — the outcome `usage_migration` names as the one thing a migration
+    /// may not produce. This is the same per-kind ADAPTER the tree already runs on the store's
+    /// usage-ledger ops: the engine keeps ONE internal shape and the wire meets a plugin where it
+    /// is. When a kind's supported FLOOR eventually rises past its envelope version, the bare arm
+    /// here becomes dead and is deleted — it is a migration window, not a permanent fork.
+    ///
+    /// **THE PROBE RUNS ONCE PER LOAD, NEVER PER CALL.** A plugin does not change its mind about
+    /// which wire it speaks, so the first successful decode LATCHES the shape and every later call
+    /// parses exactly once. That is not an optimisation, it is a requirement: trying the envelope
+    /// first on every call would parse-and-discard a whole response body before failing over on
+    /// every request a `hook` GATE serves, and the hook kind is a 1.6.0 functional fixed point whose
+    /// per-request cost may not move. Latched, the entire cost of supporting two shapes is one extra
+    /// parse of one response, once, when the plugin loads.
+    ///
+    /// `Relaxed` throughout: the value is a pure memo of a deterministic property of the peer, two
+    /// racing first-calls compute the same answer, and nothing is ordered against it.
+    fn decode_response<Resp: serde::de::DeserializeOwned>(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Resp, TransportError> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let decode_err =
+            |e: serde_json::Error| TransportError::engine(format!("plugin response decode failed: {e}"));
+        match self.shape.load(Relaxed) {
+            // Latched: this plugin speaks the envelope. A failure here is a real failure — falling
+            // back would mean a plugin that answered an envelope once and something else later, and
+            // reading that as "the old shape" would hide a genuinely broken peer.
+            response_shape::ENVELOPE => {
+                let envelope: busbar_plugin::cold::observe::Envelope<Resp> =
+                    serde_json::from_slice(bytes).map_err(decode_err)?;
+                observe::fold(&self.path, self.kind, &envelope);
+                Ok(envelope.result)
+            }
+            // Latched: this plugin predates the envelope. One parse, exactly as before #85.
+            response_shape::BARE => serde_json::from_slice(bytes).map_err(decode_err),
+            // First decode of this plugin's life: probe. The envelope is tried first so a
+            // well-formed envelope is never mis-read; on failure the bare shape is tried and, if
+            // that fails too, the ENVELOPE's error is reported, because a plugin built against the
+            // current SDK is the case an operator is far more likely to be debugging and the bare
+            // arm's "unknown variant `result`" would send them the wrong way.
+            _ => match serde_json::from_slice::<busbar_plugin::cold::observe::Envelope<Resp>>(bytes)
+            {
+                Ok(envelope) => {
+                    self.shape.store(response_shape::ENVELOPE, Relaxed);
+                    observe::fold(&self.path, self.kind, &envelope);
+                    Ok(envelope.result)
+                }
+                Err(envelope_err) => match serde_json::from_slice::<Resp>(bytes) {
+                    Ok(bare) => {
+                        self.shape.store(response_shape::BARE, Relaxed);
+                        Ok(bare)
+                    }
+                    Err(_) => Err(decode_err(envelope_err)),
+                },
+            },
+        }
+    }
+}
+
+/// Which response shape a loaded plugin speaks, as latched on [`RawPlugin::shape`].
+///
+/// A `u8` in an `AtomicU8` rather than an enum because it is read on every wire call and written
+/// once; the three values are spelled here so no call site writes a bare literal.
+mod response_shape {
+    /// Not yet decided — the next successful decode probes and latches.
+    pub(super) const UNKNOWN: u8 = 0;
+    /// `{ result, metrics[], diagnostics[] }` (DECISIONS #85).
+    pub(super) const ENVELOPE: u8 = 1;
+    /// The kind's response, unwrapped — what every plugin built before #85 answers.
+    pub(super) const BARE: u8 = 2;
 }
 
 /// A failed transport `call`, carrying a SEMANTIC [`TransportErrorKind`] alongside the human message.
@@ -441,7 +533,7 @@ fn wire_up_raw(
     lib: Library,
     cfg_json: &str,
     display: String,
-    expected_kind: &str,
+    expected_kind: &'static str,
     manifest_kind: &str,
     backing: Option<stage::Staged>,
 ) -> Result<RawPlugin, String> {
@@ -644,6 +736,8 @@ fn wire_up_raw(
         free,
         close,
         path: display,
+        kind: expected_kind,
+        shape: std::sync::atomic::AtomicU8::new(response_shape::UNKNOWN),
         _lib: Some(lib),
         _backing: backing,
     })
@@ -1697,3 +1791,11 @@ pub fn inventory(dir: &Path) -> Vec<PluginInfo> {
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;
+
+/// DECISIONS #11's real test: ONE crate built both ways must be observationally identical. Declared
+/// at the crate root rather than under `export` because it is not a test OF the export seam — it is
+/// a test of the equivalence the two build shapes are supposed to have, and the export kind is
+/// merely the first one with a fixture that can prove it.
+#[cfg(test)]
+#[path = "tests/export_conformance_tests.rs"]
+mod export_conformance_tests;

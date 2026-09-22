@@ -462,6 +462,30 @@ and hook plugins are untouched. Stores built against ABI 4 — the ones that per
 records and A2A tasks durably — are a later release; nothing you have installed needs rebuilding
 for 1.6.0. See [the plugin guide](docs/plugins.md).
 
+**Every plugin response now carries an observability envelope**, and the `export` kind's payload
+schema moves to v3 because of it. A plugin answers `{ result, metrics[], diagnostics[] }`: `result`
+is the kind-specific answer it always sent, and the other two are a back-channel that did not exist.
+The plugin REPORTS on it; Busbar validates, bounds and decides — a plugin can neither write a
+counter nor mint a diagnostic code of its own, and a metric named `busbar_*` is dropped so nothing
+can impersonate a first-party series. The bound is the one hook metrics have had since 1.5.0 (64
+entries, 8 labels, a charset on every name, finite numbers, sanitised strings, a malformed entry
+dropped whole), reached through the same function rather than a second copy of it.
+
+This exists because the export wire could not carry what a sink DID. `Delivered` was a unit variant
+and the cold tier has no host callback, so a telemetry sink that rotated a file or shed a line had
+nowhere to say so — which is why the built-in file, webhook and Prometheus exporters are still
+compiled in rather than shipped as the plugins they are supposed to be. It also closes a hole in the
+compiled-in ≡ dropped-in guarantee that was asserted and false: a compiled-in plugin could reach
+Busbar's own metrics recorder, while the same source built as a dropped-in `.so` links its own and
+silently lost every counter. Reaching a recorder is no longer representable from either build.
+
+**Nothing you have installed needs rebuilding.** The export window widens to `2..=3` rather than
+moving: a sink built before the envelope answers the bare response and keeps loading, and Busbar
+reads whichever shape a plugin speaks — decided once, when it loads. The store, secret, auth and
+hook payload schemas are unchanged, as is the transport version (`busbar_abi() == 1`) and the six
+exported symbols. A sink that wants the back-channel implements one new defaulted SDK method,
+`drain_observations`.
+
 ### Spec fidelity
 
 The LLM plane is now validated against the providers' published, machine-readable API

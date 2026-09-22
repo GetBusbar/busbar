@@ -162,11 +162,39 @@ fn response_json_roundtrip() {
     }
 }
 
-/// The export payload schema is at v2 (1.5.3, the projection grammar: expanded vocabulary,
-/// `audit` removed) — pinned so the SDK/loader floor and the wire cannot drift.
+/// The export payload schema is at v3 (DECISIONS #85: the response became
+/// [`crate::cold::observe::Envelope`]`<ExportResponse>`, so a sink can report the metrics it
+/// produced and the diagnostics it raised) — pinned so the SDK's declared version, the loader's
+/// window and the wire cannot drift apart.
+///
+/// v2 was 1.5.3's projection grammar (expanded vocabulary, `audit` removed) and is STILL LOADABLE:
+/// #85 widened the window to `[2, 3]` rather than moving it, because a sink built against the bare
+/// response is read by the loader exactly as it always was.
 #[test]
-fn export_abi_version_is_two() {
-    assert_eq!(EXPORT_ABI_VERSION, 2);
+fn export_abi_version_is_three() {
+    assert_eq!(EXPORT_ABI_VERSION, 3);
+}
+
+/// THE ENVELOPE IS THE EXPORT RESPONSE. The wire a v3 sink answers on is the kind's response
+/// wrapped in `{ result, metrics[], diagnostics[] }` — pinned here because a plugin author in any
+/// language matches these three keys literally, so their spelling is a contract and not a detail.
+#[test]
+fn a_v3_export_response_rides_the_observability_envelope() {
+    use crate::cold::observe::{Envelope, Observations, PluginMetric};
+    let enveloped = Observations::none()
+        .metric(PluginMetric::counter("logs_rotated_total", 1.0))
+        .into_envelope(ExportResponse::Delivered);
+    assert_eq!(
+        serde_json::to_string(&enveloped).unwrap(),
+        r#"{"result":"Delivered","metrics":[{"name":"logs_rotated_total","type":"counter","value":1.0}]}"#
+    );
+    // And a sink with nothing to report costs exactly the wrapper: the back-channel is not a
+    // per-call tax on a plugin that does not use it.
+    let bare: Envelope<ExportResponse> = Envelope::bare(ExportResponse::Delivered);
+    assert_eq!(
+        serde_json::to_string(&bare).unwrap(),
+        r#"{"result":"Delivered"}"#
+    );
 }
 
 /// The HTTP-endpoint ops (`routes`/`http_endpoint`) round-trip and carry the stable op tags — the

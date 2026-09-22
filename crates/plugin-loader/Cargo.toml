@@ -61,6 +61,11 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 # `PLANE_DECL` reference and separately `dlopen`s its `cdylib` (located on disk) — the two decls the
 # both-ways test compares. `cargo test -p busbar-plugin-loader` builds the member cdylib.
 busbar-plugin-example-plane = { path = "../plane-example" }
+# The `kind: export` BOTH-WAYS fixture, on exactly the terms the plane one above is here: a
+# `["cdylib", "rlib"]` crate whose `rlib` gives the test the COMPILED-IN handler and whose `cdylib`
+# the test separately `dlopen`s. DECISIONS #11 says compiled-in ≡ dropped-in; `export_conformance_tests`
+# is what makes that checkable for the thing #11 was silently false about — what a plugin OBSERVES.
+busbar-export-example-plugin = { path = "../export-example-plugin" }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.

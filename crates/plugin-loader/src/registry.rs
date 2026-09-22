@@ -76,10 +76,10 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         // vocabulary and REMOVED `audit` — an auditor is a projection made of other streams, not a
         // data type of its own — so a v1 sink that declared `audit` no longer has a stream to
         // declare, and v1 is not accepted here.
-        "export" => &[
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
-        ],
+        // v3 (DECISIONS #85) wraps the response in the observability envelope; v2 answers bare. BOTH
+        // load — the decoder accepts either shape and they are disjoint — so the FLOOR stays at the
+        // 1.5.3 vocabulary version and the envelope landing refuses no published sink.
+        "export" => &[2, busbar_plugin::cold::export::EXPORT_ABI_VERSION],
         // A `kind: plane` plugin is a protocol plane delivered as a `cdylib` and driven over the
         // HOT-tier `#[repr(C)]` `PlaneDecl` vtable (`busbar_plugin::hot`) — NOT the six-symbol JSON
         // `call` wire the five cold kinds share. Its per-kind PAYLOAD axis is the AIRLOCK MINOR

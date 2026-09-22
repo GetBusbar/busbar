@@ -853,12 +853,14 @@ fn auth_supported_abi_reads_the_shared_const() {
 /// is a recognized kind with a non-empty supported range.
 #[test]
 fn export_supported_abi_reads_the_shared_const() {
+    // The CEILING is the shared const, so the window and the SDK's declared version cannot drift
+    // apart. The FLOOR is deliberately NOT the ceiling: 2 is the 1.5.3 stream vocabulary, and
+    // DECISIONS #85 moved the ceiling to 3 (the response became `{result, metrics[], diagnostics[]}`)
+    // by WIDENING the window rather than moving it, so a sink built against the bare v2 response
+    // keeps loading — the loader reads whichever shape a plugin speaks, decided once at load.
     assert_eq!(
         supported_abi("export"),
-        &[
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
-        ]
+        &[2, busbar_plugin::cold::export::EXPORT_ABI_VERSION]
     );
     assert!(!supported_abi("export").is_empty());
 }

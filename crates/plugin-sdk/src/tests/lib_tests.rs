@@ -489,15 +489,58 @@ fn export_default_handle_http_is_404() {
 }
 
 /// EXPORT: the SDK's declared payload version reads the shared const (compile-time link, not a
-/// coincidental literal) and is pinned at v2 (1.5.3 — the projection grammar: expanded stream
-/// vocabulary, `audit` removed).
+/// coincidental literal) and is pinned at v3 — DECISIONS #85, the observability envelope. What this
+/// SDK BUILDS and what the loader ACCEPTS have to be the same number or a sink built here is refused
+/// by the engine that ships with it, which is exactly what reading the shared const prevents.
 #[test]
-fn export_abi_version_reads_the_shared_const_and_is_two() {
+fn export_abi_version_reads_the_shared_const_and_is_three() {
     assert_eq!(
         export_abi_version(),
         busbar_plugin::cold::export::EXPORT_ABI_VERSION
     );
-    assert_eq!(export_abi_version(), 2);
+    assert_eq!(export_abi_version(), 3);
+}
+
+/// THE SDK EMITS THE ENVELOPE, AND ONLY WHEN THERE IS SOMETHING TO SAY.
+///
+/// `dispatch_export_enveloped` is what the `busbar_call` glue runs, so this is the shape that goes
+/// on the wire. A handler that reports nothing — every export handler written before #85, which is
+/// all of them, because `drain_observations` is defaulted — answers a BARE envelope, so adopting
+/// the envelope costs an existing sink neither a code change nor a wire change beyond the wrapper.
+#[test]
+fn dispatch_emits_a_bare_envelope_for_a_handler_that_reports_nothing() {
+    struct Silent;
+    impl ExportHandler for Silent {
+        fn streams(&self) -> Vec<ExportStream> {
+            vec![ExportStream::Metrics]
+        }
+    }
+    let env = dispatch_export_enveloped(&Silent, ExportRequest::Streams);
+    assert!(env.is_bare());
+    assert!(matches!(env.result, ExportResponse::Streams(_)));
+}
+
+/// And a handler that DOES report gets its observations onto the response of the call that produced
+/// them — the ordering that makes the back-channel useful rather than one call late.
+#[test]
+fn dispatch_carries_what_the_handler_observed_on_that_calls_response() {
+    struct Reporting;
+    impl ExportHandler for Reporting {
+        fn streams(&self) -> Vec<ExportStream> {
+            Vec::new()
+        }
+        fn drain_observations(&self) -> Observations {
+            Observations::none()
+                .metric(PluginMetric::counter("x_total", 2.0))
+                .diagnostic(PluginDiagnostic::warn("BUSBAR-0001", "hi"))
+        }
+    }
+    let env = dispatch_export_enveloped(&Reporting, ExportRequest::Streams);
+    assert!(!env.is_bare());
+    assert_eq!(env.metrics.len(), 1);
+    assert_eq!(env.metrics[0]["name"], "x_total");
+    assert_eq!(env.diagnostics.len(), 1);
+    assert_eq!(env.diagnostics[0]["code"], "BUSBAR-0001");
 }
 
 fn mem_ctor(_cfg: &str) -> Result<BoxedStore, String> {
