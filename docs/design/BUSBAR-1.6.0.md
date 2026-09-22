@@ -1638,6 +1638,38 @@ numbers are given rather than one picked.
     score is **0 of 4, not 3 of 4** — `prometheus`/`webhook`/`file` are equally not crates. Strike
     nothing, or strike all four.
 
+18b. **"BUILD THE FOUR EXPORT CRATES" IS FOUR MISSING SUBSYSTEMS, NOT FOUR CRATES.** Measured
+    2026-09-22 after the assistant cleared the namespace and entry-trait blockers and told an agent
+    to proceed; it measured first and refused, correctly. **#85's own text already said this** —
+    *"the host-side delivery driver does not exist either… this is not 'finish three sinks over an
+    existing ABI'"* — so the ruling to proceed was made past a blocker this document had named.
+
+    Ordered prerequisites, each MEASURED:
+    - **(a) a host-side export load/registry seam.** `PluginRegistry::open_export` has **zero callers
+      outside the loader's own tests**, and `ExportDispatch(pub Arc<DynExport>)` — the one production
+      type wrapping a loaded sink (`plugin_routes.rs:117`) — **is never constructed anywhere**. No
+      boot path opens an export plugin.
+    - **(b) a delivery driver.** Nothing routes a delivery to a loaded sink.
+    - **(c) a host-owned destination capability on the cold ABI.** Property 6 says the host opens the
+      destination and hands the plugin a write sink — that needs a host-owned HANDLE to cross a wire
+      where **no handle types cross at all**; the cold lane is JSON bytes over six symbols.
+      **`kind: transport` not existing is the second half of this same gap.**
+    - **(d) for `otlp` only: a span→`traces` producer.** `ExportStream::Traces` appears in the
+      vocabulary, the projection mask and tests; **nothing builds a traces record**. `deliver_request_log`
+      builds `logs` only. Same shape as the prometheus blocker, one layer further along.
+
+    **And the owed corpus cells are blocked on a different thing again:** `plugins.load|export-*` is
+    `driver: "script"` running `plugin-list.sh <alias>` against a **published tarball**. No export
+    plugin has ever been published, so both owed cells need a signed v2 artifact minted into
+    `plugin-digests.tsv` with its digest pinned — corpus surgery under a pin, owner-sized, not a cell
+    edit.
+
+    **What was built instead, and it is the right substitute:** the adapter witness now lives in the
+    loader (`03791e495`) — one fixture answering in BOTH shapes over the real loader, the v2 arm
+    returning a bare `ExportResponse` and the v3 arm returning the envelope *and reporting a metric on
+    it*, which is the half a v2 sink structurally cannot express. Disjointness asserted on the bytes.
+    That is the owed cell's PURPOSE without the pin surgery.
+
 19. **THE CRATE COUNT MOVES 33 → 39, WHICH IS OUTSIDE YOUR ±3-5 BAND.** The six ABI fixtures were
     HOMELESS; defining them is what un-homes them (row 35-40) and the definition is clean. Recorded
     rather than absorbed, per this document's own rule that a move over ~5 is evidence the DEFINITIONS
