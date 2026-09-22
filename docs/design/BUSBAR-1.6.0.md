@@ -1294,6 +1294,48 @@ the SDK macros. Gen-2 (the 1.6.0 design, already built in `busbar-contract`) has
 **ZERO production riders for store/secret/hook** (fixtures only). They collide on five false-friend
 names, which is exactly what #35 is about. Any #84 work must know which generation it is touching.
 
+### 12. THE ORACLE IS STRUCTURALLY BLIND TO PLANE MONEY — measured 2026-09-22, and it cannot self-heal
+
+Fixing B09 (`crates/busbar/src/root/units_a2a.rs`) produced a green oracle that means **nothing**, on
+three independent grounds, each verified:
+
+1. **The module is unreachable from the path the recorder drives.** `A2aUnits::new` has exactly ONE
+   call site in the workspace — `root/tests/units_a2a.rs:1728`, under `#[cfg(test)]`. `main.rs` names
+   `root::units_a2a` once (`:1062`) only to call `scope_policy`, a boot-time table builder that
+   constructs no unit. A2A is served by `busbar_a2a::PLANE_DECL` (`main.rs:679`), and that crate has
+   zero references to `units_a2a`. Structurally airtight: `crates/busbar/Cargo.toml` declares only
+   `[[bin]]`, no `[lib]`, so nothing outside the binary can import the module at all.
+2. **Of the 468 a2a cells in the corpus, ZERO mention money, billing, usage, ledger or rate_card.**
+   All are protocol-level.
+3. **The 1.5.5 golden contains exactly ONE a2a-named cell** — `neutrality|routes|a2a-shaped-404`, a
+   404 with empty `usage`/`audit`/`metrics`, because 1.5.5 had no a2a plane. **There is no a2a money
+   golden to diverge from, and there never can be** — the golden is 1.5.5 and 1.5.5 had no a2a.
+
+**So no oracle cell anywhere would catch an a2a money regression — today, or after a2a is switched
+onto the serving path.** The same hole almost certainly exists for mcp, streaming and decision: every
+plane that did not exist in 1.5.5 is money-invisible to a golden recorded from 1.5.5. **This is the
+structural limit of the oracle as a money witness, and no amount of re-recording fixes it.** The
+corpus is OWED money cells for every post-1.5.5 plane, authored rather than recorded — and until they
+exist, "oracle green" on a plane money path is an absence of evidence, not evidence of absence.
+
+**Corollary for every agent report:** a NEUTRAL oracle on a post-1.5.5 plane must be reported as
+"the oracle cannot see this", never as "no divergence". Those are different claims.
+
+### 13. PARKED — the a2a accrual semantics need a billed-byte sign-off (#10/#59)
+
+B09's fix changes what an a2a unit accrues against its hold from `request_bytes` to
+`request_bytes × bytes_nanos`. **No observable byte moves today** (the module is unreachable, above),
+so there is no oracle cell to park — but the SEMANTICS must be signed before a2a is switched on.
+Recommendation: **approve.** The accrual and the hold are now provably the same denomination by
+construction (`AccrualMeter` is nano-units, `busbar-kernel/src/teller.rs:246`; the hold is sized in
+nanos by `Estimate::pre_tier_nanos`), and the ledger's raw counts per declared class are unchanged
+(#71 — a2a declares one class, `bytes`, `busbar-plane-a2a/src/meta.rs:46`).
+
+A clock hazard worth keeping: `bindings.now` is whole SECONDS while `effective_from` is MILLISECONDS
+(`root/kernel.rs:435`). Resolving a rate card at a seconds-valued instant matches only the from-zero
+opening entry and reports it forever — the same lie with a lookup in front of it. Any #79 resolution
+needs a millisecond binding.
+
 ### ON THE CRITICAL PATH — each costs the owner ~60 seconds and unblocks ~2 agent-days
 
 Measured 2026-09-22 against the 2026-09-25 09:00 PDT dev-green target. Two of the three critical-path
