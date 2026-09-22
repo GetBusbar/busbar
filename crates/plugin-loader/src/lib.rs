@@ -351,8 +351,9 @@ impl RawPlugin {
         bytes: &[u8],
     ) -> Result<Resp, TransportError> {
         use std::sync::atomic::Ordering::Relaxed;
-        let decode_err =
-            |e: serde_json::Error| TransportError::engine(format!("plugin response decode failed: {e}"));
+        let decode_err = |e: serde_json::Error| {
+            TransportError::engine(format!("plugin response decode failed: {e}"))
+        };
         match self.shape.load(Relaxed) {
             // Latched: this plugin speaks the envelope. A failure here is a real failure — falling
             // back would mean a plugin that answered an envelope once and something else later, and
@@ -370,21 +371,23 @@ impl RawPlugin {
             // that fails too, the ENVELOPE's error is reported, because a plugin built against the
             // current SDK is the case an operator is far more likely to be debugging and the bare
             // arm's "unknown variant `result`" would send them the wrong way.
-            _ => match serde_json::from_slice::<busbar_plugin::cold::observe::Envelope<Resp>>(bytes)
-            {
-                Ok(envelope) => {
-                    self.shape.store(response_shape::ENVELOPE, Relaxed);
-                    observe::fold(&self.path, self.kind, &envelope);
-                    Ok(envelope.result)
-                }
-                Err(envelope_err) => match serde_json::from_slice::<Resp>(bytes) {
-                    Ok(bare) => {
-                        self.shape.store(response_shape::BARE, Relaxed);
-                        Ok(bare)
+            _ => {
+                match serde_json::from_slice::<busbar_plugin::cold::observe::Envelope<Resp>>(bytes)
+                {
+                    Ok(envelope) => {
+                        self.shape.store(response_shape::ENVELOPE, Relaxed);
+                        observe::fold(&self.path, self.kind, &envelope);
+                        Ok(envelope.result)
                     }
-                    Err(_) => Err(decode_err(envelope_err)),
-                },
-            },
+                    Err(envelope_err) => match serde_json::from_slice::<Resp>(bytes) {
+                        Ok(bare) => {
+                            self.shape.store(response_shape::BARE, Relaxed);
+                            Ok(bare)
+                        }
+                        Err(_) => Err(decode_err(envelope_err)),
+                    },
+                }
+            }
         }
     }
 }
