@@ -405,6 +405,20 @@ jobs:
         run: cargo xtask gate workspace-deps --selftest
       - name: Workspace-deps lint
         run: cargo xtask gate workspace-deps
+      # WHAT THIS REPOSITORY CLAIMS ABOUT CONFORMANCE, CHECKED AGAINST THE VERDICTS IT ACTUALLY
+      # HOLDS. `conformance-sync` was registered and run by NOTHING — `full-gate --selftest` caught
+      # it by its own rule that a gate nothing runs is a gate that cannot fail. It belongs in CI
+      # rather than on the deliberately-not-run list, because what it guards is customer-facing:
+      # the manifest, the README badges and the prose claims must not drift from the real suite
+      # results. The failure mode is the repository asserting a verdict it does not have — and the
+      # suites are currently ten STALE and seven never run, so the drift it exists to catch is not
+      # hypothetical. One owner ruling rides on exactly this: the OIDF claim is "passes the suite"
+      # and NEVER "certified". It reads text and runs no suite, so it costs a second and sits in
+      # the FAST tier with the other manifest checks.
+      - name: Conformance-sync self-test
+        run: cargo xtask gate conformance-sync --selftest
+      - name: Conformance-sync
+        run: cargo xtask gate conformance-sync
       # THE GATE SET ITSELF, checked against this file. Every step above runs ONE gate; nothing
       # asked whether the set of steps still covers the set of registered gates. That question lives
       # in `full-gate --selftest` — the registry-vs-ci.yml set equality, both directions, plus the
