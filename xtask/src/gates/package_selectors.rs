@@ -158,7 +158,11 @@ struct Covered {
 /// Every package name `cargo -p` could resolve in this workspace: the members' own
 /// `[package] name`s, plus every `name = "…"` in the lockfile. Every way this can go wrong is an
 /// `Err` carrying its own sentence — none of them may be reachable as "an empty universe".
-fn universe(cx: &Ctx) -> Result<BTreeSet<String>, String> {
+///
+/// PUBLIC because `qa-names` asks the same question of a different vocabulary: a `*_crates` list in
+/// `qa/*.toml` names the same packages a `-p` does, and two readers of one universe are two answers
+/// to "is this crate still here" waiting to disagree.
+pub fn universe(cx: &Ctx) -> Result<BTreeSet<String>, String> {
     let root = cx.read(ROOT_MANIFEST).map_err(|e| {
         format!(
             "{ROOT_MANIFEST} is unreadable ({e}) — a reader with no workspace resolves no package, \

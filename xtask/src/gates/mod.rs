@@ -50,6 +50,7 @@ pub mod plane_purity;
 pub mod plane_transport_neutrality;
 pub mod population;
 pub mod qa_gate_dispatch;
+pub mod qa_names;
 pub mod reachability;
 pub mod release_order;
 pub mod response_header;
@@ -169,6 +170,26 @@ pub const REPORT_ONLY: &[Posture] = &[
         excuse: Excused::ReleaseTime,
     },
     Posture {
+        name: "qa-names",
+        why:
+            "RED BY DESIGN on HEAD, about a NAMED, FINITE set of rows and nothing else. This gate \
+              was built on 2026-09-22 to close a defect class found FIVE TIMES THAT DAY, and a \
+              gate for a class that is still open reds on the open instances or it does not work. \
+              The three rows below are the ones carrying that standing debt, twenty-five names in \
+              all: five crate names (a `caps_crate` and four kind-isolation ledger rows) naming \
+              crates the 1.6.0 folds deleted; seventeen paths (nine in qa/construction.toml under \
+              the deleted `busbar-core`/`busbar-substrate` and the renamed `busbar-plane-admin`, \
+              six qa/full-gate.toml skip scripts that moved into `testing/shadow-oracle/scripts/`, \
+              two qa/instance-noun-neutrality.toml ledger rows); and three `scope_globs` over \
+              `src/unit/` directories three planes no longer have. Every one is printed in full on \
+              every run and every one is another change's to drain. The \
+              other six rows are SCORED: a new dead name, a kind that names no key, a scan that \
+              collapsed or a stale declaration is a regression like any other. DELETE THIS POSTURE \
+              when the three names below are drained -- the stale-name check will red until you \
+              do, which is the point.",
+        excuse: Excused::OnlyRows(QA_NAMES_STANDING_REDS),
+    },
+    Posture {
         name: "ship-ready",
         why: "THE SHIP CRITERION, and the integration line is not the ship SHA. Every one of its \
               rows is a claim about a tree that is ready to promote — the twin at zero, the \
@@ -209,6 +230,31 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     "ports-only-tests:busbar-llm",
     "request-path-fn-size",
     "terminal-doors-in-audit-step",
+];
+
+/// THE `qa-names` GATE'S STANDING REDS, BY NAME.
+///
+/// Three rows, each red about dead names in `qa/*.toml` that were already there when the gate was
+/// written and each of which belongs to a change that is not this one. Same contract as
+/// [`CONSTRUCTION_STANDING_REDS`]: a red this list does not name is scored, and a name on this list
+/// that has gone green is STALE and is scored too, so the list cannot outlive its facts and cannot
+/// quietly become a blanket.
+pub const QA_NAMES_STANDING_REDS: &[&str] = &[
+    // `[rules.loc-ceilings].caps_crate = "busbar-caps"` (the crate was folded into busbar-contract)
+    // plus four `qa/kind-isolation.toml` ledger rows naming `busbar-plugin-pack`/`busbar-plugin-sign`.
+    "qa-names:crate-names-a-live-package",
+    // Seventeen: `[rules.no-uninstalled-seam].seam_root`, six `[rules.hold-escapes].known_sites`
+    // and one `confined_to_paths` under the deleted `busbar-core`/`busbar-substrate`, one
+    // `[rules.kernel-seal-impls].known_sites` under the renamed `busbar-plane-admin`, six
+    // `qa/full-gate.toml` skip scripts that moved to `testing/shadow-oracle/scripts/`, and two
+    // `qa/instance-noun-neutrality.toml` ledger rows. An eighteenth -- `[rules.no-default-bodies]`
+    // `transport_file` naming `crates/busbar-contract/src/transport.rs`, which had become a
+    // DIRECTORY -- was struck by `016422be7` between this gate first reporting it and this list
+    // being written, which is the drain working.
+    "qa-names:path-names-a-live-path",
+    // `[rules.plane-no-money].scope_globs` scopes `crates/busbar-{mcp,a2a,voice}/src/unit/*`, and
+    // none of those three directories exists: the rule scans zero files in three of its planes.
+    "qa-names:glob-matches-something",
 ];
 
 /// One entry of [`REPORT_ONLY`].
@@ -2243,6 +2289,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(package_selectors::PackageSelectorsGate),
         summary: "every `-p`/`--package`, matrix cell and xtask cargo string names a live package",
+    },
+    Registration {
+        name: "qa-names",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(qa_names::QaNamesGate),
+        summary: "every kind, crate, path and glob named in qa/*.toml resolves to something here",
     },
 ];
 

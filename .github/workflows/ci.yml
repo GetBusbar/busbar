@@ -314,6 +314,20 @@ jobs:
         run: cargo xtask gate package-selectors --selftest
       - name: Package-selector liveness gate (every -p names a package this workspace resolves)
         run: cargo xtask gate package-selectors
+      # QA-CONFIG NAME LIVENESS: a kind, crate, path or glob named in qa/*.toml that does not exist.
+      # The failure is not a red row -- the lookup resolves to EMPTY, the rule scans a population of
+      # ZERO, and a ban over nothing PASSES. This class was found FIVE TIMES on 2026-09-22 alone:
+      # the fifth plane in no kind list, the export family glob at the wrong path, and
+      # `pure_auth`/`egress_auth` naming no `[gate.plugin_kinds]` key in TWO rules at once, which
+      # left the whole auth kind out of source-denylist and forbid-unsafe. Self-test FIRST, so the
+      # classifier is proven able to name a planted phantom before its silence is believed. The
+      # gate itself runs in `--posture` form: it exits 0 while red on exactly the rows
+      # `gates::REPORT_ONLY` names -- the dead names already in the tree, each another change's to
+      # drain -- and 1 on any other red, so a NEW dead name blocks the push.
+      - name: QA-config name liveness self-test
+        run: cargo xtask gate qa-names --selftest
+      - name: QA-config name liveness gate (every name in qa/*.toml resolves to something here)
+        run: cargo xtask gate qa-names --posture
       # RELEASE-SCRIPT lint — durable guard against the 1.5.2 gate's 2h31m hang: a backgrounded
       # server (serve_forever) whose stdout was NOT redirected, captured via `$(...)`, held the
       # substitution's pipe open until the job timeout. Self-test runs FIRST (never trust the lint's
