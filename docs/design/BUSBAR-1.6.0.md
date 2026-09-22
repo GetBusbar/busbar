@@ -2431,6 +2431,54 @@ the recorded binary configures no `streams:` block — so the realtime path is u
 executes in ZERO cells. Nothing to park. **That the oracle cannot see this seam is a coverage gap,
 not a safety proof.**
 
+#### THE DEFINITION OF DONE IS PARTLY VACUOUS — audited 2026-09-22
+
+Full evidence: `docs/design/1.6.0-instrument-audit.md`. Every "cannot red" claim below is a MATCHED
+PAIR — the same planted violation placed once inside the instrument's reach and once outside, with
+both verdicts captured. **Four findings change what a green run means.**
+
+**1. `bin/oracle replay-selftest` PASSES WITH NO GOLDEN AT ALL.** It is the FIRST step of the PARITY
+group and is labelled *"the differ can see a diff."* The pinned engine does
+`fs::read_to_string(golden_ledger).unwrap_or_default()` (`run.rs:2673`). Measured: **byte-identical
+PASS and rc 0 whether the golden directory exists or not.** The tell is an asymmetry inside one
+function — the BASELINE input has an explicit empty-refusal at `:2694`; the GOLDEN input has none.
+Worse, the step **plants no divergence and never invokes the differ**, so *nothing in the DONE oracle
+proves the differ can see a diff.* Compounding: `--allow-harness-skew` is hardcoded at
+`bin/oracle:234`, so the revision guard can never fire. **This is the `txn-fence.sh` shape exactly** —
+a pass condition satisfied by the absence of the thing being checked.
+
+**2. THE TREE'S ANTI-VACUITY MECHANISM IS ITSELF VACUOUS.** `full_gate::Excuse::holds` exists because
+*"a name cannot be wrong"* — and it checks that claim with `text.contains(needle)`, **no comment
+stripping**. Proven twice on real files: a commented-out call site, and a DELETED call site whose
+needle survives inside `verify-1.6.0-done.sh`'s own line-30 header comment. **Blast radius: four
+gates — `denylist`, `plane-pricing-blindness`, `hot-path-perf`, `hot-path-alloc` — are run by
+NEITHER `full-gate` NOR the DONE oracle.** That string is their only coverage. The same file strips
+comments correctly 300 lines away for ci.yml discovery, so the capability was present and unused.
+
+**3. DoD CLAUSE 2 IS ENFORCED BY NOTHING ON THE DONE PATH.** `ship-ready` is not invoked by name by
+`verify-1.6.0-done.sh`; where `full-gate` does invoke it, it is `Excused::ReleaseTime`; and its
+`standing-reds` row auto-passes off `qa`/`main`. `posture()` additionally fails **OPEN** on a git
+error — the wrong direction for a release gate.
+
+**4. RED OVER NOTHING, in the queue the DONE oracle prints.** `qa/audit-ledger.json` has **24 of 170
+scopes naming paths not in the tree**, and **8 of them carry 6 HIGH + 23 MEDIUM open findings against
+DELETED crates.** There is no `stale-scope` row; the `denylist:stale-waivers` twin is owed.
+
+**Also: only 3 of 46 gates are enrolled in `xtask/src/gates/population.rs`**, the shared population
+floor — so 43 gates have no floor under their denominator.
+
+**CITE AS MODELS, they work:** `kind-isolation:deps` (emits `dead-dep-edge` for 23 dead names),
+`no-float-money:scan-floor` (RED right now precisely because it names the dissolved
+`busbar-mcp-codec`), `plane-transport-neutrality` (a waiver covering nothing is RED), and
+`filtered_cargo_test` (all four declared counts verified current).
+
+> **A PLANT THAT SILENTLY FAILS TO PLANT IS INDISTINGUISHABLE FROM A GATE THAT CANNOT SEE.**
+>
+> The auditor's own correction, and it belongs beside the positive-control rule: its first `Transport`
+> plant anchored on a prefix and landed in `TransportMeta` instead. The gate correctly said PASS, and
+> it nearly wrote that up as blindness. **A positive control needs its own positive control** — prove
+> the violation you planted is actually there before you believe the verdict about it.
+
 #### IMPLEMENTED 2026-09-22 — the three oracle rulings, with what they measured
 
 Engine at `7e00b54`, pinned by `891219cdf`. The section below describes the state BEFORE these
