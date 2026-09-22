@@ -8,22 +8,18 @@
 # section, the admin wiring and the registry declaration, jev is deliberately a SINGLE crate that
 # holds the pure plane AND its own typed config section.
 #
-# `busbar_kernel::config::providers::ModelCfg`, reused VERBATIM for `decisions.models.<name>`, moved
-# to `busbar_contract::config::ModelCfg` (DECISIONS #40/#38) and no longer requires this manifest to
-# name the kernel. This manifest STILL names `busbar-kernel`, and that remains a DECISIONS #40
-# dep-wall violation — an OWNER-KNOWN, OPEN one, not fixed by this pass: `src/registry.rs`'s
-# crate-local `PlaneDecl`/`BuildCtx` constants (declared for a FUTURE root registration, not wired
-# yet) still name `busbar_kernel::plane::registry::{PlaneDecl, BuildCtx}`, and those two types'
-# OWN fields transitively name kernel-internal wiring — `plane_host::PlaneSlots`,
-# `plane_routes::PlaneRouteSpec` (which itself names `axum`), `admin_verbs::AdminRouteSpec`,
-# `plane::config::{PlaneCfg, PlaneEndpointCfg}`, `plane::store::PlaneStore`,
-# `plane_host::{EngineTablesView, ContainerGateSink, EngineHost}`, `api::NamedDefView`, and
-# `config::providers::{ProviderDef, ProviderDeploy, ProviderCfg}` — none of which is contract/ABI
-# vocabulary under DECISIONS #38 (capability traits, wire types, neutral vocab). Moving `PlaneDecl`/
-# `BuildCtx` into the leaf `busbar-contract` crate would have to drag all of that kernel-internal
-# routing/admin/store surface with them, which `busbar-contract`'s own manifest forbids (it may name
-# no kernel crate). So this dependency stays, reported rather than silently carried forward; see
-# `src/registry.rs`'s own module doc.
+# THE `busbar-kernel` EDGE IS GONE, AND SO IS THE ONLY FILE THAT NEEDED IT. Two things used to make
+# this manifest name the kernel and neither does any more. `ModelCfg`, reused VERBATIM for
+# `decisions.models.<name>`, moved to `busbar_contract::config::ModelCfg` (DECISIONS #40/#38).
+# `src/registry.rs` — a crate-local `PlaneDecl` constant typed against
+# `busbar_kernel::plane::registry::{PlaneDecl, BuildCtx}`, declared for a FUTURE root registration —
+# was DELETED rather than moved: nothing outside this crate ever named `PLANE_DECL` (the binary's
+# `register_planes()` installs llm/mcp/a2a/voice and never this crate, which is not even in the
+# binary's dependency graph), so it was unreachable generation-1 code, and #19 retires that
+# generation anyway. Deleting it closed this crate's #40 dep-wall violation outright — no extraction
+# of `PlaneDecl` into `busbar-contract` was needed, and none was done. When a real registration for
+# this plane is wired, it is written against whatever seam exists then, not against a kernel type
+# resurrected from a constant nobody read.
 #
 # WHAT THIS CRATE IS NOT. There is no governance here, no breaker, no hook seat, no approval
 # decision and no metering arithmetic. Those are units, and a unit is on the other side of the
@@ -54,13 +50,6 @@ path = "src/lib.rs"
 # `pools.models.<name>`) now lives — `busbar_contract::config::ModelCfg` — since DECISIONS #40/#38
 # moved it out of the kernel.
 busbar-contract = { path = "../busbar-contract" }
-# NOT for `ModelCfg` any more (that is `busbar-contract`'s now) — ONLY for the crate-local
-# `PlaneDecl`/`BuildCtx`-shaped constants in `src/registry.rs`, declared for a FUTURE root
-# registration that gates on config-model Stage 1/2. This is a KNOWN, OPEN DECISIONS #40 dep-wall
-# violation this pass could not close: see the header comment above and `src/registry.rs`'s own
-# module doc for the full STOP report of what `PlaneDecl`/`BuildCtx` would drag into `busbar-contract`
-# if moved there wholesale.
-busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # THE RESERVED `upstream_credentials` SHAPE. `PoolCfg` (busbar-kernel) names the same enum for
 # its own per-section override; naming it here keeps `decisions:` on the identical reserved-key
 # grammar rather than a look-alike type.

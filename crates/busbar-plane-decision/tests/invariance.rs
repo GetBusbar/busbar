@@ -9,11 +9,15 @@
 //! may name" check here allows `busbar-api` alone and still forbids every genuinely kernel-side
 //! crate: `busbar-core`, `busbar-caps`, `busbar-kernel`, `busbar-unit-*`, and the sibling PLANE
 //! crates (naming another plane would be a plane reading another plane's private surface, never
-//! legitimate for any plane). This crate STILL names `busbar-kernel` in `Cargo.toml`
-//! (`src/registry.rs`'s `PlaneDecl`/`BuildCtx`) — a KNOWN, OPEN DECISIONS #40 violation, not an
-//! allowed exception, so `the_manifest_names_only_what_this_plane_may_name` below is expected to
-//! stay RED until that is closed by a separate, larger extraction (see `src/registry.rs`'s own STOP
-//! report).
+//! legitimate for any plane).
+//!
+//! `the_manifest_names_only_what_this_plane_may_name` was RED for as long as this manifest named
+//! `busbar-kernel`, and it is GREEN now because the manifest does not. The edge existed for ONE
+//! file — `src/registry.rs`, a `PlaneDecl` constant declared against a FUTURE root registration
+//! that never arrived — and that file was deleted, not relocated: nothing outside this crate ever
+//! named `PLANE_DECL`, and the binary does not even depend on this crate. This test is the #40
+//! witness for that closure, so it must never be relaxed to keep it green; if `busbar-kernel`
+//! returns to the manifest, this is the line that is supposed to fail.
 
 use std::path::{Path, PathBuf};
 

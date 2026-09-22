@@ -5,9 +5,9 @@
 //! reused verbatim — see `Cargo.toml`'s header), so it is removed from the forbidden list here.
 //! `ModelCfg` needs no such exception any more — it is `busbar_contract::config::ModelCfg` now
 //! (DECISIONS #40/#38), the crate's ordinary contract dependency. `busbar_kernel` stays ON the
-//! forbidden list and this crate still names it (`src/registry.rs`'s `PlaneDecl`/`BuildCtx`) — a
-//! KNOWN, OPEN dep-wall violation this test correctly keeps red; see that module's own STOP report
-//! for why it was not closed in the same pass that closed `ModelCfg`'s.
+//! forbidden list and this crate no longer names it anywhere: `src/registry.rs` and its sibling
+//! `src/tests/registry.rs` were the only two lines of source that did, and both files are gone —
+//! an unreachable generation-1 `PlaneDecl` constant that nothing outside this crate ever read.
 
 use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
 use busbar_contract::wire::FrameCursor;
@@ -122,9 +122,10 @@ fn the_plane_performs_no_input_or_output() {
 /// The plane names no GENUINELY kernel-side crate.
 ///
 /// `busbar_api` is named deliberately (see the module doc) and is NOT on this list. `busbar_kernel`
-/// IS still on it, and this test is expected to stay RED until `src/registry.rs`'s `PlaneDecl`/
-/// `BuildCtx` STOP report (see that module's doc) is resolved by a separate, larger extraction —
-/// see the module doc above for why closing it is not this pass's scope.
+/// IS on it, and this test was RED on exactly two source lines — `src/registry.rs`'s `use` of
+/// `PlaneDecl` and `src/tests/registry.rs`'s `BuildCtx` literal — until both files were deleted as
+/// unreachable code. It is GREEN now and is the source-side half of this crate's #40 witness (the
+/// manifest-side half is `invariance.rs`'s `the_manifest_names_only_what_this_plane_may_name`).
 #[test]
 fn the_plane_names_no_kernel_side_crate() {
     let forbidden = [
