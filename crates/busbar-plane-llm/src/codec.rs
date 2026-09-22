@@ -930,10 +930,14 @@ impl Plane for LlmPlane {
         // counts are already separate is left alone. So the four lines below partition the input
         // once, whichever dialect answered — and the plane does no arithmetic to make that true.
         let usage = &usage;
-        let mut line = |class: &'static str, ptr: Option<&'static str>, quantity: Option<u64>| {
+        // THE CLASS IS THE DECLARED SYMBOL, NEVER A RE-SPELLING OF IT — see `meta::CLASS_TOKENS_IN`
+        // for why. The four calls below now name the four consts `meta` declares in
+        // `METER_CLASSES`, so the class a count is EMITTED under and the class the plane DECLARED
+        // are one value the compiler checks rather than two strings that agree today.
+        let mut line = |class: MeterClassId, ptr: Option<&'static str>, quantity: Option<u64>| {
             if let Some(quantity) = quantity {
                 let _ = locators.lines.push(UsageLocator {
-                    class: MeterClassId::new(class),
+                    class,
                     location: ptr
                         .map(|p| Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(p))),
                     quantity: Some(quantity),
@@ -942,22 +946,22 @@ impl Plane for LlmPlane {
             }
         };
         line(
-            "tokens_in",
+            meta::CLASS_TOKENS_IN,
             Some(source.tokens_in_pointer),
             Some(usage.input_tokens),
         );
         line(
-            "tokens_out",
+            meta::CLASS_TOKENS_OUT,
             Some(source.tokens_out_pointer),
             Some(usage.output_tokens),
         );
         line(
-            "cache_read",
+            meta::CLASS_CACHE_READ,
             source.cache_read_pointer,
             usage.cache_read_input_tokens,
         );
         line(
-            "cache_write",
+            meta::CLASS_CACHE_WRITE,
             source.cache_write_pointer,
             usage.cache_creation_input_tokens,
         );

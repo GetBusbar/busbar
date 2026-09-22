@@ -58,3 +58,84 @@ fn the_plane_key_is_streaming_never_voice() {
     assert_eq!(StreamingPlane::EMPTY.key(), "streaming");
     assert_ne!(<StreamingPlane as PlaneMeta>::KEY, "voice");
 }
+
+// ── THE KERNEL-SIDE FORBID LIST ───────────────────────────────────────────────────────────────
+//
+// Its four sibling planes (`busbar-plane-a2a`, `-mcp`, `-llm`, `-decision`) each carry this test.
+// THIS CRATE DID NOT, and the asymmetry was invisible because the rule it asserts was green
+// anyway — so nothing pointed at the gap, and a reach landing here would have been the first
+// thing to notice it. The manifest allow-list is the real control; this is the same rule asserted
+// from the INSIDE, so a reach for the kernel is a red here rather than a discovery at packaging.
+
+use std::path::{Path, PathBuf};
+
+fn src_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+}
+
+/// Walk every source file, handing each to a reader.
+fn walk(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
+    for entry in std::fs::read_dir(dir)
+        .expect("the source directory is readable")
+        .flatten()
+    {
+        let path = entry.path();
+        if path.is_dir() {
+            walk(&path, f);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let text = std::fs::read_to_string(&path).expect("a source file is readable");
+            f(&path, &text);
+        }
+    }
+}
+
+/// A line that is only a comment says nothing about what the code does.
+///
+/// LOAD-BEARING HERE, not decoration: this crate's headers legitimately DISCUSS the kernel and its
+/// sibling planes — `lib.rs:35` names the older `busbar_kernel::plane::registry::PlaneDecl`
+/// architecture it is not built on, `claims.rs:117` cites `busbar_plane_llm`'s ladder, and
+/// `governed.rs:10/18` explain the dependency inversion by naming `busbar_voice::runtime`. Every
+/// one is prose about what this plane does NOT do. A gate its own explanation fails is a gate
+/// somebody deletes.
+fn is_comment(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with("//") || t.starts_with('*') || t.starts_with("/*")
+}
+
+/// The plane names no kernel-side crate, and no sibling plane.
+///
+/// `busbar_voice::` carries its `::` on purpose. The bare stem would match `busbar_voice_codec`,
+/// which is this crate's own WIRE DIALECT and a declared dependency (`Cargo.toml`) — banning it
+/// would ban the thing the plane is built out of. The path separator is what distinguishes
+/// reaching into the legacy voice ENGINE from using the codec.
+#[test]
+fn the_plane_names_no_kernel_side_crate() {
+    let forbidden = [
+        "busbar_contract::caps",
+        "busbar_kernel",
+        "busbar_unit",
+        "busbar_substrate",
+        "busbar_voice::",
+        "busbar_plane_llm",
+        "busbar_plane_mcp",
+        "busbar_plane_a2a",
+        "busbar_plane_decision",
+    ];
+    let mut offenders = Vec::new();
+    walk(&src_dir(), &mut |path, text| {
+        for (n, line) in text.lines().enumerate() {
+            if is_comment(line) {
+                continue;
+            }
+            for name in forbidden {
+                if line.contains(name) {
+                    offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+    });
+    assert!(
+        offenders.is_empty(),
+        "the streaming plane reaches a kernel-side crate or a sibling plane: {offenders:#?}"
+    );
+}

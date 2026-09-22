@@ -69,7 +69,7 @@ use busbar_contract::dest::{
     ClientMode, DestinationFacts, EgressBody, RoutePlan, VerifiedDestination,
 };
 use busbar_contract::ids::{
-    AdminVerbId, CorrelationRef, CorrelationValue, MeterClassId, OpClassId, SchemeKey,
+    AdminVerbId, CorrelationRef, CorrelationValue, OpClassId, SchemeKey,
 };
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{
@@ -582,12 +582,17 @@ impl Plane for StreamingPlane {
 
     fn meter<'u>(&self, u: &Unit<'u>, r: &Response<'u>, _ctx: &Ctx<'u>) -> UsageLocators {
         let mut lines = busbar_contract::bounded::BoundedVec::new();
+        // THE CLASS IS THE DECLARED SYMBOL, NEVER A RE-SPELLING OF IT. Each of these is the const
+        // `meta` declares in `METER_CLASSES`, so the class a count is EMITTED under and the class
+        // the plane DECLARED are one value the compiler checks — not two strings that agree today.
+        // A typo in a literal here emits a count under a class no card can name: silently unpriced,
+        // or a boot refusal under #77(5), and in neither case anything that points at this line.
         let classes = [
-            (meta::FACT_AUDIO_TOKENS_IN, "audio_tokens_in"),
-            (meta::FACT_AUDIO_TOKENS_OUT, "audio_tokens_out"),
-            (meta::FACT_TEXT_TOKENS_IN, "text_tokens_in"),
-            (meta::FACT_TEXT_TOKENS_OUT, "text_tokens_out"),
-            (meta::FACT_CACHED_TOKENS, "cached_tokens"),
+            (meta::FACT_AUDIO_TOKENS_IN, meta::CLASS_AUDIO_TOKENS_IN),
+            (meta::FACT_AUDIO_TOKENS_OUT, meta::CLASS_AUDIO_TOKENS_OUT),
+            (meta::FACT_TEXT_TOKENS_IN, meta::CLASS_TEXT_TOKENS_IN),
+            (meta::FACT_TEXT_TOKENS_OUT, meta::CLASS_TEXT_TOKENS_OUT),
+            (meta::FACT_CACHED_TOKENS, meta::CLASS_CACHED_TOKENS),
         ];
         // A duplex turn's figures all come off the upstream's usage report, which is the answer. A
         // one-shot request's input figure comes off the request, which decode read and put on the
@@ -600,7 +605,7 @@ impl Plane for StreamingPlane {
         for (fact_key, class) in classes {
             if let Some(FactValue::Int(v)) = reported(fact_key) {
                 let _ = lines.push(UsageLocator {
-                    class: MeterClassId::new(class),
+                    class,
                     location: None,
                     quantity: u64::try_from(v).ok(),
                     lane: None,
@@ -626,7 +631,7 @@ impl Plane for StreamingPlane {
             // boundary's, stated once in `meta` — a millisecond figure carried through under a
             // seconds-denominated class settles at a thousand times the duration it describes.
             let _ = lines.push(UsageLocator {
-                class: MeterClassId::new("audio_seconds_in"),
+                class: meta::CLASS_AUDIO_SECONDS_IN,
                 location: None,
                 quantity: u64::try_from(ms).ok().map(meta::audio_seconds_in),
                 lane: None,
@@ -634,7 +639,7 @@ impl Plane for StreamingPlane {
         }
         if let Some(FactValue::Int(calls)) = r.facts.get(meta::FACT_TOOL_CALLS) {
             let _ = lines.push(UsageLocator {
-                class: MeterClassId::new("tool_calls"),
+                class: meta::CLASS_TOOL_CALLS,
                 location: None,
                 quantity: u64::try_from(calls).ok(),
                 lane: None,
