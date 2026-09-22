@@ -5205,6 +5205,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
+name = "ws-conformance-subject"
+version = "0.0.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-transport-tcp",
+ "busbar-transport-ws",
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "x509-parser"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

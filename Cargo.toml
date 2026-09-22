@@ -62,6 +62,7 @@ members = [
     "crates/busbar-transport-ws",
     "crates/busbar-transport-grpc",
     "crates/busbar-transport-stdio",
+    "testing/ws-conformance/subject",
     "xtask",
 ]
 

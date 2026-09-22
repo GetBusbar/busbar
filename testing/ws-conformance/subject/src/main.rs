@@ -19,8 +19,7 @@ use std::sync::Arc;
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::transport::wire::Listener;
 use busbar_contract::{
-    Arena, ArenaBudget, ArenaBytes, ConfigView, Span, StreamId, Transport, TransportConfigView,
-    TransportKeyHandle,
+    ConfigView, ScratchBytes, StreamId, Transport, TransportConfigView, TransportKeyHandle,
 };
 use busbar_transport_tcp::TcpTransport;
 use busbar_transport_ws::WsTransport;
@@ -55,28 +54,6 @@ impl KernelSeal for SubjectSeal {
     }
 }
 
-/// Leaks one allocation per echoed message. A conformance subject process is short-lived and
-/// bounded by the case suite driving it; see the identical fixture in
-/// `busbar-contract/tests/object_safety.rs`.
-struct LeakArena;
-impl Arena for LeakArena {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
-        Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
-    }
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
-        Ok(Box::leak(src.to_string().into_boxed_str()))
-    }
-    fn alloc_spans<'a>(
-        &'a self,
-        src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
-        Ok(Box::leak(src.to_vec().into_boxed_slice()))
-    }
-    fn remaining(&self) -> usize {
-        usize::MAX
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let tcp: Arc<dyn Transport> = Arc::new(TcpTransport::new());
@@ -107,10 +84,7 @@ async fn main() {
             while let Some(item) = frames.next().await {
                 match item {
                     Ok((_stream, frame)) => {
-                        let arena = LeakArena;
-                        let Ok(bytes) = arena.alloc_bytes(frame.bytes.as_slice()) else {
-                            break;
-                        };
+                        let bytes = ScratchBytes::new(frame.bytes.as_slice());
                         if ws.write(&conn, StreamId(0), bytes).await.is_err() {
                             break;
                         }
