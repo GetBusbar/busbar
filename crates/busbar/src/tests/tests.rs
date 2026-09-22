@@ -1,12 +1,16 @@
-// THE THIN BINARY'S OWN TESTS — the boot/CLI helpers that live in main.rs and nowhere else:
-// worker-thread sizing, --safe-mode detection, the shutdown/serve lifecycle, and the
-// signing-key command's stdout-only-secret contract. Everything engine-shaped moved to
-// busbar-core/src/tests/tests.rs with the core split (step 3.7); DELETING these instead was the
-// named failure mode — validate_worker_threads_config and signing_key_command_output have no
-// other coverage.
+// THE THIN BINARY'S OWN TESTS — the boot and flag-surface helpers that live in this crate and
+// nowhere else: worker-thread sizing, --safe-mode detection, the shutdown/serve lifecycle, and the
+// signing-key command's stdout-only-secret contract. Everything engine-shaped moved out with the
+// core split (step 3.7) and rode the busbar-core absorption on to
+// busbar-kernel/src/tests/tests.rs, which is where it is today — `busbar-core` itself no longer
+// exists. DELETING these instead was the named failure mode: validate_worker_threads_config and
+// signing_key_command_output have no other coverage.
+//
+// They no longer live in ONE file, and the import below is why. main.rs was over the
+// structure-lint cap and split at the flag/serve seam, so the half this file covers that ANSWERS
+// AND EXITS is now `root::cli` while the half that BOOTS AND SERVES stayed in main.rs. `super::*`
+// reaches the second half only; the first is named explicitly.
 use super::*;
-// The CLI helpers this file covers moved to the composition root's `cli` module when
-// main.rs was split at the flag/serve seam; `super::*` no longer reaches them.
 use crate::root::cli::{
     config_override_notice, providers_override_notice, resolve_config_path,
     signing_key_command_output, value_flag,
