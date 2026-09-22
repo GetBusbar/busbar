@@ -94,15 +94,55 @@ fn a_response_is_never_a_server_message() {
     }
 }
 
-/// A REQUEST WITH A NULL `id` IS A NOTIFICATION, not a request with a null id.
+/// A NOTIFICATION METHOD IS A NOTIFICATION REGARDLESS OF WHAT `id` CARRIES.
 ///
-/// Answering it would put a response on the stream that nothing can correlate, which the base
-/// protocol reserves for errors about un-parseable requests.
+/// Notification-ness is decided by the METHOD, against the closed table, BEFORE `id` is ever read —
+/// see [`classify`]'s header. A peer that sends `notifications/message` with an explicit `id: null`
+/// is still not asking for a reply: the method itself is one the specification defines as
+/// fire-and-forget, and that does not change because the wire happens to carry a stray `id` member.
 #[test]
-fn a_null_id_is_read_as_a_notification() {
+fn a_notification_method_is_a_notification_even_with_a_null_id() {
     assert_eq!(
         classify(&line(
             r#"{"jsonrpc":"2.0","id":null,"method":"notifications/message","params":{}}"#
+        )),
+        Some(ServerMessage::Notification(ServerNotification::Message))
+    );
+}
+
+/// THE HANG THIS MODULE USED TO PRODUCE: A PRESENT-BUT-NULL `id` ON A REQUEST METHOD MUST STILL BE
+/// ANSWERED.
+///
+/// JSON-RPC 2.0 §4 defines a notification as a request whose `id` MEMBER IS ABSENT — not one whose
+/// `id` holds `null`. Many JSON-RPC encoders (serde's default among them) spell an absent field as an
+/// explicit `null` when the struct always emits the key. A classifier that filtered `id` by nullness
+/// before consulting the method table read such a peer's `roots/list` as a notification, never
+/// replied, and left the child blocked forever waiting for the response that was never coming — the
+/// defect this module's header now states first.
+#[test]
+fn a_present_but_null_id_on_a_request_method_is_still_a_request() {
+    assert_eq!(
+        classify(&line(
+            r#"{"jsonrpc":"2.0","id":null,"method":"roots/list","params":{}}"#
+        )),
+        Some(ServerMessage::Request {
+            id: serde_json::Value::Null,
+            verb: ServerRequestVerb::RootsList,
+        }),
+        "an explicit null id on a REQUEST method must still be answered, not silently dropped"
+    );
+}
+
+/// A TRUE NOTIFICATION — `id` ABSENT ENTIRELY — STILL GETS NO REPLY.
+///
+/// The fix for the hang above must not be "answer everything": an `id`-absent line is exactly what
+/// the base specification calls a notification, and answering one would put a response on the wire
+/// that nothing sent an id to correlate.
+#[test]
+fn a_true_notification_with_id_absent_is_still_unanswered() {
+    assert_eq!(
+        classify(&line(
+            r#"{"jsonrpc":"2.0","method":"notifications/message","params":{}}"#
         )),
         Some(ServerMessage::Notification(ServerNotification::Message))
     );
