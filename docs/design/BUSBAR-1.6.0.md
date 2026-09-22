@@ -2333,11 +2333,27 @@ MEASURE BEFORE BUILDING IT. Σ count × rate in fixed-point over a small slice m
 in which case the memo is complexity bought for nothing. Land the pricing, benchmark admission, add
 the memo only if the number says so.
 
-**2. `UsageLedger.spend_cents` IS REMOVED OUTRIGHT.** Owner-ruled. Out-of-tree ABI-2 stores that
-depend on the field will break on upgrade. Noted once, since `migration.rs:57-62` names breaking a
-working deployment on upgrade as the one outcome a migration may not produce: **old rows must still
-LOAD** (absent field reads as absent, never as zero) so an upgrade does not crash on existing data.
-Removing the field is the ruling; corrupting or refusing existing rows is not.
+**2. ~~`UsageLedger.spend_cents` IS REMOVED OUTRIGHT.~~ CORRECTED 2026-09-22 — THE FIELD DOES NOT
+EXIST. THERE IS NOTHING TO REMOVE.**
+
+**This ruling was sought on a false premise, and the premise was mine.** Measured:
+`busbar-contract/src/records.rs:678` — `UsageLedger` is `{requests, billable_requests, models}`, and
+its own doc says it *"replaces the old scalar `Usage { spend_cents, tokens, requests }`"*. The gate
+row **`money-invariants:no-stored-price` PASSES**: *"no money-path record stores a price/spend figure
+— price is read-time (#77(3))."*
+
+**The stored price was already removed before this session.** I asked the owner to rule on deleting a
+durable wire field, described the ABI break it would cause, and none of it existed. The owner
+answered a question that should never have been put.
+
+What DOES survive is different and neither is a stored ledger price: `DerivedUsage.spend_cents`
+(`governance/mod.rs:1357`) is computed at READ time, and `GroupBucketUsageView.spend_cents`
+(`admin/v1/contract/mod.rs:593`) is a SERVED byte. Both are outputs of pricing, which is what #77(3)
+permits — it forbids STORING a price, not reporting one.
+
+**The lesson, and it is the one this document keeps recording:** I asserted the shape of a durable
+type from memory instead of reading it, then built a ruling on top. The same class as the SSRF
+literal comparison and the blind-plane-gate claim, both also struck today.
 
 **3. THE PROOF FOR MONEY — the function's own test, AND the clock fields stop being normalised.**
 
