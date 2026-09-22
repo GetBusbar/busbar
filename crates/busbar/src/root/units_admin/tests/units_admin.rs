@@ -32,6 +32,79 @@ fn a_request() -> AdminRequest {
     }
 }
 
+/// THE PRESENTED CREDENTIAL IN `Debug`. A derived `Debug` on [`AdminRequest`] prints
+/// `credential: Some("<the operator's live admin token>")` verbatim — and prints it a SECOND time
+/// inside `headers`, because `header_pairs` copies every arriving header in as it stands, so the
+/// same bytes arrive again as `authorization: Bearer <token>` and `x-admin-token: <token>`. Any
+/// `{:?}` publishes them: a tracing line, a panic message, an `assert_eq!` failure in a CI log.
+///
+/// The secret here is a planted marker and its ABSENCE is what is asserted — the test never has to
+/// print a real credential to fail informatively. The ASCII check alone is enough to catch a
+/// regression to `#[derive(Debug)]` in this case (unlike `CredentialSlab`, whose secret is a
+/// `Vec<u8>` and would render as a decimal array): a `String` and an `Option<String>` both render
+/// their text, so a derived impl fails the very first assertion.
+#[test]
+fn debug_redacts_the_presented_credential_and_the_header_it_arrived_in() {
+    const SECRET: &str = "a-distinctive-admin-secret-7f31c9";
+    let request = AdminRequest {
+        method: "POST".to_string(),
+        path: "/api/v1/admin/config/apply".to_string(),
+        credential: Some(SECRET.to_string()),
+        headers: vec![
+            ("authorization".to_string(), format!("Bearer {SECRET}")),
+            ("x-admin-token".to_string(), SECRET.to_string()),
+            ("content-type".to_string(), "application/json".to_string()),
+        ],
+        body: b"{}".to_vec(),
+        at: 1_700_000_000,
+        unit: a_fresh_unit(),
+    };
+
+    let rendered = format!("{request:?}");
+    assert!(
+        !rendered.contains(SECRET),
+        "Debug must never carry the presented credential — not in the field, not in the header it \
+         arrived in. Got: {rendered}"
+    );
+    assert!(
+        rendered.matches("<redacted>").count() >= 3,
+        "the field and BOTH carriers must be redacted, got: {rendered}"
+    );
+    // The non-secret shape survives, or the redaction has cost the operator the diagnosis it was
+    // supposed to leave behind.
+    assert!(rendered.contains("AdminRequest"), "got: {rendered}");
+    assert!(
+        rendered.contains("/api/v1/admin/config/apply"),
+        "got: {rendered}"
+    );
+    assert!(
+        rendered.contains("content-type") && rendered.contains("application/json"),
+        "a header that carries no credential still prints as itself, got: {rendered}"
+    );
+    assert!(rendered.contains("\"POST\""), "got: {rendered}");
+
+    // AND THE REDACTION NEVER MANUFACTURES A CREDENTIAL OUT OF AN ABSENT ONE. With nothing
+    // presented there is nothing to hide, and every header prints as itself.
+    let nothing_presented = AdminRequest {
+        credential: None,
+        headers: vec![(
+            "authorization".to_string(),
+            "Bearer not-what-was-presented".to_string(),
+        )],
+        ..request
+    };
+    let rendered = format!("{nothing_presented:?}");
+    assert!(rendered.contains("credential: None"), "got: {rendered}");
+    assert!(
+        !rendered.contains("<redacted>"),
+        "nothing was presented, so nothing is redacted, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("Bearer not-what-was-presented"),
+        "got: {rendered}"
+    );
+}
+
 /// THE DOOR'S BYTES, PINNED TO THE PUBLISHED RELEASE'S OWN.
 ///
 /// A refusal path may not execute anything, so these bytes are composed from what is written

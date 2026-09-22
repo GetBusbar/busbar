@@ -326,6 +326,41 @@ impl CredentialSlab {
     pub fn clear(&mut self) {
         self.buf.zeroize();
     }
+
+    /// Overwrite every credential byte this slab is holding, IN PLACE, leaving the length alone.
+    ///
+    /// The bytes a credential has ever occupied are exactly `0..len`: [`CredentialSlab::mask`] only
+    /// ever APPENDS, and the one operation that shortens the buffer is [`CredentialSlab::clear`],
+    /// which zeroes the whole capacity on its way past. So an in-place wipe of the live region is a
+    /// complete wipe, not a partial one.
+    ///
+    /// Written as its own function, and used by [`Drop`] in preference to `clear`, because it is the
+    /// only form of the wipe that can be PROVEN. It preserves the length, so a caller — this
+    /// module's own tests — can read every byte straight back afterwards and assert zeros. A wipe
+    /// that truncated could not be checked from safe Rust at all, which refuses a slice over a
+    /// `Vec`'s spare capacity; and checking after the value has dropped is, by definition, a read of
+    /// freed memory. At drop the length is about to stop existing anyway, so preserving it costs
+    /// nothing and buys the only sound observation available.
+    fn wipe(&mut self) {
+        self.buf.as_mut_slice().zeroize();
+    }
+}
+
+/// A slab handed back to the allocator still holding a credential is a credential in freed heap —
+/// readable by a heap dump, a core file, or an out-of-bounds read elsewhere in the process. Only
+/// [`CredentialSlab::clear`] wiped, and `clear` is the IN-BAND UPGRADE path: nothing obliges the
+/// ordinary end of a connection, or an unwind past it, to call anything at all. `Drop` is the one
+/// path every one of those goes through.
+///
+/// HONEST SCOPE: this is defence in depth, not the closing of a live leak. `CredentialSlab` has no
+/// production caller in this tree yet — it is reached only from its own tests — so no credential is
+/// being freed unwiped today. The guarantee belongs to the type rather than to its callers, which is
+/// why it is written before the callers arrive: a wipe that a caller has to remember is a wipe that
+/// a caller will one day forget.
+impl Drop for CredentialSlab {
+    fn drop(&mut self) {
+        self.wipe();
+    }
 }
 
 impl Default for CredentialSlab {

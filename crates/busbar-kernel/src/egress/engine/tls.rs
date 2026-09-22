@@ -97,4 +97,41 @@ impl ClientIdentity {
     pub fn leaf_der(&self) -> &[u8] {
         self.chain[0].as_ref()
     }
+
+    /// Overwrite the private key IF this handle is the last one holding it.
+    ///
+    /// `Arc::get_mut` is the whole guard, and it is not an optimisation: identities are cloned per
+    /// hop and per client build (`plane_host::identity::resolve` hands out a clone every time), so a
+    /// wipe that did not ask whether anyone else still held the key would blank a key another hop is
+    /// about to hand to rustls, and the handshake it was parsed for would fail. `get_mut` answers
+    /// `Some` only when this is the last strong reference and there are no weak ones — exactly the
+    /// moment the key's allocation is about to go back to the allocator.
+    ///
+    /// Only the key is wiped. The chain is the certificate busbar PRESENTS; it is public by
+    /// construction and the peer already has it.
+    ///
+    /// Its own function rather than a body inlined into `drop` so the wipe is OBSERVABLE: a test can
+    /// call exactly what `Drop` calls and then read the key back, which is the only sound way to
+    /// check it — inspecting a value after its own `Drop` has run is a read of freed memory.
+    pub(super) fn wipe(&mut self) {
+        use zeroize::Zeroize as _;
+        if let Some(key) = Arc::get_mut(&mut self.key) {
+            key.zeroize();
+        }
+    }
+}
+
+/// A superseded identity's private key must not be handed back to the allocator intact.
+///
+/// `rustls_pki_types::PrivateKeyDer` implements `Zeroize` but NOT `ZeroizeOnDrop`, and its drop glue
+/// is an ordinary `Vec<u8>` deallocation: the key DER sits in freed heap afterwards, readable by a
+/// heap dump, a core file, or an out-of-bounds read elsewhere in the process. That drop is reached
+/// on a live path — `plane_host::identity::register` retains at most `MAX_RETAINED_IDENTITIES`
+/// identities and evicts the oldest FIFO, and the evicted `ClientIdentity` drops right there — so an
+/// operator who rotates the mTLS client certificate 257 times has 257 client keys lying in the
+/// process's freed heap, which is exactly the retention the FIFO cap was added to stop.
+impl Drop for ClientIdentity {
+    fn drop(&mut self) {
+        self.wipe();
+    }
 }

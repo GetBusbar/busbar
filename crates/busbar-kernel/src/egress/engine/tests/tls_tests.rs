@@ -58,6 +58,122 @@ azIEjY3bAGG06Ty/5mupuPP8ELc8c/UvwKs5C5erzjareg87DlPbdfNXFmyGqngY
 -----END RSA PRIVATE KEY-----
 ";
 
+/// A SUPERSEDED IDENTITY'S PRIVATE KEY MUST NOT BE FREED INTACT.
+///
+/// `rustls_pki_types::PrivateKeyDer` implements `Zeroize` but NOT `ZeroizeOnDrop`: its drop glue is
+/// an ordinary `Vec<u8>` deallocation, so without an `impl Drop` here the key DER is handed back to
+/// the allocator byte-for-byte. The drop is on a live path — `plane_host::identity::register`
+/// retains `MAX_RETAINED_IDENTITIES` identities and evicts the oldest FIFO, and the evicted
+/// `ClientIdentity` drops right there — so a long-lived node that rotates its mTLS client
+/// certificate accumulates one intact client key in freed heap per eviction.
+///
+/// HOW THIS IS MADE SOUND. Reading a value after its own `Drop` has run is a read of freed memory,
+/// so this test does not do that. It proves the two halves separately, both in safe Rust:
+///
+/// 1. **That the wipe wipes** — observably. `Drop` delegates to `ClientIdentity::wipe`; the test
+///    calls exactly what `drop` calls and then reads the key back out of a LIVE identity through
+///    the same `key()` accessor the client build uses. `Zeroize for Vec<u8>` overwrites the
+///    elements, drops the length to zero and then zeroes the spare capacity, so a wiped key reads
+///    back EMPTY — the key material is not merely absent from the answer, there is no answer left.
+/// 2. **That `Drop` is wired to it** — by source review, the technique this tree already uses for
+///    guarantees that cannot be observed at runtime (`mask_tests.rs`'s
+///    `clear_zeroizes_rather_than_merely_truncating`).
+///
+/// The key is a real rcgen-minted fixture, so what is asserted absent is the actual DER the parser
+/// produced rather than a marker the test could have arranged to find.
+#[test]
+fn the_drop_path_wipes_the_private_key() {
+    // (2) The wiring.
+    let src = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/egress/engine/tls.rs"
+    ));
+    let drop_fn = src
+        .split("impl Drop for ClientIdentity {")
+        .nth(1)
+        .expect(
+            "ClientIdentity must have a Drop impl in src/egress/engine/tls.rs — without one an \
+             evicted identity's private key goes back to the allocator intact",
+        )
+        .split("\n}")
+        .next()
+        .expect("the Drop impl must close");
+    assert!(
+        drop_fn.contains("self.wipe()"),
+        "Drop regressed to not wiping the key. Body was: {drop_fn}"
+    );
+
+    // (1) The wipe itself, observed on a live identity.
+    let a = ca_and_leaf(&["wipe-on-drop.test"]);
+    let mut identity =
+        ClientIdentity::from_pem(format!("{}{}", a.leaf_pem, a.leaf_key_pem).as_bytes())
+            .expect("the fixture identity parses");
+    let der = identity.key().secret_der().to_vec();
+    // Precondition: there really is key material to lose, or the absence assertion proves nothing.
+    assert!(
+        der.len() > 32,
+        "precondition: the parsed identity holds a real private key"
+    );
+    let leaf_before = identity.leaf_der().to_vec();
+
+    identity.wipe();
+
+    assert!(
+        identity.key().secret_der().is_empty(),
+        "the private key must not survive the wipe the drop path performs"
+    );
+    // The certificate is what busbar PRESENTS — the peer already has it, and wiping it would cost
+    // the diagnosis (which identity was this?) for no secrecy at all.
+    assert_eq!(
+        identity.leaf_der(),
+        leaf_before.as_slice(),
+        "the wipe touches the key and nothing else"
+    );
+}
+
+/// ...AND IT FIRES AT THE LAST HANDLE, NOT AT EVERY ONE.
+///
+/// The whole point of the `Arc` is that one parsed identity is shared — `plane_host::identity`
+/// hands out a clone per resolve, and the client build clones again. A wipe that fired on every
+/// handle's drop would blank a key another hop is about to hand to rustls, turning a memory-hygiene
+/// fix into a handshake failure. `Arc::get_mut` is what makes the wipe fire only when this handle
+/// is the last one.
+///
+/// The first half of this test is a CHARACTERISATION: with an `Arc<PrivateKeyDer>` and no `unsafe`,
+/// blanking a key another handle still holds is not expressible at all — `Arc::get_mut` is the only
+/// safe door to `&mut` and it refuses while the count is above one — so the guard is structural and
+/// no safe perturbation can make that assertion fail. The second half is the one that carries the
+/// canary: once the other handle is gone, the wipe MUST fire, and a `wipe` that stopped overwriting
+/// turns it red.
+#[test]
+fn the_wipe_waits_for_the_last_handle_and_then_fires() {
+    let a = ca_and_leaf(&["shared-identity.test"]);
+    let mut first =
+        ClientIdentity::from_pem(format!("{}{}", a.leaf_pem, a.leaf_key_pem).as_bytes())
+            .expect("the fixture identity parses");
+    let mut still_in_the_registry = first.clone();
+    let der = still_in_the_registry.key().secret_der().to_vec();
+    assert!(der.len() > 32, "precondition: a real key is being shared");
+
+    first.wipe();
+
+    assert_eq!(
+        still_in_the_registry.key().secret_der(),
+        der.as_slice(),
+        "a handle that is not the last one must leave the shared key exactly where it is"
+    );
+
+    // The other handle goes away — now this one IS the last, and the wipe is owed.
+    drop(first);
+    still_in_the_registry.wipe();
+
+    assert!(
+        still_in_the_registry.key().secret_der().is_empty(),
+        "once it is the last handle the wipe must fire, or an evicted identity's key still \
+         reaches the allocator intact"
+    );
+}
+
 /// R4 — THE PARITY CORPUS. Every buffer goes through BOTH parsers; the verdicts must AGREE, and
 /// where a verdict is pinned it is pinned for both. The rows cover order-independence, chains,
 /// each private-key encoding, and the adversarial forms (nothing, certs-only, key-only, foreign

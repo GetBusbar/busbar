@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-kernel/src/mask.rs`'s `CredentialSlab`: the two credential-handling
-//! hazards named as Part 2 #53's own top risk — a raw-plaintext `Debug` and a `clear()` that
-//! forgets the byte count but not the bytes.
+//! Tests for `crates/busbar-kernel/src/mask.rs`'s `CredentialSlab`: the three credential-handling
+//! hazards named as Part 2 #53's own top risk — a raw-plaintext `Debug`, a `clear()` that forgets
+//! the byte count but not the bytes, and a slab that reaches the allocator without either.
 //!
-//! Both tests plant a DISTINCTIVE secret value and assert its ABSENCE (from the `Debug` rendering,
-//! from the post-`clear()` allocation) — never a real secret, and never an assertion that would
-//! require printing one to fail informatively.
+//! Every test plants a DISTINCTIVE secret value and asserts its ABSENCE (from the `Debug`
+//! rendering, from the buffer after the wipe the drop path performs) — never a real secret, and
+//! never an assertion that would require printing one to fail informatively.
 
 use super::*;
 
@@ -46,6 +46,78 @@ fn debug_never_prints_the_credential_bytes() {
          credential just as much as ASCII would), got: {rendered}"
     );
     assert!(rendered.contains("64"), "the capacity is not a secret");
+}
+
+/// NO `Drop` (Part 2 #53, the third hazard). `clear()` is the IN-BAND UPGRADE path; nothing obliges
+/// the ordinary end of a connection — or an unwind past it — to call anything at all. A slab that
+/// goes out of scope without one hands its allocation back to the allocator still holding every
+/// credential byte it ever copied out of a cursor.
+///
+/// HOW THIS IS MADE SOUND. Reading a value after its own `Drop` has run is a read of freed memory,
+/// so this test does not do that. It proves the two halves separately, and both inside safe Rust:
+///
+/// 1. **That `Drop` wipes** — observably. `Drop` delegates to `CredentialSlab::wipe`, which
+///    overwrites `0..len` IN PLACE and leaves the length alone; the test calls exactly what `drop`
+///    calls and then reads every byte straight back out of a LIVE slab. No `unsafe`, no freed
+///    region, no spare capacity (which safe Rust cannot slice, and which is the reason `clear`'s
+///    truncating wipe could not be checked this way at all).
+/// 2. **That `Drop` is wired to it** — by source review, the same technique
+///    `clear_zeroizes_rather_than_merely_truncating` above and `plugins_boot_logging_wording_present`
+///    (`crates/busbar-kernel/src/tests/tests.rs`) already use for the parts of a guarantee that
+///    cannot be observed at runtime. This catches the regression that matters — someone deleting the
+///    call, or swapping it for something that does not overwrite — the moment it is typed.
+#[test]
+fn the_drop_path_overwrites_every_credential_byte() {
+    const NEEDLE: &[u8] = b"a-second-distinctive-secret-5c02de";
+
+    // (2) The wiring. `Drop` must go through the wipe; a `drop` body that did anything else would
+    // leave the bytes in the allocation no matter how well `wipe` works.
+    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/mask.rs"));
+    let drop_fn = src
+        .split("impl Drop for CredentialSlab {")
+        .nth(1)
+        .expect(
+            "CredentialSlab must have a Drop impl in src/mask.rs — without one a slab freed \
+             without an explicit clear() goes back to the allocator holding a credential",
+        )
+        .split("\n}")
+        .next()
+        .expect("the Drop impl must close");
+    assert!(
+        drop_fn.contains("self.wipe()"),
+        "Drop regressed to not wiping the buffer. Body was: {drop_fn}"
+    );
+
+    // (1) The wipe itself, observed on a live slab.
+    let mut slab = CredentialSlab::with_capacity(64);
+    let mut cursor = NEEDLE.to_vec();
+    let span = Span::new(0, cursor.len());
+    let masked = slab.mask(&mut cursor, span).expect("room in the slab");
+    // Precondition: the secret really is in the buffer, or the absence assertion below proves
+    // nothing at all.
+    assert_eq!(slab.read(masked), NEEDLE);
+    assert!(
+        slab.buf.windows(NEEDLE.len()).any(|w| w == NEEDLE),
+        "precondition: the credential is in the slab's own allocation before the wipe"
+    );
+
+    slab.wipe();
+
+    assert!(
+        !slab.buf.windows(NEEDLE.len()).any(|w| w == NEEDLE),
+        "the credential bytes must not survive the wipe the drop path performs"
+    );
+    assert!(
+        slab.buf.iter().all(|byte| *byte == 0),
+        "every byte the slab was holding must be zero after the wipe, got: {:?}",
+        slab.buf
+    );
+    assert_eq!(
+        slab.buf.len(),
+        NEEDLE.len(),
+        "the wipe leaves the LENGTH alone — that is precisely what makes it readable back, and so \
+         checkable, without reading a Vec's spare capacity or a freed allocation"
+    );
 }
 
 /// NO ZEROIZE (Part 2 #53). A bare `Vec::clear()` only drops the length; the allocation still holds

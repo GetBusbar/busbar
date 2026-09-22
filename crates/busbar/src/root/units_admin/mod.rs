@@ -79,7 +79,10 @@ const ADMIN_DECLARED_SCHEMES: &[&str] = &[ADMIN_SCHEME, "bearer"];
 /// Owned rather than borrowed because it outlives the call that built it: the kernel's step seam
 /// hands a unit nothing but its context, so the request has to be somewhere the steps can find it,
 /// and that somewhere is [`AdminUnits`] keyed by the unit's own key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// NO derived `Debug` — see the hand-written impl below. This value holds the operator's LIVE
+/// credential, twice.
+#[derive(Clone, PartialEq, Eq)]
 pub struct AdminRequest {
     /// The request method.
     pub method: String,
@@ -103,6 +106,52 @@ pub struct AdminRequest {
     /// attribution would have to be re-derived on the far side of a task boundary, which is another
     /// way of saying it would be guessed.
     pub unit: u64,
+}
+
+/// `Debug` REDACTS the presented credential — the field, and the header value it arrived in.
+///
+/// A derived `Debug` prints `credential: Some("<the operator's live admin token>")` verbatim into
+/// any `{:?}` of this value or of anything holding it: a tracing line, a panic message, an
+/// `assert_eq!` failure in CI. Redacting the field alone would not be a fix, because
+/// `admin_mount::header_pairs` copies EVERY arriving header in verbatim, so the same bytes sit one
+/// line below it as `authorization: Bearer <token>` or `x-admin-token: <token>`.
+///
+/// The header redaction is matched by VALUE, not by header name, and that is deliberate: the reader
+/// that decides which carriers count (`admin_mount::presented_credential`) owns those wire names,
+/// and a second copy of a wire name here is a wire name that can be written two ways. Whatever
+/// carrier the credential came in, the bytes are the same bytes, and those are what this matches —
+/// which also catches the `Bearer `-prefixed form, where the header value merely CONTAINS the
+/// credential rather than equalling it. Where nothing was presented, nothing is redacted: the
+/// redaction never manufactures a credential out of an absent one.
+///
+/// Everything else prints as itself. `method`, `path`, `at` and `unit` are not secrets, and `body`
+/// keeps the derived rendering it always had — the admin surface's credential carriers are headers,
+/// and a request body that needed hiding would be a different finding with a different fix.
+impl std::fmt::Debug for AdminRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const REDACTED: &str = "<redacted>";
+        let presented = self.credential.as_deref().filter(|c| !c.is_empty());
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                let shown = match presented {
+                    Some(credential) if value.contains(credential) => REDACTED,
+                    _ => value.as_str(),
+                };
+                (name.as_str(), shown)
+            })
+            .collect();
+        f.debug_struct("AdminRequest")
+            .field("method", &self.method)
+            .field("path", &self.path)
+            .field("credential", &self.credential.as_ref().map(|_| REDACTED))
+            .field("headers", &headers)
+            .field("body", &self.body)
+            .field("at", &self.at)
+            .field("unit", &self.unit)
+            .finish()
+    }
 }
 
 /// One admin answer, exactly as the surface that owns the operation produced it.
@@ -275,6 +324,36 @@ pub trait LedgerView: Send + Sync {
         crate::root::ledger_identity::LegacySnapshot,
     ) {
         (self.ledger_rows(), self.legacy_rows())
+    }
+
+    /// SEAM `booked-lines`: the lines this view can price, each carrying ITS OWN ARRIVAL INSTANT.
+    ///
+    /// The totals view's money is a READ-TIME CONVERSION over these, never a figure read off a
+    /// balance (#77(3)). A booked line holds the quantities by declared class, the lane the card is
+    /// keyed by, and `arrived_ms` — and that last field is the whole reason the seam carries lines
+    /// rather than sums: an amount already summed has lost the instants, and an instant is what
+    /// [`busbar_kernel_ledger::totals_as_of`] resolves a card at (#79).
+    ///
+    /// The default is EMPTY, and empty means "this view has no lines to price", NEVER "these rows
+    /// priced at nothing". [`derived_totals_rows`] reads it that way: with no lines there is no
+    /// derivation to make and the view falls back to the balance the book already holds, exactly as
+    /// the previous release answered. A silent zero on a money path is only ever correct where no
+    /// rate card is configured at all (#42), and this is not that.
+    fn booked_lines(&self) -> Vec<busbar_kernel_ledger::Posting> {
+        Vec::new()
+    }
+
+    /// SEAM `dated-history`: the deployment's dated rate-card history, PINNED for one read.
+    ///
+    /// Pinned rather than read per row: an apply landing while the read is in flight must not price
+    /// half of one response's rows against one history and half against another.
+    ///
+    /// `None` is "no operator has said what any of this costs", which is NOT "all of it is free".
+    /// The distinction is the whole of #42: free is an explicit zero rate row, and an absent row is
+    /// a question nobody has answered. A view that collapsed the two would report a deployment
+    /// nobody has priced as a deployment that costs nothing.
+    fn rate_history(&self) -> Option<crate::root::kernel::PinnedHistory> {
+        None
     }
 }
 
@@ -479,6 +558,37 @@ impl LedgerView for NodeLedger {
 
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
         self.lock().migration_marker()
+    }
+
+    /// The deployment's dated history, pinned — a relay and no more.
+    ///
+    /// The holder is the root's ([`crate::root::kernel::ROOT_CARD`]), the history is the ledger's,
+    /// and this method adds nothing to either. Pinned rather than borrowed, so a config apply
+    /// landing between two rows of one response cannot price the first half of the table against
+    /// one history and the second half against another.
+    fn rate_history(&self) -> Option<crate::root::kernel::PinnedHistory> {
+        crate::root::kernel::ROOT_CARD.pin()
+    }
+
+    /// SEAM `booked-lines`, UNFILLED ON THIS NODE, and named rather than faked.
+    ///
+    /// The node's book keeps BALANCES — a budget, a drawn figure, a settled figure per bucket,
+    /// dimension, scope and window — and a balance is not a quantity. There is no `tokens_input` in
+    /// it to hand back, and there is no arrival instant either: [`busbar_contract::caps::Posted`]
+    /// takes the usage report to decide its flags and keeps none of its lines, so what reaches the
+    /// book is three figures and a principal. The quantities live on the sealed facts line the
+    /// metering step writes at the end of a unit, and the ledger row that carries them into the
+    /// book is the landing this method is waiting for; until it arrives, this answers with nothing
+    /// it has.
+    ///
+    /// **Answering with nothing is the whole point of the seam being here rather than absent.** The
+    /// alternative — handing the book's settled figure over as if it were a set of lines — would
+    /// put a number in front of the derivation that no rate row produced and that no rate row added
+    /// later could ever move, which is precisely the stored price #77(3) forbids. The fallback the
+    /// empty answer selects is honest about being the previous release's arithmetic; a fabricated
+    /// line would not be.
+    fn booked_lines(&self) -> Vec<busbar_kernel_ledger::Posting> {
+        Vec::new()
     }
 }
 
@@ -908,7 +1018,14 @@ fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> 
 /// than a body invented for a verb nobody wrote one for.
 fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>> {
     Some(match verb {
-        KernelVerb::GetLedgerTotals => render_totals(&view.ledger_rows()).into_bytes(),
+        // THE MONEY IS DERIVED HERE, NOT READ. The rows the totals view renders are the lines
+        // priced through the dated history at each line's OWN arrival instant (#77(3)/#79), and
+        // the book's balance only where this view has no line to resolve. The reconciliation arm
+        // below deliberately keeps [`LedgerView::ledger_rows`]: the identity it computes is against
+        // the PREVIOUS release's rows, which are what that release's read-time derivation produced
+        // at settlement and are never repriced, so the two sides of it have to be read at the same
+        // vintage or an amendment would report every row on a healthy node as out.
+        KernelVerb::GetLedgerTotals => render_totals(&totals_rows(view)).into_bytes(),
         KernelVerb::GetLedgerCheckpoints => render_checkpoints(&view.checkpoints()).into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
             let (ledger, legacy) = view.identity_snapshot();
@@ -989,11 +1106,132 @@ fn hex32(bytes: &[u8; 32]) -> String {
     out
 }
 
-/// `GET /api/v1/admin/ledger/totals` — what the ledger posted, per bucket, day, lane and provider.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE DATED RATE-CARD HISTORY, ON THE TOTALS READ PATH — #77(3) / #79
+//
+// PRICE IS NEVER STORED. What a unit leaves behind is a line of quantities by declared class;
+// money is a conversion applied when somebody asks, against the card in force AT THE POSTING'S OWN
+// ARRIVAL — never the newest card ever authored and never the card in force at the read. So the
+// figure this endpoint publishes is a DERIVATION, and the difference is not presentational: a rate
+// row added later — including a signed back-dated correction, which the append-only history allows
+// — changes what this endpoint answers on the next read, with nothing rewritten and no posted line
+// touched. A view that echoed a stored amount could not do that, and an operator who had mispriced
+// a lane would have to choose between a wrong figure and a rewritten history.
+//
+// The resolution rule is not written here. It is `busbar_kernel_ledger::totals_as_of`, which is the
+// one function entitled to say what a set of lines comes to under a named snapshot, and it reaches
+// `HistoryView::card_at` for which entry answers for an instant. A second copy of either is how a
+// request comes to be judged at one figure and billed at another. This module chooses the rows and
+// writes down the answer; it does not add, multiply, divide or truncate.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The rows `GET /api/v1/admin/ledger/totals` renders: DERIVED where this view has lines to derive
+/// from, and the book's balance where it has none.
+///
+/// The fallback is the previous release's arithmetic and is named as such rather than presented as
+/// the model. It is what the read answers for a view with no dated history to resolve against and
+/// no per-line record to resolve — a node whose book keeps balances and nothing finer, which is
+/// every node until the sealed facts line lands in the book. It is NOT the statement that a stored
+/// sum is the money; it is the honest answer of a view that has nothing to convert.
+fn totals_rows(view: &dyn LedgerView) -> crate::root::ledger_identity::LedgerSnapshot {
+    derived_totals_rows(view).unwrap_or_else(|| view.ledger_rows())
+}
+
+/// **THE DERIVATION** — every booked line priced against the card in force AT ITS OWN ARRIVAL,
+/// summed onto the row the reconciliation is keyed at.
+///
+/// `None` is "this read has nothing better to say than the book's balance", and there are four ways
+/// to get one, each of which is a statement rather than a fallback of convenience:
+///
+/// - no dated history — a node that has resolved no configuration yet, which is a node with no
+///   entry a line could resolve to, not a node whose lines are free;
+/// - an empty snapshot — the same, one step further in;
+/// - no booked lines — a view whose ledger keeps balances and nothing finer;
+/// - **a hole**: any line the snapshot could not price at all. That is a refusal and never a zero,
+///   because pricing a gap in the record as a free request is exactly the silent zero #42 forbids,
+///   so the whole read falls back rather than one row quietly costing nothing. `totals_as_of`
+///   reports those lines rather than dropping them, which is what makes the check possible here.
+///
+/// THE RESOLUTION KEY IS THE LINE'S OWN `arrived_ms`, AND ONLY THAT. Not `PostingStamp`'s
+/// `rate_card_version`, which is reporting provenance (#44/#79) and can only ever resolve forward;
+/// not the head of the history; not the instant of the read. No clock is read on this path at all,
+/// which is what makes the seconds/milliseconds hazard structurally absent rather than merely
+/// avoided: `arrived_ms` and a history entry's `effective_from` are two readings of one scale
+/// (`root/kernel.rs` reads both from `busbar_kernel::store::now_ms`), and `window_start` — the only
+/// whole-second figure here — is used for the row's `day` and for nothing else.
+///
+/// The projection to micro-units happens ONCE PER ROW, over the summed nano-units, in
+/// [`crate::root::ledger_identity::LedgerRow::micros`], never per line. Eight lines each half a
+/// micro-unit short of a boundary are eight floors of zero where the single divide over their sum
+/// is four, and that difference is money.
+fn derived_totals_rows(
+    view: &dyn LedgerView,
+) -> Option<crate::root::ledger_identity::LedgerSnapshot> {
+    use crate::root::ledger_identity::{LedgerRow, RowKey};
+
+    let pinned = view.rate_history()?;
+    let lines = view.booked_lines();
+    if lines.is_empty() {
+        return None;
+    }
+    // THE SNAPSHOT THIS READ IS ANSWERED AT: the history as the pin holds it, for every row of it.
+    let snapshot = pinned.view();
+    let currency = crate::root::kernel::node_currency();
+    // The windows the lines fall in. A statement is cut per window because a window is what a row's
+    // `day` names, and a set rather than a list because a busy day is many lines on one window.
+    let windows: std::collections::BTreeSet<busbar_kernel_ledger::totals::WindowStart> =
+        lines.iter().map(|line| line.window_start).collect();
+
+    let mut rows = crate::root::ledger_identity::LedgerSnapshot::new();
+    for window in windows {
+        let statement =
+            busbar_kernel_ledger::totals_as_of(&snapshot, window, currency, lines.iter());
+        // A hole in the record is a refusal for the WHOLE read. One row quietly costing nothing is
+        // the silent zero #42 forbids, and a view that served the derivation for the priceable rows
+        // and the balance for the rest would be publishing two vintages under one field name.
+        if !statement.unpriceable.is_empty() {
+            return None;
+        }
+        for (key, figures) in statement.rows {
+            // A row nothing was posted against is not a row, which is the rule the balance arm
+            // keeps too — serving a line of zero would put a row in front of an operator for every
+            // key that was ever admitted and never billed.
+            let Ok(priced_nanos) = u128::try_from(figures.priced_nanos) else {
+                continue;
+            };
+            if priced_nanos == 0 {
+                continue;
+            }
+            // Accumulated rather than inserted, for the reason the balance arm accumulates: one
+            // bucket-window can hold several balances — a dimension and a scope apiece — and at the
+            // width this view reads they are one row.
+            let entry: &mut LedgerRow = rows
+                .entry(RowKey::new(
+                    key.bucket.as_str(),
+                    window,
+                    WIDTH_THE_NODE_KEEPS,
+                    WIDTH_THE_NODE_KEEPS,
+                ))
+                .or_default();
+            entry.priced_nanos = entry.priced_nanos.saturating_add(priced_nanos);
+            entry.fee_count = entry.fee_count.saturating_add(figures.fee_count);
+        }
+    }
+    Some(rows)
+}
+
+/// `GET /api/v1/admin/ledger/totals` — what the ledger's lines come to, per bucket, day, lane and
+/// provider, priced through the dated history at each line's own arrival instant.
 ///
 /// The row width is the reconciliation's row width, and deliberately so: this view and the
 /// reconciliation view are two readings of one set of rows, so a discrepancy an operator finds in
 /// one can be looked up in the other by the same four-part name.
+///
+/// The figures are chosen by [`totals_rows`] and this function writes them down. It performs no
+/// arithmetic beyond the row's single micro projection, which is the ledger's own — the same rule
+/// the reconciliation view keeps by calling `ledger_identity::reconcile` instead of re-deriving the
+/// identity. An endpoint that did its own arithmetic could disagree with the code that gates the
+/// release, and then there would be two answers and no way to tell which one was the money.
 fn render_totals(rows: &crate::root::ledger_identity::LedgerSnapshot) -> String {
     let mut out = String::from("{\"rows\":[");
     for (i, (row, figures)) in rows.iter().enumerate() {
