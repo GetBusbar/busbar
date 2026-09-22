@@ -1387,7 +1387,7 @@ sitting inside a rename commit is exactly what an auditor fails. Every commit af
 stages explicit paths and deliberately leaves files belonging to still-running agents alone. **The
 habit is the defect, not the one commit.**
 
-## The crate roster, named — 61 today, 28 at the end
+## The crate roster, named — 59 today (was 61), 28 at the end
 
 The owner asked whether the locked ~30 crates are named right anywhere. They were not. They are
 below, and the list is **derived, not invented**: #39 is owner-locked and states the repo's contents
@@ -1412,6 +1412,11 @@ leaves, per #31/#39.
 | 17–21 | `busbar-plane-{llm,mcp,a2a,streaming,decision}` | exactly 5 (#39); decision = jev (#48) |
 | 22–28 | `busbar-transport-{grpc,http,sse,stdio,tcp,tls,ws}` | |
 
+**Progress: 61 → 59.** Both `-host` crates are folded into the planes they served, done as #19's
+byte-identical LOC move. Test counts went UP rather than down — `busbar-mcp` 492 → 499 and
+`busbar-a2a` 586 → 593 — because each host crate's own tests travelled with it. That is the shape
+every remaining fold should have: if a fold loses tests, it lost code.
+
 **The 8 kernel crates already exist and are already correct** — `audit`, `breaker`, `budget`,
 `egress`, `identity`, `ledger`, `scope`, `wal`. That part of the roster is done.
 
@@ -1423,8 +1428,8 @@ byte-identical and oracle-proven.
 | Today | Becomes | Why |
 |---|---|---|
 | `busbar-llm` (60k), `busbar-llm-codec` (103k) | `busbar-plane-llm` | #39: codecs and dialects fold INTO the plane crate; no `busbar-*-codec` survives |
-| `busbar-mcp` (48k), `busbar-mcp-codec`, `busbar-plane-mcp-host` | `busbar-plane-mcp` | #39 names `busbar-plane-mcp-host` for deletion explicitly |
-| `busbar-a2a` (47k), `busbar-a2a-codec`, `busbar-plane-a2a-host` | `busbar-plane-a2a` | same |
+| `busbar-mcp` (48k), `busbar-mcp-codec`, ~~`busbar-plane-mcp-host`~~ | `busbar-plane-mcp` | **`-host` FOLDED** — #39 named it for deletion explicitly |
+| `busbar-a2a` (47k), `busbar-a2a-codec`, ~~`busbar-plane-a2a-host`~~ | `busbar-plane-a2a` | **`-host` FOLDED** |
 | `busbar-plane-voice`, `busbar-voice` (12k), `busbar-voice-codec` | `busbar-plane-streaming` | #18: voice is a dialect, not a plane; ALL logic lives in the one plane crate |
 | `busbar-admin` (38k), `busbar-plane-admin` | `busbar-core-admin` | admin is a cleanliness crate, never a plane (#3) — `busbar-plane-admin` is a category error by its own name |
 | `busbar-oauth2` | `busbar-core-oauth2` | rename only |
