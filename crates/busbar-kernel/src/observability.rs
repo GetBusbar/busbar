@@ -241,13 +241,17 @@ pub(crate) fn validate_webhook_url(url: Option<String>) -> Result<Option<String>
 }
 
 /// Well-known cloud-metadata / internal DNS names that must be blocked even though they are not IP
-/// literals (they resolve, at connect time, to the IMDS family). This holds ONLY the two metadata
-/// names; the `localhost` / `*.localhost` family is blocked separately in the `Err(_)` DNS arm of
-/// `host_is_internal`. NOTE the deliberate divergence: `config_validate::ssrf_blocked_host` (the
-/// operator-configured-upstream-URL guard) does NOT block `localhost` — it ALLOWS it as a legitimate
-/// loopback upstream — so this const overlaps `ssrf_blocked_host`'s metadata denylist only on the shared
-/// cloud-metadata names; the two guards block DIFFERENT sets on the localhost family.
-const METADATA_HOSTS: &[&str] = &["metadata.google.internal", "metadata.internal"];
+/// literals (they resolve, at connect time, to the IMDS family). The `localhost` / `*.localhost`
+/// family is blocked separately in the `Err(_)` DNS arm of `host_is_internal`. NOTE the deliberate
+/// divergence: `config_validate::ssrf_blocked_host` (the operator-configured-upstream-URL guard)
+/// does NOT block `localhost` — it ALLOWS it as a legitimate loopback upstream — so the two guards
+/// block DIFFERENT sets on the LOCALHOST family.
+///
+/// The METADATA family is NOT a place the two may differ, and this is no longer a second copy: it
+/// is [`crate::net_guard::METADATA_HOSTS`] itself. It used to be a private two-name list beside a
+/// six-name one, which is a telemetry guard that had never heard of four names the config guard
+/// refused.
+use crate::net_guard::METADATA_HOSTS;
 
 /// True for an IPv4 literal busbar must not POST telemetry to. Shared by the V4 arm and the
 /// IPv4-mapped-IPv6 arm so the two stay identical. Covers loopback, link-local (incl. the

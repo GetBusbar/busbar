@@ -16,7 +16,24 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 /// legitimate local-model upstream) while the webhook, OTLP and A2A-card guards block it. Keeping
 /// the two lists apart is what lets one guard opt out of the localhost arm without also opting out
 /// of the metadata one.
-pub const METADATA_HOSTS: &[&str] = &["metadata.google.internal", "metadata.internal"];
+///
+/// THIS IS THE ONLY METADATA-NAME LIST. [`ssrf_blocked_host`] once declared a second, LONGER copy
+/// inside its own body, and the two drifted: the config guard refused six names while
+/// [`judge_host_name`] — the arm the resolve-then-pin DIALING path consults — knew two. A private
+/// list inside a function is a list nothing else can read, which is the mechanism of the drift
+/// rather than an accident of it.
+///
+/// Note which names the address arm cannot save. [`ip_is_cloud_metadata`] covers link-local plus
+/// three literals plus IMDSv6, so a metadata endpoint that answers on a GLOBALLY ROUTABLE address
+/// — `metadata.platformequinix.com` — is caught by NOTHING but its name.
+pub const METADATA_HOSTS: &[&str] = &[
+    "metadata.google.internal",
+    "metadata.internal",
+    "metadata.tencentyun.com",
+    "metadata.platformequinix.com",
+    "instance-data",
+    "instance-data.ec2.internal",
+];
 
 /// TRUE for an IPv4 literal no busbar guard may connect to: loopback, link-local (which is where the
 /// `169.254.169.254` IMDS endpoint lives), RFC1918 private, RFC6598 CGNAT, unspecified, broadcast,
@@ -1257,18 +1274,11 @@ pub fn ssrf_blocked_host(
         return None;
     }
 
-    // Cloud-metadata / IMDS hostnames (case-insensitive). The IPv4 / IPv6 metadata literals are
-    // caught in the IP arms below; these are the DNS names a connecting stack would resolve.
-    const METADATA_HOSTS: &[&str] = &[
-        "metadata.google.internal",
-        "metadata.internal",
-        "metadata.tencentyun.com",
-        "metadata.platformequinix.com",
-        "instance-data",
-        "instance-data.ec2.internal",
-    ];
-    let host_lc = host.to_ascii_lowercase();
-    if METADATA_HOSTS.contains(&host_lc.as_str()) {
+    // Cloud-metadata / IMDS hostnames (case-insensitive), read from the ONE module-level list so
+    // this guard and the resolved-name guard cannot know different names. The IPv4 / IPv6 metadata
+    // literals are caught in the IP arms below; these are the DNS names a connecting stack would
+    // resolve.
+    if METADATA_HOSTS.iter().any(|m| m.eq_ignore_ascii_case(host)) {
         return Some(host.to_string());
     }
 

@@ -318,14 +318,18 @@ fn nat64_embedded_ipv4_is_judged_by_the_shared_predicates() {
 fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
     // Every spelling of the IMDS target 169.254.169.254 that a caller can hand us.
     for meta in [
-        "169.254.169.254",             // bare v4
-        "::ffff:169.254.169.254",      // v4-mapped
-        "64:ff9b::a9fe:a9fe",          // NAT64 well-known (RFC 6052)
-        "64:ff9b:1::a9fe:a9fe",        // NAT64 local-use (RFC 8215), zero middle
-        "64:ff9b:1:fffe::a9fe:a9fe",   // NAT64 local-use, non-zero middle
+        "169.254.169.254",           // bare v4
+        "::ffff:169.254.169.254",    // v4-mapped
+        "64:ff9b::a9fe:a9fe",        // NAT64 well-known (RFC 6052)
+        "64:ff9b:1::a9fe:a9fe",      // NAT64 local-use (RFC 8215), zero middle
+        "64:ff9b:1:fffe::a9fe:a9fe", // NAT64 local-use, non-zero middle
     ] {
         let url = format!("http://[{meta}]/latest/meta-data/");
-        let url = if meta.contains(':') { url } else { format!("http://{meta}/latest/meta-data/") };
+        let url = if meta.contains(':') {
+            url
+        } else {
+            format!("http://{meta}/latest/meta-data/")
+        };
         assert!(
             ssrf_blocked_host(&url, &[], false, &[]).is_some(),
             "{meta} reaches the cloud-metadata service and must be refused pre-flight; \
@@ -335,9 +339,9 @@ fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
 
     // The private/loopback host predicate must see through the embedding as well.
     for internal in [
-        "64:ff9b::7f00:1",         // 127.0.0.1
-        "64:ff9b::a01:203",        // 10.1.2.3
-        "64:ff9b:1:fffe::c0a8:1",  // 192.168.0.1 via local-use NAT64
+        "64:ff9b::7f00:1",        // 127.0.0.1
+        "64:ff9b::a01:203",       // 10.1.2.3
+        "64:ff9b:1:fffe::c0a8:1", // 192.168.0.1 via local-use NAT64
     ] {
         assert!(
             host_is_private_or_loopback(internal),
@@ -356,5 +360,66 @@ fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
     assert!(
         !host_is_private_or_loopback("64:ff9b::808:808"),
         "64:ff9b::808:808 embeds public 8.8.8.8 and must NOT read as internal"
+    );
+}
+
+/// THE DIALING GUARD AND THE CONFIG GUARD MUST KNOW THE SAME METADATA NAMES.
+///
+/// They did not. `ssrf_blocked_host` kept a SIX-name list private to its own body while
+/// `judge_host_name` — the arm the resolve-then-pin dialing path consults — read a TWO-name
+/// module const. Config validation refused `metadata.tencentyun.com`; the socket did not.
+#[test]
+fn the_dialing_guard_and_the_config_guard_know_the_same_metadata_names() {
+    // Every name `ssrf_blocked_host` (config validation) refuses must ALSO be refused by
+    // `judge_host_name`, which is the arm the resolve-then-pin dialing path actually consults.
+    for name in [
+        "metadata.google.internal",
+        "metadata.internal",
+        "metadata.tencentyun.com",
+        "metadata.platformequinix.com",
+        "instance-data",
+        "instance-data.ec2.internal",
+    ] {
+        // Config-validation view.
+        let cfg = ssrf_blocked_host(&format!("https://{name}/"), &[], false, &[]);
+        // Dialing view — the one a socket is opened behind.
+        let dial = judge_host_name(name, GuardPolicy::default());
+        assert!(
+            cfg.is_some(),
+            "{name}: config guard should refuse (this is the 6-name list)"
+        );
+        assert!(
+            dial.is_err(),
+            "{name}: DIALING guard did NOT refuse — config refuses it but the dial path allows it"
+        );
+    }
+}
+
+/// The NAME arm is the ONLY defence for a metadata host that answers on a PUBLIC address.
+///
+/// `ip_is_cloud_metadata` covers link-local /16 plus three literals plus IMDSv6. A metadata
+/// endpoint reachable at a globally-routable address matches NONE of them, so if the name is not
+/// in `METADATA_HOSTS` the resolve-then-pin path dials it.
+#[test]
+fn a_metadata_name_on_a_public_address_is_refused_by_its_name_alone() {
+    struct Stub(IpAddr);
+    impl Resolver for Stub {
+        fn resolve(&self, _host: &str) -> Result<Vec<IpAddr>, String> {
+            Ok(vec![self.0])
+        }
+    }
+    // Equinix Metal's metadata service answers on a public address, which is exactly why it is on
+    // the denylist by NAME: no address predicate can catch it.
+    let public = IpAddr::V4(Ipv4Addr::new(147, 75, 1, 1));
+    let got = resolve_and_pin(
+        "metadata.platformequinix.com",
+        443,
+        true,
+        &Stub(public),
+        GuardPolicy::default(),
+    );
+    assert!(
+        got.is_err(),
+        "metadata.platformequinix.com resolved to a PUBLIC address was PINNED, not refused: {got:?}"
     );
 }
