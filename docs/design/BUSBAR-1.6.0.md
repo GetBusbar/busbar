@@ -1066,6 +1066,127 @@ Two traps worth knowing before trusting any harvest row:
   got a silently-truncated file, and reported a critical SSRF vulnerability that did not exist. Query
   git directly, every time. A false security finding is worse than a missed one.
 
+## THE LOST REGISTER — what the branch harvest recovered
+
+The deep review read ~625 survivor branches across 12 slices, asking one question per branch:
+*does the FUNCTION this branch added exist in the current tree, under any name?* Verdicts:
+**RENAMED** (present, moved) · **DEAD** (a decision killed it) · **LOST** (gone, and wanted) ·
+**UNCLEAR** (say so, never guess).
+
+**Roughly 75–80% RENAMED.** The rename waves genuinely carried the work; the fear that the
+consolidation had silently dropped whole subsystems was mostly unfounded. What follows is the
+minority that did not survive, ranked by consequence. Each line is evidence-backed against trunk,
+not inferred from a missing symbol name.
+
+### FIXED IN THIS SESSION
+
+| What | Where | Commit |
+|---|---|---|
+| NAT64 embedding unjudged by the **host-string** SSRF guards — `ssrf_blocked_host` guards OAuth token endpoints and MCP tool-call ARGUMENT hosts, so a caller could pass `64:ff9b::a9fe:a9fe` as a literal and reach IMDS with no DNS involved | `net_guard.rs` ×3, `trust/net.rs` ×3 | `a6fe1018b` |
+| **MCP confused deputy** — an upstream naming `tools/call` on the response leg had it minted as a real unit and run under the ORIGINAL CALLER's identity, budget and approval grant. Ingress had the check; egress did not | `busbar-plane-mcp/src/plane.rs` | `489b63ab1` |
+| `NANOS_PER_CENT` declared **five** times; the admit-vs-bill pair (`price.rs` sizes the hold that gates admission, the ledger bills) could drift | root ×2 (compile-time assert), budget (re-export) | `a1019f041`, `489b63ab1` |
+| Served request path reported **zero `WrapSetup`** profiler samples, while the design doc claimed the fix had "Landed" | `unit/route.rs` | `74e0b1770` |
+
+### OPEN — SECURITY, exploitable
+
+1. **MCP task-answer merge bypasses the argument guard.** `mcp/tasks.rs::merge_answers` (:923)
+   inserts every caller-supplied key into the tool arguments with no re-screen, and the result goes
+   straight to dispatch (:762). The guard ran ONCE, at `create_task`, on the pre-merge arguments. A
+   caller passes `url: "https://legit.example.com"`, clears the screen, then `tasks/update` rewrites
+   it to `http://169.254.169.254/…` — dispatched unscreened. **Same class as the SSRF fix above, via
+   a different door.**
+2. **MCP server→busbar direction has no sender mirror** (second instance, distinct from the one
+   fixed): `busbar-plane-mcp/src/plane.rs` client-path guard exists, server path re-checked.
+3. **Rotate-replay-key idempotency collision.** `busbar-admin/src/keys.rs:1490` builds its
+   idempotency cache key by colon-joining two caller-controlled strings; a crafted pair collides and
+   a caller is served **a different key's freshly-rotated secret**. A correctly-built sibling exists
+   at `verbs.rs:92` — the router calls the wrong one.
+4. **Auth-cache revocation bypass.** `busbar-kernel/src/auth/mod.rs::run_chain_cached` re-`put`s on
+   a cache HIT, resetting the TTL, so a revoked credential presented faster than its TTL is never
+   re-checked. The correct implementation exists at `busbar-kernel-identity/src/chain.rs:198-220`
+   and was never ported to the file actually wired to admission.
+5. **Unauthenticated A2A push route has no rate limit.** `busbar-a2a/src/a2a/pushback.rs` has MAC +
+   replay + size hardening but no bound on volume; a valid token holder can spam durable hash-chain
+   writes and outbound webhook deliveries.
+6. **Unbounded MCP tool name into the audit chain.** `mcp/method.rs::tools_call` writes
+   caller-supplied `params.name` verbatim into a durable chain row with no length bound.
+7. **Credential plaintext in `Debug` + no zeroize.** `busbar-kernel/src/arena.rs::CredentialSlab`
+   derives `Debug` over raw client credentials and `clear()` is a bare `Vec::clear()`. Named in #53's
+   own top-risk list.
+8. **mTLS material not retired on config reload.** `plane_host/identity.rs` admits in its own doc
+   that it carries no config-generation tag (FIFO-256 cap only); `trust_anchor.rs` has no eviction
+   at all. A revoked identity stays live indefinitely at realistic scale.
+
+### OPEN — INTEGRITY (audit / money)
+
+9. **Admin audit-chain digest collision.** `legacy/chain.rs` joins fields with a raw unescaped `|`;
+   `resource` carries untrusted upstream text (`units_mcp.rs:1537` interpolates an MCP tool name).
+   A `|` in that name shifts every later field boundary, so a REJECTED mutation's digest can collide
+   with an APPLIED one's and the chain still "verifies". **Trunk's own `digest_framing_tests.rs`
+   already proves a collision pair exists.** PARKED — the fix changes sealed bytes, owner's call
+   (recommendation: versioned scheme tag, old records verify under scheme 1).
+10. **Audit second-writer detection regressed.** Legacy `append_audit`
+    (`store-memory/src/lib.rs:716-729`) refused a fork; the new seam's `append_plane_record`
+    (`:757-763`) is a blind upsert. Two processes on one store silently overwrite each other's rows.
+11. **Audit rows carry `ts: 0`.** `busbar-kernel/src/audit/journal.rs:543` hardcodes it, and
+    `purge_plane_records_before` deletes anything older than the cutoff — so the retention window is
+    defeated for the entire class.
+12. **Transient audit-write failure drops the record.** `plane/auditlog.rs:542` logs and moves on;
+    the old backfill/`durable_high` watermark is gone.
+13. **SSRF-blocked call recorded as "dispatched".** `mcp/client/issue.rs:211` maps
+    `TransportError::Refused` — the guard stopping the call BEFORE any socket opens — to
+    `OUTCOME_DISPATCHED`. The audit chain tells an investigator busbar sent something it never sent.
+14. **`rate_card_version: 0` hardcoded** at six sites across `units_mcp/voice/a2a` — violates #44's
+    pricing-provenance requirement.
+15. **Flat fee silently zero.** `cost/rate.rs:338 per_request_fee()` returns `0` for a currency the
+    card doesn't name a fee in. #42 says an unpriced class REFUSES, never silently zeroes.
+16. **Third un-clamped rate conversion.** `busbar-kernel/src/cost.rs::RateNanos::from_raw` lacks the
+    u64 overflow clamp its canonical sibling has — a config typo saturates to an astronomical charge.
+17. **Root ledger book hardcodes `NullShipper`** (`root/durability.rs:701-711`) — never persists,
+    whatever the config says.
+18. **Durable spend double-counted on shutdown** — `main.rs` flush sites race the spawned flusher.
+
+### OPEN — DURABILITY / AVAILABILITY
+
+19. **TLS `close_notify` has no timeout.** `busbar-transport-tls/src/lib.rs:856-872` calls
+    `w.shutdown().await` unbounded; the 250ms `CLOSE_NOTIFY_BUDGET` is gone. A peer that never ACKs
+    hangs the task.
+20. **WS close reason discarded** — `busbar-transport-ws/src/transport.rs:761` always sends bare
+    `Close(None)` despite an unchanged `CloseReason` enum.
+21. **Raw TCP connect unbounded** (only the handshake is bounded); WS read pump has no close wakeup.
+22. **`"id": null` misread as a notification** — `mcp/client/peer.rs:231` filters null, violating
+    JSON-RPC 2.0 §4. Any peer whose encoder spells an absent id as explicit null hangs.
+23. **Cohere token counts silently zero** — `llm-codec/src/cohere/reader.rs` uses
+    `.as_u64().unwrap_or(0)` on values Cohere specs as JSON floats. A float count bills as zero.
+24. **`InFlight::insert` overwrites a duplicate key** instead of refusing — orphans a `HoldCell` and
+    permanently inflates the in-flight count.
+25. **Plain container image cannot dlopen a plugin.** Not a missing feature — a REGRESSION: the
+    Dockerfile once carried `COPY plugins/${TARGETARCH}/lib/ /lib/`, a commit removed it as
+    collateral damage while CI kept building and staging those libs. Fix in flight.
+
+### OPEN — CORRECTNESS / OBSERVABILITY
+
+26. Verify's sealed `VerifiedDestination` set never reaches Route/Meter — Route re-derives its own,
+    a verify-then-act inconsistency (`teller.rs`).
+27. SNI compared byte-wise, not case-insensitively — `registry.rs::transport_overlaps` can clear two
+    genuinely overlapping claims.
+28. Voice tool-call refusal silently dropped with no client notification
+    (`busbar-voice/src/runtime/session.rs:421`).
+29. `voice_build` mounts nothing instead of refusing boot when `public_url` is absent.
+30. gRPC `MESSAGE_MAX_BYTES_KEY` entirely unwired; HTTP egress doesn't refuse TE+Content-Length
+    (the ingress twin does); SSE drops legal bare-field lines.
+31. Four xtask/CI-tooling bugs: no child-process timeout, a YAML block-scalar panic on multibyte
+    input, a TSV `splitn(4)` that corrupts real 6-column rows, and an unreadable directory read as
+    silently empty.
+
+### DELIBERATE — do NOT "restore" these
+
+`contract-kinds` (an 8-kind proposal; `PLUGIN-TREE.md` records it as rejected — the answer is 7,
+per #3) · the `Kind::Control`/`Kind::Dialect` families (D36/D37, cancelled) · `AdminSurface` ·
+the `units_*_leg.rs`/`plane_mount.rs` shape (#28 chose the gauntlet-kernel-rider design) · the whole
+`Arena` fixed-cap model (#41). These appear as survivors because their symbols are absent from
+trunk. Absent because they were **decided against**.
+
 ## Open items — the next session's worklist
 
 **Verified defects, not yet fixed:**
