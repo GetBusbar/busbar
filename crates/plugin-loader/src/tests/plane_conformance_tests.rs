@@ -118,7 +118,7 @@ fn dropped_in_example_plane_builds_hydrates_starts_and_dispatches() {
     // SAFETY: `host_ptr` is a live EMPTY vtable that outlives this call; the example plane does not
     // dereference `host_ctx`.
     let (build_status, handle) =
-        unsafe { plane.build(host_ptr, core::ptr::null_mut(), b"{}", &[]) };
+        unsafe { plane.build(host_ptr, busbar_plugin::hot::host::HostCtx::NULL, b"{}", &[]) };
     assert_eq!(build_status, StatusClass::Ok);
     let handle = handle.expect("build yields an opaque plane handle on Ok");
     assert!(!handle.ptr.is_null());
@@ -273,7 +273,7 @@ fn drive_opened_plane(plane: &crate::DynPlane) {
     let host_ptr: *const PlaneHostVtable = &host;
     // SAFETY: EMPTY vtable outlives the call; the example plane derefs no host slot / host_ctx.
     let (build_status, handle) =
-        unsafe { plane.build(host_ptr, core::ptr::null_mut(), b"{}", &[]) };
+        unsafe { plane.build(host_ptr, busbar_plugin::hot::host::HostCtx::NULL, b"{}", &[]) };
     assert_eq!(build_status, StatusClass::Ok);
     let handle = handle.expect("build yields an opaque plane handle on Ok");
     // SAFETY: `handle.ptr` is the live state `build` just produced.
