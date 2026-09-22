@@ -41,11 +41,13 @@ const MECHANISMS: &[McpPinMechanism] = &[
     McpPinMechanism::Unpinned,
 ];
 
-/// Every shape an approved hash can take in config: absent, present, and present-but-empty. The
-/// empty one is in the matrix deliberately — it is the case where a "is a hash configured" test and
-/// a "does the digest match" test could plausibly disagree, so it is the case the equivalence claim
-/// has to survive.
-const HASHES: &[Option<&str>] = &[None, Some("sha256:approved"), Some("")];
+/// Every shape an approved hash can take in config: absent, present, present-but-empty, and
+/// present-but-whitespace. The last two are in the matrix deliberately — they are the cases where a
+/// "is a hash configured" test and a "does the digest match" test could plausibly disagree, so they
+/// are the cases the equivalence claim has to survive. They are also the ones that used to ADMIT: an
+/// approval AT the empty string matched the empty digest the entry offered, and the tool dispatched
+/// against an approval of nothing.
+const HASHES: &[Option<&str>] = &[None, Some("sha256:approved"), Some(""), Some("   ")];
 
 /// One registered server with one tool, at the given mechanism and approved hash.
 ///
@@ -157,7 +159,10 @@ fn deleted_inline_decision(
     if matches!(mechanism, McpPinMechanism::Unpinned) {
         return Err(DispatchRefusal::NotPinned("fs".to_string()));
     }
-    if schema_hash.is_none() {
+    // A BLANK HASH IS NO HASH (see `catalogue::approved_hash`): a `schema_hash` that is absent,
+    // empty or whitespace approved nothing, so the tool is `pending` and refuses to dispatch. The
+    // oracle reads the field exactly as the routed gate now does.
+    if schema_hash.map(str::trim).unwrap_or("").is_empty() {
         return Err(DispatchRefusal::NotApproved("fs_read".to_string()));
     }
     Ok(())

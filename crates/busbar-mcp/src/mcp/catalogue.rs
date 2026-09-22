@@ -143,15 +143,54 @@ impl ToolEntry {
     /// The digest the dispatch gate compares AGAINST — the left operand it cannot be called without,
     /// not a decision of its own.
     ///
-    /// An entry the operator approved no hash for has no digest, and the empty string stands in.
-    /// That cannot admit anything: [`Catalogue::build`] records an approval only for a tool whose
-    /// hash is PRESENT, so a tool with none is absent from the approval altogether and
-    /// `Approval::serves` refuses it whatever it is handed — it never reaches a digest comparison at
-    /// all.
-    fn dispatch_digest(&self) -> &str {
-        self.schema_hash.as_deref().unwrap_or_default()
+    /// `None` IS A DISTINCT STATE AND NOT A VALUE. It used to be the EMPTY STRING, standing in for
+    /// "the operator approved no hash" on the claim that an empty digest could admit nothing because
+    /// a tool with no hash is absent from the approval map. That claim held for a tool with no key,
+    /// and it was false for an operator who wrote `schema_hash: ""`: they recorded an approval AT
+    /// the empty string, the digest offered was the empty string, the two MATCHED, and the tool
+    /// dispatched against an approval of nothing on the one comparison that exists to catch a
+    /// rug-pull. An `Option` is what keeps the two states from being spelled the same way, and
+    /// [`approved_hash`] is what keeps the empty string out of the `Some` arm.
+    fn dispatch_digest(&self) -> Option<&str> {
+        self.schema_hash.as_deref()
     }
 }
+
+/// A BLANK HASH IS NO HASH — the one normaliser, read by BOTH sides of the dispatch comparison.
+///
+/// The gate is `approved digest == offered digest`, and this plane supplies both operands from the
+/// same operator field: the APPROVAL map ([`server_entry`]) and the catalogue ENTRY
+/// ([`Catalogue::build`]). Normalising in one of the two would be a second rule about one value, and
+/// the two would disagree on exactly the input this function exists for.
+///
+/// TRIMMED rather than merely tested for empty, for the same reason `pin.key: "  "` declares no pin:
+/// a value made of spaces is a value the operator did not write. Trimming also makes a padded hash
+/// WORK against a live sighting rather than silently never matching one — the digest
+/// `client::catalogue::tool_digest` computes carries no padding, so an untrimmed `" sha256:x "` was
+/// an approval that could only ever match itself.
+fn approved_hash(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|h| !h.is_empty())
+        .map(str::to_string)
+}
+
+/// THE STAND-IN FOR "THIS TOOL HAS NO APPROVED DIGEST", where the ordered validator's [`Observed`]
+/// requires a string and there is none.
+///
+/// [`Observed`]: busbar_kernel::trust::validate::Observed
+///
+/// BELT AND BRACES, said out loud so it is not mistaken for the load-bearing half. The braces are
+/// [`approved_hash`]: a tool whose `dispatch_digest` is `None` approved no hash, so it is absent
+/// from the approval map too, and `Approval::serves` refuses it before any value is compared. The
+/// belt is this constant — it carries a NUL, which no digest
+/// [`super::client::catalogue::tool_digest`] computes can contain, so should a future edit ever put
+/// an entry in that map for a tool with no approved hash, the value offered still cannot equal a
+/// digest an upstream is serving. The EMPTY STRING was the previous stand-in and it was neither:
+/// an operator's `schema_hash: ""` recorded `At("")`, the entry offered `""`, and the two matched.
+///
+/// It never reaches an operator: `as_dispatch_refusal` renders `ArtifactDrifted` through
+/// `refusal_reason`, which reads the approval's pin and not the digest.
+const NO_APPROVED_DIGEST: &str = "\u{0}no-approved-schema-hash\u{0}";
 
 /// One exposed prompt. Markup-normalised at the edge, not here — this is the store, not the writer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -494,7 +533,11 @@ impl Catalogue {
                         server: id.clone(),
                         tool: tool.clone(),
                         namespaced,
-                        schema_hash: allow.schema_hash.clone(),
+                        // A BLANK HASH IS NO HASH, normalised HERE as well as in the approval
+                        // map: this field is the call log's `tool_digest`, the `_meta` schema hash
+                        // `tools/list` publishes and the reroute pin, and an empty string reaching
+                        // any of the three reads as an approval that was never given.
+                        schema_hash: approved_hash(allow.schema_hash.as_deref()),
                         description: allow.description.clone(),
                         input_schema: allow.input_schema.clone(),
                         output_schema: allow.output_schema.clone(),
@@ -794,9 +837,15 @@ impl Catalogue {
         // approved hash against the configured hash is comparing the operator's intent with itself
         // and cannot, by construction, notice an upstream changing its schema underneath.
         let observe = || match live.digest_for(&entry.server, &entry.tool, &server.approval) {
-            LiveDigest::Unsighted => {
-                busbar_kernel::trust::validate::Observed::At(entry.dispatch_digest().to_string())
-            }
+            // NO SIGHTING: the operator's declarative approval stands on its own and the
+            // config-written hash is what dispatch compares. A tool the operator approved NO hash
+            // for has nothing to compare, so it offers the one string that cannot equal an approval
+            // rather than the empty one that could.
+            LiveDigest::Unsighted => busbar_kernel::trust::validate::Observed::At(
+                entry
+                    .dispatch_digest()
+                    .map_or_else(|| NO_APPROVED_DIGEST.to_string(), str::to_string),
+            ),
             LiveDigest::At(digest) => busbar_kernel::trust::validate::Observed::At(digest),
             LiveDigest::Quarantined(why) => busbar_kernel::trust::validate::Observed::Drifted(why),
         };
@@ -1080,8 +1129,15 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
                 pin,
                 def.tools_allow
                     .iter()
+                    // A BLANK HASH RECORDS NO APPROVAL. An operator who wrote `schema_hash: ""`
+                    // (or a line of whitespace) put `Some("")` in here, so the approval held
+                    // `At("")`, `ToolEntry::dispatch_digest` offered `""`, and the two MATCHED —
+                    // a tool dispatching against an approval of nothing, on exactly the comparison
+                    // that exists to catch a rug-pull, while the operator believed they had pinned
+                    // the manifest. `approved_hash` is the SAME normaliser the catalogue entry
+                    // runs, so the two operands of that comparison cannot disagree.
                     .filter_map(|(tool, allow)| {
-                        allow.schema_hash.clone().map(|h| (tool.clone(), h))
+                        approved_hash(allow.schema_hash.as_deref()).map(|h| (tool.clone(), h))
                     })
                     .collect(),
             ),
