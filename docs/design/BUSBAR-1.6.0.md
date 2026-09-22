@@ -1243,6 +1243,57 @@ byte-comparing JSONL output and the `/metrics` exposition before and after.
 
 **Consequence for the roster: 34 is unreachable until this lands.** Four of its slots are these.
 
+### SEQUENCING TRAP — `PlaneDecl` MUST dissolve BEFORE the plane folds, or #40 reopens 5× wider
+
+Measured 2026-09-22. **This is a hard ordering constraint on W3/W4/W5, not advice.**
+
+`crates/busbar-plane-decision` is the ONLY live #40 violation today, and its whole `busbar-kernel`
+edge exists for `src/registry.rs` — **129 lines, provably dead**: `PLANE_DECL` is named only by that
+crate's own tests, and `crates/busbar/src/main.rs` never names the crate (`register_planes()`
+installs `busbar_llm::`/`busbar_mcp::`/`busbar_a2a::`/`busbar_voice::PLANE_DECL`). Deleting it takes
+`cargo test --workspace` out of red — that is **hours**, and it is the only part of #40 on the
+dev-green path.
+
+**THE TRAP:** `PlaneDecl` is survivable today only because those four `PLANE_DECL` exporters are the
+LEGACY engine crates `busbar-llm`/`-mcp`/`-a2a`/`-voice`, which are kernel-side by classification.
+**When #19/#39 fold them into `busbar-plane-*`, each plane crate inherits a `PLANE_DECL` and
+therefore a `busbar-kernel` edge** — recreating the violation across four more crates, in four crates
+that are supposed to be the clean ones. Dissolve `PlaneDecl` FIRST.
+
+**Why the two prior `PlaneDecl` moves were refused — the reasoning is recorded and correct.**
+Commit `250cda583`: *"Moving a type that names `EngineHost` into the neutral crate does not make it
+neutral — it drags the internals along and makes contract the thing it exists to prevent."* A struct
+literal must name every field's type even when the value is `None`, so hosting `PlaneDecl` in
+contract drags `PlaneAdmission`, `PlaneRouteSpec` (which names `axum::body::Bytes`/`http::HeaderMap`),
+`AdminRouteSpec`, `PlaneBootCtx`→`PlaneStore`+`EngineHost`, `PlaneSlots`, `ContainerGateSink`,
+`PlaneCfg`, `EngineTablesView`, `NamedDefView`, `ProviderDef/Deploy/Cfg`. **Measured drag: ~22,000
+LOC plus `axum` into the ABI crate.** Both refusals were right.
+
+**But a THIRD option exists and was never refused** — only dropped. Commit `ae0622694`
+(`origin/delete/keep-plane-decl-contract-recut-2`) is not a naive move: it is a plain-DATA
+`PlaneDeclaration` in contract with the fn-pointer table staying kernel-side, **+192 LOC, bounded**.
+No recorded reason for abandoning it; it was archived in the #67 branch collapse and never merged.
+That is the shape to revisit. **Note #30 disqualifies nothing here** — `PlaneDecl` is read once at
+boot, and store/secret/auth/hook/export are on the COLD/JSON lane by #30 itself, so there is no
+per-frame adaptation cost anywhere in the #40 work.
+
+**TWO GATES ARE LYING, both verified:**
+- `construction:manifest-allowlist` is fully GREEN and **cannot see this violation** —
+  `busbar-plane-decision` is not in `qa/construction.toml`'s `[gate.plugin_kinds].plane` list at all.
+  It also reads only DECLARED `[dependencies]`, not the transitive closure, despite its own `why`
+  text claiming otherwise. The gate written to catch #40 is blind to the only crate that breaks it.
+- `ceiling-rose`/`ceiling-slack` compare against a **stale base (`dc7bb323`)** and report ~123
+  raises that are not raises. Every ceiling declaration made against them today is judged against
+  nonsense. Known prior art: the base ref was renamed away and the gate *silently falls back to
+  `HEAD~1`* while its own comment says an unestablishable base "is RED, never green."
+
+**ALSO MEASURED: two generations of the plugin ABI ship side by side.** Gen-1 (1.5.5-era) is what
+every in-tree plugin actually implements — `busbar-api` traits + `busbar-plugin`'s cold-JSON lane +
+the SDK macros. Gen-2 (the 1.6.0 design, already built in `busbar-contract`) has real riders for
+**plane and transport only** — all 5 planes `impl Plane`, all 7 transports `impl Transport` — and
+**ZERO production riders for store/secret/hook** (fixtures only). They collide on five false-friend
+names, which is exactly what #35 is about. Any #84 work must know which generation it is touching.
+
 ### ON THE CRITICAL PATH — each costs the owner ~60 seconds and unblocks ~2 agent-days
 
 Measured 2026-09-22 against the 2026-09-25 09:00 PDT dev-green target. Two of the three critical-path
