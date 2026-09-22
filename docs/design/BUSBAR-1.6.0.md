@@ -1685,6 +1685,30 @@ LOC censuses are all source scans, and **all of them are blind to any act assemb
 rather than spelled as a literal.** The `\x6d` escape in `plane/approvals.rs` is the same blindness
 reached deliberately from the other side: identical bytes, invisible spelling.
 
+**AND THE TRAP HAS A SECOND HALF, IN THE SAME FILE — the two failure modes are in TENSION.** The
+full read of `plane_host/egress.rs` found the inverse shape 300 lines from the first:
+`pack_header_records` (`:357-371`) with `parse_headers`/`read_u32`/`read_str` and its decoder twin
+`decode_head_headers` (`:1464-1490`) — **117 raw / 87 code of hand-rolled length-prefixed binary
+record codec**, `u32 name_len` LE, name bytes, `u32 value_len` LE, value bytes, with a matching
+incremental parser that stops fail-safe on a truncated record.
+
+Mechanically that is indistinguishable from transport framing, and a pattern-based census counts it.
+**It is not framing: no byte of it ever reaches a socket.** It marshals header sets across the
+`#[repr(C)]` plugin ABI between host and plane — the same category as the JSON riding the six-symbol
+cold lane. The transport rule is "one carrier's framing and connection lifecycle"; this frames
+nothing on a carrier and manages no connection.
+
+So in ONE 1,620-line file: a real act that looks like nothing (`inject_credential`, assembled from
+variables), and nothing that looks like a real act (`pack_header_records`, carrying every framing
+pattern over no carrier). **A source scan gets both wrong, in opposite directions, at once — and the
+fix for one manufactures the other.** Loosen the patterns until `inject_credential` is caught and
+`pack_header_records` becomes a false finding; tighten until that is clean and the credential builder
+disappears again. There is no threshold that separates them, because the distinguishing fact — does a
+byte reach a carrier — is not in the text at all.
+
+That is the whole argument for **reachability over pattern**: the census resolved both by tracing
+where the bytes go, which no regex can do.
+
 Two consequences to hold on to:
 
 - **A green source-scanning gate is evidence about SPELLINGS, not about BEHAVIOUR.** Say so when
