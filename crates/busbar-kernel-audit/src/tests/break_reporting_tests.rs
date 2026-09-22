@@ -25,7 +25,7 @@ use super::{inputs, token};
 use crate::amend::{content_access, correction, AmendChain, Amendment, Reader};
 use crate::legacy::chain::{verify_chain, Chain, ChainBreakKind};
 use crate::legacy::entry::ADMIN_LOG;
-use crate::legacy::{AuditEntry, AuditInput, OUTCOME_APPLIED};
+use crate::legacy::{AuditEntry, AuditInput, AUDIT_SCHEME_PIPE, OUTCOME_APPLIED};
 use crate::record::{
     Audit, AuditBreak, AuditBreakKind, AuditChain, AuditRecord, OpClassId, Subject,
 };
@@ -285,6 +285,7 @@ fn a_broken_admin_chain_names_the_admin_log_in_its_report() {
         principal: "alice".to_string(),
         prev_hash: String::new(),
         hash: String::new(),
+        scheme: AUDIT_SCHEME_PIPE,
         recorded_here: false,
     };
     entry.hash = crate::legacy::chain::digest(&entry);

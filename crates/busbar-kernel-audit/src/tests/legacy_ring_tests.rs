@@ -317,15 +317,16 @@ fn a_restored_entry_is_not_marked_as_recorded_here() {
 }
 
 #[test]
-fn the_provenance_flag_is_not_on_the_wire_and_there_are_eight_fields() {
+fn the_provenance_flag_is_not_on_the_wire_and_there_are_nine_fields() {
     let log = ring();
     log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
     let entry = &log.export()[0];
-    // Serialised as a map, the flag is absent and the eight wire fields are present. Checked by
-    // name so that a field renamed silently is red.
+    // Serialised as a map, the flag is absent and the nine wire fields -- the original eight PLUS
+    // `scheme`, added so a verifier can always tell which rules a record was sealed under -- are
+    // present. Checked by name so that a field renamed silently is red.
     let json = serde_json::to_value(entry).unwrap();
     let map = json.as_object().unwrap();
-    assert_eq!(map.len(), 8, "the wire shape is eight fields");
+    assert_eq!(map.len(), 9, "the wire shape is nine fields");
     for field in [
         "seq",
         "ts",
@@ -335,9 +336,15 @@ fn the_provenance_flag_is_not_on_the_wire_and_there_are_eight_fields() {
         "principal",
         "prev_hash",
         "hash",
+        "scheme",
     ] {
         assert!(map.contains_key(field), "the wire lost `{field}`");
     }
+    assert_eq!(
+        map.get("scheme").and_then(serde_json::Value::as_u64),
+        Some(2),
+        "a live-recorded entry must carry the scheme that closes the digest collision"
+    );
     assert!(!map.contains_key("recorded_here"));
 }
 

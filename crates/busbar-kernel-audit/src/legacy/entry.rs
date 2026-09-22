@@ -9,15 +9,29 @@
 //! ## What "unchanged" means here, precisely
 //!
 //! Eight wire fields, in the order they have always been in. One further field carrying provenance
-//! that is skipped on the wire, so an encoded record has eight fields and not nine. A digest that is
-//! the hexadecimal SHA-256 of the previous hash, sequence, timestamp, action, resource, outcome and
-//! principal, joined by vertical bars. A genesis previous hash that is the empty string. A ring
-//! bounded at a thousand entries, pruned oldest-first. A restore that seeds the ring from what was
-//! persisted and resumes the sequence after the highest restored one.
+//! that is skipped on the wire, so an OLD encoded record has eight fields and not nine. A genesis
+//! previous hash that is the empty string. A ring bounded at a thousand entries, pruned oldest-first.
+//! A restore that seeds the ring from what was persisted and resumes the sequence after the highest
+//! restored one.
 //!
 //! Any of those moving would not break a feature — it would make the read-back surface return
 //! something different from what it returned yesterday, and make every persisted chain fail to
 //! verify. So each of them is a test in this crate rather than a sentence in this comment.
+//!
+//! ## The one deliberate exception: the scheme tag
+//!
+//! The digest used to be, unconditionally, the hexadecimal SHA-256 of the previous hash, sequence,
+//! timestamp, action, resource, outcome and principal joined by vertical bars — and a vertical bar
+//! inside a caller-controlled field (`resource`, built from an upstream MCP tool name, is the real
+//! one) shifts every field boundary after it, so two semantically different mutations could digest
+//! identically and a forged one would still "verify". [`AuditEntry::scheme`] is the fix: a per-record
+//! tag says which framing an entry was actually sealed under. An OLD entry — the tag absent — reads
+//! as [`AUDIT_SCHEME_PIPE`] and digests exactly as it always did, so nothing already on disk moves.
+//! Every entry [`AuditEntry::link`] builds FRESH now carries [`AUDIT_SCHEME_LENGTH_PREFIXED`], whose
+//! length-prefixed framing makes a field boundary unforgeable by anything a field can contain — and,
+//! being an actual wire field rather than skipped like the provenance flag, a fresh entry has NINE
+//! wire fields, not eight. A chain that mixes both eras verifies end to end: each record is checked
+//! under the rules its OWN tag names, never the rules the stream happened to use yesterday.
 //!
 //! ## Sharing a mechanism is not sharing a buffer
 //!
@@ -43,10 +57,11 @@ use super::chain::{ChainLabels, ChainedRecord, Digest, Framing};
 /// One admin audit record.
 ///
 /// The digest is the hexadecimal SHA-256 of the previous hash, sequence, timestamp, action,
-/// resource, outcome and principal joined by vertical bars, and the previous hash is the preceding
-/// entry's digest. Recomputing the chain detects any altered, reordered or deleted entry — detection,
-/// not prevention. A compromised host can still rewrite the whole chain; prevention is shipping the
-/// log off-box to something that host cannot reach.
+/// resource, outcome and principal, framed under this record's OWN [`AuditEntry::scheme`] — see
+/// [`AUDIT_SCHEME_PIPE`] and [`AUDIT_SCHEME_LENGTH_PREFIXED`] — and the previous hash is the
+/// preceding entry's digest. Recomputing the chain detects any altered, reordered or deleted entry —
+/// detection, not prevention. A compromised host can still rewrite the whole chain; prevention is
+/// shipping the log off-box to something that host cannot reach.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     /// Monotonic sequence number, one-based, unique within a process lifetime.
@@ -67,14 +82,46 @@ pub struct AuditEntry {
     pub prev_hash: String,
     /// This entry's own digest: the tamper-evidence.
     pub hash: String,
+    /// WHICH FRAMING RULES this entry was sealed under — [`AUDIT_SCHEME_PIPE`] (1) or
+    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`] (2). See [`Framing`].
+    ///
+    /// `#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: every entry persisted before this field existed
+    /// simply lacks the key, and an absent tag means exactly scheme 1, because that is what those
+    /// rows actually are — no migration of stored data is required. [`AuditEntry::link`] always
+    /// writes [`AUDIT_SCHEME_LENGTH_PREFIXED`] on a FRESH entry; nothing mints scheme 1 going
+    /// forward. A verifier reads this straight off the record — see
+    /// [`ChainedRecord::framing`](super::chain::ChainedRecord::framing) — so it can always say which
+    /// rules a given entry was sealed under, on a chain that mixes both eras.
+    #[serde(default = "audit_scheme_default")]
+    pub scheme: u8,
     /// TRUE only for entries THIS process appended live. Seeded entries — restored from a durable
     /// store — are false. Skipped on the wire, which gives the right default on the encoded and
     /// store-seeding paths; the live append sets it explicitly.
     ///
-    /// It is the provenance marker the restore witnesses assert on, and it is the ninth field of the
-    /// struct and the non-field of the wire. That distinction is the whole reason it is called out.
+    /// It is the provenance marker the restore witnesses assert on, and it is the last field of the
+    /// struct and the one field of the nine that is never on the wire. That distinction is the whole
+    /// reason it is called out.
     #[serde(skip)]
     pub recorded_here: bool,
+}
+
+/// Scheme 1: [`Framing::PipeSeparated`] — every entry already on disk, whether its stored tag is
+/// explicitly `1` or simply absent (see [`AuditEntry::scheme`]'s `#[serde(default)]`). Nothing seals
+/// a FRESH entry under this any longer; it exists so an old entry keeps verifying under the exact
+/// rules it was always sealed with.
+pub const AUDIT_SCHEME_PIPE: u8 = 1;
+
+/// Scheme 2: [`Framing::LengthPrefixed`] — the framing that makes the split between fields
+/// unforgeable, so a caller-controlled `|` inside `resource` (or any other field) can no longer move
+/// a field boundary and collide two different mutations onto one digest. [`AuditEntry::link`] seals
+/// every entry built fresh under this scheme; it is what closes the collision [`AUDIT_SCHEME_PIPE`]
+/// admits.
+pub const AUDIT_SCHEME_LENGTH_PREFIXED: u8 = 2;
+
+/// The [`AuditEntry::scheme`] a store's silence means. A free function because `serde`'s `default`
+/// attribute needs one to call, not the const directly.
+fn audit_scheme_default() -> u8 {
+    AUDIT_SCHEME_PIPE
 }
 
 /// The fields a caller supplies for one admin audit entry.
@@ -165,9 +212,32 @@ impl ChainedRecord for AuditEntry {
         chain: "the admin audit chain",
         scope: "log",
     };
-    /// PIPE-SEPARATED because that is how the entries already on disk were written. A new record
-    /// type takes the length-prefixed framing instead.
+    /// PIPE-SEPARATED: [`AUDIT_SCHEME_PIPE`]'s framing, and what an absent [`AuditEntry::scheme`]
+    /// tag means — every entry already on disk, implicitly or explicitly. NOT what a fresh entry
+    /// seals under any longer; see [`ChainedRecord::framing`] below for the framing that actually
+    /// governs a given instance's digest.
     const FRAMING: Framing = Framing::PipeSeparated;
+
+    /// THE PER-RECORD OVERRIDE: read the framing straight off this entry's own
+    /// [`AuditEntry::scheme`] tag rather than assume one framing for the whole stream. [`FRAMING`]
+    /// above still names scheme 1's framing — the type's historical default, and what an absent tag
+    /// reads as — but a live chain mixes scheme-1 entries already on disk with scheme-2 entries this
+    /// build seals, and this is what lets [`digest`](super::chain::digest) check each one under the
+    /// rules it actually used instead of the rules every OTHER entry of this type happens to use.
+    ///
+    /// [`FRAMING`]: ChainedRecord::FRAMING
+    fn framing(&self) -> Framing {
+        if self.scheme == AUDIT_SCHEME_LENGTH_PREFIXED {
+            Framing::LengthPrefixed
+        } else {
+            // AUDIT_SCHEME_PIPE, or a tag this build has never minted and does not recognise: fall
+            // back to the framing every entry already on disk was actually sealed with, rather than
+            // silently promoting an unrecognised value to a stronger framing it was never sealed
+            // under -- a wrong framing here reports an intact entry as tampered, which is the safe
+            // direction for a tamper-evidence surface to fail in.
+            Framing::PipeSeparated
+        }
+    }
 
     fn scope_of(&self) -> &str {
         ADMIN_LOG
@@ -197,6 +267,10 @@ impl ChainedRecord for AuditEntry {
             hash: String::new(),
             // Reached only from the live append: THIS process is writing it right now.
             recorded_here: true,
+            // EVERY entry built fresh seals under the current scheme -- never caller-chosen
+            // (`AuditInput` carries no scheme field), exactly like `seq`/`prev_hash`/`hash` are
+            // never caller-chosen. Nothing mints scheme 1 going forward.
+            scheme: AUDIT_SCHEME_LENGTH_PREFIXED,
         }
     }
 

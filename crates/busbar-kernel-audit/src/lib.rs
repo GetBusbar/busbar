@@ -9,16 +9,23 @@
 //! ## The previous release's admin mutation chain, kept
 //!
 //! [`legacy`] holds it, moved rather than rewritten. Eight wire fields in the order they have always
-//! been in, one further field carrying provenance that is skipped on the wire, a digest that is the
-//! hexadecimal SHA-256 of the previous hash, sequence, timestamp, action, resource, outcome and
-//! principal joined by vertical bars, a genesis previous hash that is the empty string, a ring of a
-//! thousand entries, and a restore that verifies before it seeds. Thirty-three action names, listed
-//! as one array so that "the set did not change" is something a test can say.
+//! been in, one further field carrying provenance that is skipped on the wire, a genesis previous
+//! hash that is the empty string, a ring of a thousand entries, and a restore that verifies before it
+//! seeds. Thirty-three action names, listed as one array so that "the set did not change" is
+//! something a test can say.
 //!
 //! It is kept because a digest that moved would not break a feature — it would make every chain in
 //! every deployment fail to verify at the next boot, which is to say it would report the whole of
 //! somebody's history as tampered. That is the one migration this crate may never do quietly, and
 //! the golden vector in the tests is what stops it happening by accident.
+//!
+//! What DID change: the digest used to be, unconditionally, those seven fields joined by vertical
+//! bars — forgeable by any caller who controls a byte inside one of them (an upstream MCP tool name
+//! landing in `resource` is the real path in). [`legacy::AuditEntry::scheme`] is a per-record tag
+//! that says which framing an entry was actually sealed under: absent (every entry already on disk)
+//! reads as the vertical-bar join those entries always used, and every entry sealed FRESH now takes
+//! a length-prefixed framing that makes a field boundary unforgeable by anything a field contains. A
+//! chain mixing both eras verifies end to end, each record checked under its own tag.
 //!
 //! ## The new fixed audit record, beside it
 //!
@@ -62,8 +69,8 @@ pub use amend::{
 };
 pub use legacy::{
     AuditEntry, AuditInput, AuditLog, Chain, ChainBreak, ChainBreakKind, ChainedRecord, Clock,
-    DurableSeam, NoSeam, ADMIN_LOG, AUDIT_ACTIONS, MAX_AUDIT_ENTRIES, OUTCOME_APPLIED,
-    OUTCOME_DEGRADED, OUTCOME_REJECTED,
+    DurableSeam, NoSeam, ADMIN_LOG, AUDIT_ACTIONS, AUDIT_SCHEME_LENGTH_PREFIXED, AUDIT_SCHEME_PIPE,
+    MAX_AUDIT_ENTRIES, OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED,
 };
 pub use record::{
     Amount, Audit, AuditBreak, AuditBreakKind, AuditChain, AuditInputs, AuditRecord, Controls,
