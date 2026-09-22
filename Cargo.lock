@@ -406,7 +406,6 @@ dependencies = [
  "busbar-api",
  "busbar-contract",
  "busbar-kernel",
- "busbar-plane-a2a-host",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
@@ -812,7 +811,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-llm",
  "busbar-mcp-codec",
- "busbar-plane-mcp-host",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
@@ -885,14 +883,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plane-a2a-host"
-version = "1.6.0"
-dependencies = [
- "busbar-kernel",
- "busbar-substrate-values",
-]
-
-[[package]]
 name = "busbar-plane-admin"
 version = "1.6.0"
 dependencies = [
@@ -928,14 +918,6 @@ dependencies = [
  "busbar-contract",
  "busbar-mcp-codec",
  "serde_json",
-]
-
-[[package]]
-name = "busbar-plane-mcp-host"
-version = "1.6.0"
-dependencies = [
- "busbar-kernel",
- "busbar-substrate-values",
 ]
 
 [[package]]
