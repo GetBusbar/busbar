@@ -1,0 +1,9 @@
+# The ALL-RED fixture's declaration file. Its one row names a subject that is on no roster, which is
+# the `stale-declaration` shape: a ledger row that has outlived — or never had — the debt it tracks.
+# `module` is deliberately empty so the roster check is what fires, not the file-exists check.
+[[dormant]]
+subject = "ghost"
+aspect  = "unit-path"
+module  = ""
+reason  = "a declaration for a plane that is on no roster at all, planted so the stale row has something to catch"
+switch  = "striking this row"

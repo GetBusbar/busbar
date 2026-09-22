@@ -1,0 +1,11 @@
+[package]
+name = "busbar"
+version = "0.0.0"
+
+[lib]
+name = "busbar"
+path = "src/lib.rs"
+
+[[bin]]
+name = "busbar"
+path = "src/main.rs"
