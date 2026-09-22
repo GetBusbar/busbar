@@ -5,7 +5,9 @@
 //! sibling plugin, not a shared crate, not core, not the substrate — is allowed to KNOW a concrete
 //! instance. This is the single enforceable witness for DECISION #1 (core names zero plane/plugin
 //! types), DECISION #8 (the broker law: plugins never talk to each other), and DECISION #18
-//! (streaming is the plane; voice is a dialect inside it). It generalises `plane-abi-neutrality`
+//! (streaming is the plane; voice is a dialect inside it) and DECISION #48 (the plane roster is
+//! FIVE — llm, mcp, a2a, streaming, decisions(jev) — so all five instance nouns are censused).
+//! It generalises `plane-abi-neutrality`
 //! (hot lane only) and `plane-transport-neutrality` (neutral crates only) to EVERY crate and EVERY
 //! one of the seven plugin kinds: plane, transport, store, auth, secret, hook, export.
 //!
@@ -28,7 +30,7 @@
 //!
 //! ## THE BASELINE IS A BURNDOWN LEDGER, NOT AN EXCUSE
 //!
-//! Real leaks exist today (the composition root names all four planes; auth schemes are DECISION #3
+//! Real leaks exist today (the composition root names its planes; auth schemes are DECISION #3
 //! internal units and leak heavily into core; sibling planes reference one another). The gate is
 //! therefore RED today, ON PURPOSE. `qa/instance-noun-neutrality.toml` records EACH current leak as
 //! a `[[leak]]` row with its category and owning wave, so the red is a documented burndown rather
@@ -77,7 +79,7 @@ struct Noun {
     tokens: &'static [&'static str],
 }
 
-// ── PLANES (DECISION #1 / #18) ────────────────────────────────────────────────────────────────
+// ── PLANES (DECISION #1 / #18 / #48) ──────────────────────────────────────────────────────────
 const FAM_MCP: &[&str] = &["busbar-mcp", "busbar-plane-mcp", "busbar-mcp-codec"];
 const FAM_A2A: &[&str] = &["busbar-a2a", "busbar-plane-a2a", "busbar-a2a-codec"];
 const FAM_LLM: &[&str] = &["busbar-llm", "busbar-plane-llm", "busbar-llm-codec"];
@@ -89,6 +91,10 @@ const FAM_STREAM: &[&str] = &[
     "busbar-voice",
     "busbar-voice-codec",
 ];
+// The FIFTH plane (DECISION #48, owner-locked: llm, mcp, a2a, streaming, decisions(jev)). Its one
+// crate is `busbar-plane-decision`; #39 folds codecs and dialects INTO the plane crate, so there is
+// no `busbar-decision-codec` for the family to list. The family is what EXISTS.
+const FAM_DECISION: &[&str] = &["busbar-plane-decision"];
 
 // ── TRANSPORTS (each concrete transport is its own crate) ─────────────────────────────────────
 const FAM_HTTP: &[&str] = &["busbar-transport-http"];
@@ -104,6 +110,24 @@ const FAM_NONE: &[&str] = &[];
 
 // ── AUTH SCHEMES (DECISION #3: currently internal units, so heavy known-debt into core/units) ──
 const FAM_AUTH: &[&str] = &["auth-static-plugin", "auth-admin-tokens", "busbar-oauth2"];
+
+/// DOCUMENTED EXEMPTION for the `gcp` noun: these 2 files use "GCP" as the general
+/// Google-Cloud-Platform term in cloud-metadata/SSRF security prose — `busbar-a2a`'s
+/// `fetch_tests.rs` table entries `"AWS/GCP/Azure IMDS link-local"` / `"the GCP metadata NAME"`, and
+/// `busbar-substrate-values`'s boot diagnostic warning that the metadata-SSRF guard covers
+/// `"169.254.169.254, the GCP/Azure metadata hosts"` — never the name of a concrete `gcp`
+/// auth-scheme plugin instance. This is exactly the vocabulary problem the header note above
+/// already excludes bare `aws` for ("broad infra... left to its precise scheme spelling `sigv4`");
+/// `gcp` was never given the same treatment even though no code anywhere in this tree defines a
+/// `"gcp"` scheme constant for either file to be leaking (checked: `auth-static-plugin`,
+/// `auth-admin-tokens`, `busbar-oauth2` name nothing spelled `gcp`). Excluded by exact file, not by
+/// loosening the token or dropping the noun — a real `gcp` auth scheme, when one lands, will get its
+/// own unambiguous scheme spelling the way `sigv4` stands in for `aws` today, and that spelling
+/// (not bare `gcp`) is what should be tracked.
+const GCP_GENERIC_MENTION_FILES: &[&str] = &[
+    "crates/busbar-a2a/src/a2a/tests/fetch_tests.rs",
+    "crates/busbar-substrate-values/src/diagnostics/mod.rs",
+];
 
 // ── SECRET / HOOK / EXPORT (self-contained example/test plugins; matched on crate identity) ────
 const FAM_SECRET: &[&str] = &["secret-example-plugin"];
@@ -141,6 +165,23 @@ const NOUNS: &[Noun] = &[
         kind: "plane",
         family: FAM_STREAM,
         tokens: &["voice"],
+    },
+    // The `decisions` plane (#48) — KEYED ON `jev`, THE DIALECT IT SPEAKS, NEVER ON `decision`.
+    // Both match rules here are name-shaped (`word_ci` treats `_` as a boundary; `camel_hit`
+    // capitalises the first letter), so a `decision`/`decisions` token would hit `Decision`,
+    // `GateDecision` and `VerifyDecision` — the admit/throttle/deny verdict types that ARE the
+    // primitive governance taxonomy, measured at 514 occurrences across 53 files OUTSIDE this
+    // plane, every one of them core naming its own verdict rather than a plane leaking. That is
+    // precisely the hazard `plane_abi_neutrality::PRIMITIVE_COLLISION_KEYS` documents in writing
+    // for this same plane key, and its resolution is the one taken here: do not loosen the match
+    // rule, do not rename a correct primitive to dodge a grep — spell the INSTANCE the way only
+    // the instance is spelled. `jev` (the typesafe.ai decision API, #41/#47) is that spelling and
+    // is unambiguous anywhere in the tree. A token that floods is a gate nobody reads.
+    Noun {
+        key: "jev",
+        kind: "plane",
+        family: FAM_DECISION,
+        tokens: &["jev"],
     },
     // Transports — KEYED ON THE PLUGIN-INSTANCE IDENTIFIER, NOT THE BARE PROTOCOL WORD. Bare
     // `http`/`tcp`/`tls`/… are the wire protocols and the `http` crate's own types, used as neutral
@@ -422,6 +463,9 @@ fn census(cx: &Ctx) -> Result<Vec<Leak>, String> {
             .collect();
         for noun in NOUNS {
             if noun.family.contains(&krate) {
+                continue;
+            }
+            if noun.key == "gcp" && GCP_GENERIC_MENTION_FILES.contains(&rel.as_str()) {
                 continue;
             }
             let count = lines
