@@ -1,81 +1,80 @@
 # `busbar-oracle record --filter` records ZERO cells for every pattern
 
-**Status:** open, engine-side. Filed from the busbar side; the fix belongs in
-`GetBusbar/busbar-release` (`busbar-release-oracle`), not here.
+**Status:** CLOSED 2026-09-22. Fixed in `GetBusbar/busbar-release` at `89718d8`
+(`fix/oracle-recorder-residual-gaps`), pinned by `oracle-rust.pin`, plus the `--out` fix in
+`bin/oracle` committed alongside this file.
 
-**Engine refs exercised:** `oracle-rust.pin` at `77d57937cf4b69114cc7b84be2012828fc992206` and at
-`338575545c07cfded73d3da6ca88ca65a6742666`. Both behave identically.
+**Engine refs originally exercised:** `77d5793` and `338575545c`. The diagnosis below REPLACES this
+document's original "suggested repair", which guessed at selection and guessed wrong.
 
-## What the flag claims
+## The premise was right; the cause was not selection
 
-`busbar-oracle record --help`:
+The ids exist and the patterns match. Over the committed `cells.json` (2318 cells), measured:
 
-> `--filter <FILTER>`  `--filter <regex>` on the cell id (native record), matching
-> `record.sh --filter` [default: ""]
-
-`bin/oracle` forwards it verbatim: `${FILTER:+--filter "$FILTER"}` in the `record)` arm.
-
-## What it does
-
-Every invocation below recorded **0 cells** and exited 1 with
-`record --native: recorded 0 cells for candidate -> <out> — ZERO ROWS IS RED`:
-
-| invocation | result |
+| filter | ids matched |
 |---|---|
-| `./bin/oracle record --bin B --plane all  --out O --filter '^(billing\|ledger\|config)\|'` | 0 cells |
-| `./bin/oracle record --bin B --plane all  --out O --filter 'billing'` | 0 cells |
-| `./bin/oracle record --bin B --plane core --out O --filter '^billing'` | 0 cells |
-| engine directly, `--family core --filter 'ledger'` | 0 cells |
-| engine directly, no `--family`, `--filter 'ledger__'` | 0 cells |
+| `billing` | 14 |
+| `^billing\|` | 14 |
+| `^(billing\|ledger\|config)\|` | 20 |
+| `ledger` | 6 |
+| `zzz-no-such-cell` | 0 |
 
-The same command **without** `--filter` records normally: `--plane all` reached 403 cells before it
-was stopped, and `--plane core` reached 148.
+`select_cells` is **byte-identical** between `77d5793` and the ref this was re-measured on, and
+called directly against the real corpus it returns exactly those counts. So selection never dropped
+anything. The original symptom was **SELECTED N, RECORDED 0**, not "selected 0" — two different
+faults that look identical from outside, which is why this document's first guess went to the wrong
+place.
 
-## The ids demonstrably exist
+What caused the original zero: this file's own §"Why it matters" records the condition — *three
+agents' oracle recordings running concurrently against the same fixed port band*. A recording binds
+its listen/admin/mock ports only while a cell runs, so concurrent runs on a FIXED band collide
+mid-run and every cell fails; `recorded == 0` then trips `ZERO ROWS IS RED`. `00759df`
+("claim a port band per run, and refuse loudly instead of degrading") fixed that, and at the current
+pin filtered recording measurably works:
 
-From `testing/shadow-oracle/cells.json` (2318 cells), and each of these is a `PASS` row in the
-committed golden `testing/shadow-oracle/golden/1.5.5/ledger.tsv`:
+- `--filter '^billing\|'` → 14 ledger rows, **12 PASS**, 2 SKIP (one named corpus gap, one mock that
+  did not come up).
+- `--filter 'ledger'` → 6 rows, **6 PASS**.
 
-- `billing|rate-card|history-mid-window`
-- `billing|admin-usage|after-2`
-- `billing|admin-usage|past-day`
-- `ledger|amend|adjusting-entries`
-- `ledger|amend|refused-unsigned`
-- `ledger|rate-history|as-of`
-- `ledger|currency|native`
-- `ledger|currency|minor-unit-rounding`
-- `config|rate-card|append-not-replace`
+## Three real defects found while measuring it, all now fixed
 
-An unfiltered `--plane all` recording of the candidate wrote
-`cells/billing__rate-card__history-mid-window.json`, so the cell is reachable by the recorder; only
-the filter cannot select it. The `__`-separated form is the on-disk **file** name; the `|`-separated
-form is the id in `cells.json` and in `ledger.tsv`. Patterns matching either spelling were tried and
-both answered 0, so this is not simply a separator mismatch in the caller.
+1. **`--filter` was accepted and discarded** (engine). `HarnessArgs::into_config()` hardcoded
+   `id_filter: String::new()`, so every path except `record --native` took the flag and ignored it.
+   Measured: `replay --filter 'zzz-no-such-cell'` printed the same **913 DIVERGED rows** as an
+   unfiltered replay. A pattern matching nothing narrowed nothing, silently.
+2. **`--family` sat in `--filter`'s slot** (engine). `drive_record()` pushed the family into
+   `record.sh --filter` and never passed the id regex. As an ID regex, `core` matches every id
+   *containing* "core" in any plane and misses every `plane: core` cell that does not spell it —
+   all 14 `billing|*` cells among them.
+3. **`bin/oracle record --out <dir>` wrote somewhere else and said it had not** (this repo). It
+   passed only `--work-dir`, letting the recorder write `<work>/candidate`, then printed that the
+   `--out` basename *"is honored as that dir"*. Measured: `--out /tmp/x/money` wrote the recording
+   to `/tmp/x/candidate`, left `/tmp/x/money` **empty**, and exited **0** saying "recorded 1
+   cell(s)". Any caller that named its own output dir then read an empty directory — a working
+   recorder reading as a broken one, and the most likely shape of "0 cells" for anyone re-running
+   this by hand. The engine has taken `--out-dir` for exactly this since the native cutover;
+   `bin/oracle` now passes it.
 
-Note also that `--plane` matches the cell's `plane` field, whose only values are
-`a2a | core | llm | mcp` (plus `all`) — `--plane billing` is refused with a helpful message. So
-`--plane` is not a substitute for `--filter`: the money families (`billing` 14 cells, `ledger` 5,
-`config` 1) all live under `plane: core`, which is 789 cells.
+## A zero-match filter says so, and does not borrow `ZERO ROWS IS RED`
 
-## Why it matters
+Already true at the pinned engine and re-verified here — a gap and a failure are not the same
+output. `--filter 'zzz-no-such-cell'` exits **1** with:
 
-A whole-plane run is the smallest unit of recording available, and on a shared box that is hours.
-Measured on this machine with three agents' oracle recordings running concurrently against the same
-fixed port band: **~1.5-3 cells/min** in the exec/boot families, i.e. ~4h for `--plane core` and
-~10h for the full corpus. A money change that needs the `billing|*` and `ledger|*` verdict - 20
-cells - cannot get one in reasonable time, so it either ships unmeasured or blocks a machine for a
-shift. That is the whole cost of this defect.
+> selected 0 cells: plane 'all' + filter 'zzz-no-such-cell' over a 2318-cell corpus (2318 cell(s)
+> are in that plane). That filter matches no cell id anywhere in the corpus. Note the ids are the
+> PIPE-separated form (`ledger|amend|adjusting-entries`), not the recording's file name
+> (`ledger__amend__adjusting-entries`). Recording nothing is never a pass — a run that covered none
+> of what you asked for must not be shaped like a run that covered all of it.
 
-## Suggested repair
+and writes **no** `ledger.tsv` and **no** `meta.json`, so nothing is left behind that a later reader
+could mistake for a thin-but-clean recording.
 
-Two things worth checking together in the engine's native recorder:
+## Regressions guarding this
 
-1. **Which string the filter is matched against**, and whether the match runs before or after the
-   family/plane selection narrows the set. A filter ANDed against an already-empty set, or matched
-   against a struct field that is not the id, both present as "0 cells" with no diagnostic.
-2. **A zero-match filter should say so.** `ZERO ROWS IS RED` is the right verdict for an unfiltered
-   run and the wrong message for a filter that selected nothing: the two cases want different text,
-   and the filtered one should name the pattern and the number of ids it was matched against.
-
-A cheap regression for it: `--filter '^billing\|'` must select exactly the 14 `billing|*` cells of
-`cells.json`, and `--filter 'no-such-cell'` must fail with a message naming the pattern.
+- `the_filter_flag_reaches_the_harness_config` — `--filter` survives into the config; `--family`
+  stays its own field.
+- `record_sends_the_plane_to_plane_and_the_id_regex_to_filter` — the two selectors reach their own
+  flags. On the prior code it fails printing the bug verbatim: `[…, "--filter", "core"]`, no
+  `--plane`, no id regex.
+- `a_filter_that_selects_nothing_is_a_loud_refusal` / `a_filter_that_selects_something_still_runs` —
+  the empty-selection refusal fires, and does not fire on a merely small selection.

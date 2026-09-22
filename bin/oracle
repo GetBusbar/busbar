@@ -105,12 +105,16 @@ while [ \$# -gt 0 ]; do case "\$1" in
   *) shift;;
 esac; done
 [ -n "\$BIN" ] && [ -n "\$OUT" ] || { echo "record.sh(shim): need --bin and --out" >&2; exit 2; }
-WORK="\$(cd "\$(dirname "\$OUT")" && pwd)"   # native writes <WORK>/candidate == --out
+# --out is passed through as --out-dir, so the recording lands where the caller asked rather than at
+# <work>/candidate. HarnessOracle happens to name its --out "candidate", so the two used to agree by
+# luck; any other caller silently got an empty --out and read it as a recording of nothing.
+mkdir -p "\$OUT"; OUT="\$(cd "\$OUT" && pwd)"; WORK="\$(cd "\$(dirname "\$OUT")" && pwd)"
 exec "$RUST_BIN" record --native \\
   --busbar-repo "\${BUSBAR_ORACLE_PRODUCT_ROOT:-$here}" \\
   --candidate-bin "\$BIN" \\
   --oracle-data "\${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" \\
   --work-dir "\$WORK" \\
+  --out-dir "\$OUT" \\
   --family "\$PLANE" \${FILTER:+--filter "\$FILTER"}
 SHIM
 chmod +x "$shim_dir/record.sh"
@@ -193,10 +197,16 @@ case "$sub" in
       *) shift;;
     esac; done
     [ -n "$BIN" ] && [ -n "$OUT" ] || { echo "oracle record: need --bin and --out" >&2; exit 2; }
-    mkdir -p "$OUT"; WORK="$(cd "$(dirname "$OUT")" && pwd)"   # native writes <WORK>/candidate == --out
-    [ "$(basename "$OUT")" = candidate ] || echo "oracle record: note — native recorder writes <work>/candidate; --out basename '$(basename "$OUT")' is honored as that dir" >&2
+    # --out IS HONOURED, BY BEING PASSED. This used to send only --work-dir and let the recorder
+    # write <work>/candidate, then PRINT that the --out basename "is honored as that dir". It was
+    # not: measured, `--out /tmp/x/money` wrote the recording to /tmp/x/candidate, left /tmp/x/money
+    # empty, and exited 0 saying "recorded 1 cell(s)". A caller that then read its own --out found an
+    # empty directory and reported "0 cells recorded" — which is how a working recorder reads as a
+    # broken one, and is the reported shape of "--filter records nothing". The engine has taken
+    # --out-dir for exactly this since the native cutover; this just stops discarding it.
+    mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"; WORK="$(cd "$(dirname "$OUT")" && pwd)"
     exec "$RUST_BIN" record --native --busbar-repo "$ROOT" --candidate-bin "$BIN" \
-      --oracle-data "$DATA" --work-dir "$WORK" --family "$PLANE" ${FILTER:+--filter "$FILTER"} ;;
+      --oracle-data "$DATA" --work-dir "$WORK" --out-dir "$OUT" --family "$PLANE" ${FILTER:+--filter "$FILTER"} ;;
 
   replay)
     # OLD: replay --golden G --candidate C --out R  →  the in-process Rust differ (the judge).

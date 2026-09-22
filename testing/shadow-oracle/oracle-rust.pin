@@ -18,8 +18,19 @@
 # NOTE: this ref is a feature branch head (`port/oracle-cells-generate`), which is the same shape
 # the previous pin had; re-pin to the integration/merge commit when that branch lands.
 #
+# 2026-09-22: moved to the commit that makes `--filter` real on the paths that took it and ignored
+# it. `HarnessArgs::into_config()` discarded `--filter` (so `replay --filter 'zzz-no-such-cell'`
+# printed the same 913 DIVERGED rows as an unfiltered replay), and the record driver put `--family`
+# in `record.sh`'s `--filter` slot while never passing the id regex at all. Selection itself was
+# never broken: `select_cells` is byte-identical to the refs the bug was filed against, and over the
+# committed corpus `^billing\|` selects 14, `ledger` 6, `^(billing|ledger|config)\|` 20. See
+# findings-2026-09-22-record-filter.md for the measurements and what actually caused the original
+# "0 cells" (a fixed port band shared by three concurrent runs, fixed earlier by 00759df).
+# NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same shape as the
+# previous two pins; re-pin to the integration/merge commit when that branch lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=b8cb185
+release_ref=89718d8
 crate=busbar-release-oracle
 bin=busbar-oracle
