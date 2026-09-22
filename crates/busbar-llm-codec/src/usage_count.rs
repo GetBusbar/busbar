@@ -108,4 +108,88 @@ mod tests {
         assert!(inf.is_none(), "serde_json refuses non-finite numbers at construction");
         assert_eq!(read_count_u64(&json!(f64::MAX)), None);
     }
+
+    /// NO DIALECT MAY REINTRODUCE THE BARE READ.
+    ///
+    /// This is the regression that actually matters. Fixing the six dialects once does nothing for
+    /// the seventh: the defect was never a typo, it was the house idiom, so the next dialect added
+    /// reaches for `.as_u64().unwrap_or(0)` because that is what the neighbouring code looked like.
+    /// A count read that way is silently zero for any provider that spells it as a float, and a
+    /// zeroed ledger row is invisible downstream — every view over it is faithfully consistent and
+    /// faithfully wrong.
+    ///
+    /// Scanning our own source is the cheap, durable guard, and this crate is the right place for
+    /// it: the rule is about THIS crate's dialects and nothing else. Comment lines are skipped so
+    /// the prose above (and the Bedrock writer's explanation of why its adds saturate) does not
+    /// trip the check that the prose describes.
+    #[test]
+    fn no_dialect_reads_a_count_with_the_bare_defaulting_idiom() {
+        use std::path::Path;
+
+        fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    // A test's own fixture may spell a wire value any way it likes.
+                    if p.file_name().is_some_and(|n| n == "tests") {
+                        continue;
+                    }
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs")
+                    && !p.file_name().is_some_and(|n| {
+                        let n = n.to_string_lossy();
+                        n.ends_with("_tests.rs") || n == "usage_count.rs"
+                    })
+                {
+                    out.push(p);
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        walk(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), &mut files);
+        assert!(
+            files.len() > 20,
+            "the scan found only {} source files, so it is not actually looking at the dialects",
+            files.len()
+        );
+
+        let mut offenders = Vec::new();
+        for f in &files {
+            let Ok(text) = std::fs::read_to_string(f) else {
+                continue;
+            };
+            // Join non-comment lines so the idiom is caught whether or not rustfmt split it.
+            let code: String = text
+                .lines()
+                .map(|l| {
+                    let t = l.trim_start();
+                    if t.starts_with("//") { "" } else { l }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let flat: String = code.split_whitespace().collect::<Vec<_>>().join(" ");
+            for bad in [
+                "as_u64() . unwrap_or(0)",
+                "as_u64() . unwrap_or_default()",
+                "as_u64() .unwrap_or(0)",
+                "as_u64().unwrap_or(0)",
+                "as_u64().unwrap_or_default()",
+            ] {
+                if flat.contains(bad) {
+                    offenders.push(format!("{}: {bad}", f.display()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a count must be read through read_count_u64, which accepts a float that exactly \
+             denotes an integer. `.as_u64()` alone returns None for 27.0 and the default then \
+             records zero tokens for work that really happened:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
 }
