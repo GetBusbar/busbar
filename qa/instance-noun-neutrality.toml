@@ -438,7 +438,7 @@ wave = "shared-crate neutralization — the ABI-side crates must compile with ev
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/api/src/tests/redacted_tests.rs"
+file = "crates/busbar-contract/src/tests/redacted_tests.rs"
 count = 2
 category = "shared-crate"
 wave = "shared-crate neutralization — the ABI-side crates must compile with every plugin removed"

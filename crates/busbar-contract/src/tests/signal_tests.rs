@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/api/src/signal.rs`.
+//! Tests for `crates/busbar-contract/src/signal.rs`.
 
 use super::*;
 

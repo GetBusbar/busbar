@@ -124,7 +124,7 @@ SINKS="tracing:: log:: println! eprintln! print! dbg! panic! info! warn! error! 
 #     are never instantiated (the sole reference to `CreatedKeyView` in the tree is a `typed!(…)`
 #     schema registration in `busbar-core-admin/src/v1/json/handlers.rs`), and the struct derives
 #     `Serialize + JsonSchema` — while `Redacted<T>` deliberately implements NEITHER (pinned by the
-#     compile-time fence in `crates/api/src/tests/redacted_no_serde.rs`). `Redacted<String>` there
+#     compile-time fence in `crates/busbar-contract/src/tests/redacted_no_serde.rs`). `Redacted<String>` there
 #     would not compile. The field holds no value at runtime; it is a shape, not a carrier.
 #
 #     THE CARRIER IS SOMEWHERE THIS CHECK CANNOT LOOK, and that is the more useful thing to know.
