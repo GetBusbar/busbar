@@ -26,7 +26,7 @@ fn client_identity_debug_redacts_private_key() {
 fn egress_trust_debug_redacts_client_private_key() {
     let trust = EgressTrust {
         extra_anchors: Vec::new(),
-        pinned_spki: Vec::new(),
+        pinned_public_keys: Vec::new(),
         client_identity: Some(ClientIdentity {
             cert_chain: Vec::new(),
             private_key: vec![KEY_BYTE; 8],

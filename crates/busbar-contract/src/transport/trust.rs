@@ -51,18 +51,18 @@ impl core::fmt::Debug for ClientIdentity {
 ///
 /// * `extra_anchors` — additional trust anchors (DER certificates) to trust ALONGSIDE the platform
 ///   roots. Empty means the platform roots alone, which is today's posture.
-/// * `pinned_spki` — per-destination SubjectPublicKeyInfo pins, each the SHA-256 of the peer's whole
-///   SPKI. When present, the ordinary chain check still runs AND the peer's key must hash to one of
-///   these. Empty means no pinning, which is today's posture.
+/// * `pinned_public_keys` — per-destination public-key pins, each the SHA-256 of the peer's whole
+///   public-key info. When present, the ordinary chain check still runs AND the peer's key must
+///   hash to one of these. Empty means no pinning, which is today's posture.
 /// * `client_identity` — the certificate the connection should present for a mutual handshake. `None`
 ///   means present none, which is today's posture.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct EgressTrust {
     /// Extra trust anchors (DER certificates) trusted alongside the platform roots. Empty = none.
     pub extra_anchors: Vec<Vec<u8>>,
-    /// Per-destination SPKI pins, each the SHA-256 of the peer certificate's whole SPKI. Empty = no
-    /// pinning.
-    pub pinned_spki: Vec<[u8; 32]>,
+    /// Per-destination public-key pins, each the SHA-256 of the peer certificate's whole public-key
+    /// info. Empty = no pinning.
+    pub pinned_public_keys: Vec<[u8; 32]>,
     /// The client identity to present for a mutual handshake. `None` = present none.
     pub client_identity: Option<ClientIdentity>,
 }
@@ -74,7 +74,7 @@ impl core::fmt::Debug for EgressTrust {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("EgressTrust")
             .field("extra_anchors", &self.extra_anchors)
-            .field("pinned_spki", &self.pinned_spki)
+            .field("pinned_public_keys", &self.pinned_public_keys)
             .field("client_identity", &self.client_identity)
             .finish()
     }
@@ -89,7 +89,7 @@ impl EgressTrust {
     #[must_use]
     pub fn is_unset(&self) -> bool {
         self.extra_anchors.is_empty()
-            && self.pinned_spki.is_empty()
+            && self.pinned_public_keys.is_empty()
             && self.client_identity.is_none()
     }
 }

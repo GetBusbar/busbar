@@ -436,10 +436,10 @@ fn wants_client_cert(
         let _ = roots.add(rustls_pki_types::CertificateDer::from(der.clone()));
     }
     let builder = rustls::ClientConfig::builder();
-    if trust.pinned_spki.is_empty() {
+    if trust.pinned_public_keys.is_empty() {
         builder.with_root_certificates(roots)
     } else {
-        let verifier = SpkiPinVerifier::new(roots, &trust.pinned_spki);
+        let verifier = SpkiPinVerifier::new(roots, &trust.pinned_public_keys);
         builder
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(verifier))
