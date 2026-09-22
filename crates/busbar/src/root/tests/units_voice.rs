@@ -711,7 +711,7 @@ fn the_opening_unit_seals_under_the_declared_operation_class() {
     );
     assert_eq!(
         inputs.what.op_class,
-        busbar_kernel_audit::record::OpClassId::new("voice.session.open"),
+        busbar_kernel_audit::record::OpClassId::new("streaming.session.open"),
         "the record's own op_class field must carry the plane's literal class name"
     );
 }
@@ -2249,12 +2249,17 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
             // The audience is the plane boundary and the verifier is where it is enforced. Both
             // credentials below are real keys; only one of them was minted for this plane.
             let minted_for = match credential {
-                "voice-tok" => "voice",
+                // THIS plane's own audience, read off the plane rather than restated as a
+                // literal: the audience the authenticate step asks for is
+                // `<StreamingPlane as PlaneMeta>::KEY`, and a fixture that spells it out by hand
+                // is a fixture that passes for a while after the key changes and then stops
+                // proving anything.
+                "streaming-tok" => busbar_plane_streaming::CAP_KEY,
                 "mcp-tok" => "mcp",
                 _ => return None,
             };
             (expected_aud == Some(minted_for)).then(|| KeyFacts {
-                id: "key-voice-1".to_string(),
+                id: "key-streaming-1".to_string(),
                 name: "an approved key".to_string(),
             })
         }
@@ -2300,8 +2305,8 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
 
     // Minted for this plane: admitted, carrying the key's own id, which is what the audit row
     // and the settlement are attributed to.
-    match answer(Some("voice-tok")) {
-        Ok(Authenticated::Principal(who)) => assert_eq!(who.as_str(), "key-voice-1"),
+    match answer(Some("streaming-tok")) {
+        Ok(Authenticated::Principal(who)) => assert_eq!(who.as_str(), "key-streaming-1"),
         other => panic!("a key minted for this plane opens the session: {other:?}"),
     }
 
