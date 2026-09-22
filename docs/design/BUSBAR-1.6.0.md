@@ -1627,6 +1627,52 @@ harness. Its `tests/conformance.rs` is a trait-shape battery and never mentions 
 The real harness is `testing/ws-conformance/`, now buildable but still with **zero coverage and no
 verdict** — closing that needs a real Docker run, not a branch revival.
 
+## SECURITY — root's A2A leg authorizes the OPERATION but never the AGENT
+
+**Found by the survivor review of `origin/wip/mount-chain-auth-bindings`, and verified directly.**
+
+`crates/busbar/src/root/units_a2a.rs:1173`, `fn approve`, does exactly two checks:
+
+1. `required_scope(CLAIM_A2A, op, scope_policy)` — what scope does this OPERATION need
+2. `busbar_kernel_scope::approve(self.grants, needed)` — does the key hold it
+
+Then it proceeds. `self.draft.resource` — the agent being addressed — is read and pushed into
+`ScopeFacts`, and the code's own comment says why: *"the resource travels with the approval so the
+record names the agent rather than the method."* **It is used for the audit record only. It is never
+checked against the key's grant.**
+
+`git grep -cP '\bscope_allowed\b' crates/busbar/src/root/units_a2a.rs` → **0**.
+
+Every sibling that fronts a named resource DOES enforce it — `busbar-a2a/src/a2a/{inbound,receive,
+registry,serve}.rs` each ask `scope_allowed("agent", agent_id)`: *"may this key invoke THIS fronted
+agent?"* — as do `busbar-voice/src/mount.rs:106`, `busbar-llm/src/unit/verify.rs:300`,
+`busbar-kernel/src/plane_host/dispatch.rs:281`, `trust/validate.rs:324` and
+`egress_auth/gate.rs:187`. **Root's own A2A leg is the sole exception.**
+
+### What it allows
+
+Any key holding only the operation-class grant — "may send tasks at all" — reaches **every agent the
+deployment fronts** through root's leg, regardless of which agent it was actually granted. Two keys
+of identical operation-class standing are indistinguishable at this door. That is horizontal
+privilege escalation between tenants of the same busbar, and the audit record will faithfully name
+the agent that was reached, making it look authorized.
+
+### It has been fixed three times and never landed
+
+The branch commit is itself a `(cherry picked from commit 33cbf492…)`. That source commit exists in
+the repo, `git merge-base --is-ancestor 33cbf492 HEAD` returns **false**, and it is reachable from
+two further stale branches (`delete/keep-a2a-default-on`, `delete/keep-a2a-on-mount`). So the same
+fix was written at least three separate times and lost each time — which is exactly the argument for
+having run the survivor review rather than deleting the branches.
+
+### Scope of the fix
+
+Small and isolated: add the `scope_allowed(resource.kind, resource.name)` check beside the existing
+operation check, plus the four regression tests the branch carried — all four confirmed absent from
+trunk by name. The surrounding architecture is unchanged, so it re-lands rather than needing
+re-implementation. **Not a billed-byte change**, so it does not need the owner's sign-off — it makes
+refusals happen that policy already says should happen.
+
 ## PARKED — CRITICAL: the budget cap is bypassed on every restart
 
 **Found by the survivor-branch review of `origin/r5-money-m3`. This is the single most serious
