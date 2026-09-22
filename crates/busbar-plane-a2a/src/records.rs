@@ -44,12 +44,18 @@
 
 use busbar_contract::ids::RecordSchemaId;
 
+/// The `task` kind — the durable task record's tag on the store seam.
+pub const KIND_TASK: &str = "task";
+
+/// The `task_event` kind — the durable task-event record's tag on the store seam.
+pub const KIND_TASK_EVENT: &str = "task_event";
+
 /// The task rows: one per governed exchange this node is tracking.
-pub const SCHEMA_TASK: RecordSchemaId = RecordSchemaId::new(busbar_a2a_codec::record::KIND_TASK);
+pub const SCHEMA_TASK: RecordSchemaId = RecordSchemaId::new(KIND_TASK);
 
 /// The task event rows: the hash-linked history behind each task.
 pub const SCHEMA_TASK_EVENT: RecordSchemaId =
-    RecordSchemaId::new(busbar_a2a_codec::record::KIND_TASK_EVENT);
+    RecordSchemaId::new(KIND_TASK_EVENT);
 
 /// The push-notification configurations a caller registered against a task.
 pub const SCHEMA_PUSH_CONFIG: RecordSchemaId = RecordSchemaId::new("push_config");

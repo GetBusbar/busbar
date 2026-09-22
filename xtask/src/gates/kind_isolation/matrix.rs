@@ -1979,14 +1979,14 @@ pub fn selftest<'a>(
     // a hand-written sentence about a spelling; when the cell it excuses is gone the sentence is a
     // standing licence for the next disagreement nobody reads.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/busbar-a2a-codec/Cargo.toml");
+    ov.remove("crates/busbar-llm-codec/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[disagreement]]` row whose cell is gone is a standing licence, and is struck",
         &[ROW_MATRIX],
         ov,
-        &["dead-disagreement", "busbar-a2a-codec \u{d7} transport"],
+        &["dead-disagreement", "busbar-llm-codec \u{d7} transport"],
     ));
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. `busbar-api` is the only crate of kind `api`, so

@@ -222,7 +222,7 @@ fn a_standard_error_carries_no_detail_entry() {
 /// reason word attached would be a word the specification does not define, put on the wire.
 #[test]
 fn the_error_table_is_the_codecs_own() {
-    assert_eq!(ERRORS.as_ptr(), busbar_a2a_codec::ERRORS.as_ptr());
+    assert_eq!(ERRORS.as_ptr(), crate::ERRORS.as_ptr());
     assert!(!ERRORS.is_empty());
     for (code, reason) in ERRORS {
         assert!(
@@ -232,7 +232,7 @@ fn the_error_table_is_the_codecs_own() {
     }
     assert_eq!(
         super::ERROR_INFO_TYPE,
-        busbar_a2a_codec::ERROR_INFO_TYPE,
+        crate::ERROR_INFO_TYPE,
         "the detail entry is tagged with the codec's own type URL"
     );
 }

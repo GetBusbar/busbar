@@ -10,10 +10,10 @@ use super::{operations_for, OPERATIONS, RECORD_SCHEMAS, SCHEMA_TASK, SCHEMA_TASK
 /// under a name nothing reads back.
 #[test]
 fn the_durable_schemas_are_the_codecs_own_kinds() {
-    assert_eq!(SCHEMA_TASK.as_str(), busbar_a2a_codec::record::KIND_TASK);
+    assert_eq!(SCHEMA_TASK.as_str(), crate::records::KIND_TASK);
     assert_eq!(
         SCHEMA_TASK_EVENT.as_str(),
-        busbar_a2a_codec::record::KIND_TASK_EVENT
+        crate::records::KIND_TASK_EVENT
     );
 }
 

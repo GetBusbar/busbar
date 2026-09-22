@@ -67,7 +67,7 @@ pub(super) const AUDIT_ACTION: &str = "agent.call";
 /// It cannot collide with a member row: `super::route` keys those through
 /// `busbar_kernel::store::agent_key`, which prefixes `agent:`. A pool line and an agent line are
 /// therefore distinguishable in one ledger, which is the whole reason the prefix rule exists.
-const PLANE_POOL: &str = busbar_a2a_codec::CONFIG_SECTION;
+const PLANE_POOL: &str = busbar_plane_a2a::CONFIG_SECTION;
 
 /// THE CREDENTIAL KIND THIS MOUNT CONFERS. `a2a_inbound` only when the plane is audience-bound;
 /// otherwise the empty string, which [`super::inbound::authorize`] refuses.

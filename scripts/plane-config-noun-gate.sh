@@ -120,7 +120,8 @@ CORE_ROOTS="crates/busbar-kernel/src"
 # restated literal. `<key> -> crates/busbar-<key>/src`; read the `config_section: "<noun>",` line.
 #
 # A plane may write the field as a CONSTANT rather than a literal, and one now does: the wire-codec
-# split put A2A's noun in `busbar_a2a_codec::CONFIG_SECTION` and the decl names that path. Reading
+# split put A2A's noun outside the engine crate — it is `busbar_plane_a2a::CONFIG_SECTION` since the
+# codec fold (#39) — and the decl names that path. Reading
 # only the literal form silently dropped that plane from the noun set, and a gate that scans three
 # nouns instead of four reports clean on the fourth by never looking for it. So a non-literal value
 # is FOLLOWED to the constant's own declaration — in the named crate, or in this plane's own sources

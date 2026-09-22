@@ -167,6 +167,6 @@ fn ecmascript_number(f: f64) -> String {
     }
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "tests/canonical_tests.rs"]
 mod canonical_tests;

@@ -81,7 +81,7 @@ struct Noun {
 
 // ── PLANES (DECISION #1 / #18 / #48) ──────────────────────────────────────────────────────────
 const FAM_MCP: &[&str] = &["busbar-mcp", "busbar-plane-mcp"];
-const FAM_A2A: &[&str] = &["busbar-a2a", "busbar-plane-a2a", "busbar-a2a-codec"];
+const FAM_A2A: &[&str] = &["busbar-a2a", "busbar-plane-a2a"];
 const FAM_LLM: &[&str] = &["busbar-llm", "busbar-plane-llm", "busbar-llm-codec"];
 // The streaming family. `busbar-streaming-codec` is named by the owner's map but does not exist in
 // this tree; `busbar-plane-voice` was DELETED into `busbar-plane-streaming` (#18/#83 — one plane per

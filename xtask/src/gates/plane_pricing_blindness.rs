@@ -175,7 +175,6 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
     // FOLD row: "each is a WIRE DIALECT, which def 16–20 absorbs. They are not homeless; they are
     // pre-fold." Scanned now so the fold cannot carry money across with it.
     PlaneCrate { dir: "busbar-llm-codec", placement: "#83 FOLD -> def 16-20" },
-    PlaneCrate { dir: "busbar-a2a-codec", placement: "#83 FOLD -> def 16-20" },
     PlaneCrate { dir: "busbar-voice-codec", placement: "#83 FOLD -> def 16-20" },
     // SPLIT row: "Session, turn and dialect rules -> 16-20. But unit/{admit,approve,meter,route}
     // and runtime/metering.rs decide admission and price - that is defs 5/6, not a plane." THIS

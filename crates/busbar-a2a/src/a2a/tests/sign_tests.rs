@@ -267,14 +267,14 @@ fn there_is_exactly_one_canonicalizer_and_one_signing_payload_on_this_plane() {
     // supplementary-plane character in an extension key, or a member busbar does not model. So the
     // ratchet is on the COUNT of definitions, not on a comment saying they are shared.
     //
-    // The plane is split across two crates: `busbar-a2a` (the runtime seam) and `busbar-a2a-codec`
+    // The plane is split across two crates: `busbar-a2a` (the runtime seam) and `busbar-plane-a2a`
     // (where the codec split moved the canonicalizer and the wire-format helpers). The invariant is
     // about the PLANE, not about either crate in isolation, so the scan walks both halves' `src/a2a`
     // directories.
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let dirs = [
         manifest_dir.join("../busbar-a2a/src/a2a"),
-        manifest_dir.join("../busbar-a2a-codec/src/a2a"),
+        manifest_dir.join("../busbar-plane-a2a/src/a2a"),
     ];
     let mut sources: Vec<std::path::PathBuf> = dirs
         .iter()

@@ -43,7 +43,7 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 /// claims this path and may not name this crate; a path a plane could only copy is a path the two
 /// halves can come to disagree about. The LEGACY sibling below stays here — nothing claims it, it is
 /// only tolerated on a fetch.
-pub(crate) use busbar_a2a_codec::WELL_KNOWN_CARD_PATH;
+pub(crate) use busbar_plane_a2a::WELL_KNOWN_CARD_PATH;
 
 /// The path the protocol used BEFORE v0.3. Both are tolerated on every fetch: the path moved between
 /// revisions, and an upstream pinned to an older `protocolVersion` is still serving the old one.

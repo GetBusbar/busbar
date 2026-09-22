@@ -80,9 +80,13 @@ pub struct Thresholds {
     /// samples are noise, and a security control that fires on noise is an availability control
     /// pointed at the operator.
     pub min_observations: u32,
+    /// Errors over observations, above which the error-rate signal trips.
     pub error_rate: Option<f64>,
+    /// Terminal failures over observations, above which the terminal-failure signal trips.
     pub terminal_failure_rate: Option<f64>,
+    /// The 95th-percentile latency, in milliseconds, above which the latency signal trips.
     pub latency_p95_ms: Option<u64>,
+    /// Egress spend over the configured egress budget, above which the spend signal trips.
     pub egress_budget_ratio: Option<f64>,
 }
 
@@ -91,24 +95,35 @@ pub struct Thresholds {
 pub struct Window {
     /// Dispatches in the window. The denominator for every ratio, and the sample the floor judges.
     pub observations: u32,
+    /// Dispatches in the window that returned an error.
     pub errors: u32,
+    /// Dispatches in the window that ended in a terminal failure state.
     pub terminal_failures: u32,
+    /// The 95th-percentile latency observed over the window, in milliseconds.
     pub latency_p95_ms: u64,
+    /// Egress spend over the configured egress budget, as observed.
     pub egress_spend_ratio: f64,
     /// The window the contributing observations actually span. Carried into the reason so an
     /// operator can line a suspension up against a deploy or an incident.
     pub first_observation_ms: u64,
+    /// The last contributing observation's timestamp, in unix milliseconds.
     pub last_observation_ms: u64,
 }
 
 /// A trip, with everything an operator needs to judge it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trip {
+    /// Which signal tripped.
     pub signal: AnomalySignal,
+    /// The value that was observed, formatted for an operator to read.
     pub observed: String,
+    /// The configured threshold it crossed, formatted the same way.
     pub threshold: String,
+    /// The sample the judgement was made over.
     pub observations: u32,
+    /// The first contributing observation's timestamp, in unix milliseconds.
     pub first_observation_ms: u64,
+    /// The last contributing observation's timestamp, in unix milliseconds.
     pub last_observation_ms: u64,
 }
 
@@ -207,6 +222,6 @@ pub fn evaluate(window: &Window, thresholds: &Thresholds) -> Option<Trip> {
     None
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "tests/anomaly_tests.rs"]
 mod anomaly_tests;

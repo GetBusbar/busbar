@@ -304,6 +304,16 @@ jobs:
         run: cargo xtask gate no-tracked-ignored --selftest
       - name: No-tracked-ignored gate (no tracked path matches a .gitignore rule of this tree)
         run: cargo xtask gate no-tracked-ignored
+      # PACKAGE-SELECTOR LIVENESS: a `cargo ... -p <name>`, a `tests:`/`features:` matrix cell or an
+      # xtask cargo command string that names a crate the 1.6.0 folds deleted. `cargo -p <gone>` does
+      # not select nothing, it FAILS — and scripts/txn-fence.sh's PASS CONDITION IS A BUILD FAILURE,
+      # so for as long as it read `-p busbar-core` it reported a compile fence as holding over a crate
+      # that was never compiled. Self-test FIRST, so the scanner is proven able to name a planted
+      # dead selector before its silence is believed.
+      - name: Package-selector liveness self-test
+        run: cargo xtask gate package-selectors --selftest
+      - name: Package-selector liveness gate (every -p names a package this workspace resolves)
+        run: cargo xtask gate package-selectors
       # RELEASE-SCRIPT lint — durable guard against the 1.5.2 gate's 2h31m hang: a backgrounded
       # server (serve_forever) whose stdout was NOT redirected, captured via `$(...)`, held the
       # substitution's pipe open until the job timeout. Self-test runs FIRST (never trust the lint's
@@ -1898,8 +1908,7 @@ jobs:
               - 'crates/busbar-plane-*/**'
               - 'crates/busbar-mcp/**'
               - 'crates/busbar-a2a/**'
-              - 'crates/busbar-a2a-codec/**'
-              - 'crates/busbar-kernel/**'
+              -               - 'crates/busbar-kernel/**'
               - 'scripts/mcp-subject/**'
               - 'scripts/a2a-subject/**'
               - '.github/workflows/ci.yml'
@@ -2162,7 +2171,6 @@ jobs:
   # feature-covered: busbar-substrate-values/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-a2a/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-a2a/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
-  # feature-covered: busbar-a2a-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-mcp/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-mcp/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job

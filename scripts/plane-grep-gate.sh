@@ -121,7 +121,10 @@ NEUTRAL_NEEDLES="$DIALECTS $PLANE_KEYS_PROTOCOL"
 # cross-plane ban rather than by its own.
 MCP_ROOT="crates/busbar-mcp/src"
 MCP_NEEDLES="$DIALECTS $(plane_keys_other mcp)"
-A2A_ROOT="crates/busbar-a2a/src crates/busbar-a2a-codec/src"
+# A2A IS ONE ROOT AGAIN: `busbar-a2a-codec` dissolved (#39). The engine kept the durable row structs
+# and the metering attribution, inside the root below; the wire dialect went to `busbar-plane-a2a`,
+# which this needle gate does not read — a plane-kind crate is held to the plugin-kind rules instead.
+A2A_ROOT="crates/busbar-a2a/src"
 A2A_NEEDLES="$DIALECTS $(plane_keys_other a2a)"
 VOICE_ROOT="crates/busbar-voice/src crates/busbar-voice-codec/src"
 VOICE_NEEDLES="$DIALECTS $(plane_keys_other voice)"

@@ -10,7 +10,6 @@ members = [
     "crates/busbar-llm-codec",
     "crates/busbar-mcp",
     "crates/busbar-a2a",
-    "crates/busbar-a2a-codec",
     "crates/busbar-voice",
     "crates/busbar-voice-codec",
     "crates/busbar-substrate-values",

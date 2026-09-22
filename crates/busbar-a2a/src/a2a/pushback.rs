@@ -83,7 +83,7 @@ use super::task::TaskState;
 ///
 /// The CODEC's, beside the other path suffixes: `busbar-plane-a2a` claims the endpoint this composes
 /// and may not name this crate.
-pub(crate) use busbar_a2a_codec::PUSH_PATH_SUFFIX;
+pub(crate) use busbar_plane_a2a::PUSH_PATH_SUFFIX;
 
 /// The scheme busbar names in the config it registers with the backend. RFC 9110's own, because
 /// the value is `<scheme> <credentials>` and that is what the field is for.

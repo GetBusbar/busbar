@@ -11,10 +11,10 @@ use busbar_contract::grammar::Selector;
 /// the claim that says where it lives goes red here rather than quietly claiming an empty path.
 #[test]
 fn the_mount_points_are_the_codecs_own() {
-    assert_eq!(P_ROOT, busbar_a2a_codec::MOUNT_PATH);
+    assert_eq!(P_ROOT, crate::MOUNT_PATH);
     // The framed binding's mount is one path segment, and the claim spells it as that one
     // segment followed by the method.
-    assert_eq!(busbar_a2a_codec::GRPC_MOUNT_PATH, "/lf.a2a.v1.A2AService");
+    assert_eq!(crate::GRPC_MOUNT_PATH, "/lf.a2a.v1.A2AService");
 }
 
 /// This plane's registry key is the codec's own.
@@ -22,7 +22,7 @@ fn the_mount_points_are_the_codecs_own() {
 fn the_plane_key_is_the_codecs_own() {
     assert_eq!(
         <crate::A2aPlane as busbar_contract::plane::PlaneMeta>::KEY,
-        busbar_a2a_codec::PLANE_KEY
+        crate::PLANE_KEY
     );
 }
 
@@ -95,8 +95,8 @@ fn no_claim_declares_idempotency() {
 /// and find no plane, and a claim with no route behind it would take bytes nothing can answer.
 #[test]
 fn every_mounted_route_is_claimed() {
-    for suffix in busbar_a2a_codec::MOUNTED_ROUTE_SUFFIXES {
-        let path = busbar_a2a_codec::mounted_route(suffix);
+    for suffix in crate::MOUNTED_ROUTE_SUFFIXES {
+        let path = crate::mounted_route(suffix);
         assert!(
             claims_match(&path),
             "the codec mounts {path} and this plane claims nothing that matches it"
@@ -104,8 +104,8 @@ fn every_mounted_route_is_claimed() {
     }
     // The two well-known paths are properties of the ORIGIN and so are not under the mount.
     for path in [
-        busbar_a2a_codec::METADATA_PATH,
-        busbar_a2a_codec::WELL_KNOWN_CARD_PATH,
+        crate::METADATA_PATH,
+        crate::WELL_KNOWN_CARD_PATH,
     ] {
         assert!(
             claims_match(path),
@@ -113,13 +113,13 @@ fn every_mounted_route_is_claimed() {
         );
     }
     // busbar's own push callback: the mount joined to the suffix a delivery is posted to.
-    assert!(claims_match(&busbar_a2a_codec::mounted_route(
-        busbar_a2a_codec::PUSH_PATH_SUFFIX
+    assert!(claims_match(&crate::mounted_route(
+        crate::PUSH_PATH_SUFFIX
     )));
     // The framed binding is one service and one method segment, composed from the same constant.
     assert!(claims_match(&format!(
         "{}/{{method}}",
-        busbar_a2a_codec::GRPC_MOUNT_PATH
+        crate::GRPC_MOUNT_PATH
     )));
 }
 

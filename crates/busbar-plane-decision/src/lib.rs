@@ -5,7 +5,7 @@
 //! An ADAPTER, over a protocol this crate speaks for itself rather than borrowing from a codec
 //! crate one hop away: jev is two small HTTP+JSON operations (`POST /v1/systemone`,
 //! `GET /v1/models`), byte-identity passthrough to `api.typesafe.ai`, and there is no separate
-//! wire vocabulary crate to adapt over the way `busbar-a2a-codec` still exists for
+//! wire vocabulary crate to adapt over the way `busbar-llm-codec` still exists for
 //! their planes. The signed design (DECISION #39, jev v5 sign-off) rules this deliberately: ONE
 //! crate, not a pure-plane-plus-impure-host split. See `Cargo.toml`'s header for why that also
 //! means this crate names `busbar-substrate` — a widening its pure siblings do not carry.

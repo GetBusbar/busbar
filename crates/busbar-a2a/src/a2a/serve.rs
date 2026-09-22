@@ -257,25 +257,25 @@ fn served_protocol_versions() -> &'static [&'static str] {
 pub(crate) fn agent_endpoint(public_url: &str, agent_id: &str) -> Result<String, ServeError> {
     absolute(
         public_url,
-        &busbar_a2a_codec::mounted_route(
-            &busbar_a2a_codec::ROUTE_AGENT.replace("{agent_id}", agent_id),
+        &busbar_plane_a2a::mounted_route(
+            &busbar_plane_a2a::ROUTE_AGENT.replace("{agent_id}", agent_id),
         ),
     )
 }
 
-/// THE PLANE'S MOUNT and THE gRPC BINDING'S PATH PREFIX — MOVED to `busbar-a2a-codec` with the rest
+/// THE PLANE'S MOUNT and THE gRPC BINDING'S PATH PREFIX — MOVED to `busbar-plane-a2a` with the rest
 /// of the wire vocabulary and re-exported here, so `busbar_a2a::a2a::serve::MOUNT_PATH` and its
 /// framed sibling resolve unchanged. They crossed because `busbar-plane-a2a` declares its path
 /// claims against them and may not name this crate; two spellings of a mount is a plane claiming a
 /// path nothing is served at. See the codec crate for what each one is and why gRPC's is not under
 /// the other.
-pub use busbar_a2a_codec::{GRPC_MOUNT_PATH, MOUNT_PATH};
+pub use busbar_plane_a2a::{GRPC_MOUNT_PATH, MOUNT_PATH};
 
 /// The RFC 9728 protected-resource metadata path for this plane: the well-known prefix with the
 /// plane's mount appended, exactly as the sibling plane composes its own. It crossed to the codec
 /// with the rest of the paths, for the reason the mount did — `busbar-plane-a2a` claims this path
 /// and may not name this crate — and this name resolves what it always did.
-pub(crate) use busbar_a2a_codec::METADATA_PATH;
+pub(crate) use busbar_plane_a2a::METADATA_PATH;
 
 /// THE PLANE'S CANONICAL URI — the RFC 8707 resource indicator a token must be minted FOR to be
 /// spendable here, and the audience [`busbar_kernel::plane::PlaneAdmission`] carries.

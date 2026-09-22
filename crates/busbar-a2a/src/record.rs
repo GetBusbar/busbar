@@ -9,10 +9,11 @@
 
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
 
-/// The `task` kind — the A2A task row's neutral `PlaneRecord.kind` tag.
-pub const KIND_TASK: &str = "task";
-/// The `task_event` kind — the A2A per-task provenance event's neutral `PlaneRecord.kind` tag.
-pub const KIND_TASK_EVENT: &str = "task_event";
+// THE TWO KIND STRINGS ARE THE PLANE'S, AND ARE READ FROM IT. A record kind is the name the plane
+// declares its schema under (`busbar_plane_a2a::records::SCHEMA_TASK`), so it is named once, there,
+// and this crate reads it. Spelling it on both sides is how two answers to "what is this record
+// called" come to differ, and the schema id is what a store indexes by.
+pub use busbar_plane_a2a::records::{KIND_TASK, KIND_TASK_EVENT};
 
 /// DIGEST FRAMING VERSION 1 — the LEGACY ambiguous pipe-join (`{prev_hash}|{task_id}|…|{state}`). The
 /// free-text fields (`context_id`, `principal`, `agent_id`) are NOT length-framed, so a value that

@@ -53,10 +53,10 @@ pub const PTR_ERROR_CODE: &str = "/error/code";
 
 /// The typed marker the codec stamps on an error's detail entry. Read by identity from the codec,
 /// which is where the one spelling lives.
-pub const ERROR_INFO_TYPE: &str = busbar_a2a_codec::ERROR_INFO_TYPE;
+pub const ERROR_INFO_TYPE: &str = crate::ERROR_INFO_TYPE;
 
 /// The domain the codec stamps on an error's detail entry. The codec's, likewise.
-pub const ERROR_INFO_DOMAIN: &str = busbar_a2a_codec::ERROR_INFO_DOMAIN;
+pub const ERROR_INFO_DOMAIN: &str = crate::ERROR_INFO_DOMAIN;
 
 /// The error codes this protocol defines, with the word each one is reported under.
 ///
@@ -65,7 +65,7 @@ pub const ERROR_INFO_DOMAIN: &str = busbar_a2a_codec::ERROR_INFO_DOMAIN;
 /// sibling its manifest does not name, and which could only ever say the number 32001 occurs
 /// somewhere in that file. There is one table now, and `busbar-a2a`'s own `A2aError` is pinned
 /// against it row for row in the crate that owns the enum.
-pub const ERRORS: &[(i64, &str)] = busbar_a2a_codec::ERRORS;
+pub const ERRORS: &[(i64, &str)] = crate::ERRORS;
 
 /// The request was not well formed.
 pub const CODE_INVALID_REQUEST: i64 = -32600;

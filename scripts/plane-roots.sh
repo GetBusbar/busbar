@@ -29,7 +29,7 @@
 #
 # THE RULE, and it is deliberately mechanical: a plane's root is THE DIRECTORY THAT OWNS IT, found
 # by NAME and then narrowed by OWNERSHIP. A name match alone is not an ownership claim — the wire-
-# codec split (1.6.0 step 4) gives a plane a SECOND directory under its own name (`busbar-a2a-codec/
+# codec split (1.6.0 step 4) gave a plane a SECOND directory under its own name (`busbar-llm-codec/
 # src/a2a/` beside `busbar-a2a/src/a2a/`), and that second directory holds bytes-on-the-wire, not the
 # plane's own declaration. A candidate must CARRY the plane's grammar to count: the file that
 # declares `pub const PLANE_DECL: … PlaneDecl = …` directly inside it (`a2a/mod.rs`, `mcp/mod.rs` —

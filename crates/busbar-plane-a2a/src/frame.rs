@@ -136,6 +136,7 @@ pub fn rewrite(frame: Frame, taps: &[&dyn Tap], transforms: &[&dyn Transform]) -
         .fold(frame, |frame, transform| transform.transform(frame))
 }
 
-#[cfg(test)]
-#[path = "tests/frame_tests.rs"]
-mod frame_tests;
+// THE FRAME'S OWN BATTERY IS `tests/frame.rs`, an integration test rather than a child module: its
+// tap fixture records what it observed and therefore holds a `RefCell`, which this crate's purity
+// oracle refuses anywhere under `src/`. Every item it drives is `pub`, so nothing was widened to
+// move it.

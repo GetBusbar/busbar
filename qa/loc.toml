@@ -37,9 +37,7 @@ extra_crates = []
 label = "the plane work 1.6.0 adds that v1.5.5 had no counterpart for"
 crates = [
   "busbar-a2a",
-  "busbar-a2a-codec",
   "busbar-mcp",
-  "busbar-mcp-codec",
   "busbar-plane-a2a",
   "busbar-plane-decision",
   "busbar-plane-mcp",

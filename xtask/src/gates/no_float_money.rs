@@ -192,7 +192,7 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     CountRoot {
         area: "the agent codec, node and plane",
         homes: &[
-            "crates/busbar-a2a-codec/src",
+            "crates/busbar-a2a/src/a2a",
             "crates/busbar-a2a/src",
             "crates/busbar-plane-a2a/src",
         ],

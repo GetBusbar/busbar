@@ -16,46 +16,46 @@ use busbar_contract::transport::surface as sfc;
 /// they may not be a SECOND answer to where this protocol lives.
 #[test]
 fn every_target_is_the_codec_route_it_claims_to_be() {
-    let mount = busbar_a2a_codec::MOUNT_PATH;
+    let mount = crate::MOUNT_PATH;
     assert_eq!(MOUNT, mount);
     assert_eq!(MOUNT_SLASH, format!("{mount}/"));
     assert_eq!(
         T_MESSAGE_SEND,
-        busbar_a2a_codec::mounted_route(busbar_a2a_codec::ROUTE_MESSAGE_SEND)
+        crate::mounted_route(crate::ROUTE_MESSAGE_SEND)
     );
     assert_eq!(
         T_MESSAGE_STREAM,
-        busbar_a2a_codec::mounted_route(busbar_a2a_codec::ROUTE_MESSAGE_STREAM)
+        crate::mounted_route(crate::ROUTE_MESSAGE_STREAM)
     );
     assert_eq!(
         T_TASKS,
-        busbar_a2a_codec::mounted_route(busbar_a2a_codec::ROUTE_TASKS)
+        crate::mounted_route(crate::ROUTE_TASKS)
     );
     assert_eq!(
         T_TASK,
-        busbar_a2a_codec::mounted_route(busbar_a2a_codec::ROUTE_TASK)
+        crate::mounted_route(crate::ROUTE_TASK)
     );
     assert_eq!(
         T_PUSH_CONFIGS,
-        busbar_a2a_codec::mounted_route(busbar_a2a_codec::ROUTE_PUSH_CONFIGS)
+        crate::mounted_route(crate::ROUTE_PUSH_CONFIGS)
     );
     assert_eq!(
         T_PUSH_CONFIG,
-        busbar_a2a_codec::mounted_route(busbar_a2a_codec::ROUTE_PUSH_CONFIG)
+        crate::mounted_route(crate::ROUTE_PUSH_CONFIG)
     );
     assert_eq!(
         T_EXTENDED_CARD,
-        busbar_a2a_codec::mounted_route(busbar_a2a_codec::ROUTE_EXTENDED_AGENT_CARD)
+        crate::mounted_route(crate::ROUTE_EXTENDED_AGENT_CARD)
     );
     assert_eq!(
         T_PUSH,
-        busbar_a2a_codec::mounted_route(busbar_a2a_codec::PUSH_PATH_SUFFIX)
+        crate::mounted_route(crate::PUSH_PATH_SUFFIX)
     );
-    assert_eq!(T_CARD, busbar_a2a_codec::WELL_KNOWN_CARD_PATH);
-    assert_eq!(T_METADATA, busbar_a2a_codec::METADATA_PATH);
+    assert_eq!(T_CARD, crate::WELL_KNOWN_CARD_PATH);
+    assert_eq!(T_METADATA, crate::METADATA_PATH);
     assert_eq!(
         SERVICE,
-        busbar_a2a_codec::GRPC_MOUNT_PATH.trim_start_matches('/')
+        crate::GRPC_MOUNT_PATH.trim_start_matches('/')
     );
 }
 
