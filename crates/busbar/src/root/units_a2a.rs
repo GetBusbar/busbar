@@ -506,7 +506,10 @@ impl From<busbar_kernel::pump::RecordRefusal> for LegError {
 /// The kernel holds the borrow that lets a plane be asked; these are its answers, carried forward
 /// by value so every later step reads what the plane said rather than re-deriving it. A field here
 /// is a fact the plane produced, never a fact this file computed.
-#[derive(Debug, Clone)]
+///
+/// NO derived `Debug` — see the hand-written impl below. One of those facts is the caller's live
+/// credential.
+#[derive(Clone)]
 pub struct A2aDraft {
     /// What the decode step recognised. `None` is a body this plane does not carry.
     pub op: Option<OpClassId>,
@@ -537,6 +540,53 @@ pub struct A2aDraft {
     pub streaming: bool,
     /// What the transport recorded about the arrival.
     pub arrival: ArrivalRecord,
+}
+
+/// `Debug` REDACTS the credential the transport masked out of the frame.
+///
+/// A derived `Debug` prints `credential: Some("<the caller's live bearer token>")` verbatim into any
+/// `{:?}` of this value or of anything holding it — a tracing line, a panic message, a test failure
+/// in a CI log. The masking in [`crate::root::units_a2a`]'s transport exists precisely so a
+/// credential stops travelling with the frame; rendering it here would put it back into the one
+/// place masking was supposed to keep it out of.
+///
+/// REDACTED BY VALUE, NOT BY FIELD NAME. `credential` is redacted because it is one; every OTHER
+/// owned string this record carries is redacted if it CONTAINS those same bytes. Today that is
+/// `expected_aud` alone — [`ArrivalRecord`] carries a source, a port, an ALPN/SNI name and the
+/// peer certificate's subject/issuer/fingerprint, none of which is a secret, and `narrowing` and
+/// `declared_schemes` are `&'static str` and so cannot hold a value that arrived at runtime. The
+/// point of the value test is that it does not depend on remembering which field is the secret one:
+/// a credential that ever lands somewhere new is caught by what the bytes ARE. Where nothing was
+/// presented, nothing is redacted — the redaction never manufactures a credential out of an absent
+/// one.
+impl std::fmt::Debug for A2aDraft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const REDACTED: &str = "<redacted>";
+        let presented = self.credential.as_deref().filter(|c| !c.is_empty());
+        let carries_it = |value: &str| presented.is_some_and(|c| value.contains(c));
+        f.debug_struct("A2aDraft")
+            .field("op", &self.op)
+            .field("narrowing", &self.narrowing)
+            .field("declared_schemes", &self.declared_schemes)
+            .field("from_session", &self.from_session)
+            .field("credential", &self.credential.as_ref().map(|_| REDACTED))
+            .field(
+                "expected_aud",
+                &self
+                    .expected_aud
+                    .as_deref()
+                    .map(|aud| if carries_it(aud) { REDACTED } else { aud }),
+            )
+            .field("destination", &self.destination)
+            .field("resource", &self.resource)
+            .field("legs", &self.legs)
+            .field("request_bytes", &self.request_bytes)
+            .field("response_bytes", &self.response_bytes)
+            .field("finish", &self.finish)
+            .field("streaming", &self.streaming)
+            .field("arrival", &self.arrival)
+            .finish()
+    }
 }
 
 impl A2aDraft {

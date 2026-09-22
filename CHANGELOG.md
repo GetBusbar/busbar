@@ -128,6 +128,16 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
   [the diagnostics reference](docs/diagnostics.md), which says what each one means and what to do.
+- **A service-account key file that cannot be read no longer echoes the credential into the error.**
+  `auth: jwt-bearer` tells a pasted service-account JSON from a path to one by a single leading
+  `{`, so an operator who pastes the key BODY — or whose `env:`/`file:` reference resolves to key
+  material rather than to a filename — reaches the file read holding the RS256 signing key. 1.5.5
+  interpolated that argument into the failure, so the key was published to `busbar --validate`'s
+  report, to the admin config dry-run's response, and to the panic a boot or a config apply raises
+  on the same path. The message now names the io failure only. Nothing else about the refusal
+  moves: same exit code, same surrounding `config validation failed:` frame, and the lane and the
+  secret's configured source are still named by the caller, so a misconfiguration is exactly as
+  diagnosable as before.
 - **Two A2A verbs that were answered for free are now metered.** `GetExtendedAgentCard` on
   `POST /a2a` and `ListTasks` reached a handler, did the work and left no ledger row: the card verb
   reads the caller's whole catalogue and builds a document, and `ListTasks` scans every task the
