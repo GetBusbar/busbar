@@ -1059,8 +1059,25 @@ now fixed, one was a misdiagnosis, and one dissolves on the first promotion.** C
    admit and deny. Turnstile denies for real, honest reasons: 10 suites are STALE (verdict commit ≠
    candidate sha) and 7 have never run. That is the gate working, not a broken gate.
 
-4. **`turnstile-dispatch.yml` was never pushed — REAL, still open.** It exists only in a local
-   worktree on `land/turnstile-dispatch` and still targets `integration/**` rather than `predev`.
+4. **`turnstile-dispatch.yml` was never pushed — REAL, NOW LANDED AND CORRECTED.** Recovered from
+   the worktree on `land/turnstile-dispatch` (`83954bb02`). It is the cross-repo bridge: turnstile
+   lives in `busbar-release` and reacts to a `repository_dispatch` of type `turnstile-admit`, which
+   GitHub's native `on: push` cannot send across repos, so this side has to fire it.
+
+   It was **not** simply repointed from `integration/**` to `predev`, because that would have been
+   wrong. The file fired `on: push` to the incoming lane, and predev's defining rule is that it
+   carries no automatic CI — developers commit to it freely and a *finished* session runs the
+   turnstile. Admitting a candidate runs the full battery suite; firing that on every push to a
+   branch built for frequent unfinished commits would burn the batteries dozens of times a day
+   against trees nobody claims are ready — a false signal and a standing money leak (#78). The push
+   trigger is therefore **removed entirely** and the workflow is `workflow_dispatch`-only, with an
+   optional `sha` input defaulting to the dispatched ref's head. Re-adding `on: push` would
+   reintroduce precisely the automatic-CI-on-predev that #67 rules out.
+
+   Still owner-blocked: the `TURNSTILE_DISPATCH_TOKEN` secret (fine-grained PAT, Contents:read +
+   Actions:write on `GetBusbar/busbar-release`) is not provisioned. `GITHUB_TOKEN` cannot substitute
+   — it is scoped to the repo the workflow runs in. The workflow fails loudly and by name when the
+   secret is absent, which is the correct behaviour.
 
 ## Deleting branches is free
 
