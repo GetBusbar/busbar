@@ -1709,6 +1709,32 @@ byte reach a carrier — is not in the text at all.
 That is the whole argument for **reachability over pattern**: the census resolved both by tracing
 where the bytes go, which no regex can do.
 
+**HOW THIS WAS ACTUALLY FOUND — the method is the transferable part, and it was NOT inspection.**
+Recorded at the finding agent's own insistence, correcting an earlier version of this entry that
+implied someone spotted it by reading carefully.
+
+The sequence was: the sweep returned two comment hits, and the agent **was about to report the file
+clean**. It looked further only because it had been told a credential builder was likely there — so
+it went to check the one the auth census had **already** found, saw that `inject_credential` was
+assembled from variables, and realised its own sweep had just missed it. `pack_header_records`
+surfaced afterwards, from the full read that was then ordered. Neither half came from the sweep, and
+neither would have been found without a planted answer to check against.
+
+**SO THE RULE, AND IT APPLIES TO EVERY GATE IN THIS TREE:**
+
+> **Keep one known instance OUT of the instrument's reach, and check the instrument against it.**
+
+A gate run against a tree it has already been tuned on tells you nothing — it will pass, because it
+was shaped until it did. A gate run against a violation it has never seen tells you whether it can
+see at all. That is a **positive control**, and it is the single cheapest defence against the failure
+mode that has produced twelve instrument defects here: *reporting green over nothing*.
+
+Almost none of this tree's gates have one. The exceptions are instructive — `bin/oracle
+replay-selftest` checks that the ratchet actually names every golden PASS id, and the reachability
+gate ships a canary proving each row can red. Both were written by someone who assumed their own
+instrument was broken. **Every gate added from here owes a positive control, and a gate that cannot
+be shown failing is not evidence.**
+
 Two consequences to hold on to:
 
 - **A green source-scanning gate is evidence about SPELLINGS, not about BEHAVIOUR.** Say so when
