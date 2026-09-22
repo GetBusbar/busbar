@@ -143,6 +143,20 @@ impl PrincipalId {
         Self(id.into())
     }
 
+    /// The anonymous principal: the kernel's own, carried by a round that has established no
+    /// identity yet.
+    ///
+    /// A challenge round has no principal — that is what it is FOR — yet it must still face the
+    /// policy seats that decide whether the node will engage at all (the `approve` hook-veto seat
+    /// and the `admit` door). Those seats decide ABOUT a principal, so the round needs one to
+    /// present, and this is it. It carries no bucket, so it draws against no budget; it exists only
+    /// to give the policy seats a subject to answer about, and it spells the same word the auth
+    /// chain's own open-front-door admit already spells for a caller nothing identified.
+    #[must_use]
+    pub fn anonymous() -> Self {
+        Self(String::from("anonymous"))
+    }
+
     /// The identity as the audit row prints it.
     #[must_use]
     pub fn as_str(&self) -> &str {

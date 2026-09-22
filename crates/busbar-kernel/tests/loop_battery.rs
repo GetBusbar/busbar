@@ -12,7 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Waker};
 
 use busbar_contract::caps::{
-    Abort, Canary, HoldCellState, OriginKind, Outcome, PostingFlags, ReasonCode, StepName, UnitKey,
+    Abort, Canary, HoldCellState, OriginKind, Outcome, PostingFlags, PrincipalId, ReasonCode,
+    StepName, UnitKey,
 };
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::slice::{group_lease, ConcurrencyGauge, LeaseCell, IN_FLIGHT};
@@ -97,8 +98,11 @@ fn the_verify_step_seals_the_destinations_the_later_steps_read() {
 }
 
 /// A challenge round is a handshake unit: the authenticate step answers "one more round" rather
-/// than an identity, so verify, approve and admit are never asked and no reservation is opened.
-/// The design says the step's decision may yield a challenge; this is what the loop does with one.
+/// than an identity, so it reaches no destination and opens no reservation. VERIFY is skipped —
+/// there is no principal whose destinations could be sealed, and nothing downstream would consume
+/// the set — but APPROVE and ADMIT are still asked, over the anonymous principal and the empty
+/// destination set, because a hook veto or a frozen group must be able to refuse the exchange
+/// itself. What a challenge does NOT do is verify, hold, or draw a lease.
 #[test]
 fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
     let kernel = Kernel::new();
@@ -116,17 +120,83 @@ fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
             StepName::Arrival,
             StepName::Decode,
             StepName::Authenticate,
+            StepName::Approve,
+            StepName::Admit,
             StepName::Route,
             StepName::Meter,
             StepName::Audit,
             StepName::Encode,
         ],
-        "a challenge settles nothing about where the unit may go or whether it may be admitted"
+        "a challenge skips verify but still faces the approve and admit policy seats"
+    );
+    assert!(
+        units.approved_lanes().is_empty(),
+        "a challenge seals no destination, so the seats see the empty set"
+    );
+    assert_eq!(
+        units
+            .seated_principals()
+            .iter()
+            .map(PrincipalId::as_str)
+            .collect::<Vec<_>>(),
+        vec!["anonymous", "anonymous"],
+        "both seats decide about the anonymous principal, never an identity nobody established"
+    );
+    assert_eq!(
+        canary.counts().holds,
+        0,
+        "a challenge opens no reservation: no hold was ever swapped into the cell"
     );
     assert!(
         matches!(ended, Ended::Settled { .. }),
         "the round still ends once, through the one exit"
     );
+}
+
+/// A CHALLENGE ROUND STILL FACES THE TWO SEATS THAT DECIDE WHETHER THE NODE WILL ENGAGE AT ALL.
+///
+/// `approve` is the hook-veto seat and `admit` is the door, where a frozen group is read. A
+/// challenge is unauthenticated and reaches no destination, but skipping these two was an
+/// unauthenticated path straight around the node's own admission control: a hook wired to veto the
+/// exchange, or a frozen group that would refuse it, was never asked. The round now presents the
+/// anonymous principal at both, so a refusal at either stops the handshake exactly as it stops an
+/// authenticated unit — and the record names the step and the reason, rather than settling as
+/// though the node had agreed to the round.
+#[test]
+fn a_challenge_round_still_faces_the_hook_veto_and_the_frozen_group() {
+    for (step, reason) in [
+        (StepName::Approve, ReasonCode::HookVeto),
+        (StepName::Admit, ReasonCode::GroupFrozen),
+    ] {
+        let kernel = Kernel::new();
+        let units = TestUnits {
+            challenge: true,
+            refuse_at: Some((step, reason)),
+            ..TestUnits::passing()
+        };
+        let cell = cell(&kernel);
+        let canary = Canary::new();
+        let ended = run(&units, &kernel, &cell, &canary);
+
+        assert!(
+            units.called().contains(&step),
+            "the challenge round never reached {step:?}"
+        );
+        let (refused_door, admitted_door) = units.doors();
+        assert!(
+            refused_door && !admitted_door,
+            "a refused challenge leaves through the refused-audit door, not the admitted one \
+             ({step:?})"
+        );
+        match ended {
+            Ended::Settled { end, .. } => assert_eq!(
+                end.outcome(),
+                Outcome::Refused(step, reason),
+                "a challenge refused at {step:?} must not settle as anything else"
+            ),
+            other => panic!("expected a settled refusal at {step:?}, got {other:?}"),
+        }
+    }
 }
 
 #[test]
@@ -768,15 +838,16 @@ fn two_capped_groups_are_two_leases_while_the_unit_flies_and_none_after() {
 /// A unit that never reaches the door draws nothing, and neither does an exempt one.
 ///
 /// Three units that must not raise the gauge, for three different reasons: a challenge round, which
-/// is a handshake and never reaches the door at all; a tick, which moves no money; and a unit whose
-/// every destination is a kernel verb, which is what makes the administrative surface answer while
-/// the rest of the node is capped out. A gauge these three raised would be a node that stopped
-/// admitting because of the very units that are meant to keep it reachable.
+/// faces the door's policy seats but opens no reservation behind them, so it holds no slot to
+/// count; a tick, which moves no money; and a unit whose every destination is a kernel verb, which
+/// is what makes the administrative surface answer while the rest of the node is capped out. A
+/// gauge these three raised would be a node that stopped admitting because of the very units that
+/// are meant to keep it reachable.
 #[test]
 fn a_challenge_a_tick_and_a_kernel_verb_unit_draw_no_lease() {
     for (name, units, unit_ctx) in [
         (
-            "a challenge round never reaches the door",
+            "a challenge round opens no reservation and draws no lease",
             TestUnits {
                 challenge: true,
                 ..TestUnits::passing()

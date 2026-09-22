@@ -856,11 +856,67 @@ fn open_to_door<U: Units>(
         })
         // A challenge is not a decision about this unit: it is a request for one more round before
         // one can be made. The kernel delivers it and asks again, and the round itself is a
-        // handshake unit — it reaches no destination, is scoped against nothing and opens no
-        // reservation, which is exactly the zero-hold admission. Only an established identity walks
-        // on to verify.
+        // handshake unit — it reaches no destination and opens no reservation, which is exactly the
+        // zero-hold admission. Only an established identity walks on to VERIFY.
+        //
+        // BUT "REACHES NO DESTINATION" IS NOT "FACES NO POLICY", and reading the two as one thing
+        // was an unauthenticated path straight around the node's own admission control. The three
+        // seats split cleanly, and the split is the reason this arm is written out rather than
+        // short-circuited:
+        //
+        // - VERIFY genuinely cannot apply. It answers WHERE a unit may go, for a named principal,
+        //   and it SEALS that answer with the trust grant so Route and Meter consume the set
+        //   Approve and Admit read. A round that dials nothing has nothing to seal, and the planes
+        //   that implement it record the principal there — recording the anonymous one would put an
+        //   identity nobody established onto the unit's own record. So verify is skipped, and the
+        //   sealed set stays EMPTY, which every later seat already accepts as a legitimate answer.
+        // - APPROVE must still be asked. It is the hook-veto seat: an operator's own runtime
+        //   opinion about whether the node will engage AT ALL, which is a question about the
+        //   exchange and not about where it goes. Skipping it meant a hook wired to veto the
+        //   handshake never got consulted — and the planes already write the answer for it (a
+        //   session plane's approve has an explicit handshake arm), so the seat was being answered
+        //   into a call that never came.
+        // - ADMIT must still be asked. The door is where a frozen group, a disabled bucket and the
+        //   node's own gauges are read; a round that walked past it was an unauthenticated caller
+        //   getting work out of a node that had said it would do none.
+        //
+        // The round has no principal to present, so it presents the ANONYMOUS one — the same
+        // identity the open front door admits a caller nothing identified under — over the empty
+        // destination set.
+        //
+        // AND ITS ADMISSION IS THE ZERO HOLD, whatever the door sized. A challenge opens no
+        // reservation, so there is nothing for the exit to settle and nothing to swap into the
+        // cell. Nothing the door drew is stranded by that: what a door COUNTS travels on the
+        // `groups` slip below, and the slip — with the door's own grant on it — is dropped at the
+        // end of this arm, which gives the count straight back; what a door RESERVES is a figure
+        // carried in the hold itself and recorded nowhere else, so a hold that is not settled
+        // leaves no draw behind it. For the same reason the round draws NO LEASE: it holds no slot,
+        // and a node at a saturated gauge still has to be able to finish a handshake.
         .and_then(|authenticated| match authenticated {
-            Authenticated::Challenge(_) => Ok((Admission::ZeroHold, Vec::new())),
+            Authenticated::Challenge(_) => {
+                let anonymous = PrincipalId::anonymous();
+                // THE EMPTY SEALED SET, named rather than implied: it is what the seats are handed
+                // and it is what travels back, because a round that reaches no destination has
+                // nothing for Route and Meter to consume either.
+                let nowhere: [VerifiedDestination; 0] = [];
+                let groups = GroupLeaseSlip::new();
+                units
+                    .approve(&Pass::<Approve>::mint(seal), ctx, &anonymous, &nowhere)
+                    .into_result(seal)
+                    .and_then(|_| {
+                        units
+                            .admit(
+                                &Pass::<Admit>::mint(seal),
+                                &Grant::<Admittance>::mint(seal),
+                                ctx,
+                                &anonymous,
+                                &nowhere,
+                                &groups,
+                            )
+                            .into_result(seal)
+                    })
+                    .map(|_admitted| (Admission::ZeroHold, Vec::new()))
+            }
             Authenticated::Principal(principal) => units
                 .verify(
                     &Pass::<Verify>::mint(seal),
@@ -898,8 +954,8 @@ fn open_to_door<U: Units>(
                         // THE LEASE, drawn on the one answer that entitles a unit to it. The door
                         // said yes, so from here until this unit's end the node is running it, and
                         // the lease is what says so. A refusal draws nothing — there is no slot to
-                        // count — and a unit that never reached this step, a challenge round, is
-                        // never here to draw one.
+                        // count — and neither does a challenge round, which now faces this same
+                        // door but opens no reservation behind it (see the arm above).
                         if admitted.is_ok() {
                             draw_lease(ctx, run, &groups);
                         }
