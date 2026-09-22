@@ -106,15 +106,15 @@ pub const ROW_DECL_LIVE: &str = "package-selectors:declaration-names-a-live-sele
 pub const ROW_DECL_FILE: &str = "package-selectors:declaration-names-a-live-file";
 pub const ROW_DECL_REASON: &str = "package-selectors:declaration-reason";
 
-/// The floor under the resolvable universe. Measured at 468 on the 1.6.0 integration tree (52
+/// The floor under the resolvable universe. Measured at 467 on the 1.6.0 integration tree (51
 /// workspace members plus every distinct name in `Cargo.lock`). Set well below that because the
 /// number this floor exists to reject is a universe that COLLAPSED — a reader that found nothing
 /// makes every selector in the tree look dead, which is a defect in the instrument reported as a
 /// defect in the tree.
 pub const UNIVERSE_FLOOR: usize = 40;
-/// The floor under the discovered selector sites. Measured at 198 on the 1.6.0 integration tree.
-/// This is the floor that matters: an empty scan set is the one state in which "every selector
-/// resolves" is true and means nothing.
+/// The floor under the discovered selector sites. Measured at 200, across 245 covered files, on the
+/// 1.6.0 integration tree. This is the floor that matters: an empty scan set is the one state in
+/// which "every selector resolves" is true and means nothing.
 pub const SITE_FLOOR: usize = 120;
 /// The shortest exemption reason that is a reason rather than a shrug. `feature-sets`' number.
 pub const MIN_REASON: usize = 30;
