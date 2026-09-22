@@ -66,7 +66,7 @@
 //! token, an unparseable token, a token whose MAC does not verify, or a token naming a task busbar
 //! does not hold is a `401` that says nothing about which of those it was.
 
-use std::sync::OnceLock;
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use axum::response::{IntoResponse as _, Response};
 
@@ -245,6 +245,118 @@ pub(crate) fn mirrored_verb(verb: super::local::LocalVerb) -> Option<&'static st
     })
 }
 
+// ══ THE VOLUME BOUND ═════════════════════════════════════════════════════════════════════════════
+//
+// Everything above this line bounds WHO may call [`push_notification`] and how big one call may be
+// — the MAC token, [`token_live`]'s deadline, [`MAX_PUSH_BODY`]. None of it bounds how OFTEN a
+// holder of one live, valid token may call it. Every admitted push costs a durable hash-chain write
+// (`taskstore::TASKS::transition`, plane-side) and, once a caller has armed a callback, an outbound
+// delivery to the CALLER'S OWN webhook (`super::pushdeliver::deliver`) — so without a volume bound,
+// one token for one non-terminal task lets its holder grow busbar's own audit chain without limit
+// and turn busbar into an amplifier pointed at a third party's receiver, at whatever rate it can
+// open sockets.
+//
+// The recovered design: a FIXED WINDOW, 60 requests / 60 seconds, keyed by TASK rather than by
+// source address. The token already scopes to exactly one task ([`task_of`]), so that is the
+// natural key, and unlike an IP it cannot be sidestepped by opening a second connection — the only
+// thing that spends the budget is presenting the token.
+//
+// Same shape as `busbar_kernel::ratelimit::MutationLimiter` (this endpoint just has no separate
+// "principal" to key on: the token IS the principal, and it already names the task) including the
+// same clamp against a wall clock that steps backwards — judged against the newest window this
+// limiter has ever seen, never against an older `now`, so a regressed clock cannot reopen a budget
+// that is already spent.
+
+/// Fixed push-rate window length, in seconds.
+const PUSH_RATE_WINDOW_SECS: u64 = 60;
+
+/// The budget one task's push token may spend inside one [`PUSH_RATE_WINDOW_SECS`] window.
+const PUSH_RATE_LIMIT: u32 = 60;
+
+/// One fixed window for one task: (window start, requests admitted in it so far).
+type PushWindow = (u64, u32);
+
+struct PushLimiterState {
+    /// The newest window this limiter has ever judged against — never decreases. See
+    /// [`PushLimiter::admit`] for why a limiter fed a wall clock needs one.
+    latest_window: u64,
+    /// Fixed-window counters keyed by task id. Bounded by construction: a sweep on every check
+    /// drops entries from a window strictly older than the one being judged, so task churn cannot
+    /// grow the map without bound.
+    windows: std::collections::HashMap<String, PushWindow>,
+}
+
+/// The per-task push-volume limiter. One process-wide instance, mirroring [`secret`]'s and
+/// `taskstore::TASKS`'s own process-wide statics: this endpoint authenticates a token minted by
+/// THIS process, so the budget it spends belongs to this process too.
+struct PushLimiter {
+    state: Mutex<PushLimiterState>,
+}
+
+impl PushLimiter {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(PushLimiterState {
+                latest_window: 0,
+                windows: std::collections::HashMap::new(),
+            }),
+        }
+    }
+
+    /// Spend one push from `task_id`'s budget at time `now` (unix seconds, from the caller's own
+    /// clock seam — never read here). Returns `false` once the current window's
+    /// [`PUSH_RATE_LIMIT`] is spent for that task. Never panics (poisoned lock recovered, matching
+    /// every other lock on this request path — see `busbar_kernel::store::lock_recover`'s doc for
+    /// why a poisoned rate limiter must degrade rather than cascade).
+    ///
+    /// # A clock that goes backwards
+    ///
+    /// `now` is a WALL clock pinned once per request; wall clocks are not monotonic (an NTP
+    /// correction steps one backwards), so an older `now` arriving after a newer one is not
+    /// hypothetical. This clamps the window judged against `latest_window` — the newest window
+    /// this limiter has seen — rather than trusting `now` outright, so a regressed clock cannot
+    /// reopen a budget that is already spent for the live window. See
+    /// `busbar_kernel::ratelimit::MutationLimiter::check`'s doc for the fuller account of the
+    /// bug this posture closes; the fix here is the identical shape, reproduced for a task key
+    /// instead of a principal.
+    fn admit(&self, task_id: &str, now: u64) -> bool {
+        let arrived_in = now - (now % PUSH_RATE_WINDOW_SECS);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let window = arrived_in.max(state.latest_window);
+        state.latest_window = window;
+        state.windows.retain(|_, (w, _)| *w >= window);
+        let entry = state
+            .windows
+            .entry(task_id.to_string())
+            .or_insert((window, 0));
+        if entry.1 >= PUSH_RATE_LIMIT {
+            return false;
+        }
+        entry.1 += 1;
+        true
+    }
+}
+
+/// THE process-wide push-volume limiter. See the module comment above for why one static, keyed by
+/// task, is the right shape.
+static PUSH_LIMITER: LazyLock<PushLimiter> = LazyLock::new(PushLimiter::new);
+
+/// A `429`, with the fixed window length advertised on `Retry-After` — a compliant backend backs
+/// off without guessing, matching `busbar_kernel::auth`'s own `rate_limited_response`.
+fn rate_limited() -> Response {
+    (
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        [(
+            axum::http::header::RETRY_AFTER,
+            PUSH_RATE_WINDOW_SECS.to_string(),
+        )],
+        axum::Json(serde_json::json!({
+            "error": { "message": "this task's push volume has exceeded its window budget" }
+        })),
+    )
+        .into_response()
+}
+
 // ══ THE ENDPOINT ═════════════════════════════════════════════════════════════════════════════════
 
 /// `POST /a2a/push` — A BACKEND REPORTING A TASK IT MOVED.
@@ -252,11 +364,13 @@ pub(crate) fn mirrored_verb(verb: super::local::LocalVerb) -> Option<&'static st
 /// The sequence, and every step is a refusal that costs nothing further:
 ///
 /// 1. the presented token names a task, or `401`;
-/// 2. the body is a `Task` document within the ceiling, or `400`;
-/// 3. the state it reports is recorded through `taskstore::transition`, which is the SAME
+/// 2. that task's own push-volume budget has room, or `429` — [`PushLimiter`], the fixed-window
+///    bound on how OFTEN a live token may be spent, asked before any of the cost below;
+/// 3. the body is a `Task` document within the ceiling, or `400`;
+/// 4. the state it reports is recorded through `taskstore::transition`, which is the SAME
 ///    transition table and the SAME per-task hash chain every other observation of this task goes
 ///    through — a push is not a second way for a task to move;
-/// 4. and the caller's own delivery is made by [`super::pushdeliver`], with its guard, its
+/// 5. and the caller's own delivery is made by [`super::pushdeliver`], with its guard, its
 ///    re-resolution and its pin.
 ///
 /// **NOTHING FROM THE BODY REACHES THE CALLER'S WEBHOOK.** The delivery is composed from busbar's
@@ -289,6 +403,16 @@ pub(crate) async fn push_notification(ctx: busbar_kernel::plane_routes::PlaneReq
             "this endpoint is addressed by the push token busbar registered with the agent",
         );
     };
+    let now = ctx.host.clock_now_secs();
+    // ── THE VOLUME BOUND. ────────────────────────────────────────────────────────────────────────
+    //
+    // Asked as early as every other refusal on this endpoint — right after the token is proven to
+    // name a task and before ANY of the cost this endpoint exists to bound: the sweep below, the
+    // row lookup, the body parse, the durable transition and the outbound delivery. See the "THE
+    // VOLUME BOUND" section comment above [`PushLimiter`] for what this closes.
+    if !PUSH_LIMITER.admit(&task_id, now) {
+        return rate_limited();
+    }
     // ── THE DEADLINE IS ENFORCED ON PRESENT, NOT ONLY ON SUBMIT. ────────────────────────────────
     //
     // `token_live` below retires a token when its task ends, and `taskstore`'s retention sweep is
@@ -369,7 +493,6 @@ pub(crate) async fn push_notification(ctx: busbar_kernel::plane_routes::PlaneReq
     // THE STATE THE BACKEND REPORTED, read by the SAME function that reads a relayed answer's
     // state. A push and a reply are two spellings of one fact and must not be read by two readers.
     let reported = super::relay::reported_task_state(&document);
-    let now = ctx.host.clock_now_secs();
     let moved = if reported == task.state {
         // Not an error and not a transition: a backend re-reporting a state busbar already holds is
         // a retry, and `transition` would refuse a move to the state it is already in.
@@ -464,4 +587,74 @@ fn refused(status: axum::http::StatusCode, message: &str) -> Response {
 /// it is for. Single-use would break the interrupted task this whole endpoint exists to serve.
 pub(crate) fn token_live(state: TaskState) -> bool {
     !state.is_terminal()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **THE FIXED WINDOW, DRIVEN DIRECTLY AGAINST AN INJECTED CLOCK — never a real sleep.**
+    ///
+    /// `PushLimiter::admit` takes `now` as a plain argument (the same seam
+    /// `busbar_kernel::ratelimit::MutationLimiter::check` uses), so the window's roll is provable
+    /// without waiting on it: 60 pushes inside one window are admitted, the 61st inside that SAME
+    /// window is refused, and a `now` that has moved into the NEXT window admits again.
+    #[test]
+    fn sixty_per_task_per_window_then_denied_then_the_window_rolls() {
+        let limiter = PushLimiter::new();
+        let t = 1_000_000; // window-aligned enough (fixed windows key on now - now % 60)
+
+        for i in 0..PUSH_RATE_LIMIT {
+            assert!(
+                limiter.admit("task-a", t),
+                "push {i} of {PUSH_RATE_LIMIT} must be within the window's budget"
+            );
+        }
+        assert!(
+            !limiter.admit("task-a", t),
+            "the 61st push inside one window must be refused"
+        );
+        // Still refused on a later ask within the SAME window — the limiter does not admit again
+        // just because it was asked again.
+        assert!(
+            !limiter.admit("task-a", t + 1),
+            "a second ask later in the SAME window must still be refused"
+        );
+
+        // A different task has its OWN untouched budget — the key is the task, not a shared
+        // process-wide counter.
+        assert!(
+            limiter.admit("task-b", t),
+            "a different task must have its own budget"
+        );
+
+        // AND THE WINDOW ROLLS: once `now` has moved a full window forward, the next request is
+        // admitted again.
+        assert!(
+            limiter.admit("task-a", t + PUSH_RATE_WINDOW_SECS),
+            "a new window must refill the budget"
+        );
+    }
+
+    /// A REQUEST CARRYING AN OLDER CLOCK MUST NOT REFILL A SPENT BUDGET — the same regressed-clock
+    /// posture `MutationLimiter` is proved under, reproduced here for a task key.
+    #[test]
+    fn an_out_of_order_now_cannot_refill_a_spent_budget() {
+        let limiter = PushLimiter::new();
+        for i in 0..PUSH_RATE_LIMIT {
+            assert!(limiter.admit("task-a", 120), "push {i} within the budget");
+        }
+        assert!(!limiter.admit("task-a", 120));
+        // Some OTHER task, judged at an EARLIER `now`. This must not rewind the live window.
+        let _ = limiter.admit("task-b", 60);
+        assert!(
+            !limiter.admit("task-a", 120),
+            "a request from an earlier window must not wipe task-a's live counter"
+        );
+        let _ = limiter.admit("task-b", 0);
+        assert!(
+            !limiter.admit("task-a", 120),
+            "an unreadable wall clock read as 0 must not wipe task-a's live counter"
+        );
+    }
 }
