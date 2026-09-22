@@ -1663,6 +1663,35 @@ filesystem path: the host opens the destination and hands the plugin a write sin
 
 ## Traps this tree has already sprung — do not re-learn them
 
+**THE ORACLE'S BLINDNESS TO PLANE MONEY IS NOW A NUMBER, NOT AN IMPRESSION.** Measured 2026-09-22
+over the committed 2,318-cell corpus, by grepping every cell for money/billing/usage/ledger/
+rate_card/audit:
+
+| plane | cells | cells touching money |
+|---|---|---|
+| mcp | 912 | **0** |
+| a2a | 468 | **0** |
+| llm | 149 | 14 |
+| core | 789 | 57 |
+
+The 152 mcp `over_budget` cells look like money and are not — they are Admit-step 429 refusals
+(*"budget exhausted → refused at Admit"*) asserting **no posting, no rate-card version, no unit key**.
+
+**So an oracle-green result is silent about every plane money fault**, and that is structural rather
+than accidental: no 1.5.5 golden can exist for a post-1.5.5 plane, and the generated `config.yaml`
+has no `tools:` section, so the mcp plane never even loads for a recorded cell. Of the golden's 916
+PASS rows, **zero are mcp** — all 912 read `SKIP UNSUPPORTED`.
+
+**Never cite oracle-green as evidence about plane money.** The witnesses that CAN see it are the
+conformance rigs and the per-plane money legs; those are the ones to point at.
+
+**A SECOND REASON NOT TO TRUST A LOCAL ORACLE RUN, unrelated to blindness.** A run the same day
+reported 561 divergences of which **514 were `missing.candidate`** — the recorder produced 402 of 916
+owed cells, because concurrent recorders on the shared fixed port band starve each other. A
+divergence count from a partial recording is not a divergence count. **CI's `shadow-oracle` job is
+the only place a run completes.**
+
+
 **A GREP CANNOT SEE DATA-DRIVEN CODE, AND EVERY SOURCE-SCANNING GATE HERE IS A GREP.** Demonstrated
 2026-09-22, by an agent proving its own method wrong rather than trusting it. It swept
 `crates/busbar-kernel/src/plane_host/egress.rs` for `TcpStream|connect(|HttpsConnector|ClientConfig|
