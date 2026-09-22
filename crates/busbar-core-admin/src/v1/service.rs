@@ -2240,6 +2240,41 @@ impl AdminService {
         })
     }
 
+    /// Validate an `?as_of` rate-card-history snapshot, or REFUSE.
+    ///
+    /// A seq ABOVE THE HEAD is an error and never a clamp. Clamping would answer a DIFFERENT
+    /// question under the name of the one that was asked, which is exactly the failure the
+    /// behaviour this replaces was recorded for: the parameter was ignored, the body was the
+    /// live-card reprice, and the response reported an `as_of` contradicting the URL — a caller
+    /// who guessed the parameter got a confident wrong answer. A refusal is the only answer that
+    /// cannot be mistaken for the snapshot.
+    ///
+    /// A node with NO history refuses for the same reason: there is no snapshot of a history that
+    /// does not exist, and serving the live figure under a snapshot's name would be that same
+    /// confident wrong answer. A refusal rather than an empty body, because an empty body is a
+    /// silent zero wearing a different hat (#42).
+    fn validated_snapshot(
+        history: Option<&busbar_kernel_ledger::cost::History>,
+        seq: u64,
+    ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AdminError> {
+        let head = history
+            .and_then(busbar_kernel_ledger::cost::History::head)
+            .ok_or_else(|| {
+                AdminError::Validation(
+                    "as_of names a rate-card history snapshot; this node has resolved no \
+                     rate-card history to snapshot"
+                        .into(),
+                )
+            })?;
+        if seq > head.get() {
+            return Err(AdminError::Validation(format!(
+                "as_of {seq} is above the rate-card history head ({head}); a snapshot that does \
+                 not exist is refused, never answered at the head"
+            )));
+        }
+        Ok(busbar_kernel_ledger::cost::HistorySeq(seq))
+    }
+
     /// `GET /api/v1/admin/usage` — the fleet METERING read (FinOps surface): the current UTC-day
     /// bucket's raw consumption, aggregated per (model, provider) and per key, each row carrying the
     /// full token SPLIT plus a DERIVED `spend_micros` (raw counts are what's stored, so a consumer
@@ -2253,7 +2288,18 @@ impl AdminService {
     /// store reads run on a blocking thread; never returns a secret — ids/names only.
     /// `window`: a caller-selected PAST bucket start (validated: bucket-aligned, not in the
     /// future); `None` = the current bucket. The response shape is pinned: always one bucket.
-    pub(crate) async fn get_usage(&self, window: Option<u64>) -> Result<UsageView, AdminError> {
+    ///
+    /// `as_of`: a caller-selected SNAPSHOT of the dated rate-card history — the reproducibility
+    /// primitive. An invoice cut at a snapshot is re-derived by asking for that snapshot again,
+    /// because no entry is ever removed and no entry's number ever moves. `None` = the history as
+    /// it stands. A seq ABOVE THE HEAD is a REFUSAL, never a clamp
+    /// ([`Self::validated_snapshot`]). The `as_of` FIELD on the response is a different thing and
+    /// is unchanged: it is the instant the read was taken.
+    pub(crate) async fn get_usage(
+        &self,
+        window: Option<u64>,
+        as_of: Option<u64>,
+    ) -> Result<UsageView, AdminError> {
         let now = busbar_kernel::store::now();
         let current = busbar_kernel::governance::metering_bucket(now);
         let bucket = match window {
@@ -2274,6 +2320,17 @@ impl AdminService {
         let window = UsageWindow {
             start: bucket,
             end: bucket + busbar_kernel::governance::METERING_BUCKET_SECS,
+        };
+        // DECISION #79 — THE DATED RATE-CARD HISTORY, taken ONCE for the whole read so every row of
+        // one response is answered at one snapshot. A card appended while this read is in flight
+        // must not price half its rows against one history and half against another.
+        let history = self.rate_history.and_then(UsageRateHistory::history);
+        // The snapshot the caller named, VALIDATED BEFORE ANY BOOK IS READ, so a request for a
+        // state that does not exist is refused rather than quietly answered at some other state —
+        // including when governance is off and the read would otherwise return early.
+        let snapshot = match as_of {
+            None => None,
+            Some(seq) => Some(Self::validated_snapshot(history.as_deref(), seq)?),
         };
         let empty = || UsageView {
             window,
@@ -2330,13 +2387,12 @@ impl AdminService {
                 return Err(AdminError::Internal);
             }
         };
-        // DECISION #79 — THE DATED RATE-CARD HISTORY, taken ONCE for the whole read so every row
-        // of one response is answered at one snapshot. A card appended while this read is in flight
-        // must not price half its rows against one history and half against another.
-        let history = self.rate_history.and_then(UsageRateHistory::history);
-        let view = history
-            .as_deref()
-            .map(busbar_kernel_ledger::cost::History::current);
+        // The snapshot this read is answered at: the one the caller named, or the history as it
+        // stands when no snapshot was named.
+        let view = history.as_deref().map(|h| match snapshot {
+            Some(at) => h.snapshot(at),
+            None => h.current(),
+        });
         // Aggregate in memory — a bucket is bounded by (keys × models) accumulation rows.
         let mut total = UsageBreakdown::default();
         let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =

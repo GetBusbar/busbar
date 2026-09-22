@@ -787,8 +787,22 @@ Unchanged in every byte except the one described in §9. It keeps its exact fiel
 additive rollup (`service.rs:2214-2244`), its 500 on a store error (`service.rs:2192-2211`) and its
 `window`/`as_of` semantics (`contract/mod.rs:1067-1075`). PB-16 holds: no additive lines.
 
-What changes is only which card each row is priced at: `card_at(the row's instant)` under the
-current head, rather than the live card for every row.
+What changes is which card each row is priced at, and one added request parameter.
+
+**The card.** `card_at(the row's own first instant)` under the selected snapshot, rather than the
+live card for every row. "The row's own first instant" is `max(bucket_start, priced_from_ms)`, where
+`priced_from_ms` is a new `#[serde(default)]` field on `MeteringDelta`/`MeteringRow` carrying the
+`effective_from` of the entry in force when the counts were accrued, and it JOINS THE ACCRUAL KEY —
+so a card edit inside a UTC day opens a second row and each half of the day prices at the card it
+was earned under. The clip to the bucket start is load-bearing and not a detail: an entry effective
+from instant zero dates every row it covers at zero, and a signed correction over
+`[effective_from, effective_until)` is a window in WALL-CLOCK time that zero falls outside of — so
+resolving at the era start alone makes the sanctioned repair path a no-op for exactly the rows it
+exists to repair.
+
+**The parameter.** `/usage` gains `?as_of=<history_seq>` — see §8.7, which used to say it did not.
+Where there is no history, or the row's instant falls in a hole no entry of the snapshot covers, the
+read FALLS BACK to the previous release's flat derivation: a fallback, never a silent zero (#42).
 
 The `LEDGER RULE` sentence (`contract/mod.rs:1077-1079`) is rewritten in place, because it is now
 half wrong: `spend_micros` is still derived and still not a ledger charge, but a price change no
@@ -798,8 +812,19 @@ longer reprices history. New text in document B.
 
 The five read-only verbs (`crates/busbar/src/root/units_admin.rs:4310-4314`; totals `:750`,
 checkpoints `:781`, reconciliation `:895`, migration `:942`) each gain `?as_of` and `?currency`,
-and each response gains `history_seq`, `head`, `currency` and `adjustments` (§5.1). Two new reads
-and one new write join them:
+and each response gains `history_seq`, `head`, `currency` and `adjustments` (§5.1).
+
+**`?as_of` IS NOT LIMITED TO THESE FIVE, and an earlier draft of this section was wrong to imply it
+was.** The recorded oracle cell `ledger|rate-history|as-of` sends
+`GET /api/v1/admin/usage?as_of=1` and states in its own `why` that under 1.6.0 "the same URL returns
+the snapshot it names". A recorded cell is the contract and this prose is not; where they disagreed,
+the cell won and `/usage` takes the parameter too (§8.6). Its semantics there are the same as here —
+a snapshot the whole read is answered at — with one rule stated once: **a seq above the head is
+REFUSED, never clamped to the head and never answered with an empty body.** Clamping would answer a
+different question under the name of the one that was asked, which is the precise failure the cell
+records 1.5.5 for.
+
+Two new reads and one new write join them:
 
 | Verb | Method + path | Scope |
 |---|---|---|

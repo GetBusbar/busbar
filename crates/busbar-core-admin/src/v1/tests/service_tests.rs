@@ -1831,7 +1831,7 @@ fn usage_read_store_failure_logs_the_real_error() {
                 Arc::new(GovState::new(Arc::new(FailingMeteringStore::default()), None).unwrap());
             let app = crate::new_test_app().governance(gov).build();
             let svc = AdminService::new(app);
-            let err = svc.get_usage(None).await.unwrap_err();
+            let err = svc.get_usage(None, None).await.unwrap_err();
             assert!(
                 matches!(err, AdminError::Internal),
                 "wire contract is unchanged: still AdminError::Internal, {err:?}"
@@ -2394,7 +2394,7 @@ mod dated_rate_card_history {
     const DAY: u64 = busbar_kernel::governance::METERING_BUCKET_SECS;
 
     /// A COMPLETE one-lane card at `micro_per_token` micro-units per input token, no flat fee.
-    fn card(micro_per_token: f64) -> RateCard {
+    pub(super) fn card(micro_per_token: f64) -> RateCard {
         RateCard::from_config(
             Some([(
                 LANE,
@@ -2440,7 +2440,7 @@ mod dated_rate_card_history {
 
     /// A source the service can hold for `'static`. Leaked on purpose: the production holder is a
     /// process-wide `OnceLock` and a test that raced it could only ever run once.
-    fn source(history: History) -> &'static dyn UsageRateHistory {
+    pub(super) fn source(history: History) -> &'static dyn UsageRateHistory {
         Box::leak(Box::new(Recorded {
             history: Arc::new(history),
         }))
@@ -2450,7 +2450,7 @@ mod dated_rate_card_history {
     /// which is why a card edit inside a day is TWO rows rather than one. Written through the store
     /// seam because `record_metering` can only ever bucket at the wall clock, and these windows are
     /// in the past.
-    fn gov_with_rows(rows: &[(u64, u64)]) -> Arc<GovState> {
+    pub(super) fn gov_with_rows(rows: &[(u64, u64)]) -> Arc<GovState> {
         let store = Arc::new(MemoryStore::new());
         for (bucket, priced_from_ms) in rows {
             busbar_api::Store::add_metering(
@@ -2488,15 +2488,46 @@ mod dated_rate_card_history {
             .build();
         AdminService::new(app)
             .with_rate_history(src)
-            .get_usage(Some(bucket))
+            .get_usage(Some(bucket), None)
             .await
             .expect("usage read")
+    }
+
+    /// The same read, naming a rate-card history SNAPSHOT, and returning the `Result` so a
+    /// refusal is a value the caller asserts on rather than a panic.
+    pub(super) async fn read_as_of(
+        gov: Arc<GovState>,
+        src: &'static dyn UsageRateHistory,
+        bucket: u64,
+        as_of: Option<u64>,
+    ) -> Result<UsageView, AdminError> {
+        let app = crate::new_test_app()
+            .governance(gov)
+            .cost(newest_cost())
+            .build();
+        AdminService::new(app)
+            .with_rate_history(src)
+            .get_usage(Some(bucket), as_of)
+            .await
+    }
+
+    /// A snapshot named against a service with NO dated-history source at all.
+    pub(super) async fn read_no_source_as_of(
+        gov: Arc<GovState>,
+        bucket: u64,
+        as_of: Option<u64>,
+    ) -> Result<UsageView, AdminError> {
+        let app = crate::new_test_app()
+            .governance(gov)
+            .cost(newest_cost())
+            .build();
+        AdminService::new(app).get_usage(Some(bucket), as_of).await
     }
 
     /// The three dated windows, day-aligned because a metering bucket is a UTC day. The owner's
     /// example spans months; the arithmetic of "an earlier window keeps its own card" is the same
     /// at any spacing, and a day apart keeps the fixture inside the memory store's retention.
-    fn windows() -> (u64, u64, u64) {
+    pub(super) fn windows() -> (u64, u64, u64) {
         let today = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now());
         (today - 3 * DAY, today - 2 * DAY, today - DAY)
     }
@@ -2765,7 +2796,7 @@ mod dated_rate_card_history {
             ))
             .build();
         let view = AdminService::new(app)
-            .get_usage(None)
+            .get_usage(None, None)
             .await
             .expect("usage read");
         assert_eq!(
@@ -2892,4 +2923,149 @@ fn every_money_read_in_this_crate_is_registered() {
         MONEY_READS.iter().any(|(.., resolves)| *resolves),
         "no registered money read resolves through the dated history — #79 is unwired"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// `?as_of` — THE RATE-CARD HISTORY SNAPSHOT SELECTOR
+//
+// Honouring the recorded cell `ledger|rate-history|as-of`, which sends
+// `GET /api/v1/admin/usage?as_of=1`. A recorded behaviour is the contract; the design prose that
+// gave `?as_of` to the ledger endpoints ONLY was stale and has been corrected to match.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod usage_as_of {
+    use super::dated_rate_card_history::{
+        card, gov_with_rows, read_as_of, read_no_source_as_of, source, windows,
+    };
+    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, History};
+
+    /// An older snapshot prices at the older head, and the same URL asked twice answers the same
+    /// thing forever — which is the whole of what a snapshot is for.
+    ///
+    /// The fixture is the recorded cell's shape: a window earned under the opening card, then a
+    /// card published over it. At `as_of = 0` only the opening entry is visible, so the window
+    /// reads what it always read; at the head both entries are, and — because the row was earned
+    /// before the publish — it STILL reads the same. The second assertion is the one worth having:
+    /// a snapshot selector that changed a window the publish never touched would be selecting the
+    /// wrong thing.
+    #[tokio::test]
+    async fn an_older_snapshot_is_re_derivable_and_the_publish_moves_neither() {
+        let (payg, _, _) = windows();
+        let gov = gov_with_rows(&[(payg, 0)]);
+        let mut history = History::opening(card(10.0), 0);
+        let now_ms = busbar_kernel::store::now().saturating_mul(1_000);
+        history.append(CardEntryDraft {
+            effective_from: now_ms,
+            effective_until: None,
+            card: card(1.0),
+            appended_at: now_ms,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        let src = source(history);
+
+        assert_eq!(
+            read_as_of(gov.clone(), src, payg, Some(0))
+                .await
+                .expect("seq 0 exists")
+                .total
+                .spend_micros,
+            10_000,
+            "at the opening snapshot the window prices at the opening card"
+        );
+        assert_eq!(
+            read_as_of(gov, src, payg, Some(1))
+                .await
+                .expect("seq 1 is the head")
+                .total
+                .spend_micros,
+            10_000,
+            "and at the head too — the publish is dated after the window it did not touch"
+        );
+    }
+
+    /// A BACK-DATED correction is what makes two snapshots of one window differ, and the
+    /// difference is exactly the correction.
+    #[tokio::test]
+    async fn a_snapshot_before_a_correction_still_answers_the_old_figure() {
+        let (payg, _, _) = windows();
+        let gov = gov_with_rows(&[(payg, 0)]);
+        let mut history = History::opening(card(10.0), 0);
+        history.append(CardEntryDraft {
+            effective_from: payg.saturating_mul(1_000),
+            effective_until: Some(payg.saturating_add(86_400).saturating_mul(1_000)),
+            card: card(5.0),
+            appended_at: busbar_kernel::store::now().saturating_mul(1_000),
+            author: Author::Amend {
+                operator_fingerprint: "sha256:operator".to_string(),
+                reason_hash: [7u8; 32],
+            },
+        });
+        let src = source(history);
+
+        assert_eq!(
+            read_as_of(gov.clone(), src, payg, Some(0))
+                .await
+                .expect("seq 0 exists")
+                .total
+                .spend_micros,
+            10_000,
+            "the snapshot taken before the correction re-derives the figure it was cut at"
+        );
+        assert_eq!(
+            read_as_of(gov.clone(), src, payg, Some(1))
+                .await
+                .expect("seq 1 is the head")
+                .total
+                .spend_micros,
+            5_000,
+            "the snapshot that can see the correction reports the corrected figure"
+        );
+        assert_eq!(
+            read_as_of(gov, src, payg, None)
+                .await
+                .expect("no snapshot named")
+                .total
+                .spend_micros,
+            5_000,
+            "and naming no snapshot is the history as it stands, which is the head"
+        );
+    }
+
+    /// **A SEQ ABOVE THE HEAD IS REFUSED**, never clamped to the head and never an empty body.
+    #[tokio::test]
+    async fn a_snapshot_above_the_head_is_refused_rather_than_clamped() {
+        let (payg, _, _) = windows();
+        let gov = gov_with_rows(&[(payg, 0)]);
+        let src = source(History::opening(card(10.0), 0));
+
+        let err = read_as_of(gov, src, payg, Some(7))
+            .await
+            .expect_err("a snapshot that does not exist is a refusal");
+        let busbar_kernel::admin::v1::contract::AdminError::Validation(msg) = &err else {
+            panic!("expected a client-safe validation refusal, got {err:?}");
+        };
+        assert!(
+            msg.contains("as_of 7") && msg.contains("head (0)"),
+            "the refusal must name the seq asked for and the head that exists: {msg}"
+        );
+    }
+
+    /// A node with NO dated history refuses a snapshot rather than serving the live figure under a
+    /// snapshot's name.
+    #[tokio::test]
+    async fn a_snapshot_of_a_history_that_does_not_exist_is_refused() {
+        let (payg, _, _) = windows();
+        let gov = gov_with_rows(&[(payg, 0)]);
+        let err = read_no_source_as_of(gov, payg, Some(0))
+            .await
+            .expect_err("there is no snapshot of a history that does not exist");
+        let busbar_kernel::admin::v1::contract::AdminError::Validation(msg) = &err else {
+            panic!("expected a client-safe validation refusal, got {err:?}");
+        };
+        assert!(
+            msg.contains("no rate-card history"),
+            "the refusal must say WHY there is nothing to snapshot: {msg}"
+        );
+    }
 }
