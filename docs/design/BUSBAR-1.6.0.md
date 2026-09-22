@@ -1276,6 +1276,58 @@ the `units_*_leg.rs`/`plane_mount.rs` shape (#28 chose the gauntlet-kernel-rider
 `Arena` fixed-cap model (#41). These appear as survivors because their symbols are absent from
 trunk. Absent because they were **decided against**.
 
+## Unattended wave, 2026-09-21 night — what landed
+
+Twenty commits. Every fix below was red-before-green with the failing output captured, and every one
+was verified by re-running the suite myself rather than trusting the agent's report.
+
+**Money — the serious one.** `serde_json`'s `as_u64()` returns `None` for a float-backed number, so
+the house idiom `.as_u64().unwrap_or(0)` recorded a real count as **zero** for any provider that
+spells counts as floats. Present in all six dialects; **shipped in v1.5.5**. One canonical reader
+now serves the whole crate, and a non-vacuous source-scan guard stops the seventh dialect
+reinventing it. Gemini was the worst case: its usage is an additive sum, so one float term
+contributed zero to a total that still looked plausible (read 89, should have been 172). **Parked
+for the owner, not self-approved** — see the PARK section. Second money item also parked: whether a
+rate-card edit reprices history.
+
+**Security and integrity.**
+
+| Fix | What it actually allowed |
+|---|---|
+| admin key-rotate idempotency key | A crafted `(id, header)` pair was served **another caller's cached rotate response**, token material included, without ever holding a valid id |
+| audit digest framing | Two materially different audit facts hashed identically — a rejected entry and an applied one could collide by shaping their own fields |
+| auth cache re-put on hit | A credential under steady traffic **never expired**, so revoking it did nothing for as long as it kept being used |
+| `CredentialSlab` Debug + clear | Credentials printed in the clear by any formatter, and left readable in spare capacity after release |
+| Twilio empty `streamSid` | An empty id bound vacuously, so the anti-forgery check compared empty to empty and admitted frames from anyone |
+| Twilio media format | Never validated, so a mismatched format was decoded **and timed** wrongly — and duration is a ledger quantity |
+| MCP `"id": null` | A request with an explicit null id was read as a notification and never answered — caller hangs forever |
+| MCP token exchange | No byte cap; an upstream could stream an unbounded body into memory |
+| A2A push route | No volume bound: one token, unbounded durable audit writes and outbound webhooks — busbar as an amplifier |
+| `InFlight::insert` | Overwrote a duplicate key, orphaning a hold so its budget stayed reserved forever |
+| SNI case comparison | Two overlapping transport claims judged disjoint, so boot cleared a config with two listeners on one name |
+| plane-record fork | A second writer silently overwrote a chained record and the store said nothing |
+| journal `ts: 0` | Every scoped row looked infinitely old, so retention deleted it immediately |
+| three transport hangs | TLS close, and TCP connect at two sites, could park indefinitely |
+
+**Verify→Route seam.** Verify sealed a destination set and dropped it; Route re-derived its own. The
+sealed set is now threaded through Route and Meter, so what was checked is provably what was used.
+No quantity or arithmetic changed — the trait signatures did, so all six implementors in the binary
+were updated.
+
+**Release engine.** `gate-mutants` removed from `qa` and `main` required checks (it was required
+while disabled — neither branch could ever go green). The turnstile bridge landed, deliberately
+`workflow_dispatch`-only rather than repointed to `predev`. Both detailed in Part 6.
+
+### One process failure, stated plainly
+
+Commit `1772c74706`, whose subject is only `refactor(#41): ArenaExhausted -> ScratchExhausted`,
+swept up **three different agents' uncommitted work**: the Cohere billing fix, the auth-cache
+revocation fix, and the arena→mask rename. A blanket `git add` ran while agents held the same
+working tree. The bytes are correct and the trail is recorded in `1b6c9d4ba`, but a billing change
+sitting inside a rename commit is exactly what an auditor fails. Every commit after that point
+stages explicit paths and deliberately leaves files belonging to still-running agents alone. **The
+habit is the defect, not the one commit.**
+
 ## The crate roster, named — 61 today, 28 at the end
 
 The owner asked whether the locked ~30 crates are named right anywhere. They were not. They are
