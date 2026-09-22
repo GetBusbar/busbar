@@ -1627,6 +1627,33 @@ the thing to fix, not just this one commit.
 
 **Verified defects, not yet fixed:**
 
+0. **THE PLUGIN ABI STILL SAYS `arena`, AND THE NAME IS NEW IN 1.6.0 — so the owner's own ruling
+   applies.** The `#41` rename was carried out properly *in code*: there is not one `ArenaBudget`,
+   `arena_budget` or `ArenaExhausted` left, and the wire value is `"scratch_exhausted"`. But the
+   **plugin-facing ABI was not renamed**: `busbar-contract/src/unit.rs:538` exposes
+   `pub fn arena(&self) -> &'u dyn PlaneAlloc`, and `arena:` remains a parameter name across
+   `spans.rs`, `transport/mod.rs` and `unit.rs`. `ARCHITECTURE.md` still says "`Ctx.arena` is the one
+   resource handle."
+
+   This matters more than an ordinary stale name for two reasons:
+   - **`busbar-contract` IS the plugin dependency closure (#40)** — it is the surface every plugin
+     compiles against. A name here is a published contract, not an internal detail.
+   - **It is NEW.** Measured: `git grep -P 'fn arena\b' v1.5.5` returns nothing, and `PlaneAlloc`
+     does not exist in v1.5.5 at all. So this is not an inherited name that costs compatibility to
+     change — it is a 1.6.0 invention, and the owner's standing ruling covers exactly this case:
+     *"this is brand new in 1.6.0 … if its new lets code it clean."*
+
+   Once 1.6.0 ships, every third-party plugin is written against `ctx.arena()`, and a concept the
+   architecture has explicitly retired becomes permanent in the contract. The window to fix it for
+   free closes at the cut.
+
+   **Not started deliberately.** `arena` appears as an identifier across **113 files**, and the
+   rename crosses `busbar-contract`, `busbar-kernel`, the planes and the transports — every area
+   currently under concurrent edit. It is mechanical, not subtle, and should run as one sweep on a
+   quiet tree, verified by the same `git grep -P` that measured it.
+
+
+
 1. **The plain container image could not dlopen a user-supplied plugin — FIXED, but the drop-in
    story is still not whole.** The runtime libs now ship in the plain image, extracted once from the
    already-pinned `rust:alpine` digest and copied in unconditionally, so the fix is a property of
