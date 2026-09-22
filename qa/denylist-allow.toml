@@ -61,49 +61,62 @@
 # [[allow]]
 # crate = "busbar-plane-example"
 # dep = "libc"
-# via = "cpufeatures"
-# reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O \
-#           primitive is reachable through this edge; re-review if any other path to libc appears"
+# via = "some-reviewed-intermediate-crate"
+# reason = "why THIS CRATE reaching libc through that intermediate is safe, reviewed; re-review \
+#           if any other path to libc appears"
 # owner = "the person who reviewed it"
-
-[[allow]]
-crate = "busbar-plane-a2a"
-dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
-owner = "orchestrator, 2026-09-05"
+#
+# ── WHAT DOES *NOT* BELONG HERE: AN EDGE THE WHOLE TREE HAS RULED ON ────────────────────────────
+#
+# This file answers "this CRATE may reach this offender". It is the wrong shape for a fact about an
+# EDGE, and using it for one is how a rule stops being a rule. `(dep = libc, via = cpufeatures)`
+# used to live here as SIX near-identical `[[allow]]` rows — busbar-plane-a2a, -llm, -mcp,
+# -streaming, hook-test-plugin, hooks-ranking — each restating one paragraph of
+# CPU-feature-detection reasoning, and enrolling the auth kind (auth-static-plugin,
+# auth-admin-tokens) was about to demand a seventh and an eighth. A decision restated once per
+# rediscovery is not a decision the tree can state; it is six copies nobody can reconcile.
+#
+# TWO OF THOSE SIX WERE ALSO ALREADY RED, AND FOR A DIFFERENT REASON — say it separately, because
+# it is a separate finding. `busbar-plane-a2a` and `busbar-plane-mcp` reach `libc` by NO route at
+# all any more: the unfiltered scan finds zero hits for either crate, so `denylist:stale-waivers`
+# had been reporting both rows for having outlived their offenders since before this collapse.
+# They are deleted on THAT ground — the middle rule above, not the edge ruling — and the edge
+# ruling would not have covered them, because there is nothing left in either crate to cover. That
+# also disposes of the `getrandom` half of the mcp row: the closure it described
+# (`sonic_rs -> ahash`) is not in that crate's graph either, so deleting it blesses no live edge.
+#
+# The other four are gone by COLLAPSE. The ruling now lives ONCE, keyed on the edge and not on any
+# crate, as
+# `[[rules.source-denylist.edge_exemptions]]` in `qa/construction.toml` (OWNER RULING 2026-09-22,
+# docs/design/BUSBAR-1.6.0.md). It carries `reason`, `owner`, and the enumerated `symbols` the
+# `via` crate takes from `dep` as its evidence; it is decided by the SAME `find_bypass_path` walk
+# `via` uses here, so it exempts that path and no other; and it is held to this file's own
+# both-ways floor — an exemption that suppresses no hit is RED in `denylist:stale-waivers`, exactly
+# as a waiver that covers no hit is.
+#
+# So: write an `[[allow]]` row when the answer is about THIS CRATE. Ask for an edge exemption when
+# the answer is about the EDGE and would be identical in every pure kind that took it. What you may
+# not do is mint the fifth copy.
+#
+# AN EDGE EXEMPTION DOES NOT SWALLOW THE OTHER EDGES A CRATE TAKES. A crate reaching one offender
+# through an exempted edge AND through a second, separately-reviewed one keeps its `[[allow]]` row
+# for the second — the exemption is added to that row's `via` list, not substituted for it, so the
+# two compose and the second edge still has to be defended here. That is why the llm and streaming
+# rows below still exist and now name `getrandom` alone: `getrandom -> libc` is a DIFFERENT edge
+# with a different argument, and the ruling above is explicit that it is NOT ruled on.
 
 [[allow]]
 crate = "busbar-plane-llm"
 dep = "libc"
-via = "cpufeatures, getrandom"
-reason = "Two reviewed, non-I/O edges reach libc from this plane, both closed once the xtask/denylist.rs phantom-optional-dependency fix (edge_is_active) dropped the third, unreal one (sonic_rs -> faststr -> rkyv -> uuid_1 -> getrandom -> libc: faststr's rkyv dependency is optional and its 'rkyv' feature is active nowhere in the workspace -- confirmed against the real rustc invocation for busbar-plane-llm, which carries no --cfg feature=\"rkyv\" and no --extern rkyv). (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable through this edge. (2) getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall (busbar-llm-codec's own direct `getrandom = { workspace = true }` dependency, drawn by synth_rng.rs's thread-local entropy pool); this is a syscall wrapper, not a socket/file/process primitive. This edge is NOT yet what ARCHITECTURE.md section 1.2 wants of a pure plane (entropy should arrive through Ctx, not be drawn by the codec itself) -- verified that busbar_llm_codec::write_error_envelope, the one codec entry point busbar-plane-llm calls that touches entropy, unconditionally calls the anthropic writer's error_envelope() (which mints via synth_rng::fill_entropy/getrandom) even on the call path where the caller supplies its own entropy and the drawn value is immediately overwritten and discarded. Feature-gating that draw (an `os-entropy` feature, default-on for busbar-llm/the engine, off for the plane) needs a source change in crates/busbar-llm-codec/src/{lib.rs,synth_rng.rs,anthropic/writer.rs} outside this waiver's file scope, AND would not by itself clear this xtask report: `cargo metadata`'s resolve graph unifies features across the WHOLE workspace (confirmed: busbar_llm_codec's single metadata node already shows `test-support` active workspace-wide even though busbar-plane-llm's own [dependencies] line never requests it), so a plane-only feature attenuation cannot be distinguished from the engine's own default-on request in this tool's model. Tracked as follow-up debt, not fixed here; re-review if any OTHER path to libc appears."
-owner = "orchestrator, 2026-09-05"
-
-[[allow]]
-crate = "busbar-plane-mcp"
-dep = "libc"
-via = "cpufeatures, getrandom"
-reason = "Two reviewed, non-I/O edges reach libc from this plane through its codec: (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); (2) getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Neither edge exposes a socket, file or process primitive. Re-review if any other path to libc appears."
+via = "getrandom"
+reason = "THIS ROW NOW COVERS ONE EDGE: getrandom -> libc, which is NOT ruled on. The plane's other route to libc, cpufeatures, is settled tree-wide by the (dep = libc, via = cpufeatures) edge exemption in qa/construction.toml and is no longer argued here; this row's remaining reasoning is preserved verbatim from the reviewed original. Context that still holds: the third, UNREAL route (sonic_rs -> faststr -> rkyv -> uuid_1 -> getrandom -> libc) was closed by the xtask/denylist.rs phantom-optional-dependency fix (edge_is_active) -- faststr's rkyv dependency is optional and its 'rkyv' feature is active nowhere in the workspace, confirmed against the real rustc invocation for busbar-plane-llm, which carries no --cfg feature=\"rkyv\" and no --extern rkyv. getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall (busbar-llm-codec's own direct `getrandom = { workspace = true }` dependency, drawn by synth_rng.rs's thread-local entropy pool); this is a syscall wrapper, not a socket/file/process primitive. This edge is NOT yet what ARCHITECTURE.md section 1.2 wants of a pure plane (entropy should arrive through Ctx, not be drawn by the codec itself) -- verified that busbar_llm_codec::write_error_envelope, the one codec entry point busbar-plane-llm calls that touches entropy, unconditionally calls the anthropic writer's error_envelope() (which mints via synth_rng::fill_entropy/getrandom) even on the call path where the caller supplies its own entropy and the drawn value is immediately overwritten and discarded. Feature-gating that draw (an `os-entropy` feature, default-on for busbar-llm/the engine, off for the plane) needs a source change in crates/busbar-llm-codec/src/{lib.rs,synth_rng.rs,anthropic/writer.rs} outside this waiver's file scope, AND would not by itself clear this xtask report: `cargo metadata`'s resolve graph unifies features across the WHOLE workspace (confirmed: busbar_llm_codec's single metadata node already shows `test-support` active workspace-wide even though busbar-plane-llm's own [dependencies] line never requests it), so a plane-only feature attenuation cannot be distinguished from the engine's own default-on request in this tool's model. Tracked as follow-up debt, not fixed here; re-review if any OTHER path to libc appears."
 owner = "orchestrator, 2026-09-05"
 
 [[allow]]
 crate = "busbar-plane-streaming"
 dep = "libc"
-via = "cpufeatures, getrandom"
-reason = "Two reviewed, non-I/O edges reach libc from this plane through its codec: (1) cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); (2) getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. Neither edge exposes a socket, file or process primitive. Re-review if any other path to libc appears."
+via = "getrandom"
+reason = "THIS ROW NOW COVERS ONE EDGE: getrandom -> libc, which is NOT ruled on. The plane's other route to libc, cpufeatures, is settled tree-wide by the (dep = libc, via = cpufeatures) edge exemption in qa/construction.toml and is no longer argued here; this row's remaining reasoning is preserved verbatim from the reviewed original. getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. This edge does not expose a socket, file or process primitive. Re-review if any other path to libc appears."
 owner = "orchestrator, 2026-09-05"
 
-[[allow]]
-crate = "hook-test-plugin"
-dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
-owner = "orchestrator, 2026-09-05"
 
-[[allow]]
-crate = "hooks-ranking"
-dep = "libc"
-via = "cpufeatures"
-reason = "cpufeatures uses libc for CPU feature detection only (getauxval/sysctl); no I/O primitive is reachable; re-review if any other path to libc appears"
-owner = "orchestrator, 2026-09-05"

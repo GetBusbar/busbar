@@ -32,6 +32,14 @@
 //!
 //! It began empty (section 1.2's hour-0 posture) and is not empty now; the entries in it are live
 //! exceptions with an owner and a date, and the both-ways check is what keeps them that way.
+//!
+//! THE SECOND SEAM IS NOT A WAIVER: `[[rules.source-denylist.edge_exemptions]]` in
+//! `qa/construction.toml` states a ruling about an EDGE — `(dep, via)` — once, for the whole tree,
+//! instead of minting one waiver per crate that rediscovers it. It exempts THAT PATH ONLY, decided
+//! by the same [`find_bypass_path`] walk a `via`-narrowed waiver uses, so a crate reaching the same
+//! `dep` by any other route is still a hit; it requires enumerated `symbols` as evidence on top of
+//! `reason` and `owner`; and it is held to the identical both-ways floor — an exemption that
+//! suppresses nothing is RED, exactly as a waiver that covers nothing is. See [`EdgeExemption`].
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -67,6 +75,10 @@ pub struct Report {
     /// sit in the file forever without matching anything is an exception nobody has to defend, and
     /// the next reviewer reads it as a live, reviewed fact about the tree. Any entry here makes the
     /// report RED, but the hits are still printed: a stale waiver does not invalidate the scan.
+    ///
+    /// EDGE EXEMPTIONS THAT SUPPRESSED NOTHING land here too, and deliberately in the same list: an
+    /// exemption speaks for every pure kind at once, so it is the last exception that should get a
+    /// weaker floor than the per-crate waivers it replaced. See [`stale_edge_exemptions`].
     pub stale_waivers: Vec<String>,
 }
 
@@ -620,6 +632,97 @@ fn own_src_hits_over(
     hits
 }
 
+/// One `[[rules.source-denylist.edge_exemptions]]` entry in `qa/construction.toml`: a ruling about
+/// an EDGE — `(dep, via)` — stated ONCE for the whole tree, rather than a waiver minted per crate.
+///
+/// THE DIFFERENCE FROM AN [`AllowEntry`] IS THE KEY, and it is the whole point. A waiver says "this
+/// CRATE may reach this offender"; an exemption says "this EDGE is not what the ban is about", for
+/// every pure kind at once. Four `[[allow]]` rows carried one identical paragraph about
+/// `cpufeatures` before this existed — two of them already red as stale — and enrolling the auth
+/// kind was about to mint a fifth and a sixth copy of a decision nobody had made once.
+///
+/// IT EXEMPTS THAT PATH ONLY. An exemption is applied through exactly the same
+/// [`find_bypass_path`] walk a `via`-narrowed waiver uses: a crate whose every route to `dep`
+/// passes through `via` is covered, and a crate that reaches `dep` by ANY other route is still a
+/// hit. That limit is what keeps an edge ruling from silently disarming the ban it narrows, and it
+/// is the existing waivers' own words ("re-review if any other path to libc appears") kept as the
+/// rule.
+///
+/// IT COMPOSES WITH a `via`-narrowed waiver rather than replacing it: a crate reaching `dep`
+/// through BOTH an exempted edge and a second, separately-reviewed edge is covered when its waiver
+/// names the second one — see [`fully_waived_pairs`]. Without that, an edge ruled on tree-wide
+/// would turn every mixed-route crate permanently red and the ruling would be unusable.
+pub(crate) struct EdgeExemption {
+    /// The banned dependency this edge reaches — a plain dependency-graph crate name.
+    dep: String,
+    /// The single crate the exempted path to `dep` goes through.
+    via: String,
+    /// Every symbol `via` takes from `dep`, enumerated from its source. THE EVIDENCE, and it is
+    /// required: it turns "no I/O primitive is reachable through this edge" into a list a reviewer
+    /// can check rather than an assertion to be believed.
+    symbols: Vec<String>,
+}
+
+impl EdgeExemption {
+    /// Self-test-only constructor. In production these come from `qa/construction.toml` and
+    /// nowhere else; the self-test needs to build one so the rule can be proven in both directions
+    /// without editing the committed config.
+    pub(crate) fn for_selftest(dep: &str, via: &str) -> Self {
+        Self {
+            dep: dep.to_string(),
+            via: via.to_string(),
+            symbols: vec!["selftest".to_string()],
+        }
+    }
+}
+
+/// The edge exemptions off the config document SOMEBODY ELSE READ — the same `Ctx`-routed form
+/// [`banned_lists_of`] takes, so an overlay can plant one and the self-test can prove this rule
+/// against the tree the gate is actually pointed at.
+///
+/// Same refusal posture as [`load_allowlist`]: an entry missing `reason`, `owner` or `symbols` is a
+/// refusal of the ENTIRE run, not an exemption. An exemption with no enumerated surface is an
+/// assertion, and an assertion that suppresses a security finding reads as reviewed when it was
+/// not. `via` must name exactly ONE crate — an exemption is keyed on a single edge by construction,
+/// and a comma list would be two rulings wearing one entry's evidence.
+fn edge_exemptions_of(doc: &Document) -> Vec<EdgeExemption> {
+    let mut out = Vec::new();
+    for entry in doc.array_table("rules.source-denylist.edge_exemptions") {
+        let dep = entry.get_one("dep").unwrap_or_default().trim().to_string();
+        let via = entry.get_one("via").unwrap_or_default().trim().to_string();
+        let symbols: Vec<String> = entry
+            .get_list("symbols")
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let reason = entry.get_one("reason").unwrap_or("").trim().to_string();
+        let owner = entry.get_one("owner").unwrap_or("").trim().to_string();
+        if dep.is_empty() || via.is_empty() {
+            panic!(
+                "{CONFIG_REL}: a [[rules.source-denylist.edge_exemptions]] entry is missing `dep`                  and/or `via` — an exemption is keyed on the EDGE, so an entry naming neither end                  of it exempts nothing and cannot be checked."
+            );
+        }
+        if reason.is_empty() || owner.is_empty() || symbols.is_empty() {
+            panic!(
+                "{CONFIG_REL}: the edge exemption for dep={dep:?} via={via:?} is missing a                  `reason`, an `owner` and/or `symbols` — all three are required. `symbols` is the                  evidence: it enumerates what {via} takes from {dep}, which is what makes \"no                  I/O primitive is reachable through this edge\" a claim a reviewer can check. An                  exemption without it is an assertion, and an assertion that suppresses a security                  finding reads as reviewed when it was not."
+            );
+        }
+        if via.contains(',') {
+            panic!(
+                "{CONFIG_REL}: the edge exemption for dep={dep:?} carries `via = {via:?}` — an                  exemption is keyed on ONE edge, and a comma list is two rulings sharing one                  entry's `reason`, `owner` and `symbols`. Write one entry per edge. (The                  comma-separated form belongs to `qa/denylist-allow.toml`'s per-crate `via`, which                  narrows a waiver rather than stating a ruling.)"
+            );
+        }
+        if dep.contains("::") || dep.contains("(feature:") {
+            panic!(
+                "{CONFIG_REL}: the edge exemption for dep={dep:?} names an own-src path or a                  `tokio (feature: ...)` offender. An edge exemption is computed over the resolved                  DEPENDENCY graph, so `dep` must be a plain crate name (e.g. `libc`); there is no                  edge to route a std-path hit through."
+            );
+        }
+        out.push(EdgeExemption { dep, via, symbols });
+    }
+    out
+}
+
 /// One `[[allow]]` entry: which crate, which offender (a `dep` crate name or an own-src `path`
 /// substring), and — for a `dep` entry only — an optional `via` narrowing.
 ///
@@ -772,32 +875,87 @@ fn find_bypass_path(
     None
 }
 
-/// Which `(crate, offender)` pairs are FULLY waived by `allowed`: a bare `dep`/`path` entry always
-/// qualifies; a `via`-narrowed `dep` entry qualifies only when [`find_bypass_path`] finds no path
-/// around `via`. Crates that were not found in `cargo metadata` (already warned about by the
-/// caller) cannot be via-checked and are treated as NOT covered — a missing root must never read
-/// as a satisfied waiver.
+/// Is EVERY normal-dependency route from `crate_name` to `offender` covered by one of `via`? The
+/// one place the `via` question is asked, so a per-crate waiver and a tree-wide edge exemption are
+/// decided by the identical walk and an exemption can never be the looser of the two.
+///
+/// A crate that was not found in `cargo metadata` (already warned about by the caller) cannot be
+/// via-checked and is NOT covered — a missing root must never read as a satisfied waiver.
+fn covered_by_via(
+    meta: &Metadata,
+    crates: &[PureCrate],
+    crate_name: &str,
+    offender: &str,
+    via: &[String],
+) -> bool {
+    let Some(pc) = crates.iter().find(|c| c.report_name == crate_name) else {
+        return false;
+    };
+    let Some(root_id) = find_package_id(meta, &pc.dir, &pc.name) else {
+        return false;
+    };
+    find_bypass_path(meta, &root_id, &pc.report_name, via, offender).is_none()
+}
+
+/// Which `(crate, offender)` pairs are FULLY covered, by a per-crate `[[allow]]` entry or by a
+/// tree-wide edge exemption:
+///
+///   * a bare `dep`/`path` entry always qualifies;
+///   * a `via`-narrowed `dep` entry qualifies only when [`covered_by_via`] finds no path around
+///     `via`;
+///   * an [`EdgeExemption`] `(dep, via)` qualifies, FOR EVERY PURE CRATE AT ONCE, on exactly the
+///     same test — which is what "keyed on the edge, not on the crate" means mechanically. A crate
+///     reaching `dep` by any other route still has a bypass and stays red.
+///
+/// THE TWO COMPOSE, and they have to. A crate can reach one offender through an exempted edge AND
+/// through a second edge that was ruled on separately — `busbar-plane-llm` reaches `libc` through
+/// both `cpufeatures` (exempted tree-wide) and `getrandom` (a per-crate waiver, a different edge
+/// with a different argument, not ruled on). Checked independently, NEITHER covers it: the
+/// exemption sees the `getrandom` path as a bypass and the waiver sees the `cpufeatures` path as
+/// one, so the crate would be permanently red and the tree-wide ruling would be unusable by the
+/// very crates it was written for. So a `via`-narrowed waiver's list is extended with the
+/// exemptions for the same offender before the walk: an edge the tree has already ruled on, once,
+/// is not a route this waiver has to re-argue. It is still all-or-nothing — a third route through
+/// NEITHER is a bypass and the pair stays red.
 fn fully_waived_pairs(
     meta: &Metadata,
     crates: &[PureCrate],
     allowed: &[AllowEntry],
+    exemptions: &[EdgeExemption],
 ) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
+
+    // THE EDGE RULINGS, STATED ONCE AND APPLIED EVERYWHERE. No per-crate entry is needed or
+    // wanted: that is the whole reason this seam exists, and minting one row per crate that
+    // rediscovers the same edge is the failure it was added to end.
+    for pc in crates {
+        for e in exemptions {
+            if covered_by_via(
+                meta,
+                crates,
+                &pc.report_name,
+                &e.dep,
+                std::slice::from_ref(&e.via),
+            ) {
+                out.insert((pc.report_name.clone(), e.dep.clone()));
+            }
+        }
+    }
+
     for entry in allowed {
         match &entry.via {
             None => {
                 out.insert((entry.crate_name.clone(), entry.offender.clone()));
             }
             Some(via_name) => {
-                let Some(pc) = crates.iter().find(|c| c.report_name == entry.crate_name) else {
-                    continue;
-                };
-                let Some(root_id) = find_package_id(meta, &pc.dir, &pc.name) else {
-                    continue;
-                };
-                if find_bypass_path(meta, &root_id, &pc.report_name, via_name, &entry.offender)
-                    .is_none()
-                {
+                let mut via: Vec<String> = via_name.clone();
+                via.extend(
+                    exemptions
+                        .iter()
+                        .filter(|e| e.dep == entry.offender)
+                        .map(|e| e.via.clone()),
+                );
+                if covered_by_via(meta, crates, &entry.crate_name, &entry.offender, &via) {
                     out.insert((entry.crate_name.clone(), entry.offender.clone()));
                 }
                 // else: a bypass exists — the hit(s) stay red, and the bypassing path is already
@@ -839,6 +997,48 @@ pub(crate) fn stale_waivers(allowed: &[AllowEntry], hits: &[Hit]) -> Vec<String>
         .collect()
 }
 
+/// THE SAME DIRECTION, FOR THE EDGE RULINGS: which exemptions had nothing to exempt.
+///
+/// An exemption is a stronger claim than a waiver — it speaks for the WHOLE tree, and it suppresses
+/// findings in crates nobody had to enumerate — so it is held to the same both-ways floor, and for
+/// the same reason. An exemption that matches no hit is an exception to nothing: either the edge it
+/// ruled on is gone from the tree (delete it; the ban holds on its own now), or it never existed
+/// (delete it; it was never an exception to anything). Left in place it is a decision nobody ever
+/// has to defend again, and the next reviewer reads it as a live, reviewed fact about how this tree
+/// reaches `dep` — which is exactly the reading that let four copies of one `cpufeatures` paragraph
+/// accumulate in `qa/denylist-allow.toml`, two of them already excusing offenders that were gone.
+///
+/// `hits` must be the UNFILTERED hit list, for the same reason [`stale_waivers`] needs it: an
+/// exemption that is doing its job is precisely one whose edge is present there and absent
+/// afterwards. A hit matches when its offender IS the exempted `dep` and its via-chain passes
+/// through the exempted crate — the chain is written in `cargo metadata`'s underscored
+/// extern-crate identifiers, so both sides are normalized before comparing, the same bridge
+/// [`find_bypass_path`] builds.
+pub(crate) fn stale_edge_exemptions(exemptions: &[EdgeExemption], hits: &[Hit]) -> Vec<String> {
+    exemptions
+        .iter()
+        .filter(|e| {
+            let want = e.via.replace('-', "_");
+            !hits.iter().any(|h| {
+                h.offender == e.dep
+                    && h.via
+                        .split(" -> ")
+                        .any(|seg| seg.trim().replace('-', "_") == want)
+            })
+        })
+        .map(|e| {
+            format!(
+                "{CONFIG_REL}: the edge exemption for dep={:?} via={:?} (symbols: {}) matched no                  hit — no pure kind reaches {} through {} in this tree, so the exemption is an                  exception to nothing. Either the edge is gone (delete it; the ban holds on its                  own) or it was never there (delete it; it was never an exception to anything). An                  exemption nobody has to defend reads to the next reviewer as a live, reviewed                  fact about the tree — and this one speaks for every pure kind at once.",
+                e.dep,
+                e.via,
+                e.symbols.join(", "),
+                e.dep,
+                e.via,
+            )
+        })
+        .collect()
+}
+
 /// THE RUN READS THE TREE THROUGH THE `Ctx` (audit F50).
 ///
 /// It used to take a `&Path` and reach for `std::fs` under it: the config, the crate listing and
@@ -864,6 +1064,9 @@ pub fn run(cx: &Ctx) -> Report {
         }
     };
     let banned = banned_lists_of(&config);
+    // Read off the SAME `Ctx`-routed document the banned list comes from, so an overlay can plant
+    // an exemption and the self-test can prove this rule against the tree the gate is pointed at.
+    let exemptions = edge_exemptions_of(&config);
     let allowed = load_allowlist(root);
     let crates = match pure_crates(cx, &config) {
         Ok(crates) if crates.is_empty() => {
@@ -928,10 +1131,13 @@ pub fn run(cx: &Ctx) -> Report {
         hits.extend(own_src_hits_over(&files, pc, &banned, &fragments));
     }
 
-    // Both directions, off the SAME unfiltered hit list: which waivers are doing work, and which
-    // have nothing left to do.
-    let stale = stale_waivers(&allowed, &hits);
-    let waived = fully_waived_pairs(&meta, &crates, &allowed);
+    // Both directions, off the SAME unfiltered hit list: which exceptions are doing work, and
+    // which have nothing left to do. The per-crate waivers and the tree-wide edge exemptions are
+    // held to the identical floor and reported in the identical row — an exemption is the broader
+    // claim of the two, so it is the last thing that should get a weaker check.
+    let mut stale = stale_waivers(&allowed, &hits);
+    stale.extend(stale_edge_exemptions(&exemptions, &hits));
+    let waived = fully_waived_pairs(&meta, &crates, &allowed, &exemptions);
     hits.retain(|h| !waived.contains(&(h.crate_name.clone(), h.offender.clone())));
 
     Report {
@@ -952,6 +1158,21 @@ pub fn run_on_with_allow(
     fragments: &[String],
     allow: Vec<(&str, &str, Option<&str>)>,
 ) -> Vec<Hit> {
+    run_on_with_edges(manifest_path, crates, banned, fragments, allow, Vec::new())
+}
+
+/// Test-only entry point: [`run_on_with_allow`] plus synthetic EDGE EXEMPTIONS, as `(dep, via)`
+/// pairs, never read from `qa/construction.toml`. The self-test needs this so the exemption rule is
+/// proven in both directions — covers, and fails to cover a bypassing route — against fixtures,
+/// without the case moving when the committed exemption list changes.
+pub fn run_on_with_edges(
+    manifest_path: &Path,
+    crates: Vec<PureCrate>,
+    banned: &BannedLists,
+    fragments: &[String],
+    allow: Vec<(&str, &str, Option<&str>)>,
+    exempt: Vec<(&str, &str)>,
+) -> Vec<Hit> {
     let meta_json = run_cargo_metadata(manifest_path);
     let meta = parse_metadata(&meta_json);
     let allowed: Vec<AllowEntry> = allow
@@ -968,7 +1189,11 @@ pub fn run_on_with_allow(
             }),
         })
         .collect();
-    let waived = fully_waived_pairs(&meta, &crates, &allowed);
+    let exemptions: Vec<EdgeExemption> = exempt
+        .into_iter()
+        .map(|(dep, via)| EdgeExemption::for_selftest(dep, via))
+        .collect();
+    let waived = fully_waived_pairs(&meta, &crates, &allowed, &exemptions);
 
     let root = manifest_path.parent().unwrap();
     let mut hits = Vec::new();

@@ -718,6 +718,37 @@ kinds = ["plane", "hook", "auth"]
 # living in the commit that added it. Empty at hour 0.
 [rules.source-denylist.allowlist]
 
+# EDGE EXEMPTIONS — a ruling about an EDGE, keyed on `(dep, via)`, stated ONCE for the whole tree.
+#
+# This is NOT the per-crate waiver seam. `qa/denylist-allow.toml` answers "this CRATE may reach this
+# offender"; an entry here answers "this EDGE is not what the ban above is about", for every pure
+# kind at once, and it is the shape a decision takes when the same reasoning has been rediscovered
+# crate by crate. Four `[[allow]]` rows carried one identical paragraph about `cpufeatures` before
+# this table existed, two of them already red as stale, and enrolling the auth kind was about to
+# mint a fifth and a sixth. A rule restated once per rediscovery is not a rule: it is the tree
+# losing the ability to say what its own policy is.
+#
+# IT EXEMPTS THAT PATH ONLY, and that limit is the whole safety of it. An entry does not waive the
+# offender — it waives reaching the offender THROUGH `via`. A crate that reaches the same `dep` by
+# any other route is still a hit, computed by the same `find_bypass_path` walk a `via`-narrowed
+# `[[allow]]` entry uses, so an exemption can never quietly disarm the ban it narrows.
+#
+# `symbols` is the EVIDENCE, and it is required: it enumerates every symbol the `via` crate takes
+# from `dep`, so the claim "no I/O primitive is reachable through this edge" is a list a reviewer
+# can check against the crate's source rather than an assertion. `reason` and `owner` are required
+# for the same reason they are in `qa/denylist-allow.toml` — an entry missing any of the three
+# refuses the whole run (`xtask/src/denylist.rs::edge_exemptions_of` panics).
+#
+# AND IT IS CHECKED BOTH WAYS, exactly as the waiver file is: an exemption that suppresses NO hit is
+# RED (`denylist:stale-waivers`). An exemption nobody has to defend reads to the next reviewer as a
+# live, reviewed fact about the tree, and after the edge is gone it is not a fact at all.
+[[rules.source-denylist.edge_exemptions]]
+dep = "libc"
+via = "cpufeatures"
+symbols = ["getauxval", "sysctlbyname"]
+reason = "OWNER RULING 2026-09-22, docs/design/BUSBAR-1.6.0.md: cpufeatures -> libc is NOT an I/O reach. NEEDED, and it cannot be switched off: in sha2 0.10.9 cpufeatures is a TARGET-GATED hard dependency for aarch64, x86_64 and x86 -- every platform busbar ships on -- declared behind NO feature, so force-soft forces the software hash path and still leaves the edge resolved. RIGHT CRATE: it is RustCrypto's standard runtime detector for selecting hardware SHA acceleration. ENTIRE libc SURFACE, enumerated from its source and listed in `symbols` above: getauxval and sysctlbyname, plus the c_ulong/c_void type aliases. Two function calls, both CPU-capability queries. This rule's own `why` forbids a socket, a file, a process, an OS handle, an environment read and an HTTP client; a CPU-capability query is none of those six. SCOPE, load-bearing: this exempts THAT PATH ONLY -- a pure crate reaching libc by any OTHER route is still a hit, which is the per-crate waivers' own words (re-review if any other path to libc appears) kept as the rule. getrandom -> libc is explicitly NOT ruled on here: it is a different edge with a different argument (entropy drawn by the codec instead of arriving through Ctx) and it keeps its per-crate waiver in qa/denylist-allow.toml until someone rules on it."
+owner = "owner, 2026-09-22"
+
 # ── 17. lean-core (ARCHITECTURE.md section 1.3) ─────────────────────────────────────────────────────────────
 [rules.lean-core]
 why = """The kernel and the unit crates have no closed enum a plugin could need to extend, and no \
@@ -821,7 +852,7 @@ Every method on every kind trait below must be bodiless (`;`), so implementing t
 way to answer it."""
 file = "crates/busbar-contract/src/kinds.rs"
 plane_file = "crates/busbar-contract/src/plane.rs"
-transport_file = "crates/busbar-contract/src/transport.rs"
+transport_file = "crates/busbar-contract/src/transport/mod.rs"
 traits = [
   "AuthScheme", "EgressAuthScheme", "Store", "Secret", "Hook", "Export", "Anchor",
   "Plane", "SessionPlane", "Transport",

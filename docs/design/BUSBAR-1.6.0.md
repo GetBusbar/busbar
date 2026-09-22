@@ -2506,6 +2506,82 @@ offenders they excused are gone.
    different argument and it keeps its per-crate waiver until someone rules on it. Collapsing it here
    by accident would bless a thing nobody examined.
 
+#### AND THE RULING LANDED AS AN EDGE, NOT A SEVENTH WAIVER. Measured 2026-09-22.
+
+`[[rules.source-denylist.edge_exemptions]]` in `qa/construction.toml` states `(dep = libc,
+via = cpufeatures)` ONCE, carrying `reason`, `owner` and `symbols = ["getauxval", "sysctlbyname"]`
+— the enumerated surface, so "no I/O primitive is reachable through this edge" is a list a reviewer
+can check rather than an assertion. `cargo xtask gate denylist`:
+
+```
+before:  PASS  denylist:scan
+         FAIL  denylist:hits            auth-admin-tokens: libc via auth-admin-tokens -> busbar_api
+                                          -> sha2 -> cpufeatures -> libc
+                                        auth-static-plugin: libc via auth-static-plugin -> busbar_api
+                                          -> sha2 -> cpufeatures -> libc
+         FAIL  denylist:stale-waivers   busbar-plane-a2a / busbar-plane-mcp: waiver matched no hit
+after:   PASS  denylist:scan · denylist:hits · denylist:stale-waivers   (3 rows, green)
+```
+
+**THE CENSUS WAS SIX ROWS, NOT FOUR.** The ruling text names
+`busbar-plane-{a2a,llm,mcp,streaming}`; `hook-test-plugin` and `hooks-ranking` carried the identical
+`via = "cpufeatures"` paragraph too. Six copies, and the auth kind was about to make it eight.
+**Four gone by collapse** (llm, streaming keep a row for the OTHER edge — below; a2a, mcp are the
+staleness deletion — below; hook-test-plugin and hooks-ranking cited cpufeatures and nothing else,
+so the edge rule is now their whole justification).
+
+**THE TWO STALE ROWS ARE A SEPARATE FINDING, AND ARE DELETED ON A SEPARATE GROUND.**
+`busbar-plane-a2a` and `busbar-plane-mcp` reach `libc` by NO route at all — the UNFILTERED scan
+finds zero hits for either — so both were already red under the allow-list's own both-ways rule
+before this change, and the edge exemption could not have covered them because there is nothing
+left to cover. That also disposes of the `getrandom` half of the mcp row: the closure it described
+(`sonic_rs -> ahash`) is not in that crate's graph either, so deleting it blesses no live edge.
+
+**`getrandom -> libc` KEPT ITS WAIVERS, WHICH IS THE POINT.** `busbar-plane-llm` and
+`busbar-plane-streaming` each reach `libc` by TWO routes — one exempted, one not — so their rows
+survive, rewritten to `via = "getrandom"` alone with the reviewed getrandom reasoning preserved
+verbatim and the owner kept. Mechanically this needed the exemption to COMPOSE with a `via` waiver
+rather than replace it (`fully_waived_pairs` extends the row's `via` list with the exemptions for
+the same offender): checked independently neither covers those planes — the exemption sees the
+`getrandom` path as a bypass and the waiver sees the `cpufeatures` path as one — so a tree-wide
+ruling that did not compose would have turned both planes permanently red and been unusable by the
+crates it was written for.
+
+**THE CONTROL THAT MATTERS IS THE NARROWNESS ONE**, because an over-broad exemption does not redden
+one crate — it disarms the `libc` ban in every pure kind at once and the report looks like a clean
+tree. Three, all on the REAL tree:
+
+```
+1. hits FAIL -> PASS          auth-static-plugin, auth-admin-tokens (above)
+2a. the two getrandom waivers deleted, exemption left in place
+      -> RED  denylist:hits   busbar-plane-llm: libc via ... -> getrandom -> libc
+                              busbar-plane-streaming: libc via ... -> ahash -> getrandom -> libc
+2b. `libc = { workspace = true }` planted on crates/auth-static-plugin
+      -> RED  denylist:hits   auth-static-plugin: libc via auth-static-plugin -> libc
+    reverted; Cargo.lock restored byte-identical
+3. stale-waivers FAIL -> PASS
+```
+
+A non-`cpufeatures` route to `libc` in a pure kind is still a hit, planted two different ways. The
+exemption is decided by the SAME `find_bypass_path` walk a `via` waiver uses, so it cannot be the
+looser of the two by construction.
+
+**AND THE EXEMPTION ITSELF IS HELD TO THE BOTH-WAYS FLOOR.** An exemption is the broader claim —
+keyed on `(dep, via)`, suppressing findings in crates nobody had to enumerate — so it is the last
+exception that should be the one nobody ever has to defend again. `stale_edge_exemptions` reports an
+exemption that suppresses no hit into the same `denylist:stale-waivers` row, and the gate selftest
+proves it through `Gate::run`: the real config plus one planted `via = "wasi-libc-shim"` entry
+reddens the row. Matching is on the EDGE, not the offender alone — an exemption for `libc` via an
+edge no hit takes is reported even though `libc` hits exist, or it could ride along on some other
+edge's finding. The fixture battery drives the narrowness both ways too (`edge-exemption/via-only`
+covered, `edge-exemption/via-bypass` still red under the SAME exemption), and `cargo xtask gate
+denylist --selftest` is 8 cases, 0 skipped, all green.
+
+**WHAT IT UNBLOCKS:** the three landings parked below — `busbar-substrate-values` (#83a),
+`auth-static-plugin`, `auth-admin-tokens` — plus every future pure-kind crate that needs
+`busbar_api::sha256_hex`, which has 27 consumers. No fifth, sixth, seventh or eighth copy of the
+paragraph was minted.
+
 #### PARKED FOR THE OWNER — `sha2 -> cpufeatures -> libc` NOW BLOCKS THREE LANDINGS
 
 **The same edge has been hit from three directions in one day, and it cannot be repointed away.**
