@@ -536,7 +536,7 @@ a client idempotency key of ANY length (1.5.5 caps nothing) is hashed streaming 
 `MAX_PEER_PAYLOAD_BYTES` — pinned at M2 from measurement; **node-global session budget** (`session_budget`:
 count and bytes, derived from the 15 MB budget like the cursor budget; `Refused(Arrival, SessionBudget)`
 at Unit 0); **per-unit arena = 4 KiB, RESET PER FRAME on the relay path of an open unit (each `encode_ingress_frame` / `encode_response` / transform output lives in the arena only until the frame is queued to the connection slab), reset at unit end otherwise** (pinned;
-exhaustion → `Failed(step, ArenaBudget)`; relay and egress BODIES live in the connection slab / spill, never the arena, so the arena never refuses a request 1.5.5 accepted — PB-18). `Ctx.arena` is the one resource handle.
+exhaustion → `Failed(step, ScratchExhausted)`; relay and egress BODIES live in the connection slab / spill, never the arena, so the arena never refuses a request 1.5.5 accepted — PB-18). `Ctx.arena` is the one resource handle.
 
 **`PlaneSessionState`**: one half per **connection** (`open_session` → the client half; `open_upstream`
 → one per dialed upstream), `Box<dyn Any + Send>` from a per-session slab, bounded per half with a

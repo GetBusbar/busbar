@@ -1489,6 +1489,13 @@ a dated audit note and the code is untouched.
 
 Note this is a multi-crate wiring gap (tracked in-repo as milestone "M6"), not a bounded fix.
 
+**It is worse than an internal register error: the claim is CUSTOMER-FACING.** `CHANGELOG.md`
+presents it among the release's breaking changes as "one where a rate-card edit stops repricing
+history it should not touch". So 1.6.0 currently ships a written promise about billing behaviour
+that the code does not keep. Whichever way the owner rules, one of the two has to move — either the
+endpoint is wired to the dated history, or the changelog entry and register row are retracted. It
+cannot ship as it stands.
+
 One further register item, **F-011r**, is stale rather than wrong: its "the `at` field was removed"
 claim is false — `3c118f729` restored it and the struct's doc comment records the owner rule as
 "RESTORED". Whether it folds into F-011 or is deleted depends on the external oracle tool's class

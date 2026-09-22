@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 """cost-watch.py -- the CI cost gate DECISIONS #78 claims exists and did not.
 
-docs/design/DECISIONS.md row #78 (OWNER-LOCKED 2026-09-20) reads, in the part this script exists
+docs/design/BUSBAR-1.6.0.md (Part 2) row #78 (OWNER-LOCKED 2026-09-20) reads, in the part this script exists
 to satisfy:
 
     "Hard cap $100/period total infra; $50 soft-alarm, $80 review -> on breach find the top
@@ -690,6 +690,14 @@ def build_report(records: list, *, repo: str, period_days: int, since: datetime,
         "Latchkey does not bill, and reads roughly 2.4x-3x high versus the Latchkey dashboard. "
         "Trust the dashboard for the real Latchkey bill; use this estimate only for relative "
         "ranking. See the module docstring for the full mechanism and citations.",
+        "The free-tier-adjusted 'actual'/billable Latchkey figures below are EVEN LESS reliable "
+        "than the would-be figures above them, not just as reliable: the free-tier pool is a "
+        "FIXED subtraction, so applying it to an inflated (wall-clock) minute total leaves a "
+        "disproportionately larger 'billable' remainder than applying it to Latchkey's true, "
+        "smaller total would -- once the estimate is even modestly over the pool size, the error "
+        "in 'billable minutes' can be many times larger than the error in the raw minute total. "
+        "Do not treat the actual/billable figures here as a bill estimate; they exist only to "
+        "show whether the pool looks close to exhausted, directionally.",
     ]
     if latchkey_api.status == "not_available":
         warnings.append(latchkey_api.detail)

@@ -174,19 +174,6 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `totalTokens` lost every cache token. Both the buffered Converse body and the streamed `metadata`
   frame now publish the AWS sum. The component fields are unchanged, as is a response with no cache
   activity. See [Spec fidelity](#spec-fidelity).
-- **A Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.**
-  Vertex reports `usageMetadata.toolUsePromptTokenCount` BESIDE `promptTokenCount`, not inside it —
-  on a real `gemini-2.5-flash` capture the field is `32` while the entire `promptTokenCount` is
-  `18`, and Google's own `totalTokenCount` reconciles only when the term is added. 1.5.5 read it as
-  a slice of the prompt and left it out of the bill, so every grounded / server-tool Gemini turn was
-  under-counted by exactly that term (32 of 222 tokens — 14% — on that capture), and the shortfall
-  scaled with tool use. Busbar now counts it in the input tier, where Google charges it, on the
-  buffered path and on the recovery path a response too large to reassemble takes. A Gemini client
-  reading a cross-protocol response still sees the term beside the prompt count exactly as Vertex
-  spells it, and the `totalTokenCount` busbar synthesizes now reproduces Google's. Nothing else
-  about a Gemini response changed, and a turn with no server-side tool use bills exactly as it did.
-  See [Spec fidelity](#spec-fidelity) and
-  [the recorded discrepancy](docs/design/gemini-usage-metadata-spec-discrepancy.md).
 - **Bedrock text blocks no longer open with an empty `contentBlockStart`.** On the ConverseStream
   wire a text block starts with its first `contentBlockDelta`; `contentBlockStart` is emitted for
   tool-use blocks only, as AWS does. See [Spec fidelity](#spec-fidelity).
@@ -343,16 +330,19 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly eight entries of kind `breaking`:
-two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
-both), one confined to Cohere backends that report `usage.billed_units`, one field removed
-from the hook view, one refusal that now comes out of the resolver rather than the validator, one
-key-rotate endpoint that now refuses an overlong id like its siblings, one where a rate-card
-edit stops repricing history it should not touch, and one provider credential that no longer
-degrades to an empty key.
-(A ninth register entry, F-003, is also of kind `breaking` — the CLI `--help`/`--version` text is a
-parseable contract surface — but it is caller-additive and so is presented above under Improvements
-rather than here; a reader counting `kind: breaking` rows in the register will find nine, not eight.)
+The accepted-differences register for this release has exactly eight entries of kind `breaking`
+presented here: two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is
+unchanged in both), one confined to Cohere backends that report `usage.billed_units`, one field
+removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
+endpoint that now refuses an overlong id like its siblings, one where a rate-card edit stops
+repricing history it should not touch, and one provider credential that no longer degrades to an
+empty key.
+(Two more register entries are also of kind `breaking` but are presented above under Improvements
+instead, because each waives only a caller-additive or documentation-only surface rather than a
+money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
+and F-011c — `openapi.json`'s overlay-delete endpoint prose, registered breaking only because the
+oracle tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
+changed. A reader counting `kind: breaking` rows in the register will find ten, not eight.)
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
@@ -383,6 +373,22 @@ identically, and every 1.5.5 key and minted secret carries over.
   fields; every other backend's ledgered counts are byte-identical to 1.5.5. **Migration:** if a
   Cohere lane's `billed_units` exceed its raw `tokens`, expect that key's recorded spend and
   token-limit consumption to rise to the figure Cohere itself invoices; no config change is needed.
+- 1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google
+  charges for. Vertex reports `usageMetadata.toolUsePromptTokenCount` beside `promptTokenCount`,
+  not inside it — on a real `gemini-2.5-flash` capture the field is `32` while the entire
+  `promptTokenCount` is `18`, and Google's own `totalTokenCount` reconciles only when the term is
+  added. 1.5.5 read it as a slice of the prompt and left it out of the bill, so every grounded /
+  server-tool Gemini turn was under-counted by exactly that term (32 of 222 tokens — 14% — on that
+  capture), and the shortfall scaled with tool use. 1.6.0 counts it in the input tier, where Google
+  charges it, on the buffered path and on the recovery path a response too large to reassemble
+  takes. A Gemini client reading a cross-protocol response still sees the term beside the prompt
+  count exactly as Vertex spells it, and the `totalTokenCount` busbar synthesizes now reproduces
+  Google's. Nothing else about a Gemini response changed, and a turn with no server-side tool use
+  bills exactly as it did. See [Spec fidelity](#spec-fidelity) and
+  [the recorded discrepancy](docs/design/gemini-usage-metadata-spec-discrepancy.md). **Migration:**
+  if your traffic uses Gemini server-side tools (grounding, code execution, function calling),
+  expect those keys' recorded spend to rise to what Google actually invoices; no config change is
+  needed.
 - 1.6.0 Changed: the always-null `at` field on the hook view gives way to `fires_at` (rewritten for
   you by --migrate-config). Every hook object served by `GET /api/v1/admin/hooks[/{name}]`, and the
   follow-up read of a hook write, gains `fires_at` (the resolved stage set), `groups` and `phase`
