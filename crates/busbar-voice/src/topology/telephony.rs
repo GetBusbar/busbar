@@ -23,7 +23,7 @@ use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{SessionCore, UplinkForwarder, VoiceSession};
 use crate::runtime::{LeaseCloseGuard, VoiceRuntime};
 use crate::topology::{begin_session, SessionBudget, StartError};
-use busbar_substrate::ingress::byte_duplex::serve_messages;
+use busbar_kernel::ingress::byte_duplex::serve_messages;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use futures::{Sink, Stream, StreamExt};
 use std::sync::Arc;

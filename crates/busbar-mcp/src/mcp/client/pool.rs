@@ -35,7 +35,7 @@
 //! credential is already on the wire.
 
 use super::ssrf::{SsrfPolicy, SsrfRefusal};
-use busbar_substrate::net_guard::PinnedTarget;
+use busbar_kernel::net_guard::PinnedTarget;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -48,10 +48,10 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub(crate) struct McpConnectionPool {
     /// The pinned-client pool, keyed by the judged `(host, address)` — now the shared core backend
-    /// ([`busbar_substrate::egress::PinnedClientPool`]), so mcp's dispatch hops are built to the same posture
+    /// ([`busbar_kernel::egress::PinnedClientPool`]), so mcp's dispatch hops are built to the same posture
     /// every plane shares (the refusing resolver, `tls_info` so the peer SPKI is observable, and the
     /// canonical connection knobs).
-    clients: busbar_substrate::egress::PinnedClientPool,
+    clients: busbar_kernel::egress::PinnedClientPool,
     /// The supervised child processes. Empty on every deployment that registers no stdio server,
     /// and it costs a `BTreeMap` to be so.
     pub(crate) children: super::stdio::StdioPool,
@@ -268,7 +268,7 @@ impl McpConnectionPool {
     ///
     /// The check runs BEFORE the cache is consulted for a NEW address and the cache is keyed on the
     /// result, so there is no ordering in which an unchecked address gets a client. The client is
-    /// built by the ONE egress engine ([`busbar_substrate::egress::engine::build_client`] on the
+    /// built by the ONE egress engine ([`busbar_kernel::egress::engine::build_client`] on the
     /// `EngineSpec::pinned` posture): the pin IS the resolver (the socket goes to the judged
     /// address, every other name refuses with the doctrine text), the peer SPKI is observed at
     /// connect, and the connection knobs are the canonical reqwest-parity values. No total deadline
@@ -278,16 +278,16 @@ impl McpConnectionPool {
         &self,
         url: &str,
         policy: SsrfPolicy,
-    ) -> Result<(busbar_substrate::egress::engine::EngineClient, PinnedTarget), SsrfRefusal> {
+    ) -> Result<(busbar_kernel::egress::engine::EngineClient, PinnedTarget), SsrfRefusal> {
         let target = super::ssrf::pin_upstream(url, policy).await?;
-        // THE KEY CONTAINS THE PINNED ADDRESS (`busbar_substrate::egress::PinnedClientPool` keys on it): keying
+        // THE KEY CONTAINS THE PINNED ADDRESS (`busbar_kernel::egress::PinnedClientPool` keys on it): keying
         // by host alone would let a pooled client re-resolve on its next new connection — the TOCTOU
         // the pin closes, reintroduced by the cache in front of it.
         let client =
             self.clients
                 .client_for((target.host().to_string(), target.socket_addr()), || {
-                    busbar_substrate::egress::engine::build_client(
-                        &busbar_substrate::egress::engine::EngineSpec::pinned(
+                    busbar_kernel::egress::engine::build_client(
+                        &busbar_kernel::egress::engine::EngineSpec::pinned(
                             Arc::from(target.host()),
                             target.socket_addr().ip(),
                             None,

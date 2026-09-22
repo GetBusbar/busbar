@@ -151,13 +151,13 @@ fn the_contract_stands_alone() {
 #[test]
 fn the_source_names_no_kernel_side_crate() {
     let forbidden = [
-        "busbar_caps",
+        "busbar_contract::caps",
         "busbar_kernel",
         "busbar_unit",
         "busbar_plane",
         "busbar_transport",
         "busbar_substrate",
-        "busbar_core",
+        "busbar_kernel",
     ];
     let mut offenders = Vec::new();
     walk(&src_dir(), &mut |path, text| {

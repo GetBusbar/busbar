@@ -25,8 +25,8 @@ use oauth_as::client::{Client, ClientAuth, ClientId};
 use oauth_as::grant::GrantType;
 use oauth_as::scope::ScopeSet;
 
-use busbar_core::oauth_as::config::OauthAsCfg;
-use busbar_core::test_support::TestApp;
+use busbar_kernel::oauth_as::config::OauthAsCfg;
+use busbar_kernel::test_support::TestApp;
 
 use crate::testkit::{oauth_as_plane, TestAppOauthExt};
 
@@ -240,7 +240,7 @@ fn location(headers: &reqwest::header::HeaderMap, origin: &str) -> String {
 /// The admin chain is what the consent route's `RouteAuth::Admin` consults, and it is emptied here
 /// deliberately: the property under test is the cookie's reach, and an operator credential in the
 /// middle of it would only add a second way for the test to fail.
-async fn serve() -> (String, Arc<busbar_core::state::App>) {
+async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
     serve_with_admin_chain(Vec::new()).await
 }
 
@@ -252,8 +252,8 @@ async fn serve() -> (String, Arc<busbar_core::state::App>) {
 /// described above.
 async fn serve_with_admin_chain(
     admin_chain: Vec<String>,
-) -> (String, Arc<busbar_core::state::App>) {
-    busbar_core::metrics::init();
+) -> (String, Arc<busbar_kernel::state::App>) {
+    busbar_kernel::metrics::init();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -289,7 +289,7 @@ async fn serve_with_admin_chain(
         .await
         .expect("register client");
 
-    let router = busbar_core::build_router(Arc::clone(&app));
+    let router = busbar_kernel::build_router(Arc::clone(&app));
     tokio::spawn(async move {
         axum::serve(listener, router).await.expect("serve");
     });
@@ -359,7 +359,7 @@ fn the_jar_refuses_to_send_a_cookie_to_a_sibling_path() {
 #[test]
 fn the_session_cookie_carries_exactly_the_attributes_it_should() {
     use crate::routes::session_cookies;
-    use busbar_core::oauth_as::config::AsIdentity;
+    use busbar_kernel::oauth_as::config::AsIdentity;
 
     for (issuer, secure_expected) in [
         ("https://as.example.com", true),
@@ -581,8 +581,8 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
     // And the audience binding busbar's own resource half reads off a bearer holds, which is what
     // makes the token usable at a busbar plane rather than merely well-formed.
     assert_eq!(
-        busbar_core::auth::audience::inspect_bearer(&access, &origin),
-        busbar_core::auth::audience::Binding::Bound,
+        busbar_kernel::auth::audience::inspect_bearer(&access, &origin),
+        busbar_kernel::auth::audience::Binding::Bound,
         "the access token must carry this deployment's audience"
     );
 

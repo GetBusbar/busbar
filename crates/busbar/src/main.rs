@@ -40,17 +40,17 @@ use std::time::Duration;
 
 use axum::Router;
 
-use busbar_core::{
+use busbar_kernel::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
     DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
-use busbar_core::{config, config_validate, export, metrics, observability, tls};
+use busbar_kernel::{config, config_validate, export, metrics, observability, tls};
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
 // unconditionally is an unused-import error there under `-D warnings`.
 #[cfg(not(target_env = "msvc"))]
-use busbar_core::REQUEST_ACTIVITY_TICKS;
+use busbar_kernel::REQUEST_ACTIVITY_TICKS;
 
 /// THE BUILD-PROVENANCE STAMP, as one machine-parseable line. Every field is baked at compile time
 /// by `build.rs` (see its header for what cargo does and does not expose) EXCEPT `debug-assertions`,
@@ -132,7 +132,7 @@ fn handle_cli_flags() -> Option<i32> {
                                 "warning: {code}: config at {config_path} did not parse; printing the \
                                  built-in metadata denylist only (security.blocked_metadata_hosts \
                                  skipped). Run busbar normally to see the parse error.",
-                                code = busbar_substrate::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                                code = busbar_substrate_values::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                             );
                             }
                         }
@@ -146,7 +146,7 @@ fn handle_cli_flags() -> Option<i32> {
                             "warning: {code}: config at {config_path} failed to interpolate; printing \
                              the built-in metadata denylist only (security.blocked_metadata_hosts \
                              skipped). Run busbar normally to see the interpolation error.",
-                            code = busbar_substrate::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                            code = busbar_substrate_values::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                         );
                     }
                 }
@@ -281,7 +281,7 @@ fn validate_config_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: {e}",
-                busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+                busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
             );
             return 1;
         }
@@ -301,7 +301,7 @@ fn validate_config_command() -> i32 {
         Err(errs) => {
             eprintln!(
                 "[error] {}: config errors:\n  - {}",
-                busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+                busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
                 errs.join("\n  - ")
             );
             return 1;
@@ -315,7 +315,7 @@ fn validate_config_command() -> i32 {
     if let Err(errs) = config_validate::validate_with_unset(&cfg, &unset_env_vars) {
         eprintln!(
             "[error] {}: config validation failed:\n  - {}",
-            busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+            busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
             errs.join("\n  - ")
         );
         return 1;
@@ -330,7 +330,7 @@ fn validate_config_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: {e}",
-                busbar_substrate::diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+                busbar_substrate_values::diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
             );
             return 1;
         }
@@ -342,7 +342,7 @@ fn validate_config_command() -> i32 {
     if let Err(e) = validate_builtin_secrets_resolve(&cfg) {
         eprintln!(
             "[error] {}: {e}",
-            busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+            busbar_substrate_values::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
         );
         return 1;
     }
@@ -407,7 +407,7 @@ fn list_plugins_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[warn] {}: config not readable ({e}); using the default plugins block",
-                busbar_substrate::diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
+                busbar_substrate_values::diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
             );
             (
                 config::PluginsCfg::default(),
@@ -420,7 +420,7 @@ fn list_plugins_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: plugins.trust is invalid: {e}",
-                busbar_substrate::diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
+                busbar_substrate_values::diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
             );
             return 1;
         }
@@ -477,7 +477,7 @@ fn list_plugins_command() -> i32 {
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!(
         "[error] {}: {msg}",
-        busbar_substrate::diagnostics::BOOT_FATAL_ERROR.banner()
+        busbar_substrate_values::diagnostics::BOOT_FATAL_ERROR.banner()
     );
     std::process::exit(1);
 }
@@ -513,7 +513,7 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
                 eprintln!(
                     "[warn] {code}: {name}={v:?} is not a positive integer; ignoring it and using \
                      the default worker-thread count",
-                    code = busbar_substrate::diagnostics::WORKER_THREADS_INVALID.banner()
+                    code = busbar_substrate_values::diagnostics::WORKER_THREADS_INVALID.banner()
                 );
                 None
             }
@@ -542,7 +542,7 @@ fn worker_threads_from_config() -> Option<usize> {
             // it goes to STDERR like the other boot diagnostics.
             eprintln!(
                 "[warn] {}: {msg}",
-                busbar_substrate::diagnostics::WORKER_THREADS_INVALID.banner()
+                busbar_substrate_values::diagnostics::WORKER_THREADS_INVALID.banner()
             );
             None
         }
@@ -566,7 +566,7 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 }
 
 /// REGISTER THE LINKED PROTOCOL CRATES — the composition root's one write into the protocol axis
-/// (`busbar_substrate::proto::install_protocols`). Each linked dialect contributes its `&DECL`
+/// (`busbar_kernel::proto::install_protocols`). Each linked dialect contributes its `&DECL`
 /// here and nowhere else; core's own built-in table keeps the dialects that have not been extracted
 /// yet. Feature-gated per crate so a deletion build (`--no-default-features`, or default minus one
 /// `proto-*` feature) drops the dependency edge AND the registration line together — which is what
@@ -584,14 +584,14 @@ fn register_protocols() {
     // `mut` is used only under the protocol features below; with every protocol compiled out
     // (`--no-default-features`) nothing pushes, so the binding is legitimately unmutated there.
     #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_substrate::proto::ProtocolDecl> = Vec::new();
+    let mut installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = Vec::new();
     // THE SECOND SEAM, FOLDED IN (Batch C-6): a path-model dialect's arrival split off `ProtocolDecl`
     // when the decl relocated to `busbar-substrate`, so each protocol crate contributes its
     // `(name, arrival)` pairs BESIDE its declarations here — the ONE composition-root write into both
     // seams. `install_protocols_with_path_ingress` asserts at boot that every `has_model_in_url` decl
     // has an arrival, so the two registrations cannot drift into a silent 404-shaped fall-through.
     #[allow(unused_mut)]
-    let mut path_ingress: Vec<(&'static str, busbar_core::ingress::PathIngress)> = Vec::new();
+    let mut path_ingress: Vec<(&'static str, busbar_kernel::ingress::PathIngress)> = Vec::new();
     #[cfg(feature = "proto-llm")]
     {
         installed.extend_from_slice(busbar_llm::DECLS);
@@ -606,7 +606,7 @@ fn register_protocols() {
     }
     #[cfg(feature = "plane-mcp")]
     installed.push(&busbar_mcp::PROTO_DECL);
-    busbar_substrate::proto::install_protocols_with_path_ingress(installed, path_ingress);
+    busbar_kernel::proto::install_protocols_with_path_ingress(installed, path_ingress);
 
     // THE BODY-MODEL ARRIVAL SEAM — the body-axis twin of `path_ingress`. The `named`/`adhoc`
     // (`/v1/messages`) convenience surfaces and the generic body-model dispatch arm resolve a dialect's
@@ -615,10 +615,8 @@ fn register_protocols() {
     // body-model request would resolve no arrival and 404 (the fall-through the LLM plane's
     // `BODY_INGRESS` exists to close).
     #[allow(unused_mut)]
-    let mut body_ingress: Vec<(
-        &'static str,
-        busbar_substrate::ingress::arrival::BodyIngress,
-    )> = Vec::new();
+    let mut body_ingress: Vec<(&'static str, busbar_kernel::ingress::arrival::BodyIngress)> =
+        Vec::new();
     #[cfg(all(feature = "proto-llm", not(feature = "root-llm")))]
     body_ingress.extend_from_slice(busbar_llm::BODY_INGRESS);
     // THE ROOT-DRIVEN LLM SURFACE (composition-root switch-over S2), default off. The table is the
@@ -628,14 +626,14 @@ fn register_protocols() {
     // plane's own shell. Off, this line does not exist and the surface is the one it was.
     #[cfg(all(feature = "proto-llm", feature = "root-llm"))]
     body_ingress.extend_from_slice(root::units_llm::BODY_INGRESS);
-    busbar_substrate::ingress::arrival::install_body_ingress(body_ingress);
+    busbar_kernel::ingress::arrival::install_body_ingress(body_ingress);
 
     // THE RESOLVED-COMPLETION SYNTHESIZER — the LLM plane's single re-entry the MCP sampling path drives
     // a synthesized chat completion through (`EngineHost::synthesize_completion`). Installed here beside
     // the body arrivals, gated on the LLM plane exactly as they are: with no LLM plane linked there is
     // no chat dialect to synthesize, and core returns the honest "no default chat protocol" error.
     #[cfg(feature = "proto-llm")]
-    busbar_substrate::ingress::arrival::install_completion_ingress(
+    busbar_kernel::ingress::arrival::install_completion_ingress(
         busbar_llm::native_ingress::synthesize_completion,
     );
 
@@ -644,13 +642,13 @@ fn register_protocols() {
     // does. Both engine forward paths name the concrete factory directly today, so this line changes
     // no bytes on the wire; it makes the seam's production installer exist (set-once, first writer wins).
     #[cfg(feature = "proto-llm")]
-    busbar_substrate::proto::install_stream_translator_factory(
+    busbar_kernel::proto::install_stream_translator_factory(
         busbar_llm::proto_stream::new_stream_translator,
     );
 }
 
 /// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis
-/// (`busbar_core::plane::registry::install_planes`), exactly `register_protocols`' shape on the
+/// (`busbar_kernel::plane::registry::install_planes`), exactly `register_protocols`' shape on the
 /// plane axis. The MCP plane is now a crate (`busbar-mcp`), so it contributes its `&PLANE_DECL` here
 /// under the `plane-mcp` feature; core's PRODUCTION build carries no MCP built-in row (it dual-compiles
 /// the plane back in for its own test builds only), and `merged_boot_plane_decls` folds this installed
@@ -663,7 +661,7 @@ fn register_protocols() {
 #[allow(clippy::vec_init_then_push)]
 fn register_planes() {
     #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_core::plane::registry::PlaneDecl> = Vec::new();
+    let mut installed: Vec<&'static busbar_kernel::plane::registry::PlaneDecl> = Vec::new();
     // The LLM plane, now its own crate (`busbar-llm`), contributes its `&PLANE_DECL` here behind the
     // SAME `proto-llm` feature that carries its dependency edge and its protocol `DECLS` — one switch
     // for the LLM protocol and the LLM plane, never two. `merged_boot_plane_decls` normalises the
@@ -686,14 +684,14 @@ fn register_planes() {
     // build with voice compiled out (`--no-default-features`) pushes nothing.
     #[cfg(feature = "plane-voice")]
     installed.push(&busbar_voice::PLANE_DECL);
-    busbar_core::plane::registry::install_planes(installed.leak());
+    busbar_kernel::plane::registry::install_planes(installed.leak());
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-oauth2` dependency above), before any config loads. Mirrors
     // `install_planes` immediately above for the same reason: one composition root, one
     // registration, before the first `App` is built.
     busbar_oauth2::install();
-    // Register the admin API service's mount seam (`busbar_core::admin::seam`) — the composition
+    // Register the admin API service's mount seam (`busbar_kernel::admin::seam`) — the composition
     // root is the one place entitled to name `busbar-admin`, exactly as it names `busbar-oauth2`
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
     // through the seam whenever this (mandatory) sibling is linked, which is every real build.
@@ -715,7 +713,7 @@ fn register_planes() {
 }
 
 /// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis (`busbar_substrate::diagnostics::install_diagnostics`), exactly `register_planes`' shape on
+/// axis (`busbar_substrate_values::diagnostics::install_diagnostics`), exactly `register_planes`' shape on
 /// the diagnostics axis. Each extracted plane crate OWNS its `Diagnostic` consts and exposes them as
 /// `DIAGNOSTICS`; core carries no plane-specific diagnostic (the neutral catalog is the plane-agnostic
 /// half). The neutral `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land
@@ -727,18 +725,18 @@ fn register_planes() {
 #[allow(clippy::vec_init_then_push)]
 fn register_diagnostics() {
     #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_substrate::diagnostics::Diagnostic> = Vec::new();
+    let mut installed: Vec<&'static busbar_substrate_values::diagnostics::Diagnostic> = Vec::new();
     #[cfg(feature = "plane-mcp")]
     installed.extend_from_slice(busbar_mcp::DIAGNOSTICS);
     #[cfg(feature = "plane-a2a")]
     installed.extend_from_slice(busbar_a2a::DIAGNOSTICS);
     #[cfg(feature = "plane-voice")]
     installed.extend_from_slice(busbar_voice::DIAGNOSTICS);
-    busbar_substrate::diagnostics::install_diagnostics(installed.leak());
+    busbar_substrate_values::diagnostics::install_diagnostics(installed.leak());
 }
 
 /// REGISTER THE LINKED DUPLEX PLANES' INBOUND WS-ACCEPT ARRIVALS — the composition root's one write
-/// into the neutral WS-accept registry (`busbar_substrate::ingress::duplex_ws::install_ws_arrivals`),
+/// into the neutral WS-accept registry (`busbar_kernel::ingress::duplex_ws::install_ws_arrivals`),
 /// exactly `register_planes`' shape on the WS-accept axis. Each duplex plane crate OWNS its
 /// `WsArrivalSpec`s (path + audience + a neutral gauntlet-gated accept fn) and exposes them as
 /// `voice_ws_arrivals()`; core carries none. Installed BEFORE the router is built (in `run()`), so
@@ -749,7 +747,7 @@ fn register_ws_arrivals() {
     #[cfg(feature = "plane-voice")]
     {
         let installed = busbar_voice::mount::voice_ws_arrivals();
-        busbar_substrate::ingress::duplex_ws::install_ws_arrivals(installed);
+        busbar_kernel::ingress::duplex_ws::install_ws_arrivals(installed);
     }
 }
 
@@ -779,7 +777,7 @@ fn register_ws_arrivals() {
 /// before any reader because `--validate` reads them, and this reads configuration instead. It
 /// still answers before any listener is bound, which is the property the refusal is for.
 #[cfg(feature = "root-voice")]
-fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
+fn mount_root_voice(limits: &busbar_kernel::config::limits::LimitsResolved) {
     match root::registry::seal(root::policy::client_settings(limits)) {
         Ok(sealed) => {
             // A BOOT REFUSAL for the same reason the seal's own `Err` arm is one, and it was a
@@ -837,8 +835,8 @@ fn compose_voice_governed_calls() {
 
     let durability = match root::durability::build(
         &root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     ) {
         Ok(d) => d,
         Err(e) => {
@@ -854,8 +852,11 @@ fn compose_voice_governed_calls() {
             &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),
         ),
-        pricer: busbar_unit_admission::Pricer::flat(0),
-        auth: busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+        pricer: busbar_kernel_budget::Pricer::flat(0),
+        auth: busbar_kernel_identity::Auth::new(busbar_kernel_identity::AuthChain::new(
+            Vec::new(),
+            false,
+        )),
         auth_bindings: root::kernel::auth_bindings::AuthBindings::without_directory(),
         scope: root::units_voice::scope_policy(),
         meter_policy: root::policy::build(&root::policy::MeterPolicyConfig::default()),
@@ -863,7 +864,7 @@ fn compose_voice_governed_calls() {
         io: root::units_voice::VoiceIo::default(),
         // Minted from the root's own kernel, which is the only place a sealed origin can come from:
         // a unit is lent its audit token and nothing else, so it cannot mint one where it is used.
-        origin: root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
+        origin: root::kernel::new_kernel().origin(busbar_contract::caps::OriginKind::Client),
     }));
     busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
 }
@@ -904,26 +905,39 @@ fn main() {
     // listener is bound — see `mount_root_voice`. Every axis above is installed by then, which is
     // the ordering the seal needed from this slot in the first place.
     // THE HOSTLESS-EGRESS DRIVER, installed once here beside the plane axis: the neutral
-    // `busbar_substrate::egress::seam::HostlessEgress` a plane drives its governed outbound hop
+    // `busbar_kernel::egress::seam::HostlessEgress` a plane drives its governed outbound hop
     // through, backed by core's `CoreHostlessEgress` (the `plane_host` FFI egress vtable). An
     // extracted plane holds only `&dyn HostlessEgress` off `hostless()` and never names the core
     // driver; this write is the composition root's one binding of the two. Gated to the plane
     // features, so a no-planes build (`--no-default-features`) drops it — nothing drives egress then.
     // `&CoreHostlessEgress` is a ZST unit struct, so it promotes to `'static`.
     #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
-    busbar_substrate::egress::seam::install_hostless_egress(
-        &busbar_core::egress::seam::CoreHostlessEgress,
+    busbar_kernel::egress::seam::install_hostless_egress(
+        &busbar_kernel::egress::seam::CoreHostlessEgress,
+    );
+    // THE EGRESS-TRUST HOST CAPABILITY (HOST-CAPS S3, DECISIONS #26), installed once here beside the
+    // hostless-egress driver — the "both ends" binding of the outbound trust seam: the composition
+    // root installs the process capability so a call site can later reach client-identity /
+    // trust-anchor / peer-SPKI through `busbar_kernel::plane_host::egress_trust::egress_trust_host()`
+    // instead of the free primitives. ADDITIVE AND DORMANT: `PassThroughEgressTrust` is a byte-for-byte
+    // pass-through to the same `identity`/`trust_anchor`/`spki` primitives the egress chokepoint calls
+    // directly today, and NOTHING consults the seam on the shipped path yet (W2 flips the call site),
+    // so the outbound path is unchanged. `PassThroughEgressTrust` is a ZST unit struct, so it promotes
+    // to `'static`. Gated exactly as the hostless-egress driver above.
+    #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+    busbar_kernel::plane_host::egress_trust::install_egress_trust_host(
+        &busbar_kernel::plane_host::egress_trust::PassThroughEgressTrust,
     );
     // The A2A durable task set (`busbar_a2a::taskstore::TASKS`) now OWNS its whole write/restore path
     // and drives the generic `PlaneRecord` store directly at its own boot hook, so the composition root
     // binds no task codec or reader seam here — both were deleted with the relocation.
     // The parse-time section list: the A2A plane refuses a cross-plane hook reference against the WHOLE
-    // section fold (`busbar_core::plane::config::config_sections`, which reads the process plane
+    // section fold (`busbar_kernel::plane::config::config_sections`, which reads the process plane
     // registry), so it names no core registry. Bound here — after `register_planes`, before the CLI
     // flags read `--validate` — so config validation sees the populated list. Gated to `plane-a2a`.
     #[cfg(feature = "plane-a2a")]
-    busbar_substrate::plane::config::install_plane_sections(
-        busbar_core::plane::config::config_sections,
+    busbar_kernel::plane::config::install_plane_sections(
+        busbar_kernel::plane::config::config_sections,
     );
     // The self-enveloping verb backing: the A2A `approve` verb builds its OWN response + audit
     // (`AdminReply::Prebuilt`) through the neutral `PlaneAdminEnvelope` seam, so it names no
@@ -931,8 +945,8 @@ fn main() {
     // mapping each neutral call onto the real envelope helpers), bound here before the router serves.
     // Gated to `plane-a2a`.
     #[cfg(feature = "plane-a2a")]
-    busbar_substrate::admin_verbs::install_plane_admin_envelope(
-        &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
+    busbar_kernel::admin_verbs::install_plane_admin_envelope(
+        &busbar_kernel::admin::planeverbs::CorePlaneAdminEnvelope,
     );
     // THE A2A PLANE'S KERNEL COMPOSITION, behind `root-a2a`, which is default-ON. The root is built
     // before any plane is switched onto it, so what this installs is the scope entries the approve
@@ -1017,10 +1031,10 @@ fn main() {
     // BUSBAR_PROFILE set → periodically dump the per-stage breakdown to stderr (every 20 s), so a
     // live benchmark run reports stage timings without the in-process test driver. Measurement-only
     // opt-in, absent from any production deployment; zero cost when the env is unset.
-    if busbar_substrate::profile::enabled() {
+    if busbar_substrate_values::profile::enabled() {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(20));
-            busbar_substrate::profile::dump();
+            busbar_substrate_values::profile::dump();
         });
     }
     // Worker-thread count. `advanced.worker_threads` in config.yaml is the operator override; the
@@ -1088,7 +1102,7 @@ fn main() {
     // Publish the data-plane worker count to core BEFORE anything builds: the egress client
     // shards (and later per-worker state stripes) size themselves to it. A process-topology fact,
     // exactly like the runtimes themselves — set once here, immutable, no config surface.
-    busbar_substrate::topology::set_data_workers(worker_threads);
+    busbar_kernel::topology::set_data_workers(worker_threads);
     #[cfg(unix)]
     {
         tokio::runtime::Builder::new_current_thread()
@@ -1179,7 +1193,7 @@ async fn run(data_workers: usize) {
     // `x-busbar-route-policy` / `x-busbar-route-target` are a fingerprintable observable, same class
     // as `Server-Timing: busbar` above, so they too default off and are gated by ONE process-wide
     // decision read at every emission site (`proxy::wire::maybe_attach_route_policy`).
-    busbar_core::proxy::configure_route_policy_headers(response_headers_cfg.route_policy);
+    busbar_kernel::proxy::configure_route_policy_headers(response_headers_cfg.route_policy);
     // METRICS OPT-IN, read here and nowhere else: 1.5.3 the switch is the built-in `prometheus`
     // EXPORTER (`export.prometheus`) — present ⇒ install the recorder (COLLECTION) with the operator's
     // REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay off for the life of the
@@ -1238,7 +1252,7 @@ async fn run(data_workers: usize) {
         // `resolve_backend` already warned with the remediation; repeat the posture here so the one
         // line an operator greps for ("config is ...") never claims a durability busbar does not have.
         tracing::warn!(
-            diag = %busbar_substrate::diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
+            diag = %busbar_substrate_values::diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
             "config is READ-ONLY (the overlay backend is not writable): busbar serves traffic \
              normally, but admin-API config mutations are refused. Set `config.locked: true` to \
              declare this deliberately, or give `config.overlay.file` a writable path."
@@ -1266,7 +1280,7 @@ async fn run(data_workers: usize) {
     // flag that dumps the full list.
     if cfg.allow_all_metadata {
         tracing::warn!(
-            diag = %busbar_substrate::diagnostics::METADATA_PROTECTION_DISABLED.banner(),
+            diag = %busbar_substrate_values::diagnostics::METADATA_PROTECTION_DISABLED.banner(),
             "metadata protection DISABLED — all cloud-metadata endpoints reachable"
         );
     } else {
@@ -1404,13 +1418,13 @@ async fn run(data_workers: usize) {
 
     // DURABLE STATE HYDRATION — the audit ring, the A2A task table, the MCP per-call log and
     // the MCP demotion/spent-approval records, restored from the configured governance store
-    // BEFORE a listener is bound. One boot entry point (`busbar_core::boot::hydrate_all`)
+    // BEFORE a listener is bound. One boot entry point (`busbar_kernel::boot::hydrate_all`)
     // rather than four widened statics: the sinks (`AUDIT`, `TASKS`, `CALLS`) and their
     // restore verbs stay crate-private in core, so nothing outside the engine can swap a sink
     // out from under the hash chains. The narration (which restore is a hiccup, which is
     // tamper evidence) moved with the code; see busbar-core/src/boot.rs. A plane whose durable
     // state cannot be restored REFUSES BOOT — `hydrate_all` propagates the plane hook's `Err`.
-    busbar_core::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
+    busbar_kernel::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
     // business, and nothing about it is restored from disk here. The durable config that makes "fix
@@ -1438,7 +1452,7 @@ async fn run(data_workers: usize) {
     // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
     // `Weak<App>` did when the boot snapshot drained.
     #[cfg(feature = "proto-llm")]
-    let boot_host = busbar_core::plane_host::engine_host(&app);
+    let boot_host = busbar_kernel::plane_host::engine_host(&app);
     #[cfg(feature = "proto-llm")]
     busbar_llm::spawn_probers(&boot_host);
 
@@ -1454,7 +1468,7 @@ async fn run(data_workers: usize) {
     // configured-but-unresolvable / malformed key — a fleet that MEANT to seal one must not come up
     // silently ungated. `None` (absent) ⇒ `OperatorState::Unset` in the posture view below.
     #[cfg(feature = "root-admin")]
-    let operator_key = busbar_core::preflight::resolve_operator_public_key(
+    let operator_key = busbar_kernel::preflight::resolve_operator_public_key(
         boot_operator_auth.as_ref(),
         &tls_secret_resolver,
     )
@@ -1573,7 +1587,7 @@ async fn run(data_workers: usize) {
     if let Some(gov) = app_handle.load().governance.clone() {
         // Handle intentionally dropped (not awaited): the flusher runs for the process lifetime and
         // exits its own loop on the shutdown broadcast; nothing here needs to join it.
-        std::mem::drop(busbar_core::governance::spawn_budget_flusher(
+        std::mem::drop(busbar_kernel::governance::spawn_budget_flusher(
             gov,
             shutdown_tx.subscribe(),
         ));
@@ -1588,7 +1602,7 @@ async fn run(data_workers: usize) {
     // is: a second job against the same registry would double every fetch and race every ledger stamp.
     // Fatal if an A2A outbound client identity does not resolve, exactly as before — the refusal text
     // is the plane hook's, propagated through `start_planes`.
-    busbar_core::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
+    busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
     // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
     // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve
@@ -1604,7 +1618,7 @@ async fn run(data_workers: usize) {
     if mcp_stdio_requested(std::env::args()) {
         // The neutral host factory, minted core-side and threaded into the stdio transport so the plane
         // re-mints the host over each frame's live snapshot without naming the core factory itself.
-        let factory = busbar_core::plane_host::live_host_factory(app_handle.clone());
+        let factory = busbar_kernel::plane_host::live_host_factory(app_handle.clone());
         let code = busbar_mcp::mcp::stdio_serve::serve_stdio(factory).await;
         if let Some(gov) = app_handle.load().governance.clone() {
             let n = gov.flush_budgets();
@@ -1628,7 +1642,7 @@ async fn run(data_workers: usize) {
         // The WORKER-SHUTDOWN WATCH: the broadcast, refolded into a level (a `watch<bool>`) so
         // detached work spawned at any moment — including after the signal — can still observe
         // that shutdown has fired. Each data worker registers a clone
-        // (`busbar_substrate::detached::set_worker_shutdown`) beside its detached tracker, and an MCP task
+        // (`busbar_kernel::detached::set_worker_shutdown`) beside its detached tracker, and an MCP task
         // runner selects on it to write its CANCELLED terminal status within the drain grace
         // instead of being aborted with a caller left polling forever.
         let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1752,8 +1766,8 @@ fn serve_thread_per_core(
     n: usize,
     addr: String,
     data_router: Router,
-    tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
-    secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
+    tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
+    secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Vec<std::thread::JoinHandle<()>> {
@@ -1762,9 +1776,11 @@ fn serve_thread_per_core(
     // Validate the TLS material ONCE, here on the control thread, before any worker exists: every
     // worker builds the same server config from the same files, so a bad cert or key must be
     // reported exactly once and stop the boot (workers racing to `die` would each print it).
-    if let Some(tls) = tls_cfg.as_ref() {
-        tls::install_crypto_provider();
-        let _ = tls::build_server_config(tls, &secret_resolver)
+    // Reconciliation + fail-closed (DECISIONS #40): the built-in axum/hyper listener always
+    // declares itself TLS-capable, so this can only fail on unresolvable/unparsable material —
+    // exactly the boot failure `build_server_config` always reported here.
+    if tls_cfg.is_some() {
+        let _ = busbar_core_transport::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
             .unwrap_or_else(|e| die(format!("TLS configuration error for '{addr}': {e}")));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -1806,17 +1822,17 @@ fn serve_thread_per_core(
                 // This thread IS data-plane worker `i` for its whole lifetime: everything core
                 // stripes per worker (the egress client shard today; SWRR/breaker scratch in later
                 // stages) indexes by this id. Set after the pin, before the runtime serves.
-                busbar_substrate::topology::set_worker_id(i);
+                busbar_kernel::topology::set_worker_id(i);
                 // Detached-work tracker (request-outliving spawns: webhook/tap deliveries, MCP
                 // runners, A2A watchers) — the post-drain grace below waits on it so a graceful
                 // stop gives such work a bounded window instead of an instant abort.
-                let detached = busbar_substrate::detached::DetachedTasks::new();
-                busbar_substrate::detached::set_worker_detached(detached.clone());
+                let detached = busbar_kernel::detached::DetachedTasks::new();
+                busbar_kernel::detached::set_worker_detached(detached.clone());
                 // The shutdown level, registered beside the tracker: detached work spawned on
                 // this worker captures it and can settle its own terminal state (an MCP task
                 // runner writes CANCELLED) inside the drain grace below instead of being aborted
                 // silently when the runtime drops.
-                busbar_substrate::detached::set_worker_shutdown(worker_shutdown);
+                busbar_kernel::detached::set_worker_shutdown(worker_shutdown);
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -1854,7 +1870,7 @@ fn serve_thread_per_core(
                     // Connections are drained; give this worker's detached work its bounded
                     // grace before the runtime drops (and aborts whatever remains).
                     let _ = tokio::time::timeout(
-                        busbar_substrate::detached::DETACHED_DRAIN_GRACE,
+                        busbar_kernel::detached::DETACHED_DRAIN_GRACE,
                         detached.drained(),
                     )
                     .await;
@@ -1908,8 +1924,8 @@ fn bind_reuseport_listener(addr: &str) -> std::io::Result<std::net::TcpListener>
 async fn serve_listener(
     listener: tokio::net::TcpListener,
     router: Router,
-    tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
-    secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
+    tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
+    secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     label: &str,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     // The data workers' connection-placement balancer (`None` for the admin listener and
@@ -1934,22 +1950,26 @@ async fn serve_listener(
             }
         }
         Some(tls) => {
-            tls::install_crypto_provider();
             // blocking-ffi-lint: allow — BOOT, once per listener, before that listener accepts.
             // `serve_listener` is never spawned as a task: the admin call runs directly under
             // `run()` on the control thread, and each per-worker data call is the FIRST thing its
             // freshly-built runtime `block_on`s — in both shapes this resolve parks a thread that
             // is not yet serving anything. It also completes before `tls::serve` below is reached,
             // so no connection on this listener can be waiting on it.
-            let server_config = tls::build_server_config(&tls, &secret_resolver)
-                .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
+            //
+            // The built-in axum/hyper listener below always declares itself TLS-capable
+            // (`transport_capable = true`); `prepare` still fails closed rather than silently
+            // downgrading to plaintext if the material cannot be resolved/parsed (DECISIONS #40).
+            let security =
+                busbar_core_transport::prepare(label, Some(&tls), &secret_resolver, true)
+                    .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();
             if log_at_info {
                 tracing::info!(listen = %label, mtls, "busbar listening (TLS)");
             } else {
                 tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
             }
-            if let Err(e) = tls::serve(listener, router, server_config, shutdown, balancer).await {
+            if let Err(e) = tls::serve(listener, router, security, shutdown, balancer).await {
                 die(format!("server error on '{label}': {e}"));
             }
         }
@@ -1966,7 +1986,7 @@ async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             tracing::warn!(
-                diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                 error = %e, "failed to install ctrl_c handler; SIGINT shutdown disabled"
             );
             std::future::pending::<()>().await;
@@ -1981,7 +2001,7 @@ async fn shutdown_signal() {
             }
             Err(e) => {
                 tracing::warn!(
-                    diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                    diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                     error = %e, "failed to install SIGTERM handler; SIGTERM shutdown disabled"
                 );
                 std::future::pending::<()>().await;
@@ -2012,7 +2032,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_close handler; CTRL_CLOSE shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -2026,7 +2046,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %busbar_substrate_values::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_shutdown handler; CTRL_SHUTDOWN shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -2090,7 +2110,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
                     eprintln!(
                         "[warn] {}: jemalloc idle-purge fallback disabled: could not read \
                          opt.dirty_decay_ms ({e})",
-                        busbar_substrate::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE
+                        busbar_substrate_values::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE
                             .banner()
                     );
                     return;
@@ -2119,7 +2139,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
     if let Err(e) = spawned {
         eprintln!(
             "[warn] {}: could not spawn the jemalloc idle-purge fallback thread ({e})",
-            busbar_substrate::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
+            busbar_substrate_values::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
         );
     }
 }
@@ -2292,14 +2312,14 @@ fn providers_override_notice(flag: Option<&str>, providers_file: Option<&str>) -
 /// `--validate`/`--migrate-config`, it writes nothing; the operator PLACES the key (busbar never
 /// edits their config). Exit 0 on success, 1 if the OS entropy source is unavailable.
 fn generate_signing_key_command() -> i32 {
-    // The mint lives behind `busbar_core::boot`: the CLI needs a hex string, not a `TokenSigner`,
+    // The mint lives behind `busbar_kernel::boot`: the CLI needs a hex string, not a `TokenSigner`,
     // so the signer type and its default kid stay crate-private in core.
-    let hex = match busbar_core::boot::generate_signing_key_hex() {
+    let hex = match busbar_kernel::boot::generate_signing_key_hex() {
         Ok(h) => h,
         Err(e) => {
             eprintln!(
                 "busbar: {}: could not generate a signing key: {e}",
-                busbar_substrate::diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
+                busbar_substrate_values::diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
             );
             return 1;
         }

@@ -33,22 +33,34 @@ pub const MAX_LINES_IMPL: usize = 2500;
 
 const EXCLUDE_TESTS: &str = "/tests/";
 
-/// PRE-EXISTING DEBT, GRANDFATHERED. `admin/v1/service.rs` is the one entry that is not a moved
-/// file: it sat three lines under the cap and the 1.6.0 ABI-purity retype pushed it over, because
-/// the admin read path had to stop naming the plane's own types and project the NEUTRAL view
-/// instead — the unavoidable cost of the "everything crosses the ABI" mandate, not new behaviour.
-/// Its shrink target is the module-level config-mutation builders; this entry comes off the list in
-/// that commit.
+/// PRE-EXISTING DEBT, GRANDFATHERED. Most entries are MOVED files whose debt travelled with them:
+/// the admin read path (`admin/v1/json/handlers.rs`) was extracted out of the engine into its own
+/// `busbar-admin` crate, and `config/mod.rs` / `config/migrate.rs` rode the `busbar-core` ->
+/// `busbar-kernel` absorption, so they are named at their current homes rather than deleted. The
+/// former `admin/v1/service.rs` entry has come OFF the list: the extraction to `busbar-admin`
+/// carried the config-mutation-builder shrink with it and the file now sits under the cap (2491).
+///
+/// The last two entries are the same class as the retired `service.rs` one — a structural MANDATE
+/// pushed an under-cap file over, not new behaviour:
+///   * `busbar-kernel/src/plane_host/mod.rs` — the W4.b P2 substrate absorption folded
+///     `busbar-substrate`'s 1608-line plane host into the kernel's, and the merged dispatch host is
+///     3421. Splitting it means moving plane-dispatch code, which the absorption wave deliberately
+///     does not touch; its shrink target is the per-plane vtable rows, carved to submodules once the
+///     dispatch seam is otherwise stable.
+///   * `busbar/src/root/units_admin/mod.rs` — the #36 drain of `busbar-unit-verbs` into
+///     `busbar-admin` grew the composition-root admin wiring to 2606; its shrink target is the
+///     per-verb install blocks, split to sibling modules once the drain lands in full.
 pub fn grandfathered(a: &Addresses) -> Vec<String> {
     vec![
-        format!("{}/admin/v1/json/handlers.rs", a.core),
+        "crates/busbar-admin/src/v1/json/handlers.rs".to_string(),
         format!("{}/config/mod.rs", a.core),
         format!("{}/config/migrate.rs", a.core),
         "crates/busbar-llm/src/engine/pipeline.rs".to_string(),
         format!("{}/diagnostics/mod.rs", a.substrate_values),
         "crates/busbar-a2a/src/a2a/receive.rs".to_string(),
         "crates/busbar-mcp/src/mcp/method.rs".to_string(),
-        format!("{}/admin/v1/service.rs", a.core),
+        format!("{}/plane_host/mod.rs", a.core),
+        "crates/busbar/src/root/units_admin/mod.rs".to_string(),
     ]
 }
 

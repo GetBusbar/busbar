@@ -13,7 +13,7 @@
 //! RELOCATED DOWN from `busbar-core` (`ir::neutral_handles`) at Batch C-4 — now that `IrHandle`,
 //! `IrFacts`, `Billing` and the two data leaves are all substrate-resident, these four thin newtype
 //! impls travel wholesale beside them. Core re-exports the four handles from
-//! `busbar_core::ir::neutral_handles` so its own call sites are unchanged.
+//! `busbar_kernel::ir::neutral_handles` so its own call sites are unchanged.
 
 use crate::billing::Billing;
 use crate::ir::facts::IrFacts;

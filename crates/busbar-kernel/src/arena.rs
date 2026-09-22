@@ -16,7 +16,7 @@
 //! fill. After that the cursor a plane sees has no credential in it, which is why "a plane never
 //! sees a credential" is a property of the bytes rather than a rule planes are asked to follow.
 
-use busbar_caps::ReasonCode;
+use busbar_contract::caps::ReasonCode;
 
 use crate::grammar::{ArrivalLocation, MaskKind, Span};
 

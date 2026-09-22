@@ -14,7 +14,7 @@
 //! ## THE KEY IS DERIVED FROM THE TOKEN SIGNING KEY. IT IS NOT THE TOKEN SIGNING KEY
 //!
 //! busbar already holds exactly one long-lived ed25519 secret: the one
-//! [`busbar_substrate::governance::signing::TokenSigner`] mints virtual-key tokens with. Reusing it verbatim
+//! [`busbar_kernel::governance::signing::TokenSigner`] mints virtual-key tokens with. Reusing it verbatim
 //! here was the obvious move and it is the wrong one, for a reason that is specific rather than
 //! hygienic:
 //!
@@ -103,21 +103,21 @@ impl From<CardError> for SignError {
 }
 
 /// BUSBAR'S AGENT-CARD SIGNER for one served card: the PUBLIC issuer key (`kid` + SPKI) this
-/// deployment publishes, plus the live host engine handle ([`busbar_substrate::plane_host::EngineHost`])
+/// deployment publishes, plus the live host engine handle ([`busbar_kernel::plane_host::EngineHost`])
 /// that is the seam to the host's `card_sign` capability.
 ///
 /// The plane holds NO card-signing key. The subkey is derived and held host-side
 /// (the host's governance state's `card_sign`, reached through the neutral
-/// [`busbar_substrate::plane_host::EngineHost::card_sign`] seam); this type carries only PUBLIC
+/// [`busbar_kernel::plane_host::EngineHost::card_sign`] seam); this type carries only PUBLIC
 /// material and a `&dyn EngineHost`, and
 /// `sign_card` hands the framed signing input to the host and receives the 64 signature bytes back.
 /// That is the shape the R7 relocation needs: the extracted A2A crate names no signing-secret type.
 pub(crate) struct CardSigner<'a> {
     /// The NEUTRAL host seam through which [`Self::sign_card`] reaches the host `card_sign` capability —
     /// no `&App`, no signing material, only the bytes-to-sign in and the 64 signature bytes out.
-    host: &'a dyn busbar_substrate::plane_host::EngineHost,
+    host: &'a dyn busbar_kernel::plane_host::EngineHost,
     /// The PUBLIC card-issuer key (`kid` + SPKI base64), computed host-side.
-    issuer: busbar_substrate::plane::registry::CardIssuer,
+    issuer: busbar_kernel::plane::registry::CardIssuer,
 }
 
 impl std::fmt::Debug for CardSigner<'_> {
@@ -131,12 +131,12 @@ impl std::fmt::Debug for CardSigner<'_> {
 /// THE A2A PLANE'S CARD SIGNER for this deployment: the PUBLIC issuer key bound to the live app, so
 /// `sign_card` can reach the host card-signing capability. The issuer is read off the plane's OWN
 /// runtime slot ([`super::runtime`]'s [`crate::a2a::plane::A2aPlane::card_issuer`]), where the plane's
-/// `start` hook stashed the host-computed [`busbar_substrate::plane::registry::PlaneBootCtx::card_issuer`] — so this
+/// `start` hook stashed the host-computed [`busbar_kernel::plane::registry::PlaneBootCtx::card_issuer`] — so this
 /// plane names no `GovState`. `None` when no signing key is configured (the governance-off path) or
 /// before the start hook has run, matching the old typed accessor's own absence — the caller then
 /// serves an unsigned card.
 pub(crate) fn card_signer(
-    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> Option<CardSigner<'_>> {
     let issuer = crate::a2a::runtime_arc_of(host)?.card_issuer()?.clone();
     Some(CardSigner {
@@ -147,7 +147,7 @@ pub(crate) fn card_signer(
 
 impl CardSigner<'_> {
     /// The `kid` this signer stamps, and the one a caller reads off the served card. The published
-    /// value lives on the [`CardIssuer`](busbar_substrate::plane::registry::CardIssuer) this wraps; this is the
+    /// value lives on the [`CardIssuer`](busbar_kernel::plane::registry::CardIssuer) this wraps; this is the
     /// plane-side accessor the card-signing test suite reads it back through.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn kid(&self) -> &str {

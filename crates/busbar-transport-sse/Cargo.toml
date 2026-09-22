@@ -23,5 +23,4 @@ tokio = { workspace = true, features = ["sync"] }
 # where declaring a private type and implementing the contract's sealing trait on it was a forgery
 # that happened to compile. A dev-dependency never ships in the transport, and the plugin manifest
 # allow-list reads `[dependencies]` only, by its own stated narrowing.
-busbar-caps = { path = "../busbar-caps" }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }

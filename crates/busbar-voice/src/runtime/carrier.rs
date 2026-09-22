@@ -3,7 +3,7 @@
 
 //! THE CARRIER — the live session's downlink write side and its HARD-CLOSE latch.
 //!
-//! A voice session is an open-ended full-duplex carrier. `busbar_substrate::ingress::byte_duplex`
+//! A voice session is an open-ended full-duplex carrier. `busbar_kernel::ingress::byte_duplex`
 //! pumps the UPSTREAM socket (server→client events in, client→server events out through the handler's
 //! `out`), but the DOWNLINK toward the actual client (the browser / telephony leg) is a separate sink
 //! the runtime holds here. The [`Carrier`] also owns the one thing post-hoc metering structurally

@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-core/src/admin/mod.rs`.
 
 use super::internal_error;
-use busbar_core::governance::StoreError;
+use busbar_kernel::governance::StoreError;
 
 /// `internal_error` must project `AdminError::Internal` onto the real error envelope — a 500
 /// with the frozen `{"error":{"code":"internal",...}}` body — never `Response::default()`

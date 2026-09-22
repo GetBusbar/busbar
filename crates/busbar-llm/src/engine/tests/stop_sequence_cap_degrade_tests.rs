@@ -13,8 +13,8 @@ use super::translate_request_cross_protocol;
 use crate::test_support::{LaneSpec, TestApp};
 use serde_json::json;
 
-fn http() -> busbar_substrate::transport::Transport {
-    busbar_substrate::transport::Transport::Http
+fn http() -> busbar_substrate_values::transport::Transport {
+    busbar_substrate_values::transport::Transport::Http
 }
 
 // ---- CROSS-PROTOCOL over-cap stop list: CLAMPED to cap and forwarded at 200 (v1.5.4). ----
@@ -36,14 +36,14 @@ fn openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
         &rt,
         0,
         "openai",
-        busbar_substrate::handlers::chat("openai", http()),
+        busbar_substrate_values::handlers::chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -76,14 +76,14 @@ fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
         &rt,
         0,
         "openai",
-        busbar_substrate::handlers::chat("openai", http()),
+        busbar_substrate_values::handlers::chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -116,14 +116,14 @@ fn openai_to_gemini_over_cap_stop_sequences_is_clamped_not_rejected() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
         &rt,
         0,
         "openai",
-        busbar_substrate::handlers::chat("openai", http()),
+        busbar_substrate_values::handlers::chat("openai", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -157,14 +157,14 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_clamped_not_rejected() {
         "max_tokens": 16,
         "stop_sequences": ["a", "b", "c", "d", "e"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
         &rt,
         0,
         "anthropic",
-        busbar_substrate::handlers::chat("anthropic", http()),
+        busbar_substrate_values::handlers::chat("anthropic", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,
@@ -200,14 +200,14 @@ fn cohere_to_cohere_over_cap_stop_sequences_is_preserved_verbatim() {
         "messages": [{"role": "user", "content": "hi"}],
         "stop_sequences": ["a", "b", "c", "d", "e", "f"]
     });
-    let hop_bytes = bytes::Bytes::from(busbar_substrate::json::to_vec(&body).unwrap());
+    let hop_bytes = bytes::Bytes::from(busbar_substrate_values::json::to_vec(&body).unwrap());
     let (host, rt) = crate::engine::test_host_rt(&app);
     let out = translate_request_cross_protocol(
         &host,
         &rt,
         0,
         "cohere",
-        busbar_substrate::handlers::chat("cohere", http()),
+        busbar_substrate_values::handlers::chat("cohere", http()),
         Some(body),
         crate::engine::APPLICATION_JSON,
         true,

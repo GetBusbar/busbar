@@ -71,7 +71,7 @@ use std::sync::OnceLock;
 use axum::response::{IntoResponse as _, Response};
 
 use crate::diagnostics::{A2A_NO_CSPRNG_CALLBACK, A2A_PUSHBACK_NOT_DELIVERED};
-use busbar_substrate::{diag_debug, diag_error};
+use busbar_kernel::{diag_debug, diag_error};
 
 use super::task::TaskState;
 
@@ -262,9 +262,7 @@ pub(crate) fn mirrored_verb(verb: super::local::LocalVerb) -> Option<&'static st
 /// **NOTHING FROM THE BODY REACHES THE CALLER'S WEBHOOK.** The delivery is composed from busbar's
 /// own task row (`pushdeliver::notification_body`), so a backend cannot use this endpoint to post
 /// arbitrary bytes at a URL it has never been told.
-pub(crate) async fn push_notification(
-    ctx: busbar_substrate::plane_routes::PlaneReqCtx,
-) -> Response {
+pub(crate) async fn push_notification(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
     // S7 neutral seam: this `RouteAuth::None` handler took only `CurrentApp`, the headers and the
     // body — the caller is a fronted AGENT holding no busbar key, so the middleware attached no
     // identity and this handler authenticates the per-task push token itself, below. The plane is read
@@ -308,7 +306,7 @@ pub(crate) async fn push_notification(
     //
     // AFTER the MAC, deliberately. The token has already been proven to have been minted by this
     // process, so this is not a scan an anonymous caller can drive.
-    crate::taskstore::TASKS.sweep_now(busbar_substrate::store::now());
+    crate::taskstore::TASKS.sweep_now(busbar_kernel::store::now());
 
     if body.len() > MAX_PUSH_BODY {
         return refused(

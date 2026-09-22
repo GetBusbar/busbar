@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://getbusbar.com/schemas/conformance-verdict-1.json",
+  "title": "busbar.conformance.verdict/1",
+  "description": "One suite's arm-or-red fact, the same the suite's `verdict` CI job already computes (mcp-conformance.yml:486-559), written to disk. The release pipeline drops one `<suite>.json` here per suite that ran, then `cargo xtask gate conformance-sync --write` reconciles them into the manifest. A registered suite with no verdict file is not-run, never green. Rules: status \"pass\" requires armed==true; `commit` is the sha the SUBJECT was built from, which is what makes staleness detectable.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "suite", "status", "armed", "commit"],
+  "properties": {
+    "schema": { "const": "busbar.conformance.verdict/1" },
+    "suite": { "type": "string", "description": "Stable suite id, matching the registry." },
+    "standard": { "type": "string" },
+    "plan": { "type": "string" },
+    "spec_version": { "type": "string", "description": "The spec/plan revision judged." },
+    "status": { "enum": ["pass", "fail", "not-run"] },
+    "armed": { "type": "boolean", "description": "false ⇒ status MUST be not-run." },
+    "commit": { "type": "string", "description": "The sha the subject was built from." },
+    "run_id": { "type": "string" },
+    "evidence": { "type": "string" },
+    "generated_at": { "type": "string" },
+    "reason": { "type": "string" },
+    "cert_id": { "type": "string", "description": "certified tier only: the issued cert id." },
+    "issuer": { "type": "string", "description": "certified tier only: the body that issued it." },
+    "expires": { "type": "string", "description": "certified tier only: cert validity end." }
+  }
+}

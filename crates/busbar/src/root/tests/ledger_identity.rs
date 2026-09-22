@@ -4,16 +4,16 @@
 
 use super::*;
 
-use busbar_caps::{Admit, AdmitToken};
-use busbar_caps::{Hold, LedgerToken, Usage, UsageToken};
-use busbar_caps::{KernelSeal, MeterClassId, PrincipalId, QuantitySource, UsageLine};
-use busbar_unit_cost::{
+use busbar_contract::caps::{Admittance, Grant};
+use busbar_contract::caps::{Consumption, Hold, Usage, WriteMoney};
+use busbar_contract::caps::{KernelSeal, MeterClassId, PrincipalId, QuantitySource, UsageLine};
+use busbar_kernel_ledger::cost::{
     derive_spend_micros, price, CurrencyCode, History, LaneClass, Posting, RateCard,
     STANDARD_TIER_BP,
 };
-use busbar_unit_ledger::legacy::{LegacyRows, RecordingRows};
-use busbar_unit_ledger::settle::Ledger;
-use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};
+use busbar_kernel_ledger::settle::Ledger;
+use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
 /// The day every synthetic settlement falls in. One day, because the identity is per row and a
 /// second day would only widen the fixture without widening what is checked.
@@ -38,16 +38,16 @@ fn card() -> RateCard {
     )
 }
 
-fn ledger_token() -> LedgerToken {
-    LedgerToken::mint(&KernelSeal::acquire_for_kernel())
+fn ledger_token() -> Grant<WriteMoney> {
+    Grant::<WriteMoney>::mint(&KernelSeal::acquire_for_kernel())
 }
 
-fn admit_token() -> AdmitToken<Admit> {
-    AdmitToken::mint(&KernelSeal::acquire_for_kernel())
+fn admit_token() -> Grant<Admittance> {
+    Grant::<Admittance>::mint(&KernelSeal::acquire_for_kernel())
 }
 
-fn usage_token() -> UsageToken {
-    UsageToken::mint(&KernelSeal::acquire_for_kernel())
+fn usage_token() -> Grant<Consumption> {
+    Grant::<Consumption>::mint(&KernelSeal::acquire_for_kernel())
 }
 
 fn lines(input: u64, output: u64) -> Vec<UsageLine> {
@@ -134,7 +134,7 @@ fn drive(
 ) -> (
     LedgerSnapshot,
     LegacySnapshot,
-    Vec<busbar_unit_ledger::legacy::LegacyPosting>,
+    Vec<busbar_kernel_ledger::legacy::LegacyPosting>,
 ) {
     // The card, as the migration seals it: a SINGLE-ENTRY history effective from instant zero,
     // so `card_at` resolves to that entry for every posting and the lookup is arithmetically

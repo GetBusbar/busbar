@@ -190,7 +190,7 @@ async fn a_passthrough_server_refuses_an_operator_driven_refresh() {
 #[test]
 fn an_approval_projects_onto_the_config_fields_the_build_reads_back() {
     use crate::mcp::client::catalogue::TransportPin;
-    use busbar_substrate::trust::{Approval, Observation, Sighting};
+    use busbar_kernel::trust::{Approval, Observation, Sighting};
 
     let mut approval: Approval<TransportPin> = Approval::declared(
         TransportPin::declared("cert_spki", "sha256/OLD="),
@@ -237,7 +237,7 @@ fn an_approval_projects_onto_the_config_fields_the_build_reads_back() {
 #[test]
 fn the_projected_approval_rebuilds_into_the_same_dispatch_answer() {
     use crate::mcp::client::catalogue::TransportPin;
-    use busbar_substrate::trust::{Approval, Observation, Sighting};
+    use busbar_kernel::trust::{Approval, Observation, Sighting};
 
     let mut approval: Approval<TransportPin> = Approval::declared(
         TransportPin::declared("cert_spki", "sha256/PEER="),

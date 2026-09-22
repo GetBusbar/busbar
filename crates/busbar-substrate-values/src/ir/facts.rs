@@ -7,7 +7,7 @@
 //! NEUTRAL, RELOCATED DOWN from `busbar-core` (`ir::facts`) at Batch C-2 — the trait `IrFacts`, the
 //! provenance `Slot`, the borrowed `ContentItem`, the `Shape` counts and the `NeutralFacts` empty
 //! projection are the operation-blind projection surface a second protocol family (`busbar-mcp`)
-//! implements without reaching into `busbar-core`. Core re-exports each from `busbar_core::ir::facts`
+//! implements without reaching into `busbar-core`. Core re-exports each from `busbar_kernel::ir::facts`
 //! so every in-core and plugin caller is unchanged.
 //!
 //! **THIS FILE CONTAINS NO EXECUTABLE PROTOCOL COMPARISON AND MUST NEVER CONTAIN ONE.** No
@@ -25,7 +25,7 @@
 //! # Scope: the LLM family's walk, behind a seam two families now implement
 //!
 //! The concrete-IR projection (`impl IrFacts for IrRequest` + `project`) lives in the `busbar-llm`
-//! plugin (`ir::facts_impl`); the invocation IR (`busbar_substrate::ir::invoke`) is the second family
+//! plugin (`ir::facts_impl`); the invocation IR (`busbar_substrate_values::ir::invoke`) is the second family
 //! implementing this trait with its own walk rather than being folded into a superset — one IR per
 //! family is a standing rule, because a shared superset across families is a lossless-translation
 //! surface between things that never translate.

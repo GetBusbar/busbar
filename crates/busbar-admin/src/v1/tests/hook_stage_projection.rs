@@ -13,7 +13,7 @@
 //! projected beside it through the same predicate the firing path uses.
 
 use crate::v1::service::project_hook_view;
-use busbar_core::config::{
+use busbar_kernel::config::{
     HookCfg, HookKind, HookStage, PromptAccess, UserAccess, ALL_HOOK_STAGES, CORE_HOOK_PHASES,
 };
 

@@ -31,4 +31,5 @@ path = "src/lib.rs"
 [dependencies]
 # The neutral shared surface — the diagnostics catalog types (`Class`/`Diagnostic`/`Severity`) and
 # the catalog install/render seams the plane-contributed `DIAGNOSTICS` slice is handed to at boot.
-busbar-substrate = { path = "../busbar-substrate" }
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
+busbar-substrate-values = { path = "../busbar-substrate-values" }

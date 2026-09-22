@@ -17,7 +17,7 @@
 //!
 //! | control | where |
 //! |---|---|
-//! | egress gate (transitive confused deputy) | `super::egress::plan_verb_credential` → `busbar_substrate::egress_auth::gate` |
+//! | egress gate (transitive confused deputy) | `super::egress::plan_verb_credential` → `busbar_kernel::egress_auth::gate` |
 //! | outbound credential, RFC 8693/8707 | the same planner, and NEVER the caller's busbar key |
 //! | the supervision breaker | inside the wire — a quarantined child refuses every verb, not just calls |
 //! | the durable per-call hash chain | the host's `call_log_emit_hostless` (core's call-log chain), at every terminal |
@@ -51,7 +51,7 @@ use super::jsonrpc::{parse_response, RpcOutcome};
 use super::verb::UpstreamVerb;
 use super::wire::WireLeg;
 use crate::mcp::upstream::Authorised;
-use busbar_substrate::audit::vocab::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
+use busbar_contract::vocab::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 
 /// WHAT ONE ISSUED VERB PRODUCED.
 ///
@@ -87,7 +87,7 @@ pub(crate) async fn issue(
     auth: &Authorised,
     verb: &UpstreamVerb,
     request_id: u64,
-    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
 ) -> Result<Issued, String> {
     // THE REGISTRATION, off the leg itself rather than off a tool key. A verb names no tool, and
     // reading the server out of one was what made an `mcp_tool` grant a prerequisite for issuing a
@@ -104,7 +104,7 @@ pub(crate) async fn issue(
     let record = |outcome: &'static str, reason: String| {
         host.call_log_emit_hostless(
             &principal,
-            busbar_substrate::plane::calllog::CallInput {
+            busbar_kernel::plane::calllog::CallInput {
                 // C10 (state/store port): the chain entry's timestamp is read off the SAME host this
                 // record emits through — `ClockHost::clock_now_secs`, inherited by `EngineHost` —
                 // rather than the ambient `store::now()` free function. Value-identical (the wired

@@ -93,7 +93,7 @@ pub(crate) struct Hop<'a> {
     pub(crate) ingress_protocol: &'a str,
     /// The lane's egress protocol name, read once.
     pub(crate) egress_name: &'a str,
-    pub(crate) op: busbar_substrate::handlers::Op,
+    pub(crate) op: busbar_substrate_values::handlers::Op,
     pub(crate) wants_stream: bool,
     pub(crate) client_include_usage: bool,
     pub(crate) client_has_stream_options: bool,
@@ -102,7 +102,7 @@ pub(crate) struct Hop<'a> {
     pub(crate) upstream_creds: busbar_api::UpstreamCreds,
     pub(crate) resolved_gov_key: Option<&'a Arc<busbar_api::VirtualKey>>,
     pub(crate) remaining_secs: u64,
-    pub(crate) breaker_cfg: &'a Arc<busbar_substrate::store::BreakerCfg>,
+    pub(crate) breaker_cfg: &'a Arc<busbar_kernel::store::BreakerCfg>,
     pub(crate) client_fwd: &'a [(axum::http::HeaderName, axum::http::HeaderValue)],
     pub(crate) chosen_policy_name: Option<&'static str>,
     pub(crate) metric_pool: &'a str,

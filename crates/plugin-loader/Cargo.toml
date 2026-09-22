@@ -15,15 +15,19 @@ busbar-plugin-sign = { path = "../plugin-sign" }
 # None of the three crates may name a store, so the adapter that implements all three lives on this
 # side of the seam — where the loaded plugin and its declared payload schema already are. All three
 # depend only on `busbar-caps`/`busbar-contract`, so there is no cycle back into this crate.
-busbar-caps = { path = "../busbar-caps" }
-busbar-kernel = { path = "../busbar-kernel" }
-busbar-unit-verbs = { path = "../busbar-unit-verbs" }
+busbar-contract = { path = "../busbar-contract" }
+# NOTE (1.6.0 W4.a chunk 0): the `busbar-kernel` edge was DROPPED. The only kernel items this crate
+# named — `slice::{Epoch,SliceError,SliceGrant,SliceId,SliceRequest,SliceStore,bucket_all}` +
+# `Millis` — moved DOWN to `busbar-contract` (the ONE ABI crate, DECISIONS #38: `SliceStore` is
+# implemented HERE and consumed by the kernel loop, so it is an ABI type). Removing this edge is what
+# breaks the core→plugin-loader→kernel cycle that the busbar-core→busbar-kernel absorption would
+# otherwise create.
 # The migration's read off the previous release's rows. The ledger unit states WHAT an opening
 # figure is; the row shapes it is read from are on this side of the seam, where the loaded plugin
 # already is — the same division the ledger's dual write makes in the other direction. The ledger
 # unit depends only on `busbar-caps`, so there is no cycle back into this crate.
-busbar-unit-ledger = { path = "../busbar-unit-ledger" }
-busbar-unit-wal = { path = "../busbar-unit-wal" }
+busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
+busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 libloading = { workspace = true }
 # The kind:hook seam: `DlopenPolicy` implements the async `busbar_api::RoutingPolicy` trait, running
 # the blocking `busbar_call` on `spawn_blocking` (a hook gate can be CPU-heavy). `async-trait` matches

@@ -2,9 +2,9 @@
 resolver = "2"
 members = [
     "crates/busbar",
-    "crates/busbar-core",
     "crates/busbar-core-config",
     "crates/busbar-core-hooks",
+    "crates/busbar-core-transport",
     "crates/busbar-admin",
     "crates/busbar-oauth2",
     "crates/busbar-timing",
@@ -18,9 +18,7 @@ members = [
     "crates/busbar-plane-a2a-host",
     "crates/busbar-voice",
     "crates/busbar-voice-codec",
-    "crates/busbar-substrate",
     "crates/busbar-substrate-values",
-    "crates/busbar-caps",
     "crates/busbar-contract",
     "crates/busbar-grammar",
     "crates/busbar-transport-tcp",
@@ -28,26 +26,22 @@ members = [
     "crates/busbar-transport-http",
     "crates/busbar-transport-sse",
     "crates/busbar-kernel",
-    "crates/busbar-unit-auth",
-    "crates/busbar-unit-trust",
+    "crates/busbar-kernel-identity",
+    "crates/busbar-kernel-scope",
+    "crates/busbar-kernel-budget",
+    "crates/busbar-kernel-ledger",
+    "crates/busbar-kernel-egress",
+    "crates/busbar-kernel-breaker",
+    "crates/busbar-kernel-wal",
+    "crates/busbar-kernel-audit",
     "crates/busbar-plane-llm",
     "crates/busbar-plane-mcp",
     "crates/busbar-plane-a2a",
     "crates/busbar-plane-admin",
     "crates/busbar-plane-voice",
     "crates/busbar-plane-streaming",
-    "crates/busbar-unit-admission",
-    "crates/busbar-unit-cost",
-    "crates/busbar-unit-usage",
-    "crates/busbar-unit-scope",
-    "crates/busbar-unit-egress",
-    "crates/busbar-unit-egress-auth",
+    "crates/busbar-plane-decision",
     "crates/busbar-unit-transport-key",
-    "crates/busbar-unit-breaker",
-    "crates/busbar-unit-wal",
-    "crates/busbar-unit-ledger",
-    "crates/busbar-unit-audit",
-    "crates/busbar-unit-verbs",
     "crates/api",
     "crates/busbar-plugin",
     "crates/plugin-sdk",
@@ -134,6 +128,13 @@ arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.23"
+# THE CHUNK-CHAINING BUMP ALLOCATOR behind the per-call scratch pad (DECISIONS #41). It grows by
+# adding a chunk when the current one does not fit, which is exactly the grow-on-demand the design
+# requires; `try_alloc*` returns a Result on OOM rather than aborting, so the kernel — which is
+# `forbid(unsafe)` and must never crash on growth — refuses one request instead of the process
+# dying. Already in the lock via `sonic-rs`, so it adds no crate name to the graph. Only
+# `busbar-kernel` names it; it is deliberately NOT a dependency of `busbar-contract`.
+bumpalo = "3"
 bytes = "1"
 # CPU-core enumeration + per-thread pinning for the thread-per-core data plane (the one unix
 # topology). Used ONLY by the `busbar` binary's boot seam; nothing on the request path names it.

@@ -89,7 +89,7 @@ use axum::response::Response;
 use super::rpcerror::A2aError;
 use super::task::{Task, TaskState};
 use crate::diagnostics::{A2A_PUSH_CONFIG_UNDELETED, A2A_PUSH_CONFIG_UNRECORDED};
-use busbar_substrate::{diag_debug, diag_error};
+use busbar_kernel::{diag_debug, diag_error};
 
 /// WHICH SPELLING OF THE PUSH-CONFIG VERBS A CALLER USED, because the two dialects disagree about
 /// the SHAPE of a config and not merely about the method name.
@@ -484,7 +484,7 @@ pub(crate) fn delivery_auth(
 /// THE TASK A PUSH-CONFIG REQUEST NAMES, resolved through the SAME scoped lookup every other read on
 /// this plane uses, so an id belonging to another principal is `TaskNotFound` and not a config.
 fn addressed(
-    _engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    _engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     params: &serde_json::Value,
     principal: &str,
 ) -> Option<Task> {
@@ -509,7 +509,7 @@ fn addressed(
 /// Async, because the SSRF guard resolves a name and that resolution must be the same one every
 /// other outbound decision on this plane reads.
 pub(crate) async fn create_push_config(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     dialect: Dialect,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
@@ -627,7 +627,7 @@ pub(crate) async fn create_push_config(
 
 /// `GetTaskPushNotificationConfig` / `tasks/pushNotificationConfig/get`.
 pub(crate) fn get_push_config(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     dialect: Dialect,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
@@ -661,7 +661,7 @@ pub(crate) fn get_push_config(
 
 /// `ListTaskPushNotificationConfigs` / `tasks/pushNotificationConfig/list`.
 pub(crate) fn list_push_configs(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     dialect: Dialect,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
@@ -696,7 +696,7 @@ pub(crate) fn list_push_configs(
 /// make a statement false answers the same way whether or not it had to do anything, and a client
 /// retrying a delete after a timeout must not be told its retry failed.
 pub(crate) fn delete_push_config(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     dialect: Dialect,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
@@ -774,7 +774,7 @@ pub(crate) fn delete_push_config(
 /// what it alone knows — that it issued no such task to this caller, or that it recorded the ending
 /// of this one — and is deciding nothing about a task that is still running.
 pub(crate) fn subscribe_refusal(
-    _engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    _engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
     principal: &str,

@@ -30,8 +30,8 @@ use axum::body::Bytes;
 use axum::http::HeaderMap;
 use axum::response::Response;
 
-use busbar_caps::{Decision, Meter, Outcome, Route, UnitToken, UsageToken};
-use busbar_substrate::plane_host::{EngineHost, EngineTablesView};
+use busbar_contract::caps::{Consumption, Decision, Grant, Meter, Outcome, Pass, Route};
+use busbar_kernel::plane_host::{EngineHost, EngineTablesView};
 
 use crate::unit::admit::Admitted;
 use crate::unit::arrival::BodyArrival;
@@ -143,7 +143,7 @@ pub struct Tap(crate::engine::TapCell);
 pub struct LateReport {
     /// The tier split the tap reported, by neutral unit class — the same counts the governance
     /// ledger accrued when the cell filled. Empty for a response that billed nothing.
-    pub usage: busbar_substrate::billing::Usage,
+    pub usage: busbar_substrate_values::billing::Usage,
     /// How many billable requests this unit is: one for a delivered client request that reached an
     /// upstream, zero otherwise. It is the Meter step's own count, on the same base the previous
     /// release charges the flat fee on, and it is carried rather than re-decided so the two cannot
@@ -347,7 +347,7 @@ impl Walk {
     /// The plane's own half of it — the meter half of the hold, whether the charge landed, and which
     /// pool it landed on — stays here; the kernel's half is handed straight back. The refusal, where
     /// the door raised one, waits with the other rendered bytes for the terminal.
-    pub fn take_admission(&self, admitted: Admitted) -> Decision<busbar_caps::Admit> {
+    pub fn take_admission(&self, admitted: Admitted) -> Decision<busbar_contract::caps::Admit> {
         let mut carry = self.lock();
         carry.charged = admitted.charged;
         carry.effective = admitted.effective_pool;
@@ -484,7 +484,7 @@ impl Walk {
         // billable count and does not refund it. The count is the Meter step's own, on the same base
         // the legacy accounting charges on, and it is read here rather than decided a second time.
         let usage = if facts.billing_failed {
-            busbar_substrate::billing::Usage::default()
+            busbar_substrate_values::billing::Usage::default()
         } else {
             facts
                 .usage
@@ -536,10 +536,10 @@ impl Walk {
     /// still has to say something if it is.
     pub fn audit(
         &self,
-        token: &UnitToken<busbar_caps::step::Audit>,
+        token: &Pass<busbar_contract::caps::step::Audit>,
         ctx: &crate::unit::audit::AuditCtx<'_>,
         fallback: impl FnOnce() -> Served,
-    ) -> Decision<busbar_caps::step::Audit> {
+    ) -> Decision<busbar_contract::caps::step::Audit> {
         let bytes = self.take_bytes().unwrap_or_else(fallback);
         let audited = crate::unit::audit::audit(token, ctx, bytes, self.charged());
         self.seal_terminal(audited.response);
@@ -552,10 +552,10 @@ impl Walk {
     /// is the refund. See [`Walk::audit`] for why the bytes are fetched here rather than passed in.
     pub fn audit_refused(
         &self,
-        token: &UnitToken<busbar_caps::step::Audit>,
+        token: &Pass<busbar_contract::caps::step::Audit>,
         ctx: &crate::unit::audit::AuditCtx<'_>,
         fallback: impl FnOnce() -> Served,
-    ) -> Decision<busbar_caps::step::Audit> {
+    ) -> Decision<busbar_contract::caps::step::Audit> {
         let bytes = self.take_bytes().unwrap_or_else(fallback);
         let audited = crate::unit::audit::audit_refused(token, ctx, bytes);
         self.seal_terminal(audited.response);
@@ -573,7 +573,7 @@ impl Walk {
     /// in-flight table's rather than a thread pool's. Dropping this future is what a client going
     /// away does to the upstream leg, and it is what the loop does to it when the caller drops the
     /// unit. What the walk SEES travels back here; the sealing happens here, where the token is.
-    pub async fn route(&self, token: &UnitToken<Route>, destination: &str) -> Decision<Route> {
+    pub async fn route(&self, token: &Pass<Route>, destination: &str) -> Decision<Route> {
         let (arrived, sink) = {
             let mut carry = self.lock();
             (carry.arrived.take(), carry.sink.take())
@@ -584,25 +584,29 @@ impl Walk {
         let Some(arrived) = arrived else {
             return Decision::refuse(
                 token,
-                busbar_caps::Refusal::new(busbar_caps::ReasonCode::NoDestination),
+                busbar_contract::caps::Refusal::new(
+                    busbar_contract::caps::ReasonCode::NoDestination,
+                ),
             );
         };
-        let op = busbar_substrate::handlers::frame(
-            busbar_substrate::transport::Transport::Http,
+        let op = busbar_substrate_values::handlers::frame(
+            busbar_substrate_values::transport::Transport::Http,
             self.operation,
             // The handler the Decode step resolved is looked up again here rather than carried,
             // because the lookup is a table read against a `&'static` registry and a borrowed vtable
             // is not a thing the carry holds. Same protocol, same operation, same table: the same
             // handler, or none — and none is unreachable, because the Decode step already refused a
             // unit whose pair has no handler.
-            match busbar_substrate::handlers::request_handler(self.proto)
+            match busbar_substrate_values::handlers::request_handler(self.proto)
                 .and_then(|rh| rh.operation_handler(self.operation))
             {
                 Some(h) => h,
                 None => {
                     return Decision::refuse(
                         token,
-                        busbar_caps::Refusal::new(busbar_caps::ReasonCode::NoDestination),
+                        busbar_contract::caps::Refusal::new(
+                            busbar_contract::caps::ReasonCode::NoDestination,
+                        ),
                     )
                 }
             },
@@ -668,7 +672,7 @@ impl Walk {
     ///
     /// Nothing on this side names a rate: the step assembles what the unit consumed and hands it
     /// back on the report, and the side that holds the card is the one that turns it into an amount.
-    pub fn meter(&self, token: &UnitToken<Meter>, usage: &UsageToken) -> Decision<Meter> {
+    pub fn meter(&self, token: &Pass<Meter>, usage: &Grant<Consumption>) -> Decision<Meter> {
         let mut carry = self.lock();
         let charged = carry.charged;
         let Some(facts) = carry.facts.as_ref() else {
@@ -676,7 +680,7 @@ impl Walk {
             // loop's order and answered rather than unwrapped.
             return Decision::proceed(
                 token,
-                busbar_caps::Usage::report(usage, Vec::new())
+                busbar_contract::caps::Usage::report(usage, Vec::new())
                     .unwrap_or_else(|_| unreachable!("the empty report fits any record")),
             );
         };

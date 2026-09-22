@@ -411,6 +411,17 @@ step "kind-isolation --ship"     cargo xtask gate kind-isolation-ship
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+# INSTANCE-NOUN NEUTRALITY — the burndown census that goes GREEN only when NO crate names a concrete
+# plane/transport instance outside its own crate family. RED on HEAD by design (the plane extraction
+# is in flight, and every remaining coupling is a tracked row in qa/instance-noun-neutrality.toml);
+# this is the release-time question of whether that burndown has reached zero. A per-push red would
+# only restate that the extraction is in flight, so it lives here, not in ci.yml.
+begin_group "INSTANCE-NOUN NEUTRALITY — no concrete instance noun leaks across crate families (burndown to 0)"
+step "instance-noun --selftest" cargo xtask gate instance-noun-neutrality --selftest
+step "instance-noun gate"       cargo xtask gate instance-noun-neutrality
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "PLANE-DELETE — each plane (llm/mcp/a2a/voice) is deletable"
 step "plane-delete-test --selftest" bash scripts/plane-delete-test.sh --selftest
 step "plane-delete-test --all"      bash scripts/plane-delete-test.sh --all

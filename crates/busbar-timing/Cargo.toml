@@ -18,7 +18,7 @@ name = "busbar-timing"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+# `rust-version` rationale: see busbar-kernel/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
 description = "Debug-only, feature-gated per-method micro-timing (count/total/mean/p50/p99/min/max). Default OFF and zero-cost; method timers nest inside busbar-core's stage profiler."
 license = "Apache-2.0"

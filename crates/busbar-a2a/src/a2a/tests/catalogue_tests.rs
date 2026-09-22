@@ -11,7 +11,7 @@
 
 use super::*;
 use busbar_api::{ScopeRef, VirtualKey};
-use busbar_substrate::trust::Observation;
+use busbar_kernel::trust::Observation;
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -46,7 +46,7 @@ fn as_caller(key: &VirtualKey) -> Caller<'_> {
     Caller {
         key: Some(key),
         now: 0,
-        generation: busbar_substrate::trust::validate::Generations::at_admission(1),
+        generation: busbar_kernel::trust::validate::Generations::at_admission(1),
     }
 }
 
@@ -630,7 +630,7 @@ fn a_key_that_is_no_longer_live_sees_no_agent_at_all() {
         let asked = Caller {
             key: Some(&gone),
             now: 100,
-            generation: busbar_substrate::trust::validate::Generations::at_admission(1),
+            generation: busbar_kernel::trust::validate::Generations::at_admission(1),
         };
         assert!(
             inbound_catalogue(&asked, &regs, &anything).is_empty(),

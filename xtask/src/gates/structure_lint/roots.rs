@@ -29,9 +29,13 @@ use crate::planes::{PlaneRootError, PlaneRoots, PLANE_GRAMMAR};
 pub const ROW_PROTO_ROOTS: &str = "structure-lint:proto-roots";
 pub const ROW_PLANE_ROOTS: &str = "structure-lint:plane-roots";
 
-pub const CORE: &str = "crates/busbar-core/src";
+// `busbar-core` was absorbed INTO `busbar-kernel` (W4 core-absorption) and `busbar-substrate`'s
+// plane-neutral machinery was folded into the same crate (W4.b P2), so the library seam and the
+// substrate machinery now share one home. A row's choice between `CORE` and `SUBSTRATE` still
+// records which invariant watches which surface; both address the engine crate today.
+pub const CORE: &str = "crates/busbar-kernel/src";
 pub const BIN: &str = "crates/busbar/src";
-pub const SUBSTRATE: &str = "crates/busbar-substrate/src";
+pub const SUBSTRATE: &str = "crates/busbar-kernel/src";
 pub const SUBSTRATE_VALUES: &str = "crates/busbar-substrate-values/src";
 
 /// The planes whose roots every plane-scoped row is written against.

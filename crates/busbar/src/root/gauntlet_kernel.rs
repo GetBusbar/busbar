@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DORMANT KERNEL-LOOP SIBLING of `busbar_substrate::plane_host::run_gauntlet`.
+//! THE DORMANT KERNEL-LOOP SIBLING of `busbar_kernel::plane_host::run_gauntlet`.
 //!
 //! [`run_gauntlet_via_kernel`] drives the SAME [`GauntletPlane`] the substrate gauntlet drives, but
 //! through `busbar_kernel::teller::run_unit_async` (the ONE unified loop) instead of the substrate
@@ -23,18 +23,18 @@
 
 use axum::response::Response;
 
-use busbar_caps::{
-    Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
-    Authenticated, Decision, Decode, Encode, Frame, Meter, OpClassId, OriginKind, Outcome,
-    PrincipalId, ReasonCode, Refusal, Route, TrustToken, UnitToken, Usage, UsageToken,
-    VerifiedDestination, Verify,
+use busbar_contract::caps::{
+    Admission, Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
+    Authenticated, Consumption, Decision, Decode, Dial, Encode, Frame, Grant, Meter, OpClassId,
+    OriginKind, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, Usage, VerifiedDestination,
+    Verify,
 };
 use busbar_contract::{AuditFacts, FinishClass, RoutePlan, ScopeFacts, UnitKey};
-use busbar_kernel::slice::GroupLeaseSlip;
-use busbar_kernel::teller::{AccrualMeter, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
-use busbar_substrate::plane_host::{
+use busbar_kernel::plane_host::{
     Admitted, GauntletPlane, GauntletRequest, PlaneAnswer, PlaneInFlight, VerifyOutcome,
 };
+use busbar_kernel::slice::GroupLeaseSlip;
+use busbar_kernel::teller::{AccrualMeter, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
 
 /// The transport stack every gauntlet request arrives over — one HTTP layer, named rather than
 /// empty (mirrors the LLM plane's arrival record). The value only reaches the audit/record surface,
@@ -89,7 +89,7 @@ impl<'p> GauntletKernelUnit<'p> {
 }
 
 impl Units for GauntletKernelUnit<'_> {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
         Decision::proceed(
             token,
             ArrivalRecord {
@@ -103,23 +103,19 @@ impl Units for GauntletKernelUnit<'_> {
         )
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
         Decision::proceed(token, self.op_class)
     }
 
-    fn authenticate(
-        &self,
-        token: &UnitToken<Authenticate>,
-        _ctx: &UnitCtx,
-    ) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
         // Identity is already resolved upstream and threaded via `gov`; this step states it.
         Decision::proceed(token, Authenticated::Principal(self.principal.clone()))
     }
 
     fn verify(
         &self,
-        token: &UnitToken<Verify>,
-        _trust: &TrustToken,
+        token: &Pass<Verify>,
+        _trust: &Grant<Dial>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -148,7 +144,7 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn approve(
         &self,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
@@ -158,8 +154,8 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn admit(
         &self,
-        token: &UnitToken<Admit>,
-        _admit: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        _admit: &Grant<Admittance>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
@@ -170,12 +166,7 @@ impl Units for GauntletKernelUnit<'_> {
         Decision::proceed(token, Admission::ZeroHold)
     }
 
-    fn route(
-        &self,
-        token: &UnitToken<Route>,
-        _ctx: &UnitCtx,
-        _meter: &AccrualMeter,
-    ) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, _meter: &AccrualMeter) -> Decision<Route> {
         // This rider's Route AWAITS (the plane's `drive`), so the loop reaches it through the
         // `RouteAwait` arm below and this synchronous one is never taken. Answered rather than
         // unwrapped: there is no task here to run the leg on.
@@ -184,8 +175,8 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn meter(
         &self,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
@@ -197,12 +188,7 @@ impl Units for GauntletKernelUnit<'_> {
         )
     }
 
-    fn audit(
-        &self,
-        token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Audit> {
         Decision::proceed(
             token,
             AuditFacts {
@@ -214,7 +200,7 @@ impl Units for GauntletKernelUnit<'_> {
 
     fn audit_refused(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _refusal: &Refusal,
     ) -> Decision<Audit> {
@@ -228,12 +214,7 @@ impl Units for GauntletKernelUnit<'_> {
         )
     }
 
-    fn encode(
-        &self,
-        token: &UnitToken<Encode>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Encode> {
+    fn encode(&self, token: &Pass<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
         // The plane's `drive` already produced the bytes and the transport owns the envelope; there
         // is no frame this rider writes around one.
         Decision::proceed(
@@ -258,7 +239,7 @@ impl Units for GauntletKernelUnit<'_> {
 impl RouteAwait for GauntletKernelUnit<'_> {
     fn route_leg<'a>(
         &'a self,
-        token: &'a UnitToken<Route>,
+        token: &'a Pass<Route>,
         _ctx: &'a UnitCtx,
         _meter: &'a AccrualMeter,
     ) -> RouteLeg<'a> {
@@ -292,7 +273,7 @@ fn principal_of(gov: &busbar_api::PlaneRequestCtx) -> PrincipalId {
 
 /// Run one gauntlet request through the UNIFIED kernel loop and return the plane's response verbatim.
 ///
-/// The kernel-loop twin of [`busbar_substrate::plane_host::run_gauntlet`]: same plane, same
+/// The kernel-loop twin of [`busbar_kernel::plane_host::run_gauntlet`]: same plane, same
 /// verify-before-charge order, same bytes out — driven through `busbar_kernel::teller::run_unit_async`
 /// over an ephemeral per-request kernel harness (uncapped in-flight table, node-wide gauge, canary).
 /// The loop's `Ended` is discarded: this rider binds no book and settles nothing (see the module
@@ -303,7 +284,7 @@ pub async fn run_gauntlet_via_kernel(
 ) -> Response {
     let kernel = crate::root::kernel::new_kernel();
     let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
-    let canary = busbar_caps::Canary::new();
+    let canary = busbar_contract::caps::Canary::new();
     let inflight = busbar_kernel::inflight::InFlight::new(usize::MAX, 0);
     let meter = AccrualMeter::new();
     let table = PlaneInFlight::new();
@@ -381,7 +362,7 @@ pub async fn run_gauntlet_via_kernel(
 }
 
 /// OPEN A SESSION through the UNIFIED kernel loop and return at the door — the kernel-loop twin of
-/// `busbar_substrate::plane_host::run_gauntlet_session` (its `admit_open` seat).
+/// `busbar_kernel::plane_host::run_gauntlet_session` (its `admit_open` seat).
 ///
 /// Runs the SAME plane's `verify_destination` in its verify-STRICTLY-before-charge position through
 /// `busbar_kernel::teller::open_unit` (governance-to-door, no Route, no settling exit), over an
@@ -404,7 +385,7 @@ pub fn open_gauntlet_via_kernel(
 ) -> Result<Admitted, Response> {
     let kernel = crate::root::kernel::new_kernel();
     let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
-    let canary = busbar_caps::Canary::new();
+    let canary = busbar_contract::caps::Canary::new();
     let inflight = busbar_kernel::inflight::InFlight::new(usize::MAX, 0);
     let meter = AccrualMeter::new();
     let table = PlaneInFlight::new();

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The SSE frame terminator and frame parser, ported from `busbar_substrate::proto` (moved here
+//! The SSE frame terminator and frame parser, ported from `busbar_kernel::proto` (moved here
 //! per the design's own rule: "adding a transport" means the wire-level pieces that only a
 //! transport needs move into the transport crate, verbatim in behaviour). `busbar-substrate` is
 //! outside this delivery's ownership, so its copy is left for that crate's own owner to retire;

@@ -19,8 +19,8 @@
 //!   body as a document, splice `model` and `stream` (and the array-stream shim, when asked) into
 //!   it, and re-serialize.
 //!
-//! Every one of those is TODAY's function, called. `LazyBody::parse`, `busbar_substrate::json::parse`,
-//! `busbar_substrate::json::to_vec` and `busbar_substrate::proto::array_stream_shim_key_for` are the
+//! Every one of those is TODAY's function, called. `LazyBody::parse`, `busbar_substrate_values::json::parse`,
+//! `busbar_substrate_values::json::to_vec` and `busbar_kernel::proto::array_stream_shim_key_for` are the
 //! same items the live arms in `native_ingress.rs` call, so the reject set, the depth guard and the
 //! serializer are the same ones — not an equivalent set, the same one. Nothing here parses a second
 //! time and nothing here has an opinion of its own.
@@ -64,7 +64,7 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use serde_json::Value;
 
-use busbar_substrate::proxy::KIND_INVALID_REQUEST;
+use busbar_kernel::proxy::KIND_INVALID_REQUEST;
 
 use crate::engine::LazyBody;
 use crate::unit::audit::RefusalOutcome;
@@ -238,7 +238,7 @@ pub fn arrival_body(headers: &HeaderMap, body: &Bytes) -> Result<BodyArrival, Ar
                 // The parser's own error is never echoed and never logged: with sonic-rs it embeds a
                 // fragment of the malformed body, which can carry secrets. The operator gets the
                 // byte length, the client gets the generic sentence.
-                tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
+                tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
                 return Err(ArrivalRefusal::BodyParse);
             }
         }
@@ -270,10 +270,10 @@ pub fn arrival_path_model(
     gemini_json_array: bool,
     proto: &str,
 ) -> Result<PathArrival, ArrivalRefusal> {
-    let mut v: Value = match busbar_substrate::json::parse(body) {
+    let mut v: Value = match busbar_substrate_values::json::parse(body) {
         Ok(v) => v,
         Err(_) => {
-            tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "request body JSON parse failed");
+            tracing::debug!(detail = %busbar_substrate_values::json::parse_err_log(body.len()), "request body JSON parse failed");
             return Err(ArrivalRefusal::BodyParse);
         }
     };
@@ -283,7 +283,7 @@ pub fn arrival_path_model(
             obj.insert("model".to_string(), Value::String(model.to_string()));
             obj.insert("stream".to_string(), Value::Bool(stream));
             if gemini_json_array {
-                if let Some(shim_key) = busbar_substrate::proto::array_stream_shim_key_for(proto) {
+                if let Some(shim_key) = busbar_kernel::proto::array_stream_shim_key_for(proto) {
                     obj.insert(shim_key.to_string(), Value::Bool(true));
                 }
             }
@@ -293,7 +293,7 @@ pub fn arrival_path_model(
         None => return Err(ArrivalRefusal::NotAnObject),
     }
 
-    let injected: Bytes = match busbar_substrate::json::to_vec(&v) {
+    let injected: Bytes = match busbar_substrate_values::json::to_vec(&v) {
         Ok(b) => b.into(),
         Err(_e) => {
             // Same leak class as the parse arms: the library's error Display is a busbar-internal

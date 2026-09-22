@@ -212,5 +212,5 @@ fn the_reported_numbers_belong_to_the_signal_that_tripped() {
 
 // THE LOAD-BEARING INTEGRATION of a trip with `Approval::suspend` and the identity pin lives in
 // `busbar-a2a`'s `pin_tests.rs`, not here: this crate carries the anomaly grammar alone and has no
-// dependency on `busbar_substrate::trust` or the A2A pin, both of which belong to the plane half.
+// dependency on `busbar_kernel::trust` or the A2A pin, both of which belong to the plane half.
 // See `a_trip_suspends_an_otherwise_perfectly_healthy_registration` there.

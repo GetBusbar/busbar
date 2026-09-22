@@ -286,7 +286,7 @@ async fn a_crash_looping_child_backs_off_and_is_quarantined_through_the_dispatch
         .build();
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
     let params = serde_json::json!({ "name": "fs_read", "arguments": {} });
-    let reach_the_supervisor = || app.breaker_reset(&busbar_substrate::store::tool_key("fs"));
+    let reach_the_supervisor = || app.breaker_reset(&busbar_kernel::store::tool_key("fs"));
 
     let text = |b: &serde_json::Value| {
         b.pointer("/result/content/0/text")

@@ -14,7 +14,7 @@
 
 use super::forward_with_pool;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_substrate::store::BreakerState;
+use busbar_kernel::store::BreakerState;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn a_stale_resume_does_not_revert_a_newer_probe() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());
@@ -100,7 +100,7 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
         app.store.acquire_for_dispatch_in(
             "pa",
             0,
-            busbar_substrate::store::now().saturating_add(86_400)
+            busbar_kernel::store::now().saturating_add(86_400)
         ),
         "a NEW probe must be won on the re-opened cell"
     );
@@ -143,7 +143,7 @@ async fn a_stale_resume_does_not_revert_a_newer_probe() {
 #[tokio::test]
 async fn a_dropped_main_path_future_releases_its_won_probe() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());
@@ -231,7 +231,7 @@ async fn a_dropped_main_path_future_releases_its_won_probe() {
         app.store.acquire_for_dispatch_in(
             "pa",
             0,
-            busbar_substrate::store::now().saturating_add(86_400)
+            busbar_kernel::store::now().saturating_add(86_400)
         ),
         "after the guard's release a later request must be able to win the probe again"
     );

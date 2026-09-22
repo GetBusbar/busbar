@@ -41,7 +41,7 @@
 //!
 //! ## The trust lifecycle is REUSED, not rebuilt
 //!
-//! `busbar_substrate::trust` already landed the plane-neutral `Approval` / `Sighting` / `TrustState` /
+//! `busbar_kernel::trust` already landed the plane-neutral `Approval` / `Sighting` / `TrustState` /
 //! `Drift` machine, generic over its pinned artifact, with the state DERIVED rather than stored.
 //! This plane supplies one adapter, [`catalogue::TransportPin`], and gets the whole lifecycle:
 //! register, connect, approve, per-capability approve/reject, `approve_pin`, suspend, unpin,
@@ -60,7 +60,7 @@
 //!
 //! **stdio IS A TRANSPORT THIS BUILD HAS, OUTBOUND.** A `tools:` entry carrying `transport: stdio`
 //! and a `command:` spawns a supervised child and dispatches `tools/call` down its stdin; the arm is
-//! [`busbar_substrate::transport::Transport::upstream_wire`] and the supervisor is [`stdio`]. It was DELETED once,
+//! [`busbar_substrate_values::transport::Transport::upstream_wire`] and the supervisor is [`stdio`]. It was DELETED once,
 //! as unreachable security-relevant code that read as shipped, and it is back with a caller rather
 //! than with an `#![allow(dead_code)]` — which is the only difference that ever mattered. The
 //! INBOUND direction (busbar itself launched as a child by an agent, serving MCP on its own stdin)

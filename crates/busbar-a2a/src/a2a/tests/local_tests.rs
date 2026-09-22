@@ -65,7 +65,7 @@ fn open(principal: &str, task_id: &str, context_id: &str, state: TaskState, now:
 /// A neutral `EngineHost` over a bare app. The three task-store reads/writes these verbs go through
 /// (`task_get_scoped` / `task_set_push_callback`) are pure `TASKS.*` calls that ignore the app, so
 /// any host serves — the tenancy the tests assert is the process-global store's, keyed by principal.
-fn host() -> std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost> {
+fn host() -> std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost> {
     engine().new_app_plus().build().engine_host()
 }
 
@@ -1332,7 +1332,7 @@ async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_err
     }
     let refusing: std::sync::Arc<dyn busbar_api::Store> =
         std::sync::Arc::new(RefuseOneTaskRow(busbar_store_memory::MemoryStore::new()));
-    TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+    TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         refusing,
     ));
 

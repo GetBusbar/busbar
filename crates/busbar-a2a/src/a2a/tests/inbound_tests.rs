@@ -11,7 +11,7 @@
 use super::*;
 use crate::a2a::registry::AgentRegistration;
 use busbar_api::ScopeRef;
-use busbar_substrate::trust::{Observation, Sighting};
+use busbar_kernel::trust::{Observation, Sighting};
 use std::collections::BTreeMap;
 
 fn a_key(id: &str, scopes: Option<Vec<ScopeRef>>) -> VirtualKey {
@@ -251,7 +251,7 @@ fn a_suspended_fronted_agent_refuses_inbound_as_well_as_outbound() {
         matches!(
             err,
             InboundRefusal::NotServing {
-                state: busbar_substrate::trust::TrustState::Suspended,
+                state: busbar_kernel::trust::TrustState::Suspended,
                 ref reason,
                 ..
             } if reason.as_deref().is_some_and(|r| r.contains("terminal_failure_rate"))

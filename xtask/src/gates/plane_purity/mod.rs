@@ -971,7 +971,7 @@ fn ceilings_at(base: &str, cats: &BTreeMap<String, u64>, reach: &BTreeMap<String
 /// that adds exactly one hit to that row's class. The paths all sit under a `/tests/` segment,
 /// which is what puts them in the scope `--strict` adds and `--check` deliberately does not see.
 fn strict_plants() -> Vec<(&'static str, String, &'static str)> {
-    let neutral_test = |leaf: &str| format!("crates/busbar-core/src/tests/{leaf}");
+    let neutral_test = |leaf: &str| format!("crates/busbar-kernel/src/tests/{leaf}");
     let plane_test = |key: &str| format!("crates/busbar-{key}/src/tests/planted_strict_reach.rs");
     let mut out: Vec<(&'static str, String, &'static str)> = vec![
         (

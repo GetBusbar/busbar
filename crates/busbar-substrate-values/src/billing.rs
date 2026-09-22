@@ -18,7 +18,7 @@
 //!
 //! NEUTRAL, RELOCATED DOWN from `busbar-core` (Batch C-0): pure data naming zero core type, so a
 //! plane crate (`busbar-mcp`) names `Billing`/`TokenUsage` without reaching into `busbar-core`. Core
-//! re-exports both from `busbar_core::billing` so every in-core and plugin caller compiles unchanged.
+//! re-exports both from `busbar_kernel::billing` so every in-core and plugin caller compiles unchanged.
 
 /// Token usage — the SUPERSET of chat's cache-aware accounting AND other operations' modality
 /// breakdown.
@@ -114,7 +114,7 @@ pub struct Usage {
 /// …), NOT any plane's config grammar (`rate_card:`'s `input_utok:` etc.).
 ///
 /// It is the read-back seam core's pricing oracle projects to integer nanos through
-/// (`busbar_core::cost::RateNanos::from_raw`) WITHOUT naming the plane's own config type: today
+/// (`busbar_kernel::cost::RateNanos::from_raw`) WITHOUT naming the plane's own config type: today
 /// (S2a) core fills it from its in-core `RateEntryCfg`; once the `rate_card:` grammar relocates to
 /// the owning plane (S2b, `busbar-llm`), the plane fills the SAME view from its parsed section and
 /// core is unchanged. FLOATS live ONLY at this config boundary; the projection to integer nanos and
@@ -141,7 +141,7 @@ impl RawTierRates {
     /// The ROUTING cost scalar (abstract units per MILLION tokens) the `cheapest` policy and the hook
     /// `Candidate.cost_per_mtok` signal read: the blended `(input + output) / 2` (1 micro-unit/token
     /// == 1 unit/mtok, so no further scaling). Byte-identical to the pre-seam
-    /// `busbar_core::config::rate_entry_per_mtok`, which now delegates here.
+    /// `busbar_kernel::config::rate_entry_per_mtok`, which now delegates here.
     pub fn blended_per_mtok(&self) -> f64 {
         (self.input + self.output) / 2.0
     }

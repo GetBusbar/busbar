@@ -25,9 +25,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_caps::{
-    step::Admit, AdmitToken, Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId,
-    StepName, UnitKey,
+use busbar_contract::caps::{
+    Admittance, Grant, Hold, HoldCell, OriginKind, PrincipalId, ReasonCode, SessionId, StepName,
+    UnitKey,
 };
 
 use busbar_contract::Framing;
@@ -340,7 +340,7 @@ pub struct CapRefused {
 pub trait ArrivalDoor {
     /// Open the unit's arrival hold. It reserves nothing, and the door is the only thing that can
     /// open it.
-    fn arrival_hold(&self, principal: PrincipalId, token: &AdmitToken<Admit>) -> Hold;
+    fn arrival_hold(&self, principal: PrincipalId, token: &Grant<Admittance>) -> Hold;
 }
 
 /// The in-memory hold a unit carries into the table, before it has reached the door.

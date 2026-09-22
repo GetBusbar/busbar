@@ -141,7 +141,7 @@ async fn a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier
 #[test]
 fn the_total_deadline_the_stream_rides_defaults_to_five_minutes() {
     assert_eq!(
-        busbar_substrate::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
+        busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
         300,
     );
 }

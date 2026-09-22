@@ -61,10 +61,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use serde_json::Value;
 
-use busbar_caps::{step::Route, Decision, LaneId, ReasonCode, Refusal, RoutePlan, UnitToken};
+use busbar_contract::caps::{step::Route, Decision, LaneId, Pass, ReasonCode, Refusal, RoutePlan};
 use busbar_contract::{DestinationFacts, Leg, UpstreamAddress};
-use busbar_substrate::observability::HOTPATH_LEVEL;
-use busbar_substrate::plane_host::EngineHost;
+use busbar_kernel::observability::HOTPATH_LEVEL;
+use busbar_kernel::plane_host::EngineHost;
 
 use crate::unit::meter::MeterFacts;
 
@@ -73,8 +73,8 @@ use crate::unit::meter::MeterFacts;
 // because `engine/mod.rs` re-exports them into the flattened engine namespace. Naming the substrate
 // directly is a BY-IDENTITY repoint — the very same items, resolved one hop earlier — so the bytes
 // this step emits cannot change, and one more engine name leaves the step files.
-use busbar_substrate::proxy::proxy_vocab::fire_stage_taps;
-use busbar_substrate::proxy::{APPLICATION_JSON, KIND_NOT_FOUND};
+use busbar_kernel::proxy::proxy_vocab::fire_stage_taps;
+use busbar_kernel::proxy::{APPLICATION_JSON, KIND_NOT_FOUND};
 
 use crate::engine::{
     capture_stage_shape, forwardable_client_header_names, EngineTables, GateRejected, LazyBody,
@@ -93,7 +93,7 @@ pub(crate) struct RouteInput<'a> {
     pub(crate) host: &'a Arc<dyn EngineHost>,
     pub(crate) rt: &'a Arc<NativeRuntime>,
     pub(crate) proto: &'static str,
-    pub(crate) op: busbar_substrate::handlers::Op,
+    pub(crate) op: busbar_substrate_values::handlers::Op,
     /// The admitted destination — post-downgrade, never the requested one.
     pub(crate) destination: &'a str,
     pub(crate) headers: &'a HeaderMap,
@@ -194,7 +194,7 @@ fn plan_over(rt: &Arc<NativeRuntime>, cands: &[WeightedLane]) -> RoutePlan {
         let facts = DestinationFacts::Upstream {
             // The family that dials an LLM lane. A lane's `protocol` is its DIALECT, which is a
             // different question from which transport carries it.
-            transport: busbar_substrate::transport::Transport::Http.name(),
+            transport: busbar_substrate_values::transport::Transport::Http.name(),
             address: UpstreamAddress::Socket {
                 authority: lane.authority,
                 sni: None,
@@ -236,12 +236,12 @@ pub(crate) struct RouteParts {
 /// The body is [`route_parts`]; this is the sealing, and it is the whole of the difference between
 /// them. Keeping the two apart is what lets a driver run the walk on the runtime and seal the answer
 /// on the thread the loop's token was minted on, without either half learning about the other's.
-pub(crate) async fn route(unit_token: &UnitToken<Route>, input: RouteInput<'_>) -> Routed {
+pub(crate) async fn route(unit_token: &Pass<Route>, input: RouteInput<'_>) -> Routed {
     seal(unit_token, route_parts(input).await)
 }
 
 /// Seal what the walk saw with the step's own token.
-pub(crate) fn seal(unit_token: &UnitToken<Route>, parts: RouteParts) -> Routed {
+pub(crate) fn seal(unit_token: &Pass<Route>, parts: RouteParts) -> Routed {
     let RouteParts {
         refusal,
         plan,
@@ -284,11 +284,11 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     // handed back for the Audit step to post — this step opens no door and closes none. The meter
     // half comes back unspent with it: nothing was dispatched, so nothing took it.
     let Some((cands, pool_name)) = candidates(rt, destination) else {
-        let response = busbar_substrate::proxy::ingress_error(
+        let response = busbar_kernel::proxy::ingress_error(
             proto,
             StatusCode::NOT_FOUND,
             KIND_NOT_FOUND,
-            &busbar_substrate::ingress::not_found_message(destination, model_not_found_message),
+            &busbar_kernel::ingress::not_found_message(destination, model_not_found_message),
         );
         return RouteParts {
             facts: MeterFacts {
@@ -324,10 +324,8 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         .map(str::to_string);
     // Opt-in client beta/version headers, collected against this plane's forwardable set. Empty ⇒
     // byte-identical egress.
-    let client_fwd = busbar_substrate::proxy::collect_client_headers(
-        headers,
-        &forwardable_client_header_names(),
-    );
+    let client_fwd =
+        busbar_kernel::proxy::collect_client_headers(headers, &forwardable_client_header_names());
 
     // THE PLAN, named before the walk runs it: one leg per candidate the destination resolved to,
     // in the order the walk was handed them. The lane and the dial target are the deployment's own
@@ -419,7 +417,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
                 fire_stage_taps(
                     host.tap_hooks_response(),
                     &shape,
-                    busbar_substrate::hooks::wire::HookStageProjection {
+                    busbar_kernel::hooks::wire::HookStageProjection {
                         at: "response",
                         model: None,
                         attempt_number: None,

@@ -72,9 +72,9 @@ fn signing_governance() -> Arc<dyn GovKit> {
             Arc::new(busbar_store_memory::MemoryStore::new()),
             None,
             Some(
-                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
                     &[9u8; 32],
-                    busbar_substrate::governance::signing::DEFAULT_KID,
+                    busbar_kernel::governance::signing::DEFAULT_KID,
                 ),
             ),
         )

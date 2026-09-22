@@ -282,6 +282,10 @@ jobs:
       # umbrella's stated design property (qa/segments.toml, "green-on-completion"). One red plugin
       # must not hide the state of the other nine.
       fail-fast: false
+      # Cap concurrent segment legs so the slow fan-out leaves headroom on the parked xlarge fleet
+      # for a concurrent conformance run. Segment set and independent reporting are unchanged; this
+      # only bounds how many segments run at once.
+      max-parallel: 8
       matrix: ${{ fromJSON(needs.fast.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

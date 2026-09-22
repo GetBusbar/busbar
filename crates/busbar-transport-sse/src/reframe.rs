@@ -98,68 +98,62 @@ fn push_event(out: &mut Vec<u8>, event: &str, payload: &[u8]) {
     out.push(b'\n');
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ── THE COMPOSITION-ROOT-OWNED SSE-REFRAME SEAM (HOST-CAPS S3, DECISIONS #26) ─────────────────────
+//
+// The server-side reframe above is TWO neutral free functions. This seam names that pair as ONE host
+// capability a mount reaches through a trait object rather than by calling the free functions
+// directly, so the composition root can install the reframer once at boot and a later pass swap the
+// implementation WITHOUT the mount changing. ADDITIVE AND DORMANT: the production impl
+// [`PassThroughReframe`] delegates to the exact free functions above, and NOTHING on the shipped path
+// consults the seam yet — the transport is byte-for-byte unchanged until a mount opts in. The
+// composition-root install ([`install_sse_reframe`]) mirrors the egress seam's `install_hostless_egress`.
 
-    #[test]
-    fn a_bare_body_accept_does_not_prefer_a_stream() {
-        assert!(!prefers_event_stream("application/json"));
-        assert!(!prefers_event_stream("*/*"));
-        assert!(!prefers_event_stream(""));
+/// THE SERVER-SIDE SSE-REFRAME HOST CAPABILITY, as a neutral trait a mount reaches through instead of
+/// calling [`prefers_event_stream`] / [`reframe`] directly. `Send + Sync` so the installed capability
+/// is a process-wide `&'static dyn`.
+pub trait SseReframe: Send + Sync {
+    /// Does the caller PREFER an event stream over a single body? The q-value negotiation of
+    /// [`prefers_event_stream`].
+    fn prefers_event_stream(&self, accept: &str) -> bool;
+
+    /// Reframe one complete success message into event-stream bytes, records first. The framing of
+    /// [`reframe`].
+    fn reframe(&self, records: &[&[u8]], result: &[u8]) -> Vec<u8>;
+}
+
+/// The production SSE-reframe capability: a BYTE-FOR-BYTE pass-through to the free functions
+/// [`prefers_event_stream`] and [`reframe`]. The composition root installs this today, so a mount
+/// that opts onto the seam gets exactly the bytes the free functions produce now.
+pub struct PassThroughReframe;
+
+impl SseReframe for PassThroughReframe {
+    fn prefers_event_stream(&self, accept: &str) -> bool {
+        prefers_event_stream(accept)
     }
 
-    #[test]
-    fn an_explicit_event_stream_at_equal_or_higher_weight_prefers_it() {
-        assert!(prefers_event_stream("text/event-stream"));
-        assert!(prefers_event_stream(
-            "application/json;q=0.5, text/event-stream"
-        ));
-        assert!(prefers_event_stream(
-            "text/event-stream;q=1.0, application/json;q=1.0"
-        ));
-    }
-
-    #[test]
-    fn a_down_weighted_event_stream_does_not_win() {
-        assert!(!prefers_event_stream(
-            "text/event-stream;q=0.1, application/json"
-        ));
-        assert!(!prefers_event_stream("text/event-stream;q=0"));
-    }
-
-    #[test]
-    fn records_lead_the_result_and_each_is_its_own_frame() {
-        let bytes = reframe(&[b"one", b"two"], b"answer");
-        let text = String::from_utf8(bytes).unwrap();
-        assert_eq!(
-            text,
-            "event: log\ndata: one\n\nevent: log\ndata: two\n\nevent: result\ndata: answer\n\n"
-        );
-        // The result is last: a consumer sees both logs before the answer.
-        assert!(text.find("data: one").unwrap() < text.find("data: answer").unwrap());
-        assert!(text.find("data: two").unwrap() < text.find("data: answer").unwrap());
-    }
-
-    #[test]
-    fn a_multi_line_payload_is_split_across_data_lines() {
-        let bytes = reframe(&[], b"a\nb");
-        assert_eq!(
-            String::from_utf8(bytes).unwrap(),
-            "event: result\ndata: a\ndata: b\n\n"
-        );
-    }
-
-    #[test]
-    fn every_reframed_event_carries_a_field_the_inbound_carve_recognises() {
-        // The outbound framing and the inbound recogniser are the two halves of one wire: what this
-        // produces must read back as a real frame, not a comment the carve would drop.
-        let bytes = reframe(&[b"log-line"], b"answer");
-        let mut buf = bytes.clone();
-        let (frames, _moved) = crate::carve_complete_frames(&mut buf, 0);
-        assert_eq!(frames.len(), 2);
-        for frame in &frames {
-            assert!(crate::proto::frame_carries_a_field(frame));
-        }
+    fn reframe(&self, records: &[&[u8]], result: &[u8]) -> Vec<u8> {
+        reframe(records, result)
     }
 }
+
+/// THE PROCESS-WIDE SSE-reframe capability, installed once by the composition root
+/// ([`install_sse_reframe`]). A mount reads it back through [`sse_reframe`] and gets `None` in a build
+/// that installed none — the dormant default, under which every served door calls the free functions
+/// directly and the wire is unchanged.
+static REFRAMER: std::sync::OnceLock<&'static dyn SseReframe> = std::sync::OnceLock::new();
+
+/// Install the process SSE-reframe capability — the composition root's one write, at boot, before any
+/// mount reframes. Idempotent by `OnceLock`: a second install is a no-op (the first wins).
+pub fn install_sse_reframe(reframer: &'static dyn SseReframe) {
+    let _ = REFRAMER.set(reframer);
+}
+
+/// The installed SSE-reframe capability, or `None` when none was installed (the dormant default).
+#[must_use]
+pub fn sse_reframe() -> Option<&'static dyn SseReframe> {
+    REFRAMER.get().copied()
+}
+
+#[cfg(test)]
+#[path = "tests/reframe_tests.rs"]
+mod tests;

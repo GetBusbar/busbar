@@ -98,8 +98,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo clippy --no-default-features --locked -- -D warnings",
     "cargo build --no-default-features --locked",
     "cargo test --no-default-features --locked",
-    "cargo clippy -p busbar -p busbar-core -p busbar-admin --all-targets --features openapi-schema --locked -- -D warnings",
-    "cargo test -p busbar -p busbar-core -p busbar-admin --features openapi-schema --locked openapi -- --nocapture",
+    "cargo clippy -p busbar -p busbar-kernel -p busbar-admin --all-targets --features openapi-schema --locked -- -D warnings",
+    "cargo test -p busbar -p busbar-kernel -p busbar-admin --features openapi-schema --locked openapi -- --nocapture",
     "cargo build --locked --bin busbar",
     "cargo test -p busbar --test migration_corpus --locked -- --nocapture",
     "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked",
@@ -110,6 +110,12 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate kind-isolation",
     "cargo xtask gate kernel-token-wire-purity --selftest",
     "cargo xtask gate kernel-token-wire-purity",
+    "cargo xtask gate money-invariants --selftest",
+    "cargo xtask gate money-invariants",
+    "cargo xtask gate seal-witness --selftest",
+    "cargo xtask gate seal-witness",
+    "cargo xtask gate no-float-money --selftest",
+    "cargo xtask gate no-float-money",
     "cargo xtask gate no-self-filed-issues --selftest",
     "cargo xtask gate no-self-filed-issues",
     "cargo xtask gate tracing --selftest",
@@ -136,6 +142,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate ci-umbrella",
     "cargo xtask gate config-schema --selftest",
     "cargo xtask gate config-schema",
+    "cargo xtask gate conformance-sync --selftest",
+    "cargo xtask gate conformance-sync",
     "cargo xtask gate construction --selftest",
     "cargo xtask gate construction --report",
     // The POSTURE form, which is what ci.yml and keep-proof.yml now run as a blocking step. It
@@ -166,6 +174,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate service-images",
     "cargo xtask gate structure-lint --selftest",
     "cargo xtask gate structure-lint",
+    "cargo xtask gate no-tracked-ignored --selftest",
+    "cargo xtask gate no-tracked-ignored",
     "cargo xtask gate workspace-deps --selftest",
     "cargo xtask gate workspace-deps",
     "cargo xtask full-gate --selftest",
@@ -301,7 +311,7 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
     ),
     (
         "hot-path-perf",
-        "the §8 perf witness, staged on integration/oracle-phase2 ahead of the keystone wave that \
+        "the perf witness, staged on integration/oracle-phase2 ahead of the keystone wave that \
          owns ci.yml (.github is off the plane-extraction touch surface). Its coverage is \
          `xtask/tests/hot_path_gates.rs`, which drives the gate through the dispatcher and pins its \
          verdict at green; that test runs under `cargo test --workspace --locked` on every push, \
@@ -311,11 +321,25 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
     ),
     (
         "hot-path-alloc",
-        "the §8 alloc witness, on the same footing as `hot-path-perf`: covered by \
+        "the alloc witness, on the same footing as `hot-path-perf`: covered by \
          `xtask/tests/hot_path_gates.rs`, which drives it through the dispatcher under \
          `cargo test --workspace --locked` on every push, and wired into ci.yml by name when the \
          keystone rider lands.",
         Excuse::XtaskTest("run(&[\"gate\", \"hot-path-alloc\"])"),
+    ),
+    (
+        "instance-noun-neutrality",
+        "the plane/transport instance-noun burndown census. It is GREEN only when NO crate names a \
+         concrete instance outside its own crate family, and the plane extraction is in flight, so \
+         it is RED on HEAD BY DESIGN — every remaining coupling is a tracked row in \
+         qa/instance-noun-neutrality.toml. That is a release-time DONE question on the exact same \
+         footing as plane-purity-strict and kind-isolation-ship above: run by \
+         scripts/verify-1.6.0-done.sh (`cargo xtask gate instance-noun-neutrality`), not on every \
+         push, because a gate that is red every push is a gate somebody puts a `|| true` in front of.",
+        Excuse::ReleaseScript(
+            "scripts/verify-1.6.0-done.sh",
+            "cargo xtask gate instance-noun-neutrality",
+        ),
     ),
 ];
 

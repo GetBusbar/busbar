@@ -25,10 +25,10 @@ use busbar_api::{
     AuditRecord, MeteringDelta, MeteringRow, ModelTokens, Store as AbiStore, StoreError,
     StoreResult, UsageLedger, VirtualKey,
 };
-use busbar_unit_ledger::migration::{
+use busbar_kernel_ledger::migration::{
     migrate, LegacyFamily, MigrationRecords, Outcome, OPENING_CHECKPOINT_SEQ,
 };
-use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey};
+use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey};
 use std::sync::{Arc, Mutex};
 
 /// The published payload schema — the one every 1.5.x store plugin is built against.
@@ -503,12 +503,12 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
     assert_eq!(
         opening.balances,
         vec![
-            busbar_unit_ledger::legacy::OpeningBalance {
+            busbar_kernel_ledger::legacy::OpeningBalance {
                 bucket: "vk_a".to_string(),
                 amount: 9_000,
                 rate_card_version: 3,
             },
-            busbar_unit_ledger::legacy::OpeningBalance {
+            busbar_kernel_ledger::legacy::OpeningBalance {
                 bucket: "vk_b".to_string(),
                 amount: 40,
                 rate_card_version: 3,

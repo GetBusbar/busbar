@@ -3,7 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_unit_scope::required_scope;
+use busbar_kernel_scope::required_scope;
 
 const POOL: &str = "pool-main";
 const LANE_A: &str = "lane-a";
@@ -262,7 +262,7 @@ fn redeclaring_a_pair_replaces_it() {
 // The group table
 // ─────────────────────────────────────────────────────────────────────
 
-use busbar_substrate::config::groups::{LimitCfg, LimitWindow};
+use busbar_kernel::config::groups::{LimitCfg, LimitWindow};
 
 fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg {
     LimitCfg {

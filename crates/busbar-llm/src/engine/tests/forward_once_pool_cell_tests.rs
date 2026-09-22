@@ -1,6 +1,6 @@
 use super::{forward_with_pool, KIND_INVALID_REQUEST};
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_substrate::store::{now as store_now, BreakerState};
+use busbar_kernel::store::{now as store_now, BreakerState};
 use reqwest::StatusCode;
 use serde_json::json;
 use std::sync::Arc;
@@ -44,7 +44,7 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("fb".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -129,7 +129,7 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("fb".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -217,7 +217,7 @@ async fn test_forward_once_fallback_5xx_fault_trips_and_releases_probe() {
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("fb".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -328,7 +328,7 @@ async fn test_forward_once_fallback_client_4xx_does_not_trip_breaker() {
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("fb".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("fb".into()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -444,11 +444,11 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
         // A -> B -> A cycle.
         .on_exhausted(
             "A",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("B".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("B".into()),
         )
         .on_exhausted(
             "B",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("A".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("A".into()),
         )
         .build();
 
@@ -495,7 +495,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
 #[tokio::test]
 async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker() {
     crate::testkit::install_test_seams();
-    use busbar_substrate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    use busbar_kernel::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -532,7 +532,7 @@ async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker()
         .fallback_pool("fb", &[(1, 1)])
         .on_exhausted(
             "primary",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("fb".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("fb".into()),
         )
         // The 2xx headers optimistically record a SUCCESS before the untranslatable check runs,
         // which closes the probe-won HalfOpen cell immediately — so the default ErrorRate config

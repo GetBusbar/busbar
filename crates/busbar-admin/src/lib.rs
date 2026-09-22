@@ -8,7 +8,7 @@
 //! recording layer. It depends on busbar-core ONE-WAY (Cargo refuses the reverse edge).
 //!
 //! busbar-core mounts this service through the fn-pointer seam
-//! `busbar_core::admin::seam::AdminMountSeam`; [`install`] registers this crate's implementation,
+//! `busbar_kernel::admin::seam::AdminMountSeam`; [`install`] registers this crate's implementation,
 //! and the composition root (`crates/busbar`'s `main`) calls it once, unconditionally — this crate
 //! is a MANDATORY, always-linked sibling, not a plugin.
 //!
@@ -21,30 +21,60 @@ pub mod restart;
 pub mod transport;
 pub mod v1;
 
+// ── KERNEL-VERB EXECUTION (absorbed from busbar-unit-verbs, W4.b #36) ────────────────────────────
+// The admin plane decodes a request into a `KernelVerb` and hands it here; this is the only place a
+// kernel verb's SEMANTICS live. The store face (`Store`/`StoreError`) and the idempotency window
+// (`IDEMPOTENCY_TTL_SECS`) it binds against now live on `busbar_contract::verb_store` (DECISIONS
+// #38/#40), so this unit and `busbar-plugin-loader`'s store adapter reach one face rather than
+// naming each other's crate.
+pub mod governance;
+pub mod idempotency;
+pub mod mint;
+pub mod posture;
+pub mod rate;
+pub mod refusal;
+pub mod verb;
+pub mod verbs;
+
+pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
+pub use idempotency::ReplayEncoder;
+pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
+pub use rate::ConfigClassRule;
+pub use refusal::{ReasonCode, Refusal, RefusalStep};
+pub use verb::{
+    KernelVerb, VerbScope, IRREDUCIBLE_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
+    NEW_VERBS, READ_ONLY_NEW_VERBS,
+};
+pub use verbs::{required_scope, MintOutcome, MintedKeyOutcome, NonceSource, Verbs};
+
+#[cfg(test)]
+#[path = "tests/table_matches_openapi.rs"]
+mod table_matches_openapi;
+
 pub use v1::service::mark_start;
 
 /// Register this crate's implementation of the admin-service mount seam
-/// (`busbar_core::admin::seam::AdminMountSeam`). Called EXACTLY ONCE, by the composition root
+/// (`busbar_kernel::admin::seam::AdminMountSeam`). Called EXACTLY ONCE, by the composition root
 /// (`crates/busbar`'s `main`), unconditionally — the admin API carries no feature flag at the
 /// composition root; it is always mounted.
 pub fn install() {
-    busbar_core::admin::seam::install_admin_mount_seam(busbar_core::admin::seam::AdminMountSeam {
-        mount: seam_mount,
-    });
+    busbar_kernel::admin::seam::install_admin_mount_seam(
+        busbar_kernel::admin::seam::AdminMountSeam { mount: seam_mount },
+    );
 }
 
 /// The mount the seam calls: nest the JSON v1 admin surface onto `router` at `/api/v1/admin`.
 fn seam_mount(
-    router: axum::Router<std::sync::Arc<busbar_core::state::AppHandle>>,
-) -> axum::Router<std::sync::Arc<busbar_core::state::AppHandle>> {
+    router: axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>>,
+) -> axum::Router<std::sync::Arc<busbar_kernel::state::AppHandle>> {
     crate::transport::mount(router, &crate::v1::json::JsonV1)
 }
 
 /// TEST/TEST-SUPPORT router builder: register this crate's admin mount seam (idempotently, once per
-/// process) and delegate to `busbar_core::build_router`. busbar-core's own `build_router` mounts the
+/// process) and delegate to `busbar_kernel::build_router`. busbar-core's own `build_router` mounts the
 /// admin surface through the seam, which is unregistered until the composition root (production) or
 /// this helper (tests) installs it — so every moved test that wants the admin routes builds through
-/// here instead of naming `busbar_core::build_router` directly.
+/// here instead of naming `busbar_kernel::build_router` directly.
 /// Install the process-wide test environment exactly once: the admin mount seam PLUS the LLM/MCP/A2A
 /// plane+protocol test seams (protocols/codecs, plane runtimes, ingress hooks). busbar-core's own
 /// unit-test binary auto-registers these from its `cfg(test)` builtins, but a test-support CONSUMER
@@ -60,7 +90,7 @@ fn ensure_seam() {
         busbar_a2a::testkit::install_test_seams();
         // Having registered the MCP plane above, seed its always-present default runtime for every
         // `TestApp` — the test-support analogue of busbar-core's own `cfg(test)` seeding.
-        busbar_core::test_support::install_test_mcp_runtime_factory(
+        busbar_kernel::test_support::install_test_mcp_runtime_factory(
             busbar_mcp::testkit::default_mcp_runtime,
         );
         install();
@@ -71,9 +101,9 @@ fn ensure_seam() {
 /// seam) are installed — moved admin tests use this in place of `TestApp::new()` so the seams are in
 /// place BEFORE `.build()` resolves providers/planes.
 #[cfg(test)]
-pub(crate) fn new_test_app() -> busbar_core::test_support::TestApp {
+pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
     ensure_seam();
-    busbar_core::test_support::TestApp::new()
+    busbar_kernel::test_support::TestApp::new()
 }
 #[cfg(all(not(test), feature = "test-support"))]
 fn ensure_seam() {
@@ -82,27 +112,27 @@ fn ensure_seam() {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn build_router(app: std::sync::Arc<busbar_core::state::App>) -> axum::Router {
+pub fn build_router(app: std::sync::Arc<busbar_kernel::state::App>) -> axum::Router {
     ensure_seam();
-    busbar_core::build_router(app)
+    busbar_kernel::build_router(app)
 }
 
 /// TEST/TEST-SUPPORT split-router builder: register the admin mount seam (once) and delegate to
-/// `busbar_core::router::build_split_routers_with_limits`, so the moved split-listener test mounts
+/// `busbar_kernel::router::build_split_routers_with_limits`, so the moved split-listener test mounts
 /// the admin surface on the admin router.
 #[cfg(any(test, feature = "test-support"))]
 pub fn build_split_routers_with_limits(
-    app: std::sync::Arc<busbar_core::state::App>,
+    app: std::sync::Arc<busbar_kernel::state::App>,
     request_body_max_bytes: usize,
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (
     axum::Router,
     axum::Router,
-    std::sync::Arc<busbar_core::state::AppHandle>,
+    std::sync::Arc<busbar_kernel::state::AppHandle>,
 ) {
     ensure_seam();
-    busbar_core::router::build_split_routers_with_limits(
+    busbar_kernel::router::build_split_routers_with_limits(
         app,
         request_body_max_bytes,
         max_inbound_concurrent,
@@ -111,7 +141,7 @@ pub fn build_split_routers_with_limits(
 }
 
 // The config-transaction behavior suite drives this crate's admin mutation handlers; it moved here
-// with the service from `busbar_core::config::transaction`'s tests (busbar-core can no longer name
+// with the service from `busbar_kernel::config::transaction`'s tests (busbar-core can no longer name
 // the handlers). Wired at the crate root, the direct analogue of its old `#[path]` wiring.
 #[cfg(all(test, feature = "auth-admin-tokens"))]
 #[path = "tests/txn_tests.rs"]

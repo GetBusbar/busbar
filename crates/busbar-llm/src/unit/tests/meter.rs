@@ -4,8 +4,8 @@
 
 use super::*;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_caps::{KernelSeal, StepName};
-use busbar_substrate::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
+use busbar_contract::caps::{KernelSeal, StepName};
+use busbar_kernel::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
 
 /// The literal token figures every identity here is pinned on: eleven uncached input tokens and
 /// seven output tokens, reported by the upstream and normalized by the dialect's reader.
@@ -57,7 +57,7 @@ async fn rig() -> (
         .expect("governance");
     let (key, _) = gov_kit
         .create_key(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "meter".to_string(),
                 allowed_pools: None,
                 group: None,
@@ -72,9 +72,36 @@ async fn rig() -> (
             LaneSpec::new("m0", crate::proto_codec::PROTO_OPENAI, &server.base_url())
                 .provider("zai"),
         )
-        .pool("p", &[(0, 1)]);
+        .pool("p", &[(0, 1)])
+        // BILLED: a `rate_card:` is present, so `cost_pricing_enabled` is true and — per DECISION #42
+        // — the `meter_charge` seam writes its metering row (an unbilled plane serves free and emits
+        // none). The card prices the one lane `m0` at ZERO on every tier, matching the historical
+        // no-card posture's token pricing (a rig with no card already prices every tier at 0), and
+        // the flat per-request fee stays `1` (the builder's `CostModel::flat(1)` default). So the
+        // row's counts, the derived token ledger and the zero-cent derived spend are byte-identical
+        // to the unbilled rig — #42 changed only whether the row is emitted, never its values.
+        .cost(billed_zero_card());
     TestAppKit::set_governance(&mut builder, gov_kit);
     (builder.build(), std::sync::Arc::new(key), server)
+}
+
+/// A PRESENT rate card that prices the lane `m0` at zero on every tier, with the flat fee (`1`) the
+/// unbilled rig's `CostModel::flat(1)` default carried. `pricing_enabled` is true (a card is present)
+/// so #42 lets the metering row through, while every priced figure stays the no-card baseline's.
+fn billed_zero_card() -> busbar_kernel::cost::CostModel {
+    busbar_kernel::cost::CostModel::resolve_parts(
+        Some(&std::collections::BTreeMap::from([(
+            "m0".to_string(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 0.0,
+                output_utok: 0.0,
+                cache_read_utok: 0.0,
+                cache_write_utok: 0.0,
+            },
+        )])),
+        1,
+        &Default::default(),
+    )
 }
 
 /// The sink the admit step builds and every accrual site carries to the end of the response.
@@ -106,7 +133,7 @@ fn accrued(
         .expect("the key exists");
     gov.flush_metering();
     let rows = gov
-        .metering_for(busbar_substrate::governance::metering_bucket(charged_at))
+        .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
         .expect("metering read");
     let mut mine: Vec<_> = rows.into_iter().filter(|r| r.key_id == key_id).collect();
     assert_eq!(mine.len(), 1, "one response, one metering cell");
@@ -118,10 +145,10 @@ fn accrued(
 }
 
 /// A kernel seal for the length of one test.
-fn tokens() -> (KernelSeal, UnitToken<Meter>, UsageToken) {
+fn tokens() -> (KernelSeal, Pass<Meter>, Grant<Consumption>) {
     let seal = KernelSeal::acquire_for_kernel();
-    let unit = UnitToken::mint(&seal);
-    let usage = UsageToken::mint(&seal);
+    let unit = Pass::mint(&seal);
+    let usage = Grant::<Consumption>::mint(&seal);
     (seal, unit, usage)
 }
 
@@ -137,7 +164,7 @@ fn tokens() -> (KernelSeal, UnitToken<Meter>, UsageToken) {
 async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
     // LEG 1 — a real forwarded request, metered by the live tap at the end of the response.
     let (app, key, server) = rig().await;
-    let charged_at = busbar_substrate::store::now();
+    let charged_at = busbar_kernel::store::now();
     let (host, _rt) = crate::engine::test_host_rt(&app);
     let resp = crate::engine::forward_with_pool(
         &app,
@@ -189,7 +216,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
     // LEG 2 — the step, on its own registry, over the same reported usage.
     let (app2, key2, server2) = rig().await;
     let (host2, rt2) = crate::engine::test_host_rt(&app2);
-    let reported = busbar_substrate::billing::TokenUsage {
+    let reported = busbar_substrate_values::billing::TokenUsage {
         input: INPUT,
         output: OUTPUT,
         ..Default::default()
@@ -283,7 +310,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
 #[test]
 fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
     let host: Arc<dyn EngineHost> =
-        busbar_substrate::testkit::engine_host(&crate::test_support::TestApp::new().build());
+        busbar_kernel::testkit::engine_host(&crate::test_support::TestApp::new().build());
     let (_seal, unit_token, usage_token) = tokens();
     for (status, charged, upstream_leg, fee, refund, why) in [
         (200u16, true, true, 1u32, false, "delivered and charged"),
@@ -349,9 +376,9 @@ fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
 #[test]
 fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
     let host: Arc<dyn EngineHost> =
-        busbar_substrate::testkit::engine_host(&crate::test_support::TestApp::new().build());
+        busbar_kernel::testkit::engine_host(&crate::test_support::TestApp::new().build());
     let (seal, unit_token, usage_token) = tokens();
-    let reported = busbar_substrate::billing::TokenUsage {
+    let reported = busbar_substrate_values::billing::TokenUsage {
         input: INPUT,
         output: OUTPUT,
         ..Default::default()
@@ -364,7 +391,7 @@ fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
         None,
         &Outcome::Failed(
             StepName::Route,
-            busbar_caps::ReasonCode::DestinationUnreachable,
+            busbar_contract::caps::ReasonCode::DestinationUnreachable,
         ),
     );
     assert_eq!(
@@ -395,11 +422,11 @@ fn the_step_has_the_meters_shape() {
 /// projection turns into 2_000 and 6_000 nano-units per token. The two tiers are priced
 /// DIFFERENTLY on purpose: a card that priced them alike could not tell a money figure from a
 /// token count, which is the whole thing under test.
-fn priced_card() -> busbar_core::cost::CostModel {
-    busbar_core::cost::CostModel::resolve_parts(
+fn priced_card() -> busbar_kernel::cost::CostModel {
+    busbar_kernel::cost::CostModel::resolve_parts(
         Some(&std::collections::BTreeMap::from([(
             "m0".to_string(),
-            busbar_core::config::RateEntryCfg {
+            busbar_kernel::config::RateEntryCfg {
                 input_utok: 2.0,
                 output_utok: 6.0,
                 cache_read_utok: 0.0,
@@ -415,7 +442,7 @@ fn priced_card() -> busbar_core::cost::CostModel {
 /// the sink the door pins carries a card that actually prices something. No upstream is dialled
 /// here: this test drives the step directly over a usage report the reader already produced.
 fn priced_rig() -> (
-    std::sync::Arc<busbar_core::state::App>,
+    std::sync::Arc<busbar_kernel::state::App>,
     std::sync::Arc<busbar_api::VirtualKey>,
 ) {
     crate::testkit::install_test_seams();
@@ -426,7 +453,7 @@ fn priced_rig() -> (
         .expect("governance");
     let (key, _) = gov_kit
         .create_key(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "priced".to_string(),
                 allowed_pools: None,
                 group: None,
@@ -468,7 +495,7 @@ fn priced_rig() -> (
 /// the sealing leg. The pair the walk reads has to tell them apart too.
 #[test]
 fn the_step_says_whether_it_posted_or_only_sealed() {
-    let reported = busbar_substrate::billing::TokenUsage {
+    let reported = busbar_substrate_values::billing::TokenUsage {
         input: INPUT,
         output: OUTPUT,
         ..Default::default()
@@ -477,7 +504,7 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
 
     // LEG 1 — the walk held no meter half, so this step is the accrual.
     let (app1, key1) = priced_rig();
-    let charged_at = busbar_substrate::store::now();
+    let charged_at = busbar_kernel::store::now();
     let (host1, rt1) = crate::engine::test_host_rt(&app1);
     let sink1 = sink(&host1, &key1, charged_at);
     let tables1 = crate::engine::EngineTables::new(&rt1);
@@ -532,7 +559,7 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
     let gov2 = app2.governance.clone().expect("governance is configured");
     gov2.flush_metering();
     assert!(
-        gov2.metering_for(busbar_substrate::governance::metering_bucket(charged_at))
+        gov2.metering_for(busbar_kernel::governance::metering_bucket(charged_at))
             .expect("metering read")
             .iter()
             .all(|r| r.key_id != key2.id),

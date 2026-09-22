@@ -4,8 +4,8 @@
 //! THE A2A PLANE'S IDENTITY PIN, and the one plane-specific rule the plane-neutral machine must not
 //! learn.
 //!
-//! [`CardPin`] is this plane's [`busbar_substrate::trust::PinnedArtifact`]. Everything else about approval,
-//! drift, quarantine, suspension and the dispatch gate is [`busbar_substrate::trust`], unchanged and
+//! [`CardPin`] is this plane's [`busbar_kernel::trust::PinnedArtifact`]. Everything else about approval,
+//! drift, quarantine, suspension and the dispatch gate is [`busbar_kernel::trust`], unchanged and
 //! un-forked. A2A supplies an artifact; it does not supply a second state machine.
 //!
 //! ## Why the pin is a sum type rather than a string
@@ -39,7 +39,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use super::{card, jws};
-use busbar_substrate::trust::{Approval, PinnedArtifact, Sighting, TrustError};
+use busbar_kernel::trust::{Approval, PinnedArtifact, Sighting, TrustError};
 
 /// The identity an A2A registration is pinned to. The mechanism is part of the value, not a
 /// separate field, so a registration cannot claim `jws_issuer_key` while carrying a transport pin.
@@ -127,12 +127,12 @@ impl PinnedArtifact for CardPin {
 
 /// READING AN OPERATOR'S `agents.<name>.pin:` INTO THIS PLANE'S ARTIFACT — the whole of what A2A
 /// writes for it. The sequence, and the refusal of a present-but-blank key, are
-/// [`busbar_substrate::trust::declared`]'s.
+/// [`busbar_kernel::trust::declared`]'s.
 ///
 /// `None` means "the operator supplied a root but not yet a fingerprint", which is the normal state
 /// of a fresh registration: the fingerprint is captured at `connect` and approved by a human. It is
 /// deliberately NOT an error, and it is deliberately not filled in with anything the upstream said.
-impl busbar_substrate::trust::declared::Declares for CardPin {
+impl busbar_kernel::trust::declared::Declares for CardPin {
     type Mechanism = super::config::PinMechanism;
 
     fn is_a_root(mechanism: Self::Mechanism) -> bool {
@@ -140,10 +140,10 @@ impl busbar_substrate::trust::declared::Declares for CardPin {
     }
 
     fn artifact(
-        reading: busbar_substrate::trust::declared::Reading<'_, Self::Mechanism>,
+        reading: busbar_kernel::trust::declared::Reading<'_, Self::Mechanism>,
     ) -> Option<Self> {
         use super::config::PinMechanism;
-        use busbar_substrate::trust::declared::Reading;
+        use busbar_kernel::trust::declared::Reading;
         match reading {
             // NAMED OUT LOUD, which is this plane's ruling and not core's: an operator reading a
             // registration list must SEE which entries have no root rather than inferring it from

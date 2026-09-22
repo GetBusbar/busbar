@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use super::receive::{notify_push, Admitted};
 use crate::diagnostics::{A2A_OUTBOUND_CRED_UNLEASED, A2A_PUSH_REARM_FAILED};
-use busbar_substrate::diag_warn;
+use busbar_substrate_values::diag_warn;
 
 /// EVERYTHING ONE BUSBAR-ORIGINATED HOP NEEDS that is neither the document nor the verb.
 ///
@@ -55,7 +55,7 @@ struct Originated {
 /// CALLER's answer is already decided and already correct; a backend busbar may not reach leaves the
 /// customer exactly where they were before this existed, never with a failed request.
 fn originate(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
     plane: &Arc<super::plane::A2aPlane>,
     admitted: &Admitted,
     key: &busbar_api::VirtualKey,
@@ -187,7 +187,7 @@ const ORIGINATED_RPC_ID: &str = "busbar-originated";
 /// busbar's own record, which is correct whatever the backend says.
 #[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
 pub(super) async fn mirror_push_config(
-    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     admitted: &Admitted,
     key: &busbar_api::VirtualKey,
     method: &'static str,
@@ -315,7 +315,7 @@ pub(super) async fn mirror_push_config(
 /// ever opened on it, across every tenant, moves nothing and shows nobody anything. `list_tasks`
 /// then renders busbar's own scoped rows exactly as it always did.
 pub(super) async fn refresh_listed_tasks(
-    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     admitted: &Admitted,
     key: &busbar_api::VirtualKey,
     principal: &str,

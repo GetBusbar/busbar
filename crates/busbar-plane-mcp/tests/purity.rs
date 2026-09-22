@@ -132,11 +132,11 @@ fn the_plane_performs_no_input_or_output() {
 #[test]
 fn the_plane_names_no_kernel_side_crate() {
     let forbidden = [
-        "busbar_caps",
+        "busbar_contract::caps",
         "busbar_kernel",
         "busbar_unit",
         "busbar_substrate",
-        "busbar_core",
+        "busbar_kernel",
         "busbar_plane_llm",
         "busbar_plane_a2a",
     ];

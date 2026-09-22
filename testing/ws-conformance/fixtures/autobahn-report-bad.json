@@ -1,0 +1,7 @@
+{
+  "broken-echo": {
+    "1.1.1": { "behavior": "OK", "behaviorClose": "OK", "duration": 3, "reportfile": "broken_echo_case_1_1_1.json" },
+    "2.1":   { "behavior": "FAILED", "behaviorClose": "FAILED", "duration": 4, "reportfile": "broken_echo_case_2_1.json" },
+    "4.1.1": { "behavior": "NON-STRICT", "behaviorClose": "OK", "duration": 5, "reportfile": "broken_echo_case_4_1_1.json" }
+  }
+}

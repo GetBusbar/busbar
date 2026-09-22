@@ -7,7 +7,7 @@
 //! ## ONE PATHWAY — the equality doctrine, applied to a second transport
 //!
 //! Every line read from stdin is fed to THE SAME serve sequence the HTTP endpoint runs —
-//! [`busbar_substrate::ingress::protocol::serve`], with the same [`super::envelope::McpWords`], the same
+//! [`busbar_kernel::ingress::protocol::serve`], with the same [`super::envelope::McpWords`], the same
 //! notification observer, and the same [`super::envelope::rpc_dispatch`] behind it. There is no
 //! stdio method table, no stdio refusal shaper and no stdio `_meta` reader: a request that the HTTP
 //! plane would refuse is refused here with the same code and the same sentence, because it runs the
@@ -18,7 +18,7 @@
 //! What a stdio-class transport owns — framing (one frame per line), the single write lock, the
 //! `CallRef`-keyed correlation table that pairs a server-issued request with its answer, and the
 //! EOF-drain session lifecycle — is NOT re-implemented here. It lives in the substrate as
-//! [`busbar_substrate::ingress::byte_duplex`], a protocol-blind byte pump, and this module BINDS it
+//! [`busbar_kernel::ingress::byte_duplex`], a protocol-blind byte pump, and this module BINDS it
 //! by supplying the two callbacks a plane owes: [`DuplexPlane::classify`] ("is this frame a reply,
 //! and to which call I issued?") and [`DuplexPlane::handle`] ("dispatch one non-reply frame,
 //! writing answers back through the [`DuplexHandle`]"). Every MCP-specific meaning — the JSON-RPC
@@ -46,10 +46,10 @@
 //! 1. **It is the same admission, made once.** [`ENV_CREDENTIAL`] carries the SAME credential the
 //!    HTTP plane accepts, and it is judged by the SAME sequence: the RFC 8707 audience pre-filter
 //!    against `mcp.canonical_uri` (routed host-side through
-//!    [`identity_audience_binding`](busbar_substrate::plane_host::EngineHost::identity_audience_binding)),
+//!    [`identity_audience_binding`](busbar_kernel::plane_host::EngineHost::identity_audience_binding)),
 //!    then the configured auth chain and the
 //!    one verdict resolution the HTTP middleware itself runs — routed host-side through the
-//!    [`identity_admit`](busbar_substrate::plane_host::EngineHost::identity_admit) seam (Seam-B), so this transport
+//!    [`identity_admit`](busbar_kernel::plane_host::EngineHost::identity_admit) seam (Seam-B), so this transport
 //!    admits an inbound session without naming the auth chain. A credential that the HTTP door would
 //!    refuse is refused here; one it would admit binds this session to the same principal, the same
 //!    `PlaneRequestCtx`, the same budgets, audit attribution and hooks.
@@ -112,7 +112,7 @@ use axum::response::Response;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use busbar_substrate::ingress::byte_duplex::{self, CallRef, DuplexHandle, DuplexPlane};
+use busbar_kernel::ingress::byte_duplex::{self, CallRef, DuplexHandle, DuplexPlane};
 
 use super::envelope::{
     self, McpWords, H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION, META_PROTOCOL_VERSION,
@@ -161,7 +161,7 @@ pub(crate) struct SessionIdentity {
 /// Resolve the session identity from the boot credential — the SAME admission the HTTP door runs,
 /// stated step by step in the module header. `Err` is a sentence for stderr and a refusal to serve.
 pub(crate) async fn session_identity(
-    factory: &busbar_substrate::plane_host::LiveHostFactory,
+    factory: &busbar_kernel::plane_host::LiveHostFactory,
     credential: Option<&str>,
 ) -> Result<SessionIdentity, String> {
     let Some(resource) = super::resource_of(&factory()) else {
@@ -175,7 +175,7 @@ pub(crate) async fn session_identity(
     // HTTP middleware runs before the chain, because a token minted for another resource is not
     // made admissible by arriving on a pipe instead of a socket.
     if let Some(token) = credential {
-        use busbar_substrate::plane_host::AudienceBinding as Binding;
+        use busbar_kernel::plane_host::AudienceBinding as Binding;
         // The binding JUDGEMENT is routed host-side through `identity_audience_binding` (Seam-B), so
         // this transport runs the SAME RFC 8707 pre-filter as the HTTP door without naming the core
         // auth module — only the WORDING of a refusal remains stdio's.
@@ -243,7 +243,7 @@ pub(crate) async fn session_identity(
 /// transport rather than `serve` alone: the plane-coherence lint rightly refuses a second
 /// plane-local `serve` beside `a2a::grpc::serve`.) `pub`: called from the thin `busbar` binary's
 /// `main.rs`, a different crate after the core split.
-pub async fn serve_stdio(factory: busbar_substrate::plane_host::LiveHostFactory) -> i32 {
+pub async fn serve_stdio(factory: busbar_kernel::plane_host::LiveHostFactory) -> i32 {
     let credential = std::env::var(ENV_CREDENTIAL).ok().filter(|c| !c.is_empty());
     let identity = match session_identity(&factory, credential.as_deref()).await {
         Ok(identity) => identity,
@@ -265,7 +265,7 @@ pub async fn serve_stdio(factory: busbar_substrate::plane_host::LiveHostFactory)
 /// duplex with a REAL governed `App`, which is the only way the budget refusal can be watched on an
 /// instrument without a network. The pair is handed straight to the neutral byte-duplex pump.
 pub(crate) async fn serve_io<R, W>(
-    factory: busbar_substrate::plane_host::LiveHostFactory,
+    factory: busbar_kernel::plane_host::LiveHostFactory,
     identity: SessionIdentity,
     reader: R,
     writer: W,
@@ -282,7 +282,7 @@ pub(crate) async fn serve_io<R, W>(
 /// [`serve_io`] call either. The writer is NOT held here: it belongs to the neutral pump, which
 /// hands this session a [`DuplexHandle`] onto it with the first frame ([`Session::out`]).
 fn new_session(
-    factory: busbar_substrate::plane_host::LiveHostFactory,
+    factory: busbar_kernel::plane_host::LiveHostFactory,
     identity: SessionIdentity,
 ) -> Arc<Session> {
     let session = Arc::new(Session {
@@ -419,7 +419,7 @@ fn call_ref_of_id(id: &Value) -> Option<CallRef> {
 /// Read the answer out of whichever frame the pump routed back to an [`issue`](DuplexHandle::issue).
 /// [`classify`](Session::classify) admits two shapes, so this reads both: the SEP-1036 out-of-band
 /// `notifications/elicitation/response` (the answer is `params.response`), and — the ordinary case —
-/// a genuine JSON-RPC response read through the shared [`read_response`](busbar_substrate::ingress::jsonrpc::read_response)
+/// a genuine JSON-RPC response read through the shared [`read_response`](busbar_kernel::ingress::jsonrpc::read_response)
 /// vocabulary, so a client error or a non-answer becomes the same sentence the HTTP leg would log.
 fn interpret_reply(frame: &[u8], sent_id: &Value) -> Result<Value, String> {
     let value: Value = serde_json::from_slice(frame).map_err(|e| e.to_string())?;
@@ -429,9 +429,9 @@ fn interpret_reply(frame: &[u8], sent_id: &Value) -> Result<Value, String> {
             .cloned()
             .unwrap_or(Value::Null));
     }
-    match busbar_substrate::ingress::jsonrpc::read_response(&value, sent_id) {
-        Ok(busbar_substrate::ingress::jsonrpc::Reply::Result(result)) => Ok(result),
-        Ok(busbar_substrate::ingress::jsonrpc::Reply::Error { code, message }) => Err(format!(
+    match busbar_kernel::ingress::jsonrpc::read_response(&value, sent_id) {
+        Ok(busbar_kernel::ingress::jsonrpc::Reply::Result(result)) => Ok(result),
+        Ok(busbar_kernel::ingress::jsonrpc::Reply::Error { code, message }) => Err(format!(
             "the client answered with an error ({code:?}): {message}"
         )),
         Err(not_answer) => Err(not_answer.to_string()),
@@ -459,7 +459,7 @@ struct Session {
     /// live-capable `EngineHost`, whose BOUND snapshot is that frame/tick's current load and whose
     /// `plane_slot_live` re-reads the CURRENT snapshot — so a config swap between frames is seen. The
     /// closure closes over the transport's live handle core-side, so this plane names no core handle.
-    factory: busbar_substrate::plane_host::LiveHostFactory,
+    factory: busbar_kernel::plane_host::LiveHostFactory,
     principal: busbar_api::AuthPrincipal,
     gov: busbar_api::PlaneRequestCtx,
     /// THE WRITE-AND-CALL HANDLE onto the one channel, handed to this session by the neutral pump
@@ -610,9 +610,9 @@ impl Session {
             .key
             .as_ref()
             .map_or_else(|| "<ungoverned>".to_string(), |k| k.id.clone());
-        busbar_substrate::ingress::protocol::serve(
+        busbar_kernel::ingress::protocol::serve(
             &McpWords,
-            busbar_substrate::ingress::protocol::Request {
+            busbar_kernel::ingress::protocol::Request {
                 present: super::resource_of(&host).is_some(),
                 // A pipe has no Origin: there is no browser and no rebinding surface. `None` takes
                 // the same arm an agent's headerless HTTP request takes.
@@ -647,7 +647,7 @@ impl Session {
     /// [`envelope::rpc_dispatch`] the HTTP handler runs, under headers synthesised from the body.
     async fn stdio_dispatch(
         self: &Arc<Self>,
-        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
         value: Value,
         id: Value,
         method: String,
@@ -1171,17 +1171,17 @@ impl Session {
     /// when the caller's catalogue does not carry it.
     fn visible_resource_fingerprint(
         &self,
-        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
         uri: &str,
     ) -> Option<u64> {
         // BOUND reads off the caller's host — for the frame path the frame snapshot, for the
         // watch tick the tick snapshot; either way the SAME snapshot its caller already loaded.
         let rt = super::runtime_of(host);
-        let caller = busbar_substrate::catalogue::Caller {
+        let caller = busbar_kernel::catalogue::Caller {
             key: self.gov.key(),
             // The fingerprint's snapshot instant through the neutral host seam (engine-independent).
             now: host.clock_now_secs(),
-            generation: busbar_substrate::trust::validate::Generations::at_admission(
+            generation: busbar_kernel::trust::validate::Generations::at_admission(
                 rt.catalogue.generation(),
             ),
         };

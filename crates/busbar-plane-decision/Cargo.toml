@@ -1,0 +1,56 @@
+# busbar-plane-decision — THE DECISION PLANE (jev), as an ADAPTER and nothing else.
+#
+# WHAT THIS CRATE IS. One implementation of the plugin contract's plane kind for the "decision"
+# protocol surface, dialect `jev` — a byte-identity passthrough to api.typesafe.ai's two operations:
+# POST /v1/systemone and GET /v1/models. The signed design (DECISION #39, jev v5 sign-off) rules
+# this the ONE crate for the whole plane: unlike busbar-plane-mcp/busbar-plane-a2a, which are pure
+# adapters over a separate "impure host" crate (busbar-mcp/busbar-a2a) that carries the config
+# section, the admin wiring and the registry declaration, jev is deliberately a SINGLE crate that
+# holds the pure plane AND its own typed config section. That is why this manifest names
+# `busbar-substrate` where the other plane crates do not: `busbar_substrate::config::providers::ModelCfg`
+# is reused VERBATIM for `decisions.models.<name>` (the ruled path — no second model type), and the
+# crate-local `PlaneDecl`-shaped constants in `src/registry.rs` are declared for a FUTURE root
+# registration that gates on config-model Stage 1/2 (see that module's own notes on what is and is
+# not wired here).
+#
+# WHAT THIS CRATE IS NOT. There is no governance here, no breaker, no hook seat, no approval
+# decision and no metering arithmetic. Those are units, and a unit is on the other side of the
+# kernel from a plane. The metering method returns LOCATORS — where the numbers are — and never a
+# number the ledger would post. The routing method returns a plan, never a connection. jev holds no
+# durable state of its own (it is a stateless request/response passthrough, provider-scoped), so it
+# declares no record schemas.
+[package]
+name = "busbar-plane-decision"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# One pinned number, set to what CI verifies — the same rationale every other member states.
+rust-version = "1.97"
+description = "The decision plane for busbar: the plugin contract's plane kind implemented over the jev dialect (api.typesafe.ai byte-identity passthrough)."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plane_decision"
+path = "src/lib.rs"
+
+# NO FEATURES, ON PURPOSE. A plane compiled two ways is two planes, and the kernel would have no way
+# to tell which one it registered. The contract crate holds itself to the same rule and asserts it.
+
+[dependencies]
+# THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
+busbar-contract = { path = "../busbar-contract" }
+# THE MODEL-SERVING CONFIG SHAPE, REUSED VERBATIM. The config-model ruling (owner, 2026-09-19,
+# jev v5 dictator sign-off) is explicit: `decisions.models.<name>` reuses busbar-substrate's existing `ModelCfg`
+# rather than inventing a second one — the uniform map applies to pools + decisions alike. This is
+# the one deliberate widening of a plane crate's dependency past `busbar-contract`, named here
+# rather than smuggled through a re-export, and it is the reason this crate is not held to the
+# "names no busbar-substrate" invariance check its pure siblings are (see tests/invariance.rs).
+busbar-substrate = { path = "../busbar-substrate" }
+# THE RESERVED `upstream_credentials` SHAPE. `PoolCfg` (busbar-substrate) names the same enum for
+# its own per-section override; naming it here keeps `decisions:` on the identical reserved-key
+# grammar rather than a look-alike type.
+busbar-api = { path = "../api" }
+# The object notation the jev dialect speaks. Byte-identity passthrough of the body is the norm;
+# this crate parses ONLY the handful of declared pointers (never `state`/`answers`) to build facts.
+serde_json = { workspace = true }
+serde = { workspace = true }

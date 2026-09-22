@@ -23,7 +23,7 @@ name = "busbar-voice-codec"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+# `rust-version` rationale: see busbar-kernel/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
 description = "The voice duplex codecs for busbar: the plane-4 session intermediate representation (media, control, events, tools, config, usage), the shared duplex reader/writer, the Gemini Live dialect and the Twilio Media Streams grammar — the pure half of the voice protocol, with no I/O in its closure."
 license = "Apache-2.0"

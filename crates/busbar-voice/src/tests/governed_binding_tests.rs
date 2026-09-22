@@ -22,8 +22,8 @@ use crate::runtime::carrier::Carrier;
 use crate::runtime::metering::{HostMeteringPort, MockMeteringHost};
 use crate::runtime::{GovernedCalls, ReplyRefusal, VoiceRuntime};
 use crate::topology::{open_admitted_session, SessionBudget};
-use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::plane_host::MeteringHost;
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::plane_host::MeteringHost;
 use std::sync::{Arc, Mutex};
 
 /// The deadline the plane declares for a tool call the node does not serve, in milliseconds. Read

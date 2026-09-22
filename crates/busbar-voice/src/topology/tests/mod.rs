@@ -13,8 +13,8 @@ use crate::runtime::VoiceRuntime;
 use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::webrtc::{attach, EphemeralToken, MintError, TokenMinter};
 use crate::topology::SessionBudget;
-use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::plane_host::MeteringHost;
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::plane_host::MeteringHost;
 use futures::channel::mpsc::unbounded;
 use futures::StreamExt;
 use std::sync::Arc;
@@ -25,13 +25,13 @@ use std::sync::Arc;
 #[cfg(feature = "test-support")]
 use crate::topology::dial_provider;
 #[cfg(feature = "test-support")]
-use busbar_substrate::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
+use busbar_kernel::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
 #[cfg(feature = "test-support")]
-use busbar_substrate::ingress::duplex_ws as ws_ingress;
+use busbar_kernel::ingress::duplex_ws as ws_ingress;
 #[cfg(feature = "test-support")]
-use busbar_substrate::net_guard::GuardPolicy;
+use busbar_kernel::net_guard::GuardPolicy;
 #[cfg(feature = "test-support")]
-use busbar_substrate::testkit::fixture_host::FixtureHost;
+use busbar_kernel::testkit::fixture_host::FixtureHost;
 #[cfg(feature = "test-support")]
 use futures::SinkExt;
 

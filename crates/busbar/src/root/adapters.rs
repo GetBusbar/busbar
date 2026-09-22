@@ -45,13 +45,15 @@
 //!    crates have no common dependency that could hold one, and putting an open-vocabulary key
 //!    where the kernel could compare against it is the thing the lean-core scan exists to catch.
 
-use busbar_caps::{Route, UnitToken};
+use busbar_contract::caps::{Pass, Route};
 use busbar_contract::WireStatusClass;
-use busbar_unit_breaker::cfg::BreakerCfg;
-use busbar_unit_breaker::classify::Diagnostics;
-use busbar_unit_breaker::journal::NoopJournal;
-use busbar_unit_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
-use busbar_unit_egress::ports::{Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus};
+use busbar_kernel_breaker::cfg::BreakerCfg;
+use busbar_kernel_breaker::classify::Diagnostics;
+use busbar_kernel_breaker::journal::NoopJournal;
+use busbar_kernel_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
+use busbar_kernel_egress::ports::{
+    Admit, Breaker, Classified, Outcome, Unavailable, UpstreamStatus,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -138,7 +140,7 @@ pub struct TracingDiagnostics;
 impl Diagnostics for TracingDiagnostics {
     fn unrecognized_error_map_value(&self, value: &str) {
         tracing::warn!(
-            diag = %busbar_substrate::diagnostics::CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED.banner(),
+            diag = %busbar_substrate_values::diagnostics::CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED.banner(),
             error_map_value = value,
             "error_map maps an error to an unrecognized status class; the mapping is IGNORED and \
              classification falls through to HTTP status. Valid classes: rate_limit, overloaded, \
@@ -150,7 +152,7 @@ impl Diagnostics for TracingDiagnostics {
 /// The sink the root binds the breaker unit to: the node's logging, warned once per distinct value.
 #[must_use]
 pub fn root_diagnostics() -> DiagnosticsSink {
-    Arc::new(busbar_unit_breaker::classify::WarnOnceDiagnostics::new(
+    Arc::new(busbar_kernel_breaker::classify::WarnOnceDiagnostics::new(
         TracingDiagnostics,
     ))
 }
@@ -214,8 +216,8 @@ impl BreakerAdapter {
     /// class but no number at all, and a frame that HAS a number never reaches it. The folded
     /// stand-in is an HTTP one because the coarse class is protocol-neutral and HTTP's bands are the
     /// table the breaker has always read a classless answer through.
-    fn narrow_code(status: UpstreamStatus) -> Option<busbar_unit_breaker::port::UpstreamCode> {
-        use busbar_unit_breaker::port::UpstreamCode;
+    fn narrow_code(status: UpstreamStatus) -> Option<busbar_kernel_breaker::port::UpstreamCode> {
+        use busbar_kernel_breaker::port::UpstreamCode;
         // Asked by NAMESPACE, not by arm. The narrowing is this adapter's own — the breaker's
         // enum is closed and names the two numberings it keeps tables for — but the question put
         // to the frame is a keyed one, so a numbering this adapter has no table for is simply not
@@ -233,8 +235,8 @@ impl BreakerAdapter {
     }
 }
 
-fn to_breaker_outcome(outcome: Outcome) -> busbar_unit_breaker::Outcome {
-    use busbar_unit_breaker::Outcome as B;
+fn to_breaker_outcome(outcome: Outcome) -> busbar_kernel_breaker::Outcome {
+    use busbar_kernel_breaker::Outcome as B;
     match outcome {
         Outcome::Success => B::Success,
         Outcome::Transient { retry_after } => B::Transient { retry_after },
@@ -243,8 +245,8 @@ fn to_breaker_outcome(outcome: Outcome) -> busbar_unit_breaker::Outcome {
     }
 }
 
-fn from_breaker_outcome(outcome: busbar_unit_breaker::Outcome) -> Outcome {
-    use busbar_unit_breaker::Outcome as B;
+fn from_breaker_outcome(outcome: busbar_kernel_breaker::Outcome) -> Outcome {
+    use busbar_kernel_breaker::Outcome as B;
     match outcome {
         B::Success => Outcome::Success,
         B::Transient { retry_after } => Outcome::Transient { retry_after },
@@ -265,30 +267,24 @@ impl Breaker for BreakerAdapter {
                 probe_epoch: admit.probe_epoch,
             }),
             Err(state) => Err(match state {
-                busbar_unit_breaker::LaneState::Suppressed { until } => {
+                busbar_kernel_breaker::LaneState::Suppressed { until } => {
                     Unavailable::BreakerOpen { until }
                 }
-                busbar_unit_breaker::LaneState::ProbeInFlight => Unavailable::ProbeInFlight,
-                busbar_unit_breaker::LaneState::BudgetExhausted => Unavailable::BudgetExhausted,
+                busbar_kernel_breaker::LaneState::ProbeInFlight => Unavailable::ProbeInFlight,
+                busbar_kernel_breaker::LaneState::BudgetExhausted => Unavailable::BudgetExhausted,
                 // The unit refuses only from a state that would not have admitted, so this arm
                 // does not arise. It still answers with a refusal rather than by aborting: a
                 // routing step holding a dispatch open is the wrong place to discover that an
                 // invariant of another crate has drifted, and the caller has a shed for it.
-                busbar_unit_breaker::LaneState::Ready => Unavailable::ProbeInFlight,
+                busbar_kernel_breaker::LaneState::Ready => Unavailable::ProbeInFlight,
             }),
         }
     }
 
-    fn ready(
-        &self,
-        pool: &str,
-        destination: DestinationId,
-        now: u64,
-        token: &UnitToken<Route>,
-    ) -> bool {
+    fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
         matches!(
             self.unit.state(pool, destination, now, token),
-            busbar_unit_breaker::LaneState::Ready
+            busbar_kernel_breaker::LaneState::Ready
         )
     }
 
@@ -305,10 +301,10 @@ impl Breaker for BreakerAdapter {
         pool: &str,
         destination: DestinationId,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> u64 {
         match self.unit.state(pool, destination, now, token) {
-            busbar_unit_breaker::LaneState::Suppressed { until } => until.saturating_sub(now),
+            busbar_kernel_breaker::LaneState::Suppressed { until } => until.saturating_sub(now),
             _ => 0,
         }
     }
@@ -317,7 +313,7 @@ impl Breaker for BreakerAdapter {
         let code = Self::narrow_code(status);
         let classified = self.unit.classify(
             destination,
-            busbar_unit_breaker::port::UpstreamStatus {
+            busbar_kernel_breaker::port::UpstreamStatus {
                 code,
                 retry_after: status.retry_after,
             },
@@ -335,7 +331,7 @@ impl Breaker for BreakerAdapter {
         destination: DestinationId,
         outcome: Outcome,
         now: u64,
-        token: &UnitToken<Route>,
+        token: &Pass<Route>,
     ) -> bool {
         // THE point of this adapter. The port carries no configuration, the unit requires it, and
         // the ladder is what decides how long a tripped lane stays down. A pool nobody configured
@@ -453,8 +449,8 @@ impl std::error::Error for LabelDrift {}
 ///
 /// A label present in both banks has different text on the two sides.
 pub fn check_label_banks() -> Result<(), LabelDrift> {
-    use busbar_unit_breaker::port::label;
-    use busbar_unit_egress::ports::disposition;
+    use busbar_kernel_breaker::port::label;
+    use busbar_kernel_egress::ports::disposition;
 
     for (breaker, egress) in [
         (label::TRANSIENT_UPSTREAM, disposition::TRANSIENT),

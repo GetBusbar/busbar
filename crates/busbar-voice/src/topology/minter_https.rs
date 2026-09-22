@@ -17,7 +17,7 @@
 use crate::ir::config::SessionConfig;
 use crate::topology::webrtc::{EphemeralToken, MintError, TokenMinter};
 use async_trait::async_trait;
-use busbar_substrate::egress::engine::{send_bounded, EngineClient};
+use busbar_kernel::egress::engine::{send_bounded, EngineClient};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use std::time::Duration;

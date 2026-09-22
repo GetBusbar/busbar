@@ -4,16 +4,16 @@
 //! A2A plane diagnostics — the `A2A_*` catalog entries this crate OWNS.
 //!
 //! These consts were plane-specific vocabulary living in the neutral
-//! `busbar_substrate::diagnostics` catalog; the plane extraction relocated them here so the neutral
+//! `busbar_substrate_values::diagnostics` catalog; the plane extraction relocated them here so the neutral
 //! crate names no `A2A_*` diagnostic. Each keeps its stable `BUSBAR-NNNN` number and slug — the
 //! move preserves identity, it does not renumber: codes are REGISTERED, never collapsed.
 //!
 //! [`DIAGNOSTICS`] is the slice the composition root hands to
-//! [`install_diagnostics`](busbar_substrate::diagnostics::install_diagnostics) so these codes join
+//! [`install_diagnostics`](busbar_substrate_values::diagnostics::install_diagnostics) so these codes join
 //! the runtime catalog (`REGISTRY ∪ installed`) and resolve through `by_code`. The `busbar` binary
 //! names one stable path: `busbar-a2a::DIAGNOSTICS`.
 
-use busbar_substrate::diagnostics::{Class, Diagnostic, Severity};
+use busbar_substrate_values::diagnostics::{Class, Diagnostic, Severity};
 
 /// A restored A2A task's per-task provenance chain failed verification at boot — tamper evidence.
 /// Lives in `a2a/mod.rs`, but the subject is the provenance chain's integrity, so it is a 2000 code.

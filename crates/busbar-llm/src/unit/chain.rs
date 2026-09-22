@@ -31,7 +31,7 @@
 //!
 //! # The tokens
 //!
-//! Minted the way the loop mints them — one seal for the length of one unit, one `UnitToken<S>` per
+//! Minted the way the loop mints them — one seal for the length of one unit, one `Pass<S>` per
 //! step, dropped when the call it was lent to returns. The seal is the caps crate's own kernel-only
 //! symbol, used here exactly as the nine per-step harnesses beside this file use it: inside a test
 //! module, standing in for the kernel that will lend these tokens in production.

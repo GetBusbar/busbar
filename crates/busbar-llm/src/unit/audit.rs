@@ -65,10 +65,10 @@ use axum::response::Response;
 // pass-throughs would otherwise repeat it per signature.
 use busbar_api::PlaneRequestCtx;
 #[cfg(feature = "teller-waist")]
-use busbar_caps::{step::Audit, AuditFacts, Decision, OpClassId, UnitToken};
+use busbar_contract::caps::{step::Audit, AuditFacts, Decision, OpClassId, Pass};
 #[cfg(feature = "teller-waist")]
 use busbar_contract::FinishClass;
-use busbar_substrate::plane_host::EngineHost;
+use busbar_kernel::plane_host::EngineHost;
 
 /// BYTES THAT HAVE PASSED THROUGH THIS FILE — the only shape in which a response moves between the
 /// steps, and the only shape in which one leaves the plane.
@@ -190,7 +190,7 @@ impl RefusalOutcome {
 /// refusal is rendered here and then handed to [`audit_refused`], which is what makes the record and
 /// the response come from one place without making them one call.
 pub fn render_refusal(proto: &str, refusal: &RefusalOutcome) -> Response {
-    let mut resp = busbar_substrate::proxy::ingress_error(
+    let mut resp = busbar_kernel::proxy::ingress_error(
         proto,
         refusal.status(),
         refusal.kind(),
@@ -249,13 +249,13 @@ pub fn finish_rejected_via_audit(
 
 /// FORWARD to the REJECTED door across the ARRIVAL host seam — the same not-charged finish a
 /// path-model dialect's own arrival posts a pre-routing turn-away through, verbatim. The path-model
-/// arrivals hold an [`busbar_substrate::ingress::arrival::ArrivalHost`] (not the `EngineHost` the
+/// arrivals hold an [`busbar_kernel::ingress::arrival::ArrivalHost`] (not the `EngineHost` the
 /// resolved-operation engine holds); this is that seam's door forward, so the dialect-owned legacy
 /// arrival can name its refusal and post it here rather than spelling the door itself.
 #[allow(clippy::too_many_arguments)]
 pub fn finish_rejected_via_audit_arrival(
-    host: &Arc<dyn busbar_substrate::ingress::arrival::ArrivalHost>,
-    ctx: &busbar_substrate::ingress::arrival::ArrivalCtx,
+    host: &Arc<dyn busbar_kernel::ingress::arrival::ArrivalHost>,
+    ctx: &busbar_kernel::ingress::arrival::ArrivalCtx,
     proto: &str,
     pool: &str,
     started: Instant,
@@ -322,7 +322,7 @@ impl Audited {
 /// plane's and the provisional end is the response itself, while the token and the sealed answer
 /// are the kernel's own vocabulary, named at `busbar-caps` where a plugin may name it.
 #[cfg(feature = "teller-waist")]
-pub type AuditStep = for<'a> fn(&UnitToken<Audit>, &AuditCtx<'a>, Served, bool) -> Audited;
+pub type AuditStep = for<'a> fn(&Pass<Audit>, &AuditCtx<'a>, Served, bool) -> Audited;
 
 /// How the plane says a unit ended.
 ///
@@ -374,12 +374,7 @@ fn finish_of(resp: &Response) -> FinishClass {
 /// fail-opened without charging must not refund, because the refund is a decrement of a shared
 /// window and there is nothing of this unit's in it.
 #[cfg(feature = "teller-waist")]
-pub fn audit(
-    unit_token: &UnitToken<Audit>,
-    ctx: &AuditCtx<'_>,
-    resp: Served,
-    charged: bool,
-) -> Audited {
+pub fn audit(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served, charged: bool) -> Audited {
     let facts = AuditFacts {
         op_class: ctx.op_class,
         finish: finish_of(resp.as_response()),
@@ -405,10 +400,10 @@ pub fn audit(
 /// label unconditionally, so a 403 raised against a CONFIGURED pool was recorded as if the pool had
 /// never resolved, while the live pre-admission guard recorded it under the pool's own name. The
 /// bytes agreed and the record did not. A caller that genuinely has no destination yet — a refusal
-/// taken before the model was ever read — passes [`busbar_substrate::proxy::POOL_LABEL_UNRESOLVED`], which
+/// taken before the model was ever read — passes [`busbar_kernel::proxy::POOL_LABEL_UNRESOLVED`], which
 /// the bound maps to itself because no deployment may configure a pool by that name.
 #[cfg(feature = "teller-waist")]
-pub fn audit_refused(unit_token: &UnitToken<Audit>, ctx: &AuditCtx<'_>, resp: Served) -> Audited {
+pub fn audit_refused(unit_token: &Pass<Audit>, ctx: &AuditCtx<'_>, resp: Served) -> Audited {
     // A refusal is never a completion, whatever status it wears.
     let facts = AuditFacts {
         op_class: ctx.op_class,

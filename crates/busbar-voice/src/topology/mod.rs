@@ -32,14 +32,14 @@ use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::SessionCore;
 use crate::runtime::{LeaseCloseGuard, VoiceRuntime};
-use busbar_substrate::breaker::{CanonicalSignal, StatusClass};
-use busbar_substrate::egress::duplex_ws::{self, DialError};
-use busbar_substrate::net_guard::GuardPolicy;
-use busbar_substrate::plane::handle_engine::HandleEngineError;
-use busbar_substrate::plane_host::{
+use busbar_kernel::egress::duplex_ws::{self, DialError};
+use busbar_kernel::net_guard::GuardPolicy;
+use busbar_kernel::plane::handle_engine::HandleEngineError;
+use busbar_kernel::plane_host::{
     run_gauntlet_session, BreakerHost, DispatchScope, GauntletPlane, GauntletRequest, VerifyOutcome,
 };
-use busbar_substrate::transport::{Transport, UpstreamWireKind};
+use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
+use busbar_substrate_values::transport::{Transport, UpstreamWireKind};
 use futures::{Sink, Stream};
 use std::sync::Arc;
 
@@ -153,7 +153,7 @@ pub async fn dial_provider(
 
     // ADMITTED: count the dispatch attempt on the voice-client leg (both labels operator-configured
     // and bounded — a provider/pool name and a small lane integer — so the series count stays bounded).
-    busbar_substrate::telemetry::upstream_attempt_on(pool, &lane.to_string());
+    busbar_kernel::telemetry::upstream_attempt_on(pool, &lane.to_string());
 
     // The axis pins `WebSocket` to the full-duplex wire; the `else` is unreachable by construction (a
     // closed axis), expressed as a refusal rather than a panic so a mis-selection fails closed.
@@ -258,6 +258,16 @@ impl GauntletPlane for SessionGauntlet {
                 "session gauntlet never drives a one-shot response",
             ))
             .expect("static fault response builds")
+    }
+
+    /// THE VOICE (STREAMING) PLANE'S CAPABILITY KEY on the composition-tier host-selection seam (loop
+    /// unification, #28). The plane DECLARES its identity here; the LOOP CHOICE is the composition
+    /// root's — it registers a kernel-loop SESSION runner under this same key ([`crate::PLANE_KEY`]) or
+    /// leaves it UNSET. With W2.b the root flips `voice` on, so this reported key routes the session
+    /// open-pass admit through the unified kernel loop; the admit gate is byte-identical either way, so
+    /// declaring the key is safe with or without the flip.
+    fn capability_key(&self) -> Option<&str> {
+        Some(crate::PLANE_KEY)
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::engine::AppEngineExt as _;
-use busbar_substrate::config::pools as config;
+use busbar_kernel::config::pools as config;
 
 #[test]
 fn test_config_parsing_status_503() {
@@ -88,8 +88,8 @@ fn test_config_parsing_bare_fallback_pool_fails() {
 use crate::engine::forward_with_pool;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_substrate::store::now;
-use busbar_substrate::store::BreakerState;
+use busbar_kernel::store::now;
+use busbar_kernel::store::BreakerState;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -131,8 +131,8 @@ fn chat_body(pool: &str) -> Vec<u8> {
 // `.pool_failover(...)` setter takes instead of a hand-built `PoolRuntime`.
 fn pool_runtime_with_exclusions(
     excl: Option<Vec<String>>,
-) -> busbar_substrate::config::pools::FailoverCfg {
-    busbar_substrate::config::pools::FailoverCfg {
+) -> busbar_kernel::config::pools::FailoverCfg {
+    busbar_kernel::config::pools::FailoverCfg {
         timeout_secs: 120,
         exclusions: excl,
         max_hops: 3,
@@ -146,7 +146,7 @@ fn pool_runtime_with_exclusions(
 #[tokio::test]
 async fn least_bad_never_reaches_an_excluded_member() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let server_a = ok_server_for("alpha").await;
     let server_b = ok_server_for("beta").await;
 
@@ -172,7 +172,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
             "pe",
             pool_runtime_with_exclusions(Some(vec!["beta".into()])),
         )
-        .on_exhausted("pe", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted("pe", busbar_kernel::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -213,7 +213,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
 #[tokio::test]
 async fn least_bad_ranks_only_admissible_lanes() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let server_dead = ok_server_for("gone").await;
     let server_soon = ok_server_for("soon").await;
 
@@ -237,7 +237,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
         )
         .pool("pl", &[(0, 1), (1, 1)])
         .pool_failover("pl", pool_runtime_with_exclusions(None))
-        .on_exhausted("pl", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted("pl", busbar_kernel::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -276,7 +276,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
 #[tokio::test]
 async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let server = ok_server_for("solo").await;
 
     let app = TestApp::new()
@@ -290,7 +290,7 @@ async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
         )
         .pool("ps", &[(0, 1)])
         .pool_failover("ps", pool_runtime_with_exclusions(None))
-        .on_exhausted("ps", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted("ps", busbar_kernel::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -323,7 +323,7 @@ async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
 #[tokio::test]
 async fn a_fallback_pool_applies_its_own_exclusions() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let server_primary = ok_server_for("primary").await;
     let server_ok = ok_server_for("spare").await;
     let server_blocked = ok_server_for("blocked").await;
@@ -357,7 +357,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
         .pool_failover("pf", pool_runtime_with_exclusions(None))
         .on_exhausted(
             "pf",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("spill".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("spill".into()),
         )
         .fallback_pool("spill", &[(1, 1), (2, 1)])
         .pool_failover(
@@ -423,8 +423,8 @@ use std::time::Duration;
 
 /// A failover budget long enough that an at-capacity park cannot masquerade as a fast shed: a park
 /// runs to this deadline (300s), well past [`SHED_BUDGET`].
-fn long_failover() -> busbar_substrate::config::pools::FailoverCfg {
-    busbar_substrate::config::pools::FailoverCfg {
+fn long_failover() -> busbar_kernel::config::pools::FailoverCfg {
+    busbar_kernel::config::pools::FailoverCfg {
         timeout_secs: 300,
         exclusions: None,
         max_hops: 3,
@@ -476,7 +476,7 @@ fn retry_after(resp: &axum::response::Response) -> Option<String> {
 /// Drive one request through `forward_with_pool` under the shed budget. A correct shed returns
 /// immediately; a queue-instead-of-shed regression parks the inner future to the failover deadline
 /// and this `.expect` panics — the shed-not-queued assertion.
-async fn drive_shed<A: busbar_substrate::testkit::BuiltAppSeam>(
+async fn drive_shed<A: busbar_kernel::testkit::BuiltAppSeam>(
     app: std::sync::Arc<A>,
     cands: Vec<WeightedLane>,
     pool: &str,
@@ -507,13 +507,13 @@ async fn drive_shed<A: busbar_substrate::testkit::BuiltAppSeam>(
 #[tokio::test]
 async fn at_capacity_reject_sheds_503_not_queued() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Status503)
+        .on_exhausted("p", busbar_kernel::config::pools::OnExhausted::Status503)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -535,7 +535,7 @@ async fn at_capacity_reject_sheds_503_not_queued() {
 #[tokio::test]
 async fn at_capacity_default_no_on_exhausted_sheds_503() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
@@ -564,7 +564,7 @@ async fn at_capacity_default_no_on_exhausted_sheds_503() {
 #[tokio::test]
 async fn at_capacity_fallback_spills_to_fast_member() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let fast = ok_server_for("fast").await;
     let (sem, _held) = saturated();
     let app = TestApp::new()
@@ -581,7 +581,7 @@ async fn at_capacity_fallback_spills_to_fast_member() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("overflow".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
@@ -613,13 +613,13 @@ async fn at_capacity_fallback_spills_to_fast_member() {
 #[tokio::test]
 async fn at_capacity_least_bad_sheds_when_saturated() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_kernel::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -640,7 +640,7 @@ async fn at_capacity_least_bad_sheds_when_saturated() {
 #[tokio::test]
 async fn at_capacity_bounded_burst_all_spill_not_serialized() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let fast = ok_server_for("fast").await; // pushes 4 canned OKs
     let (sem, _held) = saturated();
     let app = TestApp::new()
@@ -658,7 +658,7 @@ async fn at_capacity_bounded_burst_all_spill_not_serialized() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("overflow".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
@@ -694,7 +694,7 @@ async fn at_capacity_bounded_burst_all_spill_not_serialized() {
 #[tokio::test]
 async fn at_capacity_all_members_busy_two_member_pool_spills() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let fast = ok_server_for("fast").await;
     let (sem_a, _held_a) = saturated();
     let (sem_b, _held_b) = saturated();
@@ -713,7 +713,7 @@ async fn at_capacity_all_members_busy_two_member_pool_spills() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("overflow".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(2, 1)])
         .build();
@@ -738,7 +738,7 @@ async fn at_capacity_all_members_busy_two_member_pool_spills() {
 #[tokio::test]
 async fn at_capacity_plus_tripped_member_rejects_503() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem)) // idx 0 — at capacity
@@ -752,7 +752,7 @@ async fn at_capacity_plus_tripped_member_rejects_503() {
         ) // idx 1 — will be forced Open
         .pool("p", &[(0, 1), (1, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Status503)
+        .on_exhausted("p", busbar_kernel::config::pools::OnExhausted::Status503)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -775,7 +775,7 @@ async fn at_capacity_plus_tripped_member_rejects_503() {
 #[tokio::test]
 async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let fast = ok_server_for("fast").await;
     let (sem_a, _held_a) = saturated();
     let (sem_b, _held_b) = saturated();
@@ -789,12 +789,12 @@ async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
         .failover(long_failover())
         .on_exhausted(
             "pa",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("pb".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("pb".into()),
         )
         .fallback_pool("pb", &[(1, 1)])
         .on_exhausted(
             "pb",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("pc".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("pc".into()),
         )
         .fallback_pool("pc", &[(2, 1)])
         .build();
@@ -818,7 +818,7 @@ async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
 #[tokio::test]
 async fn at_capacity_self_referential_fallback_stays_503() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
@@ -826,7 +826,7 @@ async fn at_capacity_self_referential_fallback_stays_503() {
         .failover(long_failover())
         .on_exhausted(
             "loop",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("loop".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("loop".into()),
         )
         .fallback_pool("loop", &[(0, 1)])
         .build();
@@ -846,7 +846,7 @@ async fn at_capacity_self_referential_fallback_stays_503() {
 #[tokio::test]
 async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (sem_a, _held_a) = saturated();
     let (sem_b, _held_b) = saturated();
     let app = TestApp::new()
@@ -856,7 +856,7 @@ async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("overflow".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         // No on_exhausted for "overflow" → default Status503 when it too is exhausted.
@@ -882,7 +882,7 @@ async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
 #[tokio::test]
 async fn tripped_member_still_falls_back_to_overflow() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let fast = ok_server_for("fast").await;
     let app = TestApp::new()
         .lane(
@@ -905,7 +905,7 @@ async fn tripped_member_still_falls_back_to_overflow() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            busbar_substrate::config::pools::OnExhausted::FallbackPool("overflow".into()),
+            busbar_kernel::config::pools::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
@@ -936,7 +936,7 @@ async fn tripped_member_still_falls_back_to_overflow() {
 #[tokio::test]
 async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let sibling = ok_server_for("sibling").await;
     let (sem, _held) = saturated();
     let app = TestApp::new()
@@ -952,7 +952,7 @@ async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
         .pool("p", &[(0, 1), (1, 1)])
         .pool_failover("p", pool_runtime_with_exclusions(None))
         .failover(long_failover())
-        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_kernel::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -998,7 +998,7 @@ fn retry_after_secs(resp: &axum::response::Response) -> u64 {
 #[tokio::test]
 async fn retry_after_reflects_cooldown_when_a_member_is_tripped() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem)) // idx 0 — at capacity, Closed (cooldown reads 0)
@@ -1012,7 +1012,7 @@ async fn retry_after_reflects_cooldown_when_a_member_is_tripped() {
         ) // idx 1 — tripped
         .pool("p", &[(0, 1), (1, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Status503)
+        .on_exhausted("p", busbar_kernel::config::pools::OnExhausted::Status503)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1035,13 +1035,13 @@ async fn retry_after_reflects_cooldown_when_a_member_is_tripped() {
 #[tokio::test]
 async fn retry_after_has_saturation_floor_when_purely_at_capacity() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (sem, _held) = saturated();
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Status503)
+        .on_exhausted("p", busbar_kernel::config::pools::OnExhausted::Status503)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1061,7 +1061,7 @@ async fn retry_after_has_saturation_floor_when_purely_at_capacity() {
 #[test]
 fn retry_after_empty_candidate_set_uses_floor_not_one() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -1101,7 +1101,7 @@ fn busy_real_lane(model: &str, base_url: &str, sem: &Arc<tokio::sync::Semaphore>
 
 /// Spawn one request through the real dispatch path with `'static` literals so it can run detached
 /// while the test frees a permit / trips a breaker underneath it.
-fn spawn_request<A: busbar_substrate::testkit::BuiltAppSeam + Send + Sync + 'static>(
+fn spawn_request<A: busbar_kernel::testkit::BuiltAppSeam + Send + Sync + 'static>(
     app: std::sync::Arc<A>,
 ) -> tokio::task::JoinHandle<axum::response::Response> {
     tokio::spawn(async move {
@@ -1124,7 +1124,7 @@ fn spawn_request<A: busbar_substrate::testkit::BuiltAppSeam + Send + Sync + 'sta
 /// a tight interval rather than sleeping a fixed wall-clock time. Replaces flaky fixed-sleep syncs
 /// under CI scheduler pressure — it only proceeds once the spawned request(s) have actually reached
 /// the queue park point. Panics if the depth is not reached within the bound.
-async fn wait_until_queued<A: busbar_substrate::testkit::BuiltAppSeam + ?Sized>(
+async fn wait_until_queued<A: busbar_kernel::testkit::BuiltAppSeam + ?Sized>(
     app: &std::sync::Arc<A>,
     pool: &str,
     min_depth: u64,
@@ -1147,7 +1147,7 @@ async fn wait_until_queued<A: busbar_substrate::testkit::BuiltAppSeam + ?Sized>(
 #[tokio::test]
 async fn queue_dispatches_when_permit_frees_before_deadline() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let svc = ok_server_for("svc").await;
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let held = sem.clone().try_acquire_owned().unwrap();
@@ -1157,7 +1157,7 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
         .failover(long_failover())
         .on_exhausted(
             "p",
-            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 5000 },
+            busbar_kernel::config::pools::OnExhausted::Queue { max_ms: 5000 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1203,7 +1203,7 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
 #[tokio::test]
 async fn queue_dropped_dispatch_future_releases_probe() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
@@ -1226,7 +1226,7 @@ async fn queue_dropped_dispatch_future_releases_probe() {
         .failover(long_failover())
         .on_exhausted(
             "p",
-            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 30_000 },
+            busbar_kernel::config::pools::OnExhausted::Queue { max_ms: 30_000 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1290,7 +1290,7 @@ async fn queue_dropped_dispatch_future_releases_probe() {
 #[tokio::test]
 async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     // A gated non-2xx body: least_bad's `forward_once` parks reading it (BEFORE recording any breaker
     // outcome) — the exact mid-dispatch await a dropped future must not turn into a peer-probe revert.
     let state = Arc::new(MockServerState::new());
@@ -1317,7 +1317,7 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
         )
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_kernel::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1369,7 +1369,7 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
     assert!(
         matches!(
             app.store.try_admit("p", 0, now()),
-            Err(busbar_substrate::store::Unavailable::ProbeInFlight)
+            Err(busbar_kernel::store::Unavailable::ProbeInFlight)
         ),
         "a third caller must NOT win a second concurrent probe — peer A's probe is still in flight"
     );
@@ -1387,7 +1387,7 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
 #[tokio::test]
 async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
@@ -1420,7 +1420,7 @@ async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
         .failover(long_failover())
         .on_exhausted(
             "p",
-            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 30_000 },
+            busbar_kernel::config::pools::OnExhausted::Queue { max_ms: 30_000 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1489,7 +1489,7 @@ async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
 #[tokio::test]
 async fn queue_times_out_to_503_when_capacity_never_frees() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let (sem, _held) = saturated(); // permit held for the whole test → never frees
     let app = TestApp::new()
         .lane(saturated_lane("busy", &sem))
@@ -1497,7 +1497,7 @@ async fn queue_times_out_to_503_when_capacity_never_frees() {
         .failover(long_failover())
         .on_exhausted(
             "p",
-            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 300 },
+            busbar_kernel::config::pools::OnExhausted::Queue { max_ms: 300 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1551,7 +1551,7 @@ async fn queue_times_out_to_503_when_capacity_never_frees() {
 #[tokio::test]
 async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -1565,7 +1565,7 @@ async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
         .failover(long_failover())
         .on_exhausted(
             "p",
-            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 3000 },
+            busbar_kernel::config::pools::OnExhausted::Queue { max_ms: 3000 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1610,7 +1610,7 @@ async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
 #[tokio::test]
 async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let svc = ok_server_for("svc").await;
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let held = sem.clone().try_acquire_owned().unwrap();
@@ -1621,7 +1621,7 @@ async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
         // SHORT bound: if the freed-permit wake were lost, this would time out to 503 within 400ms.
         .on_exhausted(
             "p",
-            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 400 },
+            busbar_kernel::config::pools::OnExhausted::Queue { max_ms: 400 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1655,7 +1655,7 @@ async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
 #[tokio::test]
 async fn queue_won_permit_but_breaker_now_open_never_dispatches() {
     crate::testkit::install_test_seams();
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let svc = ok_server_for("svc").await; // wired, but must NEVER be dispatched to
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let held = sem.clone().try_acquire_owned().unwrap();
@@ -1665,7 +1665,7 @@ async fn queue_won_permit_but_breaker_now_open_never_dispatches() {
         .failover(long_failover())
         .on_exhausted(
             "p",
-            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 2000 },
+            busbar_kernel::config::pools::OnExhausted::Queue { max_ms: 2000 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);

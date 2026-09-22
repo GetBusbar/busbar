@@ -1,10 +1,10 @@
-//! `cargo xtask gate hot-path-alloc` — THE §8 HOT-PATH ALLOC WITNESS, ENFORCED.
+//! `cargo xtask gate hot-path-alloc` — THE HOT-PATH ALLOC WITNESS, ENFORCED.
 //!
 //! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 owes an alloc gate: "`#[global_allocator]`
 //! counter = 0 across the ISOLATED POD host-call batch", the second of the two criterion benches
-//! §11b counts toward the core-engine tests/benches 8→9 rise. The MEASUREMENT lives in
-//! `crates/busbar-core/benches/plane_host_vtable_alloc.rs`; this gate keeps that instrument making
-//! §8's claim, so it cannot be dropped from the bench without an owed row going missing.
+//! that count toward the core-engine tests/benches 8→9 rise. The MEASUREMENT lives in
+//! `crates/busbar-kernel/benches/plane_host_vtable_alloc.rs`; this gate keeps that instrument making
+//! that claim, so it cannot be dropped from the bench without an owed row going missing.
 //!
 //! Three claims, three rows:
 //!
@@ -36,8 +36,8 @@ pub const ROW_INSTRUMENT: &str = "hot-path-alloc:instrument-present";
 pub const ROW_GLOBAL_ALLOCATOR: &str = "hot-path-alloc:global-allocator";
 pub const ROW_POD_BATCH: &str = "hot-path-alloc:pod-batch-zero";
 
-const BENCH_REL: &str = "crates/busbar-core/benches/plane_host_vtable_alloc.rs";
-const MANIFEST_REL: &str = "crates/busbar-core/Cargo.toml";
+const BENCH_REL: &str = "crates/busbar-kernel/benches/plane_host_vtable_alloc.rs";
+const MANIFEST_REL: &str = "crates/busbar-kernel/Cargo.toml";
 const BENCH_NAME: &str = "plane_host_vtable_alloc";
 
 struct Claim {
@@ -72,7 +72,7 @@ fn instrument_row(cx: &Ctx) -> Row {
     if !cx.exists(BENCH_REL) {
         return Row::fail(
             ROW_INSTRUMENT,
-            "the §8 alloc instrument is missing",
+            "the alloc instrument is missing",
             format!("{BENCH_REL} does not exist — the alloc gate has nothing to enforce"),
         );
     }
@@ -82,17 +82,17 @@ fn instrument_row(cx: &Ctx) -> Row {
     if registered {
         Row::pass(
             ROW_INSTRUMENT,
-            "the §8 alloc instrument exists and is a registered criterion bench",
+            "the alloc instrument exists and is a registered criterion bench",
             format!("{BENCH_REL}, registered harness = false in {MANIFEST_REL}"),
         )
     } else {
         Row::fail(
             ROW_INSTRUMENT,
-            "the §8 alloc instrument is not a registered criterion bench",
+            "the alloc instrument is not a registered criterion bench",
             format!(
                 "{MANIFEST_REL} does not register `name = \"{BENCH_NAME}\"` with `harness = false` \
                  — an unregistered criterion bench is built as a libtest harness and never runs the \
-                 §8 measurement"
+                 budget measurement"
             ),
         )
     }
@@ -116,7 +116,7 @@ fn claim_row(claim: &Claim, bench: &str) -> Row {
             claim.row,
             claim.bad,
             format!(
-                "{BENCH_REL} is missing {missing:?} — a §8 claim was dropped from the alloc \
+                "{BENCH_REL} is missing {missing:?} — a budget claim was dropped from the alloc \
                  instrument"
             ),
         )
@@ -157,7 +157,7 @@ impl Gate for HotPathAllocGate {
         report.push(prove_green(
             cx,
             self,
-            "the committed alloc instrument makes every §8 claim",
+            "the committed alloc instrument makes every budget claim",
             &self.owed().iter().map(String::as_str).collect::<Vec<_>>(),
         ));
 

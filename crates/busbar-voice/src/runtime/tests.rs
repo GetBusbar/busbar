@@ -14,10 +14,10 @@ use crate::runtime::metering::{
 };
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{SessionCore, VoiceSession};
-use busbar_substrate::ingress::byte_duplex::serve_messages;
-use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::plane::handle_engine::{HandleDenied, ScopedMutateError};
-use busbar_substrate::plane_host::MeteringHost;
+use busbar_kernel::ingress::byte_duplex::serve_messages;
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::plane::handle_engine::{HandleDenied, ScopedMutateError};
+use busbar_kernel::plane_host::MeteringHost;
 use bytes::Bytes;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver};
 use futures::StreamExt;
@@ -427,7 +427,7 @@ async fn barge_in_cancels_and_truncates_at_heard_ms() {
     // pcm16 default: 48 bytes/ms. Play 96 bytes of downlink audio = 2 ms heard.
     // 96 raw bytes base64-encodes to 128 chars; use a 96-byte payload.
     let payload = vec![0u8; 96];
-    let b64 = busbar_substrate::media::base64_encode(&Bytes::from(payload));
+    let b64 = busbar_substrate_values::media::base64_encode(&Bytes::from(payload));
     let _ = core.on_server_frame(audio_delta(&b64)).await;
 
     let plan = core
@@ -560,7 +560,7 @@ impl SessionScopeRawProbe {
     fn probe(
         engine: &Arc<DurableHandleEngine>,
     ) -> Result<Arc<dyn std::any::Any + Send + Sync>, HandleDenied> {
-        busbar_substrate::plane_host::SessionScope::new(Arc::clone(engine), "mallory", "s").get()
+        busbar_kernel::plane_host::SessionScope::new(Arc::clone(engine), "mallory", "s").get()
     }
 }
 

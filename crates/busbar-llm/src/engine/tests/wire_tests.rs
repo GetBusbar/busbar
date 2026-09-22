@@ -158,7 +158,7 @@ fn unknown_ingress_mid_stream_error_is_a_bare_data_frame_from_core() {
 //    the same thing whichever crate owns the enum.
 #[test]
 fn status_word_golden_engine_client_fault_kind() {
-    use busbar_substrate::breaker::StatusClass;
+    use busbar_substrate_values::breaker::StatusClass;
     let golden: [(StatusClass, &str); 9] = [
         (StatusClass::RateLimit, "invalid_request_error"),
         (StatusClass::Overloaded, "invalid_request_error"),

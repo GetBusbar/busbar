@@ -24,8 +24,8 @@ use std::sync::Arc;
 use oauth_as::server::{AuthorizationServer, ServerConfig, SystemClock};
 use oauth_as::store::MemoryStorage;
 
-use busbar_core::diagnostics::{diag_debug, diag_warn, OAUTH_AS_SWEEP_FAILED};
-use busbar_core::oauth_as::config::AsIdentity;
+use busbar_kernel::diagnostics::{diag_debug, diag_warn, OAUTH_AS_SWEEP_FAILED};
+use busbar_kernel::oauth_as::config::AsIdentity;
 
 use super::signer::{RingEs256Key, RingEs256Verifier};
 
@@ -203,7 +203,7 @@ impl AsPlane {
     }
 }
 
-/// THE SEAM-TYPED BUILDER (`busbar_core::oauth_as::seam::AsPlaneSeam::build`): builds the plane AND
+/// THE SEAM-TYPED BUILDER (`busbar_kernel::oauth_as::seam::AsPlaneSeam::build`): builds the plane AND
 /// spawns its sweeper — the whole "how do I come alive" act `appbuild.rs` used to perform inline
 /// before the extraction — and hands back the type-erased object `App::oauth_as` stores. This is
 /// the function pointer `busbar_oauth2::install` actually registers; core cannot call

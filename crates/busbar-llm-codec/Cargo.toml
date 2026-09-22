@@ -22,7 +22,7 @@ name = "busbar-llm-codec"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+# `rust-version` rationale: see busbar-kernel/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
 description = "The LLM wire codecs for busbar: the anthropic, openai-chat, gemini, bedrock, openai-responses and cohere readers/writers, the neutral IR, the stream translator and the answer-normalization pass — the pure half of the LLM protocol, with no I/O in its closure."
 license = "Apache-2.0"
@@ -83,7 +83,7 @@ getrandom = { workspace = true }
 busbar-substrate-values = { path = "../busbar-substrate-values", features = ["test-support"] }
 # ONE relocated suite reads core's neutral detection fold and its built-in declaration table through
 # core's public surface; a DEV edge only, so no shipped target links core.
-busbar-core = { path = "../busbar-core", features = ["test-support"] }
+busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
 # ONE relocated registry test asserts the registry's handling of a codec-LESS registered protocol

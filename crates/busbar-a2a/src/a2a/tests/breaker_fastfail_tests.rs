@@ -106,8 +106,8 @@ impl RelaySeam for Seam<'_> {
 }
 
 fn a_call<'a>(
-    host: &'a dyn busbar_substrate::plane_host::EngineHost,
-    scope: &'a busbar_substrate::plane_host::DispatchScope,
+    host: &'a dyn busbar_kernel::plane_host::EngineHost,
+    scope: &'a busbar_kernel::plane_host::DispatchScope,
     rpc_id: &'a serde_json::Value,
     policy: &'a FetchPolicy,
 ) -> RelayCall<'a> {
@@ -137,7 +137,7 @@ fn a_call<'a>(
 #[test]
 fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire() {
     crate::testkit::install_test_seams();
-    use busbar_substrate::plane_host::DispatchScope;
+    use busbar_kernel::plane_host::DispatchScope;
     // A real `EngineHost` double over a bare app: the breaker cell store IS the built App's own cells,
     // the same seam the ingress admits/settles the relay through, so this exercises the production
     // path.
@@ -166,8 +166,8 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
     assert_eq!(transport.hits.load(Ordering::SeqCst), 1);
     assert!(
         matches!(
-            app.breaker_state(&busbar_substrate::store::agent_key("planner")),
-            busbar_substrate::store::BreakerState::Open { .. }
+            app.breaker_state(&busbar_kernel::store::agent_key("planner")),
+            busbar_kernel::store::BreakerState::Open { .. }
         ),
         "the agent's cell must be Open after a definitive backend failure"
     );
@@ -208,10 +208,10 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
 #[test]
 fn a_shared_host_scope_settles_the_prepare_admit() {
     crate::testkit::install_test_seams();
-    use busbar_substrate::plane_host::DispatchScope;
+    use busbar_kernel::plane_host::DispatchScope;
     let app = engine().new_app_plus().build();
     let host = std::sync::Arc::clone(&app).engine_host();
-    let key = busbar_substrate::store::agent_key("planner");
+    let key = busbar_kernel::store::agent_key("planner");
     let transport = CountingDenier {
         status: 401,
         hits: AtomicUsize::new(0),
@@ -238,7 +238,7 @@ fn a_shared_host_scope_settles_the_prepare_admit() {
     assert!(
         matches!(
             app.breaker_state(&key),
-            busbar_substrate::store::BreakerState::Open { .. }
+            busbar_kernel::store::BreakerState::Open { .. }
         ),
         "the settle folded the 401 through the same record_signal disposition and opened the cell"
     );

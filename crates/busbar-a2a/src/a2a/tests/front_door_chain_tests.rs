@@ -28,7 +28,7 @@
 
 use super::relay_harness::*;
 use crate::taskstore::TASKS;
-use busbar_substrate::audit::vocab as provenance;
+use busbar_contract::vocab as provenance;
 
 /// THE FRONT DOOR CHAINS THE TASK IT OPENED, and the chain RECOMPUTES from the persisted rows.
 ///

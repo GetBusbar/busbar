@@ -19,7 +19,7 @@ use crate::a2a::fetch::HttpResponse;
 use crate::a2a::jws::ED25519_SPKI_PREFIX;
 use crate::a2a::pin::CardPin;
 use base64::Engine as _;
-use busbar_substrate::trust::TrustState;
+use busbar_kernel::trust::TrustState;
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
 
@@ -569,7 +569,7 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
                 )
             })
     };
-    let reverify_src = read("../busbar-core/src/trust/reverify.rs");
+    let reverify_src = read("../busbar-kernel/src/trust/reverify.rs");
     let config_src = read("src/a2a/config.rs");
     let verify_src = read("src/a2a/verify.rs");
     // THE OTHER PLANE'S BOUND, held to the identical rule, PLUS THE SHARED GATE BOTH PLANES NOW RUN.
@@ -584,7 +584,7 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     // THEM rather than dropping the path — the sibling-crate spelling reaches the same two files.
     let mcp_config_src = read("../busbar-mcp/src/mcp/config.rs");
     let mcp_fetch_src = read("../busbar-mcp/src/mcp/connect.rs");
-    let shared_verify_src = read("../busbar-core/src/trust/verify.rs");
+    let shared_verify_src = read("../busbar-kernel/src/trust/verify.rs");
 
     let code = |s: &str| -> String {
         s.lines()
@@ -847,10 +847,10 @@ fn the_probe_hands_the_verb_layer_the_document_as_received_and_the_observation_o
 //
 // `A2aPlane::reverify_agent` is the FETCH the delegation path runs (through
 // `super::super::receive::verify_agent_on_call`, single-flight and fail-closed via
-// `busbar_substrate::trust::verify`) BEFORE the relay's live trust gate. These prove the plane's half: a drifted
+// `busbar_kernel::trust::verify`) BEFORE the relay's live trust gate. These prove the plane's half: a drifted
 // card demotes the agent so the gate refuses it, and an unreachable card fails closed — both driven
 // by a CALL, never a tick. The single-flight coalescing and the `verify_ttl` bound are proven
-// plane-neutrally in `busbar_substrate::trust::verify`'s own batteries.
+// plane-neutrally in `busbar_kernel::trust::verify`'s own batteries.
 
 /// Build a one-agent plane, approved against the honest card the vendor first served.
 fn approved_plane(

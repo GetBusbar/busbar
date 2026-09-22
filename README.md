@@ -15,11 +15,30 @@
 <p align="center">
 <a href="https://github.com/GetBusbar/busbar/actions/workflows/ci.yml"><img src="https://github.com/GetBusbar/busbar/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 <a href="https://codecov.io/gh/GetBusbar/busbar"><img src="https://codecov.io/gh/GetBusbar/busbar/branch/main/graph/badge.svg" alt="Coverage"></a>
+<a href="https://securityscorecards.dev/viewer/?uri=github.com/GetBusbar/busbar"><img src="https://api.securityscorecards.dev/projects/github.com/GetBusbar/busbar/badge" alt="OpenSSF Scorecard"></a>
+<a href="https://www.bestpractices.dev/projects/14739"><img src="https://www.bestpractices.dev/projects/14739/badge" alt="OpenSSF Best Practices"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/workflows/qa-security.yml"><img src="https://img.shields.io/badge/cargo--audit-RustSec-1f6feb" alt="cargo-audit (RustSec advisories)"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/workflows/qa-security.yml"><img src="https://img.shields.io/badge/cargo--deny-advisories%20%C2%B7%20licenses%20%C2%B7%20sources%20%C2%B7%20bans-1f6feb" alt="cargo-deny"></a>
 <a href="https://github.com/GetBusbar/busbar/releases"><img src="https://img.shields.io/github/v/release/GetBusbar/busbar?include_prereleases" alt="Release"></a>
 <a href="https://hub.docker.com/r/getbusbar/busbar"><img src="https://img.shields.io/docker/image-size/getbusbar/busbar?sort=semver&label=image" alt="Image size"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache 2.0"></a>
 <a href="https://getbusbar.com"><img src="https://img.shields.io/badge/website-getbusbar.com-0A66C2" alt="Website"></a>
 <a href="https://discord.com/invite/nnK5evXERp"><img src="https://img.shields.io/badge/Discord-join%20chat-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+</p>
+
+<p align="center">
+<!-- BEGIN conformance-badges (generated from conformance/manifest.json — do not edit; regenerate with `cargo xtask gate conformance-sync --write`) -->
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1201"><img src="https://img.shields.io/badge/A2A-conformant-2ea44f" alt="A2A conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1202"><img src="https://img.shields.io/badge/LLM_Anthropic-spec--conformant-2ea44f" alt="LLM Anthropic spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1203"><img src="https://img.shields.io/badge/LLM_Bedrock-spec--conformant-2ea44f" alt="LLM Bedrock spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1204"><img src="https://img.shields.io/badge/LLM_Cohere-spec--conformant-2ea44f" alt="LLM Cohere spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1205"><img src="https://img.shields.io/badge/LLM_Gemini-spec--conformant-2ea44f" alt="LLM Gemini spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1206"><img src="https://img.shields.io/badge/LLM_OpenAI-spec--conformant-2ea44f" alt="LLM OpenAI spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1207"><img src="https://img.shields.io/badge/LLM_Responses-spec--conformant-2ea44f" alt="LLM Responses spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1208"><img src="https://img.shields.io/badge/MCP-conformant-2ea44f" alt="MCP conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1209"><img src="https://img.shields.io/badge/Voice_Gemini_Live-spec--conformant-2ea44f" alt="Voice Gemini Live spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1210"><img src="https://img.shields.io/badge/Voice_OpenAI_Realtime-spec--conformant-2ea44f" alt="Voice OpenAI Realtime spec-conformant"></a>
+<!-- END conformance-badges -->
 </p>
 
 Busbar sits between AI applications and the destinations they can reach:

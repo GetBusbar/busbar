@@ -100,7 +100,7 @@ impl Default for StreamsCfg {
     }
 }
 
-impl busbar_substrate::plane::config::PlaneCfg for StreamsCfg {
+impl busbar_kernel::plane::config::PlaneCfg for StreamsCfg {
     /// The voice plane's `streams:` section carries NO secret reference — the exhaustive destructure
     /// (no `..`) is kept anyway so a future secret-bearing field fails to compile until someone
     /// decides, HERE, whether it is a secret, exactly as `AgentsCfg`/`ToolsCfg` do.
@@ -132,8 +132,8 @@ impl busbar_substrate::plane::config::PlaneCfg for StreamsCfg {
         Err("`streams:` has no named definitions".into())
     }
 
-    fn container_gates(&self) -> busbar_substrate::plane::config::ContainerGateInputs {
-        busbar_substrate::plane::config::ContainerGateInputs {
+    fn container_gates(&self) -> busbar_kernel::plane::config::ContainerGateInputs {
+        busbar_kernel::plane::config::ContainerGateInputs {
             section_hooks: Vec::new(),
             containers: Vec::new(),
         }
@@ -154,7 +154,7 @@ impl busbar_substrate::plane::config::PlaneCfg for StreamsCfg {
         self
     }
 
-    fn clone_box(&self) -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
+    fn clone_box(&self) -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
         Box::new(self.clone())
     }
 
@@ -197,12 +197,12 @@ pub fn configured_session_model() -> Option<String> {
 }
 
 /// PLANE_DECL.parse_section — deserialize `streams:` through the plane's own typed shape, boxed as the
-/// neutral [`busbar_substrate::plane::config::PlaneCfg`]. Mirror of `mcp_parse_section` /
+/// neutral [`busbar_kernel::plane::config::PlaneCfg`]. Mirror of `mcp_parse_section` /
 /// `a2a_parse_section`. UNCONDITIONAL (outside the `runtime` gate): config parse/validate is needed
 /// even in the skeleton/no-`runtime` build.
 pub fn streams_parse_section(
     v: &serde_yaml::Value,
-) -> Result<Box<dyn busbar_substrate::plane::config::PlaneCfg>, String> {
+) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
     let parsed = serde_yaml::from_value::<StreamsCfg>(v.clone()).map_err(|e| e.to_string())?;
     // Keep what we just parsed (see `PARSED_SECTION`). Only a SUCCESSFUL parse is kept, so a refused
     // config never replaces the posture a good one installed. A poisoned lock is ignored rather than
@@ -210,13 +210,13 @@ pub fn streams_parse_section(
     if let Ok(mut held) = PARSED_SECTION.write() {
         *held = Some(parsed.clone());
     }
-    Ok(Box::new(parsed) as Box<dyn busbar_substrate::plane::config::PlaneCfg>)
+    Ok(Box::new(parsed) as Box<dyn busbar_kernel::plane::config::PlaneCfg>)
 }
 
 /// PLANE_DECL.default_section — the empty `streams:` (mirror of `mcp_default_section` /
 /// `a2a_default_section`), so an ABSENT `streams:` decodes byte-identically to the plane's own
 /// [`StreamsCfg::default`].
-pub fn streams_default_section() -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
+pub fn streams_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
     Box::<StreamsCfg>::default()
 }
 

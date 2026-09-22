@@ -1,0 +1,46 @@
+# busbar-core-transport — the core-side connection-security seam (DECISIONS #40).
+#
+# A trusted, compiled-in, CLEANLINESS crate, same category as `busbar-admin` / `busbar-oauth2`:
+# a mandatory sibling of `busbar-kernel`, never a plugin, and off the hot path (it runs once per
+# listener at boot, never per request/connection byte). One-way dependency on `busbar-kernel` (it
+# reads `busbar_kernel::config::sections::TlsCfg` and resolves key material through
+# `busbar_kernel::config::secret::SecretResolver`, the same "secret kind" seam the rest of the tree
+# already reads TLS material through) — `busbar-kernel` depends on nothing here.
+#
+# This crate owns the WHOLE connection-security prep for a binding: it reads the operator's `tls:`
+# config, pulls the resolved key material through the secret kind, and builds an OPAQUE
+# `busbar_contract::transport::wire::ConnectionSecurity` wrap. The kernel's own listener code
+# (`busbar_kernel::tls`) is handed only that opaque wrap — it names no rustls/cert type of its own
+# once this crate exists. A future connection-security variant (mTLS with a different verifier
+# shape, a PQ hybrid signature scheme, ...) is a change to THIS crate alone.
+[package]
+name = "busbar-core-transport"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The core-side connection-security seam (DECISIONS #40): builds the opaque ConnectionSecurity wrap (identity / rustls-backed TLS) a transport applies blind, and fails closed on a TLS-configured binding no capable transport can serve."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_core_transport"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+# One-way: this crate reads `busbar-kernel`'s `TlsCfg` config shape and its `SecretResolver` seam
+# (the "secret kind" — the one place a `SecretRef` is turned into bytes); `busbar-kernel` names
+# nothing here.
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+tokio-rustls = { workspace = true }
+futures = { workspace = true }
+# Bridges the contract's rustls-free, futures-io-based `RawIo` (the wrap's parameter/return type)
+# to the tokio-io types `tokio_rustls::TlsAcceptor` requires — the same compat seam
+# `busbar-transport-tls` already uses to cross the same futures-io/tokio-io boundary.
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
+rcgen = { workspace = true }

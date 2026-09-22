@@ -6,7 +6,7 @@
 //!
 //! Before the plane split, `TestApp` in busbar-core built the A2A plane runtime itself (naming
 //! `crate::a2a::*` back INTO core through the `#[path]` dual-compile). Now the `agents:` builder
-//! methods live here as an extension trait over the neutral `busbar_substrate::testkit::TestAppSeam`
+//! methods live here as an extension trait over the neutral `busbar_kernel::testkit::TestAppSeam`
 //! (which core implements for its `TestApp`), and they lower to the real, externally-linked
 //! `busbar-a2a` crate through core's neutral install seams
 //! (`install_plane_runtime`, `mount_plane`/`admit_plane`, `set_container_hooks`,
@@ -14,7 +14,7 @@
 
 use crate::a2a::config::{AgentDefCfg, AgentsCfg};
 use crate::a2a::plane::A2aPlane;
-use busbar_substrate::testkit::{TestAppSeam, TestAppSeamExt};
+use busbar_kernel::testkit::{TestAppSeam, TestAppSeamExt};
 use std::sync::Arc;
 
 // The self-enveloping admin-verb backing (core's `CorePlaneAdminEnvelope`) — bound plane-side so the
@@ -54,8 +54,8 @@ const SCRATCH_KEY: &str = "a2a";
 /// generic `PlaneRecord` store directly, so there is no task codec/reader seam to install here any
 /// more (both were deleted with the relocation).
 pub fn install_test_seams() {
-    busbar_substrate::plane::config::install_plane_sections(
-        busbar_substrate::plane::config::default_plane_sections,
+    busbar_kernel::plane::config::install_plane_sections(
+        busbar_kernel::plane::config::default_plane_sections,
     );
     // The self-enveloping admin-verb backing (core's `CorePlaneAdminEnvelope`), bound plane-side from
     // THIS crate's core copy through the `tests/`-path `envelope_boot` helper (the composition-root job
@@ -63,7 +63,7 @@ pub fn install_test_seams() {
     envelope_boot::install();
     // Register the A2A plane in the process registry too (config sections / cross-plane refusal), the
     // same thing the finalizer does for plane-building tests.
-    busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_kernel::plane::registry::register_test_plane(&crate::PLANE_DECL);
 }
 
 /// The A2A plane's accumulated fixture state, mutated across the fluent chain and consumed once by
@@ -87,7 +87,7 @@ fn scratch(app: &mut dyn TestAppSeam) -> &mut A2aScratch {
 /// core's neutral seams. Mirrors what busbar-core's `TestApp::build`/`build_a2a_plane_runtime` did.
 fn finalize(app: &mut dyn TestAppSeam) {
     // Register this plane in the process registry the way production's composition root does.
-    busbar_substrate::plane::registry::register_test_plane(&crate::PLANE_DECL);
+    busbar_kernel::plane::registry::register_test_plane(&crate::PLANE_DECL);
     let scratch = app.take_plane_scratch::<A2aScratch>(SCRATCH_KEY);
 
     // Always carry the type-erased `agents:` handle onto the App (production fidelity; no test-path
@@ -120,12 +120,12 @@ fn finalize(app: &mut dyn TestAppSeam) {
         app.mount_plane(
             crate::PLANE_DECL.key,
             crate::a2a::serve::MOUNT_PATH,
-            busbar_substrate::plane::WIRE_JSONRPC,
+            busbar_kernel::plane::WIRE_JSONRPC,
         );
         app.mount_plane(
             crate::PLANE_DECL.key,
             crate::a2a::serve::GRPC_MOUNT_PATH,
-            busbar_substrate::plane::WIRE_GRPC,
+            busbar_kernel::plane::WIRE_GRPC,
         );
         if let Some(admission) = admission {
             app.admit_plane(crate::PLANE_DECL.key, admission);

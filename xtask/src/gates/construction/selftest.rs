@@ -303,19 +303,66 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a>
         &["zz_planted_loop.rs"],
     ));
 
+    // Three RED proofs, all against `crates/busbar-kernel/src/teller.rs` — the rule's own `file`,
+    // since the REPOINT (ff61939db) moved it off the deleted busbar-substrate path. A minimal,
+    // same-line `units.step()` pair is enough to exercise `in_order` and `duplicate_findings`
+    // without needing the real file's multi-line `units\n    .step(...)` chain style; the real
+    // file's own GREEN (see `loop_cases` baseline coverage below and the construction gate run
+    // itself) is what proves the chain-style receiver scan and the `route_leg`/`reached`
+    // indirections still resolve correctly, so these three plants only need to prove `in_order` and
+    // `duplicate_findings` still catch what they are FOR.
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-substrate/src/teller/run.rs",
-        "pub fn run_unit() {\n    unit.audit();\n    unit.arrival();\n}\n\npub fn open_unit() {\n \
-         unit.audit();\n}\n",
+        "crates/busbar-kernel/src/teller.rs",
+        "pub fn run_unit() {\n    units.arrival();\n    units.authenticate();\n    \
+         units.decode();\n    units.verify();\n    units.approve();\n    units.admit();\n    \
+         units.route();\n    units.meter();\n    units.audit();\n}\n\npub fn open_unit() {\n    \
+         units.arrival();\n    units.decode();\n    units.authenticate();\n    units.verify();\n  \
+         units.approve();\n    units.admit();\n    units.audit();\n}\n",
     );
     r.push(prove_red(
         cx,
         gate,
-        "the loop calls its steps out of the canonical order",
+        "a swapped pair: the loop calls decode and authenticate out of the canonical order",
         &["teller-step-order"],
         ov,
         &["calls the steps as"],
+    ));
+
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/teller.rs",
+        "pub fn run_unit() {\n    units.arrival();\n    units.decode();\n    \
+         units.authenticate();\n    units.approve();\n    units.admit();\n    units.route();\n    \
+         units.meter();\n    units.audit();\n}\n\npub fn open_unit() {\n    units.arrival();\n    \
+         units.decode();\n    units.authenticate();\n    units.verify();\n    units.approve();\n   \
+         units.admit();\n    units.audit();\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a missing step: the loop never calls verify at all",
+        &["teller-step-order"],
+        ov,
+        &["calls the steps as"],
+    ));
+
+    let mut ov = on(base);
+    ov.set(
+        "crates/busbar-kernel/src/teller.rs",
+        "pub fn run_unit() {\n    units.arrival();\n    units.decode();\n    \
+         units.authenticate();\n    units.verify();\n    units.approve();\n    units.admit();\n    \
+         units.admit();\n    units.route();\n    units.meter();\n    units.audit();\n}\n\npub fn \
+         open_unit() {\n    units.arrival();\n    units.decode();\n    units.authenticate();\n    \
+         units.verify();\n    units.approve();\n    units.admit();\n    units.audit();\n}\n",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a duplicated step: the loop calls admit twice",
+        &["teller-step-order"],
+        ov,
+        &["calls step `admit` 2 times; it must run exactly once"],
     ));
 
     let mut ov = on(base);

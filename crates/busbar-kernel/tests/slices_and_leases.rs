@@ -4,7 +4,7 @@
 //! Slices, the epoch fence, the all-or-nothing chain draw, and the leases that come back on every
 //! end.
 
-use busbar_caps::{OriginKind, ReasonCode};
+use busbar_contract::caps::{OriginKind, ReasonCode};
 use busbar_kernel::slice::{
     accrues_mid_unit, bucket_all, bucket_pool, draws_for, overdraft, takes_lease, BucketScope,
     CapDimension, ConcurrencyGauge, Draw, Epoch, LeaseSet, Overdraft, Posture, SliceBook,
@@ -255,7 +255,7 @@ fn a_draw_on_a_scope_the_unit_did_not_route_through_is_given_back() {
 fn only_the_dimensions_that_accrue_mid_unit_can_overdraw() {
     assert!(accrues_mid_unit(&CapDimension::NanoUnits));
     assert!(accrues_mid_unit(&CapDimension::Class(
-        busbar_caps::MeterClassId::new("tokens")
+        busbar_contract::caps::MeterClassId::new("tokens")
     )));
     // These two are known at the door, so there is nothing left to discover about them.
     assert!(!accrues_mid_unit(&CapDimension::Requests));
@@ -301,7 +301,7 @@ fn the_administrative_surface_answers_at_a_saturated_concurrency_cap() {
     assert!(takes_lease(OriginKind::Provider, false));
     assert!(takes_lease(
         OriginKind::Nested {
-            parent: busbar_caps::UnitKey::new(1)
+            parent: busbar_contract::caps::UnitKey::new(1)
         },
         false
     ));

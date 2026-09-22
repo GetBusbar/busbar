@@ -58,7 +58,7 @@ fn the_locked_section_shape_parses_into_the_values_it_declares() {
 /// that EVERY word in that set is refused as a server NAME on this plane.
 #[test]
 fn a_server_may_not_be_named_with_a_reserved_section_word() {
-    for reserved in busbar_substrate::plane::config::RESERVED_SECTION_KEYS {
+    for reserved in busbar_kernel::plane::config::RESERVED_SECTION_KEYS {
         let yaml =
             format!("{reserved}:\n  url: \"https://x/\"\n  pin: {{ mechanism: unpinned }}\n");
         let err = parse(&yaml).expect_err("a reserved name holding a mapping must be refused");
@@ -426,14 +426,14 @@ fn the_admin_write_path_rejects_exactly_what_the_file_rejects() {
 use crate::mcp::config::validate_published_names;
 use crate::mcp::test_engine::*;
 
-/// AN UNGOVERNED CALLER — no principal, so no grant narrows anything. `busbar_substrate::trust::validate`
+/// AN UNGOVERNED CALLER — no principal, so no grant narrows anything. `busbar_kernel::trust::validate`
 /// states that posture once for the whole tree; these two tests are about which NAMES the catalogue
 /// publishes, not about who may see them, so they ask as the deployment with governance off.
-fn ungoverned() -> busbar_substrate::catalogue::Caller<'static> {
-    busbar_substrate::catalogue::Caller {
+fn ungoverned() -> busbar_kernel::catalogue::Caller<'static> {
+    busbar_kernel::catalogue::Caller {
         key: None,
         now: 0,
-        generation: busbar_substrate::trust::validate::Generations::at_admission(1),
+        generation: busbar_kernel::trust::validate::Generations::at_admission(1),
     }
 }
 

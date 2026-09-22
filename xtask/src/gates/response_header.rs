@@ -39,7 +39,9 @@ pub const ROW_SCAN_ROOTS: &str = "response-header:scan-roots";
 pub const ROW_SCAN_FLOOR: &str = "response-header:scan-floor";
 pub const ROW_SITES: &str = "response-header:sanctioned-sites";
 
-const CORE: &str = "crates/busbar-core/src";
+// `busbar-core` was absorbed into `busbar-kernel` (W4.a, 673ecdaaa); `router.rs` (the
+// server-timing sanctioned site) landed at `crates/busbar-kernel/src/router.rs`.
+const CORE: &str = "crates/busbar-kernel/src";
 const BIN: &str = "crates/busbar/src";
 /// The LLM plane's front door. `busbar-llm` has no self-named `llm/` subdirectory (its code is
 /// `engine/`, `arrival.rs`, …), so it is named by path rather than resolved like mcp and a2a.
@@ -54,7 +56,7 @@ const EXCLUDE_TESTS_DIR: &str = "/tests/";
 /// router. The table names where they ACTUALLY are, or its allow column stops describing reality.
 const HDR_ROUTE_POLICY_FILE: &str = "crates/busbar-substrate-values/src/proxy/mod.rs";
 const HDR_ROUTE_WIRE_FILE: &str = "crates/busbar-llm/src/engine/wire.rs";
-const HDR_SERVER_TIMING_FILE: &str = "crates/busbar-core/src/router.rs";
+const HDR_SERVER_TIMING_FILE: &str = "crates/busbar-kernel/src/router.rs";
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";

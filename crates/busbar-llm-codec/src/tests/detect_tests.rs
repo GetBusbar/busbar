@@ -4,7 +4,7 @@
 //! Detection tests for the LLM plugin — RELOCATED from `busbar-core`'s `proto/detect.rs` and
 //! `proto/tests/tests.rs` because they NAME DIALECTS, which a neutral crate's tests must not.
 //!
-//! They exercise the generic detection fold (`busbar_core::proto::detect_protocol` /
+//! They exercise the generic detection fold (`busbar_kernel::proto::detect_protocol` /
 //! `residual_dialect_for_path`) through THIS plugin's registered `ProtocolDecl::claims` /
 //! `residual_claims` predicates — the same registry a shipped binary folds. The assertions are
 //! BYTE-IDENTICAL to the ones the core `if`-ladder carried: this is the proof the ladder→predicate
@@ -12,7 +12,7 @@
 //! whose netted dialect rows carry these very predicates.)
 
 use busbar_api::operation::Operation;
-use busbar_core::proto::{detect_protocol, residual_dialect_for_path};
+use busbar_kernel::proto::{detect_protocol, residual_dialect_for_path};
 use busbar_substrate_values::handlers::request_handler;
 use http::{HeaderMap, HeaderValue};
 

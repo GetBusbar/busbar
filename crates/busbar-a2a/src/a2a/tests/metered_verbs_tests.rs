@@ -31,8 +31,8 @@ async fn a2a_rows(h: &Harness) -> Vec<busbar_api::MeteringRow> {
     h.gov.flush_metering();
     h.gov
         .store()
-        .list_metering(busbar_substrate::governance::metering_bucket(
-            busbar_substrate::store::now(),
+        .list_metering(busbar_kernel::governance::metering_bucket(
+            busbar_kernel::store::now(),
         ))
         .expect("metering reads back")
         .into_iter()
@@ -78,7 +78,7 @@ fn list_call() -> serde_json::Value {
 /// to, and that absence is what kept it off the ledger. The subject is the plane's own pool
 /// (`receive::PLANE_POOL`, read from the codec's config section rather than restated), which cannot
 /// collide with a member line because members are keyed through
-/// `busbar_substrate::store::agent_key` and carry an `agent:` prefix.
+/// `busbar_kernel::store::agent_key` and carry an `agent:` prefix.
 ///
 /// The counts are asserted too. `requests` is 1 — the accrual — and every token field is 0, because
 /// the kernel's flat per-request fee needs a SELECTED UPSTREAM and a relayed response frame, and a
@@ -86,7 +86,7 @@ fn list_call() -> serde_json::Value {
 /// would be the other way to get this wrong.
 #[tokio::test]
 async fn the_catalogue_card_verb_is_metered_against_the_plane_pool() {
-    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let h = harness_billed(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call_catalogue(&h, &card_call()).await;
     assert_eq!(status, 200, "the card is still answered: {body}");
     assert!(
@@ -131,7 +131,7 @@ async fn the_catalogue_card_verb_is_metered_against_the_plane_pool() {
 /// caller nothing at all.
 #[tokio::test]
 async fn list_tasks_is_metered_under_the_agent_it_was_admitted_on() {
-    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let h = harness_billed(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call_agent(&h, "planner", &list_call()).await;
     assert_eq!(status, 200, "the list is still answered: {body}");
 
@@ -156,7 +156,7 @@ async fn list_tasks_is_metered_under_the_agent_it_was_admitted_on() {
 /// Without this, "meter everything" would pass the two tests above by billing every call twice.
 #[tokio::test]
 async fn an_ordinary_hop_is_still_metered_exactly_once() {
-    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
+    let h = harness_billed(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "{body}");
 

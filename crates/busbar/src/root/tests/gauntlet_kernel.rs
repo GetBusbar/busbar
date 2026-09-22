@@ -15,7 +15,7 @@ use std::time::Instant;
 use axum::body::{to_bytes, Body};
 use axum::http::StatusCode;
 use axum::response::Response;
-use busbar_substrate::plane_host::{
+use busbar_kernel::plane_host::{
     register_gauntlet_runner, register_session_runner, run_gauntlet, run_gauntlet_session,
     Admitted, GauntletPlane, GauntletRequest, VerifyOutcome,
 };
@@ -255,7 +255,8 @@ async fn host_selection_seam_routes_one_shot_to_registered_runner_when_set() {
 
 #[test]
 fn host_selection_seam_unset_session_key_routes_to_substrate() {
-    // No session runner registered for this key → substrate admit_open admits (correlation from req).
+    // No session runner registered for this key → the inline fallback admits (correlation from req),
+    // byte-identical to the deleted substrate `admit_open`.
     let gov = busbar_api::PlaneRequestCtx::default();
     let admitted = run_gauntlet_session(
         req(&gov),
@@ -266,7 +267,66 @@ fn host_selection_seam_unset_session_key_routes_to_substrate() {
     .expect("substrate admits on proceed");
     assert_eq!(
         admitted.correlation_id, 0,
-        "substrate admit_open carries the request's own correlation id (0 here)"
+        "the inline fallback carries the request's own correlation id (0 here)"
+    );
+}
+
+// ── W2.a: THE MCP PRODUCTION FLIP ───────────────────────────────────────────────────────────────
+// The shipped serving path for MCP `tools/call` now rides the unified kernel loop: the plane declares
+// its capability key and the composition root registers the kernel-loop runner under it at boot.
+
+#[cfg(feature = "plane-mcp")]
+#[test]
+fn install_flips_mcp_onto_the_unified_kernel_loop() {
+    // The composition-root install (main.rs calls this at boot) must register a kernel-loop runner
+    // under MCP's capability key — the per-plane FLIP. Before W2.a this was empty (dormant), so this
+    // asserts the shipped MCP path is genuinely swapped onto the unified loop, not the substrate loop.
+    crate::root::gauntlet_install::install();
+    assert!(
+        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_mcp::PLANE_KEY),
+        "install() must register MCP ({}) onto the unified kernel loop — the W2.a flip",
+        busbar_mcp::PLANE_KEY,
+    );
+}
+
+// ── W2.b: THE REMAINING PRODUCTION FLIPS ────────────────────────────────────────────────────────
+// Every other plane now rides the unified kernel loop too. Each declares its capability key and the
+// composition root registers a kernel-loop runner under it at boot — one-shot for a2a/llm, session
+// for voice/streaming. Red-before-green: with the plane's `flip_*_to_kernel(..)` line removed from
+// install(), each of these asserts fails (no runner registered); with it present, they pass.
+
+#[cfg(feature = "plane-a2a")]
+#[test]
+fn install_flips_a2a_onto_the_unified_kernel_loop() {
+    crate::root::gauntlet_install::install();
+    assert!(
+        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_a2a::PLANE_KEY),
+        "install() must register A2A ({}) onto the unified kernel loop — the W2.b flip",
+        busbar_a2a::PLANE_KEY,
+    );
+}
+
+#[cfg(feature = "proto-llm")]
+#[test]
+fn install_flips_llm_onto_the_unified_kernel_loop() {
+    crate::root::gauntlet_install::install();
+    assert!(
+        busbar_kernel::plane_host::gauntlet_runner_registered(busbar_llm::PLANE_KEY),
+        "install() must register the LLM native plane ({}) onto the unified kernel loop — the W2.b flip",
+        busbar_llm::PLANE_KEY,
+    );
+}
+
+#[cfg(feature = "plane-voice")]
+#[test]
+fn install_flips_voice_session_onto_the_unified_kernel_loop() {
+    // Voice/streaming is a SESSION plane, so the flip registers a SESSION runner (open-pass admit),
+    // asserted through the session read-side twin rather than the one-shot one.
+    crate::root::gauntlet_install::install();
+    assert!(
+        busbar_kernel::plane_host::session_runner_registered(busbar_voice::PLANE_KEY),
+        "install() must register the voice session plane ({}) onto the unified kernel loop — the W2.b flip",
+        busbar_voice::PLANE_KEY,
     );
 }
 
@@ -283,6 +343,6 @@ fn host_selection_seam_routes_session_to_registered_runner_when_set() {
     .expect("the registered session runner admits");
     assert_eq!(
         admitted.correlation_id, 4242,
-        "the registered session runner ran, not substrate admit_open"
+        "the registered session runner ran, not the inline fallback"
     );
 }

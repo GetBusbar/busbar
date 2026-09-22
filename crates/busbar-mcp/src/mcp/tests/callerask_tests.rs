@@ -76,7 +76,7 @@ const DIGEST: &str = "d";
 /// now spends through. Each call gets its own App, hence its own spent-approval ledger, which is all
 /// these behavioural cases want: single use across two presentations of ONE approval is proven in
 /// `spentledger_tests`, over one shared ledger.
-fn with_host<R>(f: impl FnOnce(&dyn busbar_substrate::plane_host::EngineHost) -> R) -> R {
+fn with_host<R>(f: impl FnOnce(&dyn busbar_kernel::plane_host::EngineHost) -> R) -> R {
     let app = test_app().build();
     let engine = engine_host(&app);
     f(engine.as_ref())
@@ -299,7 +299,7 @@ fn one_callers_state_is_not_redeemable_by_another() {
     assert!(matches!(
         got,
         AskDecision::Refuse(Refusal::StateRejected(
-            busbar_substrate::plane::approvals::Rejected::WrongPrincipal
+            busbar_kernel::plane::approvals::Rejected::WrongPrincipal
         ))
     ));
 }

@@ -351,7 +351,7 @@ mod imp {
     static ATEXIT_INSTALLED: AtomicBool = AtomicBool::new(false);
 
     /// True when method timing should record — one relaxed atomic load in steady state. Mirrors
-    /// `busbar_core::profile::enabled`: on iff `BUSBAR_TIMING` was present at first read (or forced).
+    /// `busbar_kernel::profile::enabled`: on iff `BUSBAR_TIMING` was present at first read (or forced).
     #[inline]
     pub fn enabled() -> bool {
         match ENABLED.load(Ordering::Relaxed) {

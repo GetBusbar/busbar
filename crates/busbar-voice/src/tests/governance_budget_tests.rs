@@ -12,7 +12,7 @@
 //! returns `Exhausted` (a hard close) and refuses further spend. Runtime-gated so the lease compiles.
 
 use crate::runtime::metering::{HostMeteringPort, LeaseState, MeteringPort, MockMeteringHost};
-use busbar_substrate::plane_host::MeteringHost;
+use busbar_kernel::plane_host::MeteringHost;
 use std::sync::Arc;
 
 /// voice-client cell: a session lease settled PAST its cap hard-closes and refuses further spend —

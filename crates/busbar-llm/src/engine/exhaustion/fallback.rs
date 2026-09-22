@@ -7,8 +7,8 @@
 use super::{dispatch_degraded, handle_exhaustion_for_pool, handle_status_503};
 use crate::engine::*;
 
-use busbar_substrate::diag_debug;
-use busbar_substrate::diagnostics::FALLBACK_RESTRICT_NO_ELIGIBLE_LANE;
+use busbar_substrate_values::diag_debug;
+use busbar_substrate_values::diagnostics::FALLBACK_RESTRICT_NO_ELIGIBLE_LANE;
 
 /// FallbackPool mode: actually route the request to a configured fallback pool's healthy
 /// member. Supports multi-level chains (A→B→C): when the fallback pool is itself exhausted
@@ -24,7 +24,7 @@ pub(crate) async fn handle_fallback_pool(
     pool_name: &str,
     request_ctx: &mut RequestCtx,
     ingress_protocol: &str,
-    op: busbar_substrate::handlers::Op,
+    op: busbar_substrate_values::handlers::Op,
     req_content_type: &str,
     mut usage_sink: Option<UsageSink>,
 ) -> Response {

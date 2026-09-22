@@ -47,7 +47,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 
 use super::sse;
-use busbar_substrate::ingress::protocol::CoreRefusal;
+use busbar_kernel::ingress::protocol::CoreRefusal;
 
 /// The single MCP protocol revision busbar implements — MOVED to `busbar-mcp-codec` with the rest
 /// of the protocol vocabulary and re-exported here, so `busbar_mcp::mcp::envelope::PROTOCOL_VERSION`
@@ -116,7 +116,7 @@ pub(crate) const H_PROTOCOL_VERSION: &str = "mcp-protocol-version";
 pub(super) mod code {
     // `-32700` (parse error) and `-32600` (invalid request) ARE NOT HERE ANY MORE. They are the base
     // protocol's own codes, they are emitted by two planes, and both are now owned and emitted by
-    // `busbar_substrate::ingress::jsonrpc` — the one reader that decides what an invalid envelope is. Copying
+    // `busbar_kernel::ingress::jsonrpc` — the one reader that decides what an invalid envelope is. Copying
     // them back here would recreate the second opinion this module was just moved off.
 
     // Every code below is DEFINED in `busbar-mcp-codec` and read here BY IDENTITY. `busbar-plane-mcp`
@@ -154,7 +154,7 @@ pub(super) mod code {
 #[derive(Default)]
 pub(crate) struct McpWords;
 
-impl busbar_substrate::ingress::protocol::Words for McpWords {
+impl busbar_kernel::ingress::protocol::Words for McpWords {
     fn refuse(&self, refusal: CoreRefusal<'_>) -> Response {
         match refusal {
             // Unreachable while the mount and the config are created in one act; still answered
@@ -168,13 +168,13 @@ impl busbar_substrate::ingress::protocol::Words for McpWords {
             ),
             // The RFC 9728 endpoint is NOT a JSON-RPC endpoint, so its refusal is not a JSON-RPC
             // envelope. Separate arm, separate sentence — see `CoreRefusal::MetadataUnavailable`.
-            CoreRefusal::MetadataUnavailable => busbar_substrate::ingress::protocol::json_refusal(
+            CoreRefusal::MetadataUnavailable => busbar_kernel::ingress::protocol::json_refusal(
                 StatusCode::NOT_FOUND,
                 serde_json::json!({ "error": "not_found" }),
             ),
             // `403`, which `HTTP.ORIGIN-VALIDATION` names for exactly this: "If the `Origin`
             // header is present and invalid, servers MUST respond with HTTP 403 Forbidden."
-            CoreRefusal::ForbiddenOrigin => busbar_substrate::ingress::protocol::json_refusal(
+            CoreRefusal::ForbiddenOrigin => busbar_kernel::ingress::protocol::json_refusal(
                 StatusCode::FORBIDDEN,
                 serde_json::json!({
                     "error": "invalid_origin",
@@ -185,9 +185,9 @@ impl busbar_substrate::ingress::protocol::Words for McpWords {
             // Both of these are the BASE PROTOCOL's own codes, so both are rendered by the base
             // protocol's own reader rather than restated here — that is the arrangement `code`
             // above records, and it is why `-32700` and `-32600` are not in it.
-            CoreRefusal::NotJson => busbar_substrate::ingress::jsonrpc::parse_error(),
+            CoreRefusal::NotJson => busbar_kernel::ingress::jsonrpc::parse_error(),
             CoreRefusal::InvalidEnvelope(invalid) => {
-                busbar_substrate::ingress::jsonrpc::refused(invalid)
+                busbar_kernel::ingress::jsonrpc::refused(invalid)
             }
             // `404` + `-32601`: what this revision requires of a server that does not implement a
             // method, and the answer that stays correct for every method still unimplemented.
@@ -225,23 +225,23 @@ impl busbar_substrate::ingress::protocol::Words for McpWords {
 /// type-erased engine handle rather than a `CurrentApp` extractor. Declared `RouteAuth::None`, so the
 /// auth middleware bypasses the chain and hands this handler no resolved identity — matching the old
 /// open handler, which took only `CurrentApp`.
-pub(crate) async fn metadata_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+pub(crate) async fn metadata_route(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
     // The RFC 9728 facts, read off the neutral host seam (BOUND) rather than a `handle.load()`.
     // This two-line body is the whole handler: the three deployment-specific facts (canonical URI,
     // authorization servers, scopes) read off the seam, framed into the once-defined
-    // `busbar_substrate::ingress::protocol` document.
+    // `busbar_kernel::ingress::protocol` document.
     let Some(resource) = super::resource_of(&ctx.host) else {
-        return busbar_substrate::ingress::protocol::Words::refuse(
+        return busbar_kernel::ingress::protocol::Words::refuse(
             &McpWords,
             CoreRefusal::MetadataUnavailable,
         );
     };
-    let doc = busbar_substrate::ingress::protocol::Metadata {
+    let doc = busbar_kernel::ingress::protocol::Metadata {
         resource: std::borrow::Cow::Borrowed(resource.canonical_uri()),
         authorization_servers: resource.authorization_servers(),
         scopes_supported: resource.scopes_supported(),
     };
-    busbar_substrate::ingress::protocol::metadata(&doc)
+    busbar_kernel::ingress::protocol::metadata(&doc)
 }
 
 /// `GET` and `DELETE` on the MCP endpoint.
@@ -257,7 +257,7 @@ pub(crate) async fn metadata_route(ctx: busbar_substrate::plane_routes::PlaneReq
 /// never reaches here. That ordering is deliberate: the `405` is a statement about our protocol
 /// surface, and a protected resource should not answer questions about its surface before it knows
 /// who is asking.
-pub(crate) async fn legacy_verb(_ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+pub(crate) async fn legacy_verb(_ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
     (
         StatusCode::METHOD_NOT_ALLOWED,
         [("allow", "POST")],
@@ -275,7 +275,7 @@ pub(crate) async fn legacy_verb(_ctx: busbar_substrate::plane_routes::PlaneReqCt
 /// Auth has already happened — the route declares `RouteAuth::Key`, and the plane's admission facts
 /// made the middleware verify the token's audience against this deployment's canonical URI. Anything
 /// reaching this function is an admitted caller.
-pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+pub(crate) async fn rpc(ctx: busbar_kernel::plane_routes::PlaneReqCtx) -> Response {
     // S4a Option A: this handler no longer extracts `axum::State<Arc<AppHandle>>` /
     // `Extension<..>`. Core's route adapter (the mount behind the substrate's `MountHost` seam) took them
     // off the request and handed them across the NEUTRAL `PlaneReqCtx` seam, so this plane names no
@@ -307,10 +307,10 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
     // STEPS 1, 2, 4, 5, 6, 7, 8 AND 13 ARE CORE'S, and this plane no longer states any of them.
     // What follows the call is steps 9 to 12: `params._meta`, the mirrored routing headers, the
     // method vocabulary and the verb dispatch — the four the measurement in
-    // `busbar_substrate::ingress::protocol` found are genuinely this protocol's.
-    busbar_substrate::ingress::protocol::serve(
+    // `busbar_kernel::ingress::protocol` found are genuinely this protocol's.
+    busbar_kernel::ingress::protocol::serve(
         &McpWords,
-        busbar_substrate::ingress::protocol::Request {
+        busbar_kernel::ingress::protocol::Request {
             present: resource.is_some(),
             origin: header_str(headers, "origin"),
             allowed_origins: resource.as_ref().map_or(&[][..], |r| r.allowed_origins()),
@@ -349,13 +349,13 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
 /// STEPS 9 TO 12 — everything after the envelope, and everything this protocol genuinely owns.
 ///
 /// `None` means step 13: the method vocabulary does not carry this method, which is
-/// `busbar_substrate::ingress::protocol`'s to answer with `404` + `-32601`. That was always the correct answer
+/// `busbar_kernel::ingress::protocol`'s to answer with `404` + `-32601`. That was always the correct answer
 /// for an unimplemented method and did not have to change when the table gained entries.
 /// `pub(in crate::mcp)` because the STDIO SERVE MODE (`super::stdio_serve`) runs THIS function —
 /// the equality doctrine's teeth: a second transport binds the same dispatch, never a parallel one.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::mcp) async fn rpc_dispatch(
-    engine_host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    engine_host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     principal: &busbar_api::AuthPrincipal,
     headers: &HeaderMap,
@@ -372,7 +372,7 @@ pub(in crate::mcp) async fn rpc_dispatch(
     // `reclaim_all`). Stack-pinned and heap-free until a handle is registered, `Send`, so this future
     // stays `Send`. CLUSTER-1: the sync `tools/call` breaker admit registers into this scope (threaded
     // via `Ctx::scope`) and each leg settles through it — the in-place record is gone on this path.
-    let scope = busbar_substrate::plane_host::DispatchScope::new();
+    let scope = busbar_kernel::plane_host::DispatchScope::new();
     // From here `id` is a string or a number. It is carried as `Option` only because the method
     // table's constructors take one; it is never `None` on this path, and never `Null` at all.
     let id = Some(id);
@@ -755,7 +755,7 @@ pub(in crate::mcp) fn error_response(
     let id = id.unwrap_or(serde_json::Value::Null);
     (
         status,
-        axum::Json(busbar_substrate::ingress::jsonrpc::error_body(
+        axum::Json(busbar_kernel::ingress::jsonrpc::error_body(
             id, code, message, data,
         )),
     )

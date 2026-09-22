@@ -37,8 +37,8 @@
 //! When a native gate is seated, the first veto wins and the unit stops here, BEFORE the door, which
 //! is the whole point of having the seat at this step rather than the next one.
 
-use busbar_caps::{
-    Approve, Decision, PrincipalId, ReasonCode, Refusal, ScopeFacts, UnitToken, VerifiedDestination,
+use busbar_contract::caps::{
+    Approve, Decision, Pass, PrincipalId, ReasonCode, Refusal, ScopeFacts, VerifiedDestination,
 };
 
 /// A 1.6.0-native gate seated at Approve.
@@ -71,7 +71,7 @@ pub trait VetoSeat {
 /// gate is not consulted about a unit that has already been refused — consulting it would hand a
 /// refused unit's facts to something that has no decision left to make.
 pub fn approve(
-    token: &UnitToken<Approve>,
+    token: &Pass<Approve>,
     principal: &PrincipalId,
     destinations: &[VerifiedDestination],
     seats: &[&dyn VetoSeat],

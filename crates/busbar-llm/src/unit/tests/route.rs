@@ -4,16 +4,16 @@
 
 use super::*;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_caps::KernelSeal;
+use busbar_contract::caps::KernelSeal;
 use busbar_contract::Registration;
-use busbar_substrate::store::{now as store_now, BreakerState};
+use busbar_kernel::store::{now as store_now, BreakerState};
 use serde_json::json;
 
 /// A kernel seal for the length of one leg, and the step-5 token minted from it — exactly as
 /// the loop lends it, and dropped when the call it was lent to returns.
-fn tokens() -> (KernelSeal, UnitToken<Route>) {
+fn tokens() -> (KernelSeal, Pass<Route>) {
     let seal = KernelSeal::acquire_for_kernel();
-    let token = UnitToken::mint(&seal);
+    let token = Pass::mint(&seal);
     (seal, token)
 }
 
@@ -134,7 +134,7 @@ struct Observed(Vec<(&'static str, String)>);
 
 async fn observe(
     resp: Response,
-    store: &dyn busbar_substrate::store::LaneRuntime,
+    store: &dyn busbar_kernel::store::LaneRuntime,
     state: &MockServerState,
     ids_drawn: u64,
 ) -> Observed {
@@ -469,10 +469,13 @@ async fn route_step_refuses_an_unresolved_destination_without_a_terminal() {
         .decision
         .into_result(&seal)
         .expect_err("an unresolved destination must refuse");
-    assert_eq!(refusal.reason(), busbar_caps::ReasonCode::NoDestination);
+    assert_eq!(
+        refusal.reason(),
+        busbar_contract::caps::ReasonCode::NoDestination
+    );
     assert_eq!(
         refusal.step(),
-        Some(busbar_caps::StepName::Route),
+        Some(busbar_contract::caps::StepName::Route),
         "the decision stamps the step, so the record cannot claim it stopped elsewhere"
     );
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -672,11 +675,11 @@ async fn completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusa
                 }
                 // The live shell resolves candidates before it forwards, so an unresolved
                 // destination never reaches the walk on that path either.
-                None => busbar_substrate::proxy::ingress_error(
+                None => busbar_kernel::proxy::ingress_error(
                     proto,
                     StatusCode::NOT_FOUND,
                     KIND_NOT_FOUND,
-                    &busbar_substrate::ingress::not_found_message(destination, None),
+                    &busbar_kernel::ingress::not_found_message(destination, None),
                 ),
             }
         };

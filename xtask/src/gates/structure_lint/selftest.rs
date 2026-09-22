@@ -831,7 +831,7 @@ fn with_stale_axis_exception(t: &Tables) -> Tables {
         .unwrap_or_else(|| "transport".to_string());
     t.axis_exceptions.push(axis::AxisException {
         axis: axis_name,
-        file: "crates/busbar-core/src/a_file_that_no_longer_branches.rs".to_string(),
+        file: "crates/busbar-kernel/src/a_file_that_no_longer_branches.rs".to_string(),
         why: "an exemption whose branch has already gone".to_string(),
     });
     t

@@ -23,7 +23,7 @@ name = "busbar-a2a-codec"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+# `rust-version` rationale: see busbar-kernel/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
 description = "The A2A wire vocabulary for busbar: the JSON canonicalization the card signature is taken over, the anomaly grammar, the request-id remapping table, the meter-class projection and the durable task record shapes — the pure half of the A2A protocol, with no I/O in its closure."
 license = "Apache-2.0"

@@ -12,7 +12,7 @@
 //! Runtime-gated so the durable engine compiles.
 
 use crate::runtime::scope::SessionHandle;
-use busbar_substrate::plane::handle_engine::{DurableHandleEngine, ScopedMutateError};
+use busbar_kernel::plane::handle_engine::{DurableHandleEngine, ScopedMutateError};
 use std::sync::Arc;
 
 /// voice-client cell: an opened session seals a genesis event on the durable chain and survives a

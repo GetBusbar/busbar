@@ -20,7 +20,6 @@ name = "busbar_unit_transport_key"
 path = "src/lib.rs"
 
 [dependencies]
-busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
 rustls = { workspace = true }
 

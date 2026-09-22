@@ -31,7 +31,7 @@
 //!
 //! ## The address predicates are NOT re-implemented here
 //!
-//! The CGNAT, unique-local, link-local and alternate-encoding atoms live in [`busbar_substrate::net_guard`] and
+//! The CGNAT, unique-local, link-local and alternate-encoding atoms live in [`busbar_kernel::net_guard`] and
 //! are used from there. Duplicated security logic is the one kind of duplication that cannot be made
 //! safe by documenting it: somebody hardens one copy against a new obfuscation and never learns the
 //! other exists.
@@ -131,10 +131,10 @@ pub(crate) struct PinnedCallback {
 ///
 /// The tear-out went the other way too — the three ranges this copy had and the shared predicate
 /// did not (`0.0.0.0/8`, `192.0.0.0/24`, `198.18.0.0/15`) moved INTO
-/// [`busbar_substrate::net_guard::ipv4_is_internal`] first, so no guard lost coverage in the unification. That
+/// [`busbar_kernel::net_guard::ipv4_is_internal`] first, so no guard lost coverage in the unification. That
 /// ordering is the whole discipline: widen the shared predicate to the union, then delete the copy.
 pub(crate) fn is_internal_addr(ip: &IpAddr) -> bool {
-    busbar_substrate::net_guard::ip_is_internal(ip)
+    busbar_kernel::net_guard::ip_is_internal(ip)
 }
 
 /// Split a URL into `(scheme, host)` without pulling in a URL parser.
@@ -217,7 +217,7 @@ fn structural_check(url: &str) -> Result<Structural, PushNotifyError> {
     if scheme != "https" {
         return Err(PushNotifyError::Scheme(scheme));
     }
-    if busbar_substrate::net_guard::is_alternate_ipv4_encoding(&host) {
+    if busbar_kernel::net_guard::is_alternate_ipv4_encoding(&host) {
         return Err(PushNotifyError::ObfuscatedHost(host));
     }
     // A canonical IP LITERAL is checked directly and is not subject to the resolver's answer at all
@@ -264,8 +264,8 @@ pub(crate) fn floor_callback(task_id: &str, callback: Option<String>) -> Option<
     match callback {
         Some(url) => match structural_refusal(&url) {
             Some(refusal) => {
-                busbar_substrate::diag_error!(
-                    busbar_substrate::diagnostics::PLANE_SSRF_CALLBACK_AT_STORE,
+                busbar_substrate_values::diag_error!(
+                    busbar_substrate_values::diagnostics::PLANE_SSRF_CALLBACK_AT_STORE,
                     task = %task_id,
                     error = %refusal,
                     "a2a: a push callback the SSRF guard refuses reached the task store and was \

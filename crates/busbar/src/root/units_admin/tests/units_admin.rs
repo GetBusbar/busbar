@@ -7,7 +7,7 @@ use super::*;
 /// The legacy ring binds no clock of its own; a pinned one keeps records comparable.
 #[derive(Debug)]
 struct PinnedClock;
-impl busbar_unit_audit::Clock for PinnedClock {
+impl busbar_kernel_audit::Clock for PinnedClock {
     fn now(&self) -> u64 {
         1_700_000_000
     }
@@ -194,7 +194,12 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_refused_units_status_is_the_one_its_ending_earned() {
-    let status = |reason| answer_for(Outcome::Refused(busbar_caps::StepName::Admit, reason));
+    let status = |reason| {
+        answer_for(Outcome::Refused(
+            busbar_contract::caps::StepName::Admit,
+            reason,
+        ))
+    };
     assert_eq!(status(ReasonCode::DecodeFailed).status, 400);
     assert_eq!(status(ReasonCode::NoDestination).status, 404);
     assert_eq!(status(ReasonCode::InFlightCap).status, 429);
@@ -212,7 +217,7 @@ fn a_refused_units_status_is_the_one_its_ending_earned() {
     // owed is the reason, and the side of the door it happened on is not the caller's business.
     assert_eq!(
         answer_for(Outcome::Failed(
-            busbar_caps::StepName::Route,
+            busbar_contract::caps::StepName::Route,
             ReasonCode::DurabilityUnavailable
         )),
         error_answer(503, "unavailable")
@@ -275,13 +280,13 @@ fn a_header_count_larger_than_the_frame_is_refused_not_reserved() {
 /// set than the set entitled to hold the token.
 #[test]
 fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let binding = AdminBinding::new(Arc::new(RefusingDispatch));
 
-    let rows = |completed: bool| -> Vec<busbar_unit_audit::legacy::AuditEntry> {
-        let log = busbar_unit_audit::AuditLog::with(
+    let rows = |completed: bool| -> Vec<busbar_kernel_audit::legacy::AuditEntry> {
+        let log = busbar_kernel_audit::AuditLog::with(
             Box::new(PinnedClock),
-            Box::new(busbar_unit_audit::NoSeam),
+            Box::new(busbar_kernel_audit::NoSeam),
         );
         let key = UnitKey::new(1);
         let mut request = a_request();
@@ -291,15 +296,15 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
         binding.units.open(key, request);
         let ctx = UnitCtx {
             key,
-            origin: busbar_caps::OriginKind::Client,
+            origin: busbar_contract::caps::OriginKind::Client,
             session: None,
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: true,
             kernel_verb_only: true,
         };
-        let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
+        let decode_token: Pass<Decode> = Pass::mint(&seal);
         let _ = decode(&binding, &decode_token, &ctx).into_result(&seal);
-        let verify_token: UnitToken<Verify> = UnitToken::mint(&seal);
+        let verify_token: Pass<Verify> = Pass::mint(&seal);
         let _ = verify(
             &binding,
             &verify_token,
@@ -308,7 +313,7 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
         )
         .into_result(&seal);
 
-        let audit_token: UnitToken<Audit> = UnitToken::mint(&seal);
+        let audit_token: Pass<Audit> = Pass::mint(&seal);
         if completed {
             let _ =
                 audit(&binding, &log, &audit_token, &ctx, &Outcome::Completed).into_result(&seal);
@@ -362,7 +367,7 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
         }
     }
 
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     let under = |path: &str, sealed: Sealed| -> Result<(), ReasonCode> {
@@ -375,18 +380,18 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
         binding.units.open(key, request);
         let ctx = UnitCtx {
             key,
-            origin: busbar_caps::OriginKind::Client,
+            origin: busbar_contract::caps::OriginKind::Client,
             session: None,
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: true,
             kernel_verb_only: true,
         };
-        let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
+        let decode_token: Pass<Decode> = Pass::mint(&seal);
         decode(&binding, &decode_token, &ctx)
             .into_result(&seal)
             .expect("the plane's table declares this operation");
         binding.units.set_granted(key, VerbScope::Full);
-        let token: UnitToken<Route> = UnitToken::mint(&seal);
+        let token: Pass<Route> = Pass::mint(&seal);
         let outcome = route(
             &binding,
             Arc::new(crate::root::kernel::RefusingStore),
@@ -402,8 +407,8 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
 
     let required = Sealed(Some((
         PostureCtx {
-            operator: busbar_unit_verbs::OperatorState::Unset,
-            dual_control: busbar_unit_verbs::DualControl::Required,
+            operator: busbar_admin::OperatorState::Unset,
+            dual_control: busbar_admin::DualControl::Required,
         },
         ApprovalState::NotYetApproved,
     )));
@@ -414,8 +419,8 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
 
     let ceremony_run = Sealed(Some((
         PostureCtx {
-            operator: busbar_unit_verbs::OperatorState::Set([0u8; 32]),
-            dual_control: busbar_unit_verbs::DualControl::Single,
+            operator: busbar_admin::OperatorState::Set([0u8; 32]),
+            dual_control: busbar_admin::DualControl::Single,
         },
         ApprovalState::NotYetApproved,
     )));
@@ -445,8 +450,8 @@ fn an_unsealed_node_reports_the_posture_a_fresh_install_is_actually_in() {
     let (posture, approval) = UnsealedPosture
         .resolve(KernelVerb::Adjust, "admin")
         .expect("a node with no journal knows what it has not sealed");
-    assert_eq!(posture.operator, busbar_unit_verbs::OperatorState::Unset);
-    assert_eq!(posture.dual_control, busbar_unit_verbs::DualControl::Single);
+    assert_eq!(posture.operator, busbar_admin::OperatorState::Unset);
+    assert_eq!(posture.dual_control, busbar_admin::DualControl::Single);
     assert_eq!(approval, ApprovalState::NotYetApproved);
 }
 
@@ -534,7 +539,7 @@ fn the_rate_class_is_the_shipped_table_and_not_the_default() {
     );
     assert_eq!(MutationClass::Forbidden.limit(), 0);
     assert!(
-        busbar_unit_scope::admin_required_scope("GET", "/api/v1/admin/audit") == Scope::ReadOnly
+        busbar_kernel_scope::admin_required_scope("GET", "/api/v1/admin/audit") == Scope::ReadOnly
     );
 }
 
@@ -571,7 +576,7 @@ fn a_unit_leaves_the_table_when_it_ends() {
 fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
     let ctx = UnitCtx {
         key: UnitKey::new(1),
-        origin: busbar_caps::OriginKind::Client,
+        origin: busbar_contract::caps::OriginKind::Client,
         session: None,
         generation: busbar_kernel::registry::Generation::FIRST,
         admin_listener: true,
@@ -590,7 +595,7 @@ fn an_admin_unit_settles_at_zero_requests_and_zero_fee() {
 /// secret's placeholder would be predictable from the secret it protects.
 #[test]
 fn two_nonces_over_one_unit_do_not_agree() {
-    use busbar_unit_verbs::NonceSource;
+    use busbar_admin::NonceSource;
     let source = ArrivalNonce(1_700_000_000);
     let mut first = [0u8; 16];
     let mut second = [0u8; 16];
@@ -612,7 +617,7 @@ fn two_nonces_over_one_unit_do_not_agree() {
 /// key secret is minted from — rather than by anything checkable here.
 #[test]
 fn both_halves_of_a_nonce_are_drawn_and_neither_repeats() {
-    use busbar_unit_verbs::NonceSource;
+    use busbar_admin::NonceSource;
     use std::collections::HashSet;
 
     let source = ArrivalNonce(1_700_000_000);
@@ -679,33 +684,33 @@ fn only_the_two_minting_verbs_are_reached_through_the_seam_directly() {
 #[derive(Default)]
 struct ReplaySlots(Mutex<HashMap<(String, String), Vec<u8>>>);
 
-impl busbar_unit_verbs::store::Store for ReplaySlots {
+impl busbar_contract::verb_store::Store for ReplaySlots {
     fn chain_break(
         &self,
-        _admin: &busbar_caps::AdminToken,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         Ok(())
     }
 
     fn store_restore(
         &self,
-        _admin: &busbar_caps::AdminToken,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _backup_ref: &str,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         Ok(())
     }
 
     fn reseal_epoch_floor(
         &self,
-        _admin: &busbar_caps::AdminToken,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         Ok(())
     }
 
     fn replay_new_verb(
         &self,
         key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
+    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
         Ok(self
             .0
             .lock()
@@ -718,7 +723,7 @@ impl busbar_unit_verbs::store::Store for ReplaySlots {
         &self,
         key: &(String, String),
         response: &[u8],
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
         self.0
             .lock()
             .expect("no test panics under this lock")
@@ -733,7 +738,7 @@ impl busbar_unit_verbs::store::Store for ReplaySlots {
 /// bytes is that there is no decode step here that could.
 #[test]
 fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
-    use busbar_unit_verbs::store::Store;
+    use busbar_contract::verb_store::Store;
 
     let answer = AdminAnswer {
         status: 201,
@@ -765,12 +770,12 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
 /// enough to key a slot and carries nothing a second holder could present.
 #[test]
 fn the_replay_encoder_carries_an_identity_and_never_a_secret() {
-    use busbar_unit_verbs::ReplayEncoder;
+    use busbar_admin::ReplayEncoder;
 
     let admin = crate::root::kernel::new_kernel().admin_token();
-    let outcome = busbar_unit_verbs::MintedKeyOutcome {
+    let outcome = busbar_admin::MintedKeyOutcome {
         id: "vk_1".to_string(),
-        secret: busbar_caps::SecretOnce::mint(&admin, 42, UnitKey::new(1), "body.secret"),
+        secret: busbar_contract::caps::SecretOnce::mint(&admin, 42, UnitKey::new(1), "body.secret"),
         expires_at: None,
     };
     let bytes = PackedReplay.encode(&outcome);
@@ -833,26 +838,26 @@ impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
 struct IdentifiesOperator;
 
 #[cfg(feature = "root-admin")]
-impl busbar_unit_auth::module::AuthModule for IdentifiesOperator {
+impl busbar_kernel_identity::module::AuthModule for IdentifiesOperator {
     fn name(&self) -> &'static str {
         "identifies-operator"
     }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_unit_auth::module::AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
         match candidate {
-            Some("admin-token") => busbar_unit_auth::module::AuthOutcome::Identify(
-                busbar_unit_auth::principal::Principal::from_id(
+            Some("admin-token") => busbar_kernel_identity::module::AuthOutcome::Identify(
+                busbar_kernel_identity::principal::Principal::from_id(
                     crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
                 ),
             ),
-            _ => busbar_unit_auth::module::AuthOutcome::Pass,
+            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
         }
     }
 }
 
 #[cfg(feature = "root-admin")]
-fn a_door_that_identifies_the_operator() -> busbar_unit_auth::AuthChain {
-    busbar_unit_auth::AuthChain::new(
-        vec![busbar_unit_auth::chain::ChainEntry {
+fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
+    busbar_kernel_identity::AuthChain::new(
+        vec![busbar_kernel_identity::chain::ChainEntry {
             provider: "identifies-operator".to_string(),
             module: Box::new(IdentifiesOperator),
         }],
@@ -925,16 +930,16 @@ fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identified()
 struct IdentifiesSomebodyElse;
 
 #[cfg(feature = "root-admin")]
-impl busbar_unit_auth::module::AuthModule for IdentifiesSomebodyElse {
+impl busbar_kernel_identity::module::AuthModule for IdentifiesSomebodyElse {
     fn name(&self) -> &'static str {
         "identifies-somebody-else"
     }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_unit_auth::module::AuthOutcome {
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
         match candidate {
-            Some("a-tenants-token") => busbar_unit_auth::module::AuthOutcome::Identify(
-                busbar_unit_auth::principal::Principal::from_id("acct:not-the-operator"),
+            Some("a-tenants-token") => busbar_kernel_identity::module::AuthOutcome::Identify(
+                busbar_kernel_identity::principal::Principal::from_id("acct:not-the-operator"),
             ),
-            _ => busbar_unit_auth::module::AuthOutcome::Pass,
+            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
         }
     }
 }
@@ -948,7 +953,7 @@ impl busbar_unit_auth::module::AuthModule for IdentifiesSomebodyElse {
 /// the caller presented and not about a credential the node withdrew.
 #[cfg(feature = "root-admin")]
 fn answer_at_the_closed_door(
-    door: busbar_unit_auth::AuthChain,
+    door: busbar_kernel_identity::AuthChain,
     credential: Option<&str>,
 ) -> AdminAnswer {
     let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
@@ -1041,8 +1046,8 @@ fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_needed() {
-    let door = busbar_unit_auth::AuthChain::new(
-        vec![busbar_unit_auth::chain::ChainEntry {
+    let door = busbar_kernel_identity::AuthChain::new(
+        vec![busbar_kernel_identity::chain::ChainEntry {
             provider: "identifies-somebody-else".to_string(),
             module: Box::new(IdentifiesSomebodyElse),
         }],
@@ -1068,22 +1073,24 @@ fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_n
 /// the loop resolves it. Returns the binding and the context every later step reads the unit
 /// through, so a cell drives the real steps rather than a table it filled in by hand.
 #[cfg(feature = "root-admin")]
-fn a_bound_unit(request: AdminRequest) -> (AdminBinding, UnitCtx, busbar_caps::KernelSeal) {
+fn a_bound_unit(
+    request: AdminRequest,
+) -> (AdminBinding, UnitCtx, busbar_contract::caps::KernelSeal) {
     let binding = AdminBinding::new(Arc::new(AnsweringDispatch));
     let key = UnitKey::new(1);
     binding.units.open(key, request);
     let ctx = UnitCtx {
         key,
-        origin: busbar_caps::OriginKind::Client,
+        origin: busbar_contract::caps::OriginKind::Client,
         session: None,
         generation: busbar_kernel::registry::Generation::FIRST,
         admin_listener: true,
         kernel_verb_only: true,
     };
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     // Decode is what puts the verb in the table. A cell that called `set_verb` itself would be
     // asserting over a row the loop never wrote.
-    let _ = decode(&binding, &UnitToken::mint(&seal), &ctx);
+    let _ = decode(&binding, &Pass::mint(&seal), &ctx);
     (binding, ctx, seal)
 }
 
@@ -1111,7 +1118,7 @@ fn a_bound_unit(request: AdminRequest) -> (AdminBinding, UnitCtx, busbar_caps::K
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
-    use busbar_caps::{OriginKind, StepName};
+    use busbar_contract::caps::{OriginKind, StepName};
     use busbar_kernel::inflight::{arrival_hold, cap_refusal_step, Enter};
 
     let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
@@ -1167,7 +1174,7 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
     // The step's own answer, for the unit that got through.
     let (binding, ctx, seal) = a_bound_unit(a_request());
     assert!(ctx.admin_listener, "the fixture is on the admin listener");
-    let record = arrival(&binding, &UnitToken::mint(&seal), &ctx)
+    let record = arrival(&binding, &Pass::mint(&seal), &ctx)
         .into_result(&seal)
         .expect("an admin unit is never refused at the gate");
     assert_eq!(record.transport_chain, vec![ADMIN_TRANSPORT]);
@@ -1200,7 +1207,7 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
         binding.units.verb(ctx.key).is_none(),
         "the fixture must be a path the table never resolved"
     );
-    let refusal = verify(&binding, &UnitToken::mint(&seal), &ctx, &principal)
+    let refusal = verify(&binding, &Pass::mint(&seal), &ctx, &principal)
         .into_result(&seal)
         .expect_err("a verb that resolved to nothing has nowhere to go");
     assert_eq!(refusal.reason(), ReasonCode::NoDestination);
@@ -1211,7 +1218,7 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
         binding.units.verb(ctx.key).is_some(),
         "the fixture must be a path the table did resolve"
     );
-    let destinations = verify(&binding, &UnitToken::mint(&seal), &ctx, &principal)
+    let destinations = verify(&binding, &Pass::mint(&seal), &ctx, &principal)
         .into_result(&seal)
         .expect("a resolved verb has somewhere to go");
     assert!(
@@ -1240,9 +1247,9 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
 #[cfg(feature = "root-admin")]
 #[test]
 fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
-    let legacy = busbar_unit_audit::AuditLog::with(
+    let legacy = busbar_kernel_audit::AuditLog::with(
         Box::new(PinnedClock),
-        Box::new(busbar_unit_audit::NoSeam),
+        Box::new(busbar_kernel_audit::NoSeam),
     );
 
     // A mutation: an operator-key write, on the mutating side of the closed split.
@@ -1266,14 +1273,14 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     let _ = audit(
         &binding,
         &legacy,
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
         &ctx,
         &Outcome::Completed,
     );
     assert_eq!(legacy.len(), before + 1, "one unit, one entry");
     let entry = legacy.list(1).pop().expect("the entry just sealed");
     assert_eq!(entry.action, resolved.verb);
-    assert_eq!(entry.outcome, busbar_unit_audit::OUTCOME_APPLIED);
+    assert_eq!(entry.outcome, busbar_kernel_audit::OUTCOME_APPLIED);
     // The record names the identity Verify resolved -- never the credential the request
     // presented, which is a secret and stays out of the chain.
     assert_eq!(entry.principal, AN_IDENTIFIED_OPERATOR);
@@ -1294,7 +1301,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     let _ = audit(
         &binding,
         &legacy,
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
         &ctx,
         &Outcome::Completed,
     );
@@ -1312,13 +1319,13 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     let _ = audit_refused(
         &binding,
         &legacy,
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
         &ctx,
         &Refusal::new(ReasonCode::OverBudget),
     );
     assert_eq!(legacy.len(), before + 1, "the attempt is on the chain");
     let entry = legacy.list(1).pop().expect("the entry just sealed");
-    assert_eq!(entry.outcome, busbar_unit_audit::OUTCOME_REJECTED);
+    assert_eq!(entry.outcome, busbar_kernel_audit::OUTCOME_REJECTED);
     assert_eq!(entry.principal, AN_IDENTIFIED_OPERATOR);
     assert!(legacy.verify(), "the chain is still linked");
 
@@ -1339,7 +1346,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     let _ = audit_refused(
         &binding,
         &legacy,
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
         &ctx,
         &Refusal::new(ReasonCode::Unauthenticated),
     );
@@ -1376,42 +1383,42 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
     #[derive(Debug, Default)]
     struct RecordingStore(Mutex<Vec<String>>);
 
-    impl busbar_unit_verbs::store::Store for RecordingStore {
+    impl busbar_contract::verb_store::Store for RecordingStore {
         fn chain_break(
             &self,
-            _admin: &busbar_caps::AdminToken,
-        ) -> Result<(), busbar_unit_verbs::StoreError> {
+            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        ) -> Result<(), busbar_contract::verb_store::StoreError> {
             self.0.lock().unwrap().push("chain_break".to_string());
-            Err(busbar_unit_verbs::StoreError::Failed)
+            Err(busbar_contract::verb_store::StoreError::Failed)
         }
 
         fn store_restore(
             &self,
-            _admin: &busbar_caps::AdminToken,
+            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
             backup_ref: &str,
-        ) -> Result<(), busbar_unit_verbs::StoreError> {
+        ) -> Result<(), busbar_contract::verb_store::StoreError> {
             self.0
                 .lock()
                 .unwrap()
                 .push(format!("store_restore:{backup_ref}"));
-            Err(busbar_unit_verbs::StoreError::Failed)
+            Err(busbar_contract::verb_store::StoreError::Failed)
         }
 
         fn reseal_epoch_floor(
             &self,
-            _admin: &busbar_caps::AdminToken,
-        ) -> Result<(), busbar_unit_verbs::StoreError> {
+            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        ) -> Result<(), busbar_contract::verb_store::StoreError> {
             self.0
                 .lock()
                 .unwrap()
                 .push("reseal_epoch_floor".to_string());
-            Err(busbar_unit_verbs::StoreError::Failed)
+            Err(busbar_contract::verb_store::StoreError::Failed)
         }
 
         fn replay_new_verb(
             &self,
             _key: &(String, String),
-        ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
+        ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
             Ok(None)
         }
 
@@ -1419,7 +1426,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             &self,
             _key: &(String, String),
             _response: &[u8],
-        ) -> Result<(), busbar_unit_verbs::StoreError> {
+        ) -> Result<(), busbar_contract::verb_store::StoreError> {
             Ok(())
         }
     }
@@ -1434,7 +1441,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
         }
     }
 
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     // The posture a fleet that has run its ceremony has, so the gates admit and what is left is
@@ -1449,8 +1456,8 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             ) -> Option<(PostureCtx, ApprovalState)> {
                 Some((
                     PostureCtx {
-                        operator: busbar_unit_verbs::OperatorState::Set([0u8; 32]),
-                        dual_control: busbar_unit_verbs::DualControl::Single,
+                        operator: busbar_admin::OperatorState::Set([0u8; 32]),
+                        dual_control: busbar_admin::DualControl::Single,
                     },
                     ApprovalState::NotYetApproved,
                 ))
@@ -1483,21 +1490,21 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
         binding.units.open(key, request);
         let ctx = UnitCtx {
             key,
-            origin: busbar_caps::OriginKind::Client,
+            origin: busbar_contract::caps::OriginKind::Client,
             session: None,
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: true,
             kernel_verb_only: true,
         };
-        decode(&binding, &UnitToken::mint(&seal), &ctx)
+        decode(&binding, &Pass::mint(&seal), &ctx)
             .into_result(&seal)
             .unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
         binding.units.set_granted(key, VerbScope::Full);
 
-        let token: UnitToken<Route> = UnitToken::mint(&seal);
+        let token: Pass<Route> = Pass::mint(&seal);
         let outcome = route(
             &binding,
-            Arc::clone(&store) as Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+            Arc::clone(&store) as Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
             &admin,
             &token,
             &ctx,
@@ -1676,7 +1683,10 @@ fn exactly_three_verbs_land_on_the_store() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn an_unresolved_unit_is_sealed_by_the_method_it_asked_with() {
-    let refused = &Outcome::Refused(busbar_caps::StepName::Decode, ReasonCode::DecodeFailed);
+    let refused = &Outcome::Refused(
+        busbar_contract::caps::StepName::Decode,
+        ReasonCode::DecodeFailed,
+    );
     let read = busbar_contract::OpClassId::new(OP_UNRESOLVED_READ);
     let write = busbar_contract::OpClassId::new(OP_UNRESOLVED_WRITE);
 
@@ -1712,9 +1722,9 @@ fn an_unresolved_unit_is_sealed_by_the_method_it_asked_with() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_refused_door_seals_the_refusal_that_happened() {
-    let legacy = busbar_unit_audit::AuditLog::with(
+    let legacy = busbar_kernel_audit::AuditLog::with(
         Box::new(PinnedClock),
-        Box::new(busbar_unit_audit::NoSeam),
+        Box::new(busbar_kernel_audit::NoSeam),
     );
     // A path the plane's table does not declare, so the verb never resolves and the door takes
     // its unresolved arm — the one that used to fabricate.
@@ -1730,7 +1740,7 @@ fn the_refused_door_seals_the_refusal_that_happened() {
     let facts = audit_refused(
         &binding,
         &legacy,
-        &UnitToken::mint(&seal),
+        &Pass::mint(&seal),
         &ctx,
         &Refusal::new(ReasonCode::Unauthenticated),
     )
@@ -1821,8 +1831,8 @@ impl LedgerView for SeededLedger {
         .collect()
     }
 
-    fn checkpoints(&self) -> Vec<busbar_unit_ledger::checkpoint::Checkpoint> {
-        use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
+        use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
         let mut totals = std::collections::BTreeMap::new();
         totals.insert(
@@ -1834,13 +1844,13 @@ impl LedgerView for SeededLedger {
                 ),
                 A_DAY,
             ),
-            busbar_unit_ledger::totals::Totals {
+            busbar_kernel_ledger::totals::Totals {
                 settled: 8_000,
                 drawn: 8_250,
-                ..busbar_unit_ledger::totals::Totals::zero()
+                ..busbar_kernel_ledger::totals::Totals::zero()
             },
         );
-        vec![busbar_unit_ledger::checkpoint::Checkpoint::seal(
+        vec![busbar_kernel_ledger::checkpoint::Checkpoint::seal(
             4,
             1,
             1_700_000_000,
@@ -1853,8 +1863,8 @@ impl LedgerView for SeededLedger {
         .expect("an unsigned seal cannot fail")]
     }
 
-    fn migration_marker(&self) -> Option<busbar_unit_ledger::migration::MigrationMarker> {
-        Some(busbar_unit_ledger::migration::MigrationMarker {
+    fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
+        Some(busbar_kernel_ledger::migration::MigrationMarker {
             checkpoint_seq: 0,
             node: 1,
             sealed_at: 1_699_999_000,
@@ -2001,17 +2011,17 @@ fn each_view_serves_the_figures_the_ledger_holds() {
 #[cfg(feature = "root-admin")]
 #[derive(Default)]
 struct CountingRows {
-    written: Arc<Mutex<Vec<busbar_unit_ledger::legacy::LegacyPosting>>>,
+    written: Arc<Mutex<Vec<busbar_kernel_ledger::legacy::LegacyPosting>>>,
     copies: Arc<std::sync::atomic::AtomicUsize>,
     folded: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(feature = "root-admin")]
-impl busbar_unit_ledger::legacy::LegacyRows for CountingRows {
+impl busbar_kernel_ledger::legacy::LegacyRows for CountingRows {
     fn write(
         &mut self,
-        posting: &busbar_unit_ledger::legacy::LegacyPosting,
-    ) -> Result<(), busbar_unit_ledger::legacy::LegacyWriteError> {
+        posting: &busbar_kernel_ledger::legacy::LegacyPosting,
+    ) -> Result<(), busbar_kernel_ledger::legacy::LegacyWriteError> {
         self.written
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -2022,7 +2032,7 @@ impl busbar_unit_ledger::legacy::LegacyRows for CountingRows {
 
 #[cfg(feature = "root-admin")]
 impl LegacyRowsRead for CountingRows {
-    fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting> {
+    fn postings(&self) -> Vec<busbar_kernel_ledger::legacy::LegacyPosting> {
         self.copies
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.written
@@ -2031,7 +2041,7 @@ impl LegacyRowsRead for CountingRows {
             .clone()
     }
 
-    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_unit_ledger::legacy::LegacyPosting)) {
+    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_kernel_ledger::legacy::LegacyPosting)) {
         for posting in self
             .written
             .lock()
@@ -2234,7 +2244,7 @@ const LOST: (&str, u64) = ("vk_lost", 1_000_000);
 #[derive(Clone)]
 struct RowsThatLose {
     drop_bucket: &'static str,
-    kept: Arc<Mutex<Vec<busbar_unit_ledger::legacy::LegacyPosting>>>,
+    kept: Arc<Mutex<Vec<busbar_kernel_ledger::legacy::LegacyPosting>>>,
 }
 
 #[cfg(feature = "root-admin")]
@@ -2248,11 +2258,11 @@ impl RowsThatLose {
 }
 
 #[cfg(feature = "root-admin")]
-impl busbar_unit_ledger::legacy::LegacyRows for RowsThatLose {
+impl busbar_kernel_ledger::legacy::LegacyRows for RowsThatLose {
     fn write(
         &mut self,
-        posting: &busbar_unit_ledger::legacy::LegacyPosting,
-    ) -> Result<(), busbar_unit_ledger::legacy::LegacyWriteError> {
+        posting: &busbar_kernel_ledger::legacy::LegacyPosting,
+    ) -> Result<(), busbar_kernel_ledger::legacy::LegacyWriteError> {
         if posting.bucket != self.drop_bucket {
             self.kept
                 .lock()
@@ -2265,7 +2275,7 @@ impl busbar_unit_ledger::legacy::LegacyRows for RowsThatLose {
 
 #[cfg(feature = "root-admin")]
 impl LegacyRowsRead for RowsThatLose {
-    fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting> {
+    fn postings(&self) -> Vec<busbar_kernel_ledger::legacy::LegacyPosting> {
         self.kept.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
@@ -2274,11 +2284,11 @@ impl LegacyRowsRead for RowsThatLose {
 /// path settles through — so what the views read is what a served request would have left.
 #[cfg(feature = "root-admin")]
 fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: u64) {
-    use busbar_caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, UsageToken,
+    use busbar_contract::caps::{
+        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, WriteMoney,
     };
-    use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
     let seal = KernelSeal::acquire_for_kernel();
     let key = TotalsKey::new(
@@ -2287,7 +2297,7 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
         BucketScope::All,
     );
     let usage = Usage::report(
-        &UsageToken::mint(&seal),
+        &Grant::<Consumption>::mint(&seal),
         vec![UsageLine {
             class: MeterClassId::new("nano_units"),
             quantity: nanos,
@@ -2297,7 +2307,7 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
     )
     .expect("one line");
 
-    let token = busbar_caps::DurabilityToken::mint(&seal);
+    let token = busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
     let mut durability = units.durability.lock().unwrap_or_else(|p| p.into_inner());
     durability.ledger.record_hold_opened(&key, A_DAY, nanos);
     durability
@@ -2306,7 +2316,7 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
                 key: &key,
                 window: A_DAY,
                 durability: &token,
-                step: busbar_caps::StepName::Meter,
+                step: busbar_contract::caps::StepName::Meter,
                 stamp: crate::root::durability::PostingStamp {
                     rate_card_version: 3,
                     wall: 1_700_000_000,
@@ -2314,13 +2324,13 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
                 },
             },
             Hold::open(
-                &AdmitToken::<Admit>::mint(&seal),
+                &Grant::<Admittance>::mint(&seal),
                 PrincipalId::new(bucket),
                 nanos,
             ),
             u128::from(nanos),
             &usage,
-            &LedgerToken::mint(&seal),
+            &Grant::<WriteMoney>::mint(&seal),
         )
         .expect("the memory-buffered journal takes it");
 }
@@ -2330,7 +2340,7 @@ fn settle_on(units: &crate::root::kernel::ProductionUnits, bucket: &str, nanos: 
 fn a_node_that_settled(lose: Option<&'static str>) -> crate::root::kernel::ProductionUnits {
     let units = match lose {
         None => {
-            let rows = busbar_unit_ledger::legacy::RecordingRows::new();
+            let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
             crate::root::kernel::ProductionUnits::admin_only_over(
                 Arc::new(AnsweringDispatch),
                 Box::new(rows.clone()),
@@ -2433,13 +2443,13 @@ fn the_reconciliation_names_a_row_this_nodes_dual_write_lost() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
-    use busbar_unit_ledger::migration::MigrationRecords as _;
-    use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+    use busbar_kernel_ledger::migration::MigrationRecords as _;
+    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
     let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
-    let token = busbar_caps::DurabilityToken::mint(&seal);
-    let marker = busbar_unit_ledger::migration::MigrationMarker {
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let token = busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
+    let marker = busbar_kernel_ledger::migration::MigrationMarker {
         checkpoint_seq: 0,
         node: 0,
         sealed_at: 1_699_999_000,
@@ -2461,12 +2471,12 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
                 ),
                 A_DAY,
             ),
-            busbar_unit_ledger::totals::Totals {
+            busbar_kernel_ledger::totals::Totals {
                 settled: 8_000,
-                ..busbar_unit_ledger::totals::Totals::zero()
+                ..busbar_kernel_ledger::totals::Totals::zero()
             },
         );
-        let checkpoint = busbar_unit_ledger::checkpoint::Checkpoint::seal(
+        let checkpoint = busbar_kernel_ledger::checkpoint::Checkpoint::seal(
             7,
             0,
             1_700_000_100,
@@ -2478,10 +2488,10 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
         )
         .expect("an unsigned seal cannot fail");
         durability
-            .journal_checkpoint(&checkpoint, &token, busbar_caps::StepName::Meter)
+            .journal_checkpoint(&checkpoint, &token, busbar_contract::caps::StepName::Meter)
             .expect("the memory-buffered journal takes it");
         durability
-            .migration_records(&token, busbar_caps::StepName::Meter)
+            .migration_records(&token, busbar_contract::caps::StepName::Meter)
             .write_marker(&marker)
             .expect("the marker goes on the chain");
     }
@@ -2580,7 +2590,7 @@ fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_r
 #[test]
 fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
     let binding = AdminBinding::new(Arc::new(RefusingDispatch));
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
 
     let decide = |path: &str, method: &str, granted: VerbScope| -> bool {
         let key = UnitKey::new(1);
@@ -2589,13 +2599,13 @@ fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
         binding.units.open(key, request);
         let ctx = UnitCtx {
             key,
-            origin: busbar_caps::OriginKind::Client,
+            origin: busbar_contract::caps::OriginKind::Client,
             session: None,
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: true,
             kernel_verb_only: true,
         };
-        let token: UnitToken<Approve> = UnitToken::mint(&seal);
+        let token: Pass<Approve> = Pass::mint(&seal);
         let decision = approve(
             &binding,
             Some(granted),
@@ -2645,8 +2655,8 @@ fn a_ledger_view_is_read_only_in_every_table_that_has_an_opinion() {
         let verb = kernel_verb(&row).unwrap_or_else(|| panic!("{path} names no kernel verb"));
         assert!(LEDGER_VERBS.contains(&verb), "{path} is not a ledger verb");
         assert_eq!(
-            busbar_unit_verbs::required_scope(verb),
-            busbar_unit_verbs::required_scope(KernelVerb::GetUsage),
+            busbar_admin::required_scope(verb),
+            busbar_admin::required_scope(KernelVerb::GetUsage),
             "{path} does not require what the legacy /usage read requires"
         );
         assert_eq!(
@@ -2655,7 +2665,7 @@ fn a_ledger_view_is_read_only_in_every_table_that_has_an_opinion() {
             "{path} would spend a mutation slot per read"
         );
         assert_eq!(
-            busbar_unit_scope::admin_required_scope("GET", path),
+            busbar_kernel_scope::admin_required_scope("GET", path),
             Scope::ReadOnly
         );
     }
@@ -2689,7 +2699,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
     let admin = crate::root::kernel::new_kernel().admin_token();
 
     for verb in LEDGER_VERBS {
-        let verbs = busbar_unit_verbs::Verbs::new(
+        let verbs = busbar_admin::Verbs::new(
             CoreGovernance::new(
                 Arc::new(CountingDispatch(Arc::clone(&calls))),
                 Arc::new(SeededLedger),
@@ -2711,11 +2721,11 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
                 // The posture a fleet is in before its operator ceremony has run, under which
                 // every one of the 17 money-governance verbs is refused. A view answers anyway,
                 // because there is nothing for an operator to have approved about a read.
-                Some(busbar_unit_verbs::PostureCtx {
-                    operator: busbar_unit_verbs::OperatorState::Unset,
-                    dual_control: busbar_unit_verbs::DualControl::Required,
+                Some(busbar_admin::PostureCtx {
+                    operator: busbar_admin::OperatorState::Unset,
+                    dual_control: busbar_admin::DualControl::Required,
                 }),
-                busbar_unit_verbs::ApprovalState::NotYetApproved,
+                busbar_admin::ApprovalState::NotYetApproved,
                 b"",
             )
             .unwrap_or_else(|r| panic!("{verb:?} was refused: {r:?}"));
@@ -2730,7 +2740,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
 
     // The control: a money-governance verb under the same posture IS refused, so the green above
     // is the views being exempt rather than the posture check being unbound.
-    let verbs = busbar_unit_verbs::Verbs::new(
+    let verbs = busbar_admin::Verbs::new(
         CoreGovernance::new(
             Arc::new(CountingDispatch(Arc::clone(&calls))),
             Arc::new(SeededLedger),
@@ -2749,11 +2759,11 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             "admin",
             VerbScope::Full,
             1_700_000_000,
-            Some(busbar_unit_verbs::PostureCtx {
-                operator: busbar_unit_verbs::OperatorState::Unset,
-                dual_control: busbar_unit_verbs::DualControl::Required,
+            Some(busbar_admin::PostureCtx {
+                operator: busbar_admin::OperatorState::Unset,
+                dual_control: busbar_admin::DualControl::Required,
             }),
-            busbar_unit_verbs::ApprovalState::NotYetApproved,
+            busbar_admin::ApprovalState::NotYetApproved,
             b"",
         )
         .is_err());
@@ -2869,10 +2879,13 @@ fn a_configured_name_cannot_break_out_of_the_document() {
 #[cfg(test)]
 fn a_seeded_history() -> crate::root::kernel::RootHistory {
     let history = crate::root::kernel::RootHistory::default();
-    let opening = busbar_unit_cost::RateCard::from_micro_rates_in(
-        busbar_unit_cost::CurrencyCode::USD,
+    let opening = busbar_kernel_ledger::cost::RateCard::from_micro_rates_in(
+        busbar_kernel_ledger::cost::CurrencyCode::USD,
         [(
-            busbar_unit_cost::LaneClass::new("gpt", busbar_unit_cost::CLASS_INPUT),
+            busbar_kernel_ledger::cost::LaneClass::new(
+                "gpt",
+                busbar_kernel_ledger::cost::CLASS_INPUT,
+            ),
             2.0,
         )],
         0,
@@ -2892,8 +2905,8 @@ fn a_test_operator_signing_key() -> ed25519_dalek::SigningKey {
 /// The sealed-posture operator state the effect verifies against: the single operator PUBLIC key, as
 /// the fleet would seal it in `Policy` and the posture seam would carry it to the verb.
 #[cfg(test)]
-fn a_sealed_operator() -> busbar_unit_verbs::OperatorState {
-    busbar_unit_verbs::OperatorState::Set(a_test_operator_signing_key().verifying_key().to_bytes())
+fn a_sealed_operator() -> busbar_admin::OperatorState {
+    busbar_admin::OperatorState::Set(a_test_operator_signing_key().verifying_key().to_bytes())
 }
 
 /// The `operator_fingerprint` a correction names to confirm WHICH key signed it: the SHA-256 of the
@@ -2950,7 +2963,7 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
         .view()
         .card_at(instant)
         .expect("the opening prices the instant");
-    assert_eq!(before_seq, busbar_unit_cost::HistorySeq(0));
+    assert_eq!(before_seq, busbar_kernel_ledger::cost::HistorySeq(0));
 
     // The correction applies, arriving at second 6 (→ 6000 ms).
     let packed = amend_rate_history_effect(&history, &a_correction_body(), 6, a_sealed_operator())
@@ -2973,19 +2986,19 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
     let after = history.pin().expect("pinned after");
     let view = after.view();
     let entries = view.entries();
-    assert_eq!(entries[0].seq(), busbar_unit_cost::HistorySeq(0));
+    assert_eq!(entries[0].seq(), busbar_kernel_ledger::cost::HistorySeq(0));
     assert_eq!(entries[0].effective_from(), 0);
     assert!(matches!(
         entries[0].author(),
-        busbar_unit_cost::Author::Config { .. }
+        busbar_kernel_ledger::cost::Author::Config { .. }
     ));
     // The correction out-ranks the opening for the window it covers.
     let (now_seq, _) = view
         .card_at(instant)
         .expect("the correction prices the instant");
-    assert_eq!(now_seq, busbar_unit_cost::HistorySeq(1));
+    assert_eq!(now_seq, busbar_kernel_ledger::cost::HistorySeq(1));
     match entries[1].author() {
-        busbar_unit_cost::Author::Amend {
+        busbar_kernel_ledger::cost::Author::Amend {
             operator_fingerprint,
             ..
         } => assert_eq!(operator_fingerprint, &a_test_operator_fingerprint()),
@@ -2994,13 +3007,15 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
 
     // AN INVOICE CUT BEFORE THE AMENDMENT RE-DERIVES UNCHANGED: an older snapshot never sees the
     // correction, so money already booked stays booked.
-    let old =
-        crate::root::kernel::PinnedHistory::for_test_at(&after, busbar_unit_cost::HistorySeq(0));
+    let old = crate::root::kernel::PinnedHistory::for_test_at(
+        &after,
+        busbar_kernel_ledger::cost::HistorySeq(0),
+    );
     let (old_seq, _) = old
         .view()
         .card_at(instant)
         .expect("the old snapshot still prices the instant");
-    assert_eq!(old_seq, busbar_unit_cost::HistorySeq(0));
+    assert_eq!(old_seq, busbar_kernel_ledger::cost::HistorySeq(0));
 }
 
 /// VALIDATION REFUSALS. Every malformed or empty correction is refused at its shape, before it can
@@ -3027,7 +3042,7 @@ fn amend_rate_history_refuses_a_correction_that_names_no_signer_window_or_price(
         let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
             .expect_err("a malformed correction must be refused");
         assert!(
-            matches!(err, busbar_unit_verbs::GovernanceError::Validation),
+            matches!(err, busbar_admin::GovernanceError::Validation),
             "{case} must refuse Validation, got {err:?}"
         );
         assert_eq!(
@@ -3040,7 +3055,7 @@ fn amend_rate_history_refuses_a_correction_that_names_no_signer_window_or_price(
     let history = a_seeded_history();
     assert!(matches!(
         amend_rate_history_effect(&history, b"not json", 6, a_sealed_operator()),
-        Err(busbar_unit_verbs::GovernanceError::Validation)
+        Err(busbar_admin::GovernanceError::Validation)
     ));
     assert_eq!(history.len(), 1);
 }
@@ -3052,7 +3067,7 @@ fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
     let empty = crate::root::kernel::RootHistory::default();
     let err = amend_rate_history_effect(&empty, &a_correction_body(), 6, a_sealed_operator())
         .expect_err("an empty history cannot be amended");
-    assert!(matches!(err, busbar_unit_verbs::GovernanceError::NotFound));
+    assert!(matches!(err, busbar_admin::GovernanceError::NotFound));
     assert_eq!(empty.len(), 0);
 }
 
@@ -3123,7 +3138,7 @@ fn amend_rate_history_refuses_a_correction_from_an_unknown_operator_fingerprint(
     let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
         .expect_err("an unknown signer must be refused");
     assert!(
-        matches!(err, busbar_unit_verbs::GovernanceError::Validation),
+        matches!(err, busbar_admin::GovernanceError::Validation),
         "an unknown fingerprint refuses Validation, got {err:?}"
     );
     assert_eq!(history.len(), 1, "a refused correction appends nothing");
@@ -3144,7 +3159,7 @@ fn amend_rate_history_refuses_a_correction_whose_signature_does_not_verify() {
     let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
         .expect_err("a signature that does not cover the body must be refused");
     assert!(
-        matches!(err, busbar_unit_verbs::GovernanceError::Validation),
+        matches!(err, busbar_admin::GovernanceError::Validation),
         "a bad signature refuses Validation, got {err:?}"
     );
     assert_eq!(history.len(), 1, "a refused correction appends nothing");
@@ -3169,7 +3184,7 @@ fn amend_rate_history_refuses_a_correction_whose_signature_does_not_verify() {
 ///   release without an operator key.
 #[test]
 fn the_production_posture_view_seals_the_operator_key_the_verify_path_admits_against() {
-    use busbar_unit_verbs::{DualControl, OperatorState};
+    use busbar_admin::{DualControl, OperatorState};
 
     // The fleet's sealed operator PUBLIC key — the 32 raw ed25519 bytes `set_operator_key` seals.
     let sealed_pub = a_test_operator_signing_key().verifying_key().to_bytes();
@@ -3214,7 +3229,7 @@ fn the_production_posture_view_seals_the_operator_key_the_verify_path_admits_aga
     assert!(
         matches!(
             amend_rate_history_effect(&fresh, &a_correction_body(), 6, unset_ctx.operator),
-            Err(busbar_unit_verbs::GovernanceError::Validation)
+            Err(busbar_admin::GovernanceError::Validation)
         ),
         "with no sealed operator key the amend is refused, byte-for-byte as the release without it"
     );

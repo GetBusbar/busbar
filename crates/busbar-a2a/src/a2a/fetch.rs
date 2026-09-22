@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE AGENT CARD FETCH: the card-shaped part of a guarded fetch, over the guard in
-//! [`busbar_substrate::net_guard`].
+//! [`busbar_kernel::net_guard`].
 //!
 //! Everything else on this plane decides. This is the one module that REACHES OUT, at a URL an
 //! operator wrote and following redirects a stranger controls, and it therefore carries the whole
@@ -11,7 +11,7 @@
 //! ## THE GUARD IS NOT HERE, and that is the point
 //!
 //! Resolve-then-pin, the address judgement, the metadata arm that sits ahead of `allow_private`, the
-//! hop bound and the body cap all live in [`busbar_substrate::net_guard`]. They were written twice — once here
+//! hop bound and the body cap all live in [`busbar_kernel::net_guard`]. They were written twice — once here
 //! and once for the MCP dispatch path — and the doc comments in each copy had already started
 //! citing the other's function names as the reason an ordering was correct. A security control that
 //! has to cite its twin to explain itself has two implementations and one of them will be the stale
@@ -52,7 +52,7 @@
 
 use std::net::IpAddr;
 
-use busbar_substrate::net_guard::{self, GuardPolicy, GuardRefusal, PinnedTarget};
+use busbar_kernel::net_guard::{self, GuardPolicy, GuardRefusal, PinnedTarget};
 
 use super::card::{WELL_KNOWN_CARD_PATH, WELL_KNOWN_CARD_PATH_LEGACY};
 
@@ -61,7 +61,7 @@ use super::card::{WELL_KNOWN_CARD_PATH, WELL_KNOWN_CARD_PATH_LEGACY};
 /// Re-exported rather than redeclared: a second trait with the same shape would let a transport be
 /// written against one and a guard against the other, which is how two implementations of one
 /// control start.
-pub(crate) use busbar_substrate::net_guard::Resolver;
+pub(crate) use busbar_kernel::net_guard::Resolver;
 
 /// The operator's fetch policy. Config, therefore intent.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,7 +88,7 @@ pub(crate) struct FetchPolicy {
     /// concept and two spellings of it would be two things to learn and two things to get wrong.
     /// It relaxes the loopback/private ARMS of the guard and NOTHING else: a cloud-metadata name
     /// and a cloud-metadata address are refused with this set, because
-    /// [`busbar_substrate::net_guard::judge_address`] tests the metadata arm BEFORE it reads this flag, and
+    /// [`busbar_kernel::net_guard::judge_address`] tests the metadata arm BEFORE it reads this flag, and
     /// the alternate-IPv4-encoding arm is likewise unconditional. An `allow_private` that reached
     /// IMDS would be a config flag that hands out cloud credentials.
     pub(crate) allow_private: bool,
@@ -274,14 +274,14 @@ impl std::fmt::Display for FetchRefusal {
 
 /// One HTTP response, reduced to what a card fetch reads.
 ///
-/// This is the neutral, host-owned [`busbar_substrate::egress::Response`], re-exported under this plane's
+/// This is the neutral, host-owned [`busbar_kernel::egress::Response`], re-exported under this plane's
 /// historical name so the card-fetch and relay call sites read unchanged. It lives in
-/// [`busbar_substrate::egress`] rather than here because the same buffered round trip serves the MCP dispatch
+/// [`busbar_kernel::egress`] rather than here because the same buffered round trip serves the MCP dispatch
 /// path too, and a return type owned by one plane could not be returned to the other. Its
 /// `peer_spki` / `client_identity_offered` fields carry the exact per-hop observations this plane's
 /// verifier reads ([`super::verify`] refuses a `cert_spki`/`mtls` registration whose card did not
 /// arrive over the connection those fields describe).
-pub(crate) use busbar_substrate::egress::Response as HttpResponse;
+pub(crate) use busbar_kernel::egress::Response as HttpResponse;
 
 /// The HTTP round trip, as a seam.
 ///
@@ -294,7 +294,7 @@ pub(crate) trait Transport {
     fn get(&self, url: &url::Url, addr: IpAddr) -> Result<HttpResponse, String>;
 }
 
-/// GUARD ONE HOP AND PIN IT: the card fetch's door onto [`busbar_substrate::net_guard::resolve_and_pin`].
+/// GUARD ONE HOP AND PIN IT: the card fetch's door onto [`busbar_kernel::net_guard::resolve_and_pin`].
 ///
 /// Returns the parsed URL BESIDE the pin, because the two are needed together and for different
 /// things: the socket goes to [`PinnedTarget::addr`], and the request carries the URL — its host in
@@ -306,10 +306,10 @@ pub(crate) trait Transport {
 ///
 /// The one difference between the two callers of the guard that could NOT be parameterised away.
 /// The MCP dispatch path wants a strict recogniser on an attacker-influenced string, and gets
-/// [`busbar_substrate::net_guard::split_url`]. This path must FOLLOW redirects, and following one means
+/// [`busbar_kernel::net_guard::split_url`]. This path must FOLLOW redirects, and following one means
 /// joining a relative `Location` against the hop that sent it exactly as a client would — which
 /// needs a real URL type and its resolution rules, not a splitter. Both then bring the host they
-/// parsed through the SAME [`busbar_substrate::net_guard::judge_host_name`] and the same resolve-then-pin, so
+/// parsed through the SAME [`busbar_kernel::net_guard::judge_host_name`] and the same resolve-then-pin, so
 /// what differs is the recognition and never the judgement.
 pub(crate) fn guard_hop(
     url: &str,

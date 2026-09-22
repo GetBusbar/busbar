@@ -1,0 +1,13 @@
+{
+  "schema": "busbar.conformance.verdict/1",
+  "suite": "llm-bedrock",
+  "standard": "Amazon Bedrock Runtime API",
+  "plan": "spec battery vs pinned botocore models",
+  "spec_version": "2023-09-30",
+  "status": "pass",
+  "armed": true,
+  "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
+  "run_id": "https://github.com/GetBusbar/busbar/actions/runs/1203",
+  "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1203",
+  "generated_at": "2026-09-19T14:05:00Z"
+}

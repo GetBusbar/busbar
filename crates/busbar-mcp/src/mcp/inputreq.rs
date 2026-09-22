@@ -251,7 +251,7 @@ pub(crate) type ErasedGrants<'a> = dyn Fn() -> super::config::ServerRequestGrant
 /// hold `charge` registers lives in it and releases when [`drive`] drops it at the end of the round,
 /// so a multi-round call holds at most ONE concurrency slot at a time instead of accumulating one per
 /// round into the request-wide arena.
-pub(crate) type ErasedCharge<'a> = dyn FnMut(&RoundRecord, &busbar_substrate::plane_host::DispatchScope) -> Result<(), String>
+pub(crate) type ErasedCharge<'a> = dyn FnMut(&RoundRecord, &busbar_kernel::plane_host::DispatchScope) -> Result<(), String>
     + Send
     + 'a;
 
@@ -293,7 +293,7 @@ pub(crate) async fn drive<C, F, S, SF>(
     mut satisfy: S,
     mut charge: impl FnMut(
         &RoundRecord,
-        &busbar_substrate::plane_host::DispatchScope,
+        &busbar_kernel::plane_host::DispatchScope,
     ) -> Result<(), String>,
 ) -> Outcome
 where
@@ -314,7 +314,7 @@ where
         // own earlier rounds. The rate check, the per-round budget fee and the metering `charge`
         // performs are UNAFFECTED — they still run once per round; only the hold's lifetime is the
         // round's rather than the request's.
-        let round_scope = busbar_substrate::plane_host::DispatchScope::new();
+        let round_scope = busbar_kernel::plane_host::DispatchScope::new();
         // CHARGE FIRST, and refuse on a refusal. See the `charge` note above: this is the same
         // per-key budget an LLM request is admitted against, and it is what stops a loop that
         // nothing else stops.

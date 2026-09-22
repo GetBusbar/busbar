@@ -3,7 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_caps::{KernelSeal, StepName};
+use busbar_contract::caps::{KernelSeal, StepName};
 
 /// A deployment, as the guards see one.
 #[derive(Default)]
@@ -50,12 +50,8 @@ impl PoolView for View {
 /// step's named refusal against the live envelope; nothing in this directory returns one.
 fn envelope(status: u16, kind: &str, message: &str) -> (u16, Vec<u8>) {
     let code = axum::http::StatusCode::from_u16(status).expect("a status the doors emit");
-    let resp = busbar_substrate::proxy::ingress_error(
-        crate::proto_codec::PROTO_OPENAI,
-        code,
-        kind,
-        message,
-    );
+    let resp =
+        busbar_kernel::proxy::ingress_error(crate::proto_codec::PROTO_OPENAI, code, kind, message);
     let status = resp.status().as_u16();
     let body = futures::executor::block_on(async {
         use http_body_util::BodyExt;
@@ -204,7 +200,7 @@ fn an_empty_destination_set_proceeds_rather_than_refusing() {
     let seal = seal();
     let view = View::default();
     let d = verify(
-        &UnitToken::<Verify>::mint(&seal),
+        &Pass::<Verify>::mint(&seal),
         &view,
         "pool-a",
         &PrincipalId::new("vk_x"),
@@ -225,7 +221,7 @@ fn the_step_stamps_its_refusal_with_verify() {
         ..Default::default()
     };
     let answer = verify(
-        &UnitToken::<Verify>::mint(&seal),
+        &Pass::<Verify>::mint(&seal),
         &view,
         "denied",
         &PrincipalId::new("vk_x"),

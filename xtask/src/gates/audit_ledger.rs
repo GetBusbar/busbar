@@ -586,7 +586,7 @@ mod tests {
     ///
     /// This is what made every `gate-mutants` shard report BASELINE RED: the mutation workflow
     /// fetched the branch's merge-base ref and not the pin mirror, so `cargo test -p xtask --lib`
-    /// was red on the runner — on the checkout AND inside `cargo-mutants`' scratch copy, which
+    /// was red on the runner — on the checkout AND inside the mutation runner's scratch copy, which
     /// faithfully carries whatever refs the checkout had. The scratch copy was never the difference.
     ///
     /// The assertions below are UNCHANGED and still fail. What this adds is the sentence naming the

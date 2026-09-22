@@ -6,8 +6,8 @@ use super::*;
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
-use busbar_core::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use busbar_kernel::teller::Ended;
+use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 
 /// The one dialect these fixtures speak. Same-protocol openai→openai, so a divergence is about
 /// the PATH rather than about a translation.
@@ -130,7 +130,7 @@ fn unique(prefix: &str) -> String {
 
 /// One deployment: a governed key, a one-lane pool, and a scripted upstream.
 struct Rig {
-    app: Arc<busbar_core::state::App>,
+    app: Arc<busbar_kernel::state::App>,
     key: Arc<busbar_api::VirtualKey>,
     /// The BEARER the deployment's own door will resolve back to [`Rig::key`]. Minted rather
     /// than synthesized, so a fixture that presents it is presenting the thing a client sends.
@@ -159,9 +159,21 @@ const MINTED_AT: u64 = 1_700_000_000;
 const LIVE_EXP: u64 = 4_000_000_000;
 const DEAD_EXP: u64 = 1_000_000_000;
 
+/// The default rig: BILLING OFF (no `rate_card:`), the historical posture most fixtures run under.
 async fn rig(fixture: Fixture) -> Rig {
+    rig_with_billing(fixture, false).await
+}
+
+/// A BILLED rig: a `rate_card:` prices the one lane model `m0`, so [`CostModel::pricing_enabled`] is
+/// true and — per DECISION #42 — the metering row + ledger fire. Used by the tests that ASSERT a
+/// metering row; the money surface only runs on a billed plane.
+async fn rig_billed(fixture: Fixture) -> Rig {
+    rig_with_billing(fixture, true).await
+}
+
+async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     busbar_llm::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..8 {
@@ -174,13 +186,13 @@ async fn rig(fixture: Fixture) -> Rig {
     if fixture.seeded_group_requests().is_some() {
         groups.insert(
             group.clone(),
-            busbar_core::config::GroupCfg {
+            busbar_kernel::config::GroupCfg {
                 parent: None,
                 enabled: true,
-                limits: vec![busbar_core::config::groups::LimitCfg {
-                    metric: busbar_core::config::groups::LimitMetric::Budget,
+                limits: vec![busbar_kernel::config::groups::LimitCfg {
+                    metric: busbar_kernel::config::groups::LimitMetric::Budget,
                     amount: 100,
-                    per: Some(busbar_core::config::groups::LimitWindow::Total),
+                    per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
@@ -190,7 +202,7 @@ async fn rig(fixture: Fixture) -> Rig {
         );
     }
 
-    let store = Arc::new(busbar_core::governance::MemoryStore::new());
+    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
     if let Some(requests) = fixture.seeded_group_requests() {
         use busbar_api::Store as _;
         store
@@ -209,15 +221,15 @@ async fn rig(fixture: Fixture) -> Rig {
     // the deployment's own door can be asked to resolve them. Without one a rig could only ever
     // hand the plane a hand-built context, which is the one thing an authenticate fixture must
     // not do.
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &SIGNING_SECRET,
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
-        busbar_core::governance::GovState::new_with_signer(store, None, Some(signer))
+        busbar_kernel::governance::GovState::new_with_signer(store, None, Some(signer))
             .expect("governance"),
     );
-    let spec = |name: &str| busbar_substrate::governance::NewKeySpec {
+    let spec = |name: &str| busbar_kernel::governance::NewKeySpec {
         name: name.to_string(),
         allowed_pools: fixture.key_scopes(),
         group: fixture
@@ -233,7 +245,25 @@ async fn rig(fixture: Fixture) -> Rig {
     let (_, expired_token) = gov
         .mint_signed(spec("root-llm-expired"), DEAD_EXP, MINTED_AT)
         .expect("mint the expired key");
-    let cost = busbar_core::cost::CostModel::resolve_parts(None, FEE_CENTS, &groups);
+    // DECISION #42: billing is on exactly when a `rate_card:` is present. A BILLED rig prices the
+    // one lane model `m0` (so the metering row + ledger run); the default rig configures no card (the
+    // money surface stays quiet). Either way the flat per-request fee stays `FEE_CENTS` — fee posting
+    // is independent of the token rates — and every non-`m0` fixture keeps working because the billed
+    // card only exists in the billed rig, which those fixtures never build.
+    let priced_card = std::collections::BTreeMap::from([(
+        LANE.to_string(),
+        busbar_kernel::config::RateEntryCfg {
+            input_utok: 1.0,
+            output_utok: 1.0,
+            cache_read_utok: 0.0,
+            cache_write_utok: 0.0,
+        },
+    )]);
+    let cost = busbar_kernel::cost::CostModel::resolve_parts(
+        billed.then_some(&priced_card),
+        FEE_CENTS,
+        &groups,
+    );
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
     let app = TestApp::new()
@@ -253,7 +283,7 @@ async fn rig(fixture: Fixture) -> Rig {
         expired_token,
         server,
         upstream: state,
-        charged_at: busbar_substrate::store::now(),
+        charged_at: busbar_kernel::store::now(),
         group,
     }
 }
@@ -265,8 +295,8 @@ impl Rig {
         }
     }
 
-    fn host(&self) -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
-        busbar_core::plane_host::engine_host(&self.app)
+    fn host(&self) -> Arc<dyn busbar_kernel::plane_host::EngineHost> {
+        busbar_kernel::plane_host::engine_host(&self.app)
     }
 }
 
@@ -348,7 +378,7 @@ fn compare(label: &str, legacy: &Observed, looped: &Observed, failures: &mut Vec
 }
 
 async fn observe(rig: &Rig, resp: Response) -> Observed {
-    use busbar_substrate::store::BreakerState;
+    use busbar_kernel::store::BreakerState;
 
     let mut fields: Vec<(&'static str, String)> = Vec::new();
     fields.push(("status", resp.status().as_u16().to_string()));
@@ -391,9 +421,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     fields.push(("ledger_spend_cents", derived.spend_cents.to_string()));
     gov.flush_metering();
     let mut rows: Vec<busbar_api::MeteringRow> = gov
-        .metering_for(busbar_substrate::governance::metering_bucket(
-            rig.charged_at,
-        ))
+        .metering_for(busbar_kernel::governance::metering_bucket(rig.charged_at))
         .expect("metering read")
         .into_iter()
         .filter(|r| r.key_id == rig.key.id)
@@ -438,7 +466,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
 /// LEG 1 — the shipped entry point, on its own deployment.
 async fn leg_legacy(fixture: Fixture) -> Observed {
     let rig = rig(fixture).await;
-    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov: rig.gov(),
         caller_token: None,
@@ -460,6 +488,17 @@ async fn leg_legacy(fixture: Fixture) -> Observed {
 /// LEG 2 — the same request through the kernel's loop over the nine step files.
 async fn leg_loop(fixture: Fixture) -> Observed {
     let rig = rig(fixture).await;
+    let resp = drive(&rig, fixture).await;
+    let observed = observe(&rig, resp).await;
+    rig.server.shutdown().await;
+    observed
+}
+
+/// [`leg_loop`] on a BILLED rig (a `rate_card:` present) — for the tests that assert the metering
+/// row, which #42 emits only when billing is on. The fixtures it is driven with all serve the priced
+/// `m0` lane, so the card names every model they reach and none is refused as unpriced.
+async fn leg_loop_billed(fixture: Fixture) -> Observed {
+    let rig = rig_billed(fixture).await;
     let resp = drive(&rig, fixture).await;
     let observed = observe(&rig, resp).await;
     rig.server.shutdown().await;
@@ -549,11 +588,11 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     // settle path onto a real journal, come back off it in the order they were written — which
     // is the ordering the record is FOR, and which does not exist if the second field is the
     // first one copied.
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     // Both settlements through the ONE money-book seam over the shared book — the pass-through the
@@ -562,14 +601,16 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let seam = crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book));
     let who = PrincipalId::new("acct:llm");
     for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
-        let ledger_token = busbar_caps::LedgerToken::mint(&seal);
-        let accrual = busbar_caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
-        let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
+        let ledger_token =
+            busbar_contract::caps::Grant::<busbar_contract::caps::WriteMoney>::mint(&seal);
+        let accrual =
+            busbar_contract::caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
+        let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
         settle(
             &seam,
             &who,
             arrived,
-            &busbar_caps::DurabilityToken::mint(&seal),
+            &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal),
             posted,
         )
         .expect("the memory-buffered journal takes it");
@@ -603,9 +644,11 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
 /// somewhere and that is where it would land.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in() {
-    use busbar_substrate::governance::metering_bucket;
+    use busbar_kernel::governance::metering_bucket;
 
-    let rig = rig(Fixture::BufferedOk).await;
+    // BILLED: this test asserts a metering row lands in the bucket the unit arrived in, and #42 emits
+    // a metering row only when billing is on.
+    let rig = rig_billed(Fixture::BufferedOk).await;
     // The last SECOND of the bucket BEFORE the one the node's own clock is in, and the last
     // MILLISECOND of that second. Before, so that a figure derived from a fresh clock read
     // instead of from this arrival lands somewhere visibly different — in the live bucket,
@@ -689,12 +732,12 @@ const EPOCH: u64 = 1_700_000_000;
 /// The first entry is effective from zero for the same reason the holder's is: an instant before
 /// the first entry is a hole and a hole is a refusal.
 fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
-    let mut history = busbar_unit_cost::History::new();
+    let mut history = busbar_kernel_ledger::cost::History::new();
     for (n, (from, output)) in entries.iter().enumerate() {
         let card = crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate::billing::RawTierRates {
+                busbar_substrate_values::billing::RawTierRates {
                     input: 0.0,
                     output: *output,
                     cache_read: 0.0,
@@ -705,26 +748,26 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
             true,
             crate::root::kernel::node_currency(),
         );
-        history.append(busbar_unit_cost::CardEntryDraft {
+        history.append(busbar_kernel_ledger::cost::CardEntryDraft {
             effective_from: if n == 0 { 0 } else { *from },
             effective_until: None,
             card,
             appended_at: *from,
-            author: busbar_unit_cost::Author::Config {
+            author: busbar_kernel_ledger::cost::Author::Config {
                 policy_epoch: n as u64,
             },
         });
     }
     crate::root::kernel::PinnedHistory::for_test(
         std::sync::Arc::new(history),
-        busbar_unit_cost::HistorySeq((entries.len() - 1) as u64),
+        busbar_kernel_ledger::cost::HistorySeq((entries.len() - 1) as u64),
     )
 }
 
 /// A report of `output` tokens on the lane the histories above price.
 fn report_of(output: u64) -> LateReport {
     LateReport {
-        usage: busbar_substrate::billing::Usage {
+        usage: busbar_substrate_values::billing::Usage {
             usage_units: std::collections::BTreeMap::from([(
                 busbar_api::UNIT_OUTPUT.to_string(),
                 output,
@@ -780,7 +823,7 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
         crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate::billing::RawTierRates {
+                busbar_substrate_values::billing::RawTierRates {
                     input: 0.0,
                     output: 1.0,
                     cache_read: 0.0,
@@ -802,7 +845,7 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
         crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate::billing::RawTierRates {
+                busbar_substrate_values::billing::RawTierRates {
                     input: 0.0,
                     output: 100.0,
                     cache_read: 0.0,
@@ -842,8 +885,10 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
     let kernel = busbar_kernel::teller::Kernel::new();
     let token = kernel.usage_token();
     let head = history_of(&[(0, 1.0), (5_000, 100.0)]);
-    let earlier =
-        crate::root::kernel::PinnedHistory::for_test_at(&head, busbar_unit_cost::HistorySeq(0));
+    let earlier = crate::root::kernel::PinnedHistory::for_test_at(
+        &head,
+        busbar_kernel_ledger::cost::HistorySeq(0),
+    );
 
     let at = Arrived::at(9_000, 1);
     assert_eq!(
@@ -888,9 +933,9 @@ fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
     assert_eq!(posting.arrived_mono, 7);
 
     // The tamper. Every figure a reader could be tempted to trust, made a lie.
-    posting.cached = Some(busbar_unit_cost::CachedPrice {
-        history_seq: busbar_unit_cost::HistorySeq(u64::MAX),
-        card_seq: busbar_unit_cost::HistorySeq(u64::MAX),
+    posting.cached = Some(busbar_kernel_ledger::cost::CachedPrice {
+        history_seq: busbar_kernel_ledger::cost::HistorySeq(u64::MAX),
+        card_seq: busbar_kernel_ledger::cost::HistorySeq(u64::MAX),
         currency: crate::root::kernel::node_currency(),
         pre_tier_nanos: 1,
         priced_nanos: 1,
@@ -936,11 +981,11 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         "this plane's door opens the kernel's hold at zero; the spend is the governance ledger's"
     );
 
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     // Settle THROUGH the money-book seam, over the shared book — the pass-through the live exit arm
@@ -951,7 +996,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         &crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book)),
         &who,
         Arrived::at(EPOCH * 1_000, 0),
-        &busbar_caps::DurabilityToken::mint(&seal),
+        &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal),
         posted,
     )
     .expect("the memory-buffered journal takes it");
@@ -959,7 +1004,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
     let window =
-        busbar_unit_admission::budget_window(busbar_unit_admission::window::WINDOW_DAY, EPOCH);
+        busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_DAY, EPOCH);
     let figures = durability.ledger.book().get(&balance(&who), window);
     assert_eq!(figures.overdraft_carried_out, 0);
     let replayed = durability
@@ -1081,7 +1126,7 @@ async fn drive_keeping_the_unit<'n>(
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: hold,
-            now: busbar_substrate::store::now_ms(),
+            now: busbar_kernel::store::now_ms(),
         })
         .expect("the uncapped table takes the unit");
     let ctx = UnitCtx {
@@ -1174,7 +1219,11 @@ async fn every_fixture_reaches_the_end_it_names() {
 async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
     // A STREAMED unit accrues at stream end rather than at the buffered tap, so it is asserted
     // in its own right: without this the comparison could be green on a stream metering nothing.
-    let streamed = leg_loop(Fixture::StreamedOk).await;
+    // BILLED (a `rate_card:` present): the delivered legs assert the metering row #42 emits only when
+    // billing is on. The refusal legs below stay on the default UNBILLED rig — their assertions are
+    // about the door/guard, and `UnknownModel` in particular must reach the POST-door refusal it
+    // names rather than the pre-admission unpriced-model refusal a card would trigger.
+    let streamed = leg_loop_billed(Fixture::StreamedOk).await;
     assert_eq!(field(&streamed, "ledger_requests"), "1");
     assert_eq!(
         field(&streamed, "ledger_tokens"),
@@ -1186,7 +1235,7 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
         format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1")
     );
 
-    let delivered = leg_loop(Fixture::BufferedOk).await;
+    let delivered = leg_loop_billed(Fixture::BufferedOk).await;
     assert_eq!(field(&delivered, "ledger_requests"), "1");
     assert_eq!(
         field(&delivered, "metering_rows"),
@@ -1209,6 +1258,48 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
     assert_eq!(field(&post_door, "metering_rows"), "");
 }
 
+/// W3.c / DECISION #42: BILLING OFF (no `rate_card:`) ⇒ SERVE FREE WITH ZERO METERING ROWS, YET
+/// STILL GOVERNED. The complement of `the_loop_leaves_the_money_where_the_shipped_plane_leaves_it`
+/// (which drives the BILLED rig): with no card the node is a pure failover/routing proxy — the SAME
+/// delivered request is served identically (status 200) but writes NO metering row, because #42 says
+/// an unbilled plane emits none. And the plane is NOT unlimited: admission/governance still runs — a
+/// pool-ACL guard refuses exactly as it does on a billed plane — which is the "breaker + concurrency
+/// still enforced" half of #42 (both live on the admission/egress path, independent of the card).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn billing_off_serves_free_with_zero_metering_rows_yet_still_governs() {
+    // BILLING OFF (default rig, no `rate_card:`): a delivered request is served, and writes no
+    // metering row (#42), where the BILLED rig would write one — the only difference the card makes.
+    let free = leg_loop(Fixture::BufferedOk).await;
+    assert_eq!(
+        field(&free, "status"),
+        "200",
+        "billing off still serves the request (a free failover/routing proxy)"
+    );
+    assert_eq!(
+        field(&free, "metering_rows"),
+        "",
+        "billing off (no rate_card) emits ZERO metering rows (#42)"
+    );
+    // The exact same delivered request on a BILLED rig DOES write a metering row — proof the empty
+    // result above is billing-off and not a metering path that never ran.
+    let billed = leg_loop_billed(Fixture::BufferedOk).await;
+    assert_eq!(
+        field(&billed, "metering_rows"),
+        format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1"),
+        "the same request on a billed plane writes exactly one metering row"
+    );
+    // STILL GOVERNED with billing off: the admission-time pool-ACL guard refuses, exactly as on a
+    // billed plane — the plane is a proxy, never unlimited. (Breaker + concurrency ride the same
+    // admission/egress path, which the card's absence never touches.)
+    let guarded = leg_loop(Fixture::PoolAcl).await;
+    assert_eq!(
+        field(&guarded, "ledger_requests"),
+        "0",
+        "billing off still runs admission governance — the pool-ACL guard refuses"
+    );
+    assert_eq!(field(&guarded, "metering_rows"), "");
+}
+
 /// EXACTLY ONE LINK PER UNIT on the principal's chain, whichever door the unit left through.
 ///
 /// The rule the switch could most easily break: the shipped door POSTS its own refusal, and the
@@ -1217,7 +1308,7 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
 /// rather than the verification alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_unit_leaves_exactly_one_link_on_the_chain() {
-    use busbar_core::proxy::reqlog::REQUESTS;
+    use busbar_kernel::proxy::reqlog::REQUESTS;
 
     for fixture in [
         Fixture::BufferedOk,
@@ -1228,7 +1319,7 @@ async fn one_unit_leaves_exactly_one_link_on_the_chain() {
         // LEG 1 — the shipped entry point names a destination on its link; whatever it names is
         // what the loop's link has to name too, so the expectation is READ rather than spelled.
         let shipped_rig = rig(fixture).await;
-        let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+        let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
             host: shipped_rig.host(),
             gov: shipped_rig.gov(),
             caller_token: None,
@@ -1333,7 +1424,7 @@ fn path_facts(proto: &'static str, fixture: Fixture) -> PathFacts {
 /// LEG 1 — the shipped path-model entry point, on its own deployment.
 async fn leg_legacy_path(fixture: Fixture, proto: &'static str) -> Observed {
     let rig = rig(fixture).await;
-    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov: rig.gov(),
         caller_token: None,
@@ -1481,7 +1572,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
     for proto in [GEMINI, BEDROCK] {
         let shipped = {
             let rig = rig(Fixture::UnknownModel).await;
-            let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+            let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
                 host: rig.host(),
                 gov: rig.gov(),
                 caller_token: None,
@@ -1733,7 +1824,7 @@ async fn leg_legacy_decode(
     body: Bytes,
 ) -> Observed {
     let rig = rig(Fixture::BufferedOk).await;
-    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov: rig.gov(),
         caller_token: None,
@@ -1938,7 +2029,7 @@ async fn principal_the_loop_settled_on(rig: &Rig, gov: busbar_api::PlaneRequestC
 
 /// LEG 1 — the shipped entry point, driven with a context the DOOR produced.
 async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
-    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov,
         caller_token: None,
@@ -1995,7 +2086,7 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
 ///   anonymous actor — never the refused key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
-    use busbar_core::proxy::reqlog::REQUESTS;
+    use busbar_kernel::proxy::reqlog::REQUESTS;
 
     let mut failures: Vec<String> = Vec::new();
     for cred in [Credential::Good, Credential::Bad, Credential::Expired] {
@@ -2191,7 +2282,7 @@ async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -
 ///   plane's own permission answer in the caller's dialect rather than the node's overload one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing() {
-    use busbar_core::proxy::reqlog::REQUESTS;
+    use busbar_kernel::proxy::reqlog::REQUESTS;
     use std::sync::atomic::AtomicBool;
 
     assert!(
@@ -2450,7 +2541,7 @@ const RESOLVED_OP_CASES: [Fixture; 5] = [
 /// this leg is `run_gauntlet` reached with exactly the parsed head its production callers hand it.
 async fn leg_native_run(fixture: Fixture) -> Observed {
     let rig = rig(fixture).await;
-    let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+    let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov: rig.gov(),
         caller_token: None,

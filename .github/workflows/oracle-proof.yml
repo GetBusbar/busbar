@@ -1,0 +1,288 @@
+# .github/workflows/oracle-proof.yml
+#
+# A DEDICATED, DISPATCH-ONLY LANE FOR THE ORACLE RECORD+REPLAY PROOF.
+#
+# ci.yml's `shadow-oracle` job (this build vs the published 1.5.5, 0 divergences) is one job in a
+# ~30-job workflow. Every other job in ci.yml — fmt, clippy, the workspace suite across five
+# runners, the Windows build, the migration corpus, and the rest — is real signal for a normal push,
+# but none of it is what an oracle turnstile needs: a turnstile wants exactly the shadow-oracle
+# verdict, on demand, without paying for the other ~29 jobs to get it. This workflow is that: ONE
+# job, `workflow_dispatch` only, whose body is a byte-for-byte copy of ci.yml's `shadow-oracle` job
+# (as of the `test/oracle-rust-flip` branch, ci.yml lines 2669-2924) — same runner size, same
+# services, same action pins, same steps, same env. It is not a redesign; it is the same job with a
+# dedicated door.
+#
+# WHY THIS IS SAFE TO KEEP IN SYNC BY HAND. `shadow-oracle` in ci.yml has no `needs:` and no tier
+# `if:` guard — it is already self-contained, which is exactly what makes a verbatim extraction
+# possible without smuggling in a dependency on some other job's setup. If ci.yml's shadow-oracle job
+# ever changes, this file drifts until someone re-copies it; that tradeoff is accepted because the
+# alternative — a reusable-workflow `uses:` split out of ci.yml — is a larger surgery than "cut CI
+# cost for turnstile dispatch" asked for.
+name: oracle proof
+
+on:
+  workflow_dispatch:
+
+# Mirrors sched-oracle-store-cells.yml's pattern: the oracle binds a fixed port band
+# (48700-48900, reserved from the kernel's ephemeral pool by a step below), so two oracle proofs on
+# the same ref must not run concurrently or they fight over that band and the same service
+# containers. Non-cancelling, also like that workflow: a proof already recording candidate cells is
+# not the one to kill out from under an operator who is watching it.
+concurrency:
+  group: oracle-proof-${{ github.ref }}
+  cancel-in-progress: false
+
+# ── COMPILER CACHE (sccache) — REMOVED, LK-5 ──────────────────────────────────────────────────────
+# Copied verbatim from ci.yml's top-level env block: the candidate build below (`cargo build -p
+# busbar --release --locked`) reads RUSTFLAGS and CARGO_TERM_COLOR exactly as it does in ci.yml, and
+# a divergence here would make this lane's candidate a different binary than the one ci.yml records.
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ── VERBATIM FROM ci.yml (test/oracle-rust-flip, lines 2669-2924) ──────────────────────────────
+  # Everything from here to the end of the file is a straight copy of the `shadow-oracle:` job body.
+  # Do not "improve" a step here without also changing ci.yml — the whole point of this lane is that
+  # it proves the SAME thing ci.yml's job proves, just without the other ~29 jobs attached.
+  shadow-oracle:
+    name: shadow oracle (this build vs the published 1.5.5, 0 divergences)
+    runs-on: latchkey-xlarge
+
+    timeout-minutes: 60
+    env:
+      BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+      # bin/oracle (Phase C) builds the money oracle from the PRIVATE sibling GetBusbar/busbar-release
+      # pinned in testing/shadow-oracle/oracle-rust.pin. The default GITHUB_TOKEN is scoped to THIS
+      # repo, so bin/oracle's clone of that private repo needs a cross-repo token — the same PAT the
+      # release-dispatch path already uses. Without it every ./bin/oracle call dies before recording.
+      BUSBAR_RELEASE_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+    # THE BACKENDS BOTH SIDES RECORD AGAINST.
+    #
+    # The store families' cells boot a real backend, spend, restart and read back — persistence IS
+    # the thing under comparison. Without a backend here those cells were named gaps on both sides,
+    # so the oracle compared nothing and said "0 divergences" about the one family whose whole claim
+    # is durability. A gap on both sides is not agreement.
+    #
+    # Digests are NOT re-pinned here. testing/fleet-fixtures/service-images.tsv is the single pinned
+    # list (that is what the `service image pins` job enforces: every workflow `image:` line must
+    # equal a row in it), so these three are the same bytes the `check` job runs — postgres 16 and
+    # valkey 8 identically, and mysql 8 from the row plugin-ci.yml already uses. Re-pinning with
+    # `docker buildx imagetools inspect` here would create a second source of truth and the pin gate
+    # would refuse it, which is the gate working. The bump belongs in that one file.
+    services:
+      postgres:
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # MySQL 8's FIRST boot initialises the datadir and restarts once, which is why its readiness
+      # budget is larger than the other two here exactly as service-images.tsv's ready_secs records.
+      mysql:
+        image: mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb
+        env:
+          MYSQL_ROOT_PASSWORD: busbar
+          MYSQL_USER: busbar
+          MYSQL_PASSWORD: busbar
+          MYSQL_DATABASE: busbar_test
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+      valkey:
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # SERVICE CONTAINERS ARE ADDRESSED BY CONTAINER IP, NOT localhost. On a GitHub-hosted runner
+      # a job owned the whole machine, so `ports: - 5432:5432` and `localhost:5432` were the same
+      # fact. On busbar-xl FOUR agents share a box and the host's 5432 is one resource: the second
+      # job to publish it dies in `Initialize containers` with "port is already allocated", before a
+      # line of the job has run. So nothing is published; the services keep the per-job
+      # `github_network_*` bridge the runner already builds for them, and this step reads each
+      # container's address off it. Two jobs, two networks, two addresses, nothing to collide on.
+      - name: Service endpoints (container IP, not a published host port)
+        run: ./scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} mysql=${{ job.services.mysql.id }} valkey=${{ job.services.valkey.id }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-shadow-oracle-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+      # THE RECORDER'S PORTS ARE NOT THE KERNEL'S TO HAND OUT. The oracle binds a fixed band
+      # (48781 mock, 48811/48812 data+admin, 48821/48822 the boot probe, 48851+ the selftest), and on
+      # Linux that band sits INSIDE the default ephemeral range, `net.ipv4.ip_local_port_range`
+      # 32768-60999. So any outbound connection this job makes — curl to the mock, busbar to an
+      # upstream, the cargo build's own network — can be assigned 48812 as its SOURCE port, and the
+      # next `busbar` then dies with `cannot bind listen address '127.0.0.1:48812': Address already
+      # in use`. That is exactly what turned 234 of 897 golden cells into FAIL: the recorder's own
+      # bindability probe asks "is anything ACCEPTING here" (a TCP connect), which an ephemeral
+      # OUTBOUND socket correctly answers "no" to right up until the bind fails.
+      #
+      # macOS never sees it — its ephemeral range starts at 49152, above the whole band — which is
+      # why every local recording is green and only the runner is red.
+      #
+      # The fix is to tell the kernel the band is spoken for. `ip_local_reserved_ports` removes those
+      # ports from EPHEMERAL allocation while leaving an explicit bind to them legal, which is the
+      # exact asymmetry the recorder needs. Range chosen to cover the whole 487xx/488xx band the
+      # oracle and the fleet fixtures agree on. It is applied, then READ BACK: a silently-failed
+      # sysctl would leave the flake in place under a step that printed nothing.
+      - name: Reserve the oracle port band from the kernel's ephemeral pool
+        run: |
+          set -euo pipefail
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=48700-48900
+          got="$(sysctl -n net.ipv4.ip_local_reserved_ports)"
+          echo "ip_local_reserved_ports=${got}"
+          case "$got" in *48700-48900*) ;; *) echo "::error::the oracle port band was not reserved (got '${got}'); a recorder bind would race the kernel's ephemeral allocator"; exit 1 ;; esac
+      - name: Oracle revision (keys the 1.5.5 artifact cache)
+        id: rev
+        run: |
+          set -euo pipefail
+          digest=$(awk -F'\t' '$1=="1.5.5" && $2=="busbar-x86_64-unknown-linux-gnu.tar.gz"{print $3}' testing/shadow-oracle/golden-digests.tsv)
+          # The key names the ARTIFACTS this cache holds — the pinned 1.5.5 release binary and the
+          # pinned plugins — and nothing else. It used to carry harness_rev too, because the cache
+          # also held a re-recorded golden; the golden is now read from the tree, so hashing the
+          # harness into this key would only throw away a correct download on every harness edit.
+          echo "key=oracle-artifacts-${digest:0:12}" >> "$GITHUB_OUTPUT"
+      - name: Cache the pinned 1.5.5 artifacts (restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: ${{ steps.rev.outputs.key }}
+          path: ~/.cache/busbar-oracle
+      - name: The differ can see a diff (replay selftest)
+        run: ./bin/oracle replay-selftest
+      - name: Fetch the published 1.5.5 binary and plugins by digest
+        run: |
+          set -euo pipefail
+          ./bin/oracle fetch-golden
+          # The plugin set is DERIVED from the same digest file the cells and fetch-plugin.sh read,
+          # not restated here: a hand-kept copy of it goes stale the day a plugin is added, and the
+          # symptom is a plugins-family cell recording against a plugin that was never fetched.
+          plugins="$(cut -f1 testing/shadow-oracle/plugin-digests.tsv | grep -v '^#' | sort -u)"
+          [ -n "$plugins" ] || { echo "::error::no plugins derived from plugin-digests.tsv"; exit 1; }
+          for pl in $plugins; do
+            ./bin/oracle fetch-plugin "$pl" >/dev/null
+          done
+      - name: Cache the pinned 1.5.5 artifacts (save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: ${{ steps.rev.outputs.key }}
+          path: ~/.cache/busbar-oracle
+
+      - name: Build the candidate (release, with the release public key)
+        run: |
+          set -euo pipefail
+          [ -n "${BUSBAR_RELEASE_PUBKEY:-}" ] || { echo "::error::BUSBAR_RELEASE_PUBKEY is not set; the plugins family would be red for the wrong reason"; exit 1; }
+          cargo build -p busbar --release --locked
+      - name: Both binaries accept the oracle config
+        run: ./bin/oracle selftest target/release/busbar "$HOME/.cache/busbar-oracle/1.5.5/busbar"
+      # THE GOLDEN IS COMMITTED, NOT RE-DERIVED. `testing/shadow-oracle/golden/1.5.5/` is the signed-off
+      # 1.5.5 recording, reviewed cell by cell, and it is the thing this job is supposed to diff
+      # against. Re-recording it here made the gate's own reference an OUTPUT of the runner: 234 of
+      # 897 cells failed to record on one run and the report read "the golden no longer owes this id"
+      # — the tree's answer to "what did 1.5.5 do" changed because a runner had a bad afternoon.
+      # A reference that is re-derived on the machine under test is not a reference.
+      #
+      # So the golden is COPIED IN, and the copy is checked: the ledger must carry the same number of
+      # PASS rows as meta.json says were recorded, and that number must be non-zero. A truncated or
+      # half-checked-out golden owes fewer cells, and owing fewer cells is how this gate goes quietly
+      # green — owed-baseline.txt in replay.sh is the second half of that guard and catches an id that
+      # stops being owed at all.
+      - name: The golden is the committed 1.5.5 recording (never re-recorded here)
+        run: |
+          set -euo pipefail
+          src=testing/shadow-oracle/golden/1.5.5
+          rm -rf target/oracle/recordings/golden
+          mkdir -p target/oracle/recordings
+          cp -R "$src" target/oracle/recordings/golden
+          pass=$(awk -F'\t' '$2=="PASS"' target/oracle/recordings/golden/ledger.tsv | wc -l | tr -d ' ')
+          want=$(python3 -c 'import json;print(json.load(open("target/oracle/recordings/golden/meta.json"))["recorded"])')
+          echo "committed golden: ${pass} PASS rows, meta.json records ${want}"
+          [ "$pass" -gt 0 ] || { echo "::error::the committed golden carries no PASS rows — the replay below would be vacuously green"; exit 1; }
+          [ "$pass" = "$want" ] || { echo "::error::the committed golden's ledger has ${pass} PASS rows but meta.json records ${want}; the checked-in recording is not whole"; exit 1; }
+      - name: Record the candidate
+        run: |
+          set -euo pipefail
+          rm -rf target/oracle/recordings/candidate; mkdir -p target/oracle/recordings/candidate
+          ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
+      - name: Replay — candidate vs golden (0 divergences, gaps named)
+        run: ./bin/oracle replay --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: shadow-oracle-report
+          path: |
+            target/oracle/reports/ci/report.md
+            target/oracle/reports/ci/report.json
+            target/oracle/reports/ci/diverging.txt
+            target/oracle/reports/ci/owed-gaps.txt
+            target/oracle/reports/ci/ledger.tsv
+          if-no-files-found: warn
+      # THE HEAD RECORDING, HANDED ON. The `llm-conformance` job in ci.yml judges the SAME candidate
+      # recording this job just made against the providers' published specs, so it is uploaded here
+      # rather than re-recorded there (a second recording would need a second release build and
+      # could disagree with the one the oracle diffed). `if: always()` so a replay divergence above
+      # does not withhold the recording: "differs from 1.5.5" and "violates the spec" are two
+      # independent facts about the commit. This lane does not run llm-conformance itself — it is
+      # scoped to the shadow-oracle verdict alone — but the artifact is uploaded verbatim so the same
+      # consumer could still be pointed at a run of this workflow if that is ever wired up.
+      #
+      # THE PATH LIST IS AN ALLOW-LIST, and that is a secrets decision, not tidiness. `raw/` is the
+      # PRE-NORMALISATION forensic tree: it holds the bodies exactly as they came off the wire, the
+      # per-cell working directories (config.yaml with the generated signing key, the admin token),
+      # the script-cell logs, and the admin key-mint responses whose `.token` is a live `bbk_…`
+      # virtual key. Uploading that whole tree published minted key material to an artifact any
+      # reader of the run can download, for seven days, on every commit. Normalisation is what
+      # strips those; `cells/` is the post-normalisation view and is safe by construction.
+      #
+      # It cannot simply be dropped, though: testing/llm-conformance/validate.py PREFERS the raw
+      # wire bytes over the normalized cell (Recording.response_bytes -> raw/body, plus raw/headers
+      # and raw/request.body), because judging a normalized body against a vendor schema judges the
+      # normalizer. Excluding raw/ outright would silently downgrade the conformance verdict to the
+      # normalized view rather than the wire. So exactly the three files it reads are carried, and
+      # only for `llm__` cells — the only ones it opens. Everything else in raw/, including every
+      # admin-plane cell, stays on the runner.
+      - name: Upload the candidate recording (consumed by llm-conformance)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: shadow-oracle-candidate-recording
+          path: |
+            target/oracle/recordings/candidate/cells
+            target/oracle/recordings/candidate/ledger.tsv
+            target/oracle/recordings/candidate/meta.json
+            target/oracle/recordings/candidate/raw/llm__*/body
+            target/oracle/recordings/candidate/raw/llm__*/headers
+            target/oracle/recordings/candidate/raw/llm__*/request.body
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-shadow-oracle-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target

@@ -17,7 +17,7 @@
 //! ## THE ONE PATHWAY, which is the sentence this module must keep true
 //!
 //! A sampling ask IS an LLM request, so it rides the LLM request's own pipeline —
-//! [`EngineHost::synthesize_completion`](busbar_substrate::plane_host::EngineHost::synthesize_completion),
+//! [`EngineHost::synthesize_completion`](busbar_kernel::plane_host::EngineHost::synthesize_completion),
 //! the neutral host seam over the same resolved core every arriving chat request enters after its
 //! model is known. That buys, without a second implementation of any of them: the
 //! INBOUND caller's governance (the completion is admitted under the caller's key, charged on the
@@ -102,14 +102,14 @@ impl SamplingSpend {
 /// The entry's params are translated to one non-streaming chat request in the tree's lingua-franca
 /// chat wire shape — which every registered provider protocol has a translation from — and dispatched
 /// through the resolved ingress pipeline behind
-/// [`EngineHost::synthesize_completion`](busbar_substrate::plane_host::EngineHost::synthesize_completion)
+/// [`EngineHost::synthesize_completion`](busbar_kernel::plane_host::EngineHost::synthesize_completion)
 /// under `gov`, the INBOUND caller's own governance context. The host resolves which chat dialect the
 /// request drives as (the registry's residual-default), so this bridge names none. Text content only,
 /// in this release: an image or
 /// audio block in the ask is refused rather than silently dropped, because a completion computed
 /// over less than the upstream sent is an answer to a question nobody asked.
 pub(crate) async fn satisfy_upstream_ask(
-    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     ask: &super::inputreq::Ask,
     server: &str,
@@ -270,7 +270,7 @@ fn chat_body(
 /// DRIVE one completion through the governed pipeline and shape the answer as the protocol's
 /// `CreateMessageResult`.
 async fn complete(
-    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     cfg: &super::config::SamplingCfg,
     body: serde_json::Value,

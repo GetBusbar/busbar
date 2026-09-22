@@ -14,8 +14,8 @@ use busbar_api::{
     Candidate, PolicyResult, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest, TransformOutcome,
 };
-use busbar_substrate::hooks::ResolvedPolicy;
-use busbar_substrate::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
+use busbar_kernel::hooks::ResolvedPolicy;
+use busbar_kernel::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
 use std::sync::{Arc, Mutex};
 
 /// The marker the rewrite hook plants in the prompt; a tap payload carrying it saw the rewrite.
@@ -91,12 +91,12 @@ impl RoutingPolicy for SeatProbe {
 fn gate(policy: Arc<dyn RoutingPolicy>) -> ResolvedPolicy {
     ResolvedPolicy::Policy {
         policy,
-        on_error: busbar_substrate::config::PolicyOnError::default(),
+        on_error: busbar_kernel::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(500),
         send_prompt: false,
         send_user: false,
-        on_empty: busbar_substrate::config::PolicyOnError::Reject,
+        on_empty: busbar_kernel::config::PolicyOnError::Reject,
     }
 }
 
@@ -148,16 +148,16 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     let server = crate::test_support::MockServer::new(state).await;
 
     let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_store_memory::MemoryStore::new());
-    let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
-        busbar_substrate::governance::signing::DEFAULT_KID,
+        busbar_kernel::governance::signing::DEFAULT_KID,
     );
     let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
         .governance(store, None, Some(signer))
         .expect("governance");
     let (key, secret) = gov_kit
         .mint_signed(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "seats".to_string(),
                 allowed_pools: None,
                 group: None,
@@ -189,7 +189,7 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     let key_id = key.id.clone();
     let read: Arc<dyn Fn() -> Ledger + Send + Sync> = Arc::new(move || {
         let u = gov
-            .usage_for(cost.as_ref(), &key_id, busbar_substrate::store::now())
+            .usage_for(cost.as_ref(), &key_id, busbar_kernel::store::now())
             .expect("usage read")
             .expect("the key exists");
         gov.flush_budgets();
@@ -221,7 +221,7 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     a.tap_hooks_candidate = vec![(std::time::Duration::from_millis(500), false, ct, Vec::new())];
     a.global_gates = vec![(0u16, gate(Arc::new(gate_probe)))];
 
-    let router = busbar_substrate::testkit::build_router(app);
+    let router = busbar_kernel::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let serve = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

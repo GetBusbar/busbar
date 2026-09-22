@@ -7,19 +7,19 @@
 //! `#[allow(dead_code)]`: `crate::mcp::connect::refresh` fed `ServerCatalogue::observe` the pin the
 //! OPERATOR DECLARED, under the module comment's own name for it — "the observed identity" — so a
 //! `cert_spki`-pinned registration's sighting always agreed with its approval BY CONSTRUCTION.
-//! `busbar_substrate::trust::Approval::drift`'s `pin_changed` check (`self.pin != obs.pin`) could
+//! `busbar_kernel::trust::Approval::drift`'s `pin_changed` check (`self.pin != obs.pin`) could
 //! never fire: the two sides of that comparison were read from the same field. An operator who
 //! configured `cert_spki` believed the upstream's certificate was pinned; the upstream's certificate
 //! was never once compared to anything.
 //!
 //! Every test here drives a REAL TLS HANDSHAKE — through `crate::mcp::client::transport::HttpTransport`,
-//! the production wire — against `busbar_substrate::egress::fixtures::spawn_tls`, a real `rustls` server
+//! the production wire — against `busbar_kernel::egress::fixtures::spawn_tls`, a real `rustls` server
 //! on a real loopback socket. The one throw-away CA these hops trust
 //! (`crate::mcp::client::transport::test_ca::TEST_CA`) exists because MCP has no config-shaped way to name
 //! a private CA for a registration yet (unlike A2A's `client_identity:` path); see that module for
 //! why one CA correctly serves both the matching and the mismatched case below.
 
-use busbar_substrate::egress::fixtures::{spawn_tls, CannedResponse, ClientAuth, TlsServerSpec};
+use busbar_kernel::egress::fixtures::{spawn_tls, CannedResponse, ClientAuth, TlsServerSpec};
 use std::sync::Arc;
 
 use crate::mcp::client::catalogue::CatalogueCache;
@@ -55,7 +55,7 @@ fn tools_list_body() -> String {
 
 /// A REAL TLS peer serving the one `tools/list` answer, over the certificate every test-build hop
 /// trusts (`TEST_CA`). Kept alive by the caller for as long as a refresh may still reach it.
-fn tls_peer() -> busbar_substrate::egress::fixtures::TlsFixture {
+fn tls_peer() -> busbar_kernel::egress::fixtures::TlsFixture {
     spawn_tls(TlsServerSpec {
         cert_chain_pem: TEST_CA.leaf_pem.clone(),
         key_pem: TEST_CA.leaf_key_pem.clone(),

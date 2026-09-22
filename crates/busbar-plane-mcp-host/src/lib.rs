@@ -13,7 +13,7 @@
 //! ## What lives here today
 //!
 //! The MCP plane's DIAGNOSTICS catalog — the `MCP_*` entries the composition root installs via
-//! [`install_diagnostics`](busbar_substrate::diagnostics::install_diagnostics). This is the one
+//! [`install_diagnostics`](busbar_substrate_values::diagnostics::install_diagnostics). This is the one
 //! byte-safe, non-money, cycle-free leaf of the host surface: it names nothing in `busbar-mcp`, so it
 //! moves down here cleanly while `busbar-mcp` re-exports it under its old paths
 //! (`busbar_mcp::DIAGNOSTICS`, `busbar_mcp::diagnostics::…`) so every caller resolves what it always
@@ -28,6 +28,8 @@
 //! `super::callerask`, and `McpRuntime` holds a `sampling::SamplingSpend`. It cannot leave
 //! `busbar-mcp` byte-safely while the money files stay — so it moves as one unit in the oracle-gated
 //! money cell, not this byte-safe one.
+
+#![forbid(unsafe_code)]
 
 /// THE MCP PLANE'S DIAGNOSTICS CATALOG — the `MCP_*` entries this plane owns and the [`DIAGNOSTICS`]
 /// slice the composition root installs. Relocated here from `busbar-mcp/src/diagnostics.rs` byte for

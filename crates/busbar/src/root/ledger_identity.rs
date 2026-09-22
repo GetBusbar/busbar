@@ -24,7 +24,7 @@
 //! the unit split — so the one place entitled to hold both sides of the comparison is the thing
 //! that built both, and that is here.
 //!
-//! The arithmetic itself is not here. `busbar_unit_ledger::identity::residual` is the pure function
+//! The arithmetic itself is not here. `busbar_kernel_ledger::identity::residual` is the pure function
 //! — no clock, no store, no state, two snapshots in and a number out — and this module's job is to
 //! supply those two snapshots in its terms. That division is deliberate: an auditor re-deriving the
 //! identity from a pair of sealed checkpoints runs exactly the same function this does.
@@ -47,9 +47,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use busbar_unit_cost::{micros_of, Priced};
-use busbar_unit_ledger::identity::{residual, Residual};
-use busbar_unit_ledger::totals::Totals;
+use busbar_kernel_ledger::cost::{micros_of, Priced};
+use busbar_kernel_ledger::identity::{residual, Residual};
+use busbar_kernel_ledger::totals::Totals;
 
 /// Which of the previous release's rows a posting groups onto.
 ///

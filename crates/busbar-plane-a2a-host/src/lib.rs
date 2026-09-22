@@ -13,7 +13,7 @@
 //! ## What lives here today
 //!
 //! The A2A plane's DIAGNOSTICS catalog — the `A2A_*` entries the composition root installs via
-//! [`install_diagnostics`](busbar_substrate::diagnostics::install_diagnostics). This is the one
+//! [`install_diagnostics`](busbar_substrate_values::diagnostics::install_diagnostics). This is the one
 //! byte-safe, non-money, cycle-free leaf of the host surface: it names nothing in `busbar-a2a`, so it
 //! moves down here cleanly while `busbar-a2a` re-exports it under its old paths
 //! (`busbar_a2a::DIAGNOSTICS`, `busbar_a2a::diagnostics::…`) so every caller resolves what it always
@@ -25,9 +25,11 @@
 //! and the `receive`/`inbound` admission path with its `config`/`admin_view` modules — is a single
 //! strongly-connected component welded to the money/receive files: `receive.rs` reaches
 //! `meter_charge`, `run_gauntlet`, `GauntletPlane`/`A2aInvokePlane`, and the private
-//! `inbound::Dispatch` admission struct that the §11a audit flags for the shared `PlaneDecl::dispatch`
+//! `inbound::Dispatch` admission struct flagged for the shared `PlaneDecl::dispatch`
 //! seam. It cannot leave `busbar-a2a` byte-safely while the money files stay — so it moves as one unit
 //! in the oracle-gated money cell, not this byte-safe one.
+
+#![forbid(unsafe_code)]
 
 /// THE A2A PLANE'S DIAGNOSTICS CATALOG — the `A2A_*` entries this plane owns and the [`DIAGNOSTICS`]
 /// slice the composition root installs. Relocated here from `busbar-a2a/src/diagnostics.rs` byte for

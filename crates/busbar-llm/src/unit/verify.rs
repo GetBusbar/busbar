@@ -40,10 +40,10 @@
 //! bytes, which is what keeps every terminal on this plane on one path — and what lets this file
 //! carry no HTTP vocabulary beyond the two kind constants the live doors already spell.
 
-use busbar_caps::{
-    Decision, PrincipalId, ReasonCode, Refusal, UnitToken, VerifiedDestination, Verify,
+use busbar_contract::caps::{
+    Decision, Pass, PrincipalId, ReasonCode, Refusal, VerifiedDestination, Verify,
 };
-use busbar_substrate::plane_host::{CostHandle, EngineHost, EngineTablesView};
+use busbar_kernel::plane_host::{CostHandle, EngineHost, EngineTablesView};
 
 use crate::unit::audit::RefusalOutcome;
 
@@ -86,8 +86,8 @@ impl VerifyRefusal {
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
-            VerifyRefusal::NotAuthorized => busbar_substrate::proxy::KIND_PERMISSION,
-            VerifyRefusal::NoRate { .. } => busbar_substrate::proxy::KIND_INVALID_REQUEST,
+            VerifyRefusal::NotAuthorized => busbar_kernel::proxy::KIND_PERMISSION,
+            VerifyRefusal::NoRate { .. } => busbar_kernel::proxy::KIND_INVALID_REQUEST,
         }
     }
 
@@ -334,7 +334,7 @@ impl PoolView for HostPoolView<'_> {
 /// before its exhaustion answer. Refusing here would move the charge, and moving a charge is not a
 /// refactor.
 pub fn verify(
-    token: &UnitToken<Verify>,
+    token: &Pass<Verify>,
     view: &dyn PoolView,
     pool: &str,
     principal: &PrincipalId,

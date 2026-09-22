@@ -98,8 +98,8 @@
 //! returned strings are frozen (`"http"`/`"websocket"`/`"stdio"` plus the three `WIRE_*` constants
 //! below), so the move changes no byte a caller reads. `busbar-substrate-values` re-exports this
 //! module at its historical path (`transport::{Transport, UpstreamWireKind}` and
-//! `plane::{WIRE_JSONRPC, WIRE_HTTP_JSON, WIRE_GRPC}`), so `busbar_substrate::transport::Transport`
-//! and `busbar_substrate::plane::WIRE_*` still resolve, unchanged, for every existing caller.
+//! `plane::{WIRE_JSONRPC, WIRE_HTTP_JSON, WIRE_GRPC}`), so `busbar_substrate_values::transport::Transport`
+//! and `busbar_kernel::plane::WIRE_*` still resolve, unchanged, for every existing caller.
 
 /// The three WIRE-FORMAT NAMES the transport axis and the plane declaration share. The CUT: the rest
 /// of `plane` is the declaration/registry surface, which names the host seams and the route mount and
@@ -107,7 +107,7 @@
 /// constants (that is the whole point of them: one spelling for the metric label, the plane's
 /// wire-format list and the served card's `protocolBinding`), so they crossed with the axis.
 /// `busbar-substrate-values` and `busbar-substrate` both re-export all three, so
-/// `busbar_substrate::plane::WIRE_JSONRPC` and its siblings resolve unchanged.
+/// `busbar_kernel::plane::WIRE_JSONRPC` and its siblings resolve unchanged.
 pub mod plane {
     /// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read
     /// twice as a `wire_format_names` entry and once more by the error-shaping boundary, which
@@ -118,13 +118,13 @@ pub mod plane {
     /// THE SECOND WIRE FORMAT THE A2A PLANE SPEAKS: A2A's HTTP+JSON binding, where the REQUEST LINE
     /// names the operation rather than a body member. Named once, here, because it is read three ways
     /// and all three must agree — as a `wire_format_names` entry, as the
-    /// `busbar_core::transport::Transport::HttpJson` label, and (upper-cased by
+    /// `busbar_kernel::transport::Transport::HttpJson` label, and (upper-cased by
     /// `a2a::serve::servable_bindings`) as the `protocolBinding` a served agent card advertises. The
     /// card spelling is `HTTP+JSON`, so this is that string lower-cased and nothing else.
     pub const WIRE_HTTP_JSON: &str = "http+json";
 
     /// The A2A specification's gRPC binding, as a wire-format name. Lower-case here and upper-cased
-    /// once, by `busbar_core::a2a::serve::servable_bindings`, into the `GRPC` an agent card advertises
+    /// once, by `busbar_kernel::a2a::serve::servable_bindings`, into the `GRPC` an agent card advertises
     /// — so the card cannot claim a binding the plane does not list, which is the whole reason that
     /// function reads this list rather than writing one of its own.
     pub const WIRE_GRPC: &str = "grpc";
@@ -178,7 +178,7 @@ pub enum Transport {
     Stdio,
     /// A FULL-DUPLEX FRAMED CONNECTION — one long-lived socket carrying framed messages in BOTH
     /// directions at once, rather than the one-request-one-response exchange [`Transport::Http`]
-    /// models. The byte-duplex carrier that `busbar_substrate::ingress::byte_duplex` pumps: a
+    /// models. The byte-duplex carrier that `busbar_kernel::ingress::byte_duplex` pumps: a
     /// message `Stream`/`Sink<Vec<u8>>` pair served until the stream ends, with each side free to send
     /// a frame at any time without a prior request from the other.
     ///

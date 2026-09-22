@@ -75,16 +75,16 @@ async fn ask(addr: SocketAddr, path: &str) -> Answer {
 /// On the legacy leg, every ledger path answers exactly as a path that does not exist.
 #[tokio::test]
 async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
     busbar_admin::install();
     // An OPEN admin posture, so that a path which DID exist would reach its handler rather than an
     // authentication refusal. Without this the test would pass on a surface that had grown all five
     // routes and simply refused the credential.
-    let app = busbar_core::test_support::TestApp::new()
+    let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();
     let (_data, admin, _handle) =
-        busbar_core::build_split_routers_with_limits(app, 1 << 20, 0, false);
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -126,13 +126,13 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
 /// root-leg tests check against the closed table.
 #[tokio::test]
 async fn the_pinned_document_gained_no_ledger_path() {
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
     busbar_admin::install();
-    let app = busbar_core::test_support::TestApp::new()
+    let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();
     let (_data, admin, _handle) =
-        busbar_core::build_split_routers_with_limits(app, 1 << 20, 0, false);
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

@@ -27,6 +27,5 @@ rustls-pki-types = { workspace = true }
 ring = { workspace = true }
 
 [dev-dependencies]
-busbar-caps = { path = "../busbar-caps" }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }
 rcgen = { workspace = true }

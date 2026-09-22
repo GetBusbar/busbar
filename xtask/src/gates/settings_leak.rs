@@ -49,8 +49,14 @@ pub const ROW_SCAN_FLOOR: &str = "settings-leak:scan-floor";
 pub const ROW_NO_RAW_BAG: &str = "settings-leak:no-raw-bag";
 
 /// The core/bin split roots plus the LLM plane. The plane roots are FOUND, not spelled.
+///
+/// `busbar-core` was absorbed into `busbar-kernel` (W4.a, 673ecdaaa) — the settings/admin surface
+/// this gate exists for (`settings_keys`, `RootSettings`, `HookView`, `redact_settings_bags`) now
+/// lives under `crates/busbar-kernel/src` (see `config/`, `admin/`, `api.rs`). This entry is an
+/// existence check only: the actual scan set is the whole `crates/` tree via
+/// `population::source_population`, so repointing it does not narrow what gets scanned.
 const FIXED_ROOTS: &[&str] = &[
-    "crates/busbar-core/src",
+    "crates/busbar-kernel/src",
     "crates/busbar/src",
     "crates/busbar-llm/src",
 ];

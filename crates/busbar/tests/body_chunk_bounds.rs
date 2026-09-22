@@ -19,15 +19,15 @@
 //!      actual bytes against the node's spill budget, and it refuses at the same byte however the
 //!      bytes were split -- one chunk, or many thousands more chunks than the frame ceiling.
 
-use busbar_caps::ReasonCode;
+use busbar_contract::caps::ReasonCode;
 use busbar_contract::transport::TransportMeta;
+use busbar_kernel::config::limits::{
+    DEFAULT_REQUEST_BODY_MAX_BYTES, REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR,
+};
 use busbar_kernel::grammar::DeepestPointer;
 use busbar_kernel::inflight::InFlight;
 use busbar_kernel::pump::{
     BodySpool, Direction, Dispatch, Scheduler, Shape, SpillBudget, StreamId, MAX_NEEDMORE_FRAMES,
-};
-use busbar_substrate::config::limits::{
-    DEFAULT_REQUEST_BODY_MAX_BYTES, REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR,
 };
 use busbar_transport_http::HttpTransport;
 use busbar_transport_sse::SseTransport;

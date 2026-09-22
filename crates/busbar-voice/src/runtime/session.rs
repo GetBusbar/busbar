@@ -3,7 +3,7 @@
 
 //! THE LIVE DUPLEX SESSION RUNTIME — the pump body, behind the `runtime` feature.
 //!
-//! Binds the neutral byte-duplex pump (`busbar_substrate::ingress::byte_duplex::serve_messages`), the
+//! Binds the neutral byte-duplex pump (`busbar_kernel::ingress::byte_duplex::serve_messages`), the
 //! codec's `DuplexReader`/`DuplexWriter` pair, the durable `SessionScope`, and the D2 metering lease
 //! into one governed carrier. The runtime is GENERIC over the codec traits (HARD RULE 3) so it does
 //! not depend on WHICH dialect codec is present — the Gemini codec drops in unchanged.
@@ -28,7 +28,7 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use busbar_substrate::ingress::byte_duplex::{CallRef as WireCallRef, DuplexHandle, DuplexPlane};
+use busbar_kernel::ingress::byte_duplex::{CallRef as WireCallRef, DuplexHandle, DuplexPlane};
 
 /// THE FRAME PLAN one decoded inbound frame produces — what to write UPSTREAM (client→server events:
 /// tool results, barge-in cancel/truncate, `response.create`), what to relay DOWNLINK to the client,

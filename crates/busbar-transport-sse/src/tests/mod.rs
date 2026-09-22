@@ -12,8 +12,10 @@ use futures::StreamExt;
 /// forging kernel evidence in order to test something else, and it read as if that were the
 /// ordinary way to obtain one. The ordinary way is a token the loop lends out, so the fixture uses
 /// that and the transport under test receives exactly what a deployment hands it.
-fn fixture_seal() -> busbar_caps::TransportKeyToken {
-    busbar_caps::TransportKeyToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel())
+fn fixture_seal() -> busbar_contract::caps::Grant<busbar_contract::caps::KeyHandle> {
+    busbar_contract::caps::Grant::<busbar_contract::caps::KeyHandle>::mint(
+        &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+    )
 }
 
 fn fixture_key() -> TransportKeyHandle {
@@ -588,7 +590,7 @@ async fn a_success_body_that_is_not_an_event_stream_reaches_the_plane() {
         .expect("the body is carried as a frame, not thrown away");
     assert_eq!(
         only.meta.status,
-        Some(busbar_contract_transport::wire::WireStatusClass::Success),
+        Some(busbar_contract::transport::wire::WireStatusClass::Success),
         "the status leg http read off the 200 rides the frame that carries the leftover body"
     );
     assert_eq!(

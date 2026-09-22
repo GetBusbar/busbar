@@ -28,11 +28,11 @@
 //!
 //! ## The response body is CAPPED
 //!
-//! An upstream MCP server is not trusted. `busbar_substrate::proxy::read_capped` is the engine's existing
+//! An upstream MCP server is not trusted. `busbar_kernel::proxy::read_capped` is the engine's existing
 //! primitive for exactly this and is reused rather than re-hand-rolled, so the cap, the truncation
 //! signal and the transport-error signal are the same three the rest of the engine reports.
 
-use busbar_substrate::egress::seam;
+use busbar_kernel::egress::seam;
 
 use super::jsonrpc::OutboundRequest;
 use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
@@ -42,7 +42,7 @@ use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
 #[derive(Debug, Default)]
 pub(crate) struct HttpTransport;
 
-/// The vtable arm [`busbar_substrate::transport::Transport::Http`] hands an MCP leg to. It unpacks the parts of
+/// The vtable arm [`busbar_substrate_values::transport::Transport::Http`] hands an MCP leg to. It unpacks the parts of
 /// the leg an HTTP send needs and forwards to the inherent [`HttpTransport::send`], which the
 /// refresh path in `mcp::connect` reaches through the same vtable.
 ///
@@ -99,7 +99,7 @@ impl HttpTransport {
             .await
             .map_err(TransportError::Refused)?;
 
-        let cap = busbar_substrate::proxy::max_upstream_buffered_bytes();
+        let cap = busbar_kernel::proxy::max_upstream_buffered_bytes();
         // OWNED inputs for the blocking hop — the seam's `HopSpec` borrows these, and `leg` (with its
         // pool triggers and the `UPSTREAM_PROGRESS` task-local) must NOT cross into `spawn_blocking`,
         // so the SSE frame handling stays async-side below where `leg` is live.
@@ -173,14 +173,14 @@ impl HttpTransport {
             .unwrap_or(false);
         let raw = buffered.body;
         match buffered.end {
-            busbar_substrate::proxy::ReadEnd::Complete => {}
-            busbar_substrate::proxy::ReadEnd::Truncated => {
+            busbar_kernel::proxy::ReadEnd::Complete => {}
+            busbar_kernel::proxy::ReadEnd::Truncated => {
                 return Err(TransportError::Io(format!(
                     "upstream response exceeded the {cap}-byte cap; a truncated JSON-RPC response \
                      is not parsed"
                 )))
             }
-            busbar_substrate::proxy::ReadEnd::TransportError => {
+            busbar_kernel::proxy::ReadEnd::TransportError => {
                 return Err(TransportError::Io(
                     "upstream connection failed mid-response; a partial JSON-RPC response is not \
                      parsed"
@@ -256,7 +256,7 @@ pub(crate) mod test_ca {
         let mut ca_params = CertificateParams::new(Vec::new()).expect("ca params");
         ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         let ca_cert = ca_params.self_signed(&ca_kp).expect("self-signed ca");
-        let ca_der = busbar_substrate::egress::fixtures::certs_from_pem(&ca_cert.pem());
+        let ca_der = busbar_kernel::egress::fixtures::certs_from_pem(&ca_cert.pem());
 
         let issuer = Issuer::from_params(&ca_params, ca_kp);
         let leaf_kp = KeyPair::generate().expect("leaf key");
@@ -267,7 +267,7 @@ pub(crate) mod test_ca {
             .signed_by(&leaf_kp, &issuer)
             .expect("signed leaf");
 
-        let trust_anchor_ref = busbar_substrate::plane_host::trust_anchor::register(ca_der);
+        let trust_anchor_ref = busbar_kernel::plane_host::trust_anchor::register(ca_der);
         let expected_pin = format!(
             "sha256/{}",
             base64::engine::general_purpose::STANDARD
@@ -328,7 +328,7 @@ pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::pe
                     let accepted = leg
                         .pool
                         .triggers
-                        .signal(leg.server, busbar_substrate::store::now_ms());
+                        .signal(leg.server, busbar_kernel::store::now_ms());
                     tracing::debug!(
                         server = %leg.server,
                         notification = ?n,
@@ -343,7 +343,7 @@ pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::pe
                     let accepted = leg
                         .pool
                         .triggers
-                        .signal(leg.server, busbar_substrate::store::now_ms());
+                        .signal(leg.server, busbar_kernel::store::now_ms());
                     if let Some(uri) = frame.pointer("/params/uri").and_then(|u| u.as_str()) {
                         leg.pool.updates.record(leg.server, uri);
                     }

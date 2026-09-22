@@ -80,18 +80,18 @@ use std::time::Instant;
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use busbar_caps::{
-    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision, Decode,
-    Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
-    TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
+use busbar_contract::caps::{
+    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Consumption, Decision,
+    Decode, Dial, Encode, Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId,
+    ReasonCode, Refusal, Route, VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, Registration, UnitKey};
+use busbar_kernel::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_llm::arrival::PathArrivalFacts;
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
-use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
 use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
 
 /// The transport stack every request on this plane arrives over.
@@ -234,7 +234,7 @@ pub struct LlmNode {
     kernel: busbar_kernel::teller::Kernel,
     inflight: busbar_kernel::inflight::InFlight,
     gauge: busbar_kernel::slice::ConcurrencyGauge,
-    canary: busbar_caps::Canary,
+    canary: busbar_contract::caps::Canary,
     door: crate::root::kernel::AdmissionDoor,
     /// THE NODE'S ONE INTERNER. A configured lane's name is read out of config as a runtime `String`
     /// and a `LaneId` is a borrowed static one, so the two are bridged by leaking each name exactly
@@ -265,7 +265,7 @@ pub struct LlmNode {
     /// Minted outside the loop because making a posting durable happens after the exit has sealed
     /// the end: there is no step of the unit whose token could stand in, which is the same reason
     /// the verbs unit's and the transport-key unit's are minted outside it.
-    durability_token: busbar_caps::DurabilityToken,
+    durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     // THE RATE-CARD HISTORY THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
     // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is appended to rather than
     // bound once, because a rate is a statement about a deployment and a deployment's rates change
@@ -287,7 +287,7 @@ pub struct LlmNode {
     /// Minted outside the loop for the same reason the journal's and the ledger's are: the report a
     /// late accrual prices arrives after the exit sealed the end, so there is no step of the unit
     /// whose token could stand in.
-    usage_token: busbar_caps::UsageToken,
+    usage_token: busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     /// THE ONE SEAM THIS PLANE'S ROUTE STEP REACHES THE ENGINE THROUGH.
     ///
     /// On the node rather than on the unit because what it instruments is a statement about a SET of
@@ -334,7 +334,7 @@ impl LlmNode {
             // answered.
             inflight: busbar_kernel::inflight::InFlight::new(usize::MAX, 0),
             gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
-            canary: busbar_caps::Canary::new(),
+            canary: busbar_contract::caps::Canary::new(),
             door: crate::root::kernel::AdmissionDoor,
             lanes: Arc::clone(&lanes),
             lane_names: Mutex::new(LaneNames {
@@ -669,9 +669,9 @@ impl LlmNode {
 /// The flat fee is NOT a line built here. It is the card's, added by the pricing as a line of its own
 /// from the billable count the report carries, which is what keeps one configured fee to one place.
 fn usage_record(
-    token: &busbar_caps::UsageToken,
-    usage: &busbar_substrate::billing::Usage,
-) -> busbar_caps::Usage {
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
+    usage: &busbar_substrate_values::billing::Usage,
+) -> busbar_contract::caps::Usage {
     let lines = [
         busbar_api::UNIT_INPUT,
         busbar_api::UNIT_OUTPUT,
@@ -683,10 +683,10 @@ fn usage_record(
         // A zero-quantity line is not a fact about anything, and the plane's own metering step drops
         // them for the same reason. Kept out here too so the two reports have the same shape.
         let quantity = usage.usage_units.get(class).copied().unwrap_or(0);
-        (quantity > 0).then(|| busbar_caps::UsageLine {
-            class: busbar_caps::MeterClassId::new(class),
+        (quantity > 0).then(|| busbar_contract::caps::UsageLine {
+            class: busbar_contract::caps::MeterClassId::new(class),
             quantity,
-            source: busbar_caps::QuantitySource::Count,
+            source: busbar_contract::caps::QuantitySource::Count,
             estimated: false,
         })
     })
@@ -695,8 +695,9 @@ fn usage_record(
     // a bound on lines, and the four tiers this plane reports are far inside it. An empty record is
     // the honest fallback — it prices the fee and no tokens, which is what a response that reported
     // nothing costs.
-    busbar_caps::Usage::report(token, lines)
-        .unwrap_or_else(|_| busbar_caps::Usage::report(token, Vec::new()).expect("no lines fit"))
+    busbar_contract::caps::Usage::report(token, lines).unwrap_or_else(|_| {
+        busbar_contract::caps::Usage::report(token, Vec::new()).expect("no lines fit")
+    })
 }
 
 /// **WHAT ONE REPORT IS WORTH**, against one card — the node's single pricing expression.
@@ -723,19 +724,22 @@ fn usage_record(
 fn priced_posting(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
-    token: &busbar_caps::UsageToken,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     report: &LateReport,
-) -> (busbar_unit_cost::Posting, Option<busbar_unit_cost::Priced>) {
+) -> (
+    busbar_kernel_ledger::cost::Posting,
+    Option<busbar_kernel_ledger::cost::Priced>,
+) {
     // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
     // the classes and their counts, and the unit's PINNED arrival supplies the instant in both its
     // readings. The instant is not a clock read — this runs after the body drained, which may be a
     // different day from the one the request was admitted in, and a fresh reading would price the
     // request against a card it never agreed to.
-    let mut posting = busbar_unit_cost::Posting::from_usage(
+    let mut posting = busbar_kernel_ledger::cost::Posting::from_usage(
         &report.lane,
         &usage_record(token, &report.usage),
         u64::from(report.fee_count),
-        busbar_unit_cost::STANDARD_TIER_BP,
+        busbar_kernel_ledger::cost::STANDARD_TIER_BP,
         arrived.ms(),
         arrived.mono(),
     );
@@ -743,7 +747,7 @@ fn priced_posting(
     // history resolves which entry was in force then; a later apply is not in this view at all, so
     // there is no arm here that could read one.
     let currency = crate::root::kernel::node_currency();
-    let priced = busbar_unit_cost::price(&history.view(), &posting, currency).ok();
+    let priced = busbar_kernel_ledger::cost::price(&history.view(), &posting, currency).ok();
     // THE CACHE IS WRITTEN AND IS NEVER READ BACK. It rides the posting so a reader has a figure to
     // compare a re-derivation against and so a totals read need not re-price a day of postings on
     // every request — but the figure this function RETURNS is the lookup's, taken off `priced`
@@ -764,7 +768,7 @@ fn priced_posting(
 fn priced_amount(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
-    token: &busbar_caps::UsageToken,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     report: &LateReport,
 ) -> u64 {
     let (_posting, priced) = priced_posting(history, arrived, token, report);
@@ -797,9 +801,9 @@ struct LateAccrual {
     /// request an operator edited a price underneath — which is the request the distinction exists
     /// for.
     history: crate::root::kernel::PinnedHistory,
-    durability_token: busbar_caps::DurabilityToken,
-    ledger_token: busbar_caps::LedgerToken,
-    usage_token: busbar_caps::UsageToken,
+    durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+    ledger_token: busbar_contract::caps::Grant<busbar_contract::caps::WriteMoney>,
+    usage_token: busbar_contract::caps::Grant<busbar_contract::caps::Consumption>,
     principal: PrincipalId,
     arrived: Arrived,
     /// The unit's carry, kept alive for exactly as long as the body is: the reading needs the lane
@@ -852,9 +856,12 @@ impl LateAccrual {
         if amount == 0 {
             return;
         }
-        let accrual =
-            busbar_caps::HoldAccrual::after_terminal(principal.clone(), amount, &ledger_token);
-        let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
+        let accrual = busbar_contract::caps::HoldAccrual::after_terminal(
+            principal.clone(),
+            amount,
+            &ledger_token,
+        );
+        let posted = busbar_contract::caps::Posted::settle_late(accrual, &ledger_token);
         // Through the money-book seam, as the terminal exit arm does — the same shared book, the
         // same posting, the lock taken and released behind the seam.
         let book = crate::root::durability::SharedBook::over(book);
@@ -973,7 +980,7 @@ impl Drop for Occupied<'_> {
 /// reason of its own and a client is owed the same answer whichever gate stopped it. WHICH seat
 /// stopped the unit is the operator's diagnostic, and the step file already logs it.
 fn vetoed(proto: &str) -> Response {
-    busbar_substrate::proxy::ingress_error(
+    busbar_kernel::proxy::ingress_error(
         proto,
         StatusCode::FORBIDDEN,
         busbar_substrate_values::proxy::KIND_PERMISSION,
@@ -983,7 +990,7 @@ fn vetoed(proto: &str) -> Response {
 
 /// What a node that cannot take the unit at all answers with, in the caller's own dialect.
 fn unavailable(proto: &str) -> Response {
-    busbar_substrate::proxy::ingress_error(
+    busbar_kernel::proxy::ingress_error(
         proto,
         StatusCode::SERVICE_UNAVAILABLE,
         busbar_substrate_values::proxy::KIND_OVERLOADED,
@@ -1096,7 +1103,7 @@ impl LlmUnit<'_> {
 // ---------------------------------------------------------------------------------------------
 
 impl Units for LlmUnit<'_> {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
         let record = ArrivalRecord {
             source: String::new(),
             port: 0,
@@ -1156,7 +1163,7 @@ impl Units for LlmUnit<'_> {
         }
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
         let refuse = |refusal: decode::DecodeRefusal| {
             self.walk
                 .hold_bytes(audit::render_refusal(self.walk.proto(), &refusal.outcome()));
@@ -1209,11 +1216,7 @@ impl Units for LlmUnit<'_> {
         }
     }
 
-    fn authenticate(
-        &self,
-        token: &UnitToken<Authenticate>,
-        _ctx: &UnitCtx,
-    ) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
         // The read of the auth middleware's already-resolved outcome. It cannot refuse — every
         // refusal this step could raise is the middleware's, upstream of the plane — and it is still
         // called, because "the middleware answered" is a fact this step states rather than one the
@@ -1223,8 +1226,8 @@ impl Units for LlmUnit<'_> {
 
     fn verify(
         &self,
-        token: &UnitToken<Verify>,
-        trust: &TrustToken,
+        token: &Pass<Verify>,
+        trust: &Grant<Dial>,
         _ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -1272,7 +1275,7 @@ impl Units for LlmUnit<'_> {
 
     fn approve(
         &self,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -1311,8 +1314,8 @@ impl Units for LlmUnit<'_> {
 
     fn admit(
         &self,
-        token: &UnitToken<Admit>,
-        admit_token: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        admit_token: &Grant<Admittance>,
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
@@ -1344,12 +1347,7 @@ impl Units for LlmUnit<'_> {
         self.walk.take_admission(admitted)
     }
 
-    fn route(
-        &self,
-        token: &UnitToken<Route>,
-        _ctx: &UnitCtx,
-        _meter: &AccrualMeter,
-    ) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, _meter: &AccrualMeter) -> Decision<Route> {
         // THIS PLANE'S ROUTE AWAITS, so it is answered by the `RouteAwait` arm below and this one is
         // not a path any unit on this plane takes: `LlmNode::answer` drives the loop's asynchronous
         // entry point and there is no other caller. Answered rather than unwrapped — an arm that
@@ -1360,8 +1358,8 @@ impl Units for LlmUnit<'_> {
 
     fn meter(
         &self,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
@@ -1380,12 +1378,7 @@ impl Units for LlmUnit<'_> {
         self.walk.meter(token, usage)
     }
 
-    fn audit(
-        &self,
-        token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Audit> {
         // THE CHARGED TERMINAL. A unit that passed the door leaves here, whatever it ended on: a
         // delivered answer, a relayed upstream failure, or a destination that resolved to nothing
         // after the caller was already charged. All three are the same door.
@@ -1397,7 +1390,7 @@ impl Units for LlmUnit<'_> {
 
     fn audit_refused(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         _ctx: &UnitCtx,
         _refusal: &Refusal,
     ) -> Decision<Audit> {
@@ -1411,18 +1404,13 @@ impl Units for LlmUnit<'_> {
             })
     }
 
-    fn encode(
-        &self,
-        token: &UnitToken<Encode>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Encode> {
+    fn encode(&self, token: &Pass<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
         // The terminal already produced the bytes and the transport already owns the envelope: this
         // is an HTTP response, and there is no frame this plane writes around one. An empty envelope
         // is the honest answer rather than a trailer this surface does not send.
         Decision::proceed(
             token,
-            busbar_caps::Frame {
+            busbar_contract::caps::Frame {
                 direction: busbar_contract::Direction::Outbound,
                 stream: busbar_contract::StreamId(0),
                 bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b""[..])),
@@ -1496,7 +1484,7 @@ impl Units for LlmUnit<'_> {
 impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
     fn route_leg<'a>(
         &'a self,
-        token: &'a UnitToken<Route>,
+        token: &'a Pass<Route>,
         _ctx: &'a UnitCtx,
         _meter: &'a AccrualMeter,
     ) -> busbar_kernel::teller::RouteLeg<'a> {
@@ -1538,11 +1526,11 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
 /// The caller rather than the pool, because the kernel's posting is the unit's — what the POOL spent
 /// is the governance ledger's figure and is already moved there by the walk's tap. Two figures, two
 /// books, neither a second spelling of the other.
-fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
-    busbar_unit_ledger::totals::TotalsKey::new(
-        busbar_unit_ledger::totals::BucketId::new(principal.as_str()),
-        busbar_unit_ledger::totals::CapDimension::NanoUnits,
-        busbar_unit_ledger::totals::BucketScope::All,
+fn balance(principal: &PrincipalId) -> busbar_kernel_ledger::totals::TotalsKey {
+    busbar_kernel_ledger::totals::TotalsKey::new(
+        busbar_kernel_ledger::totals::BucketId::new(principal.as_str()),
+        busbar_kernel_ledger::totals::CapDimension::NanoUnits,
+        busbar_kernel_ledger::totals::BucketScope::All,
     )
 }
 
@@ -1566,20 +1554,20 @@ pub fn settle(
     book: &dyn crate::root::durability::MoneyBook,
     principal: &PrincipalId,
     arrived: Arrived,
-    token: &busbar_caps::DurabilityToken,
-    posted: busbar_caps::Posted,
-) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+    posted: busbar_contract::caps::Posted,
+) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
     let key = balance(principal);
     let at = crate::root::durability::Settling {
         key: &key,
-        window: busbar_unit_admission::budget_window(
-            busbar_unit_admission::window::WINDOW_DAY,
+        window: busbar_kernel_budget::budget_window(
+            busbar_kernel_budget::window::WINDOW_DAY,
             arrived.secs(),
         ),
         durability: token,
         // The loop has no exit step of its own; the figure this posting is OF is the metering step's,
         // and that is the step a durability loss here is attributed to.
-        step: busbar_caps::StepName::Meter,
+        step: busbar_contract::caps::StepName::Meter,
         // The posting's two clocks, and they are two READINGS of the one arrival: the wall epoch
         // DATES the posting, the monotonic reading ORDERS it. Stamped from the wall clock twice, the
         // second field is a copy — and two postings of one second become unorderable, which is
@@ -1629,7 +1617,7 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> Response {
         headers,
         body,
     } = a;
-    let Some(operation) = busbar_substrate::handlers::request_handler(proto)
+    let Some(operation) = busbar_substrate_values::handlers::request_handler(proto)
         .and_then(|rh| rh.resolve_operation(uri.path(), &body))
     else {
         return host.fallback_not_found(
@@ -1701,7 +1689,7 @@ body_arrivals! {
 async fn path_arrival(
     proto: &'static str,
     parsed: busbar_llm::arrival::PathArrivalFacts,
-    ctx: busbar_substrate::ingress::arrival::ArrivalCtx,
+    ctx: busbar_kernel::ingress::arrival::ArrivalCtx,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -1830,7 +1818,7 @@ fn bedrock_path_arrival(
 /// Same two dialects, same names, same table; what changes is the PATH a request takes to reach the
 /// answer. The composition root installs this one instead of the plane's when `root-llm` is on, and
 /// with it off this static does not exist and the surface is the one it was.
-pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngress)] = &[
+pub static PATH_INGRESS: &[(&str, busbar_kernel::ingress::arrival::PathIngress)] = &[
     (busbar_llm::proto_codec::PROTO_GEMINI, gemini_path_arrival),
     (busbar_llm::proto_codec::PROTO_BEDROCK, bedrock_path_arrival),
 ];
@@ -1844,7 +1832,7 @@ pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngres
 /// The URL-model pair keep their own `PATH_INGRESS` entry points, which parse their own URL space
 /// before they reach any step this file drives. Their BODY entries are here, because the generic
 /// body-model dispatch arm resolves them by name like every other dialect.
-pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngress)] = &[
+pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)] = &[
     (
         busbar_llm::proto_codec::PROTO_ANTHROPIC,
         anthropic_body_arrival,
@@ -1868,7 +1856,7 @@ pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngres
 /// `busbar_llm::native_ingress::run` (native_ingress.rs:592) is the LIVE money authority: from the
 /// same resolved-op arrival — a known `model`, the dialect's already-resolved `operation`, the
 /// caller's headers and body — it builds a `NativePlane`/`GauntletRequest` and settles per-token
-/// billing through `busbar_substrate::plane_host::run_gauntlet` (the SUBSTRATE loop), late-accruing
+/// billing through `busbar_kernel::plane_host::run_gauntlet` (the SUBSTRATE loop), late-accruing
 /// against the admission-pinned `ROOT_CARD` snapshot. Every resolved-op arrival funnels through it:
 /// `operation_ingress` (once the body's model is read), `ingress_path_model` (once the URL's is), and
 /// the MCP-sampling re-entry `synthesize_completion`.
@@ -1890,7 +1878,7 @@ pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngres
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn native_run_via_loop(
-    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_api::operation::Operation,

@@ -18,7 +18,7 @@
 //!
 //! The tempting shape is to skip recording when verification fails and leave the last good sighting
 //! in place. That reads, from every operator-facing surface, as an agent that is still fine. So a
-//! refusal is recorded as [`busbar_substrate::trust::Sighting::Failed`] with the reason, which derives `Error`
+//! refusal is recorded as [`busbar_kernel::trust::Sighting::Failed`] with the reason, which derives `Error`
 //! and serves nothing — and, because `reverify::settle` deliberately does not clear the drift clock
 //! on a failed contact, an upstream cannot age its own quarantine out by refusing connections.
 //!
@@ -32,7 +32,7 @@
 
 use serde_json::Value;
 
-use busbar_substrate::trust::{Observation, Sighting};
+use busbar_kernel::trust::{Observation, Sighting};
 
 use super::anomaly;
 use super::card::{self, CardError};
@@ -488,7 +488,7 @@ impl super::verbs::CardObserver for RegistrationProbe<'_> {
 // ══ THE PLANE'S HALF: the FETCH verify-on-call runs on the delegation path ═══════════════════════
 //
 // [`reverify_once`] above is the pass. The single-flight, the freshness bound and the fail-closed
-// ordering are `busbar_substrate::trust::verify`'s, once, for every plane; what is here is the only part that is
+// ordering are `busbar_kernel::trust::verify`'s, once, for every plane; what is here is the only part that is
 // genuinely this plane's — the transport the pass fetches the card over. There is NO scheduler and no
 // tick: `super::plane::A2aPlane::reverify_agent` calls `reverify_once` from the request path when
 // `super::receive::verify_agent_on_call` finds the recorded observation older than `verify_ttl`.

@@ -6,8 +6,8 @@
 //! Every row says the same thing in a different situation: post the lower evidence, mark it, and
 //! put it where someone will look at it. These are the rows.
 
-use busbar_caps::OriginKind;
-use busbar_caps::{Outcome, PostingFlags, ReasonCode, StepName};
+use busbar_contract::caps::OriginKind;
+use busbar_contract::caps::{Outcome, PostingFlags, ReasonCode, StepName};
 use busbar_contract::{DestinationFacts, LaneId, UpstreamAddress, UpstreamIdx};
 use busbar_kernel::teller::{
     fee_count, requests_drawn, requests_settled, settle_amount, Evidence, FeeEvidence, FinishClass,

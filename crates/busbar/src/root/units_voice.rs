@@ -121,11 +121,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use busbar_caps::{
-    Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
-    Decision, Decode, Encode, Meter, MeterClassId, OpClassId, Outcome, PrincipalId, QuantitySource,
-    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, TrustToken, UnitKey, UnitToken, Usage,
-    UsageLine, UsageToken, VerifiedDestination, Verify,
+use busbar_contract::caps::{
+    Admission, Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
+    Consumption, Decision, Decode, Dial, Encode, Grant, Meter, MeterClassId, OpClassId, Outcome,
+    Pass, PrincipalId, QuantitySource, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, UnitKey,
+    Usage, UsageLine, VerifiedDestination, Verify,
 };
 use busbar_contract::dest::ClientMode;
 use busbar_contract::ids::{CorrelationRef, CorrelationValue, LaneId};
@@ -134,12 +134,12 @@ use busbar_kernel::reply::{AwaitingReplies, NotWaiting};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_kernel::Millis;
+use busbar_kernel_budget::{Admission as _, Door, Estimate, InMemoryCells, Pricer};
+use busbar_kernel_egress::trust::net::GuardPolicy;
+use busbar_kernel_identity::{Auth, AuthRequest};
+use busbar_kernel_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
 use busbar_plane_voice::claims::Dialect;
 use busbar_plane_voice::{meta, Upstream, VoicePlane};
-use busbar_unit_admission::{Admission as _, Door, Estimate, InMemoryCells, Pricer};
-use busbar_unit_auth::{Auth, AuthRequest};
-use busbar_unit_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
-use busbar_unit_trust::net::GuardPolicy;
 
 /// Every meter class this plane declares fits in one usage report, with room to spare.
 ///
@@ -148,7 +148,7 @@ use busbar_unit_trust::net::GuardPolicy;
 /// unreachable by inspection, so a plane that grows a class has to come past this line.
 const _: () = assert!(
     <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES.len()
-        <= busbar_caps::MAX_USAGE_LINES
+        <= busbar_contract::caps::MAX_USAGE_LINES
 );
 
 /// Nano-units in a cent, for the one place this file turns the rate card's flat fee into the unit a
@@ -702,7 +702,7 @@ pub struct VoiceNode {
     ///
     /// One table for the node, because the parent indices a chain chases are positions in it: two
     /// tables would be two readings of what a group's cap is.
-    pub groups: busbar_unit_admission::GroupTable,
+    pub groups: busbar_kernel_budget::GroupTable,
     /// What the door prices an estimate against.
     pub pricer: Pricer,
     /// The authentication chain, resolved from configuration at boot.
@@ -730,7 +730,7 @@ pub struct VoiceNode {
     /// token and nothing else — so a unit cannot mint one where it is used. Minting it here, from
     /// the kernel the root already holds, is the composition that makes the record's "where it came
     /// from" field a fact rather than a value the root chose per record.
-    pub origin: busbar_caps::Origin,
+    pub origin: busbar_contract::caps::Origin,
     /// The node's monotonic sequence for the audit record's second clock, so a wall clock that
     /// jumped cannot reorder one unit's own events.
     mono: AtomicU64,
@@ -762,7 +762,7 @@ pub struct VoiceNodeParts {
     /// The plane, with its configured upstream list.
     pub plane: VoicePlane,
     /// The configured limit tree, resolved at boot into the shape the door walks.
-    pub groups: busbar_unit_admission::GroupTable,
+    pub groups: busbar_kernel_budget::GroupTable,
     /// What the door prices an estimate against.
     pub pricer: Pricer,
     /// The authentication chain, resolved at boot.
@@ -778,7 +778,7 @@ pub struct VoiceNodeParts {
     /// The I/O half, behind its four seams.
     pub io: VoiceIo,
     /// The sealed origin every unit of this plane carries into its record.
-    pub origin: busbar_caps::Origin,
+    pub origin: busbar_contract::caps::Origin,
 }
 
 impl VoiceNode {
@@ -817,7 +817,7 @@ impl VoiceNode {
         &self,
         principal: &PrincipalId,
         group: Option<&str>,
-    ) -> Option<busbar_unit_admission::BucketChain> {
+    ) -> Option<busbar_kernel_budget::BucketChain> {
         self.groups.chain_for(principal.as_str(), group).ok()
     }
 
@@ -1067,7 +1067,7 @@ pub struct VoiceUnit<'n> {
     /// node's configuration does not have, whose caps therefore could not be read. A caller bound
     /// to no group at all has a perfectly good chain of one uncapped attribution bucket, and gets
     /// it.
-    pub chain: Option<&'n busbar_unit_admission::BucketChain>,
+    pub chain: Option<&'n busbar_kernel_budget::BucketChain>,
     /// What the turn reported, once the upstream reported it.
     pub usage: TurnUsage,
     /// The identifier a tool call's answer must carry, as the plane's draft minted it.
@@ -1186,7 +1186,7 @@ impl<'n> VoiceUnit<'n> {
     /// it would be a step deciding its own input — once per frame, for an answer that is the same
     /// every time.
     #[must_use]
-    pub fn charging_through(mut self, chain: &'n busbar_unit_admission::BucketChain) -> Self {
+    pub fn charging_through(mut self, chain: &'n busbar_kernel_budget::BucketChain) -> Self {
         self.chain = Some(chain);
         self
     }
@@ -1296,7 +1296,7 @@ impl<'n> VoiceUnit<'n> {
             .max(rate.cache_read)
             .max(rate.cache_write);
         Estimate {
-            per_class: vec![busbar_unit_admission::ClassEstimate {
+            per_class: vec![busbar_kernel_budget::ClassEstimate {
                 class: meta::CLASS_AUDIO_TOKENS_OUT.as_str().to_string(),
                 quantity: TURN_OPENING_TOKENS,
                 max_unit_price_nanos: dearest,
@@ -1340,7 +1340,7 @@ impl<'n> VoiceUnit<'n> {
             return 0;
         };
         let door = self.node.door.lock().unwrap_or_else(|e| e.into_inner());
-        busbar_unit_admission::AdmissionUnit::new(
+        busbar_kernel_budget::AdmissionUnit::new(
             &door,
             &self.node.pricer,
             self.dialect.name(),
@@ -1404,25 +1404,21 @@ impl<'n> VoiceUnit<'n> {
 // ---------------------------------------------------------------------------------------------
 
 impl Units for VoiceUnit<'_> {
-    fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
+    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
         // The kernel's own gate, over the configured budgets. There is no unit behind this step and
         // there was never meant to be: what it answers is the connection's own arrival record, which
         // the transport built and this file carries.
         Decision::proceed(token, self.arrival.clone())
     }
 
-    fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+    fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
         // The plane already read the frame; the pump already turned what it read into a shape. What
         // reaches the loop here is the operation class that shape is, and re-reading the frame to
         // re-derive it would advance the codec's per-session sequence a second time.
         Decision::proceed(token, self.shape.op_class())
     }
 
-    fn authenticate(
-        &self,
-        token: &UnitToken<Authenticate>,
-        _ctx: &UnitCtx,
-    ) -> Decision<Authenticate> {
+    fn authenticate(&self, token: &Pass<Authenticate>, _ctx: &UnitCtx) -> Decision<Authenticate> {
         let request = AuthRequest {
             candidate: self.credential.as_deref(),
             // The plane narrows within the claim's alternatives and never outside them; the unit is
@@ -1458,8 +1454,8 @@ impl Units for VoiceUnit<'_> {
 
     fn verify(
         &self,
-        token: &UnitToken<Verify>,
-        trust: &TrustToken,
+        token: &Pass<Verify>,
+        trust: &Grant<Dial>,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -1509,7 +1505,7 @@ impl Units for VoiceUnit<'_> {
 
     fn approve(
         &self,
-        token: &UnitToken<Approve>,
+        token: &Pass<Approve>,
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
@@ -1525,7 +1521,7 @@ impl Units for VoiceUnit<'_> {
         // by omission — every operation class a deployment forgot to name would be open.
         let claim = ClaimKey::new(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY);
         let Some(needed) =
-            busbar_unit_scope::required_scope(claim, self.shape.op_class(), &self.node.scope)
+            busbar_kernel_scope::required_scope(claim, self.shape.op_class(), &self.node.scope)
         else {
             return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
         };
@@ -1533,7 +1529,7 @@ impl Units for VoiceUnit<'_> {
         // which is the half that was missing. Finding the requirement and not checking it is a
         // lookup, not an authorization: it refuses a class the deployment forgot to name and admits
         // every principal for every class it did, including the read-only one opening a session.
-        match busbar_unit_scope::approve(self.grants, needed) {
+        match busbar_kernel_scope::approve(self.grants, needed) {
             Ok(()) => Decision::proceed(token, ScopeFacts::default()),
             Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied)),
         }
@@ -1541,8 +1537,8 @@ impl Units for VoiceUnit<'_> {
 
     fn admit(
         &self,
-        token: &UnitToken<Admit>,
-        admit: &AdmitToken<Admit>,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
@@ -1600,7 +1596,7 @@ impl Units for VoiceUnit<'_> {
         };
         let door = self.node.door.lock().unwrap_or_else(|e| e.into_inner());
         // The pinned arrival epoch, never a fresh clock read: the door's own contract.
-        let mut unit = busbar_unit_admission::AdmissionUnit::new(
+        let mut unit = busbar_kernel_budget::AdmissionUnit::new(
             &door,
             &self.node.pricer,
             self.dialect.name(),
@@ -1623,12 +1619,7 @@ impl Units for VoiceUnit<'_> {
         decision
     }
 
-    fn route(
-        &self,
-        token: &UnitToken<Route>,
-        ctx: &UnitCtx,
-        meter: &AccrualMeter,
-    ) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
         // **The exit for a call nobody answered.** The sweep took the wait out of the table and left
         // the ending behind; this is where the unit reads it. A call that ran out its declared
         // deadline ends under that deadline rather than settling as though the answer arrived, which
@@ -1669,8 +1660,8 @@ impl Units for VoiceUnit<'_> {
 
     fn meter(
         &self,
-        token: &UnitToken<Meter>,
-        usage: &UsageToken,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
@@ -1697,13 +1688,13 @@ impl Units for VoiceUnit<'_> {
         }
     }
 
-    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
         self.seal(token, ctx, *outcome, outcome_finish(outcome))
     }
 
     fn audit_refused(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit> {
@@ -1711,24 +1702,21 @@ impl Units for VoiceUnit<'_> {
         // a record, because a refusal is an event — and the record says which step said no and why,
         // because a refusal nobody can name is an event with no information in it.
         let outcome = Outcome::Refused(
-            refusal.step().unwrap_or(busbar_caps::StepName::Admit),
+            refusal
+                .step()
+                .unwrap_or(busbar_contract::caps::StepName::Admit),
             refusal.reason(),
         );
         self.seal(token, ctx, outcome, busbar_contract::FinishClass::Error)
     }
 
-    fn encode(
-        &self,
-        token: &UnitToken<Encode>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Encode> {
+    fn encode(&self, token: &Pass<Encode>, _ctx: &UnitCtx, _outcome: &Outcome) -> Decision<Encode> {
         // The plane renders the bytes; what the loop needs here is the frame they travel in. A voice
         // unit's ending is carried by the turn's own terminal frame, so the envelope is empty rather
         // than carrying a trailer this dialect does not write.
         Decision::proceed(
             token,
-            busbar_caps::Frame {
+            busbar_contract::caps::Frame {
                 direction: busbar_contract::Direction::Outbound,
                 stream: busbar_contract::StreamId(0),
                 bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b""[..])),
@@ -1799,11 +1787,11 @@ impl VoiceUnit<'_> {
     /// in; the ledger keeps it. An uncapped attribution bucket is still a balance, which is the
     /// point — a deployment that configured no group still has one figure per principal.
     #[must_use]
-    pub fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
-        busbar_unit_ledger::totals::TotalsKey::new(
-            busbar_unit_ledger::totals::BucketId::new(principal.as_str()),
-            busbar_unit_ledger::totals::CapDimension::NanoUnits,
-            busbar_unit_ledger::totals::BucketScope::All,
+    pub fn balance(principal: &PrincipalId) -> busbar_kernel_ledger::totals::TotalsKey {
+        busbar_kernel_ledger::totals::TotalsKey::new(
+            busbar_kernel_ledger::totals::BucketId::new(principal.as_str()),
+            busbar_kernel_ledger::totals::CapDimension::NanoUnits,
+            busbar_kernel_ledger::totals::BucketScope::All,
         )
     }
 
@@ -1826,20 +1814,20 @@ impl VoiceUnit<'_> {
     pub fn settle(
         &self,
         principal: &PrincipalId,
-        posted: busbar_caps::Posted,
-        token: &busbar_caps::DurabilityToken,
-    ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+        posted: busbar_contract::caps::Posted,
+        token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+    ) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
         let key = Self::balance(principal);
         let at = crate::root::durability::Settling {
             key: &key,
-            window: busbar_unit_admission::budget_window(
-                busbar_unit_admission::window::WINDOW_DAY,
+            window: busbar_kernel_budget::budget_window(
+                busbar_kernel_budget::window::WINDOW_DAY,
                 self.epoch,
             ),
             durability: token,
             // The loop has no exit step of its own; the figure this posting is OF is the metering
             // step's, and that is the step a durability loss here is attributed to.
-            step: busbar_caps::StepName::Meter,
+            step: busbar_contract::caps::StepName::Meter,
             stamp: crate::root::durability::PostingStamp {
                 rate_card_version: 0,
                 wall: self.epoch,
@@ -1861,7 +1849,7 @@ impl VoiceUnit<'_> {
     /// own token, which the loop lends for the length of this call.
     fn seal(
         &self,
-        token: &UnitToken<Audit>,
+        token: &Pass<Audit>,
         ctx: &UnitCtx,
         outcome: Outcome,
         finish: busbar_contract::FinishClass,
@@ -1879,7 +1867,8 @@ impl VoiceUnit<'_> {
             .durability
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let _record = busbar_unit_audit::record::Audit::seal(&mut durability.record, inputs, token);
+        let _record =
+            busbar_kernel_audit::record::Audit::seal(&mut durability.record, inputs, token);
         Decision::proceed(token, facts)
     }
 
@@ -1892,11 +1881,11 @@ impl VoiceUnit<'_> {
         ctx: &UnitCtx,
         outcome: Outcome,
         finish: busbar_contract::FinishClass,
-    ) -> busbar_unit_audit::record::AuditInputs {
+    ) -> busbar_kernel_audit::record::AuditInputs {
         // The record does not decide the fee a second time: it reads the same evidence the exit
         // path settles from, through the same function.
         let (fee_count, _) = busbar_kernel::teller::fee_count(&self.fee(ctx, Some(finish)));
-        busbar_unit_audit::record::AuditInputs {
+        busbar_kernel_audit::record::AuditInputs {
             // WHO THE RECORD IS ABOUT. The principal the auth chain named, where the unit got as far
             // as being handed one. `Arrival` is the honest answer for a unit that was refused before
             // any principal existed — a connection that never got past decode is nobody's — and it
@@ -1908,14 +1897,16 @@ impl VoiceUnit<'_> {
                 .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
             {
-                Some(principal) => {
-                    busbar_unit_audit::record::Subject::PrincipalId(principal.as_str().to_string())
-                }
-                None => busbar_unit_audit::record::Subject::Arrival,
+                Some(principal) => busbar_kernel_audit::record::Subject::PrincipalId(
+                    principal.as_str().to_string(),
+                ),
+                None => busbar_kernel_audit::record::Subject::Arrival,
             },
-            what: busbar_unit_audit::record::What {
+            what: busbar_kernel_audit::record::What {
                 unit_key: ctx.key,
-                op_class: busbar_unit_audit::record::OpClassId::new(self.shape.op_class().as_str()),
+                op_class: busbar_kernel_audit::record::OpClassId::new(
+                    self.shape.op_class().as_str(),
+                ),
                 destination: None,
                 parent: None,
                 pre_hook_head: None,
@@ -1924,7 +1915,7 @@ impl VoiceUnit<'_> {
             wall: self.epoch,
             mono: self.node.tick(),
             origin: self.node.origin,
-            outcome: busbar_unit_audit::record::OutcomeFacts {
+            outcome: busbar_kernel_audit::record::OutcomeFacts {
                 // How the LOOP ended this unit, and the step it ended at. Both are carried in
                 // rather than written here: a record that says every unit completed is a record
                 // that cannot tell a turn from the refusal that replaced it.
@@ -1935,17 +1926,17 @@ impl VoiceUnit<'_> {
                 emission_delta: 0,
                 stale_policy: false,
             },
-            amount: busbar_unit_audit::record::Amount {
+            amount: busbar_kernel_audit::record::Amount {
                 lines: self.usage.lines(),
                 pre_tier: 0,
                 priced: 0,
-                tier_bp: busbar_unit_admission::STANDARD_TIER_BP,
+                tier_bp: busbar_kernel_budget::STANDARD_TIER_BP,
                 fee_count,
                 currency: String::new(),
                 rate_card_version: 0,
                 bucket_chain_ref: String::new(),
             },
-            controls: busbar_unit_audit::record::Controls::default(),
+            controls: busbar_kernel_audit::record::Controls::default(),
             // The label itself never reaches the chain — only its digest does — so what travels here
             // is what the chain hashes, and nothing a reader could resolve back to a conversation.
             correlation_label: None,
@@ -1977,13 +1968,14 @@ impl VoiceUnit<'_> {
 /// plane's sealed ending is the single source, and an ending it called an error posts nothing.
 fn fee_evidence(
     shape: UnitShape,
-    origin: busbar_caps::OriginKind,
+    origin: busbar_contract::caps::OriginKind,
     selected_upstream: bool,
     relayed_first_response_frame: bool,
     finish: Option<busbar_contract::FinishClass>,
 ) -> FeeEvidence {
     FeeEvidence {
-        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client && shape.is_handshake(),
+        client_open_or_one_shot: origin == busbar_contract::caps::OriginKind::Client
+            && shape.is_handshake(),
         selected_upstream,
         relayed_first_response_frame,
         status_at: None,
@@ -2004,14 +1996,16 @@ fn outcome_finish(outcome: &Outcome) -> busbar_contract::FinishClass {
 }
 
 /// The audit crate's own spelling of a finish class.
-fn audit_finish(finish: busbar_contract::FinishClass) -> busbar_unit_audit::record::FinishClass {
+fn audit_finish(finish: busbar_contract::FinishClass) -> busbar_kernel_audit::record::FinishClass {
     match finish {
-        busbar_contract::FinishClass::Complete => busbar_unit_audit::record::FinishClass::Complete,
-        busbar_contract::FinishClass::TurnComplete => {
-            busbar_unit_audit::record::FinishClass::TurnComplete
+        busbar_contract::FinishClass::Complete => {
+            busbar_kernel_audit::record::FinishClass::Complete
         }
-        busbar_contract::FinishClass::Partial => busbar_unit_audit::record::FinishClass::Partial,
-        busbar_contract::FinishClass::Error => busbar_unit_audit::record::FinishClass::Error,
+        busbar_contract::FinishClass::TurnComplete => {
+            busbar_kernel_audit::record::FinishClass::TurnComplete
+        }
+        busbar_contract::FinishClass::Partial => busbar_kernel_audit::record::FinishClass::Partial,
+        busbar_contract::FinishClass::Error => busbar_kernel_audit::record::FinishClass::Error,
     }
 }
 

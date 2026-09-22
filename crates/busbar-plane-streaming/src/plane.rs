@@ -502,14 +502,28 @@ impl Plane for StreamingPlane {
         }
         let session_upstream_count = ctx.session().map(|s| s.upstream_count()).unwrap_or(0);
         if session_upstream_count > 0 {
+            // Route to the upstream this session DIALED at open, not the first configured one. Unit 0
+            // (the fresh branch below) picked `default_upstream(arriving)` off the arriving dialect;
+            // a paired turn must name that SAME upstream by its real config index and lane, or a
+            // session that dialed the second-declared provider — a gemini-live client where
+            // openai-realtime is declared first — has every turn metered on the first provider's
+            // lane: the wrong provider's money. The session's own bound client dialect is the arriving
+            // dialect Unit 0 chose from, read back off the declared session fact (falling back to the
+            // unit's own draft fact for the same reason `default_upstream` reads it there).
+            let dialed = client_dialect_from_session(ctx).or_else(|| draft_dialect(u));
+            let idx = dialed
+                .filter(|d| d.is_duplex_upstream())
+                .and_then(|d| self.upstreams().iter().position(|up| up.dialect == d))
+                .unwrap_or(0);
+            let lane = self
+                .upstreams()
+                .get(idx)
+                .map(|up| up.lane)
+                .unwrap_or(busbar_contract::ids::LaneId::new("streaming"));
             return DestinationFacts::SessionUpstream {
-                upstream: busbar_contract::ids::UpstreamIdx(0),
+                upstream: busbar_contract::ids::UpstreamIdx(u8::try_from(idx).unwrap_or(0)),
                 stream: None,
-                lane: self
-                    .upstreams()
-                    .first()
-                    .map(|up| up.lane)
-                    .unwrap_or(busbar_contract::ids::LaneId::new("streaming")),
+                lane,
             };
         }
         // The dialect the decode step named, off the unit's own sealed draft facts.

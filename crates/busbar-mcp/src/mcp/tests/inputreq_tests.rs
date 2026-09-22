@@ -300,7 +300,7 @@ async fn every_round_including_the_first_is_charged_exactly_once() {
 /// was refused — the self-contention this test pins out.
 #[tokio::test]
 async fn a_multi_round_dispatch_holds_one_concurrency_slot_at_a_time() {
-    use busbar_substrate::plane_host::DispatchScope;
+    use busbar_kernel::plane_host::DispatchScope;
     use std::sync::atomic::{AtomicI64, Ordering};
     use std::sync::Arc;
 

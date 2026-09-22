@@ -4,8 +4,9 @@
 //! The store adapter: the three unit-side store seams over ONE loaded store plugin.
 //!
 //! Three crates bind to a store and none of them may name one — `busbar-kernel` (slices),
-//! `busbar-unit-verbs` (the disaster-recovery verbs and the sealed new-verb replay cache) and
-//! `busbar-unit-wal` (shipping). The composition root binds all three to a single adapter over the
+//! the admin verb-execution unit (the disaster-recovery verbs and the sealed new-verb replay
+//! cache, reached here through the `busbar_contract::verb_store::Store` face) and `busbar-unit-wal`
+//! (shipping). The composition root binds all three to a single adapter over the
 //! store this crate loaded, so there is exactly one store handle in the process and exactly one
 //! place that knows what the loaded plugin can and cannot do.
 //!
@@ -42,7 +43,7 @@
 //! # The shim's semantics, stated rather than implied
 //!
 //! - **Slices.** A node whose store cannot hold a fleet-wide window has exactly one generation of
-//!   leases and nothing that can advance it, so [`epoch`](busbar_kernel::slice::SliceStore::epoch)
+//!   leases and nothing that can advance it, so [`epoch`](busbar_contract::slice::SliceStore::epoch)
 //!   is constant and a reservation is granted in full, stamped with that epoch — a request carrying
 //!   some other epoch is stamped, not refused, because a stale-epoch refusal would be an error and
 //!   there is no fleet for it to be stale against. The grant never expires for the same reason.
@@ -78,16 +79,16 @@
 use crate::DynStore;
 use busbar_api::Store as AbiStore;
 use busbar_api::{StoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
-use busbar_caps::AdminToken;
-use busbar_kernel::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
-use busbar_unit_ledger::legacy::{LegacyHead, LegacyMigrationSource};
-use busbar_unit_ledger::migration::{
+use busbar_contract::caps::{AdminVerb, Grant};
+use busbar_contract::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
+use busbar_contract::verb_store::{Store as VerbStore, StoreError as VerbStoreError};
+use busbar_kernel_ledger::legacy::{LegacyHead, LegacyMigrationSource};
+use busbar_kernel_ledger::migration::{
     LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows, MigrationError, MigrationMarker,
     MigrationRecords,
 };
-use busbar_unit_ledger::totals::CapDimension;
-use busbar_unit_verbs::store::{Store as VerbStore, StoreError as VerbStoreError};
-use busbar_unit_wal::{Record, ShipError, Shipper};
+use busbar_kernel_ledger::totals::CapDimension;
+use busbar_kernel_wal::{Record, ShipError, Shipper};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -164,10 +165,10 @@ type ReplaySlots = HashMap<(String, String), (u64, Option<Vec<u8>>)>;
 /// How long a sealed replay slot answers for, in seconds.
 ///
 /// The seam's own contract names the window, and the in-process sibling
-/// [`busbar_unit_verbs::idempotency`] keeps exactly this one — so a deployment whose store predates
+/// [`busbar_contract::verb_store::IDEMPOTENCY_TTL_SECS`] keeps exactly this one — so a deployment whose store predates
 /// the durable cache gets the same replay window it would get from the store, rather than a
 /// different one because the shim is answering.
-pub const REPLAY_TTL_SECS: u64 = busbar_unit_verbs::idempotency::IDEMPOTENCY_TTL_SECS;
+pub const REPLAY_TTL_SECS: u64 = busbar_contract::verb_store::IDEMPOTENCY_TTL_SECS;
 
 /// The clock the sealed replay cache ages its slots against, in unix seconds.
 ///
@@ -781,7 +782,7 @@ impl SliceStore for StoreAdapter {
             id: SliceId(id),
             granted: request.wanted,
             // Nothing expires a lease that no other node can take, so the grant is open-ended.
-            valid_until: busbar_kernel::Millis::MAX,
+            valid_until: busbar_contract::Millis::MAX,
             // The shim's epoch, not the requested one: stamping is not refusing.
             epoch: SHIM_EPOCH,
         })
@@ -805,7 +806,7 @@ impl SliceStore for StoreAdapter {
 impl VerbStore for StoreAdapter {
     /// Break the journal chain. On a deployment whose journal is memory-buffered, the chain is the
     /// node's own, so the break is recorded here and the node's next entry starts a new one.
-    fn chain_break(&self, _admin: &AdminToken) -> Result<(), VerbStoreError> {
+    fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), VerbStoreError> {
         let mut recovery = self.inner.shim.recovery();
         recovery.chain_breaks = recovery.chain_breaks.saturating_add(1);
         Ok(())
@@ -816,7 +817,11 @@ impl VerbStore for StoreAdapter {
     /// that a restore was taken and reseal the node-local state that depends on it.
     ///
     /// The sealed replay cache deliberately survives — see the module preamble.
-    fn store_restore(&self, _admin: &AdminToken, backup_ref: &str) -> Result<(), VerbStoreError> {
+    fn store_restore(
+        &self,
+        _admin: &Grant<AdminVerb>,
+        backup_ref: &str,
+    ) -> Result<(), VerbStoreError> {
         let mut recovery = self.inner.shim.recovery();
         recovery.restores = recovery.restores.saturating_add(1);
         recovery.last_restore = Some(backup_ref.to_string());
@@ -835,7 +840,7 @@ impl VerbStore for StoreAdapter {
     }
 
     /// Reseal the epoch floor. The shim has one epoch, so the floor becomes it.
-    fn reseal_epoch_floor(&self, _admin: &AdminToken) -> Result<(), VerbStoreError> {
+    fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), VerbStoreError> {
         let mut recovery = self.inner.shim.recovery();
         recovery.epoch_floor = SHIM_EPOCH.0;
         Ok(())

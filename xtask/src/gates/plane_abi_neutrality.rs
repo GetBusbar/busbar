@@ -48,6 +48,16 @@ pub const ROW_TEST_RATCHET: &str = "plane-abi-neutrality:test-path-ratchet";
 const HOT_LANE: &str = "crates/busbar-plugin/src/hot";
 const TAXONOMY_DOC: &str = "docs/design/1.6.0-plane-abi-taxonomy.md";
 
+/// DOCUMENTED EXEMPTION for [`declared_plane_keys`]: `crates/busbar-plugin/src/hot/mod.rs` declares
+/// `pub const PLANE_DECL: &[u8] = b"busbar_plane_decl\0";` — the ABI SYMBOL NAME a plane cdylib's
+/// hot-lane entrypoint exports, resolved by the loader via `libloading`. It starts with the same
+/// `pub const PLANE_DECL` grammar every real plane's declaration marker uses, but it is the loader's
+/// OWN vocabulary constant, not a plane declaring itself — `busbar-plugin` is the host, not a plane.
+/// Scanned like any other file it makes `declared_plane_keys` read a "plugin" plane into existence,
+/// which the total-coverage row then fails to find in [`BANNED`] — a false positive, not a leak.
+/// Excluded by exact file, not by loosening the grammar or adding "plugin" to the ban list.
+const HOT_LANE_DECL_SITE: &str = "crates/busbar-plugin/src/hot/mod.rs";
+
 /// The banned protocol/role nouns. Matched case-insensitively as SUBSTRINGS of identifiers on
 /// declaration lines: a banned noun concatenated into a name — `McpTransport`, `server_stream` — is
 /// exactly the leak to catch, and a word-boundary match would miss it.
@@ -197,6 +207,10 @@ fn declared_plane_keys(cx: &Ctx) -> Result<Vec<String>, String> {
         .map_err(|e| e.to_string())?;
     let mut keys: Vec<String> = Vec::new();
     for f in &files {
+        let rel = f.rel_str();
+        if rel == HOT_LANE_DECL_SITE {
+            continue;
+        }
         if !f
             .text
             .lines()
@@ -204,7 +218,6 @@ fn declared_plane_keys(cx: &Ctx) -> Result<Vec<String>, String> {
         {
             continue;
         }
-        let rel = f.rel_str();
         let Some(krate) = rel
             .strip_prefix("crates/")
             .and_then(|r| r.split('/').next())

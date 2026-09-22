@@ -45,9 +45,9 @@ fn signing_governance() -> Arc<dyn GovKit> {
             Arc::new(busbar_store_memory::MemoryStore::new()),
             None,
             Some(
-                busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
                     &[7u8; 32],
-                    busbar_substrate::governance::signing::DEFAULT_KID,
+                    busbar_kernel::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
@@ -129,7 +129,7 @@ fn redemption(state: &str) -> serde_json::Value {
     })
 }
 
-/// Build the neutral [`busbar_substrate::plane_routes::PlaneReqCtx`] the core route adapter would
+/// Build the neutral [`busbar_kernel::plane_routes::PlaneReqCtx`] the core route adapter would
 /// hand `envelope::rpc` (S4a Option A), from the pieces a test has: the live handle (erased as the
 /// engine handle), the resolved `gov`, an anonymous principal and the request body. `slot` is unused
 /// by `rpc` (it reads its resource off the live app), so a unit stands in; `caller_principal` mirrors
@@ -138,8 +138,8 @@ fn rpc_ctx(
     handle: Arc<dyn EngineHandle>,
     gov: &busbar_api::PlaneRequestCtx,
     body: axum::body::Bytes,
-) -> busbar_substrate::plane_routes::PlaneReqCtx {
-    busbar_substrate::plane_routes::PlaneReqCtx {
+) -> busbar_kernel::plane_routes::PlaneReqCtx {
+    busbar_kernel::plane_routes::PlaneReqCtx {
         path: String::new(),
         uri: axum::http::Uri::default(),
         method: busbar_plugin_loader::RouteMethod::Post,

@@ -13,6 +13,8 @@
 //! bottom layer writes — is read by a transport and by the loop, and by nobody who writes a plugin.
 
 use core::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -477,6 +479,38 @@ impl fmt::Debug for Conn {
 /// moves the bytes is the transport's business and not the seam's.
 pub trait RawIo: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin {}
 impl<T: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin> RawIo for T {}
+
+/// The core↔transport connection-security seam (DECISIONS #40): an opaque wrap a binding's
+/// connection-security prep hands to a transport, and the ONE operation a transport calls on it.
+///
+/// This is deliberately rustls-free, matching the ABI-face rule that already keeps rustls (and
+/// every other concrete crypto/cert type) out of this crate (DECISIONS #38/#39): a plugin manifest
+/// — and a transport, which is in-tree but still only ever named through this trait here — never
+/// names `rustls::ServerConfig` or any key byte. `busbar-core-transport` is the one crate that
+/// builds a concrete implementation (an identity no-op for a plaintext binding, a rustls-backed one
+/// for a TLS binding); everything on this side of the seam sees only `wrap`.
+///
+/// A transport that can call `wrap` on its accepted/dialled stream declares
+/// [`super::TransportMeta::WRAPPABLE_BYTE_STREAM`]; one that cannot (e.g. a stdio transport, which
+/// has no byte stream to wrap at all) leaves it at its default `false` and the composition root
+/// fails closed rather than hand it a `TLS`-configured binding it would have to silently downgrade.
+pub trait ConnectionSecurity: Send + Sync {
+    /// Apply this binding's connection security to a freshly accepted/dialled raw stream, handing
+    /// back the secured stream the transport serves from then on.
+    ///
+    /// The identity wrap returns `io` unchanged — a plaintext binding's wire is untouched, byte for
+    /// byte. A TLS wrap runs the handshake and returns the encrypted session. Either way this is a
+    /// PER-CONNECTION outcome: any failure (a rejected handshake, a transport error) is reported
+    /// through the `io::Error` and must never be treated as a reason to bring the listener down.
+    fn wrap<'a>(&'a self, io: Box<dyn RawIo>) -> SecuredIoFut<'a>;
+}
+
+/// The one boxed future [`ConnectionSecurity::wrap`] returns — named for the same reason
+/// [`super::Fut`] is: an async trait method has to box its future, and a bare inline
+/// `Pin<Box<dyn Future<...> + Send + 'a>>` at the call site is what clippy's `type_complexity`
+/// (correctly) refuses to let sprawl across a signature.
+pub type SecuredIoFut<'a> =
+    Pin<Box<dyn Future<Output = std::io::Result<Box<dyn RawIo>>> + Send + 'a>>;
 
 /// The byte stream under a connection, detached from the layer that owned it.
 ///

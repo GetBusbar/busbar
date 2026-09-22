@@ -12,8 +12,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use serde_json::json;
 
-use busbar_core::governance::{GovState, MemoryStore};
-use busbar_core::state::AppHandle;
+use busbar_kernel::governance::{GovState, MemoryStore};
+use busbar_kernel::state::AppHandle;
 
 /// A store whose KEY WRITES always fail — the mint half of `commit_then` cannot succeed, while the
 /// config half (which never touches the store) commits normally. Everything else delegates.
@@ -62,15 +62,15 @@ impl busbar_api::Store for RefusesKeyWrites {
     }
 }
 
-fn gov(store: Arc<dyn busbar_core::governance::Store>) -> Arc<GovState> {
+fn gov(store: Arc<dyn busbar_kernel::governance::Store>) -> Arc<GovState> {
     Arc::new(
         GovState::new_with_signer(
             store,
             None,
             Some(
-                busbar_core::governance::signing::TokenSigner::from_secret_bytes(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
                     &[7u8; 32],
-                    busbar_core::governance::signing::DEFAULT_KID,
+                    busbar_kernel::governance::signing::DEFAULT_KID,
                 ),
             ),
         )
@@ -78,10 +78,10 @@ fn gov(store: Arc<dyn busbar_core::governance::Store>) -> Arc<GovState> {
     )
 }
 
-fn tree(names: &[&str]) -> std::collections::BTreeMap<String, busbar_core::config::GroupCfg> {
+fn tree(names: &[&str]) -> std::collections::BTreeMap<String, busbar_kernel::config::GroupCfg> {
     names
         .iter()
-        .map(|n| (n.to_string(), busbar_core::config::GroupCfg::default()))
+        .map(|n| (n.to_string(), busbar_kernel::config::GroupCfg::default()))
         .collect()
 }
 
@@ -93,7 +93,7 @@ async fn mint_with_parent(
 ) -> StatusCode {
     mint_as(
         handle,
-        busbar_core::auth::AuthPrincipal(None),
+        busbar_kernel::auth::AuthPrincipal(None),
         name,
         group,
         parent,
@@ -106,7 +106,7 @@ async fn mint_with_parent(
 /// each test provisions its own group name.
 async fn mint_as(
     handle: &Arc<AppHandle>,
-    principal: busbar_core::auth::AuthPrincipal,
+    principal: busbar_kernel::auth::AuthPrincipal,
     name: &str,
     group: &str,
     parent: &str,
@@ -138,7 +138,7 @@ const PROVISION_FAIL_VERSION_SUMMARY: &str = "group.provision group:user:alice-m
 /// committed config change is never invisible, and the retry is idempotent (the group now exists).
 #[tokio::test]
 async fn mint_failure_after_the_provision_commit_still_records_the_committed_group() {
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
     let app = crate::new_test_app()
         .governance(gov(Arc::new(RefusesKeyWrites(MemoryStore::new()))))
         .groups_tree(tree(&["team"]))
@@ -147,7 +147,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let versions_before = handle
         .load()
         .versions
-        .list(0, busbar_core::admin::v1::contract::LIST_LIMIT_MAX)
+        .list(0, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX)
         .len();
 
     let status = mint_with_parent(&handle, "k", PROVISION_FAIL_GROUP, "team").await;
@@ -171,20 +171,20 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     // AND IT IS RECORDED — at COMMIT time, so a mint that fails afterwards cannot erase the fact
     // that the config changed.
     assert!(
-        busbar_core::audit_ring::AUDIT
+        busbar_kernel::audit_ring::AUDIT
             .list_filtered(
                 0,
-                busbar_core::audit_ring::MAX_AUDIT_ENTRIES,
+                busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
                 Some("group.provision"),
                 Some(PROVISION_FAIL_RESOURCE)
             )
             .iter()
-            .any(|e| e.outcome == busbar_core::audit_ring::OUTCOME_APPLIED),
+            .any(|e| e.outcome == busbar_kernel::audit_ring::OUTCOME_APPLIED),
         "the committed provision is in the audit trail"
     );
     let versions = live
         .versions
-        .list(0, busbar_core::admin::v1::contract::LIST_LIMIT_MAX);
+        .list(0, busbar_kernel::admin::v1::contract::LIST_LIMIT_MAX);
     assert!(
         versions.len() > versions_before,
         "the committed provision is in the version log"
@@ -209,10 +209,10 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     // before the second read. Latent: nothing in this suite currently drives that many concurrent
     // audit writes. Accepted rather than bracketed by seq, which would narrow the window but not
     // defeat eviction.
-    let audit_rows_before = busbar_core::audit_ring::AUDIT
+    let audit_rows_before = busbar_kernel::audit_ring::AUDIT
         .list_filtered(
             0,
-            busbar_core::audit_ring::MAX_AUDIT_ENTRIES,
+            busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
             Some("group.provision"),
             Some(PROVISION_FAIL_RESOURCE),
         )
@@ -220,10 +220,10 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let status = mint_with_parent(&handle, "k", PROVISION_FAIL_GROUP, "team").await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
-        busbar_core::audit_ring::AUDIT
+        busbar_kernel::audit_ring::AUDIT
             .list_filtered(
                 0,
-                busbar_core::audit_ring::MAX_AUDIT_ENTRIES,
+                busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
                 Some("group.provision"),
                 Some(PROVISION_FAIL_RESOURCE)
             )
@@ -239,16 +239,16 @@ const CEILING_ACTOR: &str = "test:ceiling-audit";
 
 /// `key.create`/rejected rows written by [`CEILING_ACTOR`] — this test's refusals and no others.
 fn ceiling_refusal_rows() -> usize {
-    busbar_core::audit_ring::AUDIT
+    busbar_kernel::audit_ring::AUDIT
         .list_filtered(
             0,
-            busbar_core::audit_ring::MAX_AUDIT_ENTRIES,
+            busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES,
             Some("key.create"),
             Some(crate::keys::KEY_RESOURCE_NONE),
         )
         .iter()
         .filter(|e| {
-            e.outcome == busbar_core::audit_ring::OUTCOME_REJECTED && e.principal == CEILING_ACTOR
+            e.outcome == busbar_kernel::audit_ring::OUTCOME_REJECTED && e.principal == CEILING_ACTOR
         })
         .count()
 }
@@ -259,7 +259,7 @@ fn ceiling_refusal_rows() -> usize {
 /// configured groups and mints that bind to an EXISTING group are unaffected.
 #[tokio::test]
 async fn auto_provision_stops_at_the_group_ceiling() {
-    busbar_core::metrics::init();
+    busbar_kernel::metrics::init();
     let mut app = crate::new_test_app()
         .governance(gov(Arc::new(MemoryStore::new())))
         .groups_tree(tree(&["team"]))
@@ -280,7 +280,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
     // in the binary shares, so this filters to rows written by THIS test's principal. Without that
     // a concurrent test's refusal satisfies the assertion and it passes with the fix reverted.
     let ceiling_actor =
-        busbar_core::auth::AuthPrincipal(Some(busbar_api::Principal::from_id(CEILING_ACTOR)));
+        busbar_kernel::auth::AuthPrincipal(Some(busbar_api::Principal::from_id(CEILING_ACTOR)));
     let rejected_before = ceiling_refusal_rows();
     let status = mint_as(&handle, ceiling_actor, "k2", "user:bob", "team").await;
     assert_eq!(

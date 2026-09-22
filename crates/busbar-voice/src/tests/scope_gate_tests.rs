@@ -18,8 +18,8 @@
 
 use crate::mount::{open_governed, session_scope_allowed, GovernedOpen, Ingress};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
-use busbar_substrate::plane::handle_engine::DurableHandleEngine;
-use busbar_substrate::testkit::fixture_host::FixtureHost;
+use busbar_kernel::plane::handle_engine::DurableHandleEngine;
+use busbar_kernel::testkit::fixture_host::FixtureHost;
 use std::sync::Arc;
 
 /// The pool a voice session is served on — the value the `session` grant names.

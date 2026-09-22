@@ -398,6 +398,7 @@ boot.refusal|BOOT-141|boot
 boot.refusal|BOOT-150|validate
 boot.refusal|BOOT-151|validate
 boot.refusal|BOOT-152|validate
+boot.refusal|BOOT-152b|boot
 boot.refusal|BOOT-153|boot
 boot.refusal|BOOT-162|boot
 boot.refusal|BOOT-170|boot

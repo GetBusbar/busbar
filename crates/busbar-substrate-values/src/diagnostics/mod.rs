@@ -230,13 +230,13 @@ pub fn by_code(code: u16) -> Option<&'static Diagnostic> {
 // in-tree call sites (a `pub(crate)` macro cannot cross a crate boundary), and these `#[macro_export]`
 // versions are the ones a PLUGIN crate reaches: a plane extracted from core into its own crate can no
 // longer name `crate::diagnostics::diag_warn`, so it emits coded diagnostics with the identical banner
-// form through `busbar_substrate::diagnostics::{diag_warn, SOME_DIAG}`. The expansion is byte-identical
+// form through `busbar_substrate_values::diagnostics::{diag_warn, SOME_DIAG}`. The expansion is byte-identical
 // to core's (`::tracing::warn!(diag = %DIAG.banner(), …)`); the expanding crate supplies `tracing`.
 //
 // `#[macro_export]` hoists the macro to the substrate CRATE ROOT, so a plugin reaches it as
-// `busbar_substrate::diag_warn!` (imported `use busbar_substrate::{diag_warn, diag_error, diag_debug};`
+// `busbar_substrate_values::diag_warn!` (imported `use busbar_kernel::{diag_warn, diag_error, diag_debug};`
 // alongside the `Diagnostic` const it names). Deliberately NOT re-exported under this `diagnostics`
-// module: core does `pub use busbar_substrate::diagnostics::*`, and a public macro re-export here would
+// module: core does `pub use busbar_substrate_values::diagnostics::*`, and a public macro re-export here would
 // be glob-imported into core where core's own `pub(crate)` `diag_warn` shadows it — the exact
 // crate-root pollution core's diagnostics header calls out. A crate-root-only export sidesteps that and
 // still gives a future plugin the macro.

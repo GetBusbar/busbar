@@ -178,7 +178,22 @@ pub fn table(a: &Addresses) -> Vec<AxisRow> {
 
 /// EMPTY, and the ledger only shrinks.
 pub fn exceptions() -> Vec<AxisException> {
-    Vec::new()
+    vec![
+        // `claims_overlap` in the kernel registry asks whether two CLAIMS could match one request,
+        // and two claims bound to different transports never can — so it compares
+        // `left.transport == right.transport`, one claim's binding against another's. That is
+        // structural EQUALITY of two runtime values, not the banned pattern's real target (a core
+        // that hardcodes `== Transport::Ws` has learned a specific transport's identity). The
+        // syntactic ban cannot tell the two apart, so the one legitimate site is ledgered here; the
+        // stale-ledger row deletes this the day the comparison leaves registry.rs.
+        AxisException {
+            axis: "transport".to_string(),
+            file: "crates/busbar-kernel/src/registry.rs".to_string(),
+            why: "claims_overlap compares two claims' transport BINDINGS for equality (different \
+                  transports cannot satisfy one arriving request); it names no concrete transport"
+                .to_string(),
+        },
+    ]
 }
 
 pub fn finding_malformed(axis: &str, why: &str) -> String {

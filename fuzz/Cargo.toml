@@ -1,0 +1,36 @@
+# Coverage-guided fuzz harnesses for busbar's untrusted parse surface.
+#
+# This is a SELF-CONTAINED workspace (note the empty `[workspace]` table below): it is NOT a
+# member of the root workspace, so it never affects a normal `cargo build`/`cargo test` and adds
+# zero cost to the per-push CI. It only builds when `cargo fuzz` is invoked (see qa-fuzz.yml,
+# which runs at the qa promotion boundary, time-boxed). The harnesses depend on the target crates
+# by path with their sanctioned `test-support` feature and DO NOT modify any crate source.
+[package]
+name = "busbar-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# The codec crate exposes the concrete per-dialect readers behind its `test-support` feature (the
+# same seam its own fidelity tests use). `embeddings_read_request` dispatches straight into the
+# production `read_embeddings_request` reader for each dialect — so fuzzing this entry point fuzzes
+# the real JSON/wire decode of an untrusted request body.
+busbar-llm-codec = { path = "../crates/busbar-llm-codec", features = ["test-support"] }
+
+# Fuzz harnesses are not doctested/benchmarked and must not be picked up as workspace tests.
+[[bin]]
+name = "codec_embeddings_read_request"
+path = "fuzz_targets/codec_embeddings_read_request.rs"
+test = false
+doc = false
+bench = false
+
+# Make this its own workspace so the root workspace does not try to build the fuzz crate (and its
+# sanitizer flags) during ordinary builds.
+[workspace]

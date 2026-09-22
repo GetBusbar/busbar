@@ -24,6 +24,7 @@ pub mod changelog;
 pub mod changelog_register;
 pub mod ci_umbrella;
 pub mod config_schema;
+pub mod conformance_sync;
 pub mod construction;
 pub mod denylist_gate;
 pub mod design_bindings;
@@ -37,7 +38,9 @@ pub mod inventory_coverage;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod kind_isolation;
+pub mod money_invariants;
 pub mod no_deferral;
+pub mod no_float_money;
 pub mod no_self_filed_issues;
 pub mod no_tracked_ignored;
 pub mod plane_abi_neutrality;
@@ -47,6 +50,7 @@ pub mod population;
 pub mod qa_gate_dispatch;
 pub mod release_order;
 pub mod response_header;
+pub mod seal_witness;
 pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
@@ -402,7 +406,7 @@ const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
 // says so" trigger the struck note named. Re-examined: no case was added; the growth is the 1.6.0
 // register itself. The `audited-at-reachable` case asks git to reach EVERY commit the register names,
 // and the register gained the whole 1.6.0 drain — so the same 14 cases now scan a bigger history. It
-// is NOT the per-plant disk rescan `construction` had (d0117d2cb): each case plants a DIFFERENT
+// is NOT the per-plant disk rescan the earlier `construction` register had: each case plants a DIFFERENT
 // register, so the reachability answer differs per case and is not memoisable across them. Isolated
 // it is still under the default (8 779), but the battery runs under `cargo test`'s own ~1.4x
 // contention where it crosses it — the same reason every other whole-tree battery here carries the
@@ -1988,6 +1992,27 @@ pub static REGISTRY: &[Registration] = &[
         summary: "the kernel never re-derives a usage token class from a raw provider wire pointer",
     },
     Registration {
+        name: "no-float-money",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(no_float_money::NoFloatMoneyGate),
+        summary: "no floating point on the money runtime path (#77.8); the #44 card-build boundary is exempt",
+    },
+    Registration {
+        name: "seal-witness",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(seal_witness::SealWitnessGate),
+        summary: "capability proofs are exactly Pass<stage> + Grant<capability> + one kernel minter (#65/#73)",
+    },
+    Registration {
+        name: "money-invariants",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(money_invariants::MoneyInvariantsGate),
+        summary: "money records hold no plugin/plane field, store no price, seal one facts-line per unit (#77)",
+    },
+    Registration {
         name: "kind-isolation",
         batch: 1,
         tier: Tier::Fast,
@@ -2108,7 +2133,7 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(hot_path_perf::HotPathPerfGate),
         summary:
-            "the §8 perf instrument measures the vtable crossing < 1µs (p50+p99) and 0 per-token \
+            "the perf instrument measures the vtable crossing < 1µs (p50+p99) and 0 per-token \
                   host calls",
     },
     Registration {
@@ -2116,7 +2141,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(hot_path_alloc::HotPathAllocGate),
-        summary: "the §8 alloc instrument asserts 0 global allocations across the isolated POD \
+        summary: "the alloc instrument asserts 0 global allocations across the isolated POD \
                   host-call batch",
     },
     Registration {
@@ -2133,6 +2158,14 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(config_schema::ConfigSchemaGate),
         summary:
             "the config grammar is frozen at 1.5.3: snapshot drift plus additive-only vs a git ref",
+    },
+    Registration {
+        name: "conformance-sync",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(conformance_sync::ConformanceSyncGate),
+        summary:
+            "the conformance manifest, README badges and claims never drift from the real verdicts",
     },
     Registration {
         name: "inventory-coverage",

@@ -39,8 +39,8 @@
 //! The cache is still built, because a cache is not an authority: it holds what a module already
 //! decided, for less time than the module suggested, and never holds a rejection at all.
 
-use busbar_unit_auth::cache::CredentialCache;
-use busbar_unit_auth::chain::{KeyVerifier, ResolvedKey, RevocationView};
+use busbar_kernel_identity::cache::CredentialCache;
+use busbar_kernel_identity::chain::{KeyVerifier, ResolvedKey, RevocationView};
 use std::sync::Arc;
 
 /// The facts the chain reads out of a verified key.
@@ -203,13 +203,13 @@ fn credential_cache() -> CredentialCache {
 /// there is no second opinion here about what a valid key is, no second denylist, and nothing this
 /// type could get wrong that the state has not already decided.
 pub struct GovernanceDirectory {
-    state: Arc<busbar_core::governance::GovState>,
+    state: Arc<busbar_kernel::governance::GovState>,
 }
 
 impl GovernanceDirectory {
     /// Bind the directory to one governance state.
     #[must_use]
-    pub fn new(state: Arc<busbar_core::governance::GovState>) -> Self {
+    pub fn new(state: Arc<busbar_kernel::governance::GovState>) -> Self {
         GovernanceDirectory { state }
     }
 }
@@ -251,7 +251,7 @@ pub const ADMIN_TOKENS_MODULE: &str = "admin-tokens";
 /// the same one the credential cache digests with, a few lines up — so there is no second spelling
 /// of the digest in this file, only one function named twice.
 pub struct AdminTokens {
-    state: Arc<busbar_core::governance::GovState>,
+    state: Arc<busbar_kernel::governance::GovState>,
 }
 
 impl AdminTokens {
@@ -261,18 +261,18 @@ impl AdminTokens {
     /// admin token expects the next request to be judged against the new one — a copy taken here
     /// would keep admitting the old credential until the process restarted.
     #[must_use]
-    pub fn new(state: Arc<busbar_core::governance::GovState>) -> Self {
+    pub fn new(state: Arc<busbar_kernel::governance::GovState>) -> Self {
         AdminTokens { state }
     }
 }
 
-impl busbar_unit_auth::module::AuthModule for AdminTokens {
+impl busbar_kernel_identity::module::AuthModule for AdminTokens {
     fn name(&self) -> &'static str {
         ADMIN_TOKENS_MODULE
     }
 
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_unit_auth::module::AuthOutcome {
-        use busbar_unit_auth::module::AuthOutcome;
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
+        use busbar_kernel_identity::module::AuthOutcome;
         // No token configured is not a refusal and not an admission: this module has nothing to
         // judge, so it defers. What that means for the node is decided by the chain around it — an
         // all-pass chain denies — and not by an opinion invented here.
@@ -286,7 +286,7 @@ impl busbar_unit_auth::module::AuthModule for AdminTokens {
         };
         if busbar_api::constant_time_eq(&busbar_api::sha256_hex(candidate.as_bytes()), &configured)
         {
-            AuthOutcome::Identify(busbar_unit_auth::principal::Principal::from_id(
+            AuthOutcome::Identify(busbar_kernel_identity::principal::Principal::from_id(
                 ADMIN_PRINCIPAL_ID,
             ))
         } else {
@@ -311,9 +311,11 @@ impl busbar_unit_auth::module::AuthModule for AdminTokens {
 /// which is the previous release's "the admin API is disabled without a token", reached the same
 /// way rather than restated here.
 #[must_use]
-pub fn admin_chain(state: Arc<busbar_core::governance::GovState>) -> busbar_unit_auth::AuthChain {
-    busbar_unit_auth::AuthChain::new(
-        vec![busbar_unit_auth::chain::ChainEntry {
+pub fn admin_chain(
+    state: Arc<busbar_kernel::governance::GovState>,
+) -> busbar_kernel_identity::AuthChain {
+    busbar_kernel_identity::AuthChain::new(
+        vec![busbar_kernel_identity::chain::ChainEntry {
             provider: ADMIN_TOKENS_MODULE.to_string(),
             module: Box::new(AdminTokens::new(state)),
         }],

@@ -9,7 +9,7 @@
 //! projection (the family-blind walk the shared pipeline reads a request through) and the neutral
 //! `IrHandle` wrappers stay in `busbar-core` — those name the core-owned engine seam — and core
 //! `impl`s the projection for these very types. Core re-exports each type from its historical path
-//! (`busbar_core::ir::invoke::InvokeReq`, …) so the in-core call sites are unchanged.
+//! (`busbar_kernel::ir::invoke::InvokeReq`, …) so the in-core call sites are unchanged.
 
 // The neutral resolved-primitives param bag a cross-protocol egress hop passes to a handle's
 // `prepare_for_egress` (all primitives — no concrete IR). Relocated from `busbar-core` at Batch C-1.

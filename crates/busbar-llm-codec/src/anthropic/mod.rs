@@ -17,7 +17,7 @@
 //!
 //! DUAL COMPILATION, stated so the `#[path]` in core is not read as a leak: `busbar-core`'s
 //! test/`test-support` builds compile these same sources back in as `proto::anthropic` (via
-//! `extern crate self as busbar_core`), so the pre-extraction test fixture surface — hundreds of
+//! `extern crate self as busbar_kernel`), so the pre-extraction test fixture surface — hundreds of
 //! `Protocol::anthropic()` fixtures and `protocol: anthropic` configs across the core suite —
 //! keeps proving what it always proved without core's PRODUCTION build knowing this dialect
 //! exists. That is why every core reference in these files is spelled with core's crate name and every

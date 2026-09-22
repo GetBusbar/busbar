@@ -1,0 +1,57 @@
+# OpenSSF Scorecard — an external, reproducible score of this repo's security posture.
+#
+# WHY IT LIVES HERE AND NOT ON LATCHKEY: Scorecard analyses public metadata (branch
+# protection, workflow permissions, pinned deps, signed releases, this file itself). It
+# needs no Latchkey image, no cargo, and no real-money soak, so it runs on a free
+# GitHub-hosted `ubuntu-latest` runner and never spends a Latchkey minute.
+#
+# WHY sched (not per-push): the score moves slowly and is a statement about `main`, so a
+# weekly cadence plus an on-demand lever plus a re-check whenever branch protection
+# changes is the right frequency — a per-push run would spend for no new signal.
+name: OpenSSF Scorecard
+
+on:
+  # Re-score when a branch protection rule changes — one of the checks Scorecard grades.
+  branch_protection_rule: {}
+  # Weekly baseline. Tuesday 08:00 UTC — off the Monday slot qa-security.yml already uses.
+  schedule:
+    - cron: "0 8 * * 2"
+  # Manual re-run against the default branch on demand.
+  workflow_dispatch: {}
+
+# Read-only by default; the analysis job widens its own scope below and says exactly why.
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Upload the SARIF result to the repository's code-scanning alerts.
+      security-events: write
+      # Publish the score to the public OpenSSF API via OIDC (Scorecard badge / deps.dev).
+      id-token: write
+      # Read the repository under analysis.
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Scorecard reads history/metadata; keep the token out of the working tree.
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@55891bbd73f2425e97637d96e306fc9d491d0b21 # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publish the result to the OpenSSF public dataset so the README badge resolves.
+          publish_results: true
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          sarif_file: results.sarif
+          category: ossf-scorecard

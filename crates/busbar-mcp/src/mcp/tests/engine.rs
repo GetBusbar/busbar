@@ -4,15 +4,15 @@
 //! THE ENGINE BINDING for this plane's test binary — the ONE place in the MCP test tree that names
 //! the engine crate. Every other test file reaches the engine (the test-App builder, governance
 //! registries, the call log, the audit ring, the store-plugin fixture, the built App's router /
-//! host / handle / breaker cells) through the neutral `busbar_substrate::testkit::engine_kit` seam,
+//! host / handle / breaker cells) through the neutral `busbar_kernel::testkit::engine_kit` seam,
 //! by way of [`engine`] and the small helpers here.
 //!
 //! The helpers keep the tests' old call shapes (`engine_host(&app)`, `build_router(app)`,
 //! `app_handle(app)`) so the port from the engine's concrete fixture reads as a rename, not a rewrite.
 //! Test files glob-import this module.
 
-use busbar_substrate::plane_host::EngineHost;
-pub(crate) use busbar_substrate::testkit::engine_kit::{
+use busbar_kernel::plane_host::EngineHost;
+pub(crate) use busbar_kernel::testkit::engine_kit::{
     EngineApp, EngineHandle, EngineTestKit, GovKit, HookEnvHandle, HookNeed, TestAppKit,
     TestAppKitExt,
 };
@@ -21,7 +21,7 @@ use std::sync::Arc;
 /// The engine's test kit. Binding it here — and nowhere else — is what lets the rest of this tree
 /// stay neutral: swap the engine and this one function changes.
 pub(crate) fn engine() -> &'static dyn EngineTestKit {
-    &busbar_core::test_support::engine_kit::CORE_ENGINE_KIT
+    &busbar_kernel::test_support::engine_kit::CORE_ENGINE_KIT
 }
 
 /// A fresh test-App builder — the fluent chain a test drives `.mcp(&cfg).mcp_server(..).build()` on.

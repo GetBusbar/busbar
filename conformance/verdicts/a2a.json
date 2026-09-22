@@ -1,0 +1,13 @@
+{
+  "schema": "busbar.conformance.verdict/1",
+  "suite": "a2a",
+  "standard": "Agent2Agent (A2A) Protocol",
+  "plan": "official a2aproject/a2a-tck + a2a-harness + a2a-go reference peer",
+  "spec_version": "0.2.1",
+  "status": "pass",
+  "armed": true,
+  "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
+  "run_id": "https://github.com/GetBusbar/busbar/actions/runs/1201",
+  "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1201",
+  "generated_at": "2026-09-19T14:05:00Z"
+}

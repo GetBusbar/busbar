@@ -21,8 +21,8 @@
 
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
-use busbar_substrate::testkit::engine_kit::{GovKit, HookEnvHandle};
-use busbar_substrate::testkit::engine_kit_plus::EngineAppPlus;
+use busbar_kernel::testkit::engine_kit::{GovKit, HookEnvHandle};
+use busbar_kernel::testkit::engine_kit_plus::EngineAppPlus;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -425,7 +425,7 @@ pub(super) fn approve(reg: &mut AgentRegistration) {
 /// The same, against a card that declares a binding.
 pub(super) fn approve_card(reg: &mut AgentRegistration, card: serde_json::Value) {
     let digests = crate::a2a::card::skill_digests(&card).expect("digests");
-    let sighting = busbar_substrate::trust::Sighting::Seen(busbar_substrate::trust::Observation {
+    let sighting = busbar_kernel::trust::Sighting::Seen(busbar_kernel::trust::Observation {
         pin: Some(crate::a2a::pin::CardPin::JwsIssuerKey {
             issuer_key: "KEY".to_string(),
             card_fingerprint: "sha256/CARD".to_string(),
@@ -490,7 +490,7 @@ pub(super) async fn with_ledger() -> (
     let ledger = Arc::new(crate::taskstore::event_ledger::EventLedger::new());
     // A sink SWAP, not a re-register, so the working-set tests' shared registration and every
     // position stay intact.
-    crate::taskstore::TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+    crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         ledger.clone(),
     ));
     (ledger, guard)
@@ -623,6 +623,27 @@ pub(super) async fn harness_gated(
         gates,
         &[("planner", BACKEND), ("payments", OTHER_BACKEND)],
         &[],
+        false,
+    )
+    .await
+}
+
+/// THE DEFAULT DEPLOYMENT, BUT BILLED — a `rate_card:` is present, so `cost_pricing_enabled` is
+/// true and, under DECISION #42, the plane's `meter_charge` seam writes a metering row. The default
+/// [`harness`] builds an UNBILLED plane (`CostModel::flat`, no card) that serves free and — per #42
+/// — emits no metering row; the metering-row batteries opt into this billed twin. Every OTHER byte
+/// of the deployment is identical, so the row's SHAPE (its model, request accrual and all-zero token
+/// split) is exactly what the unbilled plane computed — #42 changed only the emission gate, never the
+/// row's values.
+pub(super) async fn harness_billed(outcome: Outcome, with_credential: bool) -> Harness {
+    harness_full(
+        outcome,
+        with_credential,
+        &["planner"],
+        None,
+        &[("planner", BACKEND), ("payments", OTHER_BACKEND)],
+        &[],
+        true,
     )
     .await
 }
@@ -637,9 +658,10 @@ pub(super) async fn harness_full(
     gates: Option<Gates>,
     defs: &[(&str, &str)],
     pools: &[(&str, &[&str])],
+    billed: bool,
 ) -> Harness {
-    use busbar_substrate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_substrate::governance::NewKeySpec;
+    use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
+    use busbar_kernel::governance::NewKeySpec;
     engine().metrics_init();
 
     let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_store_memory::MemoryStore::new());
@@ -664,11 +686,11 @@ pub(super) async fn harness_full(
                 ..Default::default()
             },
             2_000_000_000,
-            busbar_substrate::store::now(),
+            busbar_kernel::store::now(),
         )
         .expect("mint");
     let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
-        .verify(plain.as_str(), busbar_substrate::store::now(), None)
+        .verify(plain.as_str(), busbar_kernel::store::now(), None)
         .expect("the plain token verifies")
         .generation;
     // THE GRANT. `agent:<id>` is what `inbound::authorize`, the catalogue and the EGRESS gate all
@@ -712,6 +734,22 @@ pub(super) async fn harness_full(
         for (name, cfg) in g.hooks {
             builder = builder.hook(&name, cfg);
         }
+    }
+    if billed {
+        // A BILLED plane: a `rate_card:` is present, so `cost_pricing_enabled` is true and DECISION
+        // #42 lets the `meter_charge` seam write its metering row. The card's entries never touch the
+        // A2A meter path — an A2A verb accrues a pure request (component `Queries`, amount 0), which
+        // `record_metering` stores as raw counts under the plane pool / agent key regardless of any
+        // price — so a card with no entries is enough to flip pricing on without altering one byte of
+        // the row. The flat fee stays `1` (the unbilled default's `CostModel::flat(1)`), and fee
+        // posting is a read-time projection that never lands in the metering row either.
+        let card: std::collections::BTreeMap<
+            String,
+            busbar_kernel::config::sections::RateEntryCfg,
+        > = std::collections::BTreeMap::new();
+        let groups: std::collections::BTreeMap<String, busbar_kernel::config::groups::GroupCfg> =
+            std::collections::BTreeMap::new();
+        builder = builder.cost(engine().cost_parts(Some(&card), 1, &groups));
     }
     let app = builder.build();
     // The front door writes the A2A task chain through the process-wide `TASKS` registry; the plane

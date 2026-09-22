@@ -150,7 +150,7 @@ jobs:
               echo "### CI tier: FAST"
               echo ""
               echo "Push to a non-promotion branch (\`$REF\`), so this run proved:"
-              echo "structure lint, fmt/clippy/build/test, config-stability, public-hygiene,"
+              echo "structure lint, fmt, clippy/build/test, config-stability, public-hygiene,"
               echo "generated-artifact-drift, shadow-oracle, llm-conformance, design-bindings"
               echo "and construction-gate (blocking on its posture: a NEW red fails the run)."
               echo ""
@@ -164,6 +164,68 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           cat "$GITHUB_STEP_SUMMARY"
+
+  # ── THE CHEAP PREFLIGHT TIER, AND WHY THE EXPENSIVE JOBS WAIT ON IT ────────────────────────────
+  # `fmt`, split out of the bundled `check` job below so a `cargo fmt --check` verdict costs SECONDS
+  # on a latchkey-small runner instead of riding a full workspace build. It is one member of the
+  # cheap hygiene tier — the fast (<~2 min), deterministic, no-full-build checks: this `fmt`,
+  # `structure-lint`, `config-stability`, the `changes` classifier, `public-hygiene`,
+  # `service-image-pins` and `generated-artifact-drift`. They stay INDEPENDENT jobs (not chained
+  # steps) so every cheap failure surfaces in ONE pass: a dev sees fmt AND structure-lint AND a
+  # config drift together, fixes them together, and the expensive tier runs ONCE.
+  #
+  # The `preflight` job below is the BARRIER: it `needs:` every cheap check and does nothing but go
+  # green when they all pass. Every expensive job (`check`, `shadow-oracle`, the plane rigs, the
+  # feature legs, the timing/txn/coverage/windows compiles — every latchkey-*large job that compiles
+  # or records) `needs: preflight`, so none of them launches until the cheap tier is green. That
+  # kills the waste this whole change exists for: a one-minute fmt failure no longer burns the
+  # forty-minute shadow oracle alongside it. `preflight` carries NO `if:` guard, so the default
+  # `success()` applies — if any cheap check fails or is skipped, `preflight` is skipped and every
+  # job that needs it is skipped in turn, while the cheap jobs themselves all still run and report.
+  fmt:
+    name: fmt (cargo fmt --check)
+    runs-on: latchkey-small
+
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, no run history yet:
+    # floored at 10 per that section's rule. `cargo fmt --check` parses source and compiles nothing,
+    # so this is seconds; re-measure to p95 x1.5 once ten green runs exist.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Only rustfmt — this job compiles nothing, so it takes neither clippy nor the registry/target
+      # cache the build jobs carry. That is the point of splitting it out: gating on fmt costs a
+      # checkout and a rustfmt parse, not a workspace build.
+      - name: Install Rust toolchain (rustfmt only)
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          components: rustfmt
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+  # THE PREFLIGHT BARRIER. `needs:` every member of the cheap hygiene tier; its only step is a green
+  # echo. It has NO `if:` on purpose: the implicit `success()` means it runs (and goes green) only
+  # when ALL of its dependencies succeeded, and is SKIPPED the moment one fails or is skipped — which
+  # cascades to every expensive job that `needs: preflight`. Every one of its dependencies is a
+  # fast-tier job (none carries the full-tier guard), so `preflight` itself runs on every push and PR
+  # and is scored `fast` in the umbrella's RESULTS ledger below.
+  preflight:
+    name: preflight (cheap hygiene tier green — the expensive tier may launch)
+    needs:
+      - fmt
+      - structure-lint
+      - config-stability
+      - changes
+      - public-hygiene
+      - service-image-pins
+      - generated-artifact-drift
+    runs-on: latchkey-small
+
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. NEW JOB, a no-op barrier: it
+    # compiles nothing and runs one echo, so it is seconds. Floored at 10 per that section's rule.
+    timeout-minutes: 10
+    steps:
+      - name: Cheap hygiene tier is green
+        run: echo "fmt, structure-lint, config-stability, changes, public-hygiene, service-image-pins and generated-artifact-drift all passed — the expensive tier may launch."
 
   # LAYOUT GATE — its OWN job, deliberately. It used to be the first step of `check`, ahead of
   # clippy/build/test, which made it a MASK: any layout violation aborted the job before a single
@@ -234,6 +296,14 @@ jobs:
         run: cargo xtask gate structure-lint --selftest
       - name: Structure lint
         run: cargo xtask gate structure-lint
+      # NO-TRACKED-IGNORED: a file that is both tracked AND matched by a .gitignore rule of this tree
+      # is a landmine — it ships from a clean checkout but vanishes from a fresh `git add`, so the two
+      # halves of the team see different trees. Cheap, structural, and belongs on every push. Self-test
+      # FIRST, so the matcher is proven able to catch a planted tracked-and-ignored path.
+      - name: No-tracked-ignored self-test
+        run: cargo xtask gate no-tracked-ignored --selftest
+      - name: No-tracked-ignored gate (no tracked path matches a .gitignore rule of this tree)
+        run: cargo xtask gate no-tracked-ignored
       # RELEASE-SCRIPT lint — durable guard against the 1.5.2 gate's 2h31m hang: a backgrounded
       # server (serve_forever) whose stdout was NOT redirected, captured via `$(...)`, held the
       # substitution's pipe open until the job timeout. Self-test runs FIRST (never trust the lint's
@@ -458,6 +528,33 @@ jobs:
         run: cargo xtask gate kernel-token-wire-purity --selftest
       - name: Kernel token-wire purity (BLOCKING — no raw provider wire token field reaches the kernel)
         run: cargo xtask gate kernel-token-wire-purity
+      # MONEY INVARIANTS (#77): the money-path durable records hold no plugin/plane identity field
+      # (per-plugin pricing is UNREPRESENTABLE, not merely banned), store no price/spend figure
+      # (money is a read-time view over raw counts), and the facts-line seal lives only in the
+      # core/kernel crates — one sealed line per unit at the end, never per-plugin.
+      - name: Money-invariants self-test (the money-model scanner cannot be lied to)
+        run: cargo xtask gate money-invariants --selftest
+      - name: Money-invariants gate (BLOCKING — no plugin-keyed money, no stored price, one seal site)
+        run: cargo xtask gate money-invariants
+      # SEAL-WITNESS (#77): the money facts-line seal has exactly ONE root minter, spelled only inside
+      # the kernel crate — a second minter anywhere else is a second book. This is the money-model
+      # sibling of money-invariants above; it runs on every push for the same reason. Self-test FIRST,
+      # so the seal scanner is proven able to catch a planted second minter before its verdict is trusted.
+      - name: Seal-witness self-test (the seal scanner cannot be lied to)
+        run: cargo xtask gate seal-witness --selftest
+      - name: Seal-witness gate (BLOCKING — the money facts-line has one root minter, kernel-only)
+        run: cargo xtask gate seal-witness
+      # NO-FLOAT-MONEY (#77.8): the 1.6.0 money model is unitless integer arithmetic — a float on the
+      # money runtime path sums differently by order and rounds in ways nobody configured, which turns
+      # "the bill equals the sum of the lines" from a proof into a hope. This scans the one-book money
+      # crate (busbar-kernel-ledger) and the binary's dedicated money-unit files for f32/f64, exempting
+      # exactly the one #44 card-build boundary (cost/rate.rs), where a configured decimal becomes an
+      # integer rate once. Self-test runs FIRST (never trust the scanner before proving it still
+      # catches a planted float and still lets the exempt boundary through).
+      - name: No-float-money self-test (the scanner cannot be lied to)
+        run: cargo xtask gate no-float-money --selftest
+      - name: No-float-money (BLOCKING — no floating point on the money runtime path)
+        run: cargo xtask gate no-float-money
       # NO-DEFERRAL: every reachable unimplemented!()/todo!() (Class A) and every self-declared debt
       # label (Class B) in shipped source must be a floor-checked entry in the committed
       # scripts/no-deferral.waivers allowlist. verify-1.6.0-done.sh runs the stricter
@@ -600,8 +697,12 @@ jobs:
             target
 
   check:
-    name: fmt · clippy · build · test
+    name: clippy · build · test
     runs-on: latchkey-xlarge
+    # WAITS ON THE CHEAP TIER. `cargo fmt --check` is now its own `fmt` job in the preflight tier, so
+    # this xlarge build/clippy/test job does not launch until the cheap hygiene checks are green.
+    needs:
+      - preflight
 
     # A hung test burns the runner's 6-HOUR default in silence without this: one never-finishing
     # test leaves the job printing nothing until someone notices and cancels by hand. A green run
@@ -689,7 +790,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
-          components: rustfmt, clippy
+          # `cargo fmt --check` moved to the fast `fmt` job in the preflight tier, so this job no
+          # longer installs rustfmt — only clippy for the lint step below.
+          components: clippy
 
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
         uses: ./.github/actions/cargo-home
@@ -702,9 +805,6 @@ jobs:
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             target
-
-      - name: Format check
-        run: cargo fmt --all -- --check
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -962,7 +1062,7 @@ jobs:
   # if the committed `openapi.json` — the file the runtime serves via `include_str!` — no longer
   # matches what the code generates, and the COVERAGE LOCK proves every operation has a typed body.
   # Regenerate a stale file with:
-  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-core -p busbar-admin --features openapi-schema openapi_json_matches_committed_file
+  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-kernel -p busbar-admin --features openapi-schema openapi_json_matches_committed_file
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -975,6 +1075,8 @@ jobs:
   openapi-schema:
     name: openapi-schema clippy · drift · coverage
     runs-on: latchkey-large
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 3.9 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -999,7 +1101,7 @@ jobs:
             ${{ env.CARGO_HOME }}/git
             target
       - name: Clippy (--features openapi-schema)
-        run: cargo clippy -p busbar -p busbar-core -p busbar-admin --all-targets --features openapi-schema --locked -- -D warnings
+        run: cargo clippy -p busbar -p busbar-kernel -p busbar-admin --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
         run: |
           set -euo pipefail
@@ -1007,7 +1109,7 @@ jobs:
           # prints "running 0 tests / test result: ok" and EXITS 0. The floor is not 1 — this step
           # claims to run the drift guard AND the coverage lock AND their neighbours, so a filter
           # that quietly collapsed to a single surviving test would still be a coverage hole.
-          out="$(cargo test -p busbar -p busbar-core -p busbar-admin --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
+          out="$(cargo test -p busbar -p busbar-kernel -p busbar-admin --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
           n="$(echo "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')"
           if [ "$n" -lt 8 ]; then
             echo "::error::the OpenAPI suite ran only ${n} tests, expected >= 8."
@@ -1047,6 +1149,8 @@ jobs:
   migration-corpus:
     name: migration corpus (every shipped config still migrates)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.7 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1178,6 +1282,10 @@ jobs:
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 0.7 min
     # over the last 10 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 10
+    env:
+      # This job's `./bin/oracle cells --{selftest,check}` also builds the Rust engine from the
+      # PRIVATE GetBusbar/busbar-release pin, so it needs the same cross-repo token as shadow-oracle.
+      BUSBAR_RELEASE_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
@@ -1256,7 +1364,7 @@ jobs:
             target
   public-hygiene:
     name: docs hygiene (public prose describes the software, not the process)
-    runs-on: latchkey-large
+    runs-on: latchkey-small
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.2 min
     # over the last 13 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1380,6 +1488,8 @@ jobs:
   executable-config-lint:
     name: executable-config gate (heredocs · test literals · shipped yaml)
     runs-on: latchkey-large
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.7 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1446,6 +1556,8 @@ jobs:
   no-default-features:
     name: no-default-features build · clippy · test
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 22.0 min
     # over the last 13 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1544,6 +1656,8 @@ jobs:
   deletion-test-matrix:
     name: deletion-test (neutral crates compile with a plane removed)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.6 min
     # over the last 15 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1553,6 +1667,9 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     strategy:
       fail-fast: false
+      # Cap concurrent legs so a full-tier run does not monopolise the parked xlarge fleet.
+      # Leg contents and count are unchanged; this only serialises how many run at once.
+      max-parallel: 3
       matrix:
         include:
           - name: mcp removed (a2a kept)
@@ -1590,6 +1707,15 @@ jobs:
             cargo build -p busbar-core -p busbar-substrate -p busbar-api \
               --no-default-features --locked --verbose
           fi
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-deletion-test-matrix-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
   # ── EVERY NON-DEFAULT FEATURE IS COMPILED BY A JOB THAT NAMES IT ──────────────────────────────
   # A cargo feature nothing builds is a feature that is already broken and nobody knows. The code
@@ -1618,15 +1744,25 @@ jobs:
     name: feature sets (every non-default feature compiles, with lints, with its tests)
     # SAME RUNNER LABEL AND SAME PINNED TOOLCHAIN AS `check`. A feature leg that builds on a
     # different runner class or a different compiler is answering a different question.
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. A row is one workspace clippy
     # plus one set of crate test binaries; `check`'s own workspace clippy+build+test is ~13 min warm
     # and ~40 cold, and a row is a strict subset of that work. 45 leaves cold-cache headroom.
-    timeout-minutes: 45
-    # FAST TIER — no `if:` guard. The defect this job exists for is "nobody compiled it for days",
-    # and a full-tier job on the integration line is a job that does not compile it for days.
+    timeout-minutes: 60
+    # FULL TIER ONLY. Seven legs, each a near-full workspace recompile under a distinct feature
+    # closure — a promotion check, not a per-commit one. Skipped on pushes to non-promotion branches
+    # (integration/**); runs on every pull request, on dev/qa/main, and on workflow_dispatch. `dev`
+    # is train-write-only (DECISIONS #67), so skipping only integration/** costs ~the same as a
+    # qa-only guard while keeping this job COUNTED and enforced in ci-umbrella. See the tier note at
+    # the top of this file.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     strategy:
       fail-fast: false
+      # Cap concurrent legs so a full-tier run does not bust the parked xlarge fleet.
+      # Leg contents and count are unchanged; this only serialises how many run at once.
+      max-parallel: 4
       matrix:
         include:
           # The six sets. `features` is passed verbatim to `--features`; `tests` is passed verbatim
@@ -1636,11 +1772,8 @@ jobs:
             features: busbar/test-harness
             tests: -p busbar
           - name: timing
-            features: busbar-core/timing,busbar-llm/timing,busbar-llm-codec/timing
-            tests: -p busbar-core -p busbar-llm -p busbar-llm-codec -p busbar-timing
-          - name: llm auth-admin-tokens
-            features: busbar-llm/auth-admin-tokens
-            tests: -p busbar-llm
+            features: busbar-kernel/timing,busbar-llm/timing,busbar-llm-codec/timing
+            tests: -p busbar-kernel -p busbar-llm -p busbar-llm-codec -p busbar-timing
           - name: llm webhook-receiver
             features: busbar-llm/webhook-receiver
             tests: -p busbar-llm
@@ -1651,8 +1784,8 @@ jobs:
           # matrix anyway, because reachability is a property of a DEFAULT and a default moving is
           # the exposure this whole job is about. A row that NAMES the feature survives the flip.
           - name: core duplex-ws
-            features: busbar-core/duplex-ws
-            tests: -p busbar-core
+            features: busbar-kernel/duplex-ws
+            tests: -p busbar-kernel
           # admin/oauth2 test-support are non-default forwards no sibling edge enables (busbar-admin's
           # dev-deps deliberately do NOT turn on its own test-support), so nothing builds the
           # `cfg(all(not(test), feature = "test-support"))` surface behind them. Each row builds and
@@ -1665,13 +1798,18 @@ jobs:
             tests: -p busbar-oauth2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-feature-sets-${{ matrix.name }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
       - name: Clippy — ${{ matrix.name }}
         run: cargo clippy --workspace --all-targets --features "${{ matrix.features }}" --locked -- -D warnings
       - name: Plugin cdylibs the suites dlopen
@@ -1693,6 +1831,125 @@ jobs:
         # The OWNING crates' suites, with the feature on. Compiling the `#[cfg]`-ed code proves it is
         # valid Rust; running the suite is what proves it does anything.
         run: cargo test ${{ matrix.tests }} --features "${{ matrix.features }}" --locked
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-feature-sets-${{ matrix.name }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+
+  # ── WHICH SUBSYSTEMS CHANGED (cheap path classifier) ──────────────────────────────────────────
+  # A single fast job that answers "did any plane code change on this push?", so the expensive
+  # `plane-rigs` job below can skip an integration/** push that touched no plane code. It is ONLY a
+  # cost optimisation: `plane-rigs` ALSO runs unconditionally on every pull request, on dev/qa/main,
+  # and on workflow_dispatch (see its `if:`), so a wrong answer here can at worst make a fast
+  # integration push do MORE work — it can never let a promotion path skip a gate. This job itself
+  # always runs (fast tier) and is scored by the umbrella like any other always-on job.
+  changes:
+    name: changed-paths classifier
+    runs-on: latchkey-small
+    timeout-minutes: 5
+    outputs:
+      plane: ${{ steps.filter.outputs.plane }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          # The plane surface `plane-rigs` actually exercises: it boots the busbar binary and runs the
+          # mcp + a2a H2 admission rigs. Be inclusive — a false positive only costs a rig run.
+          filters: |
+            plane:
+              - 'crates/busbar-plane-*/**'
+              - 'crates/busbar-mcp/**'
+              - 'crates/busbar-mcp-codec/**'
+              - 'crates/busbar-a2a/**'
+              - 'crates/busbar-a2a-codec/**'
+              - 'crates/busbar-kernel/**'
+              - 'scripts/mcp-subject/**'
+              - 'scripts/a2a-subject/**'
+              - '.github/workflows/ci.yml'
+
+  # ── THE ONE CANONICAL RELEASE BINARY, BUILT ONCE AND SHARED ───────────────────────────────────
+  # Three jobs used to each run the identical `cargo build -p busbar --release --locked` in parallel
+  # — `plane-rigs` (the subject its rigs boot), `perf-build-gate` (the binary its provenance stamp is
+  # asserted on), and `shadow-oracle` (the candidate it records against 1.5.5). Same command, same
+  # default feature set, same pinned toolchain, same target: ONE artifact serves all three, so it is
+  # built here once (~15 min xlarge) and the three consumers `download-artifact` it instead of each
+  # paying that build again.
+  #
+  # WHY THE THREE ARE SAFELY THE SAME BINARY, and not merged carelessly (a rig grading the wrong
+  # binary is worse than a slow build). The build command is byte-for-byte identical across the three;
+  # `BUSBAR_RELEASE_PUBKEY` is a RUNTIME input (the shadow oracle's plugin-signature check at record
+  # time) and is NOT read by crates/busbar/build.rs — that build script keys only on BUSBAR_PGO,
+  # CARGO_ENCODED_RUSTFLAGS, PROFILE, OPT_LEVEL and TARGET — so setting it here changes no output bit
+  # while still satisfying the oracle's "the key must be set" guard; and the provenance stamp
+  # (profile=release, opt-level=3, debug-assertions=false, pgo=false) is a property of the plain
+  # release profile this job builds, asserted below on the exact bytes the three will download.
+  #
+  # NEEDS PREFLIGHT so a hygiene-failing branch never reaches this xlarge build. NO full-tier `if:`
+  # guard: `shadow-oracle` is a fast-tier job that consumes this artifact, so this build must run on
+  # every push and PR too — its RESULTS row is scored `fast`.
+  build-release:
+    name: build-release (the one canonical release binary, built once + shared)
+    runs-on: latchkey-xlarge
+    needs: [preflight]
+
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. This is the release build the
+    # three consumers used to each pay; measured ~15 min cold. 45 leaves cold-cache headroom for the
+    # release profile, matching the ceiling plane-rigs carried for the same compile.
+    timeout-minutes: 60
+    env:
+      # RUNTIME key for the shadow oracle's plugins family; NOT read by build.rs, so it changes no
+      # output bit. Set here so the shared binary is built under the same environment the oracle's
+      # own build asserted, and so this job proves the key is present before the artifact is minted.
+      BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-build-release-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+      # THE ONE BUILD. RELEASE, default features, `--locked`, with the release public key set — the
+      # exact command the three consumers used to each run.
+      - name: Build the one canonical release binary
+        run: |
+          set -euo pipefail
+          [ -n "${BUSBAR_RELEASE_PUBKEY:-}" ] || { echo "::error::BUSBAR_RELEASE_PUBKEY is not set; the plugins family would be red for the wrong reason"; exit 1; }
+          cargo build -p busbar --release --locked
+      # PROVE THE SHARED BINARY CARRIES THE STAMP, on the exact bytes the three will download. A plain
+      # release build (no BUSBAR_PGO) must report profile=release, opt-level=3, debug-assertions=false,
+      # pgo=false. `perf-build-gate` re-asserts this on its download; asserting it here as well means a
+      # bad artifact never leaves this job.
+      - name: Assert build-provenance stamp on the canonical binary
+        run: scripts/build-provenance-gate.sh target/release/busbar release false
+      - name: Upload the canonical release binary (consumed by plane-rigs, perf-build-gate, shadow-oracle)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: busbar-release
+          path: target/release/busbar
+          if-no-files-found: error
+          retention-days: 7
+      - name: Latchkey Fast Cache (cargo registry + target, save)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: save
+          key: cargo-${{ runner.os }}-build-release-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
 
   # ── EVERY H2 RIG SCENARIO THE TREE CARRIES IS RUN ─────────────────────────────────────────────
   # `qa/teller-steps.json` maps every Teller step of every gating plane to the scenario that proves
@@ -1709,25 +1966,40 @@ jobs:
   # glob expands on the runner, where nobody reads the expansion). A step per scenario is a line a
   # reviewer can count against the directory listing, and it is what the gate counts too.
   #
-  # FAST TIER — no `if:` guard. These are the ADMISSION path: the money decisions. A full-tier job on
-  # the integration line is a job that does not run them on the line where the work happens.
+  # PATH-CONDITIONAL, FULL-TIER-GUARDED. These are the ADMISSION path: the money decisions, so they
+  # ALWAYS run where a promotion could happen — every pull request, dev/qa/main, workflow_dispatch —
+  # and additionally run on an integration/** push IFF that push touched plane code (`needs.changes`).
+  # The guard therefore CONTAINS the full-tier form the umbrella's FULL_TIER expression mirrors
+  # (`github.event_name != 'push'` + the promotion branches), OR'd with the path signal. That means
+  # the ONLY time it is skipped is a fast integration push with no plane change — precisely the
+  # `full`-tier run the umbrella forgives — so its RESULTS row below is scored `full`, not `fast`.
   plane-rigs:
     name: plane rigs (every H2 gating scenario for mcp and a2a, RUN)
-    runs-on: [self-hosted, linux, x64, busbar-xl]
+    runs-on: latchkey-xlarge
+    # `changes` stays a direct dependency because the `if:` below reads `needs.changes.outputs.plane`;
+    # `preflight` is added so this xlarge rig job also waits on the cheap hygiene tier; `build-release`
+    # supplies the subject binary these rigs boot, downloaded below instead of rebuilt here.
+    needs: [changes, preflight, build-release]
+    if: needs.changes.outputs.plane == 'true' || github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. The release build dominates
     # (`teller-steps`, the other job that compiles the binary crate outside `check`'s cache, carries
     # 30); each rig boots its own throwaway busbar plus its own mock on its own ports and asserts one
     # step, seconds apiece. 45 leaves cold-cache headroom for the release profile.
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
-      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
-      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
-      - name: Compiler cache (sccache, GitHub Actions cache backend)
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Latchkey Fast Cache (cargo registry + target, restore)
+        uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
+        with:
+          action: restore
+          key: cargo-${{ runner.os }}-plane-rigs-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
       # The rigs' mock upstream and mock agent are Node; the port picker and the JSON readers are
       # python3, which the runner image already carries.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -1740,11 +2012,17 @@ jobs:
         run: cargo xtask gate teller-steps --selftest
       - name: Teller-steps matrix (every gating plane x step cell names a real scenario)
         run: cargo xtask gate teller-steps
-      - name: Build the subject the rigs boot
-        # RELEASE, because that is what `h2-lib.sh` resolves by default
-        # (`${…_SUBJECT_BUSBAR_BIN:-target/release/busbar}`) and a rig that silently graded a debug
-        # binary would be proving the admission path of something nobody ships.
-        run: cargo build -p busbar --release --locked
+      # THE SUBJECT THE RIGS BOOT — the ONE canonical release binary `build-release` built, downloaded
+      # instead of rebuilt. RELEASE, because that is what `h2-lib.sh` resolves by default
+      # (`${…_SUBJECT_BUSBAR_BIN:-target/release/busbar}`) and a rig that silently graded a debug
+      # binary would be proving the admission path of something nobody ships.
+      - name: Download the canonical release binary the rigs boot
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: busbar-release
+          path: target/release
+      - name: Make the downloaded binary executable
+        run: chmod +x target/release/busbar
       # ── the MCP plane's six ───────────────────────────────────────────────────────────────────
       - name: mcp.rig authenticate-refusal
         run: ./scripts/mcp-subject/h2-authenticate-refusal.sh
@@ -1783,34 +2061,26 @@ jobs:
   # docs/ci/feature-sets.md, produced with `cargo tree -f '{p}|{f}'` over every CI invocation.
   #
   # feature-covered: busbar/loom-model -- txn-guards -- scripts/loom.sh builds it in release to explore the txn interleavings
-  # feature-covered: busbar-core/loom-model -- txn-guards -- same scripts/loom.sh run; the root feature is a forward onto this one
+  # feature-covered: busbar-kernel/loom-model -- txn-guards -- same scripts/loom.sh run; the root feature is a forward onto this one
   # feature-covered: busbar/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar with the feature named
-  # feature-covered: busbar-core/openapi-schema -- openapi-schema -- same job names -p busbar-core with the feature
-  # feature-covered: busbar-a2a/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
-  # feature-covered: busbar-llm/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
+  # feature-covered: busbar-kernel/openapi-schema -- openapi-schema -- same job names -p busbar-kernel with the feature
+  # feature-covered: busbar-a2a/openapi-schema -- openapi-schema -- pulled by the forward from busbar-kernel in that job's build
+  # feature-covered: busbar-llm/openapi-schema -- openapi-schema -- pulled by the forward from busbar-kernel in that job's build
   # feature-covered: busbar-llm-codec/openapi-schema -- openapi-schema -- pulled by the forward from busbar-llm in that job's build
-  # feature-covered: busbar-mcp/openapi-schema -- openapi-schema -- pulled by the forward from busbar-core in that job's build
-  # feature-covered: busbar-substrate/openapi-schema -- openapi-schema -- pulled by the forward from every plane crate there
+  # feature-covered: busbar-mcp/openapi-schema -- openapi-schema -- pulled by the forward from busbar-kernel in that job's build
   # feature-covered: busbar-voice/openapi-schema -- openapi-schema -- pulled by the forward from busbar with the feature on
   # feature-covered: busbar-timing/timing -- check -- the Timing implementation tests step names -p busbar-timing --features timing
   # feature-covered: busbar-llm/teller-waist -- check -- the LLM teller-step tests step names it, and the root default reaches it
   # feature-covered: busbar-voice/test-support -- check -- the Voice runtime tests step names --features runtime,test-support
   # feature-covered: busbar-voice/runtime -- check -- the Voice runtime tests step names it, and the root default reaches it
   # feature-covered: busbar-voice-codec/runtime -- check -- the Voice runtime tests step names -p busbar-voice-codec --features runtime
-  # feature-covered: busbar-core/plane-voice -- check -- reached from the root binary's default plane-voice in the workspace build
-  # feature-covered: busbar-substrate/plane-voice -- check -- reached from busbar-core/plane-voice in the workspace default build
-  # feature-covered: busbar-substrate/plane-a2a -- check -- reached from busbar-core/plane-a2a in the workspace default build
-  # feature-covered: busbar-substrate/plane-mcp -- check -- reached from busbar-core/plane-mcp in the workspace default build
-  # feature-covered: busbar-substrate/plane-llm -- check -- reached from busbar-core/plane-llm in the workspace default build
-  # feature-covered: busbar-substrate/dispatch -- check -- reached from the plane-mcp forward in the workspace default build
-  # feature-covered: busbar-substrate/relay -- check -- reached from the plane-a2a forward in the workspace default build
-  # feature-covered: busbar-substrate/runtime -- check -- reached from the plane-voice forward in the workspace default build
-  # feature-covered: busbar-substrate-values/dispatch -- check -- reached from busbar-substrate/dispatch in the default build
-  # feature-covered: busbar-substrate-values/relay -- check -- reached from busbar-substrate/relay in the default build
-  # feature-covered: busbar-substrate-values/runtime -- check -- reached from busbar-substrate/runtime in the default build
-  # feature-covered: busbar-unit-auth/sha256 -- check -- reached from the default auth-admin-tokens closure in the workspace build
-  # feature-covered: busbar-core/test-support -- check -- unified in by a dev-dependency under cargo clippy --workspace --all-targets
-  # feature-covered: busbar-substrate/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
+  # feature-covered: busbar-kernel/plane-voice -- check -- reached from the root binary's default plane-voice in the workspace build
+  # feature-covered: busbar-kernel/runtime -- check -- reached from the plane-voice forward in the workspace default build
+  # feature-covered: busbar-substrate-values/dispatch -- check -- reached from busbar-kernel/dispatch in the default build
+  # feature-covered: busbar-substrate-values/relay -- check -- reached from busbar-kernel/relay in the default build
+  # feature-covered: busbar-substrate-values/runtime -- check -- reached from busbar-kernel/runtime in the default build
+  # feature-covered: busbar-kernel-identity/sha256 -- check -- reached from the default auth-admin-tokens closure in the workspace build
+  # feature-covered: busbar-kernel/test-support -- check -- unified in by a dev-dependency under cargo clippy --workspace --all-targets
   # feature-covered: busbar-substrate-values/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-a2a/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-a2a/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
@@ -1847,7 +2117,7 @@ jobs:
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
           action: save
-          key: cargo-${{ runner.os }}-deletion-test-matrix-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          key: cargo-${{ runner.os }}-plane-rigs-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           path: |
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
@@ -1855,6 +2125,8 @@ jobs:
   no-plugins-gate:
     name: no-plugins gate (compiled out · not installed)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.9 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1898,6 +2170,8 @@ jobs:
   txn-guards:
     name: txn compile fence · loom model
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 12.1 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -1940,6 +2214,8 @@ jobs:
   timing:
     name: timing gate (release)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 18.1 min
     # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -2000,6 +2276,8 @@ jobs:
   windows:
     name: windows build · clippy · test
     runs-on: windows-latest
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 18.3 min
     # over the last 7 green runs of this job; ceiling is p95 x1.5, floor 10.
     timeout-minutes: 27
@@ -2156,6 +2434,8 @@ jobs:
   coverage:
     name: coverage (llvm-cov · codecov)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 6.4 min
     # over the last 9 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -2224,7 +2504,7 @@ jobs:
       # look up the tag's commit (`gh api repos/codecov/codecov-action/git/ref/tags/v5.x.y`) and
       # replace both the sha and the version comment together.
       - name: Upload to Codecov (never fails the build)
-        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           # Codecov rejects tokenless uploads on protected branches (dev/qa/main) with
           # "Token required because branch is protected". This org-level secret authenticates
@@ -2269,6 +2549,9 @@ jobs:
   perf-build-gate:
     name: perf + build-parity gate
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier, and on `build-release` for the shared binary whose provenance
+    # stamp this job asserts (downloaded below, no longer rebuilt here).
+    needs: [preflight, build-release]
 
     # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 9.9 min
     # over the last 7 green runs of this job; ceiling is p95 x1.5, floor 10.
@@ -2330,10 +2613,17 @@ jobs:
 
       # THE STAMP, PROVEN ON A REAL RELEASE BINARY. A plain release build (no BUSBAR_PGO) must report
       # profile=release, opt-level=3, debug-assertions=false, pgo=false. A debug/non-optimized binary
-      # would report otherwise and fail — the exact misdiagnosis the stamp exists to prevent.
-      - name: Build busbar (release) + assert build-provenance stamp
+      # would report otherwise and fail — the exact misdiagnosis the stamp exists to prevent. The
+      # binary is the ONE `build-release` built (downloaded, not rebuilt here); asserting the stamp on
+      # it is exactly the parity check this gate owes — proof the shared artifact carries the stamp.
+      - name: Download the shared release binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: busbar-release
+          path: target/release
+      - name: Assert build-provenance stamp on the shared release binary
         run: |
-          cargo build -p busbar --release --locked
+          chmod +x target/release/busbar
           scripts/build-provenance-gate.sh target/release/busbar release false
 
       # THE DETERMINISTIC ALLOCATION-COUNT PERF GATE, by name (also covered by the workspace test run).
@@ -2577,10 +2867,19 @@ jobs:
   shadow-oracle:
     name: shadow oracle (this build vs the published 1.5.5, 0 divergences)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier — the whole point of this change: a one-minute fmt failure no
+    # longer burns this forty-minute record alongside it — and on `build-release` for the candidate
+    # binary it records (downloaded below instead of rebuilt here).
+    needs: [preflight, build-release]
 
     timeout-minutes: 60
     env:
       BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+      # bin/oracle (Phase C) builds the money oracle from the PRIVATE sibling GetBusbar/busbar-release
+      # pinned in testing/shadow-oracle/oracle-rust.pin. The default GITHUB_TOKEN is scoped to THIS
+      # repo, so bin/oracle's clone of that private repo needs a cross-repo token — the same PAT the
+      # release-dispatch path already uses. Without it every ./bin/oracle call dies before recording.
+      BUSBAR_RELEASE_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
     # THE BACKENDS BOTH SIDES RECORD AGAINST.
     #
     # The store families' cells boot a real backend, spend, restart and read back — persistence IS
@@ -2713,11 +3012,20 @@ jobs:
           key: ${{ steps.rev.outputs.key }}
           path: ~/.cache/busbar-oracle
 
-      - name: Build the candidate (release, with the release public key)
+      # THE CANDIDATE is the ONE `build-release` built (release, under the release public key),
+      # downloaded here instead of rebuilt. The pubkey guard stays: the key is a RUNTIME input to the
+      # plugins family the oracle records below (not a build input), so it must be present in THIS
+      # job's environment — the download does not carry it.
+      - name: Download the candidate (release) binary + guard the release public key
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: busbar-release
+          path: target/release
+      - name: The release public key is set for the record (plugins family)
         run: |
           set -euo pipefail
           [ -n "${BUSBAR_RELEASE_PUBKEY:-}" ] || { echo "::error::BUSBAR_RELEASE_PUBKEY is not set; the plugins family would be red for the wrong reason"; exit 1; }
-          cargo build -p busbar --release --locked
+          chmod +x target/release/busbar
       - name: Both binaries accept the oracle config
         run: ./bin/oracle selftest target/release/busbar "$HOME/.cache/busbar-oracle/1.5.5/busbar"
       # THE GOLDEN IS COMMITTED, NOT RE-DERIVED. `testing/shadow-oracle/golden/1.5.5/` is the signed-off
@@ -2827,7 +3135,7 @@ jobs:
             target
   llm-conformance:
     name: llm spec conformance (HEAD recording vs the published provider specs)
-    runs-on: latchkey-large
+    runs-on: latchkey-small
 
     timeout-minutes: 20
     needs: shadow-oracle
@@ -2928,6 +3236,8 @@ jobs:
   teller-steps:
     name: teller steps (one cell per Teller step per plane, and the cells RUN)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     timeout-minutes: 30
     # FULL TIER. --root-legs compiles the binary crate under a feature combination no other job
@@ -2976,6 +3286,8 @@ jobs:
   construction-gate:
     name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)
     runs-on: latchkey-xlarge
+    # Waits on the cheap hygiene tier.
+    needs: [preflight]
 
     timeout-minutes: 15
     # `continue-on-error: true` IS GONE, AND SO IS THE REASON FOR IT. It was here because the gate
@@ -3052,6 +3364,7 @@ jobs:
   # Self-test FIRST, as everywhere else in this file.
   design-bindings:
     name: design bindings (every Appendix B binding proven by a check that exists · regen-clean)
+    needs: [preflight]
     runs-on: latchkey-large
 
     timeout-minutes: 10
@@ -3134,7 +3447,11 @@ jobs:
     if: always()
     needs:
       - gate-tier
+      - fmt
+      - preflight
       - structure-lint
+      - changes
+      - build-release
       - check
       - openapi-schema
       - migration-corpus
@@ -3197,7 +3514,11 @@ jobs:
       # that distinction mean anything.
       RESULTS: |
         gate-tier|fast|${{ needs.gate-tier.result }}
+        fmt|fast|${{ needs.fmt.result }}
+        preflight|fast|${{ needs.preflight.result }}
         structure-lint|fast|${{ needs.structure-lint.result }}
+        changes|fast|${{ needs.changes.result }}
+        build-release|fast|${{ needs.build-release.result }}
         check|fast|${{ needs.check.result }}
         config-stability|fast|${{ needs.config-stability.result }}
         generated-artifact-drift|fast|${{ needs.generated-artifact-drift.result }}
@@ -3211,8 +3532,8 @@ jobs:
         executable-config-lint|full|${{ needs.executable-config-lint.result }}
         no-default-features|full|${{ needs.no-default-features.result }}
         deletion-test-matrix|full|${{ needs.deletion-test-matrix.result }}
-        feature-sets|fast|${{ needs.feature-sets.result }}
-        plane-rigs|fast|${{ needs.plane-rigs.result }}
+        feature-sets|full|${{ needs.feature-sets.result }}
+        plane-rigs|full|${{ needs.plane-rigs.result }}
         no-plugins-gate|full|${{ needs.no-plugins-gate.result }}
         txn-guards|full|${{ needs.txn-guards.result }}
         timing|full|${{ needs.timing.result }}

@@ -15,6 +15,10 @@ async-trait = { workspace = true }
 # (or any consumer that already depends on busbar-api) can name `busbar_api::SecretRef` without a
 # separate path dep. This crate depends only on serde/serde_json, so no dependency cycle.
 busbar-secret-ref = { path = "../secret-ref" }
+# The money-path durable records + the `Store` trait relocated to `busbar-kernel-ledger` (#35, W3.a).
+# `busbar-api` re-exports them under their original names for staged back-compat (retires W5.b). No
+# cycle: `busbar-kernel-ledger` depends only on `busbar-contract` (which does not depend on api).
+busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 sha2 = { workspace = true }
 hex = { workspace = true }
 zeroize = { workspace = true }

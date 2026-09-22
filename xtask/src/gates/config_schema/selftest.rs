@@ -228,7 +228,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // the first and the classifier would report the swap as a break nobody made.
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-substrate/src/config/zz_collision_fixture.rs",
+        "crates/busbar-kernel/src/config/zz_collision_fixture.rs",
         "#[derive(serde::Deserialize)]\npub struct DeployCfg {\n    pub other: String,\n}\n",
     );
     report.push(prove_rows_red(
@@ -243,7 +243,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // A LIFTED KEY WITH NO CARRIER. The lift list must not be usable to hold a deleted field open.
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-substrate/src/config/zz_lift_fixture.rs",
+        "crates/busbar-kernel/src/config/zz_lift_fixture.rs",
         "pub(crate) const LIFTED_EXTRA_KEYS: &[&str] = &[\"zz_no_such_key\"];\n",
     );
     report.push(prove_rows_red(
@@ -258,7 +258,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // AN UNSUPPORTED `rename_all` would fingerprint wire keys the parser does not accept.
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-substrate/src/config/zz_rename_fixture.rs",
+        "crates/busbar-kernel/src/config/zz_rename_fixture.rs",
         "#[derive(serde::Deserialize)]\n#[serde(rename_all = \"Klingon\")]\npub struct ZzRenameFx {\n    pub max_tokens: u32,\n}\n",
     );
     report.push(prove_rows_red(
@@ -272,29 +272,21 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 
     // ── THE CORE-KIND ROOT CENSUS ────────────────────────────────────────────────────────────────
     // The tracked set used to name ONE core crate by a hardcoded path. The config layer is being
-    // carved out of `busbar-core` into `busbar-core-config`, and under a hardcoded root every file
-    // that leaves takes its grammar out of the fingerprint with it: the fresh render loses the
-    // types, and the additive rule reads the loss as a BREAK. That is a MOVE being reported as a
-    // deletion, which is the one thing this gate must not say — the operator-visible grammar did
-    // not change by a byte.
+    // carved out of the engine (`busbar-kernel`, which absorbed `busbar-core`) into `busbar-core-*`
+    // surfaces, and under a hardcoded root every file that leaves takes its grammar out of the
+    // fingerprint with it: the fresh render loses the types, and the additive rule reads the loss as
+    // a BREAK. That is a MOVE being reported as a deletion, which is the one thing this gate must not
+    // say — the operator-visible grammar did not change by a byte.
     //
     // These two cases are a matched pair, and neither is worth anything without the other: the
     // first says a type that MOVED between two core-kind roots is not a break, the second says a
     // type that VANISHED from every core-kind root still is. A census that only knew how to say
-    // "fine" would pass both halves of that pair and gate nothing.
-    let moved = "crates/busbar-core/src/config/overlay.rs";
-    let manifest =
-        "[package]\nname = \"busbar-core-config\"\nversion = \"0.0.0\"\nedition = \"2021\"\n";
+    // "fine" would pass both halves of that pair and gate nothing. The move target,
+    // `busbar-core-config`, is a real core-kind census member (no `config/` module, so its `src/`
+    // root is its grammar directory).
+    let moved = "crates/busbar-kernel/src/config/overlay.rs";
 
     let mut ov = Overlay::new();
-    ov.set(
-        "Cargo.toml",
-        cx.read("Cargo.toml").unwrap_or_default().replace(
-            "\"crates/busbar-core\",",
-            "\"crates/busbar-core\",\n    \"crates/busbar-core-config\",",
-        ),
-    );
-    ov.set("crates/busbar-core-config/Cargo.toml", manifest);
     ov.set(
         "crates/busbar-core-config/src/overlay.rs",
         cx.read(moved).unwrap_or_default(),
@@ -303,7 +295,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     report.push(prove_rows_green(
         cx,
         gate,
-        "a grammar type that MOVED from busbar-core to another core-kind crate is NOT a break",
+        "a grammar type that MOVED between two core-kind roots is NOT a break",
         &[ROW_TRACKED_SOURCES, ROW_SNAPSHOT_DRIFT, ROW_ADDITIVE_ONLY],
         ov,
     ));

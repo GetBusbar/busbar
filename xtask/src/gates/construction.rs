@@ -61,12 +61,12 @@ pub const CEILINGS: &str = "qa/construction.toml";
 /// The three section 1.1 surface ceilings, each with the crates it sums and the words the row uses
 /// for them. The figures live in `[gate.surface_ceilings]`; only the labels are here, because a
 /// label is not a threshold.
-const SURFACE: [(&str, &str, &str, &str, i64); 3] = [
+const SURFACE: [(&str, &str, &str, &str, i64); 2] = [
     (
-        "contract+caps",
+        "contract",
         "contract_caps",
-        "busbar-contract,busbar-caps",
-        "the contract pair's plugin-visible surface",
+        "busbar-contract",
+        "the contract crate's plugin-visible surface (caps folded in, #37/#38)",
         3500,
     ),
     (
@@ -75,13 +75,6 @@ const SURFACE: [(&str, &str, &str, &str, i64); 3] = [
         "busbar-grammar",
         "the closed span grammar's surface",
         500,
-    ),
-    (
-        "contract-transport",
-        "contract_transport",
-        "busbar-contract-transport",
-        "the transport-facing contract's surface",
-        1000,
     ),
 ];
 

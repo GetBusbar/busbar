@@ -1,0 +1,23 @@
+[package]
+name = "ws-conformance-subject"
+version = "0.0.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "Autobahn|Testsuite subject: busbar's ws transport composed over tcp, echoing on loopback."
+
+# TESTKIT, NOT PRODUCT PATH. This binary exists only so the Autobahn|Testsuite fuzzingclient has a
+# real busbar transport to point at. It is not shipped, not built by `cargo build --bin busbar`,
+# and carries no plane/protocol meaning of its own -- it composes the SAME
+# `WsTransport::over(TcpTransport)` chain the architecture names, the way a battery test in
+# `busbar-transport-tcp/src/tests/mod.rs` composes the identical pair.
+[[bin]]
+name = "ws-conformance-subject"
+path = "src/main.rs"
+
+[dependencies]
+busbar-contract = { path = "../../../crates/busbar-contract" }
+busbar-transport-ws = { path = "../../../crates/busbar-transport-ws" }
+busbar-transport-tcp = { path = "../../../crates/busbar-transport-tcp" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+futures = { workspace = true }

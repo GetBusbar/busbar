@@ -14,9 +14,9 @@ fn json_v1_mount_prefix_matches_contract_const() {
     let t = crate::v1::json::JsonV1;
     let computed = format!(
         "{}/{}/{}",
-        busbar_core::admin::v1::contract::API_ROOT,
+        busbar_kernel::admin::v1::contract::API_ROOT,
         t.version(),
         t.area()
     );
-    assert_eq!(computed, busbar_core::admin::v1::contract::ADMIN_PREFIX);
+    assert_eq!(computed, busbar_kernel::admin::v1::contract::ADMIN_PREFIX);
 }

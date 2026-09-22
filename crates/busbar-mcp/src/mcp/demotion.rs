@@ -23,8 +23,8 @@
 ///
 /// Returns how many were replayed, for the boot line.
 pub(crate) fn hydrate(
-    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    store: Option<&std::sync::Arc<dyn busbar_substrate::plane::store::PlaneStore>>,
+    host: &std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    store: Option<&std::sync::Arc<dyn busbar_kernel::plane::store::PlaneStore>>,
 ) -> usize {
     // The durable demotion rows come off the GENERIC plane store directly (the neutral opaque
     // `PlaneRecord` envelope, kind `demotion`), decoded HERE into the plane's own `McpDemotionRow` —
@@ -74,7 +74,7 @@ pub(crate) fn hydrate(
             let sc = servers.entry(id.as_str().to_string()).or_insert_with(|| {
                 crate::mcp::client::catalogue::ServerCatalogue::seeded(id.clone(), approval)
             });
-            sc.sighting = busbar_substrate::trust::Sighting::Demoted(reason);
+            sc.sighting = busbar_kernel::trust::Sighting::Demoted(reason);
         });
         replayed += 1;
     }

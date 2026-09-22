@@ -69,8 +69,8 @@ async fn a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_to
     // cell opens on the FIRST definitive failure, per the core classifier.
     assert!(
         matches!(
-            app.breaker_state(&busbar_substrate::store::tool_key("fs")),
-            busbar_substrate::store::BreakerState::Open { .. }
+            app.breaker_state(&busbar_kernel::store::tool_key("fs")),
+            busbar_kernel::store::BreakerState::Open { .. }
         ),
         "a 401 from the upstream must open the server's breaker cell"
     );
@@ -166,8 +166,8 @@ async fn a_tripped_server_refuses_before_a_task_id_is_minted() {
     }
     for _ in 0..50 {
         if matches!(
-            app.breaker_state(&busbar_substrate::store::tool_key("fs")),
-            busbar_substrate::store::BreakerState::Open { .. }
+            app.breaker_state(&busbar_kernel::store::tool_key("fs")),
+            busbar_kernel::store::BreakerState::Open { .. }
         ) {
             break;
         }
@@ -267,11 +267,11 @@ async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fa
     // has not said anything). So a fixed loop of five calls buys fewer than five WIRE failures. This
     // one keeps driving the front door, waiting each backoff out, until the cell has genuinely seen
     // `min_requests` of them.
-    let key = busbar_substrate::store::tool_key("sh");
+    let key = busbar_kernel::store::tool_key("sh");
     let deadline = Instant::now() + Duration::from_secs(20);
     while !matches!(
         app.breaker_state(&key),
-        busbar_substrate::store::BreakerState::Open { .. }
+        busbar_kernel::store::BreakerState::Open { .. }
     ) {
         assert!(
             Instant::now() < deadline,
@@ -340,8 +340,8 @@ async fn one_transient_failure_does_not_refuse_the_next_caller() {
     // false — and a cell that did not trip must not behave as though it had.
     assert!(
         matches!(
-            app.breaker_state(&busbar_substrate::store::tool_key("fs")),
-            busbar_substrate::store::BreakerState::Closed
+            app.breaker_state(&busbar_kernel::store::tool_key("fs")),
+            busbar_kernel::store::BreakerState::Closed
         ),
         "one sub-threshold transient must leave the cell Closed and admitting, not benched"
     );
@@ -384,8 +384,8 @@ async fn a_transient_server_that_breaches_the_error_rate_trips_and_then_fast_fai
     );
     assert!(
         matches!(
-            app.breaker_state(&busbar_substrate::store::tool_key("fs")),
-            busbar_substrate::store::BreakerState::Open { .. }
+            app.breaker_state(&busbar_kernel::store::tool_key("fs")),
+            busbar_kernel::store::BreakerState::Open { .. }
         ),
         "an all-error window at or above min_requests must trip the cell"
     );

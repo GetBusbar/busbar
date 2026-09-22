@@ -122,8 +122,8 @@ fn every_billing_plane_reaches_the_core_meter_seam_in_production() {
 // The gate above scans the PLANE CRATE, which is the legacy path's answer: the plane crate serves
 // the request and reaches the host's metering entry points itself. Over the composition root the
 // plane does not hold the host at all — it contributes one method per Teller step
-// (`busbar_substrate::teller::TellerPlane`) and the loop calls them in order, so the Meter step is
-// `fn meter(&mut self, token: &UnitToken<Meter>, usage: &UsageToken, …) -> Decision<Meter>` in that
+// (`busbar_kernel::teller::TellerPlane`) and the loop calls them in order, so the Meter step is
+// `fn meter(&mut self, token: &Pass<Meter>, usage: &Grant<Consumption>, …) -> Decision<Meter>` in that
 // plane's leg under `crates/busbar/src/root/`.
 //
 // A leg can satisfy every neutrality and isomorphism gate in the tree and still hand back a
@@ -148,8 +148,11 @@ const BILLING_PLANE_ROOT_LEGS: &[(&str, &str)] = &[
 /// actually uses: the usage unit's own entry point, the report constructor it returns, and the
 /// per-leg fold helper that wraps it. A leg reaching NONE of these reports no lines, and a Meter
 /// step that reports no lines charges nobody.
-const TELLER_USAGE_SEAM_TOKENS: &[&str] =
-    &["busbar_unit_usage::meter(", "Usage::report(", "fold_usage("];
+const TELLER_USAGE_SEAM_TOKENS: &[&str] = &[
+    "busbar_kernel_ledger::usage::meter(",
+    "Usage::report(",
+    "fold_usage(",
+];
 
 /// THE ONE HOP a Meter step is allowed. `units_llm.rs`'s step is `self.walk.meter(token, usage)`,
 /// which lands in the plane's own Meter module — the same one usage seam, reached through the
@@ -322,7 +325,7 @@ fn selftest_the_seam_scanners_discriminate() {
 fn selftest_a_seam_reached_only_by_a_test_module_does_not_count() {
     let leg_that_meters_nobody = r#"
 impl TellerPlane for Leg {
-    fn meter(&self, token: &UnitToken<Meter>, usage: &UsageToken) -> Decision<Meter> {
+    fn meter(&self, token: &Pass<Meter>, usage: &Grant<Consumption>) -> Decision<Meter> {
         Decision::proceed(token, Default::default())
     }
 }

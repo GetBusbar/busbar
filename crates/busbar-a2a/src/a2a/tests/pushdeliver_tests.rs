@@ -32,7 +32,7 @@ use super::super::pushnotify::{self, PushNotifyError};
 use super::super::relay::{ChunkFlow, RelaySeam, RelayTransport, StreamHead};
 use super::super::task::{Direction, Task, TaskState};
 use crate::testkit::engine_boot::engine;
-use busbar_substrate::audit::vocab as provenance;
+use busbar_contract::vocab as provenance;
 
 const CALLBACK: &str = "https://hook.caller.test/notify";
 /// The address the callback resolved to when it was REGISTERED. Public, so it passed.
@@ -699,7 +699,7 @@ async fn a_task_in_the_registry(
     // Aim the process-wide `task_event` stream at THIS ledger for the duration of the lock — a sink
     // swap, not a re-register, so the working-set tests' shared registration (and every position) is
     // left intact — and attach the row-upsert sink.
-    crate::taskstore::TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+    crate::taskstore::TASKS.set_sink(busbar_kernel::plane::store::PlaneStoreView::narrow(
         ledger.clone(),
     ));
     let task = task_with_callback(task_id, state);

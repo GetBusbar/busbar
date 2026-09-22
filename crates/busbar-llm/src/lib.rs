@@ -20,7 +20,7 @@
 //! feature, which carries the dependency edge too, so dropping the feature drops the whole LLM
 //! protocol and the deletion gate watches busbar refuse all six names at boot.
 //!
-//! WHAT IS DELIBERATELY *NOT* HERE. `busbar_substrate::proto::openai_family` — the `ERR_TYPE_*` bank,
+//! WHAT IS DELIBERATELY *NOT* HERE. `busbar_kernel::proto::openai_family` — the `ERR_TYPE_*` bank,
 //! `bearer_error_code`, `tool_arguments_to_string`, `MESSAGE_NAMES_SENTINEL` — reads like it should
 //! have travelled with the OpenAI dialects, and it must not: `busbar-core` itself consumes it in
 //! PRODUCTION (`proxy`'s whole `KIND_*` vocabulary, `admin`'s error envelopes, `auth`'s bearer error
@@ -31,7 +31,7 @@
 //! back in under `crate::proto::{anthropic, …}` via `#[path]`, so core's pre-extraction fixture
 //! surface keeps exercising the real codecs from inside core's own test binary. Two consequences
 //! bind every file here: dialect sources address core by its crate name (core's
-//! `extern crate self as busbar_core` alias resolves that to itself), and a dialect referring to a
+//! `extern crate self as busbar_kernel` alias resolves that to itself), and a dialect referring to a
 //! SIBLING dialect must do it RELATIVELY — `super::gemini::…` from a `mod.rs`, `super::super::…`
 //! from one file deeper — because the parent module is this crate's root in one shape and
 //! `crate::proto` in the other, and only a relative path is correct in both.
@@ -119,6 +119,12 @@ pub use busbar_llm_codec::{
     usage_tail, wire_shim, DECLS,
 };
 
+/// THE LLM PLANE'S CAPABILITY KEY (`"llm"`) — the string the composition root flips onto the unified
+/// kernel loop and the same string the LLM native plane reports from its
+/// `GauntletPlane::capability_key`. Re-exported at the crate root so the `busbar` binary names ONE
+/// stable path (`busbar_llm::PLANE_KEY`) and the plane and the flip cannot drift onto two literals.
+pub use busbar_llm_codec::PLANE_KEY;
+
 /// THE RELOCATED LLM MONEY-PATH ENGINE (1.6.0 money-path Phase 3-4 C). Routing tables, egress
 /// pipeline, health probe loop and native fallback plane — see [`engine`].
 pub mod engine;
@@ -131,7 +137,7 @@ pub mod openai_responses_webhook;
 /// THE PATH-MODEL DIALECT ARRIVALS (gemini/bedrock URL-model ingress), RELOCATED here from
 /// `busbar-core` — the last piece of core→plane entanglement. They parse their own model out of the
 /// URL and reach the core request pipeline through the neutral
-/// [`busbar_substrate::ingress::arrival::ArrivalHost`] seam, so this crate names no core
+/// [`busbar_kernel::ingress::arrival::ArrivalHost`] seam, so this crate names no core
 /// item. Registered via [`PATH_INGRESS`].
 pub mod arrival;
 
@@ -159,18 +165,19 @@ pub mod unit;
 /// present solely in this crate's own test binary. Nothing outside that binary reaches this module.
 #[cfg(test)]
 pub mod test_support {
-    pub use busbar_core::test_support::*;
+    pub use busbar_kernel::test_support::*;
 
     /// THE CHAT DISPATCH CELL the money-path tests hold by value — `frame(Http, CHAT, ChatOperation)`
     /// over THIS crate's real openai chat codec. It USED to live in core's `handlers/tests/chat_fixture`
     /// (a `#[cfg(test)]` file that named `busbar_llm::chat_handle::ChatOperation` across the dev-dep
     /// back-edge); with the money-path tests relocated here it is built in-plane, naming its own cell —
     /// no cross-crate `#[cfg(test)]` reach, and no `busbar-core[test-support] → busbar-llm` cycle.
-    pub const CHAT: busbar_substrate::handlers::Op = busbar_substrate::handlers::frame(
-        busbar_substrate::transport::Transport::Http,
-        busbar_api::operation::Operation::CHAT,
-        &crate::chat_handle::ChatOperation("openai"),
-    );
+    pub const CHAT: busbar_substrate_values::handlers::Op =
+        busbar_substrate_values::handlers::frame(
+            busbar_substrate_values::transport::Transport::Http,
+            busbar_api::operation::Operation::CHAT,
+            &crate::chat_handle::ChatOperation("openai"),
+        );
 }
 
 /// THE LLM PLUGIN'S TEST-KIT — the composition-root-shaped install seams a test uses to bring the LLM
@@ -196,13 +203,13 @@ pub mod testkit;
 /// `anthropic, openai, gemini, bedrock, responses, cohere`. A dialect appended here rather than
 /// inserted keeps every existing family's index; inserting one silently renumbers all of them.
 /// THE LLM PLANE'S VOCABULARY DECLARATION — the plane's statement about ITSELF, relocated here from
-/// `busbar_substrate::proto::PLANE_DECL` so the LLM plane owns its declaration exactly as `busbar-mcp` and
+/// `busbar_kernel::proto::PLANE_DECL` so the LLM plane owns its declaration exactly as `busbar-mcp` and
 /// `busbar-a2a` own theirs. The composition root installs it through
 /// core's `plane::registry::install_planes` (`crates/busbar/src/main.rs::register_planes`, behind
 /// `proto-llm`); core's own test binary names it through the `#[cfg(test)]` row in
 /// `plane::registry::BUILTIN_PLANE_DECLS`, so both shapes boot the same `[llm, mcp, a2a]` plane list.
 ///
-/// `wire_format_names` is [`busbar_substrate::proto::known_protocols`] itself — the model plane's dialects
+/// `wire_format_names` is [`busbar_kernel::proto::known_protocols`] itself — the model plane's dialects
 /// ARE the registered protocols, so a seventh dialect moves that list with nothing edited here. Every
 /// other field is `None`/trivial (the fallback plane claims no path, mounts nothing and reconciles
 /// nothing). R3/R4 sub-phase B DID move the LLM data-plane runtime (lanes/pools/failover/egress) off its
@@ -210,8 +217,8 @@ pub mod testkit;
 /// type still lives in `busbar-core`, which a plane crate may not name, so `busbar-core`'s `appbuild`
 /// composes that slot through a core-local constructor rather than through this decl's `build_runtime`
 /// pointer (which stays `None`); Phase 3 relocates the type here and flips the pointer on, like MCP's.
-pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
-    busbar_substrate::plane::registry::PlaneDecl {
+pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
+    busbar_kernel::plane::registry::PlaneDecl {
         key: "llm",
         // THE FALLBACK CATCH-ALL — every unclaimed path falls through to the LLM plane, so core reads
         // the fallback key off this flag rather than a hard-coded `"llm"` literal.
@@ -223,7 +230,7 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // `NamedMapSection`), so `singular` is never routed here; carried for completeness.
         admin_noun: "pool",
         audit_kind: "pool",
-        wire_format_names: busbar_substrate::proto::known_protocols,
+        wire_format_names: busbar_kernel::proto::known_protocols,
         // THE FALLBACK MOUNTS NOTHING — the catch-all every unclaimed path falls through to, so it
         // claims no path and binds no audience.
         claims: |_| Vec::new(),
@@ -296,7 +303,7 @@ pub use crate::engine::health::spawn_probers;
 /// operation off the body and register nothing. The arrival fns live in THIS crate
 /// ([`crate::arrival::{gemini_arrival, bedrock_arrival}`]) and reach the core pipeline through the
 /// neutral `ArrivalHost` seam — no reference into core; this states the NAME→fn pairing.
-pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngress)] = &[
+pub static PATH_INGRESS: &[(&str, busbar_kernel::ingress::arrival::PathIngress)] = &[
     (
         crate::proto_codec::PROTO_GEMINI,
         crate::arrival::gemini_arrival,
@@ -309,14 +316,14 @@ pub static PATH_INGRESS: &[(&str, busbar_substrate::ingress::arrival::PathIngres
 
 /// THE BODY-MODEL DIALECT ARRIVALS — the body-axis twin of [`PATH_INGRESS`]. The convenience surfaces
 /// (`named`/`adhoc` `/v1/messages`) and the generic body-model dispatch arm resolve a dialect's
-/// universal ingress by NAME through `busbar_substrate::ingress::arrival::body_ingress_for`; this slice
+/// universal ingress by NAME through `busbar_kernel::ingress::arrival::body_ingress_for`; this slice
 /// states each dialect's NAME→arrival pairing. The composition root
 /// (`crates/busbar/src/main.rs::register_protocols`) hands it to
-/// `busbar_substrate::ingress::arrival::install_body_ingress`; the test-kit seeds it through
+/// `busbar_kernel::ingress::arrival::install_body_ingress`; the test-kit seeds it through
 /// `set_test_body_ingress`. Every dialect appears (each routes its body-model traffic through the ONE
 /// engine); the URL-model pair (gemini/bedrock) also carry a body entry for the dispatch arm's
 /// symmetry, even though their primary surface is [`PATH_INGRESS`].
-pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngress)] = &[
+pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)] = &[
     (
         crate::proto_codec::PROTO_ANTHROPIC,
         crate::arrival::anthropic_body_arrival,
@@ -345,9 +352,9 @@ pub static BODY_INGRESS: &[(&str, busbar_substrate::ingress::arrival::BodyIngres
 
 /// THE READS-NOT-RESTATES GUARANTEE for the LLM `PLANE_DECL`, pinned HERE because this is the crate
 /// that owns the declaration — and the only place its `wire_format_names` field and
-/// `busbar_substrate::proto::known_protocols` resolve to the SAME `busbar-core` instance, so a by-pointer
+/// `busbar_kernel::proto::known_protocols` resolve to the SAME `busbar-core` instance, so a by-pointer
 /// identity is meaningful (core's own test binary links two core instances and cannot check it — see
-/// `busbar_core`'s `the_llm_planes_dialects_are_the_registrys_...`). A mutation that replaced the
+/// `busbar_kernel`'s `the_llm_planes_dialects_are_the_registrys_...`). A mutation that replaced the
 /// registry read with a literal spelling today's six dialects — the vacuous shape a `PlaneDecl` uses
 /// to keep claiming dialects a build no longer compiles in — is a DIFFERENT fn pointer and fails here.
 #[cfg(test)]

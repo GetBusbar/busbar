@@ -143,7 +143,7 @@ const CARD: &str = r#"{"protocolVersion":"0.3.0","name":"planner"}"#;
 pub(super) fn identity_from_config(
     cert_pem: &str,
     key_pem: &str,
-) -> busbar_substrate::egress::engine::ClientIdentity {
+) -> busbar_kernel::egress::engine::ClientIdentity {
     // A monotonic counter, not a clock read: two tests can read the same nanosecond, and a
     // colliding path means one test reads a file another is still writing.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

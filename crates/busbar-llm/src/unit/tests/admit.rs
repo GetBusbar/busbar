@@ -5,9 +5,9 @@
 use super::*;
 use crate::test_support::TestApp;
 use busbar_api::Store as _;
-use busbar_caps::{KernelSeal, LedgerToken, Posted, StepName, Usage, UsageToken};
+use busbar_contract::caps::{Consumption, Grant, KernelSeal, Posted, StepName, Usage, WriteMoney};
+use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
 use busbar_store_memory::MemoryStore;
-use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -31,14 +31,14 @@ const FEE_CENTS: i64 = 1;
 
 /// A governed app with one key, a one-cent flat fee, and whatever groups the caller declares.
 fn governed(
-    groups: BTreeMap<String, busbar_substrate::config::groups::GroupCfg>,
+    groups: BTreeMap<String, busbar_kernel::config::groups::GroupCfg>,
     group: Option<&str>,
     seed: Option<(&str, u64)>,
 ) -> (
     std::sync::Arc<crate::test_support::BuiltApp>,
     std::sync::Arc<busbar_api::VirtualKey>,
 ) {
-    busbar_substrate::metrics::init();
+    busbar_kernel::metrics::init();
     let store = std::sync::Arc::new(MemoryStore::new());
     if let Some((bucket, requests)) = seed {
         store
@@ -58,7 +58,7 @@ fn governed(
         .expect("governance");
     let (key, _) = gov
         .create_key(
-            busbar_substrate::governance::NewKeySpec {
+            busbar_kernel::governance::NewKeySpec {
                 name: "identity".to_string(),
                 allowed_pools: None,
                 group: group.map(str::to_string),
@@ -101,10 +101,10 @@ fn durable(app: &std::sync::Arc<crate::test_support::BuiltApp>, bucket: &str) ->
 
 /// A kernel seal for the length of one test: the tokens the step is lent are minted from it
 /// and dropped when the call returns, exactly as the loop lends them.
-fn tokens() -> (KernelSeal, UnitToken<Admit>, AdmitToken<Admit>) {
+fn tokens() -> (KernelSeal, Pass<Admit>, Grant<Admittance>) {
     let seal = KernelSeal::acquire_for_kernel();
-    let unit = UnitToken::mint(&seal);
-    let admit = AdmitToken::mint(&seal);
+    let unit = Pass::mint(&seal);
+    let admit = Grant::<Admittance>::mint(&seal);
     (seal, unit, admit)
 }
 
@@ -123,7 +123,7 @@ async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(key.clone()),
     };
-    let charged_at = busbar_substrate::store::now();
+    let charged_at = busbar_kernel::store::now();
 
     // LEG 1 — the live door, reached through the very seam the plane's step calls.
     let live = match host.admission_door(
@@ -222,14 +222,14 @@ async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
         "the hold is accounting; sizing it is later"
     );
     assert_eq!(hold.accrued(), 0, "nothing has been spent against it yet");
-    let usage_token = UsageToken::mint(&seal);
+    let usage_token = Grant::<Consumption>::mint(&seal);
     let posted = Posted::settle(
         hold,
         // Nothing was routed, so the priced total is zero — and it is passed as money rather
         // than derived from the report, which carries no lines to derive one from.
         0,
         &Usage::report(&usage_token, Vec::new()).expect("no lines is a legal report"),
-        &LedgerToken::mint(&seal),
+        &Grant::<WriteMoney>::mint(&seal),
     );
     assert_eq!(posted.principal().as_str(), key.id.as_str());
     assert_eq!(
@@ -252,13 +252,13 @@ async fn the_step_charges_the_same_slot_fee_base_and_cent_as_the_live_door() {
 async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
     let groups = BTreeMap::from([(
         "bgrp".to_string(),
-        busbar_substrate::config::groups::GroupCfg {
+        busbar_kernel::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_substrate::config::groups::LimitCfg {
-                metric: busbar_substrate::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
                 amount: 100,
-                per: Some(busbar_substrate::config::groups::LimitWindow::Total),
+                per: Some(busbar_kernel::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -271,7 +271,7 @@ async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
     let gov = busbar_api::PlaneRequestCtx {
         key: Some(key.clone()),
     };
-    let charged_at = busbar_substrate::store::now();
+    let charged_at = busbar_kernel::store::now();
 
     let group_before = ledger(&app, "group:bgrp@total", charged_at);
     assert_eq!(

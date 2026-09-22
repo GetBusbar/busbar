@@ -1,18 +1,18 @@
 use super::lane_auth_headers;
 use crate::engine::Lane;
-use busbar_substrate::proto::SigningContext;
+use busbar_kernel::proto::SigningContext;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 fn lane_with_auth(auth: Option<&str>) -> Lane {
     let resolved_auth = auth.map(|a| match a {
-        "api-key" => busbar_substrate::config::ProviderAuth::ApiKey,
-        "bearer" => busbar_substrate::config::ProviderAuth::Bearer,
+        "api-key" => busbar_kernel::config::ProviderAuth::ApiKey,
+        "bearer" => busbar_kernel::config::ProviderAuth::Bearer,
         other => panic!("unexpected test auth style: {other}"),
     });
     Lane {
         prebuilt_auth: None,
-        credential: busbar_substrate::egress_auth::resolve("openai", resolved_auth),
+        credential: busbar_kernel::egress_auth::resolve("openai", resolved_auth),
         egress_targets: std::collections::HashMap::new(),
         reasoning: false,
         prompt_caching: false,
@@ -94,7 +94,7 @@ fn test_keyless_lane_sends_no_auth_header() {
             "an empty credential must send NO auth header (auth style {auth:?})"
         );
         assert!(
-            busbar_substrate::egress_auth::prebuild_auth(&lane.credential, "", &lane.signing_host)
+            busbar_kernel::egress_auth::prebuild_auth(&lane.credential, "", &lane.signing_host)
                 .is_none_or(|h| h.is_empty()),
             "and the boot-time prebuilt freeze must not hold one either (auth style {auth:?})"
         );

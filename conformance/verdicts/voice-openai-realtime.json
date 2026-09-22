@@ -1,0 +1,13 @@
+{
+  "schema": "busbar.conformance.verdict/1",
+  "suite": "voice-openai-realtime",
+  "standard": "OpenAI Realtime API",
+  "plan": "spec battery + replay",
+  "spec_version": "2024-12-17",
+  "status": "pass",
+  "armed": true,
+  "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
+  "run_id": "https://github.com/GetBusbar/busbar/actions/runs/1210",
+  "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1210",
+  "generated_at": "2026-09-19T14:05:00Z"
+}

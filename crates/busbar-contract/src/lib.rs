@@ -12,18 +12,33 @@
 
 pub mod authz;
 pub mod bounded;
+pub mod caps;
+pub mod civil;
 pub mod dest;
+pub mod duration;
 pub mod grammar;
 pub mod ids;
 pub mod kinds;
 pub mod plane;
 pub mod plugin;
+pub mod scratch;
+pub mod slice;
 pub mod spans;
 pub mod surface;
 pub mod transport;
 pub mod unit;
 pub mod upstream;
+pub mod verb_store;
+pub mod vocab;
 pub mod wire;
+
+/// Milliseconds on the kernel's monotonic clock.
+///
+/// The kernel never reads a wall clock: every deadline, every tick interval and every lease
+/// lifetime is a difference between two of these, handed in by the caller. It lives on the contract
+/// (the ONE ABI crate, DECISIONS #38) because the slice/lease types it stamps — the store-facing
+/// ABI a plugin's store implements and the kernel consumes — are the contract's own.
+pub type Millis = u64;
 
 pub use bounded::{
     Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, FactsExhausted, Ir, IrEdit,
@@ -61,6 +76,7 @@ pub use plane::{
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
+pub use scratch::{Scratch, ScratchRefused};
 pub use transport::{
     check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
     TransportConfigView, TransportMeta, TRANSPORT_ABI,
@@ -76,3 +92,8 @@ pub use wire::{
     Listener, ListenerHandle, RawIo, RawStream, StatusAt, TransportEnvelope, TransportError,
     Unit0Trigger, WireStatus, WireStatusClass,
 };
+
+/// The default admin-scope CEILING for an identity provider that names none (`read-only`). Relocated
+/// here (W4.b P2) from the deleted `busbar-substrate::config::auth` so the below-kernel `busbar-core-config`
+/// spine can name it without a path back to the engine; `busbar_kernel::config::auth` re-exports it.
+pub const DEFAULT_MAX_ADMIN_SCOPE: &str = "read-only";

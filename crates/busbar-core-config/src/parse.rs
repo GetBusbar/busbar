@@ -6,10 +6,10 @@
 //! config checks), not the admin HTTP API. Byte-identical rename: only the Rust binding path
 //! moves — every parsed VALUE and error-message TEXT is unchanged.
 
-/// The `<n><unit>` duration parser lives in the neutral substrate (`busbar_substrate::duration`) so
+/// The `<n><unit>` duration parser lives in the neutral substrate (`busbar_contract::duration`) so
 /// the plane crates name it without reaching into busbar-core; re-exported here so every
 /// `crate::config::parse::parse_duration_secs` caller is unchanged.
-pub use busbar_substrate::duration::parse_duration_secs;
+pub use busbar_contract::duration::parse_duration_secs;
 
 use busbar_contract::authz::Scope;
 
@@ -38,7 +38,7 @@ pub fn parse_ceiling(subject: &str, token: &str) -> Result<Scope, String> {
              (`{}`), and to grant NO admin authority through this identity source grant no \
              `admin_scope` under its `role_bindings:` — the ceiling caps what a grant can \
              reach, it cannot express the absence of one.",
-            busbar_substrate::config::auth::DEFAULT_MAX_ADMIN_SCOPE
+            busbar_contract::DEFAULT_MAX_ADMIN_SCOPE
         )
     })
 }

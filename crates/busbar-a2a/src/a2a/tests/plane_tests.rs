@@ -14,7 +14,7 @@ use super::*;
 use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
-use busbar_substrate::trust::TrustState;
+use busbar_kernel::trust::TrustState;
 
 fn cfg_with(agents: &[(&str, AgentDefCfg)]) -> AgentsCfg {
     let mut out = AgentsCfg::default();
@@ -205,7 +205,7 @@ fn egress_scopes_and_the_leased_credential_travel_from_config_to_the_registratio
 /// the socket took effect on the NEXT request and the in-flight one went out under an approval that
 /// had already been replaced.
 ///
-/// `LiveGate` now reaches the one ordered validator in `busbar_substrate::trust::validate` and hands it both
+/// `LiveGate` now reaches the one ordered validator in `busbar_kernel::trust::validate` and hands it both
 /// generations. This drives the real gate through the real plane.
 ///
 /// RED, WATCHED: with `LiveGate::still_delegable` passing `Generations::at_admission(live)` instead
@@ -223,7 +223,7 @@ fn an_in_flight_dispatch_admitted_under_generation_n_is_refused_at_n_plus_1() {
     // generation did, and the test would pass on a plane with no generation check at all.
     plane.with_registrations_mut(|regs| {
         regs[0].sighting =
-            busbar_substrate::trust::Sighting::Seen(busbar_substrate::trust::Observation {
+            busbar_kernel::trust::Sighting::Seen(busbar_kernel::trust::Observation {
                 pin: Some(crate::a2a::pin::CardPin::JwsIssuerKey {
                     issuer_key: "MCowBQYDK2VwAyEAKEY".to_string(),
                     card_fingerprint: "sha256/CARD".to_string(),
@@ -330,10 +330,10 @@ fn every_registry_mutation_moves_the_generation() {
 /// discriminates on `TypeId` and catches a divergent engine rather than accepting any value.
 #[test]
 fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_slot() {
-    use busbar_substrate::plane::handle_engine::{
+    use busbar_kernel::plane::handle_engine::{
         DurableHandleEngine, HandleMeta, SubmitRecord, SweepBounds,
     };
-    use busbar_substrate::testkit::TestAppSeam;
+    use busbar_kernel::testkit::TestAppSeam;
     use std::any::Any;
     use std::sync::Arc;
 

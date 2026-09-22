@@ -25,7 +25,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use busbar_caps::{ReasonCode, StepName, UnitKey};
+use busbar_contract::caps::{ReasonCode, StepName, UnitKey};
 
 use crate::grammar::{resolve_pointer, DeepestPointer, Resolved};
 use crate::inflight::{InFlight, SessionSlot};
