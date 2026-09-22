@@ -656,6 +656,34 @@ pub struct A2aBindings<'r, S: CellStore> {
     /// reaches a rate table. Zero on a deployment whose card prices this plane's byte class at
     /// nothing, which is a reservation carrying the flat fee alone and not a missing one.
     pub bytes_nanos: u64,
+    /// **THE DATED RATE-CARD HISTORY, PINNED AT ADMISSION** — read for PROVENANCE and nothing
+    /// else (#44: the version is visible on usage and audit; #79: it is never the pricing input).
+    ///
+    /// Pinned rather than read live, for the reason [`crate::root::kernel::PinnedHistory`] gives:
+    /// a unit prices its whole life against the snapshot it was admitted under, so an entry
+    /// appended while this request is in flight cannot restate what it already arrived under.
+    ///
+    /// `None` is a deployment with NO rate card at all — billing off (#42), nothing metered,
+    /// nothing priced, and no entry there is for a stamp to name.
+    pub history: Option<&'r crate::root::kernel::PinnedHistory>,
+    /// THE ARRIVAL INSTANT ON THE MILLISECOND SCALE — the resolution key #79 names, and a THIRD
+    /// reading of this unit's one arrival, beside `now` and `mono` below.
+    ///
+    /// Three readings because they are on three scales and answer three questions. `now` is whole
+    /// SECONDS: it dates the record, picks the budget window and measures the task TTL, all of
+    /// which are second-scale APIs. `mono` is the monotonic counter that ORDERS the record.
+    /// This one is MILLISECONDS, because that is the scale the dated history's `effective_from`
+    /// is written on (`crate::root::kernel::CardRepricer` stamps an entry from
+    /// `busbar_substrate_values::store::now_ms`), and a comparison between two instants only
+    /// means what it says when both are on one scale. Resolving the history at `now` instead
+    /// would compare seconds against milliseconds: every unit would land before every entry but
+    /// the from-zero opening one, and the stamp would report the opening card forever — the same
+    /// lie a hardcoded zero tells, with a lookup in front of it.
+    ///
+    /// Pinned by the root from the SAME arrival as `now`, never read here: a unit does not read
+    /// clocks, and one that derived this field from `now` by multiplying would be manufacturing
+    /// millisecond precision the second-scale reading never had.
+    pub arrived_ms: u64,
     /// The plane's durable records.
     pub records: &'r RecordLegs,
     /// What the usage unit folds against.
@@ -831,13 +859,62 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             // way: the wall epoch dates it, the monotonic reading orders it. A posting stamped twice
             // off the wall clock is a posting a stepped clock can reorder against its own record.
             stamp: crate::root::durability::PostingStamp {
-                rate_card_version: 0,
+                // The card in force when this unit ARRIVED, resolved through the dated history
+                // (#79) rather than asserted. A literal zero here was `HistorySeq::OPENING` —
+                // a real entry number, and a false one on every deployment that has ever changed
+                // a price: it stamped each posting as though the opening card had priced it.
+                rate_card_version: self.rate_card_version(),
                 wall: self.bindings.now,
                 mono: self.bindings.mono,
             },
         };
         let mut durability = read_through_poison(self.bindings.durability);
         durability.settle_posted(&at, posted)
+    }
+
+    /// **THE RATE-CARD ENTRY THIS UNIT'S RECORDS NAME AS ITS PROVENANCE** (#44/#79).
+    ///
+    /// ONE function, read by both the settlement stamp and the audit record, because those two
+    /// figures are one fact: a posting stamped with one entry and a record stamped with another is
+    /// a provenance no reader downstream can reconcile, and the only way to make that
+    /// unrepresentable is to have one place resolve it — the same argument [`fee_evidence`] is
+    /// written for one field over.
+    ///
+    /// **The resolution rule is #79's, and it is the arrival instant against the dated history:**
+    /// the highest-seq entry whose interval covers `arrived_ms`. NOT the head of the history —
+    /// the head is the newest card ever authored, and stamping that would say a unit served three
+    /// months ago was priced by a card published yesterday. NOT a version carried in from
+    /// anywhere either: resolving off the instant is what makes the history recoverable BACKWARD,
+    /// so a back-dated correction reprices its window and the stamp follows, rather than pinning
+    /// the record to a card the correction superseded.
+    ///
+    /// **It is provenance, never a pricing input.** Nothing reads this number to compute money;
+    /// the money view resolves the card itself off the posting's own instant
+    /// (`busbar_kernel_ledger::cost::price`). That is #79's whole point — the stamp is a report,
+    /// and a report that became an input would freeze the past against correction.
+    ///
+    /// `HistorySeq::OPENING` where no history is pinned, and that is not the hardcoded zero this
+    /// replaced: no card is a deployment with billing off (#42), where nothing was priced and
+    /// there is no other entry a stamp could honestly name. Where a card DOES exist the opening
+    /// entry is effective from instant zero and covers every instant, so this resolves to a real
+    /// entry for every unit that has one.
+    ///
+    /// Off the hot path: one reverse scan of a handful of entries, once per unit at its exit,
+    /// never on the per-token loop #71's perf invariant governs.
+    fn rate_card_version(&self) -> u64 {
+        self.bindings
+            .history
+            // The seq is taken INSIDE the closure and the card is dropped there. A `HistoryView`
+            // borrows the snapshot it was spelled out of, so carrying the pair out would be
+            // carrying a borrow of a temporary — and the card is not wanted here in any case:
+            // this resolves WHICH entry, and never what it charges (#79).
+            .and_then(|pinned| {
+                pinned
+                    .view()
+                    .card_at(self.bindings.arrived_ms)
+                    .map(|(seq, _)| seq.get())
+            })
+            .unwrap_or_else(|| busbar_kernel_ledger::cost::HistorySeq::OPENING.get())
     }
 
     /// The verify judgement, without the seal.
@@ -1016,7 +1093,11 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 None => busbar_kernel_audit::Subject::Arrival,
             },
             what: busbar_kernel_audit::What {
-                unit_key: busbar_contract::ids::UnitKey::new(0),
+                // THE UNIT'S OWN KEY, which the loop already handed this step on `ctx`. A literal
+                // zero filed every unit of this plane under one key, so the record that is
+                // supposed to identify which call was made identified none of them and every a2a
+                // row collided with every other.
+                unit_key: ctx.key,
                 // The action, not the operation class. The rig reads this word, and the plane's own
                 // class is carried beside it on the facts the step returns.
                 op_class: busbar_kernel_audit::OpClassId::new(AUDIT_ACTION),
@@ -1048,7 +1129,10 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 tier_bp: 0,
                 fee_count,
                 currency: String::new(),
-                rate_card_version: 0,
+                // The same resolution the settlement stamps, through the same function, so the
+                // record and the posting cannot name two different cards for one unit (#44: the
+                // version is VISIBLE on the audit report).
+                rate_card_version: self.rate_card_version(),
                 bucket_chain_ref: String::new(),
             },
             controls: busbar_kernel_audit::Controls::default(),
@@ -1345,7 +1429,16 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // The bytes the request carried accrue as the unit runs; the answer's bytes settle at the
         // metering step. The meter is the kernel's running total and the hold is applied to it at
         // the exit, which is why this is an accrual and not a posting.
-        meter.accrue(self.draft.request_bytes);
+        //
+        // PRICED, because the meter is denominated in NANO-UNITS and a byte count is not one. The
+        // hold this accrual is spent against was sized in nanos from this plane's counts times the
+        // card's per-byte price (`Estimate::pre_tier_nanos`), and `AccrualMeter` is documented as
+        // the running total of what a unit has SPENT. Accruing the raw count put a byte figure
+        // where a nano figure belongs: a reservation drawn down by a bytes-per-nano fraction of
+        // the spend it was opened for, so a unit that exhausted its budget read as one that had
+        // barely started. Read through the one function the estimate's own product is spelled in,
+        // so the size of the reservation and the size of the draw cannot drift apart.
+        meter.accrue(request_nanos(&self.draft, self.bindings.bytes_nanos));
         // How far this unit's reservation may still grow, read off the same chain the door was
         // judged against. Offered here rather than at the door because it is a reading of the window
         // as it is NOW, and the exit is where it is spent. Zero is a top-up that does not happen,
@@ -1577,6 +1670,37 @@ fn bytes_located(draft: &A2aDraft) -> LocatedValue {
             ptr: busbar_contract::caps::LocatorPtr::new(""),
         },
     }
+}
+
+/// What this unit draws against its own reservation, in NANO-UNITS.
+///
+/// **The one conversion between this plane's counts and this plane's money, and the only one.**
+/// The two live on different scales and mixing them is not a rounding error, it is a category
+/// error. The LEDGER takes raw counts per declared class and prices nothing (#71) — that is
+/// [`bytes_located`] and the metering step's kernel line, both quantities. The HOLD is an
+/// accounting reservation sized in nano-units by [`A2aUnits::estimate`], and what is spent
+/// against it has to be nano-units too, or the comparison the hold exists to make is between two
+/// figures that are not measured in the same thing.
+///
+/// The price is the one the root already resolved off the card for this unit's destination set
+/// ([`A2aBindings::bytes_nanos`]) — not a lookup, not a second reading of a rate table on the
+/// serving path (#71's perf invariant), and exactly the per-unit figure the estimate's own class
+/// line carries. Written as a function rather than spelled at the two sites because those two
+/// products ARE one decision: a reservation sized from one and drawn down by another is a
+/// reservation that cannot be reconciled against itself, and the one that drifts is the one
+/// nobody re-derived.
+///
+/// Saturating, because a spend is never a refusal. The hold's own overdraft arm is what carries a
+/// figure past the reservation ([`busbar_contract::caps::Hold::spend`] has no failure path on
+/// purpose — the door already said yes), so an arithmetic panic here would be a unit that
+/// delivered value and then never settled at all.
+///
+/// #81 note: the count is a byte count, which is integral by construction — there is no such
+/// thing as half a byte on the wire — so this product carries no fractional quantity today. When
+/// the scale-6 decimal count type lands, this is the site the multiply moves to exact fixed-point
+/// at; the shape of the decision does not change.
+fn request_nanos(draft: &A2aDraft, bytes_nanos: u64) -> u64 {
+    draft.request_bytes.saturating_mul(bytes_nanos)
 }
 
 /// Whether the flat fee could land on this unit AT ALL — the question the hold has to size for.
