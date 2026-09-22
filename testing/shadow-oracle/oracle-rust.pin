@@ -10,8 +10,16 @@
 # oracle.pin (the Python archive digest-pin) is KEPT for this pass as a fallback and is NOT deleted;
 # the Python tool is retired in a later step (see the Phase C cutover checklist).
 #
+# 2026-09-22 (DECISION #80): moved to the commit that ports the corpus GENERATOR into the judge, so
+# `./bin/oracle cells --check` regenerates the 2318-cell corpus and refuses byte drift instead of
+# only validating the committed file against itself. busbar's own generator
+# (`testing/shadow-oracle/cells/__init__.py`) is deleted in the same commit as this bump — a judge
+# older than this ref cannot check the corpus it is asked to judge, so the two move together.
+# NOTE: this ref is a feature branch head (`port/oracle-cells-generate`), which is the same shape
+# the previous pin had; re-pin to the integration/merge commit when that branch lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=4ff00d90535c7327d5a3a3e91e65761ef563adf3
+release_ref=77d57937cf4b69114cc7b84be2012828fc992206
 crate=busbar-release-oracle
 bin=busbar-oracle

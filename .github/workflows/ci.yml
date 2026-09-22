@@ -1338,14 +1338,26 @@ jobs:
       # blast radius: the shadow oracle's recorder and replayer iterate it, so a stale or hand-edited
       # cell list silently changes what the whole 1.5.5 parity battery even asks. It derives from the
       # two inventories checked immediately above, which is exactly why it can fall behind them.
+      #
+      # DECISION #80 (owner-locked 2026-09-22) made this step REAL. Until now the generator was
+      # busbar's own `testing/shadow-oracle/cells/__init__.py`, which the Rust judge could not
+      # execute — so `cells --check` validated only the committed file's internal consistency
+      # (duplicate ids, counts-vs-cells) and generator drift was not merely passing, it was NOT
+      # BEING CHECKED AT ALL. The generator is Rust now (busbar-release's `busbar-release-corpus`,
+      # byte-identical to this corpus), the Python is deleted, and `cells --check` regenerates the
+      # 2318 cells from the inventories and fixtures and refuses ANY byte difference.
       - name: shadow-oracle cells drift (committed == fresh derivation)
         run: |
           set -euo pipefail
-          # Self-test FIRST, as everywhere else here: every `*_cells()` builder returns [] for a
+          # Self-test FIRST, as everywhere else here: every cell builder yields nothing for a
           # missing fixture, so a renamed fixture deletes a whole family from the owed corpus
-          # without a word. The self-test plants exactly that and requires the per-family floor to
-          # refuse it, before the floor's verdict on this tree is trusted.
+          # without a word. The self-test plants exactly that (repointing the largest fixture-gated
+          # family at a path that cannot exist and calling its REAL builder) and requires the
+          # per-family floor to refuse it, before the floor's verdict on this tree is trusted.
           ./bin/oracle cells --selftest
+          # The drift gate: regenerate to memory, byte-compare against the committed corpus. The
+          # corpus feeds the MONEY oracle, so a changed cell is a money-byte change — if this goes
+          # red, name the change and get it signed off (#10/#59); do not regenerate to go green.
           ./bin/oracle cells --check
 
   # PUBLIC-HYGIENE gate. busbar is sold to enterprises, and this repo, the docs site and the
