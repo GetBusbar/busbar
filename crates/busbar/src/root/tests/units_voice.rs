@@ -33,7 +33,7 @@ static UPSTREAMS: &[Upstream] = &[
 /// The plane's declaration is the one source, and every reading below comes from it.
 #[test]
 fn the_emitted_audio_class_is_the_one_the_plane_declares() {
-    let declared = <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
+    let declared = <StreamingPlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
         .iter()
         .any(|class| class.key == meta::CLASS_AUDIO_TOKENS_OUT);
     assert!(
@@ -78,7 +78,7 @@ fn every_declared_class_carries_a_figure() {
         tool_calls: 17,
     };
     let lines = usage.lines();
-    let declared = <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES;
+    let declared = <StreamingPlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES;
     assert_eq!(
         lines.len(),
         declared.len(),
@@ -151,7 +151,7 @@ fn node_behind(
     )
     .expect("a memory-buffered journal cannot fail to open");
     VoiceNode::new(VoiceNodeParts {
-        plane: VoicePlane::new(UPSTREAMS),
+        plane: StreamingPlane::new(UPSTREAMS),
         groups,
         pricer: Pricer::flat(0),
         auth,
@@ -276,7 +276,7 @@ fn a_credential_the_door_does_not_accept_ends_the_session_at_authenticate() {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(expected_aud.map(str::to_string));
             (credential == "tok"
-                && expected_aud == Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY))
+                && expected_aud == Some(<StreamingPlane as busbar_contract::plane::PlaneMeta>::KEY))
             .then(|| KeyFacts {
                 id: "key-voice-1".to_string(),
                 name: "an approved key".to_string(),
@@ -360,7 +360,7 @@ fn a_credential_the_door_does_not_accept_ends_the_session_at_authenticate() {
     for aud in asked.iter() {
         assert_eq!(
             aud.as_deref(),
-            Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY)
+            Some(<StreamingPlane as busbar_contract::plane::PlaneMeta>::KEY)
         );
     }
 }
@@ -581,7 +581,7 @@ fn a_class_with_nothing_to_report_produces_no_line() {
 #[test]
 fn silence_in_the_scope_policy_is_a_refusal() {
     use busbar_kernel_scope::PolicyView;
-    let claim = ClaimKey::new(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY);
+    let claim = ClaimKey::new(<StreamingPlane as busbar_contract::plane::PlaneMeta>::KEY);
     let policy = scope_policy();
     assert!(policy
         .required_scope(claim, OpClassId::new(OP_DUPLEX_TURN))
@@ -877,7 +877,7 @@ fn the_handshake_scope_is_the_kernel_granted_one() {
 /// The correlation a client's reply carries, as the plane reads it off the bytes.
 fn reply(call_id: &str) -> CorrelationRef<'_> {
     CorrelationRef {
-        fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+        fact_key: busbar_plane_streaming::plane::FACT_TOOL_CORRELATION,
         value: CorrelationValue::Str(call_id),
     }
 }
@@ -1008,7 +1008,7 @@ fn an_unanswered_tool_call_ends_at_the_deadline_its_leg_declared() {
     let _ = plan(&kernel, &node, 11, "call_aaa", 0);
     let _ = plan(&kernel, &node, 22, "call_bbb", 20_000);
 
-    let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
+    let deadline = u64::from(busbar_plane_streaming::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
     assert!(
         node.tool_calls.expired(deadline - 1).is_empty(),
         "a call is not swept one millisecond before its own deadline"
@@ -1110,7 +1110,7 @@ fn the_runtimes_port_reaches_the_nodes_own_table() {
     );
 
     // The tick's sweep, through the same port, at the deadline the plane's own leg declared.
-    let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
+    let deadline = u64::from(busbar_plane_streaming::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
     assert_eq!(port.expired(deadline - 1), 0, "not one millisecond early");
     assert_eq!(
         port.expired(deadline + 1),
@@ -1207,7 +1207,7 @@ fn the_served_composition_has_no_ungoverned_session_left_in_it() {
         "the pump knows itself by the identifier the door minted"
     );
 
-    let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
+    let deadline = u64::from(busbar_plane_streaming::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
     assert_eq!(
         core.sweep_expired(deadline - 1),
         0,
@@ -1522,7 +1522,7 @@ fn a_paid_turns_record_names_its_principal() {
             expected_aud: Option<&str>,
         ) -> Option<KeyFacts> {
             (credential == "tok"
-                && expected_aud == Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY))
+                && expected_aud == Some(<StreamingPlane as busbar_contract::plane::PlaneMeta>::KEY))
             .then(|| KeyFacts {
                 id: "key-voice-1".to_string(),
                 name: "an approved key".to_string(),
@@ -1622,7 +1622,7 @@ fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
         "what the kernel counted is not the audio the turn emitted"
     );
     assert!(
-        <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
+        <StreamingPlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
             .iter()
             .any(|decl| decl.key == class
                 && decl.direction == busbar_contract::ids::ClassDirection::Input),
@@ -2134,7 +2134,7 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     use busbar_contract::plane::{Ingress, Plane, PlaneSessionState};
     use busbar_contract::unit::{Clock, Ctx};
     use busbar_contract::wire::FrameCursor;
-    use busbar_plane_voice::session::VoiceSessionState;
+    use busbar_plane_streaming::session::VoiceSessionState;
 
     let seal = KernelSeal::acquire_for_kernel();
     let arena = CellPlaneAlloc;
@@ -2145,7 +2145,7 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
         unix_secs: 1_700_000_000,
         monotonic_nanos: 0,
     };
-    let plane = VoicePlane::new(UPSTREAMS);
+    let plane = StreamingPlane::new(UPSTREAMS);
     let mut state = PlaneSessionState::new(VoiceSessionState::for_dialect(Dialect::OpenaiRealtime));
 
     // The first client event of the session. `session.update` is what a real client sends
@@ -2180,7 +2180,7 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     // would be a unit the audit record and the rate card have no row for.
     for shape in [UnitShape::SessionOpen, UnitShape::Turn, UnitShape::ToolCall] {
         assert!(
-            <VoicePlane as busbar_contract::plane::PlaneMeta>::OP_CLASSES
+            <StreamingPlane as busbar_contract::plane::PlaneMeta>::OP_CLASSES
                 .contains(&shape.op_class()),
             "{shape:?} carries a class this plane never declared"
         );
@@ -2203,7 +2203,7 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     assert_eq!(
         for_,
         Some(CorrelationRef {
-            fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+            fact_key: busbar_plane_streaming::plane::FACT_TOOL_CORRELATION,
             value: CorrelationValue::Str("c-1"),
         })
     );
@@ -2273,7 +2273,7 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
     )
     .expect("a memory-buffered journal cannot fail to open");
     let node = VoiceNode::new(VoiceNodeParts {
-        plane: VoicePlane::new(UPSTREAMS),
+        plane: StreamingPlane::new(UPSTREAMS),
         groups: crate::root::policy::group_table(
             &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),

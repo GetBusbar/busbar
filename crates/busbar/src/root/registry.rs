@@ -91,7 +91,7 @@ use busbar_core_admin::admin_codec::AdminPlane;
 use busbar_plane_llm::LlmPlane;
 use busbar_plane_mcp::McpPlane;
 #[cfg(feature = "plane-voice")]
-use busbar_plane_voice::VoicePlane;
+use busbar_plane_streaming::StreamingPlane;
 use busbar_transport_grpc::GrpcTransport;
 use busbar_transport_http::{ClientSettings, HttpTransport};
 use busbar_transport_sse::SseTransport;
@@ -255,7 +255,7 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
         .chain(claims_of::<A2aPlane>())
         .collect();
     #[cfg(feature = "plane-voice")]
-    claims.extend(claims_of::<VoicePlane>());
+    claims.extend(claims_of::<StreamingPlane>());
     claims.extend(claims_of::<AdminPlane>());
     claims
 }
@@ -460,7 +460,7 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
     // claims bytes on `ws`, so registering it in a build with no WS transport would be the root
     // mounting a plane whose claims name a layer this binary does not carry.
     #[cfg(feature = "plane-voice")]
-    planes.push(Arc::new(VoicePlane::EMPTY) as Arc<dyn Plugin>);
+    planes.push(Arc::new(StreamingPlane::EMPTY) as Arc<dyn Plugin>);
     planes.push(Arc::new(AdminPlane::new()) as Arc<dyn Plugin>);
     for plane in planes {
         registry.register(plane).map_err(BootRefusal::Registry)?;

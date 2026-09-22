@@ -784,11 +784,14 @@ fn mount_root_voice(limits: &busbar_kernel::config::limits::LimitsResolved) {
             // `debug_assert!`: a seal that reported success without the plane this function exists
             // to mount is a composition that did not do what it says, and the shipped build was the
             // one that never looked. Serving on it would bind a listener for a plane no registry can
-            // resolve — every voice session refused at the first frame, from a node that booted
+            // resolve — every streaming session refused at the first frame, from a node that booted
             // clean.
             if sealed
                 .registry
-                .resolve(busbar_kernel::registry::PluginKind::Plane, "voice")
+                .resolve(
+                    busbar_kernel::registry::PluginKind::Plane,
+                    <busbar_plane_streaming::StreamingPlane as busbar_contract::plane::PlaneMeta>::KEY,
+                )
                 .is_none()
             {
                 eprintln!(
@@ -845,7 +848,7 @@ fn compose_voice_governed_calls() {
         }
     };
     let node = std::sync::Arc::new(VoiceNode::new(VoiceNodeParts {
-        plane: busbar_plane_voice::VoicePlane::new(&[]),
+        plane: busbar_plane_streaming::StreamingPlane::new(&[]),
         // No group reaches this node's door: the table's two answers read no cap, and the served
         // sessions' admissions are the sealed root's, not this stub's.
         groups: root::policy::group_table(

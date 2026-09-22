@@ -32,7 +32,6 @@ members = [
     "crates/busbar-plane-llm",
     "crates/busbar-plane-mcp",
     "crates/busbar-plane-a2a",
-    "crates/busbar-plane-voice",
     "crates/busbar-plane-streaming",
     "crates/busbar-plane-decision",
     "crates/busbar-unit-transport-key",

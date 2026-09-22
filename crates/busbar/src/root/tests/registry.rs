@@ -38,19 +38,19 @@ const SEALED_ORDER: &[&str] = &[
     "llm HeaderPresent(\"anthropic-beta\")",
     "llm HeaderPresent(\"x-goog-api-key\")",
     "llm HeaderPresent(\"x-api-key\")",
-    "voice PathSuffix(\"/v1/audio/transcriptions\")",
+    "streaming PathSuffix(\"/v1/audio/transcriptions\")",
     "llm PathSuffix(\"/v1/audio/translations\")",
     "llm PathContains(\":streamGenerateContent\")",
     "llm PathSuffix(\"/v1/chat/completions\")",
     "llm PathContains(\":batchEmbedContents\")",
-    "voice PathContains(\"BidiGenerateContent\")",
-    "voice PathSuffix(\"/v1/audio/speech\")",
+    "streaming PathContains(\"BidiGenerateContent\")",
+    "streaming PathSuffix(\"/v1/audio/speech\")",
     "llm PathContains(\":generateContent\")",
     "llm PathSuffix(\"/v1/moderations\")",
     "llm PathSuffix(\"/v1/embeddings\")",
     "llm PathSuffix(\"/v1/responses\")",
     "llm PathContains(\":embedContent\")",
-    "voice PathSuffix(\"/v1/realtime\")",
+    "streaming PathSuffix(\"/v1/realtime\")",
     "llm PathContains(\"/v1/messages\")",
     "llm PathContains(\"/v1/images/\")",
     "llm PathSuffix(\"/v2/rerank\")",
@@ -98,7 +98,9 @@ fn seven_transports_and_five_planes_register() {
         VOICE
     );
     assert_eq!(
-        registry.resolve(PluginKind::Plane, "voice").is_some(),
+        registry
+            .resolve(PluginKind::Plane, busbar_plane_streaming::CAP_KEY)
+            .is_some(),
         VOICE
     );
 }
@@ -116,7 +118,7 @@ fn the_planes_declare_forty_eight_claims() {
     assert_eq!(count("llm"), 25);
     assert_eq!(count("mcp"), 4);
     assert_eq!(count("a2a"), 14);
-    assert_eq!(count("voice"), 4);
+    assert_eq!(count(busbar_plane_streaming::CAP_KEY), 4);
     assert_eq!(count("admin"), 1);
     assert_eq!(claims.len(), 48);
 }
@@ -513,11 +515,11 @@ fn every_claimed_plane_key_is_a_registered_plane() {
 #[test]
 fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
     let telephony = vec![PlaneClaim {
-        plane: "voice",
+        plane: busbar_plane_streaming::CAP_KEY,
         claim: Claim {
             transport: "twilio-media",
             selector: Selector::PrefixOneLevel("/twilio"),
-            scheme: Some("voice-key"),
+            scheme: Some("streaming-key"),
             scheme_alternatives: &["twilio-signature"],
             idempotency: None,
         },
@@ -527,7 +529,7 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
     assert!(matches!(
         refusal,
         BootRefusal::UnregisteredClaimTransport {
-            plane: "voice",
+            plane: busbar_plane_streaming::CAP_KEY,
             transport: "twilio-media",
         }
     ));

@@ -1,11 +1,10 @@
-//! The composition-root wiring for the streaming plane — the plane side of it, staged here.
+//! The composition-root wiring for the streaming plane — the plane side of it.
 //!
-//! The kernel-side flip (registering this plane, mounting its ingress, settling its turns) is the LAST
-//! step of onboarding, and it depends on seams that are landing in parallel and are NOT yet merged in
-//! this crate's base. Rather than half-edit the root against a seam that is not there, the plane side is
-//! complete and byte-additive here, and the exact kernel-side calls are written down — as code that
-//! compiles ([`plane_for_root`]) and as the precise conditions each remaining edge waits on — so the
-//! flip is a known, small change the day the seams land, not a rediscovery.
+//! **S1 IS LIVE.** The switchover this module was staged for has landed: `busbar-plane-voice` is
+//! DELETED and `crates/busbar/src/root/registry.rs` registers THIS plane, under THIS plane's key
+//! ([`CAP_KEY`] = `"streaming"`). There is no longer a `"voice"` registration for a `"streaming"` one
+//! to collide with, which is exactly the condition the staging note below waited on. S2–S4 still
+//! describe edges that are not flipped; each says so where it stands.
 //!
 //! ## S1 — DISPATCH (register the plane under its capability key)
 //!
@@ -24,12 +23,12 @@
 //! units.register_units(busbar_plane_streaming::CAP_KEY, streaming_units);
 //! ```
 //!
-//! **Not done live, on purpose.** This plane's claims ARE the voice adapter's claims (`ws` + `http`),
-//! so registering `"streaming"` ALONGSIDE the already-registered `"voice"` plane trips the boot's
-//! claim-overlap check. The reframe (#18: the plane is streaming, voice is a dialect) is a SWITCHOVER —
-//! the `"streaming"` registration REPLACES the `"voice"` one — not a second plane run beside it. Doing
-//! that switchover moves the existing `plane-voice` cells (`units_voice`, the registry rows, main.rs),
-//! which this onboarding must not do. It is staged for the switchover pass that owns those cells.
+//! **DONE — and it had to be a REPLACEMENT, not an addition.** This plane's claims ARE the deleted
+//! voice adapter's claims (`ws` + `http`), so registering `"streaming"` ALONGSIDE a `"voice"` plane
+//! would have tripped the boot's claim-overlap check. The reframe (#18: the plane is streaming, voice
+//! is a dialect) is a SWITCHOVER — the `"streaming"` registration REPLACED the `"voice"` one — and the
+//! switchover pass moved the cells it owns with it (`units_voice`, the registry rows, `main.rs`'s boot
+//! guard, which now reads this plane's own [`CAP_KEY`] rather than a `"voice"` string literal).
 //!
 //! ## S2 — MONEY-BOOK (settle end-of-turn)
 //!

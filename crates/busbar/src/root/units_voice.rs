@@ -138,8 +138,8 @@ use busbar_kernel_budget::{Admission as _, Door, Estimate, InMemoryCells, Pricer
 use busbar_kernel_egress::trust::net::GuardPolicy;
 use busbar_kernel_identity::{Auth, AuthRequest};
 use busbar_kernel_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
-use busbar_plane_voice::claims::Dialect;
-use busbar_plane_voice::{meta, Upstream, VoicePlane};
+use busbar_plane_streaming::claims::Dialect;
+use busbar_plane_streaming::{meta, Upstream, StreamingPlane};
 
 /// Every meter class this plane declares fits in one usage report, with room to spare.
 ///
@@ -147,7 +147,7 @@ use busbar_plane_voice::{meta, Upstream, VoicePlane};
 /// Asserting the fit here is what makes that arm unreachable from the declarations rather than
 /// unreachable by inspection, so a plane that grows a class has to come past this line.
 const _: () = assert!(
-    <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES.len()
+    <StreamingPlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES.len()
         <= busbar_contract::caps::MAX_USAGE_LINES
 );
 
@@ -439,8 +439,8 @@ impl std::fmt::Debug for VoiceIo {
 /// second spelling of either here would be a wait entered under one key and answered under another,
 /// with both files looking correct on their own.
 const TOOL_REPLY_LEG: ClientMode = ClientMode::AwaitReply {
-    correlation_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
-    deadline_secs: busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS,
+    correlation_key: busbar_plane_streaming::plane::FACT_TOOL_CORRELATION,
+    deadline_secs: busbar_plane_streaming::plane::TOOL_REPLY_DEADLINE_SECS,
 };
 
 /// Why a client's tool reply woke nothing.
@@ -668,7 +668,7 @@ impl busbar_voice::runtime::GovernedCalls for NodeCalls {
         // minted the wait under. Spelling either differently here would be a wait entered under one
         // key and answered under another, with both sides looking correct on their own.
         let correlates = CorrelationRef {
-            fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+            fact_key: busbar_plane_streaming::plane::FACT_TOOL_CORRELATION,
             value: CorrelationValue::Str(call_id),
         };
         match self.node.tool_calls.replied(session, correlates) {
@@ -701,7 +701,7 @@ impl busbar_voice::runtime::GovernedCalls for NodeCalls {
 /// for each of those would be furniture rather than structure.
 pub struct VoiceNode {
     /// The plane, with its configured upstream list.
-    pub plane: VoicePlane,
+    pub plane: StreamingPlane,
     /// The admission unit's long-lived door. Its ledger cells are hydrated once, at boot, and are
     /// never re-read on the request path.
     pub door: Mutex<Door<InMemoryCells>>,
@@ -767,7 +767,7 @@ impl std::fmt::Debug for VoiceNode {
 /// deployment which never read its rate cards fail to compile rather than fall back to a default.
 pub struct VoiceNodeParts {
     /// The plane, with its configured upstream list.
-    pub plane: VoicePlane,
+    pub plane: StreamingPlane,
     /// The configured limit tree, resolved at boot into the shape the door walks.
     pub groups: busbar_kernel_budget::GroupTable,
     /// What the door prices an estimate against.
@@ -934,7 +934,7 @@ pub struct TurnUsage {
 /// absent line and a red assertion in `every_declared_class_carries_a_figure` rather than as a
 /// mispriced turn.
 fn declared_class(key: &str) -> Option<MeterClassId> {
-    <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
+    <StreamingPlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
         .iter()
         .find(|decl| decl.key.as_str() == key)
         .map(|decl| decl.key)
@@ -991,7 +991,7 @@ impl TurnUsage {
     /// A class with nothing to report produces no line rather than a zero: a line that says zero and
     /// a line that is absent settle the same, but only one of them claims the upstream said so.
     fn lines(&self) -> Vec<UsageLine> {
-        <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
+        <StreamingPlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
             .iter()
             .filter_map(|decl| {
                 let (quantity, source, estimated) = self.figure(decl)?;
@@ -1237,7 +1237,7 @@ impl<'n> VoiceUnit<'n> {
     /// is what lets a wait outlive the frame that planned it.
     fn correlation_out(&self) -> Option<CorrelationRef<'_>> {
         self.call_id.as_deref().map(|id| CorrelationRef {
-            fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+            fact_key: busbar_plane_streaming::plane::FACT_TOOL_CORRELATION,
             value: CorrelationValue::Str(id),
         })
     }
@@ -1435,7 +1435,7 @@ impl Units for VoiceUnit<'_> {
             // The audience a signed token must carry to be accepted on this plane's ingress. The
             // plane's own name, so a token minted for another plane's audience is refused here and
             // not at the destination it was going to reach.
-            expected_aud: Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY),
+            expected_aud: Some(<StreamingPlane as busbar_contract::plane::PlaneMeta>::KEY),
             in_handshake: self.shape.is_handshake(),
             now: self.epoch,
             // Revocation gates NEW units only. Unit 0 is new; a later frame of a session already
@@ -1526,7 +1526,7 @@ impl Units for VoiceUnit<'_> {
         // Everything else asks the policy, and silence is a refusal. The scope unit answers `None`
         // for a pair it was told nothing about, and reading `None` as a pass would be authorization
         // by omission — every operation class a deployment forgot to name would be open.
-        let claim = ClaimKey::new(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY);
+        let claim = ClaimKey::new(<StreamingPlane as busbar_contract::plane::PlaneMeta>::KEY);
         let Some(needed) =
             busbar_kernel_scope::required_scope(claim, self.shape.op_class(), &self.node.scope)
         else {
@@ -2024,7 +2024,7 @@ fn audit_finish(finish: busbar_contract::FinishClass) -> busbar_kernel_audit::re
 /// deployment decides is which principals hold which scope; what the classes need is structure.
 #[must_use]
 pub fn scope_policy() -> crate::root::policy::ScopePolicy {
-    let claim = ClaimKey::new(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY);
+    let claim = ClaimKey::new(<StreamingPlane as busbar_contract::plane::PlaneMeta>::KEY);
     crate::root::policy::ScopePolicy::new()
         // The handshake's own class is declared for completeness, but the approve step answers it
         // before the policy is asked: a kernel-granted operation needs no policy entry at all.

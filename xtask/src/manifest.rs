@@ -568,7 +568,7 @@ path = "../busbar-plane-mcp"
 busbar-plane-a2a = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-busbar-plane-voice = { workspace = true }
+busbar-plane-streaming = { workspace = true }
 
 [dev-dependencies]
 busbar-testkit = { workspace = true }
@@ -588,7 +588,7 @@ llm-serve = []
         assert!(shipped.contains(&"busbar-plane-llm"), "{shipped:?}");
         assert!(shipped.contains(&"busbar-plane-mcp"), "{shipped:?}");
         assert!(shipped.contains(&"busbar-plane-a2a"), "{shipped:?}");
-        assert!(shipped.contains(&"busbar-plane-voice"), "{shipped:?}");
+        assert!(shipped.contains(&"busbar-plane-streaming"), "{shipped:?}");
         // A feature name is not a dependency, and neither is a `[package]` key.
         assert!(!shipped.contains(&"llm-serve"), "{shipped:?}");
         assert!(!shipped.contains(&"name"), "{shipped:?}");
@@ -605,7 +605,7 @@ llm-serve = []
         let d = dep_decls(M);
         let target = d
             .iter()
-            .find(|x| x.pkg == "busbar-plane-voice")
+            .find(|x| x.pkg == "busbar-plane-streaming")
             .expect("the per-target dependency is read");
         assert_eq!(target.section, "target.cfg(unix).dependencies");
         assert_eq!(

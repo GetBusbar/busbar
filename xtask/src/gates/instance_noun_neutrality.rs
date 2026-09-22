@@ -83,11 +83,11 @@ struct Noun {
 const FAM_MCP: &[&str] = &["busbar-mcp", "busbar-plane-mcp", "busbar-mcp-codec"];
 const FAM_A2A: &[&str] = &["busbar-a2a", "busbar-plane-a2a", "busbar-a2a-codec"];
 const FAM_LLM: &[&str] = &["busbar-llm", "busbar-plane-llm", "busbar-llm-codec"];
-// streaming + voice share one family. `busbar-streaming-codec` is named by the owner's map but does
-// not exist in this tree; `busbar-plane-voice` does. The family is what EXISTS.
+// The streaming family. `busbar-streaming-codec` is named by the owner's map but does not exist in
+// this tree; `busbar-plane-voice` was DELETED into `busbar-plane-streaming` (#18/#83 — one plane per
+// protocol, and the plane is streaming). The family is what EXISTS.
 const FAM_STREAM: &[&str] = &[
     "busbar-plane-streaming",
-    "busbar-plane-voice",
     "busbar-voice",
     "busbar-voice-codec",
 ];
