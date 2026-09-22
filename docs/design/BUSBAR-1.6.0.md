@@ -1197,6 +1197,62 @@ it is a port (`origin/queue-rebased-A3plus`), not a re-implementation.
    excludes admin and the `control` kind was CANCELLED. A cleanliness crate should implement no
    plugin entry face at all; how admin's verbs reach the loop without one is unsettled.
 
+### ON THE CRITICAL PATH — each costs the owner ~60 seconds and unblocks ~2 agent-days
+
+Measured 2026-09-22 against the 2026-09-25 09:00 PDT dev-green target. Two of the three critical-path
+roots of the crate collapse are owner decisions that cost ZERO agent-time. Everything below is
+prepared; only the word is missing.
+
+6. **The `#35`/`#40` record-shape seam.** A store plugin implements `Store` and handles
+   `PlaneRecord`/`UsageLedger`/`VirtualKey` — the store kind's whole ABI — and those types live only
+   in `busbar-kernel-ledger`. So **the money one-book rides inside every plugin's dependency
+   closure** (measured: 6 busbar crates, via `crates/api/src/store.rs`'s re-export shim). Retiring
+   `busbar-api` alone does NOT fix it. The seam Part 7 already recorded is: record *shapes* →
+   `busbar-contract`, ledger *semantics* → `busbar-kernel-ledger`. **It is a money-path type move,
+   so #10/#59 forbids self-approval.** Blocks W6 entirely, and W6 blocks the only #40 witness
+   (`busbar-plane-decision`'s `tests/{purity,invariance}.rs`, red today BY DESIGN — they go green
+   when the edge closes, and that flip is the proof).
+
+7. **The `voice.*` → `streaming.*` constant rename.** #18 locks the plane's name as streaming, and
+   #18 asserts the rename is "byte-identical (naming/packaging, not behavior)". **Measured: that is
+   false.** Five constants change VALUE — `OP_SESSION_OPEN` (`voice.session.open` →
+   `streaming.session.open`), `FACT_INTERRUPT_AUDIO_PLAYED_MS`, `EGRESS_PACING_FACT_KEY`,
+   `claims::SCHEME` (`voice-key` → `streaming-key`), `PlaneMeta::KEY`. An `OpClassId` is a METERING
+   AND AUDIT KEY: it lands in usage-ledger rows, metering rows and audit records. Billed-byte
+   adjacent ⇒ #10/#59 ⇒ never self-approved. Question is two parts: (a) may the values change, and
+   (b) does the oracle corpus gain a cell for it? Note #81's precedent — the owner ruled a necessary
+   1.5.5 divergence acceptable — but that ruling was scoped to unit counts and does not extend here
+   by itself.
+
+8. **`busbar-core-substrate` — the measurement is done, and it says the rule and the crate are
+   mutually unsatisfiable.** 14,084 LOC / 42 files. Nine crates depend on it (`busbar-contract`'s
+   edge is dev-only, so the plugin closure is unaffected). It is TWO things welded together: pure
+   ABI-shaped value leaves (`ir/*`, `billing`, `wire`, `media`, `json`, `lossless`) AND runtime
+   machinery (a SigV4 signer, an eventstream parser, an SSE proxy, a protocol registry, a breaker, a
+   diagnostics catalogue). Ten of the kernel's 23 references are **re-export shims** — e.g.
+   `kernel/src/ir/handle.rs` is 14 lines whose body is one `pub use`. The other thirteen are real:
+   the kernel genuinely consumes `billing::Usage` (8 sites), `proto::registry`, `handlers::*`,
+   `IrFacts`. **So #37's "the kernel does NOT depend on the foundation" cannot hold as written** —
+   one crate is serving two tiers in opposite directions, because substrate holds both the kernel's
+   own billing vocabulary AND the projection traits the planes must implement without seeing the
+   kernel (the orphan-rule fix the extraction existed for). Folding it into the kernel breaks #40
+   for five plane crates; folding it into contract puts a SigV4 signer in the ABI crate and blows
+   `contract_caps` (7,012) past ~20k; splitting it makes the roster 34 and moves `billing::Usage`,
+   a money-path type. Either the rule narrows (e.g. "the kernel may consume the foundation's value
+   leaves but must not be BUILT by it") or the crate splits. **Owner call; the rename in W7 is safe
+   either way.**
+
+9. **A fractional count bound for an ABI-2 store (#81a(f)).** Four `i64` columns cannot hold it;
+   truncating violates #81; refusing breaks a working deployment on upgrade, which
+   `api/src/usage_migration.rs:57-62` names as the one outcome a migration may not produce. Parked
+   as a REFUSAL (#42). **Currently unreachable** — no provider has been shown to emit a fractional
+   count on the wire — so this does not block the cut, but it is the one hole in #81.
+
+10. **`plugin-testkit` (1,083 LOC) — park, do not delete.** #33's "there is NO testkit" rests on
+    five owner expressions of dislike and no kill, and the roster he approved still reads
+    `busbar-plugin-sdk (author machinery + testkit feature)`. Deleting shipped code on an
+    over-claiming doc row is the failure mode this section exists to prevent.
+
 ## Traps this tree has already sprung — do not re-learn them
 
 - **`git grep -E` does NOT honour `\b`.** Use `-P`. And never grep a concatenated `git archive`
