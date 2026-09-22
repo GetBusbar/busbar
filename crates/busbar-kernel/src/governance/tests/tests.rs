@@ -5294,3 +5294,43 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
         "admission is store state: a genuinely-signed token is refused when the store has no binding"
     );
 }
+
+
+
+
+/// **THE ACCRUAL DATES ITSELF ON THE MILLISECOND SCALE THE HISTORY IS DATED ON** (DECISION #79).
+///
+/// `record_metering` takes `now` in SECONDS, for the bucket. A card apply records
+/// `store::now_ms()`. Lifting `now * 1_000` for the price instant therefore dates every response
+/// in a second at that second's FIRST instant, and a card applied later in the same second sorts
+/// after all of them — so a request served AFTER an edit prices at the card BEFORE it.
+///
+/// That is not hypothetical: it was measured on the oracle's own
+/// `billing|rate-card|history-mid-window` script, where the third chat landed after the second of
+/// two card publishes and still resolved to the first — 52,500,000 where #79 says 277,530,000.
+/// Reading the finer clock made the same script answer 277,530,000 exactly.
+///
+/// A source witness rather than a behavioural one on purpose: the rate-epoch holder is a
+/// process-wide `OnceLock`, and a test that installed one would date every other accrual in this
+/// binary too. What has to stay true is which clock this line reads, and that is what is asserted.
+#[test]
+fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
+    let src = include_str!("../state.rs");
+    let body = src
+        .split("pub fn record_metering(")
+        .nth(1)
+        .expect("record_metering is declared")
+        .split("\n    }")
+        .next()
+        .expect("its body closes");
+    assert!(
+        body.contains("effective_from_at(crate::store::now_ms())"),
+        "the metering accrual stopped dating itself on the millisecond clock the rate-card \
+         history is dated on: {body}"
+    );
+    assert!(
+        !body.contains("saturating_mul(1_000)"),
+        "the metering accrual is lifting a SECOND into milliseconds again — a card applied later \
+         in the same second would sort after every response of that second (#79): {body}"
+    );
+}

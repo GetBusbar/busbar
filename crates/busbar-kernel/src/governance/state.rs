@@ -877,14 +877,20 @@ impl GovState {
         now: u64,
     ) {
         // THE CELL'S PRICE INSTANT (DECISION #79): when the card this response was served under
-        // STARTED, not which card it is. The wall clock the tap reads is in seconds; the history is
-        // dated in milliseconds, and the two are readings of one scale, so the lift is a multiply
-        // and the comparison is second-accurate — which is finer than the UTC day this cell would
-        // otherwise be dated by, and that is the whole gain. A build with no root ledger in it
-        // answers zero, the opening entry's own `effective_from`, so the cell still dates to a card
-        // that covers it rather than to none.
-        let priced_from_ms =
-            crate::rate_apply::effective_from_at(now.saturating_mul(1_000));
+        // STARTED, not which card it is. A build with no root ledger in it answers zero, the
+        // opening entry's own `effective_from`, so the cell still dates to a card that covers it
+        // rather than to none.
+        //
+        // READ ON THE MILLISECOND SCALE THE HISTORY IS DATED ON, not lifted from `now`. `now` is
+        // seconds; a card apply records `store::now_ms()`. Lifting `now * 1_000` therefore dates
+        // every response in a second at that second's FIRST instant, and a card applied later in
+        // the same second sorts AFTER all of them — so a request served after an edit priced at the
+        // card before it. That is not a rounding nicety: it was measured, on the oracle's own
+        // `billing|rate-card|history-mid-window` script, as a response landing after the second of
+        // two card publishes and still resolving to the first. Two clocks of different resolution
+        // cannot order two events inside one tick of the coarser one, so the accrual reads the
+        // finer one, which is the one the thing it is being compared against was written on.
+        let priced_from_ms = crate::rate_apply::effective_from_at(crate::store::now_ms());
         let key: MeterKey = (
             key_id.to_string(),
             metering_bucket(now),
