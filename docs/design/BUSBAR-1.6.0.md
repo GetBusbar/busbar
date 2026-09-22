@@ -2082,6 +2082,73 @@ ever leaves `NATIVE_PLANES`.
 > everyone reading the ledger spends their time on a product bug that does not exist.
 
 
+#### TWO CLOCKS OF DIFFERENT RESOLUTION CANNOT ORDER TWO EVENTS INSIDE ONE TICK OF THE COARSER ONE
+
+A money defect, found by MEASUREMENT and not by review — and review had already passed over it.
+
+`record_metering` takes `now` in **seconds** (it buckets by UTC day). A rate-card apply records
+`store::now_ms()`. The price instant was computed by lifting the coarse clock: `now * 1_000`. That
+dates **every response served during a second at that second's FIRST instant**, so a card applied at
+`T.600` sorts *after* a response served at `T.900`. The consequence is exact and wrong: a response
+served AFTER a card was published prices against the card BEFORE it.
+
+**The measurement, against a real release binary running the cell's own script:**
+
+| | spend_after_a | after_b | final |
+|---|--:|--:|--:|
+| 1.5.5 golden | 25,000,000 | 500,060,000 | 750,090,000 |
+| #79 target | 2,500,000 | 27,500,000 | **277,530,000** |
+| candidate, before fix | 2,500,000 | 27,500,000 | **52,500,000** ← WRONG |
+| candidate, after fix | 2,500,000 | 27,500,000 | **277,530,000** ← EXACT |
+
+The first two columns AGREE in every row. A reviewer checking "does the card resolve?" sees two
+correct numbers and stops. **Only the third response — the one served after the second publish,
+inside the same coarse tick — discriminates.** Fixed at `d407263d7`: the accrual now reads
+`effective_from_at(store::now_ms())`, the same clock the history is dated on.
+
+> **A PRICE INSTANT MUST BE READ FROM THE SAME CLOCK THE RATE-CARD HISTORY IS DATED ON.** Never
+> lifted, never truncated, never derived from a coarser bucket key. A bucket key and a price instant
+> are two different quantities that happen to both be times; sharing a variable between them is the
+> bug. This generalises past money: any two events compared for ORDER must come from one clock.
+
+**And the same red-test discipline produced a design change, not just a fix.** Resolving at
+`priced_from_ms` alone was tried and a test refused it: it makes a back-dated correction a no-op for
+exactly the rows the correction exists to repair. The instant is `max(bucket_start, priced_from_ms)`
+— the era picks the card, the clip keeps the instant inside the row's own wall-clock span so a
+correction window can contain it.
+
+#### PARKED FOR THE OWNER — TWO MONEY READS OF THE SAME CONSUMPTION DISAGREE (#10/#59)
+
+**After a rate-card edit, `/usage` and `/keys/{id}/usage` report DIFFERENT MONEY for the same
+consumption.** `GET /v1/usage` now resolves through the dated history (#79). `GET /keys/{id}/usage`
+(`keys.rs:1825`) and `GET /groups/{g}/usage` (`service.rs:1303`) do not — they read the ENFORCEMENT
+ledger and fall back to the current card. `busbar-kernel/src/metrics.rs:438` (the
+`busbar_bucket_spend_cents` gauge) has the same defect.
+
+**Root cause, not a symptom:** `UsageLedger`/`ModelTokens` (`busbar-contract/src/records.rs`) carry
+**no price instant**. `ModelTokens` is `{model, usage_units}`; `billable_requests` — the flat-fee base
+— is cell-level. The book cannot distinguish two price eras inside one window.
+
+**Why it was PARKED rather than fixed:** closing it means splitting `ModelTokens` by era AND splitting
+`billable_requests` with it, which changes `BudgetCell::accrue` on the admission/completion HOT PATH,
+alters a durable wire type every store plugin implements, and changes what a budget cap compares
+against. The owner approved `MeteringDelta`/`MeteringRow` by name; this is a different and larger
+change to ENFORCEMENT money. #10/#59: never self-approve a billed-byte change.
+
+**Recommendation:** the same shape applied to the sibling book — `ModelTokens` gains `priced_from_ms`
+and joins the accrual key; `billable_requests` splits with it so the flat fee is era-correct too. By
+the owner's own standard — *"money is never wrong, ledger or ratecard is wrong"* — **a ledger that
+cannot distinguish two price eras in one window IS a wrong ledger.** That makes this the same defect
+as the one already fixed, not a new feature.
+
+**Do not tighten the `h2-card-epoch.sh` legs until this closes** — the two reads still disagree, so
+the rig must keep reporting both figures side by side.
+
+**The money-read roster is now ENFORCED, not documented.** `MONEY_READS` + `MONEY_CONVERSIONS` walk
+`busbar-core-admin`'s non-test `src/` tree and go RED on a conversion site in an unregistered file.
+A future read that prices flat is a failing test, not a review note — which is the direct answer to
+*enrolment is the gap no count detects*: this roster detects its own omissions.
+
 #### THE FIFTH PLANE WAS IN NO KIND LIST — and a positive control is what proved it
 
 `busbar-plane-decision` (the jev plane, #48) appeared in NO `[gate.plugin_kinds]` list. Absence from
