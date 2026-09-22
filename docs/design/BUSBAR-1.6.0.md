@@ -1735,7 +1735,35 @@ precisely because *"plugins can never touch secrets"* and secret handling is ker
 journal is the other half of that ruling — the half that makes the kernel actually audit what it took
 custody of.
 
-## SECURITY — root's A2A leg authorizes the OPERATION but never the AGENT
+## CORRECTION — the A2A grant gap is REAL but NOT REACHABLE. I overstated it.
+
+**I recorded this as a live horizontal privilege escalation. That was wrong, and the error was mine:
+I verified the missing check but never verified that the function is reachable.** A second
+independent review caught it.
+
+`crates/busbar/src/root/units_a2a.rs::approve()` genuinely lacks the per-agent `scope_allowed`
+check — that part stands, and `git grep -c scope_allowed` on the file is still 0. But the module is
+named from `crates/busbar/src/main.rs` at **exactly one line (960)**, and only to install scope
+entries via `scope_policy(...)`. The code says so itself:
+
+> *"It diverts no byte: the serving path is still the one `register_planes` mounted, which is why the
+> conformance battery and the neutrality cells read identically with this on and with it off."*
+
+The **actual** served A2A path is `crates/busbar-a2a/src/a2a/{inbound,receive,registry,serve}.rs`,
+and every one of those independently calls `scope_allowed("agent", agent_id)`. So no caller today
+reaches the unguarded `approve`, and **no key can reach an agent it was not granted.**
+
+**Severity corrected: not exploitable. It is a latent landmine, not an open door.**
+
+Still worth fixing, for one specific reason: `units_a2a.rs` exists to become a serving path. The
+moment it is wired up — which is the direction the root-side composition is heading — the gap
+becomes live, and it will be wired up by someone who reasonably assumes the approve step already
+authorizes what it is approving. A dormant file with a missing authorization check is a trap laid for
+a future change, so the check lands now while the cost is four tests.
+
+### The original finding, retained for the record
+
+### SECURITY — root's A2A leg authorizes the OPERATION but never the AGENT
 
 **Found by the survivor review of `origin/wip/mount-chain-auth-bindings`, and verified directly.**
 
