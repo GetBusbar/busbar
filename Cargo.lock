@@ -990,15 +990,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plugin-testkit"
-version = "1.5.0"
-dependencies = [
- "busbar-api",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "busbar-secret-example-plugin"
 version = "1.5.0"
 dependencies = [
@@ -1024,7 +1015,6 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-plugin-sdk",
- "busbar-plugin-testkit",
  "libc",
  "serde",
  "serde_json",
@@ -1036,7 +1026,6 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-contract",
- "busbar-plugin-testkit",
 ]
 
 [[package]]

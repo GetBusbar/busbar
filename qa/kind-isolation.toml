@@ -1758,16 +1758,6 @@ kind = "plugin-tooling"
 count = "5"
 
 [[cell]]
-crate = "busbar-plugin-testkit"
-kind = "api"
-count = "10"
-
-[[cell]]
-crate = "busbar-plugin-testkit"
-kind = "plane"
-count = "5"
-
-[[cell]]
 crate = "busbar-secret-example-plugin"
 kind = "api"
 count = "4"
@@ -2974,16 +2964,6 @@ why     = "busbar-plugin-sdk names busbar-plugin: declared normal in the shipped
 drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
 
 [[dep]]
-from    = "busbar-plugin-testkit"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
-why     = "busbar-plugin-testkit names busbar-api: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
 from    = "busbar-secret-example-plugin"
 to      = "busbar-api"
 half    = "shipped"
@@ -3492,26 +3472,6 @@ verdict = "owner-ruling-pending"
 cite    = "no ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 row covers this pair."
 why     = "busbar-plugin-sdk names busbar-store-memory: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-store-memory dependency from busbar-plugin-sdk."
-
-[[dep]]
-from    = "busbar-store-example-plugin"
-to      = "busbar-plugin-testkit"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
-why     = "busbar-store-example-plugin names busbar-plugin-testkit: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin-testkit dependency from busbar-store-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-[[dep]]
-from    = "busbar-store-memory"
-to      = "busbar-plugin-testkit"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
-why     = "busbar-store-memory names busbar-plugin-testkit: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-plugin-testkit dependency from busbar-store-memory's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-api"

@@ -1,6 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#![allow(dead_code)]
+
+//! # PROVENANCE, 2026-09-22 — this file was `busbar-plugin-testkit`
+//!
+//! The owner ruled the shared testkit crate DELETED (*"delete it. wtf is a testkit."*), which
+//! DECISIONS #33 already asserted (*"There is NO `testkit` — dead, not a crate and not a feature:
+//! each plugin self-tests (#2); the kernel tests no plugin"*). #2/#31 are the reason the suite could
+//! not simply move to one crate and be shared from there: a plugin is a 3rd party living in its own
+//! repo, and cross-plugin shared test utils are exactly what that topology forbids.
+//!
+//! So the suite is COPIED, not relocated, and each backend owns its copy outright. The duplication
+//! is the ruled design, not an accident of the move — the cost #2 accepts in exchange for a plugin
+//! that can be built and tested with no sibling in the tree. Every assertion below is BYTE-IDENTICAL
+//! to the testkit's last version; only this header is new.
+//!
+//! The "reaches every backend on its next dependency bump" promise in the doc above is therefore
+//! NO LONGER TRUE of this copy, and is left standing as the record of what the shared crate was for.
 //! Contract conformance for [`busbar_api::Store`] — the checks every backend must pass identically.
 //!
 //! These exist because an audit found the fleet disagreeing with itself: the same input produced a

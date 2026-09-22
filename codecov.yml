@@ -20,7 +20,6 @@ comment: false
 ignore:
   - "crates/*-example-plugin"
   - "crates/hook-test-plugin"
-  - "crates/plugin-testkit"
   - "tests"
   - "examples"
   - "docs"

@@ -17,7 +17,13 @@ busbar-api = { path = "../api" }
 busbar-contract = { path = "../busbar-contract" }
 
 [dev-dependencies]
-# The shared `Store` contract conformance suite. Core's own reference backend runs it too: if the
-# reference implementation does not pass the checks the plugin backends are held to, the checks are
-# wrong.
-busbar-plugin-testkit = { path = "../plugin-testkit", features = ["store"] }
+# The `Store` contract conformance suite used to arrive here as `busbar-plugin-testkit`. The owner
+# ruled that crate DELETED on 2026-09-22 and #2/#31 forbid a shared test util between plugins, so
+# the suite now lives in this crate's own `tests/store_conformance.rs`. It serialises typed rows into
+# the opaque `PlaneRecord` body exactly as core does, which is the whole of what it needs from serde;
+# `busbar-api` it already has as a normal dependency above.
+#
+# Core's own reference backend still runs the suite: if the reference implementation does not pass
+# the checks the plugin backends are held to, the checks are wrong.
+serde = { workspace = true }
+serde_json = { workspace = true }

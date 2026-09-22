@@ -39,7 +39,6 @@ members = [
     "crates/api",
     "crates/busbar-plugin",
     "crates/plugin-sdk",
-    "crates/plugin-testkit",
     "crates/plugin-loader",
     "crates/plugin-sign",
     "crates/plugin-pack",

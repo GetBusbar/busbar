@@ -213,7 +213,6 @@ Covering leg is the FIRST leg that compiles the feature; several are compiled by
 | `busbar-mcp/openapi-schema` | non-default | `openapi-schema` | yes |
 | `busbar-mcp/test-support` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
 | `busbar-mcp-codec/test-support` | non-default | `feature-sets` (this change) | NO |
-| `busbar-plugin-testkit/store` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
 | `busbar-substrate/dispatch` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-substrate/openapi-schema` | non-default | `openapi-schema` | yes |
 | `busbar-substrate/plane-a2a` | non-default | `check` — reached from a workspace default | yes |
