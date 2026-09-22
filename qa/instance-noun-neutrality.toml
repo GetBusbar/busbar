@@ -5286,7 +5286,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "valkey"
 kind = "store"
-file = "crates/plugin-sign/src/tests/lib_tests.rs"
+file = "crates/plugin-loader/src/tests/sign_tests.rs"
 count = 36
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"

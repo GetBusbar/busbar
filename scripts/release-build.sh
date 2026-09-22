@@ -89,7 +89,7 @@ PY
 ARCHIVE="busbar-${TARGET}.${SPEC_ARCHIVE}"
 
 # ── THE KEY, ASSERTED BEFORE ANYTHING IS COMPILED, FOR EVERY TARGET ─────────────────────────────
-# `option_env!("BUSBAR_RELEASE_PUBKEY")` (crates/plugin-sign) is a COMPILE-time read that resolves
+# `option_env!("BUSBAR_RELEASE_PUBKEY")` (crates/plugin-loader/src/sign.rs) is a COMPILE-time read that resolves
 # to `None` when the variable is absent. There is no build error, no warning, and no runtime
 # complaint until an operator installs a signed plugin and is told the binary "embeds no busbar
 # release key". Refusing to start the build is the only moment at which that is loud.
