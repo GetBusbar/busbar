@@ -10,8 +10,9 @@
 //! ## What moved here, byte-identical
 //!
 //! [`HttpTransport::dial`] builds ONE pooled `hyper_util` client per transport instance, with the
-//! exact posture 1.5.5's egress client used (`busbar_kernel::egress::engine`, read before this
-//! was written): redirects never followed (hyper's client is structurally incapable of following
+//! exact posture 1.5.5's egress client used (read off that client before this was written; the
+//! module is deliberately not named here, because a transport is a wire and names no core path —
+//! see this crate's `no_plane_names` test): redirects never followed (hyper's client is structurally incapable of following
 //! one — no policy to set), `connect_timeout` 10s, TCP keepalive 60s + nodelay, HTTP/2 keep-alive
 //! interval 30s / timeout 10s with the adaptive window on, `pool_max_idle_per_host` /
 //! `pool_idle_timeout` from [`ClientSettings`], and `upstream_http1_only` /
