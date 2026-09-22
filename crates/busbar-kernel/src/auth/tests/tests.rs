@@ -262,25 +262,11 @@ fn test_empty_chain_is_open_front_door() {
     assert!(mw.validate_token(Some("anything")));
 }
 
-/// `upstream_credentials` selects WHOSE credential goes upstream; it does not gate the front
-/// door. With an empty chain both modes admit everything (the old none/passthrough split is now
-/// chain-shape for the front door + this knob for egress). 1.5.3: the knob itself moved OFF `auth:`
-/// onto the `pools:` section, so the middleware no longer carries it at all — which is the strongest
-/// possible form of "it does not gate the front door".
-#[test]
-fn test_open_door_regardless_of_upstream_creds() {
-    for uc in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
-        let cfg = crate::config::AuthCfg::default_none();
-        let mw = AuthMiddleware::new_builtin(&cfg);
-        assert!(mw.validate_token(None));
-        assert!(mw.validate_token(Some("anything")));
-        // The mode lives on the App (all-pools default + per-pool override), not on the chain.
-        let app = crate::test_support::TestApp::new()
-            .upstream_creds(uc)
-            .build();
-        assert_eq!(app.upstream_creds(), uc);
-    }
-}
+// `test_open_door_regardless_of_upstream_creds` MOVED to `tests/auth_cross_plane.rs`:
+// `App::upstream_creds()` reads through `engine_tables_view()`, which only the REAL `busbar_llm`
+// plane's `build_runtime` populates with the configured `upstream_credentials` — an
+// integration-test target, never this `#[cfg(test)]` unit module (see `endpoints_cross_plane.rs`'s
+// header for the same reason).
 
 /// `chain: [keys]` sets the `keys_in_chain` flag rather than installing a boxed module: virtual
 /// keys authenticate on the governance path, so the entry records operator intent for

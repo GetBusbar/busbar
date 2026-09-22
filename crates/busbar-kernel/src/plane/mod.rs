@@ -648,8 +648,15 @@ fn path_is_under(path: &str, mount: &str) -> bool {
 /// "that is defined on a different section of this plane". A bare not-found would send someone
 /// hunting for a typo that is not there, which is why an unknown name is a genuinely different
 /// error.
+///
+/// The TYPE (and [`RefError`], [`Self::insert`], [`Self::resolve`]) are `pub` rather than
+/// `pub(crate)` so `tests/plane_config_cross_plane.rs::the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary`
+/// can drive the resolve-time refusal directly, over the REAL plane roster, exactly as the sibling
+/// parse-time refusal in that file already does — the same "internal-only `busbar-kernel` crate
+/// (`publish = false`) pays that cost" reasoning `registry_cross_plane.rs`'s header gives for its own
+/// widened seams.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PlaneSections<T> {
+pub struct PlaneSections<T> {
     /// One section per plane, keyed by plane registry key. An absent key is an EMPTY section, read
     /// as such by every accessor — the same answer the old three hard fields gave for a plane that
     /// happened to hold nothing. Iteration order is never taken from this map's own key order:
@@ -661,7 +668,7 @@ pub(crate) struct PlaneSections<T> {
 /// Why a name did not resolve. The two arms are kept distinct because only one of them is
 /// actionable in the same way.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum RefError {
+pub enum RefError {
     /// The name exists, but on ANOTHER plane. A plane boundary violation.
     CrossPlane {
         name: String,
@@ -720,7 +727,7 @@ impl<T> PlaneSections<T> {
     }
 
     /// Declare `name` on `plane`.
-    pub(crate) fn insert(&mut self, plane: &'static str, name: &str, entry: T) -> Option<T> {
+    pub fn insert(&mut self, plane: &'static str, name: &str, entry: T) -> Option<T> {
         self.map_mut(plane).insert(name.to_string(), entry)
     }
 
@@ -741,7 +748,7 @@ impl<T> PlaneSections<T> {
     /// The sibling scan runs in [`plane_keys`] (LAYERING) order so a name defined on several other
     /// planes always diagnoses the same one. A nondeterministic diagnostic is worse than none: it
     /// makes a boot failure unreproducible.
-    pub(crate) fn resolve(&self, plane: &'static str, name: &str) -> Result<&T, RefError> {
+    pub fn resolve(&self, plane: &'static str, name: &str) -> Result<&T, RefError> {
         if let Some(entry) = self.sections.get(plane).and_then(|m| m.get(name)) {
             return Ok(entry);
         }
@@ -783,6 +790,88 @@ impl<T> PlaneSections<T> {
 // declared wire formats (the actual dialect/plane registries), which only type-checks/behaves
 // correctly with ONE `busbar_kernel` in the graph and a real roster registered — an integration-test
 // target, never this `#[cfg(test)]` unit module. See that file's header.
+
+/// Build one ALL-STUB `PlaneDecl` for [`isolated_three_plane_test_registry`] — every hook is
+/// `None`/no-op (no dialect, no wire format, no scope kind), like
+/// [`crate::test_support::register_neutral_test_plane`]'s single fixture. `const fn` because it
+/// backs `static` initializers: a function POINTER is a compile-time constant regardless of what
+/// the function body does, so the closures below cost nothing to name here.
+#[cfg(test)]
+const fn neutral_sibling_decl(
+    key: &'static str,
+    config_section: &'static str,
+    subject_noun: &'static str,
+) -> registry::PlaneDecl {
+    registry::PlaneDecl {
+        key,
+        fallback: false,
+        config_section,
+        scope_kinds: &[],
+        subject_noun,
+        admin_noun: subject_noun,
+        audit_kind: subject_noun,
+        wire_format_names: || &[],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        owned_config_sections: &[],
+        resolve_provider: None,
+    }
+}
+
+/// THE NEUTRAL THREE-PLANE TEST REGISTRY — for [`PlaneSections`]'s own unit tests (`sections_tests`).
+/// Unlike [`crate::test_support::register_neutral_test_plane`] (ONE plane: "some plane exists so a
+/// config section has an owner"), these are the CONTAINER's own tests: they exercise
+/// [`PlaneSections::resolve`]'s sibling walk over THREE distinct registered keys, and one of them
+/// (`sections_tests::iteration_covers_every_plane_and_attributes_each_entry`) counts [`plane_keys`]
+/// against exactly the entries it inserted, so the registered set must be EXACTLY these three:
+/// nothing a sibling test left registered, nothing more.
+///
+/// The three keys are DELIBERATELY not `"llm"`/`"mcp"`/`"a2a"`: this generic multi-tenant container
+/// asserts nothing about what any real plane IS or DOES, and core naming those literals — even in a
+/// `#[cfg(test)]`-only synthetic `PlaneDecl` — is exactly what the A6/HostCtx dev-dependency-cycle
+/// cleanup deleted `TEST_BUILTIN_PLANE_DECLS` to stop (`cargo xtask gate construction`'s
+/// `neutral-no-dialect` rule, ceiling 0, enforces this). `"alpha"`/`"beta"`/`"gamma"` are three
+/// registry keys and nothing else. The one test in this file that DID need a real plane's own
+/// section-name prose (`the_refusal_message_is_actionable`) moved to
+/// `tests/plane_config_cross_plane.rs`, where naming the real planes is licensed.
+///
+/// Returns the [`registry::TestRegistryIsolation`] guard, which the caller holds for its test body's
+/// lifetime: the registered set stays exactly these three regardless of what ran before it or runs
+/// concurrently with it.
+#[cfg(test)]
+pub(crate) fn isolated_three_plane_test_registry() -> registry::TestRegistryIsolation {
+    static ALPHA: registry::PlaneDecl = neutral_sibling_decl("alpha", "alpha-section", "alpha thing");
+    static BETA: registry::PlaneDecl = neutral_sibling_decl("beta", "beta-section", "beta thing");
+    static GAMMA: registry::PlaneDecl = neutral_sibling_decl("gamma", "gamma-section", "gamma thing");
+    // `TestRegistryIsolation::seeded`, NOT `empty()` followed by `register_test_plane`: the guard
+    // holds `TEST_REGISTRY_SERIAL` for its whole lifetime, and `register_test_plane` takes that same
+    // (non-reentrant) lock — calling it after `empty()` on this thread would self-deadlock. `seeded`
+    // installs the three decls atomically under the one lock acquisition instead.
+    registry::TestRegistryIsolation::seeded(&[&ALPHA, &BETA, &GAMMA])
+}
 
 #[cfg(test)]
 #[path = "tests/sections_tests.rs"]

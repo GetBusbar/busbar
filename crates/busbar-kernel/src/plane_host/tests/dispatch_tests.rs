@@ -244,35 +244,12 @@ fn entitlement_check_denies_a_target_outside_the_grant() {
     });
 }
 
-#[test]
-fn entitlement_check_mcp_server_grant_does_not_cover_a_pool() {
-    // The vice-versa of the cross-kind fail-closed proof: a key scoped to an `mcp_server` grant
-    // does NOT satisfy a `pool` (scope_kind 0) target. This pins the scope-kind index bijection —
-    // `mcp_server` is index 1, `pool` is index 0 — so the two kinds never alias each other.
-    let key = scoped_key(
-        "k-1",
-        Some(vec![busbar_api::ScopeRef {
-            kind: "mcp_server".to_string(),
-            value: "fast".to_string(),
-        }]),
-    );
-    let app = app_with_key(&key);
-    with_dispatch_scope(&app, |host, _vt| {
-        let caller = caller_ref(b"k-1", 0);
-        // The grant DOES cover the matching mcp_server target (sanity: the grant is live).
-        let server = target_ref(b"fast", 1); // scope_kind 1 = "mcp_server"
-        assert!(
-            entitlement_check(host, &caller, &server),
-            "the key's mcp_server grant covers `fast` → entitled"
-        );
-        // …but it must NOT cover a `pool` target of the same value.
-        let pool = target_ref(b"fast", 0); // scope_kind 0 = "pool"
-        assert!(
-            !entitlement_check(host, &caller, &pool),
-            "an `mcp_server` grant must NOT cover a `pool` target"
-        );
-    });
-}
+// `entitlement_check_mcp_server_grant_does_not_cover_a_pool` MOVED to
+// `tests/plane_host_dispatch_cross_plane.rs`: its opening sanity assertion needs `scope_kind_at(1)`
+// to genuinely resolve to `"mcp_server"`, which only the REAL `busbar_mcp` plane's registered decl
+// can answer — naming that real vocabulary here (even via a synthetic `#[cfg(test)]` decl) is
+// exactly what `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) forbids. See
+// that file for the relocated test.
 
 #[test]
 fn entitlement_check_fails_closed_on_null_and_no_governance() {

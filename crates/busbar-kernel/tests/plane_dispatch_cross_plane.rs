@@ -124,6 +124,31 @@ fn the_llm_and_a2a_planes_have_earned_an_ir_today() {
     );
 }
 
+/// THE A2A LEGS' NAMES ARE THE A2A PLANE'S WIRE FORMATS, and this is the assertion that keeps the
+/// two lists one vocabulary rather than two that happen to agree. The card a served agent publishes
+/// spells its `protocolBinding` from the plane's list (`serve::servable_bindings` upper-cases it),
+/// and the metric label an operator reads spells it from here. If these ever diverge, an operator
+/// correlating a Prometheus series with a published binding is silently comparing two strings that
+/// no longer describe the same leg.
+///
+/// Relocated from `src/tests/transport_tests.rs` (the "fix the 38" pass): it asserts real `a2a`
+/// wire-format behaviour, so — like every other test in this file — it needs the real roster.
+#[test]
+fn the_a2a_legs_are_named_by_the_planes_wire_formats() {
+    register_planes();
+    use busbar_kernel::transport::Transport;
+    let wires = wire_format_names("a2a");
+    let legs: Vec<&str> = [Transport::JsonRpc, Transport::HttpJson, Transport::Grpc]
+        .iter()
+        .map(|t| t.name())
+        .collect();
+    assert_eq!(
+        wires,
+        legs.as_slice(),
+        "the A2A plane's wire formats and the transports its legs ride must be one list"
+    );
+}
+
 /// The fallback plane's wire-format count is DERIVED from the real protocol registry, never a
 /// literal. An additional registered protocol must not require anyone to remember to bump a number
 /// here.

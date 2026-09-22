@@ -1312,6 +1312,16 @@ pub struct TestRegistryIsolation {
 impl TestRegistryIsolation {
     /// Take the serial lock, snapshot the registered planes, and clear them for the guard's lifetime.
     pub fn empty() -> Self {
+        Self::seeded(&[])
+    }
+
+    /// Take the serial lock, snapshot the registered planes, and install EXACTLY `decls` (first-wins
+    /// dedup by key) for the guard's lifetime — the isolated-AND-seeded combination [`Self::empty`]
+    /// alone cannot express: `std::sync::Mutex` is not reentrant, so a caller that took `empty()`'s
+    /// guard and then called [`register_test_plane`] on the SAME thread would re-lock
+    /// [`TEST_REGISTRY_SERIAL`] it already holds and self-deadlock. This seeds the set atomically,
+    /// under the one lock acquisition, instead.
+    pub fn seeded(decls: &[&'static PlaneDecl]) -> Self {
         let serial = TEST_REGISTRY_SERIAL
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -1323,7 +1333,13 @@ impl TestRegistryIsolation {
             .unwrap_or_else(|e| e.into_inner()) = Some(std::thread::current().id());
         let saved = {
             let mut reg = TEST_REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
-            std::mem::take(&mut *reg)
+            let saved = std::mem::take(&mut *reg);
+            for decl in decls {
+                if !reg.iter().any(|d| d.key == decl.key) {
+                    reg.push(decl);
+                }
+            }
+            saved
         };
         Self {
             _serial: serial,

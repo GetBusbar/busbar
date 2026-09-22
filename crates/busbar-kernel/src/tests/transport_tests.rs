@@ -24,25 +24,10 @@ fn names_are_stable_and_distinct() {
     assert_eq!(Transport::Grpc.name(), "grpc");
 }
 
-/// THE A2A LEGS' NAMES ARE THE A2A PLANE'S WIRE FORMATS, and this is the assertion that keeps the
-/// two lists one vocabulary rather than two that happen to agree. The card a served agent publishes
-/// spells its `protocolBinding` from the plane's list (`serve::servable_bindings` upper-cases it),
-/// and the metric label an operator reads spells it from here. If these ever diverge, an operator
-/// correlating a Prometheus series with a published binding is silently comparing two strings that
-/// no longer describe the same leg.
-#[test]
-fn the_a2a_legs_are_named_by_the_planes_wire_formats() {
-    let wires = crate::plane::wire_format_names("a2a");
-    let legs: Vec<&str> = [Transport::JsonRpc, Transport::HttpJson, Transport::Grpc]
-        .iter()
-        .map(|t| t.name())
-        .collect();
-    assert_eq!(
-        wires,
-        legs.as_slice(),
-        "the A2A plane's wire formats and the transports its legs ride must be one list"
-    );
-}
+// `the_a2a_legs_are_named_by_the_planes_wire_formats` MOVED to
+// `tests/plane_dispatch_cross_plane.rs`: it asserts `wire_format_names("a2a")` against the REAL a2a
+// plane's declared wire formats, which needs the real roster registered — an integration-test
+// target, never this `#[cfg(test)]` unit module (see that file's header).
 
 /// FRAMING IS IDENTITY ON `Http`, AND THE CODEC IS UNTOUCHED. The framed cell hands back the very
 /// codec it was given — same operation, same vtable — so nothing a codec does can depend on having

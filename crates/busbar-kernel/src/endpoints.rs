@@ -287,6 +287,8 @@ pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) ->
     }
 }
 
-#[cfg(test)]
-#[path = "tests/endpoints_tests.rs"]
-mod tests;
+
+// `tests` (the `/stats`/`/v1/models` topology suite) MOVED to `tests/endpoints_cross_plane.rs` (the
+// "fix the 38" pass after the A6/HostCtx dev-dependency-cycle cleanup): every test in it builds real
+// lanes/pools, which only materialize through the REAL `busbar_llm` plane's `build_runtime`/`viewer`
+// — an integration-test target, never this `#[cfg(test)]` unit module. See that file's header.

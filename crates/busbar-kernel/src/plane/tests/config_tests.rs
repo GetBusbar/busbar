@@ -149,36 +149,12 @@ fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
     );
 }
 
-/// THE RESOLVE-TIME REFUSAL, on a name that EXISTS on a sibling plane.
-///
-/// The input is a BARE name — no dot, nothing for the parse-time rule to object to. It passes that
-/// rule cleanly and is refused only because the BINDING crosses the boundary. Neither check
-/// subsumes the other, which is why merging them would delete one.
-#[test]
-fn the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary() {
-    let mut sections: PlaneSections<u8> = PlaneSections::default();
-    sections.insert("a2a", "planner", 1);
-
-    // The parse-time rule has NO objection to this name.
-    refuse_cross_plane_reference("`tools.search`", "planner", &config_sections())
-        .expect("a bare name is legal in shape; the boundary it crosses is a binding, not a shape");
-
-    let err = sections
-        .resolve("mcp", "planner")
-        .expect_err("a name defined on a sibling plane is a boundary violation");
-    assert_eq!(
-        err,
-        RefError::CrossPlane {
-            name: "planner".to_string(),
-            referenced_from: "mcp",
-            defined_in: "a2a",
-        }
-    );
-    assert!(
-        err.to_string().contains("which is defined in `agents`"),
-        "the refusal DIAGNOSES rather than merely denying, got: {err}"
-    );
-}
+// `the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary` MOVED to
+// `tests/plane_config_cross_plane.rs`: it asserts `RefError::CrossPlane`'s rendered PROSE contains
+// the real A2A plane's own config-section name (`"agents"`), which needs the real roster registered
+// — naming that real plane's key/section here (even behind a synthetic `#[cfg(test)]` decl) is
+// exactly what `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) exists to
+// forbid. See that file for the relocated test.
 
 // ══ THE REMAINING SENTENCES, so the total `From` has a reader for every arm ═══════════════════════
 

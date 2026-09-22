@@ -243,6 +243,14 @@ fn scope_kind_str(scope_kind: u32) -> Option<&'static str> {
 /// a non-UTF-8 identity/target, an unmapped [`scope_kind`](TargetRef::scope_kind), an unknown caller
 /// key, a tombstoned/disabled key, or a caught panic. Only a live enabled key whose grant explicitly
 /// covers the target returns `true`.
+///
+/// Stays `pub(crate)`: `EntitlementCheckFn` (`busbar_plugin::hot::host`) is a SAFE
+/// `extern "C-unwind" fn` type — widening this definition to plain `pub` trips clippy's
+/// `not_unsafe_ptr_arg_deref` (a public fn dereferencing a raw pointer without being `unsafe fn`),
+/// and this function's contract is exactly that risk (a forged/dangling `caller`/`target` is UB).
+/// `tests/plane_host_dispatch_cross_plane.rs` reaches the REAL wired fn through the PUBLIC
+/// `PlaneHostVtable::entitlement_check` field instead (`Some(dispatch::entitlement_check)`, wired in
+/// `vtable.rs`) — the same seam a real plane calls through — rather than naming this item directly.
 pub(crate) extern "C-unwind" fn entitlement_check(
     host: HostCtx,
     caller: *const CallerRef,
