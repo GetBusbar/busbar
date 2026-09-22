@@ -1406,7 +1406,8 @@ leaves, per #31/#39.
 | 1 | `busbar` | the binary |
 | 2 | `busbar-kernel` | the loop |
 | 3–10 | `busbar-kernel-{audit,breaker,budget,egress,identity,ledger,scope,wal}` | "the 8", exactly as #19 says |
-| 11–13 | `busbar-core-{admin,oauth2,substrate}` | cleanliness crates, not plugins (#3) |
+| 11–12 | `busbar-core-admin`, `busbar-core-oauth2` | **surfaces ABOVE** — cleanliness crates, depend on kernel one-way, off the hot path (#3/#37) |
+| 13 | `busbar-core-substrate` | **foundation BELOW — the kernel must NOT depend on it (#37). It does today; see the violation below.** Not a cleanliness crate. |
 | 14 | `busbar-contract` | the plugin dependency closure, and nothing else (#40) |
 | 15–16 | `busbar-plugin-{sdk,loader}` | |
 | 17–21 | `busbar-plane-{llm,mcp,a2a,streaming,decision}` | exactly 5 (#39); decision = jev (#48) |
@@ -1433,12 +1434,32 @@ byte-identical and oracle-proven.
 | `busbar-plane-voice`, `busbar-voice` (12k), `busbar-voice-codec` | `busbar-plane-streaming` | #18: voice is a dialect, not a plane; ALL logic lives in the one plane crate |
 | `busbar-admin` (38k), `busbar-plane-admin` | `busbar-core-admin` | admin is a cleanliness crate, never a plane (#3) — `busbar-plane-admin` is a category error by its own name |
 | `busbar-oauth2` | `busbar-core-oauth2` | rename only |
-| `busbar-substrate-values` | `busbar-core-substrate` | rename only |
+| `busbar-substrate-values` | `busbar-core-substrate` | **NOT a rename only.** #37 deletes the fat 30k runtime shell, drains its runtime half into the kernel-8, deletes `plane_host/`, and sends the pure-value leaves (civil/duration/clock/config-enums/audit-vocab) to `busbar-contract`. What survives under the new name is the pure half — json/eventstream/media/sigv4 codecs, proto registry, catalogue, diagnostics, breaker helpers, ~13–15k LOC. |
 | `busbar-core-{config,hooks,transport}` | fold into kernel / contract | vestigial stubs from the core dissolve — `busbar-core-hooks` is **31 lines** with one dependent |
 | `busbar-plugin`, `plugin-pack`, `plugin-sign`, `plugin-testkit` | `busbar-plugin-{sdk,loader}` | #39 names only sdk and loader |
 | `plugin-sdk`, `plugin-loader` | `busbar-plugin-{sdk,loader}` | rename to the locked names |
 | `api`, `busbar-grammar`, `busbar-timing`, `busbar-unit-transport-key` | fold into their one consumer | none is named in #39 |
 | `auth-admin-tokens`, `auth-static-plugin`, `export-example-plugin`, `hook-test-plugin`, `hooks-ranking`, `plane-example`, `secret-example-plugin`, `secret-ref`, `store-example-plugin`, `store-memory` | **leave the repo** | #39: "the busbar repo holds NO plugin source… There is no in-tree plugin" |
+
+### #37's tier rule is violated: the kernel DOES depend on substrate
+
+**#37 (OWNER-LOCKED) defines the `busbar-core-*` tier in two halves:** *"surfaces above: admin/oauth2
+dep kernel one-way; **foundation below: substrate, which the kernel does NOT depend on**."*
+
+Measured, the kernel does depend on it, and not incidentally:
+
+- `crates/busbar-kernel/Cargo.toml:43` — `busbar-substrate-values = { path = ... }`, a **normal**
+  dependency, not dev-only
+- It also **inherits four of substrate's features** (`dispatch`, `relay`, `runtime`, `test-support`
+  at lines 214–216, 257), so the kernel's own feature surface is defined partly in terms of it
+- **23 files** under `crates/busbar-kernel/src/` name `busbar_substrate_values`
+
+So the direction of dependency between the engine and the foundation beneath it is currently
+inverted relative to the locked rule. This is the same class of problem as the #40 closure violation
+below — a tier boundary asserted in the spec and not enforced by anything in the build.
+
+Worth noting what is NOT wrong: `busbar-contract`'s edge to substrate is **dev-only**, so it does not
+widen the plugin closure. That one is fine.
 
 ### #40 IS VIOLATED BY SEVEN CRATES, AND ONE OF THEM IS THE MONEY BOOK
 
