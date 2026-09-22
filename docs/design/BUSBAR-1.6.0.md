@@ -2149,6 +2149,23 @@ distinguishable from a working row by looking at the path.
 - **`ledger sync --write` launders audited code into unaudited scopes.** A fold moves code, the gate
   flags the new scope missing, sync adds it unaudited and deletes the old scope's record, and the
   gate goes green. Moved scopes must CARRY their audit record.
+  **THE TRAP NOW HAS A PRICE, measured 2026-09-22 against a COPY of the live register:**
+
+  ```
+  ledger --check, real register:        99 scope(s) OPEN at HIGH/MEDIUM
+  ledger --check, after sync --write:   73 scope(s) OPEN at HIGH/MEDIUM
+  ```
+
+  **One `sync --write` deletes 26 scopes' worth of open HIGH/MEDIUM findings and exits 0.** Not
+  "loses provenance" — DELETES REAL OPEN FINDINGS, and reports success. The tool for a move is
+  `cargo xtask ledger move <old-id> <new-id>`, which carries `rounds[]`, preserves all eleven
+  `PRESERVED` keys, and re-stamps ONLY when `relative_files` proves the bytes are identical and only
+  the path prefix moved. **Price the wrong answer against a copy before you write** — that is what
+  turned this from a warning into a number.
+
+  Corollary, and it cuts the other way too: the **33 records naming paths that no longer exist** must
+  not simply be deleted. Several are folds still in flight. Deleting them is the same laundering
+  pointed backwards — each is a `ledger move` owed by whoever owns that fold.
 - **A checklist that outlives its decision will quietly re-litigate it.** `qa/kind-isolation.toml`
   was steering at `busbar-control-admin` — a kind the owner killed. `ARCHITECTURE.md` §1.4 and ~20
   references in the kind-isolation gate still call `control` a kind.
