@@ -66,6 +66,8 @@ pub mod synth_rng;
 /// The dialect-neutral tail-usage isolation helper shared by every reader's
 /// `recover_truncated_usage` override. PUBLIC: the plane's metering locators name the same
 /// isolation the reference path performs.
+pub mod usage_count;
+
 pub mod usage_tail;
 
 /// The OpenAI-family citation `annotations` mapping shared by the Chat and Responses codecs.
