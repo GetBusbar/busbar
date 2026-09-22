@@ -1682,6 +1682,29 @@ than accidental: no 1.5.5 golden can exist for a post-1.5.5 plane, and the gener
 has no `tools:` section, so the mcp plane never even loads for a recorded cell. Of the golden's 916
 PASS rows, **zero are mcp** — all 912 read `SKIP UNSUPPORTED`.
 
+**RULING — DO NOT CLOSE THIS GAP BY ADDING CELLS.** An agent asked whether the corpus should gain
+mcp/a2a money cells. It should not, and the reason is what the oracle IS:
+
+> **The oracle's job is 1.5.5 PARITY. No 1.5.5 golden can exist for a post-1.5.5 plane.**
+
+A new mcp money cell would have nothing on the golden side to be parity with — it would be a cell
+that can only ever report `missing.golden`, i.e. a permanent red that means "this is new", which is
+true of the whole plane and not a finding. **The blindness is the boundary of the instrument, not a
+defect in it.** An oracle asked to witness something that did not exist in 1.5.5 is being asked to do
+a job it cannot have.
+
+**The witness for plane money is the CONFORMANCE RIGS, and they exist.** `plane-rigs` carries twenty
+legs, eight of them money, gating in `ci.yml` with no `continue-on-error`: the meter-row deltas, the
+card-epoch pair, `h2-class-price`, `h2-unpriced-refuses` and `h2-ledger-unconditional`. Several are
+RED today and are *meant* to be — they name real defects (a plane posting quantity **0** while a flat
+fee bills 1; no card able to name a declared class).
+
+So the gap to close is **rig coverage, not corpus coverage**, and pointing new work at the corpus
+wastes it on a place that structurally cannot answer. The one thing the corpus IS owed is cells for
+surfaces that existed in 1.5.5 and lost coverage — the export sinks are the live example (`plugins.
+load|export-*` has no cell at all, and a pre-envelope v2 sink cell is the adapter's only possible
+witness).
+
 **Never cite oracle-green as evidence about plane money.** The witnesses that CAN see it are the
 conformance rigs and the per-plane money legs; those are the ones to point at.
 
