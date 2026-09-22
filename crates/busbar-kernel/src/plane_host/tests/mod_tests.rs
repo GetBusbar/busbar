@@ -254,8 +254,29 @@ fn wired_auth_resolve_writes_pod_only_on_ok() {
     });
 }
 
+/// The test emitter's registry key. Distinct per test where a test needs its own cardinality
+/// budget; `forget_emitter` clears one so tests do not inherit each other's ceilings.
+const TEST_PLANE: &str = "test-plane";
+
+/// Like [`with_test_state`], but the `HostCtx` is ATTRIBUTED to `plane` — the mint a real plane
+/// dispatch uses. `metrics_emit` refuses an unattributed handle, so every test of that slot has to
+/// come through here, which is the point: the host's provenance is not optional.
+fn with_test_state_as<R>(
+    plane: &'static str,
+    f: impl FnOnce(HostCtx, &PlaneHostVtable, &DispatchScope) -> R,
+) -> R {
+    let app = crate::test_support::TestApp::new().build();
+    let scope = DispatchScope::new();
+    crate::plane_host::with_borrowed_host_as(plane, &app, &scope, |host, vt| f(host, vt, &scope))
+}
+
 /// Build a `MetricSample` over a borrowed name and a value — the POD a plane hands `metrics_emit`.
 fn sample_of(name: &[u8], value: f64) -> MetricSample {
+    labelled_sample(name, value, &[])
+}
+
+/// The same, carrying an OPAQUE packed label blob (the ABI says the host does not interpret it).
+fn labelled_sample(name: &[u8], value: f64, labels: &[u8]) -> MetricSample {
     MetricSample {
         size: core::mem::size_of::<MetricSample>() as u32,
         version: busbar_plugin::hot::POD_VERSION,
@@ -264,14 +285,18 @@ fn sample_of(name: &[u8], value: f64) -> MetricSample {
         value_bits: value.to_bits(),
         name_ptr: name.as_ptr(),
         name_len: name.len(),
-        labels_ptr: core::ptr::null(),
-        labels_len: 0,
+        labels_ptr: if labels.is_empty() {
+            core::ptr::null()
+        } else {
+            labels.as_ptr()
+        },
+        labels_len: labels.len(),
     }
 }
 
 #[test]
 fn wired_metrics_emit_reaches_the_recorder() {
-    with_test_state(|host, vt, _scope| {
+    with_test_state_as(TEST_PLANE, |host, vt, _scope| {
         // An ADMISSIBLE name: within the charset and outside the reserved `busbar_` namespace.
         // (It was `busbar_plane_host_test` before the host started bounding this slot — which is
         // the point: the old wiring let a plane write into the first-party namespace, and the test
@@ -299,7 +324,7 @@ fn wired_metrics_emit_reaches_the_recorder() {
 /// the sample), or push a `NaN` straight into the recorder.
 #[test]
 fn metrics_emit_refuses_what_the_host_does_not_admit() {
-    with_test_state(|host, vt, _scope| {
+    with_test_state_as(TEST_PLANE, |host, vt, _scope| {
         let emit = vt.metrics_emit.unwrap();
         // The RESERVED namespace: a plane cannot impersonate a first-party series.
         let reserved = sample_of(b"busbar_http_requests_total", 1.0);
@@ -351,10 +376,145 @@ fn metrics_emit_refuses_what_the_host_does_not_admit() {
 /// asks — asserted directly, so the two can never be "fixed" apart.
 #[test]
 fn both_abi_lanes_ask_the_same_metric_name_question() {
-    assert!(crate::metrics::observe::admits_metric_name("plane_host_test"));
-    assert!(!crate::metrics::observe::admits_metric_name("busbar_anything"));
+    assert!(crate::metrics::observe::admits_metric_name(
+        "plane_host_test"
+    ));
+    assert!(!crate::metrics::observe::admits_metric_name(
+        "busbar_anything"
+    ));
     assert!(!crate::metrics::observe::admits_metric_name("Bad-Name"));
     assert!(!crate::metrics::observe::admits_metric_name(""));
+}
+
+/// **PROVENANCE IS NOT OPTIONAL.** A handle minted for the HOST's own use — `calllog`, `auditlog`,
+/// trust, the breaker — carries no emitter, and `metrics_emit` refuses it.
+///
+/// This is the same finding as the name-invention it sits beside: an identity the emitter supplies
+/// is a claim, not an attribution. The host either knows who is emitting, from the mint it performed
+/// itself, or the sample does not become a series. Anonymous series are series an operator cannot
+/// act on, and two planes reporting one name would be indistinguishable in the exposition.
+#[test]
+fn metrics_emit_refuses_a_handle_with_no_host_attributed_emitter() {
+    // `with_test_state` goes through `with_dispatch_scope`, which is a HOST-internal mint.
+    with_test_state(|host, vt, _scope| {
+        let sample = sample_of(b"plane_host_test", 1.0);
+        assert_eq!(
+            (vt.metrics_emit.unwrap())(host, &sample as *const MetricSample),
+            StatusClass::Refused,
+            "an unattributed handle must not be able to register a series"
+        );
+    });
+}
+
+/// **THE CARDINALITY BUDGET, RED-PROVABLE: a bounded emitter is admitted, an unbounded one is
+/// refused.**
+///
+/// A name check bounds what a series may be CALLED; nothing bounded how MANY. A plane emitting
+/// `req_0_total`, `req_1_total`, … passes every charset rule ever written and grows the recorder's
+/// registry without limit — and a Prometheus registry never shrinks, so by the time an operator
+/// notices, a restart is the only remedy. That is resource exhaustion reachable from an untrusted
+/// plugin.
+///
+/// The refusal is RETURNED to the plane, not swallowed: it is entitled to know its telemetry stopped
+/// landing.
+#[test]
+fn metrics_emit_admits_a_bounded_emitter_and_refuses_an_unbounded_one() {
+    const PLANE: &str = "cardinality-series-plane";
+    crate::metrics::observe::forget_cardinality(PLANE);
+    with_test_state_as(PLANE, |host, vt, _scope| {
+        let emit = vt.metrics_emit.unwrap();
+        // BOUNDED: the same series, over and over, is admitted every time — a well-behaved emitter
+        // never runs out of budget.
+        let steady = sample_of(b"steady_total", 1.0);
+        for _ in 0..(crate::metrics::observe::MAX_SERIES_PER_PLUGIN * 4) {
+            assert_eq!(
+                emit(host, &steady as *const MetricSample),
+                StatusClass::Ok,
+                "an established series must keep reporting forever"
+            );
+        }
+        // UNBOUNDED: a fresh series name every call. The budget admits up to the ceiling (one slot
+        // is already spent on `steady_total`) and refuses past it.
+        let mut admitted = 1usize;
+        for i in 0..(crate::metrics::observe::MAX_SERIES_PER_PLUGIN * 2) {
+            let name = format!("churn_{i}_total");
+            let s = sample_of(name.as_bytes(), 1.0);
+            if emit(host, &s as *const MetricSample) == StatusClass::Ok {
+                admitted += 1;
+            }
+        }
+        assert_eq!(
+            admitted,
+            crate::metrics::observe::MAX_SERIES_PER_PLUGIN,
+            "the budget must be a hard ceiling, not a suggestion"
+        );
+        // And the ESTABLISHED series is untouched by the flood — a misbehaving shape must not evict
+        // a well-behaved one, or a real series flaps in and out of the exposition.
+        assert_eq!(
+            emit(host, &steady as *const MetricSample),
+            StatusClass::Ok,
+            "an established series must survive another series exhausting the budget"
+        );
+    });
+}
+
+/// The LABEL half of the same budget, on the hot lane's OPAQUE blob. The host does not interpret
+/// these bytes — the ABI says so — and does not need to: telling two label sets apart is all a
+/// cardinality bound requires, which is what lets the bound exist before the label encoding does.
+#[test]
+fn metrics_emit_bounds_distinct_label_sets_under_one_series() {
+    const PLANE: &str = "cardinality-label-plane";
+    crate::metrics::observe::forget_cardinality(PLANE);
+    with_test_state_as(PLANE, |host, vt, _scope| {
+        let emit = vt.metrics_emit.unwrap();
+        let mut admitted = 0usize;
+        for i in 0..(crate::metrics::observe::MAX_LABEL_SETS_PER_SERIES * 3) {
+            let labels = format!("request_id\u{1}{i}");
+            let s = labelled_sample(b"one_series_total", 1.0, labels.as_bytes());
+            if emit(host, &s as *const MetricSample) == StatusClass::Ok {
+                admitted += 1;
+            }
+        }
+        assert_eq!(
+            admitted,
+            crate::metrics::observe::MAX_LABEL_SETS_PER_SERIES,
+            "labelling by request id must hit a ceiling, not explode the registry"
+        );
+        // A label set ALREADY inside the budget keeps being admitted.
+        // The same bytes `format!("request_id\u{1}0")` produces — a byte-string literal cannot
+        // carry a `\u{}` escape, so the code unit is spelled directly.
+        let known = labelled_sample(b"one_series_total", 1.0, b"request_id\x010");
+        assert_eq!(emit(host, &known as *const MetricSample), StatusClass::Ok);
+    });
+}
+
+/// ONE BUDGET, BOTH LANES — the same assertion shape as the name question above. The cold lane's
+/// fold and the hot lane's slot ask `admits_cardinality`, so a plugin cannot pick a lane to get a
+/// more generous ceiling.
+#[test]
+fn both_abi_lanes_ask_the_same_cardinality_question() {
+    const PLANE: &str = "shared-budget-plane";
+    crate::metrics::observe::forget_cardinality(PLANE);
+    // Spend the whole series budget through the shared predicate...
+    for i in 0..crate::metrics::observe::MAX_SERIES_PER_PLUGIN {
+        assert!(crate::metrics::observe::admits_cardinality(
+            PLANE,
+            &format!("s_{i}_total"),
+            0
+        ));
+    }
+    // ...and the HOT lane's entry point sees the same exhausted budget, because it is the same one.
+    assert!(!crate::metrics::observe::admits_cardinality_opaque(
+        PLANE,
+        "one_more_total",
+        &[]
+    ));
+    // An established series still passes on either entry point.
+    assert!(crate::metrics::observe::admits_cardinality_opaque(
+        PLANE,
+        "s_0_total",
+        &[]
+    ));
 }
 
 /// The async guard is `Send` (so a future holding it across `.await` stays `Send`) and the Send
