@@ -15,6 +15,10 @@
 //!    list of its scope's files at the audited commit. When the code moves the hash stops matching
 //!    and the scope reads `stale` — the result EXPIRED, it did not pass. Staleness is checked
 //!    THIRD, ahead of `in_progress`, `open`, `fixed` and `clean`, so no result kind can outrun it.
+//!    THE PATH IS PART OF THE DIGEST, so a directory rename changes it while changing no code. That
+//!    is what `ledger move` is for: it re-stamps a record onto the new paths only when the relative
+//!    file map proves the bytes are the same ([`relative_files`]), and otherwise leaves the digest
+//!    alone and records the paths it is over ([`hashed_scope`]) so the round stays recomputable.
 //! 3. **CLEAN IS TWO ZERO ROUNDS FROM DISTINCT AUDITORS AT THE CURRENT HASH.** One auditor finding
 //!    nothing is `unconfirmed`, which is not a pass. The rounds list is APPEND-ONLY; `record` never
 //!    edits or replaces a round, and `sync` carries the list across verbatim. An auditor is
@@ -601,6 +605,56 @@ pub fn tree_hash(sc: &Json, all: &BTreeMap<String, String>) -> Option<String> {
     Some(h.hexdigest())
 }
 
+/// The scope's files with the scope's own prefix stripped: RELATIVE path -> blob oid.
+///
+/// This is what makes "the same code at a different path" a DECIDABLE question rather than a
+/// judgement call. [`tree_hash`] digests `path<TAB>oid`, so a pure directory rename changes it even
+/// though not one byte of code moved; two relative-file maps that compare equal say the bytes ARE
+/// the same and the only thing that changed is the prefix. `ledger move` re-stamps a record only
+/// when this comparison holds, so a re-stamp is never an assertion — it is a measurement.
+pub fn relative_files(
+    sc: &Json,
+    id: &str,
+    all: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    scope_files(sc, all)
+        .into_iter()
+        .map(|(p, oid)| {
+            let rel = if p == id {
+                String::new()
+            } else {
+                p.strip_prefix(&format!("{}/", id.trim_end_matches('/')))
+                    .unwrap_or(&p)
+                    .to_string()
+            };
+            (rel, oid)
+        })
+        .collect()
+}
+
+/// The PATHS A RECORD'S `tree_hash` WAS COMPUTED UNDER, which after a `move` is not always the
+/// scope's current paths.
+///
+/// `tree_hash` digests `path<TAB>oid`, so THE PATH IS PART OF THE EVIDENCE. When `ledger move`
+/// rewrites a scope's paths — a directory rename, a fold — a round whose reading pre-dates the move
+/// still carries the digest it computed under the OLD paths. Re-deriving that digest under the NEW
+/// paths yields the hash of a directory that did not exist yet, which the anti-forgery rule would
+/// read as "stamped against a tree it did not read" — a false accusation about a round that read
+/// exactly what it says it read, at a path that has since moved.
+///
+/// So `move` writes `hashed_as` — the paths the digest is over — onto every record it carries
+/// WITHOUT re-stamping, and the anti-forgery rule verifies against those. Nothing is weakened: the
+/// claim stays exactly as recomputable as it was before the rename, against exactly the tree it
+/// named. A record with no `hashed_as` is hashed under the scope's own paths, as it always was.
+pub fn hashed_scope<'a>(sc: &'a Json, rec: &'a Json) -> &'a Json {
+    let under = rec.get("hashed_as");
+    if under.get("paths").as_array().is_some() {
+        under
+    } else {
+        sc
+    }
+}
+
 /// The hash the scope's files ACTUALLY had at the commit `rec` claims to have read. A record whose
 /// stored hash disagrees with this was stamped against a tree it did not read.
 ///
@@ -614,7 +668,7 @@ pub fn audited_tree_hash(sc: &Json, git: &Git) -> Result<Option<String>, String>
         return Err("the record names no audited_at commit".to_string());
     };
     let files = git.files_at(at)?;
-    Ok(tree_hash(sc, &files))
+    Ok(tree_hash(hashed_scope(sc, sc), &files))
 }
 
 /// The commit a record — a scope's top-level record or one of its rounds — claims to have read.
@@ -1078,7 +1132,12 @@ pub fn save(path: &Path, doc: &Json) -> Result<(), String> {
 /// The keys `sync` CARRIES ACROSS from an existing scope, in this order. Assigning an existing key
 /// keeps its position; `rounds` does not exist in a freshly derived scope, so it lands last — which
 /// is exactly where the committed register has it.
-const PRESERVED: [&str; 9] = [
+///
+/// `moved_from` and `hashed_as` are here for the same reason the other nine are: they are the
+/// EVIDENCE `ledger move` writes, and a `sync` that dropped them would silently un-do a move —
+/// `hashed_as` is what keeps a carried round's hash checkable, so losing it turns every moved
+/// round into "stamped against a tree it did not read" on the next `sync --write`.
+pub const PRESERVED: [&str; 11] = [
     "tree_hash",
     "audited_at",
     "round",
@@ -1087,12 +1146,83 @@ const PRESERVED: [&str; 9] = [
     "report",
     "auditor",
     "fixed_at",
+    "moved_from",
+    "hashed_as",
     "rounds",
 ];
+
+/// The register's key order for one scope, which is the order a freshly derived scope is written
+/// in and therefore the order [`merge`] produces. `ledger move` rewrites a record in place rather
+/// than re-deriving the whole list, so it re-orders what it wrote through this — otherwise the
+/// next `sync --write` would shuffle the keys and bury the one line that changed in a 147KB
+/// reflow.
+pub const SCOPE_KEY_ORDER: [&str; 15] = [
+    "id",
+    "kind",
+    "paths",
+    "tree_hash",
+    "audited_at",
+    "round",
+    "result",
+    "counts",
+    "report",
+    "auditor",
+    "fixed_at",
+    "exclude",
+    "moved_from",
+    "hashed_as",
+    "rounds",
+];
+
+/// Put one scope's keys back into [`SCOPE_KEY_ORDER`], keeping any key not named there in the
+/// order it already had. A key nothing knows about is never dropped — a register that quietly lost
+/// a field it did not recognise would be a register that edits evidence.
+pub fn reorder_scope(sc: &mut Json) {
+    let fresh = {
+        let Some(o) = sc.as_object() else {
+            return;
+        };
+        let mut fresh = Obj::new();
+        for key in SCOPE_KEY_ORDER {
+            if let Some(v) = o.get(key) {
+                fresh.insert(key, v.clone());
+            }
+        }
+        for (k, v) in o.iter() {
+            if !SCOPE_KEY_ORDER.contains(&k) {
+                fresh.insert(k, v.clone());
+            }
+        }
+        fresh
+    };
+    *sc = Json::Object(fresh);
+}
+
+/// Copy the [`PRESERVED`] keys of `old` onto the derived record `derived`. One statement of "what a
+/// record IS, as opposed to what the tree DERIVES", shared by [`merge`] (same id) and by
+/// `ledger move` (the id itself changed).
+pub fn carry(derived: &Json, old: &Json) -> Json {
+    let mut keep = derived.clone();
+    if let Some(o) = keep.as_object_mut() {
+        for key in PRESERVED {
+            if let Some(v) = old.as_object().and_then(|oo| oo.get(key)) {
+                o.insert(key, v.clone());
+            }
+        }
+    }
+    keep
+}
 
 /// Merge the derived scope list with the register's records. A scope whose path left the tree loses
 /// its record with it — that is the `-` line `sync` prints, and it is deliberate: a record about
 /// code that no longer exists is not evidence about this tree.
+///
+/// THE MATCH IS BY ID, AND AN ID IS A DIRECTORY PATH. That is precisely why `ledger move` exists:
+/// `git mv crates/plugin-sdk crates/busbar-plugin-sdk` changes no byte of code, but it changes
+/// every derived id under it, so this function finds no `old` for the new id, emits the bare
+/// `unaudited` derived record, and the audited one falls out of the output entirely. `sync` is
+/// right to be blind here — it derives from the tree and knows nothing about intent — so the
+/// carry-across has to be stated by the person doing the rename, which is what `move` is.
 pub fn merge(derived: &[Json], existing: &[Json]) -> Vec<Json> {
     let by_id: BTreeMap<&str, &Json> = existing
         .iter()
@@ -1101,21 +1231,10 @@ pub fn merge(derived: &[Json], existing: &[Json]) -> Vec<Json> {
     derived
         .iter()
         .map(|d| {
-            let mut keep = d.clone();
-            let Some(id) = d.get("id").as_str() else {
-                return keep;
+            let Some(old) = d.get("id").as_str().and_then(|id| by_id.get(id)) else {
+                return d.clone();
             };
-            let Some(old) = by_id.get(id) else {
-                return keep;
-            };
-            if let Some(o) = keep.as_object_mut() {
-                for key in PRESERVED {
-                    if let Some(v) = old.as_object().and_then(|oo| oo.get(key)) {
-                        o.insert(key, v.clone());
-                    }
-                }
-            }
-            keep
+            carry(d, old)
         })
         .collect()
 }

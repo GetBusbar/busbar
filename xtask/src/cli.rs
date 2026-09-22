@@ -21,8 +21,10 @@ usage:
   cargo xtask gate <name> --parity -- <legacy argv...>
   cargo xtask selftest [<name>] [--jobs N]
   cargo xtask denylist [--selftest] [--format=tsv]
+  cargo xtask loc [--ref <rev>] [--format json|table] [--per-file] [--ceiling CRATES=N]
+  cargo xtask loc --selftest
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
-  cargo xtask ledger {sync|status|next|record|fixed} | --check
+  cargo xtask ledger {sync|status|next|record|fixed|move} | --check
   cargo xtask full-gate [--list] [--selftest] [--dump-gates|--dump-cargo [FILE]]
   cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
   cargo xtask conformance check --selftest";
@@ -38,7 +40,7 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// after `cargo xtask` as a gate name. These two are the exceptions: the runner that DRIVES the
 /// gates and the register that RECORDS the audit, neither of which has an owed row set. Listed
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
-pub const NON_GATE_SUBCOMMANDS: &[&str] = &["full-gate", "ledger", "conformance"];
+pub const NON_GATE_SUBCOMMANDS: &[&str] = &["full-gate", "ledger", "conformance", "loc"];
 
 pub fn main(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
@@ -59,6 +61,14 @@ pub fn main(args: &[String]) -> i32 {
         // gates, so it has no owed row set of its own and nothing reconciles it.
         Some("full-gate") => match open_ctx() {
             Ok(cx) => crate::full_gate::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        // THE ONE LINE COUNTER. Not a gate: it is an INSTRUMENT, and the gates that ratchet a
+        // line ceiling call the same library in process. It is listed in
+        // `NON_GATE_SUBCOMMANDS` for the same reason `ledger` is — a reader of `ci.yml` cannot
+        // tell a gate from a subcommand by shape, and nothing reconciles an owed row set for it.
+        Some("loc") => match open_ctx() {
+            Ok(cx) => crate::loc::main(&cx, &args[1..]),
             Err(code) => code,
         },
         Some("ledger") => match open_ctx() {
