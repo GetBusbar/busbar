@@ -33,7 +33,12 @@
 set -euo pipefail
 
 REPO="$(git rev-parse --show-toplevel)"
-REAP=0
+# Honour BOTH `--reap` and an inherited REAP=1. The env form is what the hourly
+# housekeeping instruction has always used -- and a plain `REAP=0` here clobbered
+# it, so every hourly run was a DRY RUN that printed "WOULD KILL" and killed
+# nothing. Caught 2026-09-22 when the runaway rule finally fired on a test binary
+# at 1054% CPU and the process was still there afterwards.
+REAP="${REAP:-0}"
 IDLE_HOURS=12
 
 while [ $# -gt 0 ]; do
