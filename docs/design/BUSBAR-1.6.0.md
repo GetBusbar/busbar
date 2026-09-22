@@ -1377,6 +1377,40 @@ Resolving it means re-recording those golden cells, which is precisely the "acce
 billed bytes" act that #10/#59 reserves to the owner. I have not touched
 `accepted-differences.json`.
 
+### SECOND PARKED ITEM — does a rate-card edit reprice history?
+
+Found by the bank-auditor walk of all 40 `accepted-differences.json` entries (34 PASS, 1 fixed,
+2 parked). Entry **D-3** is **WRONG**, proven empirically rather than by reading code: the
+`rate-card-history` oracle scenario was built and run against the current binary, and
+`GET /admin/usage` after a mid-window rate-card edit returned `spend_micros: 750090000` — a pure
+read-time reprice off the CURRENT card — where the register and a published `CHANGELOG.md` line
+both claim `277530000`.
+
+The dated rate-card history engine in `busbar-kernel-ledger` is real and correct. `GET /admin/usage`
+was simply never wired to it; `money_book.rs`'s own doc comment admits the seam is "DORMANT".
+
+**This is a policy question, not a bug report, which is why it is parked and not fixed.** Both
+answers are consistent with "money is a view over ledger × ratecard" — they differ on *which*
+ratecard the view uses:
+
+- **As built:** the view multiplies the ledger by the card in force *now*, so editing a rate
+  reprices all history. `derive_spend_cents`' own doc calls this "the operator's rate-card edit
+  taking effect retroactively, which is the designed behavior."
+- **As the register and CHANGELOG claim:** the view multiplies each ledger row by the card that was
+  in force *when that row was written*, so history is immutable once billed.
+
+An auditor would want this stated explicitly, because it decides whether a published invoice can
+change after the fact. Nobody but the owner can choose. Rewiring a live billing read path under
+audit pressure to satisfy a register entry would be exactly the wrong move, so the register carries
+a dated audit note and the code is untouched.
+
+Note this is a multi-crate wiring gap (tracked in-repo as milestone "M6"), not a bounded fix.
+
+One further register item, **F-011r**, is stale rather than wrong: its "the `at` field was removed"
+claim is false — `3c118f729` restored it and the struct's doc comment records the owner rule as
+"RESTORED". Whether it folds into F-011 or is deleted depends on the external oracle tool's class
+scoring, so it also carries a note rather than an edit.
+
 ### What I did do
 
 Fixed the parse, everywhere, at one seam — `crates/busbar-llm-codec/src/usage_count.rs`,
