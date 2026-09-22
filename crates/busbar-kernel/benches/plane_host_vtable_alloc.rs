@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOT-PATH ALLOC INSTRUMENT — the zero-allocation witness of
-//! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 ("Alloc gate: `#[global_allocator]` counter =
+//! `docs/design/BUSBAR-1.6.0.md` Part 3 §8 ("Alloc gate: `#[global_allocator]` counter =
 //! 0 across the ISOLATED POD host-call batch"), owed alongside the perf instrument as part of the
 //! tests/benches 8→9 rise.
 //!

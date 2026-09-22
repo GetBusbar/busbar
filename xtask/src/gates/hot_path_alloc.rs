@@ -1,6 +1,6 @@
 //! `cargo xtask gate hot-path-alloc` — THE HOT-PATH ALLOC WITNESS, ENFORCED.
 //!
-//! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 owes an alloc gate: "`#[global_allocator]`
+//! `docs/design/BUSBAR-1.6.0.md` Part 3 §8 owes an alloc gate: "`#[global_allocator]`
 //! counter = 0 across the ISOLATED POD host-call batch", the second of the two criterion benches
 //! that count toward the core-engine tests/benches 8→9 rise. The MEASUREMENT lives in
 //! `crates/busbar-kernel/benches/plane_host_vtable_alloc.rs`; this gate keeps that instrument making

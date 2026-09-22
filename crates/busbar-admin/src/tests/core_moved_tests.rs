@@ -344,7 +344,7 @@ async fn split_admin_listener_no_double_exposure() {
 /// secret then authenticating as a working virtual key. RELOCATED here from busbar-llm's
 /// `engine::forward_pool_integration_tests` (1.6.0): the admin `/api/v1/admin/keys*` routes mount
 /// only through the admin seam (`crate::build_router`), which the busbar-llm plane test binary never
-/// installs (busbar-admin is NOT a dep of the LLM plane, per DECISIONS.md #37 — a PLANE crate must
+/// installs (busbar-admin is NOT a dep of the LLM plane, per BUSBAR-1.6.0.md Part 2 #37 — a PLANE crate must
 /// not depend on busbar-admin nor mount the admin surface). The duplicate there was deterministically
 /// RED (valid-token POST → 404); this is its correct home, where the seam is mounted.
 // Admin-token behavior — requires the compile-removable `admin-tokens` module.

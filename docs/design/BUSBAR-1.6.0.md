@@ -1,4 +1,280 @@
-# Busbar 1.6.0 — LOCKED DECISIONS (authoritative)
+# BUSBAR 1.6.0 — THE DOCUMENT
+
+**This file is the whole specification.** It replaced and deleted five predecessors
+(`VISION-1.6.0.md`, `1.6.0-plane-extraction-LOCKED.md`, `DECISIONS.md`, `1.6.0-PLAN.md`,
+`1.6.0-plane-abi-taxonomy.md`). If you are a new session: read **Part 0**, say "got it", and drill
+into the Part you need. Nothing else in `docs/design/` outranks this file.
+
+**Authority order inside this document** (was DECISIONS #14, now structural):
+Part 1 (Vision/Laws) > Part 3 (Plane seam) > Part 2 (the 78 Locked Decisions) > Part 5 (Execution plan).
+Where a checklist disagrees with a Law or an owner ruling, the Law and the owner win.
+
+**How to cite.** The 78 decision rows keep their numbers verbatim — they are cited from source
+comments, `qa/*.toml` gate ledgers, workflow YAML and commit messages. `#41`, `#67`, `#78` and the
+rest mean exactly what they meant before this collapse. Cite a row; never re-litigate it.
+
+| Part | What it is | Who wrote it |
+|---|---|---|
+| 0 | Orientation — the whole release in one screen | new |
+| 1 | The Vision: Law 0 and Laws 1–7 | verbatim |
+| 2 | The 78 Locked Decisions (LAW + enforcing gate) | verbatim |
+| 3 | The plane-extraction seam, LOCKED v4 | verbatim |
+| 4 | The plane ABI neutral taxonomy, v5 | verbatim |
+| 5 | The execution plan: waves W0–W8 | verbatim |
+| 6 | The release engine: branches, turnstile, train, Latchkey, cost | new |
+| 7 | Ground-clearing session log (2026-09-21) — state of the tree | new |
+
+---
+
+# PART 0 — READ THIS FIRST
+
+## What 1.6.0 is
+
+One sentence: **core stops being a monolith that knows about protocols, and becomes a thin engine
+that hosts plugins.**
+
+1.5.5 was one `busbar` crate with the core, the planes and every dialect mangled together, and core
+carried special-case knowledge of individual protocols. That entanglement is the defect 1.6.0 cures.
+In 1.6.0 you run **core** and drop in **plugins**; core does everything the same way for everything
+and does not know or care whether there are zero planes or a hundred.
+
+## The vocabulary (get this right or you will design the wrong thing)
+
+**7 plugin kinds** (#3): `store`, `secret`, `auth`, `hook`, `export`, **`plane`**, **`transport`**.
+- `auth` is ONE kind. Inbound-verify and outbound-sign are two *operations* of it. Direction is a
+  usage mode, not a kind. There is no "egress-auth" kind.
+- `transport` is ONE kind, bidirectional. A plane declares its needs as `(transport, auth)` per direction.
+- **NOT kinds:** `control` (admin/oauth2 are cleanliness crates), `dialect` (lives inside a plane),
+  `unit` (core's own workflow).
+
+**5 planes** (#48): `llm`, `mcp`, `a2a`, **`streaming`**, `decisions` (jev).
+- The fourth plane is **streaming**, not "voice". Crate `busbar-plane-streaming`, feature
+  `plane-streaming` (#18). **Voice is a dialect inside the streaming plane**, one capability among N.
+  This distinction is load-bearing: name the plane "voice" and you have named an instance where a
+  category belongs, which is exactly what the neutrality witness exists to catch.
+
+**A dialect** is a thing INSIDE a plane — the llm plane has 6, mcp has 1, a2a has 1, streaming has N.
+A dialect is not a plugin and not a kind. Nobody drops in a dialect; they drop in an updated plane
+plugin that supports more dialects. Adding one is a new file in that plane's crate, and **core does
+not change at all**.
+
+**2 ABI lanes, split by heat** (#30):
+- **HOT / POD** — `plane` + `transport`. In-memory, `repr(C)`, sub-microsecond.
+- **COLD / JSON** — `store`, `secret`, `auth`, `hook`, `export`.
+
+Every plugin has **both** ABIs and can be **compiled in OR dropped into `plugins/`** — same contract,
+same loading path. Those are the only two requirements; there is no third (#2).
+
+**Rejected, do not resurrect:** D36 (dialect as a plugin kind / per-dialect crates) and D37 (a
+`control` plugin kind). If a stale checklist reports these as "todo", it is wrong — ignore it.
+
+## The laws in one breath
+
+**Law 0:** every plugin is isolated from everything except through its ABI to core; core is isolated
+to communicating over that ABI and knowing what **kind** a plugin is. That's it. Neither side ever
+needs more. If either appears to need more, the design is wrong, not the invariant.
+
+Everything else is a corollary: core has zero instance logic (1); no lateral plugin edges (2); the
+plane asks and core provides (3); one crate = one plugin = one plane (4); dialects are internal (5);
+billing is declared once and priced generically (6); every plugin is off until its config verb
+appears (7). Full text in Part 1.
+
+## What "done" means
+
+Dev-green on **one SHA**, with nothing outstanding, deferred or niggling:
+
+1. `scripts/verify-1.6.0-done.sh` exits 0 across its **22** groups — full run, never `--fast`
+   (exit 3 is PROVISIONAL, not spendable), every bless/repoint env var empty.
+   *(The script declared 21 while 22 `begin_group` blocks existed, so `floor_is_honest` refused to
+   score anything at all. Fixed this session — see Part 7.)*
+2. Construction standing-reds **empty** — `ship-ready` green, not merely `--posture`-tolerated.
+   Hard clause: every `Family::Neutral` crate names **ZERO** plane/control/transport/dialect instance
+   vocabulary in source, ceiling 0 and ARMED, with no ratchet row able to raise it.
+3. Every entry in `testing/shadow-oracle/accepted-differences.json` revisited and re-signed-off —
+   each one is a crack in "LLM-only ≡ 1.5.5".
+4. Laws 0–7 hold on the SHA; byte-identity green; config-gated loading verified.
+5. Nothing niggling: no dead scaffolding, docs and version bump landed, changelog complete.
+
+## The two things that are never negotiable
+
+**The oracle is never waived.** 1.6.0 configured with only the LLM plane must be byte-identical to
+the published 1.5.5 — same config schema, same wire bytes, same behaviour, proven cell by cell
+against the real binary. The new planes are purely additive and off by default. A genuine divergence
+is **PARKED for the owner** with cell + diff + root-cause + recommendation. It is never self-approved
+(#10/#59).
+
+**Money bytes are sacred.** The plane emits raw **counts** per class; the ledger appends ONE sealed
+facts line at unit end; **price is a read-time view and is never stored** (#42/#43/#44/#66/#71/#77).
+Integer-only, unitless, no floats. Never self-approve a billed-byte change.
+
+**Banned words:** defer, 1.6.x, later, "out of scope for 1.6.0". It is 1.6.0-or-bust.
+
+## Who decides what
+
+The owner sets the vision. The **architect** (the driving assistant) owns the seams and hands agents
+bounded implementation tasks with no design leeway. **Agents implement; agents do not design.** If an
+agent needs a design decision it asks the architect; if the architect needs a vision decision it asks
+the owner. Root-cause first: agent laziness is fixed at the root, never brought for sign-off.
+
+
+---
+
+# PART 1 — THE VISION: LAW 0 AND LAWS 1–7
+
+> *Absorbed verbatim from `VISION-1.6.0.md`, which this document replaced. Highest authority in this document.*
+
+
+This document is the single source of truth for the 1.6.0 architecture. The owner sets the vision;
+the architect (the driving assistant) enforces it and hands agents bounded implementation tasks with
+**no design leeway**. Agents do not architect. If an agent needs a design decision, it asks the
+architect; if the architect needs a vision decision, it asks the owner. Do not lose this to context
+compaction — re-read it after any summary.
+
+## The disease we are curing
+Old 1.5.5/1.6: **one `busbar` crate** with the core, the 4 planes, and the 16 dialects all mangled
+together. Core had special-case knowledge of individual planes. That entanglement is the defect.
+
+## The cure: core is a generic plugin host
+You run **core**. You drop in **plugins**: planes, transports, stores, secrets, hooks, exports.
+Core does everything the **same way for everything**. It does not know or care whether there are
+0 planes or 100. It just has plugins, addressed by **kind**.
+
+### Law 0 — the whole invariant, in one line
+**Every plugin is isolated from everything except through its ABI to core. Core is isolated to only
+communicate over its ABI to plugins and to know what kind a plugin is. That's it. Neither ever needs
+more info.**
+
+This is the sufficiency claim, and it is total: a plugin's *only* channel to the world is its ABI to
+core; core's *only* knowledge of a plugin is its ABI and its **kind**. If either side ever appears to
+need more than that — core wanting to know *which* plane this is, a plugin wanting to reach another
+plugin — the design is wrong, not the invariant. Every law below is a corollary of this one.
+
+## The laws (non-negotiable)
+
+1. **Core speaks plugin ABIs only, and has ZERO instance logic.** Core never contains
+   `if this plane is X then do Y`. Core knows a fixed set of plugin **kinds** and treats every
+   instance of a kind **identically**. No plugin-instance name ever appears in core logic.
+
+2. **No lateral edges.** A plugin never names, imports, or talks to another plugin — same kind or
+   different kind. Plane↔plane, dialect↔dialect, plugin↔plugin: forbidden. **Core orchestrates
+   everything**; all coordination flows through core over the ABI.
+
+3. **Plane asks, core provides.** A plane declares a *need* (e.g. "I want an HTTP session"). **Core**
+   creates it from a transport and hands it over. A plane never grabs a transport or another plugin
+   itself.
+
+4. **1 crate = 1 plugin = 1 plane, self-contained and droppable.** Everything a plane needs lives in
+   its one crate. Drop one crate into the plugins folder → core now knows about LLMs, or MCP, or a
+   VPN, or whatever is next. No cross-crate sprawl to make one plugin work.
+
+5. **Dialects are internal to their plane — NOT a plugin kind.** One plane owns one IR; that IR *is*
+   the plane. One plane speaks 1+ dialects. Dialects live **inside the plane crate** as clean code
+   (e.g. `src/dialects/openai.rs`, `src/dialects/anthropic.rs`). Adding a dialect (e.g. `mcpv2`) =
+   add a file in that plane crate; the plane's shape does not change and **core does not change at
+   all**. Whether a plane uses an internal trait to organize its dialects is **that plane's own,
+   standalone decision** — never imposed by core or the contract.
+
+6. **Billing is declared once and priced generically.** A plane declares its **units** (tokens,
+   streams, audio-seconds, tool-calls, …) once. Core captures the quantities and prices them against
+   the **rate card the user registered**. Units rarely change — a frozen schema — which is what keeps
+   the money path byte-identical to 1.5.5.
+
+7. **Config-gated loading — every plugin is off until its config verb is used.** Core loads a plugin
+   **iff** its configuration section is present. No verb configured → that plugin is never loaded.
+   This holds for **all** kinds, not just planes: don't configure a SQL store → it is never loaded;
+   don't configure the plane verbs (`pools` = LLM, `tools` = MCP, `agents` = A2A, `streams` = voice)
+   → those planes are never loaded. This is the *mechanism* behind "LLM-only ≡ 1.5.5": with only
+   `pools` configured, only the LLM plane loads and the bytes are identical to 1.5.5; add `tools` /
+   `agents` / `streams` and the MCP / A2A / streams planes load — purely additive, nothing else
+   changes. A plugin that loads (or costs anything) without its verb configured is a bug.
+
+## What this means for the gates
+The purity gates (`plane-purity`, `kind-isolation`) exist to **enforce Laws 1 and 2**: no plugin
+instance named in core/neutral crates, no lateral plugin naming. They are **servants of the vision,
+not the vision**. Consequences:
+- A plane naming its **own** dialects/vendors is correct (Law 5) — it is internal. A gate that reds
+  on that is **scoped wrong**, and the fix is the gate's scope, not the code.
+- `plane-grep-gate` and `plane-noun-gate` are **report-only debt meters**, explicitly **excluded**
+  from the done-oracle (`00-MASTER-PLAN.md`, `verify-1.6.0-done.sh`). They do **not** gate the
+  release and must never drive architecture (e.g. splitting a plane into per-dialect crates to make
+  a substring count hit zero — that violates Laws 4 and 5).
+
+## Rejected (do not resurrect)
+- **D36 "dialect as a plugin kind" / per-dialect crates** (`busbar-plane-<plane>-<dialect>`). A
+  dialect is not a plugin kind and gets no crate of its own (Law 5). No crate is ever kind "dialect".
+- **The contract-level `Dialect` trait / `DialectMeta` / `DIALECT_ABI`** — an over-abstraction the
+  contract imposed on every plane, inert besides. **Removed** in the commit that added this doc.
+
+### Kept on purpose — do not confuse with the above
+- The purity gate's **"dialect" vocabulary axis** (the `× dialect` matrix column and the vendor list
+  `openai/gemini/anthropic/bedrock/cohere/responses`) STAYS. It is the mechanism that enforces
+  **Law 1**: a neutral/core crate must name no vendor instance; a plane may name its own. It is a
+  vocabulary scan, not a claim that any crate is a dialect plugin.
+- The inert `Kind::Dialect` enum variant + its PENDING-kind gate scaffolding are **not** removed yet:
+  excising them is deep gate + design-doc surgery with real thrash risk and **zero done-oracle
+  benefit** (nothing reds because of them). Tracked as a **post-green cleanup**, not release work.
+- The `× dialect` column itself is a **neutral-only tripwire**: its ceiling is armed at 0 for every
+  `Family::Neutral` crate, and it is deliberately **NOT measured** for plane/dialect crates
+  (`xtask/src/gates/kind_isolation/matrix.rs:528-536` — the one column with no owner to strike
+  itself out, because the plane crate *is* where the vendor names live until the split lands). Its
+  sole purpose is catching a vendor name leaking into a neutral crate, not policing a plane's own
+  dialects.
+
+## Why the oracle / turnstile exists
+The oracle (byte-identity vs the published 1.5.5) and the purity gates, run by the turnstile engine
+on **every commit**, exist to guarantee two things:
+
+1. **The laws hold on every commit** — no commit may introduce an instance-branch in core, a lateral
+   plugin edge, or a vendor name in a neutral crate. The gates are the per-commit proof of Laws 0–2.
+2. **1.6.0 + the LLM plane is indistinguishable from 1.5.5 — to the user.** Install 1.6.0, configure
+   only the LLM plane, and it must **look, act, and feel identical to 1.5.5**: same config schema,
+   same wire bytes, same behavior — provably, cell by cell, against the published 1.5.5 binary. The
+   new planes (MCP, A2A, streams) are **purely additive and off by default**; a user turns them on in
+   config — "config mcp/a2a/streams and boom, new features" — and nothing about the existing money
+   path changes. That byte-identity is non-negotiable and is the reason the oracle is never waived.
+
+## Definition of Done — the checklist (owner-set; do not lose to compaction)
+"Done" is **dev-green 1.6.0 with nothing outstanding, deferred, or niggling** — the point where the
+architect can honestly say *"there is nothing left to do; it is perfection until users test it."*
+Concretely, ALL of:
+1. `scripts/verify-1.6.0-done.sh` exits 0 on one SHA, and dev CI is green on it.
+2. **Construction standing-reds are EMPTY** — `ship-ready` green, not merely `--posture`-tolerated.
+   The LLM-engine rebuild is done (no 1117-line request-path fn; terminal doors only in the Audit
+   step; the price named only where the card lives; one pick site; ports-only tests; holds clean).
+   **The hard clause:** every `Family::Neutral` crate — `kernel`, `core`, `caps`, `contract`,
+   `contract-transport`, `grammar`, `substrate`, `api`, `timing`, `plugin-abi`/`plugin-tooling`,
+   `unit`, `store`, `auth`, `secret`, `hooks`, `export`, **and the composition root** — names
+   **ZERO** `plane`/`control`/`transport`/`dialect` instance vocabulary in source: ceiling 0,
+   ARMED (the `law0-neutral-instance` class in `xtask/src/gates/kind_isolation/matrix.rs`), and no
+   `[[cell]]` ratchet row in `qa/kind-isolation.toml` can raise it. Cargo.toml manifest names are
+   excepted (manifest edges are already governed by `kind-isolation:deps`). A plane/kind-home crate
+   naming its **own** kind's vocabulary is correct (Law 5) and is never measured by this class.
+   "Done" means source count == 0 for every neutral × `{plane, control, transport, dialect}` cell —
+   not "held flat" at whatever count it measures today.
+3. **Every accepted 1.5.5 deviation is revisited and re-signed-off.** Walk
+   `testing/shadow-oracle/accepted-differences.json` entry by entry: each is a crack in "LLM-only ≡
+   1.5.5". Eliminate the ones that can be eliminated (make the bytes match); for any that genuinely
+   must remain, re-confirm the justification consciously — no deviation is inherited unexamined.
+4. The laws (0–7) hold on the SHA: purity/kind-isolation/plane-delete green, byte-identity (parity)
+   green, config-gated loading verified, additive planes conform.
+5. Nothing niggling: no dead scaffolding worth removing left behind (e.g. finish or excise the inert
+   `Kind::Dialect` remnant), docs + version bump landed, changelog complete.
+
+## How "done" is proven
+- Quality is proven by the **byte-identity oracle** (money path vs the 1.5.5 golden), the crate's own
+  **tests**, **clippy**, and **`/codeaudit` looped to two consecutive zero-finding reports** — not by
+  a substring grep. A crate that owns vendor names (a plane) is proven clean by these, not by the
+  meter that (correctly) does not scan it.
+- The release is done when **`scripts/verify-1.6.0-done.sh` exits 0** (its groups are the real
+  oracle: build, plane-purity, byte-identity/parity, config-stability, no-deferral, conformance,
+  design-bindings, changelog, plane-delete) and dev CI is green.
+
+---
+
+# PART 2 — THE 78 LOCKED DECISIONS
+
+> *Absorbed verbatim from `DECISIONS.md`, which this document replaced. Row numbers are cited from source comments, gate ledgers and commit messages — they are permanent. Cite a row; never re-litigate it.*
+
 
 Rule: a decision here is LAW and states the CURRENT truth — facts only. When a decision changes, its
 row is rewritten to the new truth; rows never carry an override trail ("ignore X, do Y", "AMENDS",
@@ -129,3 +405,734 @@ edit-in-place stale-row fixes (codec-crate #6/#18/#19/#20/#21/#34; planes 4→5 
 loop-unify). -->
 
 Commit authorship comes from git config (GitHub noreply). No AI attribution, ever.
+
+---
+
+# PART 3 — THE PLANE-EXTRACTION SEAM (LOCKED v4)
+
+> *Absorbed verbatim from `1.6.0-plane-extraction-LOCKED.md`, which this document replaced. Outranks Part 2 where they disagree.*
+
+
+Owner ruling: **repr(C) plugin ABI NOW** (full dynamic-load parity with token-auth). Survived 3
+adversarial rounds (r1: 9 spine-adjacent breaks fixed; r2: ~10 refinements, 0 spine breaks; r3: 0 spine
+breaks, RR1/RR2/RR3/RR7/RR8 survived, RR3b + 2 mechanical fixes folded here). Pin: `db7fcd68`.
+
+> **SEAM SHAPE (§2-§4) is SUPERSEDED by `DESIGN-v5-taxonomy.md`** — the neutral primitive taxonomy
+> (carrier axis / scope hierarchy / 2-tier egress / WorkItem reserved-shape / re-derived capability set)
+> after a 5-protocol neutrality panel + 3 re-panels. The SPINE below (§0-§1 law/forcing, repr(C)+sized/
+> append-only/major-airlock versioning, HOT/COLD, §5 chain, §6 state, §7 migration, §8 gates, §11
+> acceptance) STANDS. Design status: **RATIFIED** — 17 adversarial passes (r1-r3 spine: 9 breaks fixed,
+> 0 spine breaks; 5-protocol neutrality panel; 3 re-panels all RATIFY after the duplex-in/CostHold-out/
+> WorkItem-lock/server-rename corrections). Implementation-ready, pending owner "go" on Phase 0.
+
+## Locked decisions (owner-ratified 2026-08-22)
+1. **repr(C) plugin ABI NOW** — full dynamic-load parity with token-auth (not a deferred/in-process trait).
+2. **1.6.0 is the FINAL release — there is no "after."** The extraction lands INSIDE 1.6.0 and BLOCKS the
+   cut. Must be as rock-solid as the rest of the release.
+3. **HOT/COLD split:** HOT plugins (mcp/a2a) use the POD-fast lane; COLD capability plugins
+   (store/secret/auth/hook/export) KEEP the existing JSON lane, UNCHANGED — no rewrite of shipping code
+   or the 4 external store repos. Same plug, different lane by heat. Does not violate the Law.
+4. **Plane `.so` trust = identical to current plugins:** operator-configured; busbar signs its own; third
+   parties may ship unsigned and the operator may allow them. Reuse `plugin-sign` + config toggle.
+5. **Coding held** until explicit owner "go." Phase 0 (perf spike) is the first step when cleared.
+
+## 0. Law
+Plugin behavior ⟂ linkage. Compiled-in vs plugins-folder = packaging only. Seam ALWAYS used. ONE code
+path. Every plugin (store/secret/auth/hook/export AND mcp/a2a) speaks the same protocol; token-auth is
+the proof. **`core/src/mcp/` and `core/src/a2a/` cease to exist.** Core names ZERO plane types. This
+OVERRIDES the shipped D8 deferral (`plane/host.rs:11-17`) per owner: "no 1.6.x, design the final."
+
+## 1. Forcing argument
+Dynamic load crosses `.so`; Rust `dyn`/`Arc`/enums can't; one code path ⇒ static uses the same repr(C)
+ABI ⇒ mcp/a2a are protocol-plane plugin KINDS on `plugin-abi`, dogfooding the host-vtable statically and
+dynamically identically.
+
+## 2. ABI — two tiers on one seam (meets the <1µs budget)
+- **POD-fast tier (hot, per-request):** args borrowed `(ptr,len)` or `#[repr(C)]` POD by pointer; results
+  by value (`u64`/`#[repr(u8)]` enum) or into a caller `&mut MaybeUninit<Out>` the callee fully writes
+  INSIDE `catch_unwind`, marking init only on Ok (precedent: `plugin-sdk/boundary.rs`). NO `Vec` return,
+  NO malloc, NO serde on hot calls. (Deletes the shipped `plane/host.rs:61-119` `-> Result<Vec<u8>>`.)
+- **Bytes tier (cold/variable):** owned bytes for config, tool-result bodies, chain digest-input bytes.
+- **repr discipline:** every shared enum `#[repr(u8)]`.
+- **Soundness:** vtable fns `extern "C-unwind"`; `free` never panics; opaque plane-state handle `Send+Sync`.
+- **Budget:** ~10 POD-fast calls/req × 2-5ns (static) / +1-3ns (PLT) = tens of ns; zero alloc/serde/
+  per-token crossing ⇒ ~100× under 1µs. PROVEN by a step-0 perf spike before full build (§7).
+
+## 3. core → plane: `PlaneDecl` (full surface) + two ingress kinds
+Registered built-in (composition root) or dynamic (loader reads export symbol) — SAME decl, SAME
+`PlaneDispatch`. `PlaneDecl` carries (restoring the full surface, ADV-R3-2):
+- vocabulary (name/section-key/scope/label), `config_validate(raw)->parsed`,
+  `build(BuildCtx{secrets-already-resolved})->opaque_handle`, `hydrate/start`,
+- **admin_routes() + openapi()** — the admin-verb/OpenAPI contribution with the non-vacuity invariant
+  (`plane/registry.rs:264-292`); MUST NOT be dropped.
+- ingress, TWO kinds: **route** (HTTP + gRPC-as-axum-POST `a2a/grpc.rs:123`) and **stream** (MCP
+  `stdio_serve`: host owns the pipe, pumps frames into the same `dispatch`; plane never touches the fd).
+
+Every `dispatch(req_bytes, sink)` runs inside a host-owned **DispatchScope** (§4).
+
+## 4. plane → core: `PlaneHost` + DispatchScope arena
+Plane holds `host` + its OWN opaque state + HANDLE-IDS to host-side objects. Never holds a live
+`Transport`/`GovState`/`Admission`/`VirtualKey`/secret.
+
+**DispatchScope (leak fix):** core owns each dispatch invocation and opens a per-invocation arena. EVERY
+host handle the plane takes (AdmissionId, EgressId, PipeId, verify-leadership) is arena-registered; when
+the dispatch future ENDS or is DROPPED (disconnect/cancel/panic/parked-at-await), the arena Drop reclaims
+ALL — running the real `Admission::drop` (`store/planes.rs:357-360`), closing egress, killing subprocs.
+RAII across FFI, scoped to what core controls. (RR8 confirmed: tokio drops the future on cancel for both
+ingress kinds; hardening note: assert the arena Drop is synchronous on abort in a test.)
+
+| Capability | Tier | Notes |
+|---|---|---|
+| `govern_admit(&Facts)->Decision`, `meter_charge(&Usage)` | POD | |
+| `breaker_admit(&Key)->AdmissionId`, `breaker_settle(AdmissionId,&Signal)` | POD | arena reclaims on scope-drop; `failover::walk` pool-select + admit + the `pre_admitted` handoff (`relay.rs:1508-1512`) is ONE atomic cluster |
+| `verify_lookup(&Key)->Hit\|Lead\|Follow`, `verify_store(&Key,verdict,ttl)` | POD | host owns cache + single-flight; PLANE fetches. No cycle (verify precedes admission `method.rs:1188`<`1551`; verify fetch takes no admission `connect.rs:273`) |
+| `egress_open(&EgressDesc)->(EgressId,EgressHead)`, `egress_poll`, `egress_write`, `egress_close` | POD hdr + bytes | host owns reqwest + resolve-then-pin + SPKI + mTLS(`client_identity`). `EgressHead` (post-connect, pre-body) carries `observed_spki`. Streaming poll validated (`a2a/transport.rs:612-625` already `chunk().await`+Continue/Stop) |
+| `subprocess_open(&CmdDesc)->PipeId`, `pipe_read/write`, `subprocess_close` | POD hdr + bytes | MCP stdio egress: governed `tokio::process` (host owns lifecycle + COMMAND-ALLOWLIST); server→client sampling over stdio is refused today (`peer.rs:305-330`) so no stdio reentrancy |
+| `run_operation(&OpDesc)->OpResult` | POD hdr + bytes | MCP HTTP sampling re-enters busbar's LLM pipeline (`sampling.rs:281`). RR7 hardening: carry a depth-bound + reuse the originating request's budget/audit correlation to avoid double-count |
+| `journal_append(scope, content_suffix_bytes, &FramingDesc)->seq`, `journal_read(q)->rows` | bytes + POD desc | §5. `FramingDesc{ framing: Framing::{LengthPrefixed\|PipeSeparated}, digests_scope: bool }` — host frames the prelude in that stream's framing (ADV-FINAL) |
+| `approvals_redeem`, `quarantine_op`, `auth_resolve`, `metrics_emit`, `clock_now` | POD | **NO `secret_resolve`** (confinement, `host.rs:67-69`). Per-request creds — A2A per-hop bearer `mint_from` (`creds.rs:411`, `receive.rs:1475`), MCP RFC 8693 token-exchange (`egress.rs:62`, `issue.rs:146`) — are NOT build-time. They resolve HOST-SIDE: `egress_open` takes a credential-REF (which pool/hop/exchange); the host mints + injects the header app-layer; the plane passes a ref and NEVER holds plaintext (ADV-FINAL — a confinement *improvement*, not just a removal) |
+
+## 5. Chain: keep plane framing; cleave ONLY the position cache (RR3b — simpler than v3)
+KEY REALIZATION (ADV-R3-1): the digest + seq authority are ALREADY host-side in `audit::digest`/`seal`/
+`Chain::append`. v3's re-framing was an unnecessary regression that broke byte-exactness (two shipped
+framings: calllog `LengthPrefixed` `calllog.rs:177`, provenance/admin `PipeSeparated`
+`provenance.rs:125`/`admin/audit.rs:108`; admin carries NO scope field `admin/audit.rs:150-158`).
+LOCKED design:
+- The plane KEEPS its record type + `digest_fields`, and emits ONLY the **content SUFFIX bytes** (its own
+  fields, in its own framing) — NOT the prelude.
+- The host owns the **prelude framing** (ADV-FINAL correction — it is NOT "Chain::append byte-identical";
+  the host must re-frame `prev_hash / [scope] / seq` in EACH stream's framing and join the plane's
+  suffix). The plane passes a per-stream `FramingDesc{ framing, digests_scope }` so the host reproduces
+  the EXACT legacy bytes: `LengthPrefixed` for calllog, `PipeSeparated` for provenance/admin, and
+  `digests_scope=false` for admin (which never digested scope, `admin/audit.rs:150-158`).
+- What moves HOST-SIDE is more than the position cache (ADV-FINAL): the per-scope last-seq/hash POSITION
+  CACHE + LRU, the **write-ordering invariant**, the **durable sink**, and the **stored body** — all into
+  a generic scope-keyed `audit::Journal` that names no plane type. `verify_chain` re-digests stored bytes.
+- GATE: a boot-verify golden that replays GENUINE **pre-change captured fixtures** (NOT regenerated by the
+  new code — non-circular) across all THREE framings PLUS genesis (empty prev_hash) and admin-no-scope,
+  proving an old store verifies byte-identically after the change.
+
+## 6. State: opaque handle owned plane-side
+Plane allocates state, hands core `*mut c_void` + `free`; core stores in `plane_slots`, never downcasts,
+frees via ABI on config swap. Replaces `mcp_runtime: Arc<dyn Any>` and A2A's typed `App::a2a`.
+
+## 7. Migration — green + tests-pass at EVERY commit
+"Wire the seam in place, THEN relocate." No commit both moves files AND changes behavior; atomic
+transaction-CLUSTERS flip in one in-place commit. RR6: no type cycle (all handle types built in step 1).
+0. **PERF SPIKE:** rewrite ONE hot call to the POD-fast shape; criterion-measure plugin-vs-in-core <1µs
+   empirically. Gate the whole effort on this proving out. (Also fold the §perf-forensics wins here:
+   cache `pool_upstream_creds`, shrink `Candidate`, lazy `now()` — free budget headroom for the seam.)
+1. Build full `PlaneHost` (POD-fast) + repr(C) ABI data + DispatchScope arena; host-side impl. Unused.
+2. Dogfood IN PLACE, one edge-class OR atomic cluster per commit (green after each) — the 374-edge
+   inversion. Clusters: {failover::walk pool-select + breaker admit + settle + pre_admitted handoff},
+   {verify lookup+fetch+store}.
+3. Chain (§5) in place: cleave the position cache host-side; convert record sites to `journal_append`;
+   boot-verify golden green. Plane framing untouched.
+4. State slots → opaque handle: add `crate::a2a::runtime()` accessor (MCP-parity), migrate the typed read
+   at `appbuild.rs:1690-1698`, THEN erase `App::a2a`; flip both slots to §6, delete `Arc<dyn Any>`.
+5. Physically relocate core/src/mcp→busbar-mcp, core/src/a2a→busbar-a2a (mechanical — code names only
+   PlaneHost/PlaneDecl/ABI-data). Record-shape modules move; the position-cache + chain stay in core::audit.
+6. Tests: plane UNIT tests → plane crates + `plane-testkit` mock host. Mixed chain/integration suites
+   (`calllog_tests.rs` names `PlaneCallLog` + `verify_chain`) → new `busbar-plane-tests` integ crate
+   depending on BOTH; genuinely-mixed bodies split at the assertion level. No mock implements the chain.
+   Delete the `#[cfg(test)] #[path]` dual-compile.
+7. Delete empty core/src/{mcp,a2a}. Turn on seam witnesses (§8).
+
+## 8. Enforcement witnesses (CI-gated)
+- **Seam A**: core naming any plane type / `crate::mcp::` / `crate::a2a::` = 0.
+- **Seam B**: plane crates reaching core outside PlaneHost/PlaneDecl/ABI-data = 0.
+- **Perf gate (<1µs)**: criterion, plugin-host-vtable vs direct-call baseline, delta<1µs p50 AND p99; a
+  per-token host-call counter on the streaming path asserted == 0. Proven first by step-0 spike.
+- **Alloc gate**: `#[global_allocator]` counter = 0 allocs across the ISOLATED POD host-call batch.
+- **LLM-untouched**: LLM byte-identity goldens + freeze witness unchanged/0.
+- **Chain-compat golden**: old-store boot-verify over all 3 streams (§5).
+
+## 9. A2A off-seam (validated): receive.rs needs only a `{tool,arguments}` projection for the hooks gate,
+no LLM IR. A2A dispatch = the same `PlaneDecl::dispatch`. No codec cell.
+
+## 11. Acceptance: rerun the two architecture audits as CUT GATES (owner, 2026-08-22)
+The audits that diagnosed the problem are the acceptance test that it's fixed. Both rerun post-extraction
+(fresh opus agents, no prior context) and GATE the 1.6.0 cut:
+
+### 11a. Plane-symmetry ("siblings") review — target ≥ 9/10 (was 4/10)
+Baseline `ARCH-SYMMETRY-REVIEW.md`: 4/10 (Seam B an 8, Seam A a 2). To EARN ≥9, the rerun must find the
+following resolved (the extraction resolves each by construction — this is the checklist):
+- A2A is a REAL crate, not a 19-line shell; no plane body in `core/src/a2a` (seam witness A = 0).
+- All planes ride ONE seam uniformly (PlaneHost/PlaneDecl) — no "LLM full / MCP thin / A2A absent" spread.
+  Seam A must score like Seam B.
+- `PlaneHost` (+ cost carrier) has REAL production riders (dogfooded, step 2) — no "0-caller ABI".
+- The 5 mislabeled `plane/` modules moved to their plane crates (or the chain/position-cache generically
+  renamed) — no single-protocol detail under a neutral name.
+- A2A's 2642-line off-seam `receive.rs` rides `PlaneDecl::dispatch`; egress centralized host-side (the
+  host-guard duplication gone); error taxonomy no longer a third divergent spelling.
+- No-op/awkward-fit count per plane ≈ 0.
+
+### 11b. Core-engine quality review — target ≥ 9/10 (HOLD, must not regress)
+Baseline `CORE-ENGINE-QUALITY.md`: 9/10 (alloc 9, locking 9, algorithmic 9, memory 10, cleanliness 7,
+tests/benches 8). The rerun must confirm:
+- Hot-path alloc/lock/memory dimensions HELD (the <1µs + no-per-token-crossing gates protect them).
+- The LLM money path byte-identical + freeze 0 (extraction didn't touch it).
+- tests/benches SHOULD RISE 8→9: the perf gate + alloc gate add the criterion benches the audit flagged
+  as missing; also fold the 1.5.1→1.5.4 perf-regression wins (pool_upstream_creds HashMap lookup,
+  Candidate SignalBag widening, unconditional now()) for headroom.
+- Net engine score ≥ 9 (regression below 9 fails the cut).
+
+## 10. What this buys (the sell)
+- **The claim becomes true, not aspirational**: mcp/a2a are plugins in the SAME sense as token-auth —
+  drop a `.so` in the folder or compile it in, identical behavior, linkage is packaging. Seam witnesses
+  prove core names zero plane types and planes touch only the ABI.
+- **~84k LOC leave core**; core/src/{mcp,a2a} deleted; the neutral engine gets smaller and its blast
+  radius shrinks.
+- **<1µs hot-path tax, CI-proven** — repr(C) POD-by-pointer, zero per-token crossings; the LLM money path
+  is untouched (delta 0).
+- **The unvalidated seams get dogfooded**: PlaneHost/CostBreakdown gain a real rider (step 2), so the ABI
+  is shaped by the real plane, not the imagined one.
+- **The audit chain stays exactly one chain**, byte-compatible with every deployed store (golden-gated).
+- **The arch-review's 4/10 becomes real siblings**: both planes ride ONE seam, error taxonomy and egress
+  centralize, the plane/ mislabel resolves.
+
+---
+
+# PART 4 — THE PLANE ABI NEUTRAL TAXONOMY (v5)
+
+> *Absorbed verbatim from `1.6.0-plane-abi-taxonomy.md`, which this document replaced. MACHINE-READ: `xtask/src/gates/plane_abi_neutrality.rs` parses the first `banned set` line below as its mandate. Do not reword that line.*
+
+
+Merges into DESIGN-LOCKED §2-§4 (the seam SHAPE). Spine unchanged: Law §0, forcing §1, repr(C)+
+versioning (sized/append-only/major-airlock), HOT/COLD tiers, opaque state §6, migration §7, gates §8,
+acceptance §11 all HOLD. This doc replaces the *capability/carrier/scope/metering* shape after the
+5-protocol neutrality panel proved the locked §4 was ENUMERATED from mcp/a2a/llm, not DERIVED.
+
+Panel result: capability-shaped at the CORE (proven neutral by the tunnel foil), protocol-shaped at two
+EDGES (ingress shape; four MCP-flavored capabilities). Fix = derive from a primitive taxonomy, implement
+only what the 3 real planes use, everything else append-only.
+
+## The derivation question
+NOT "what do mcp/a2a/llm call in core?" (enumeration → over-fit). INSTEAD: **"what does a governed
+execution-boundary proxy offer ANY carrier of work?"** Answer = 4 axes + a small primitive set.
+
+## Axis 1 — CARRIER (ingress), an OPEN axis, not the closed {route,stream} enum
+A carrier is "a source of work-items + a way to emit," decoupled from "a reply is mandatory." Points:
+| Carrier | reply? | initiator | real planes | status |
+|---|---|---|---|---|
+| request/response | yes | remote | llm, mcp(http), a2a(http+grpc-as-POST) | IMPLEMENT |
+| response-stream (req→streamed resp) | yes, streamed | remote | llm-stream, a2a relay, mcp subscribe | IMPLEMENT |
+| duplex-session (independent in/out) | n/a | either | **MCP stdio-serve**, (RTP-class) | **IMPLEMENT** (MCP stdio-serve is its 1.6.0 rider — REPANEL-2 BREAK: busbar-as-MCP-server originates requests + pushes unsolicited notifications; req/resp+stream can't carry it) |
+| subscription/pull (host-initiated, reply-less) | no | host | (MQ-class) | EXTENSION POINT |
+| accept-loop (many concurrent stateful sockets) | protocol | remote | (DB-wire-class) | EXTENSION POINT |
+`PlaneDecl` declares which carrier(s) it provides; the host drives them uniformly.
+
+**WorkItem reserved-shape invariant (LOCKED + WITNESSED — REPANEL-1 keystone).** `dispatch` generalizes
+from `(req_bytes, sink)` to a **`WorkItem`** that is a SIZED, `#[repr(C)]`, append-only-versioned struct
+carrying a `kind`-tagged **inbound handle** and a `kind`-tagged **emit handle**. From DAY ONE the tags
+RESERVE all representations even though only some code paths ship: inbound ∈ {finite-buffer, stream,
+absent}; emit ∈ {reply, stream, unsolicited, absent}. Implementing "only the 3 planes' carriers" must
+NOT collapse `WorkItem` to a bare `(ptr,len)+sink` — that would force a breaking reshape on the first
+exotic carrier. A CI witness asserts `WorkItem` carries the kind tags and can represent absent/duplex
+inbound+emit. This struct is THE extensibility keystone: with it, a new carrier is an append-only minor
+bump (new `#[repr(u8)]` kind variant + a vtable slot at the end); without it, the append-only claim is
+prose. The 3 planes ride {request/response, response-stream, duplex-session}; pull/accept-loop are
+append-only additions.
+
+## Axis 2 — SCOPE (lifetime hierarchy), not the single per-dispatch arena
+Every host handle is acquired AT a scope; the host reclaims on that scope's end/drop. Three scopes:
+| Scope | reclaim trigger | holds | real planes |
+|---|---|---|---|
+| dispatch | work-item future ends/drops (disconnect/cancel/panic) | admission, one-shot egress, verify-leadership | all |
+| session/connection | connection close | per-conn state, pooled backend conn, in-flight leases | a2a session; (DB-wire) |
+| durable/unit-of-work | explicit complete/expire (survives the process) | task rows, deferred-callback context | a2a tasks (accept-then-callback) |
+A per-CONNECTION opaque state slot joins the per-plane one (§6). The async plane parks a durable
+work-handle at 202 and resumes via nested lookup — NOT reclaimed at future-drop (the v4 arena bug).
+
+## Axis 3 — EGRESS, two governed tiers (host ALWAYS owns the SSRF/pin/breaker/meter chokepoint)
+| Tier | shape | governs | subsumes |
+|---|---|---|---|
+| HTTP-request | reqwest one-shot + resolve-then-pin + SPKI + mTLS + HTTP head | url/ip/spki | today's mcp/a2a http |
+| governed raw-connection | host opens a pinned, SSRF-checked, metered BYTE channel; plane frames on top; duplex | address/allowlist | **subprocess (MCP stdio) AND raw sockets (DB-wire/tunnel/RTP)** — subprocess is NOT a separate capability |
+Both are `egress_open(&EgressDesc{ kind: Http|RawConn|Subprocess, ... })`; kind is data, the governance
+is one path. Removes the 4 subprocess capability slots as protocol-specific furniture.
+
+## Axis 4 — METERING, money-scalar (reserve/settle is an EXTENSION POINT, not 1.6.0)
+`CostBreakdown` is already a neutral money scalar (tunnel foil: byte-metering fits via `top("Bytes",…)`),
+and `Usage` is opaque-component (tokens|bytes|frames|queries) — that covers all 3 shipping planes:
+A2A meters once per hop (`a2a/meter.rs`), MCP charges per discrete round (`mcp/method.rs::charge_round`),
+LLM per-token path is untouched. So per-request `meter_charge` is the 1.6.0 implement-set.
+**reserve/settle (`CostHold`) is DEMOTED to an EXTENSION POINT** (REPANEL-2 + REPANEL-3 both: zero
+production callers among the 3 planes; its only justification was the *deferred* RTP carrier, so shipping
+it trips acceptance gate §11a "no 0-caller ABI" and v5's own "implement only what the 3 planes use"
+rule). The `CostHold` TYPE stays in place (fully tested) for the future high-rate-carrier minor bump —
+it's a reserved shape, not implemented wiring.
+
+## The re-derived CAPABILITY set (implement only what 3 planes use; rest = extension points)
+NEUTRAL CORE (tunnel-proven, all/most planes): `govern_admit`, `meter_charge` + `cost_reserve/settle`,
+`egress_open`(2-tier)/`poll`/`write`/`close`, `breaker_admit->AdmissionId`/`breaker_settle`,
+`journal_append(scope,content_bytes,&FramingDesc)`/`journal_read`, `metrics_emit`, `clock_now`,
+`auth_resolve`. Egress carries a credential-REF (host mints per-hop bearer / RFC8693; plane never holds
+plaintext). NO `secret_resolve`.
+
+NEUTRAL, DERIVED FROM THE PANEL (add these — the reply-shape hid them):
+- ingress **work-item settle** (`ack | nack | dead-letter`) — the dual of `breaker_settle`; a reply IS
+  the ack for req/resp, so it was invisible until MQ. Neutral for any carrier.
+- ordered-processing **lease** (a partition/ordering handle, like AdmissionId) — for ordered carriers.
+- **nested-dispatch** (`route_suboperation(work_bytes)->result`) — REPLACES `run_operation`; the host
+  routes an opaque sub-request through the SAME router, never knowing it's LLM. Dissolves the MCP→LLM
+  coupling (worst over-fit). MCP sampling uses it; it names no protocol.
+- durable **work-handle + resume-lookup** — the durable-scope primitive (was `tasks_op`); a2a async uses it.
+
+TRUST FAMILY (neutral over a generic COUNTERPARTY, not "MCP server"): `verify_lookup`/`verify_store`
+(host cache + single-flight, plane fetches), counterparty **drift-quarantine**, one-time **approval
+redeem**. Used by mcp (server digest) AND a2a (card fingerprint). Phrased for "counterparty," never
+"MCP." If a piece proves single-plane after wiring, it moves INTO that plugin (the owner's 1-plane rule).
+
+## What moves OUT of the host ABI (no-op-matrix verdict)
+- `subprocess_open/pipe` → an EgressDesc.kind (raw-connection tier). Not a capability.
+- `run_operation` → `nested-dispatch` (neutral). Not LLM-named.
+- `quarantine`/`approvals` → trust family, counterparty-phrased; relocate to plugin if single-plane.
+
+## Neutrality witness (add to §8): no host capability name, ABI type, OR CARRIER NAME may contain a
+protocol/role noun — banned set `llm|mcp|a2a|tool|agent|sampling|task|server|card|round|prompt`
+(REPANEL-1: the old set omitted `server|card`, so it couldn't catch its own `server-stream` leak — now
+renamed `response-stream`). The grep gate runs over the ABI crate INCLUDING the carrier-variant names and
+this witness's own token list = 0. Machine check that "derived, not enumerated" STAYS true as
+capabilities are added.
+
+## Scope discipline for 1.6.0 (keep it tight — post-re-panel)
+IMPLEMENT: carriers {request/response, response-stream, **duplex-session** (MCP stdio-serve rider)}; the
+**WorkItem reserved-shape** (sized/versioned, kind-tagged inbound+emit, witnessed); scopes {dispatch,
+session [riders: MCP stdio-serve + A2A relay], durable [rider: A2A tasks]}; egress {http, raw-connection
+incl subprocess}; metering {**charge only**}; neutral core + trust-family + nested-dispatch (depth-bounded,
+RR7) + work-handle.
+DO NOT implement (no 1.6.0 rider — EXTENSION POINTS, each an append-only minor bump when its protocol
+arrives): subscription/pull + accept-loop carriers; ingress work-item settle (ack/nack/dead-letter);
+ordered-processing lease; **metering reserve/settle (`CostHold`)**. The TAXONOMY + the WorkItem reserved
+shape guarantee each is a clean add, never a break. That is "fits-or-cleanly-extends for the next 5."
+
+---
+
+# PART 5 — THE EXECUTION PLAN: WAVES W0–W8
+
+> *Absorbed verbatim from `1.6.0-PLAN.md`, which this document replaced. Lowest authority — where this disagrees with a Law or an owner ruling, the Law and the owner win.*
+
+
+Read this + DECISIONS.md before any status/architecture claim. This is the ONE plan (#58). It is
+seam-decoupled (#25/#27): waves overlap behind stable both-ends seams — the wave numbers are a
+dependency order, not a stop-the-world sequence.
+
+## Dates
+- **Owner-need target:** throw everything, no quality drop, no defer.
+- **Honest worst-case floor: Wed 2026-10-08 17:00 PDT** (never slips silently; moves only on a named
+  MAJOR EVENT, DECISIONS #16).
+
+## DONE = DEV-GREEN (the definition every wave drives to)
+DEV-GREEN is reached when ALL of the following hold and turnstile boards ADMIT:
+1. **Oracle byte-identical vs the 1.5.5 golden on every family** (money sacred, #9/#10). The ONLY
+   accepted diffs are the owner-approved re-blesses: S0 dated-card (F1/F2/F3, 3 cells), NEUT-U-auth
+   `operator_pub`, BOOT-135 wording (#64). Everything else byte-green.
+2. **All P-item behaviours match 1.5.5** — refusal-reason collapse, unary/empty terminality,
+   wrong-provider attribution, voice tool-args, Gemini usage — fixed as BUGS, not signed (#43/#71).
+3. **The full xtask gate battery is GREEN** — construction, kind-isolation (7 kinds, dep-wall allowlist
+   ⊆ {busbar-contract, busbar-plugin-sdk}, #40), plane-purity, kind-abi-lane (#30), naming (#34),
+   no-codec-crate (#39), no-testkit (#33), kernel-string-neutrality (#49), transport-scheme fail-closed
+   (#50), seal-witness (KernelSeal kernel-only/unforgeable, #65), Pass/Grant per-call binding (#74),
+   admin↔config parity (#52), secret-hygiene blocking (#53), legacy-drain = 0 (#19/#37).
+4. **Conformance MUST-set landed + green for all 5 planes** (llm/mcp/a2a/streaming/decisions), incl.
+   landing `integration/conformance-b` (#68).
+5. **Two arch audits ≥9/10 + audit-ledger clean + two consecutive clean `/codeaudit` passes** (#60).
+6. **turnstile BOARD = ADMIT → train ff `predev`→`dev` = DEV-GREEN** (#32/#67).
+
+## Real tip / branch flow
+Work lands on **`predev`**; the release train is the only writer of `dev` (#67). Turnstile conducts;
+the autoscaler (Latchkey-primary, EC2 floor-0 burst-only, #56) supplies the fleet.
+
+---
+
+## THE WAVES (max agents; disjoint per-crate ownership #27e; every agent red-before-green; every
+## money-touching step shadow-oracle-gated; each wave loops `/codeaudit` to 2 clean passes #60)
+
+### W0 — Foundations (DONE / verify)
+- DECISIONS.md ledger perfect (conflict-audit to 2 clean passes).
+- Oracle-rust port live in busbar-release; `busbar-oracle` deleted.
+- Autoscaler live (LK-primary, #56).
+- 1.5.5 GOLDEN recorded up front from the 1.5.5 binary (#27a) — the fixed diff reference.
+
+### W1 — Seams both-ends (unblocks all parallelism; additive/dormant, byte-safe) [#25/#26/#27]
+Agents (parallel): (a) money-book seam + byte-identical pass-through stub (#25); (b) capability-keyed
+dispatch table + `register_units(key,impl)` (#26 S1); (c) HOST-CAPS seams — egress trust/SPKI/identity,
+inbound agent-card JWS, SSE reframe (#26 S3); (d) HOT-ABI de-stub + drop-in loader `open_plane` +
+manifest claim-sealing + plane cdylib SDK + bare-bones distribution (#26 S4/#11); (e) busbar-core drain
+facades — per-step re-export so steps relocate in any order (#27b). Nothing swaps the shipped path yet.
+
+### W2 — Loop-unify + kernel-8 + Scratch + Pass/Grant [#28/#36/#41/#65/#72–74]
+Agents: (a) lift the dispatch scope onto the ONE kernel `teller::run_unit`; re-point every plane's
+gauntlet rider (llm/a2a/mcp/streaming) at it; collapse the substrate loop's two audit doors; DELETE
+`busbar-substrate/teller`. Prove MCP end-to-end byte-identical FIRST (proof case), then every plane
+rides the same seam. (b) collapse 14 `busbar-unit-*` → 8 `busbar-kernel-<name>` (#36). (c) `Scratch`
+trait in busbar-contract + `ScratchPad` grow-on-demand in busbar-kernel::scratch; MEASURE + report the
+start size (#41). (d) unify capability proofs to Pass (per stage) + Grant (per action); make
+`KernelSeal` kernel-only/unforgeable (#65); per-request u64 generation in-process + kernel-MAC'd ABI
+handle (#72/#73/#74).
+
+### W3 — Money one-book + P-item bug fixes [#25/#42/#43/#77]
+Agents: (a) consolidate to `busbar-kernel-ledger` (rates+usage+ledger); plane emits raw usage COUNTS
+per class; ledger appends once, sealed, at unit end; PRICE is a read-time view; pricing keyed on its own
+noun (no plugin/plane field, per-plugin pricing unrepresentable); unpriced⇒boot-refusal when billing on;
+integer-only, unitless (#66/#77); billing optional by rate_card presence (#42); rate_card+fees are
+reserved core-owned config keys stripped before the plugin blob (#43). (b) FIX every P-item bug to match
+1.5.5 (#43/#71). Oracle money-green (S0 the only accepted money diff).
+
+### W4 — Core dissolve + legacy drain [#19/#37]
+Agents: delete `busbar-core`; land `busbar-core-{admin,oauth2,substrate}`; drain fat substrate runtime
+into the kernel-8; delete `busbar-voice` (voice = streaming dialect, #18). Gate: legacy-drain = 0.
+
+### W5 — Folds: planes / contract / plugin-infra / config [#39/#38/#35/#33/#40/#47/#49/#51]
+Agents (parallel, disjoint): (a) planes → 5 one-crate each, codecs/dialects fold IN; add the
+`decisions` plane crate `busbar-plane-decision` (jev dialect, #48). (b) `busbar-contract` = the ONE ABI
+crate (fold contract-transport); `busbar-api` retires, money records → busbar-kernel-ledger
+byte-identical (#38/#35). (c) plugin infra = `busbar-plugin-sdk` + `busbar-plugin-loader`, no testkit;
+dep-wall allowlist gate (#40). (d) CONFIG reshape: per-plane sections (pools/tools/agents/decisions/
+streams), `models` under pools, provider = connection + default protocol/error_map overridable
+per-model, plane interprets fail-closed (#47/#49/#51); rate_card+fees stripped at the ABI (#43);
+`--migrate-config` for the provider reshape.
+
+### W6 — Naming rename [#34/#78]
+One agent, ONE atomic `git mv` + Cargo-repoint wave to the `busbar-<major>` scheme (busbar-hook-ranking,
+busbar-<kind>-<name>, etc.) — run once the open fix-branches fold, to avoid conflict hell. External repo
+renames ride the release-train wave, not mid-1.6.0.
+- **CI workflow renames (cadence prefixes, #78).** The uncoupled workflow files were already renamed
+  (`qa-*` / `manual-*` / `sched-*` / `fleet-*`). W6 renames the COUPLED set that a piecemeal rename would
+  break — `ci`, `release`, `docker`, `verify-deploy`, `build-artifact`, `plugin-ci`, `plugin-consumer-verify`,
+  `plugin-functional`, `prepare-release`, `qa-gate`, `release-stage`, `gate-mutants` — each PAIRED with its
+  coupling update: branch-protection required-check contexts (the `name:`), `workflow_run: workflows:[…]`
+  lists (qa-gate←"CI"; verify-deploy←"Release","Docker"), the cosign/sigstore identity pinned to
+  `…/workflows/docker.yml@…`, cross-repo `uses: GetBusbar/busbar/.github/workflows/<file>@…` in every plugin
+  repo, and `gh workflow run <file/name>` in RELEASE.md/playbooks.
+- **Reconcile historical doc references** to the OLD workflow filenames in the same atomic pass — the
+  migration/reference/playbook docs (`docs/ci/latchkey-migration.md`, `.github/required-status-checks.md`,
+  `docs/ci/feature-sets.md`, `docs/design/playbook/*`, `docs/{a2a,mcp}.md`, `1.6.0-proof-dashboard.md`)
+  still name `a2a-conformance.yml`, `codeql.yml`, `security.yml`, `keep-proof.yml`, `release-fleet.yml`,
+  etc. Update them to the renamed files (`qa-conformance-a2a.yml`, `qa-codeql.yml`, `qa-security.yml`,
+  `manual-keep-proof.yml`, `fleet-autoscaler.yml`, …) so no stale path survives the rename.
+
+### W7 — Conformance-b + full gate battery [#68/#30/#32/#40/#49/#50/#52/#53/#65]
+Agents: (a) land `integration/conformance-b`; conformance MUST-set green for all 5 planes (#68). (b)
+arm + green every gate in the DONE battery above (each RED-provable, red-before-green).
+
+### W8 — BOARD → DEV-GREEN [#32/#67]
+turnstile runs gates + oracle + conformance → BOARD verdict. On ADMIT, the train fast-forwards
+`predev`→`dev`. **DEV-GREEN.**
+
+---
+
+## Orchestration shape (per wave)
+- **1 lead** (defines the wave's seams/order) + **N implementer agents** (disjoint crates) + **1
+  verifier** (runs the oracle + the wave's gates) + **1 adversarial audit pair** (opus + sonnet, #60).
+- Turnstile conducts; the LK-primary autoscaler provides the fleet (#56).
+- A wave does not "complete" until its gates are green, its oracle is byte-identical, and `/codeaudit`
+  returns two consecutive clean passes (#60).
+- Seams (W1) mean W2–W5 overlap heavily; W6 (rename) and W8 (board) are the two serialization points.
+
+## Rolling, cross-cutting (run continuously, not a wave)
+- **Frozen-SHA arch audits** (two, ≥9/10) against the rolling tip (#27c) — converge as code lands.
+- **Golden re-record** on fleet boxes for any unverified cells; **money moves proven per-step** on a
+  spot oracle box (zero-idle, terminate on close).
+
+## UNATTENDED SAFETY (owner away)
+Blind-swarm ONLY additive/dormant/purely-local work the oracle can prove byte-identical. Any step that
+SWAPS the shipped request path or touches the money book waits for a green candidate binary + serial
+execution + is surfaced to the owner. Money is sacred; deny-and-fix on any user-visible byte; never
+self-approve a billed-byte change. Quality + byte-identity outrank raw agent count.
+
+## Anti-recurrence
+- Every settled decision is a DECISIONS.md row with an enforcing gate; drift → RED, not re-litigation.
+- VISION + 1.6.0-plane-extraction-LOCKED + DECISIONS authoritative; all other docs reconciled or
+  deleted (#14/#58). One canonical doc per topic, edited in place.
+- READ-FIRST hook + this file re-read every turn; cite-or-ask, never guess.
+
+## Open execution items feeding the waves (from the ledger PENDING)
+- Verify + carry the lossless-carry (#76) and money invariants (#77) into implementation gates.
+- Architect follow-ups (no owner Q): Pass/Grant rename map (#73), minimal-token audit (#72/#73),
+  transport roster + scheme-sets (#50/#51).
+- Branch reconciliation: fold `land/conformance-turnstile-wiring` (#41–#77) with
+  `land/decisions-consolidation` numbering.
+
+## GRANULAR EXECUTION TABLE (LOCKED) — line-by-line, each step's GREEN condition
+Each row is DONE only when its **GREEN when** is objectively true. A wave's GATE row must be green before
+the next serialization point. Owner = lead(L)+implementers(N)+verifier(V)+adversarial pair(A).
+
+| # | Task | GREEN when (objective) | Dep |
+|---|------|------------------------|-----|
+| **P0.1** | Commit CI-cost overhaul (right-size, EC2→LK, timeouts, cadence gating, gate-mutants decouple, OpenSSF) | committed on land/conformance-turnstile-wiring; all 23 workflows parse; `ci-umbrella --selftest` exit 0; 0 EC2 | — |
+| **P0.2** | Clean workflow set reaches `main` (train) | `main` carries the renamed/cheap workflows | P0.1 |
+| **P0.3** | Re-enable workflows + drop `gate-mutants` from qa/main protection + reassert | `gh workflow list` all active; qa/main protection has no `gate-mutants`; `ci-branch-protection.sh` runs clean | P0.2 |
+| **P0.4** | Autoscaler EC2-off deployed (LK primary, spot spillover on approval) | fleet-control tick: latchkey-only, ec2 disabled, 0 on-demand; $-watch armed ($100 cap/$50 alarm #78) | P0.1 |
+| **W0.1** | DECISIONS ledger clean | 2 consecutive clean conflict-audits (#60) — DONE | — |
+| **W0.2** | oracle-rust live; `busbar-oracle` deleted | replay-selftest exit 0; `cells --check` OK, no data-format drift | — |
+| **W0.3** | 1.5.5 GOLDEN recorded | golden artifact present, digest pinned (#27a) | — |
+| **W1.a** | Money-book seam + byte-identical pass-through stub | oracle byte-identical (money path unchanged) | W0 |
+| **W1.b** | Capability-keyed dispatch table + `register_units(key,impl)` | build + dispatch-table selftest green | W0 |
+| **W1.c** | HOST-CAPS seams (egress trust/SPKI, inbound JWS, SSE reframe) | build + seam tests; oracle byte-identical | W0 |
+| **W1.d** | HOT-ABI de-stub + drop-in `open_plane` loader + manifest claim-seal + cdylib SDK | loader loads a signed plane cdylib; token-auth proof passes; oracle byte-identical | W0 |
+| **W1.e** | busbar-core drain facades (per-step re-export) | build; steps relocatable in any order; oracle byte-identical | W0 |
+| **W1.GATE** | Seams both-ends complete, dormant | full oracle byte-identical; shipped path unchanged | W1.a-e |
+| **W2.a** | Lift dispatch onto ONE `teller::run_unit`; MCP proof FIRST | MCP oracle byte-identical on the unified loop | W1.GATE |
+| **W2.b** | Re-point every plane at run_unit; delete `busbar-substrate/teller` | each plane (llm/a2a/mcp/streaming) oracle byte-identical; teller gone; build | W2.a |
+| **W2.c** | 14 `busbar-unit-*` → 8 `busbar-kernel-<name>` (#36) | kind-isolation gate green (8 crates); dep-wall allowlist ⊆ {contract,plugin-sdk} | W2.b |
+| **W2.d** | Scratch trait + ScratchPad grow-on-demand (#41) | scratch tests (grow/shrink/never-crash) pass; measured start size reported | W2.b |
+| **W2.e** | KernelSeal kernel-only/unforgeable + per-call Pass/Grant (#65/#72-74) | seal-witness gate green; per-call binding test; zero-hot-path-cost bench | W2.c |
+| **W2.GATE** | Loop-unify + kernel-8 + Scratch + Pass/Grant | all planes byte-identical; kernel-8; W2 gates green | W2.a-e |
+| **W3.a** | Consolidate `busbar-kernel-ledger` (rates+usage+ledger) | build; ledger tests green | W2.GATE |
+| **W3.b** | Plane emits raw counts; sealed facts-line once at end; price=read-time view | money-invariants gate (#77) green; per-plugin pricing = compile-fail test | W3.a |
+| **W3.c** | Unpriced⇒boot-refusal; billing-optional by rate_card; integer-only unitless | boot-refusal test; billing-off zero-row test; no-float gate green | W3.a |
+| **W3.d** | Fix every P-item to match 1.5.5 (#43/#71) | each P-item oracle byte-identical | W3.a |
+| **W3.GATE** | Money one-book + P-fixes | oracle money-green; S0 the only accepted money diff | W3.a-d |
+| **W4.a** | Delete `busbar-core` → core-{admin,oauth2,substrate} | build; one-way-dep gate green | W3.GATE |
+| **W4.b** | Drain fat substrate runtime into kernel-8 | legacy-drain = 0 gate green | W4.a |
+| **W4.c** | Delete `busbar-voice` (voice = streaming dialect #18) | no busbar-voice; streaming plane serves voice; oracle byte-identical | W4.a |
+| **W4.GATE** | Core dissolve + legacy drain | legacy-drain=0; build; oracle byte-identical | W4.a-c |
+| **W5.a** | Planes → 5 one-crate each; codecs/dialects fold in; add `busbar-plane-decision` (jev #48) | no-codec-crate + plane-purity gates green; exactly 5 plane crates | W4.GATE |
+| **W5.b** | `busbar-contract` = the ONE ABI crate; `busbar-api` retires; money records→ledger | kind-abi-lane gate green; build; oracle byte-identical | W4.GATE |
+| **W5.c** | Plugin infra = `busbar-plugin-sdk` + `busbar-plugin-loader`, no testkit | no-testkit gate + dep-wall allowlist gate green | W4.GATE |
+| **W5.d** | Config reshape (per-plane sections, models-under-pools, provider=connection+default-proto) + `--migrate-config` | admin↔config parity (#52) + kernel-string-neutrality (#49) + transport-scheme fail-closed (#50) gates green; migrate-config test | W4.GATE |
+| **W5.GATE** | Folds complete | all fold gates green; oracle byte-identical | W5.a-d |
+| **W6.a** | Atomic `git mv` → `busbar-<kind>-<name>` + Cargo repoint (#34) | naming gate green; build | W5.GATE |
+| **W6.b** | CI workflow renames (coupled set) + historical-doc reconciliation (#78) | required-check names rewired in branch protection; all workflows parse; consistent | W5.GATE |
+| **W6.GATE** | Naming rename | naming gate green; build; CI intact | W6.a-b |
+| **W7.a** | Land `integration/conformance-b` (#68) | branch merged | W2.GATE |
+| **W7.b** | Conformance MUST-set green all 5 planes | conformance gate green ×5 (llm/mcp/a2a/streaming/decisions) | W7.a |
+| **W7.c** | Arm + green every gate in the DONE battery, each red-provable | full xtask gate battery green; every gate `--selftest` proves red-ability | W6.GATE |
+| **W7.GATE** | Conformance-b + full battery | conformance ×5 green + full gate battery green | W7.a-c |
+| **W8.a** | 2 arch audits ≥9/10 + 2 consecutive clean `/codeaudit` (#60) | audit-ledger clean; two clean passes | W7.GATE |
+| **W8.b** | Turnstile BOARD = gates + oracle + conformance | BOARD verdict = ADMIT | W8.a, all GATEs |
+| **W8.c** | Train ff `predev`→`dev` (#32/#67) | ref moves; **DEV-GREEN 100%** | W8.b |
+
+Commit authorship comes from git config (GitHub noreply). No AI attribution, ever.
+
+---
+
+# PART 6 — THE RELEASE ENGINE
+
+Everything in Parts 1–5 describes the product. This Part describes the machine that ships it. It
+lives in **two repos**, and that split is the single most common source of "I can't find the
+autoscaler" confusion.
+
+## The branch roster (#67) — four branches, and no others
+
+| Branch | Rule | CI |
+|---|---|---|
+| `predev` | **permanent WIP.** Every in-flight session lands here and forks from here. | **None, deliberately.** Developers commit freely; a finished session runs turnstile to reach `dev`. |
+| `dev` | **release-train-write-only.** "Next version's WIP, nowhere near done." | full `ci.yml` |
+| `qa` | promotion target | full CI + the real-media matrix |
+| `main` | **a push here cuts a release** — tag, GitHub Release, container promotion, `latest` moved. Irreversible. | release orchestration |
+
+**Never push `dev`, `qa` or `main` by hand.** `--force-with-lease` is permitted only on `predev`
+(#61), which carries no protection rule and no ruleset.
+
+## The two repos
+
+**`GetBusbar/busbar`** — the product. `crates/`, `xtask/` (every gate), `scripts/` (including
+`verify-1.6.0-done.sh`, the definition of done), `conformance/`, `testing/shadow-oracle/`.
+
+**`GetBusbar/busbar-release`** — the engine, five crates:
+
+| Crate | Job |
+|---|---|
+| `busbar-release-turnstile` | The gate. Runs the batteries and returns a **BOARD** verdict — `ADMIT` or deny. Nothing reaches `dev` without it. |
+| `busbar-release-train` | The mover. Fast-forwards `predev` → `dev` → `qa` → `main` in lockstep, refusing unless every precondition holds. |
+| `busbar-release-oracle` | The byte-identity oracle: this build vs the published 1.5.5 binary. |
+| `busbar-release-autoscaler` | Runner capacity. Ships the **`busbar-fleet`** binary (`src/bin/busbar-fleet.rs`) — this is the "fleet" tool; there is no separate fleet crate. |
+| `busbar-release-corpus` | The recorded request corpus the oracle replays. |
+
+Its workflows: `turnstile.yml`, `fleet-control.yml`, `oracle-rerecord.yml`, `docker-autoscaler.yml`, `ci.yml`.
+
+## Where CI runs, and what it costs
+
+CI runs on **Latchkey**, not EC2. The EC2 fleet is retired: it was costing ~$2k and is confirmed
+fully torn down — zero instances, zero volumes, zero NAT gateways, zero elastic IPs. Latchkey is
+both cheaper and the money oracle's home (**#56 wins over #29** — the oracle rides Latchkey, it does
+not need a dedicated fleet box; `CI_RUNNER_ONDEMAND_FLOOR` is 0, not 2).
+
+**#78 sets the budget: $50 soft alarm / $80 review / $100 hard cap.** `scripts/cost-watch.py`
+enforces it with a strict exit-code contract (`0` clear / `2` alarm / `3` review / `1` cap breach /
+`4` tool error) plus a self-test.
+
+Three facts about measuring that cost, each of which cost real time to learn:
+
+1. **GitHub's job wall-clock over-counts by roughly 2.4–3×.** A job's `started_at`→`completed_at`
+   span includes Latchkey's queue and provisioning wait (~65–80s even for a trivial `echo`).
+   Latchkey bills `duration_ms` — execution only. Any dollar figure derived from GitHub's job spans
+   is an **estimate**, and must be labelled as one.
+2. **Latchkey has no usage or billing endpoint.** Verified against the public OpenAPI spec and by
+   live-probing `/usage /billing /account /costs /me /whoami /quota` — all 404. `GET /jobs` returns
+   `duration_ms` but caps at the **100 most-recent jobs org-wide**, with no date filter and no
+   pagination, so it structurally cannot reconstruct a multi-thousand-job period total. It is a
+   cross-check, not a source of truth.
+3. **There is a free-tier pool** (32,000 min/period, including a 30,000 bonus that expires
+   2026-09-30). Subtracting a threshold amplifies estimate error, so the free-tier-adjusted "actual"
+   figure is *less* reliable than the raw would-be figure, not more.
+
+The standing finding from the first real run: **`gate-mutants` alone is ~73% of spend.** That is the
+lever worth pulling before any other cost work.
+
+## Promotion is blocked today — the exact reasons
+
+`qa` and `main` cannot be promoted to right now. This is not a policy choice; it is four concrete
+defects, and no `gh api` call fixes them — **the train has to run**:
+
+1. **`gate-mutants` is a required check on `qa` + `main`, but it is `workflow_dispatch`-only AND
+   `disabled_manually`.** It can never report, so the branch can never go green.
+   `ci-branch-protection.sh:43-47` claims this was removed. It was not.
+2. **`ship-ready` and `construction gate (…)` job names do not exist on `dev`/`qa`/`main`.** Those
+   branches carry a `ci.yml` from 2026-09-04 / 08-30 / 08-26. The contexts are required and never
+   report.
+3. **`busbar-release-turnstile admit` denies on a subcommand that does not exist.** It runs
+   conformance via `cargo xtask conformance check --musts`; `xtask/src/cli.rs` has no such
+   subcommand → exit 2 → Red → deny.
+4. **`turnstile-dispatch.yml` was never pushed.** It exists only in a local worktree on
+   `land/turnstile-dispatch`, and it still points at `integration/**` rather than `predev`.
+
+## Deleting branches is free
+
+No `on: delete` trigger, no `on: create`, no catch-all push glob — zero workflow runs and zero
+job-minutes. (The comment at `ci.yml:23` claiming `branches: ['**']` is stale; the real trigger list
+is narrow.) Deleting `pr/*` auto-closes those PRs, which also fires nothing, because `closed` is not
+in the default `pull_request` types.
+
+
+---
+
+# PART 7 — GROUND-CLEARING SESSION LOG (2026-09-21)
+
+This Part is the handoff. It records what the ground-clearing session changed, what is proven, and
+what is still open. **Everything below this line is state, not law** — it goes stale, unlike Parts
+1–5. When an item here is done, delete the row.
+
+## What the session was for
+
+The code was close; the ground under it was not. Three compounding problems: 980 remote branches
+across two divergent integration lineages each holding work the other needed; 187 markdown docs of
+which only three were permitted to be authoritative, so agents steered by whatever stale checklist
+they met first; and a release engine that could not promote. This session cleared the ground and
+produced this document. It deliberately did **not** run the release.
+
+## Safety net
+
+Full bundle at `~/Downloads/busbar-all-refs-2026-09-21.bundle` (all 2547 refs, `git bundle verify`
+exit 0), with a ref manifest beside it at `~/Downloads/busbar-refs-2026-09-21.txt`. Two commits
+reachable from almost nothing were tagged deliberately: `1e82b3a0f` (`integration/reland`, reachable
+from no other ref) and `004f98d89` (the trunk). **Nothing was deleted without being in that bundle
+first.**
+
+## The trunk
+
+`integration/1.6.0-dev-green` @ `004f98d89` was ruled trunk over `predev`, which was stale (a
+40-row DECISIONS table, 0 of 16 waves). The consolidated result lives on `consolidated/1.6.0` and
+becomes `predev`.
+
+## Fixes landed — each red-before-green, evidence in the commit body
+
+Checkpoint `ec21d27f0` — 77 files, +4536/−432. The substantive ones:
+
+| Area | Fix |
+|---|---|
+| **SSRF / NAT64** | `embedded_ipv4()` now recognises RFC 6052 `64:ff9b::/96` and RFC 8215 `64:ff9b:1::/48` in both `busbar-kernel-egress/src/trust/net.rs` and `busbar-kernel/src/net_guard.rs`. Red proof: `resolve_and_pin` actually pinned `64:ff9b:1:fffe::a9fe:a9fe` — a DNS64-synthesised IMDS address walking straight through the cloud-metadata guard. |
+| **Plugin host ABI** | `HostCtx` became `#[repr(C)] { ptr, generation: u32, kind: u8 }` with a `HostGeneration` RAII guard and a `LIVE_GENERATIONS` thread-local, so a stale host handle is detected rather than dereferenced. `ABI_MINOR` 20 → 21. |
+| **Ledger** | `redeem_plane_token` defaulted to `Ok(true)` — fail-open on a token redemption. Now `Ok(false)`. `list_keys_since` gained the `k.revision == 0` arm it was missing. |
+| **Secrets** | `MAX_SECRET_FILE_BYTES` = 1 MiB with `read_secret_file_bounded` using `Read::take(cap+1)`; an unbounded read was previously possible. |
+| **OAuth2** | `percent_decode` now decodes over bytes instead of slicing a `&str` by index — a `%` before a multibyte character panicked an unauthenticated path. |
+| **Substrate** | `busbar-substrate-values/src/proto.rs` declaration lookup compared by pointer identity first, then by value, instead of only one. |
+| **Streaming codec** | Exact `rate=` token match (`.contains("rate=16000")` also matched `rate=160000`); usage falls back to stated totals; tool payload object-wrapped; `push_call_args` now replaces only when the held buffer is empty or the fragment extends it. |
+| **Ceiling gate** | `INTEGRATION_REF` repointed from the renamed-away `origin/integration/oracle-phase0` to `origin/predev`, and an unresolvable base is now **RED** instead of silently falling back to `HEAD~1`. That fallback meant `ceiling-rose` had been measuring one commit rather than the branch — **it surfaced 147 hidden ceiling rises.** |
+| **Done oracle** | `scripts/verify-1.6.0-done.sh` declared 21 groups while 22 `begin_group` blocks existed, so `floor_is_honest` refused to score **anything**. Now 22, `--selftest` green, with 12 environment refusals including `SKIP_BOOT_LEG` and the four `BUSBAR_ORACLE_*` vars it previously did not assert. |
+| **Cost** | `scripts/cost-watch.py` + `.github/workflows/sched-cost-watch.yml` built from nothing, implementing #78's exit-code contract with a self-test. |
+
+## Branch harvest — method and result
+
+Patch-id is useless here: the rename waves moved every path, so identical work has a different
+patch-id on every branch. **Symbols survive renames.** For each branch the method is: extract the
+identifiers, string literals and test names it *adds* versus its merge-base, then grep the enriched
+trunk for each one. Code paths and doc paths are indexed **separately** — a doc claiming "Landed"
+otherwise masks absent code.
+
+This method is what caught the NAT64 loss, where `git grep -l 'ff9b'` returned only `Cargo.lock`.
+
+Buckets: **empty** (no source content the trunk lacks) · **harvested** (all unique symbols found in
+trunk) · **survivor** (symbols absent — review and port with path translation).
+
+Two traps worth knowing before trusting any harvest row:
+- `git grep -E` does **not** honour `\b`. Extended-regex mode silently returns zero matches for a
+  word-boundary pattern. Use `-P`. This single flag was the difference between 969 and 57,701 indexed
+  symbols.
+- **Never grep a concatenated "trunk blob".** One worker built a blob with `git archive | tar -xO`,
+  got a silently-truncated file, and reported a critical SSRF vulnerability that did not exist. Query
+  git directly, every time. A false security finding is worse than a missed one.
+
+## Open items — the next session's worklist
+
+**Verified defects, not yet fixed:**
+
+1. **The plain container image cannot dlopen a user-supplied plugin.** `Dockerfile:43-45` copies only
+   the binary and two YAMLs into `FROM scratch`, while every plugin cdylib must be built
+   `-C target-feature=-crt-static` (aarch64-musl silently drops the cdylib otherwise —
+   `docker.yml:554`) and therefore dynamically links musl libc/libgcc_s/libstdc++. Those libs are
+   extracted only on the `headroom: true` matrix legs and land in the bundled variant, never in the
+   plain image — yet the Dockerfile's own header tells users to drop a tarball into
+   `/etc/busbar/plugins`. The bundled variant works; the core image does not. **For a release named
+   "Protocols as Plugins" this is a blocker.** Fix must be plugin-agnostic: make the runtime libs a
+   property of the image, extracted once from the already-pinned `rust:alpine` digest.
+2. **`NANOS_PER_CENT` is declared three times** — canonically in `busbar-kernel-ledger/src/cost/`,
+   and again locally at `busbar/src/root/units_voice.rs:157` and `units_a2a.rs:1045`. All three hold
+   `10_000_000` today, so this is latent drift, not a live miscount — which is exactly why it should
+   be collapsed now, before someone edits one copy and a request is judged at one rate and billed at
+   another.
+3. **`rate_card_version: 0` is hardcoded** at six sites across `units_mcp.rs`, `units_voice.rs` and
+   `units_a2a.rs`.
+
+**Known doc/gate drift:**
+
+4. The `PLANE-DELETE` group in `verify-1.6.0-done.sh` still enumerates `llm/mcp/a2a/**voice**` —
+   stale against #18 (streaming is the plane) and #48 (there are five planes, including `decisions`).
+5. The neutrality mandate at Part 4's `banned set` line lists
+   `llm|mcp|a2a|tool|agent|sampling|task|server|card|round|prompt`, and the gate adds `voice`,
+   `realtime` and `audio`. It names no `streaming` token. `streaming` is a plane noun and belongs
+   there on the merits, but adding it reds the witness wherever the word appears in a neutral crate,
+   so it is a scoped burndown rather than a one-line edit — recorded here rather than slipped in
+   quietly. **Do the crate rename first** (`busbar-plane-voice` and `busbar-plane-streaming` both
+   exist today; #18 says there is one plane and it is `streaming`), then ban the noun.
+
+   **Ruling made this session — `decision` must NOT go in the ban list.** The `decisions` plane (jev,
+   #48) declares the key `plane-decision`, and the witness matches banned nouns case-insensitively as
+   *substrings*. Banning `decision` therefore forbids `Decision`, `GateDecision` and `VerifyDecision`
+   — the admit/throttle/deny verdict types that *are* the primitive governance taxonomy the plane ABI
+   is supposed to be derived from. Measured, not assumed: adding the token red `exported-declarations`
+   with 7 findings in `crates/busbar-plugin/src/hot/{host,pod}.rs` plus a blown test-path ratchet,
+   every one of them core naming its own verdict rather than a plane leaking. A substring witness
+   cannot tell those apart, so the plane key is exempted in writing at
+   `PRIMITIVE_COLLISION_KEYS` in `xtask/src/gates/plane_abi_neutrality.rs`, following the existing
+   `PLANE_DECL` precedent — the ban list is not loosened and no correct primitive is renamed to dodge
+   a grep. A genuine leak of that plane is still caught by `plane-purity` and by the
+   `law0-neutral-instance` class, both of which key on the crate edge rather than on a noun.
+   **Result: `plane-abi-neutrality` is now 6/6 green; `plane-keys-covered` had been red.**
+6. `CONFIG_NOUN_FLOOR=16` contradicts the comment directly above it, which claims 19.
+7. Three done-oracle groups are red for harness drift rather than product state: `TELLER-STEPS`
+   (calls the retired `testing/shadow-oracle/rigs-ledger.sh`), `STORE-QA` (calls the retired
+   `scripts/service-images-check.sh`), and `KERNEL` (`filtered_cargo_test 1 … attempt_identity` now
+   matches 2 tests, so it reds for VACUITY).
+8. `busbar-release`'s `oracle-rerecord.yml` hardcodes `e2194e422…` as "the current predev tip" — a
+   literal SHA that will keep resolving while being silently wrong.
+
+**Deliberate design reversals — do not "restore" these:** `contract-kinds` (an 8-kind proposal;
+`PLUGIN-TREE.md` records it as rejected — the answer is 7, per #3) and the unadopted portion of
+`rename-wave-execution-map`. Both show up as harvest survivors because their symbols are absent from
+trunk. Absent because they were *decided against*, not because they were lost.
+
+## Standing rules for anyone working this tree
+
+- `git -C <path>` — never `cd <path> && git`.
+- No `Co-Authored-By` and no AI attribution on any commit, ever.
+- `--force-with-lease` only on your own `land-*`/`keep-*` branches, and on `predev`.
+- Every agent works a **disjoint** slice; every change is red-before-green; the red evidence goes in
+  the commit body.
+- Run build and test commands in the **foreground**. Roughly fifteen agents in this session
+  backgrounded their own scans and then waited forever for a notification that was never coming.
+- The oracle is never waived. Money bytes are never self-approved. A divergence is PARKED for the
+  owner with cell, diff, root cause and recommendation.

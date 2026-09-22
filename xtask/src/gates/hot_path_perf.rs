@@ -1,6 +1,6 @@
 //! `cargo xtask gate hot-path-perf` — THE HOT-PATH PERF WITNESS, ENFORCED.
 //!
-//! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 owes a perf gate: "criterion,
+//! `docs/design/BUSBAR-1.6.0.md` Part 3 §8 owes a perf gate: "criterion,
 //! plugin-host-vtable vs direct-call baseline, delta<1µs p50 AND p99; a per-token host-call counter
 //! on the streaming path asserted == 0", and it is one of the two criterion benches that
 //! raise the core-engine tests/benches dimension 8→9. The MEASUREMENT lives in the criterion

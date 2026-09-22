@@ -3316,7 +3316,7 @@ jobs:
           fetch-depth: 0
       - name: Fetch the line the branch is measured against
         # See the identical step in the `ship-ready` job below for the full rationale (predev,
-        # DECISIONS.md #67, and why the fetch is resilient but the gate itself is not).
+        # BUSBAR-1.6.0.md Part 2 #67, and why the fetch is resilient but the gate itself is not).
         run: |
           git fetch --no-tags --quiet origin +refs/heads/predev:refs/remotes/origin/predev || \
             echo "::warning::could not fetch origin/predev -- INTEGRATION_REF will not resolve, \
@@ -3417,7 +3417,7 @@ jobs:
         # `ceiling-rose` (xtask/src/gates/construction/ceilings.rs::INTEGRATION_REF) and the
         # mutation verdict (scripts/gate-mutants.sh::GM_DEFAULT_BASE) are both measured against the
         # merge-base with `predev`, the permanent WIP branch every repo's in-flight work lands on
-        # and forks from (DECISIONS.md #67). RESILIENT ON PURPOSE: a `git fetch` that cannot find
+        # and forks from (BUSBAR-1.6.0.md Part 2 #67). RESILIENT ON PURPOSE: a `git fetch` that cannot find
         # the ref (network blip, the ref moved again, a checkout with a stale remote) must not crash
         # this job outright -- the gate can still render an honest verdict once it runs. But it must
         # not go quiet either: `base_ref()` treats an unresolved ref as RED, never as "nothing

@@ -80,7 +80,7 @@ jobs:
       - name: Fetch the line the branch is measured against
         # `ceiling-rose`'s ref (xtask/src/gates/construction/ceilings.rs::INTEGRATION_REF), spelled
         # once here as `scripts/gate-mutants.sh::GM_DEFAULT_BASE` = `predev`, the permanent WIP
-        # branch every repo's in-flight work lands on and forks from (DECISIONS.md #67). RESILIENT,
+        # branch every repo's in-flight work lands on and forks from (BUSBAR-1.6.0.md Part 2 #67). RESILIENT,
         # NOT UNCONDITIONAL: a fetch that cannot find the ref must not crash this job before the
         # gate gets a chance to render an honest verdict -- but it must not go quiet either. Without
         # it the merge-base cannot be computed and `gm_base` REFUSES (exit 2) rather than reporting

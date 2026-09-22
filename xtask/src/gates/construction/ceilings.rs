@@ -52,7 +52,7 @@ pub const KIND_CEILINGS: &str = "qa/kind-isolation.toml";
 /// The replacement has to be the ref every in-flight branch forks from and lands back on, because
 /// that is the only thing that makes `merge-base(HEAD, ref)` mean "where did THIS branch's work
 /// start" rather than "where did the whole team's work start":
-/// * `predev` is exactly that ref — DECISIONS.md #67 (owner-locked): "`predev` is the permanent WIP
+/// * `predev` is exactly that ref — BUSBAR-1.6.0.md Part 2 #67 (owner-locked): "`predev` is the permanent WIP
 ///   branch; `dev` is release-train-write-only... All work-in-progress lands on `predev` in every
 ///   repo." Measured on this very branch the day this was written: merge-base with `predev` is 77
 ///   commits back; merge-base with `dev` is 2 421 commits back, three weeks earlier.

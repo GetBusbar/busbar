@@ -49,7 +49,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # THE BASE. Spelled to match `xtask/src/gates/construction/ceilings.rs::INTEGRATION_REF`: a branch
 # that is measured against one ref by the ceilings and another by the mutants can be green on both
 # while being unheld on the difference between them. `predev` is the permanent WIP branch every
-# repo's in-flight work lands on and forks from (DECISIONS.md #67) -- the successor to the
+# repo's in-flight work lands on and forks from (BUSBAR-1.6.0.md Part 2 #67) -- the successor to the
 # now-renamed `integration/oracle-phase0` phase line. See INTEGRATION_REF's own doc comment for why
 # `dev` (release-train-write-only, promoted rarely) and the trunk this script happens to run on are
 # both the wrong ref. KEEP THIS IN SYNC WITH `INTEGRATION_REF` BY HAND -- there is no single source

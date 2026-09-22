@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOT-PATH PERF INSTRUMENT — the `<1µs` witness of
-//! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 ("Perf gate (<1µs): criterion,
+//! `docs/design/BUSBAR-1.6.0.md` Part 3 §8 ("Perf gate (<1µs): criterion,
 //! plugin-host-vtable vs direct-call baseline, delta<1µs p50 AND p99; a per-token host-call counter
 //! on the streaming path asserted == 0"), also part of the tests/benches 8→9 rise.
 //!
