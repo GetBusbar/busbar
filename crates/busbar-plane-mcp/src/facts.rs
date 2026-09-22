@@ -62,11 +62,11 @@ pub const META_MEMBER: &str = "_meta";
 /// The metadata key naming the revision a caller is speaking. The CODEC's, read by identity: the
 /// server half requires it inbound and writes it outbound, and a key this plane merely copied is a
 /// key the two spellings can drift apart on while each side stays consistent with itself.
-pub const META_PROTOCOL_VERSION: &str = busbar_mcp_codec::codec::META_PROTOCOL_VERSION;
+pub const META_PROTOCOL_VERSION: &str = crate::codec::META_PROTOCOL_VERSION;
 
 /// The metadata key naming what the caller can answer if asked. The codec's, for the reason
 /// [`META_PROTOCOL_VERSION`] states.
-pub const META_CLIENT_CAPABILITIES: &str = busbar_mcp_codec::codec::META_CLIENT_CAPABILITIES;
+pub const META_CLIENT_CAPABILITIES: &str = crate::codec::META_CLIENT_CAPABILITIES;
 
 /// The metadata key naming a token progress should be reported under.
 pub const META_PROGRESS_TOKEN: &str = "progressToken";

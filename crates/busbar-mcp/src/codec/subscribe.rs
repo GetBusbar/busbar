@@ -49,7 +49,7 @@ use busbar_substrate_values::ir::subscribe::{SubscribeIntent, SubscribeReq, Subs
 #[cfg(any(test, feature = "test-support"))]
 use busbar_substrate_values::wire::WireBody;
 
-use super::{METHOD_RESOURCES_SUBSCRIBE, METHOD_RESOURCES_UNSUBSCRIBE};
+use busbar_plane_mcp::codec::{METHOD_RESOURCES_SUBSCRIBE, METHOD_RESOURCES_UNSUBSCRIBE};
 
 /// The subscription codec.
 ///

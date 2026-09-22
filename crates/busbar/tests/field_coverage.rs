@@ -230,7 +230,8 @@ fn every_carried_claim_names_a_real_test() {
         repo_root().join("crates/busbar/src"),
         repo_root().join("crates/busbar-llm/src"),
         repo_root().join("crates/busbar-llm-codec/src"),
-        repo_root().join("crates/busbar-mcp-codec/src"),
+        repo_root().join("crates/busbar-mcp/src/codec"),
+        repo_root().join("crates/busbar-plane-mcp/src"),
         repo_root().join("crates/busbar-a2a-codec/src"),
         repo_root().join("crates/busbar-voice-codec/src"),
     ];

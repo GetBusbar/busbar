@@ -14,12 +14,15 @@
 # durable state — the tool catalogue, the approvals, the settings — is reached only through record
 # legs on that plan, never through a store this crate holds.
 #
-# THE DEPENDENCY EDGE, STATED HONESTLY. The contract crate is the surface a plugin is written
-# against and it stands alone. `busbar-mcp` is named here for the codec vocabulary only, and it is
-# a heavier crate than a pure plane's dependency rule would like: it carries an HTTP stack, an
-# async runtime and the engine that still lives beside its codec. That is a finding about where the
-# codec sits today, not a decision taken here — the adapter itself names no runtime, opens nothing,
-# holds no connection and reads no clock but the one the context hands it.
+# THE DEPENDENCY EDGE, AND THE THING THAT CHANGED. There is no longer a codec crate to name. The
+# MCP wire dialect — the mount path, the revision, the method names, the `_meta` keys, the error
+# code table, the notification pair, the durable record vocabulary, the content sanitizer and the
+# structured-output check — folded IN here, because definition 16–20 puts everything one protocol
+# needs and no other protocol may name in the protocol's own plane crate (#39: no `busbar-*-codec`).
+# The engine's registry row and its two operation cells did NOT come with it: they name the kernel's
+# handler matrix, which is kernel-side machinery, and they now read this crate's vocabulary rather
+# than restating it. The adapter still names no runtime, opens nothing, holds no connection and
+# reads no clock but the one the context hands it.
 [package]
 name = "busbar-plane-mcp"
 version = "1.6.0"
@@ -40,11 +43,10 @@ path = "src/lib.rs"
 [dependencies]
 # THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
 busbar-contract = { path = "../busbar-contract" }
-# THE CODEC. Read-only from here: this crate calls the JSON-RPC envelope vocabulary, the method
-# names and the notification codec, and edits none of them. `busbar-mcp-codec`, NOT `busbar-mcp`:
-# the codec split out of the plugin so a PURE kind can name it; the axum routes, the stdio serve
-# loop and the tokio client transports stayed in `busbar-mcp`, and this edge names only the codec.
-busbar-mcp-codec = { path = "../busbar-mcp-codec" }
+# The notification codec writes its envelope as bytes, the same type the frame cursor hands in.
+bytes = { workspace = true }
+# The two wire parameter objects the notification codec reads and writes derive their shapes.
+serde = { workspace = true }
 # The object notation the codec speaks. The adapter hands values across the seam and never invents
 # a second parser.
 serde_json = { workspace = true }

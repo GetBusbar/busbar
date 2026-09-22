@@ -77,36 +77,36 @@ pub const RESULT_TYPE_TASK: &str = "task";
 // holds the remaining question, which is whether the SET this plane may write is one the codec knows.
 
 /// The bytes could not be read at all.
-pub const CODE_PARSE_ERROR: i64 = busbar_mcp_codec::codec::CODE_PARSE_ERROR;
+pub const CODE_PARSE_ERROR: i64 = crate::codec::CODE_PARSE_ERROR;
 
 /// The envelope was not a request.
-pub const CODE_INVALID_REQUEST: i64 = busbar_mcp_codec::codec::CODE_INVALID_REQUEST;
+pub const CODE_INVALID_REQUEST: i64 = crate::codec::CODE_INVALID_REQUEST;
 
 /// The method named is not one this node answers.
-pub const CODE_METHOD_NOT_FOUND: i64 = busbar_mcp_codec::codec::CODE_METHOD_NOT_FOUND;
+pub const CODE_METHOD_NOT_FOUND: i64 = crate::codec::CODE_METHOD_NOT_FOUND;
 
 /// The parameters were not admissible.
-pub const CODE_INVALID_PARAMS: i64 = busbar_mcp_codec::codec::CODE_INVALID_PARAMS;
+pub const CODE_INVALID_PARAMS: i64 = crate::codec::CODE_INVALID_PARAMS;
 
 /// Something on this side failed.
-pub const CODE_INTERNAL: i64 = busbar_mcp_codec::codec::CODE_INTERNAL;
+pub const CODE_INTERNAL: i64 = crate::codec::CODE_INTERNAL;
 
 /// A mirrored header did not agree with the body it was mirrored from.
-pub const CODE_HEADER_MISMATCH: i64 = busbar_mcp_codec::codec::CODE_HEADER_MISMATCH;
+pub const CODE_HEADER_MISMATCH: i64 = crate::codec::CODE_HEADER_MISMATCH;
 
 /// The caller did not declare a capability the answer would have needed.
 pub const CODE_MISSING_CLIENT_CAPABILITY: i64 =
-    busbar_mcp_codec::codec::CODE_MISSING_CLIENT_CAPABILITY;
+    crate::codec::CODE_MISSING_CLIENT_CAPABILITY;
 
 /// The revision the caller asked for is not one this node speaks.
 pub const CODE_UNSUPPORTED_PROTOCOL_VERSION: i64 =
-    busbar_mcp_codec::codec::CODE_UNSUPPORTED_PROTOCOL_VERSION;
+    crate::codec::CODE_UNSUPPORTED_PROTOCOL_VERSION;
 
 /// A policy said no.
-pub const CODE_REFUSED: i64 = busbar_mcp_codec::codec::CODE_REFUSED;
+pub const CODE_REFUSED: i64 = crate::codec::CODE_REFUSED;
 
 /// The server this call would have reached could not be reached.
-pub const CODE_UPSTREAM_UNAVAILABLE: i64 = busbar_mcp_codec::codec::CODE_UPSTREAM_UNAVAILABLE;
+pub const CODE_UPSTREAM_UNAVAILABLE: i64 = crate::codec::CODE_UPSTREAM_UNAVAILABLE;
 
 /// Every code this plane may write.
 pub const CODES: &[i64] = &[
@@ -127,7 +127,7 @@ pub const CODES: &[i64] = &[
 /// Declared so the test below can assert this plane writes none of them. A retired code is worse
 /// than an unknown one: a peer that still recognises it will act on a meaning this node did not
 /// intend.
-pub const RETIRED_CODES: &[i64] = busbar_mcp_codec::codec::RETIRED_CODES;
+pub const RETIRED_CODES: &[i64] = crate::codec::RETIRED_CODES;
 
 /// What kind of scalar the identifier member held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

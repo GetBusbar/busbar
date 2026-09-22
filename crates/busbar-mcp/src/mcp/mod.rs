@@ -123,7 +123,7 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
     busbar_kernel::plane::registry::PlaneDecl {
         // THE KEY IS THE CODEC'S OWN, named once on the pure side of the split so this declaration,
         // the protocol declaration and the contract plane in `busbar-plane-mcp` cannot drift apart.
-        key: busbar_mcp_codec::PLANE_KEY,
+        key: busbar_plane_mcp::PLANE_KEY,
         // A MOUNTED plane, not the fallback catch-all.
         fallback: false,
         config_section: "tools",
@@ -875,20 +875,20 @@ pub mod method;
 /// The check that keeps the promise `outputSchema` makes. Publishing a schema makes conforming
 /// structured results a MUST for the server that published it, and on this plane that server is
 /// busbar — while the value itself comes from an upstream that can return whatever it likes.
-/// MOVED to `busbar-mcp-codec` (it is a total function of a schema and a value, so it travelled
+/// MOVED to `busbar-plane-mcp` (it is a total function of a schema and a value, so it travelled
 /// with the codec); re-exported here under its old in-crate path so `super::outputschema::check`
 /// and `crate::mcp::outputschema::check` resolve unchanged.
-pub(crate) use busbar_mcp_codec::outputschema;
+pub(crate) use busbar_plane_mcp::outputschema;
 pub(crate) mod reroute;
 pub(crate) mod resource;
 pub(crate) mod roots;
 /// The `sampling/createMessage` SATISFIER and the per-upstream budget it spends — the other
 /// operator-declared answer to an upstream's ask, beside `roots`.
 pub(crate) mod sampling;
-/// MOVED to `busbar-mcp-codec` (it is a total function of a string, so it travelled with the
+/// MOVED to `busbar-plane-mcp` (it is a total function of a string, so it travelled with the
 /// codec); re-exported here under its old in-crate path so `super::sanitize::…` and
 /// `crate::mcp::sanitize::…` resolve unchanged.
-pub(crate) use busbar_mcp_codec::sanitize;
+pub(crate) use busbar_plane_mcp::sanitize;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
 /// revision removed the GET stream, not Server-Sent Events — see the module header.
 pub(crate) mod sse;
@@ -1041,7 +1041,7 @@ impl std::fmt::Display for McpCfgError {
 /// The join itself is on the CODEC side, so the plane — which declares an OPEN claim on the composed
 /// discovery path and may not name this crate — reads the same composer rather than a second one.
 /// The well-known prefix went with it; there is one place the two are put together now.
-use busbar_mcp_codec::codec::protected_resource_metadata_path;
+use busbar_plane_mcp::codec::protected_resource_metadata_path;
 
 impl McpResource {
     /// Validate and derive. Every refusal is fail-closed at BOOT rather than at first request: an

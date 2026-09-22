@@ -5,7 +5,7 @@
 //!
 //! The MCP codec used to read its five JSON-RPC method names straight off `rmcp`'s own const-string
 //! types, so a name the specification authors retired stopped COMPILING rather than being served.
-//! The codec then crossed into `busbar-mcp-codec`, whose whole point is that a PURE plane kind can
+//! The codec then crossed into `busbar-plane-mcp`, whose whole point is that a PURE plane kind can
 //! name it — and `rmcp` hard-depends on `tokio`, which is exactly what a pure kind's transitive
 //! closure may not contain. So the codec spells the five names as literals and the pin lives here,
 //! in the crate that still links the SDK.
@@ -23,29 +23,29 @@ use rmcp::model::ConstString;
 #[test]
 fn every_wire_name_this_cell_serves_is_the_one_the_sdk_declares() {
     assert_eq!(
-        busbar_mcp_codec::codec::METHOD_TOOLS_CALL,
+        busbar_plane_mcp::codec::METHOD_TOOLS_CALL,
         rmcp::model::CallToolRequestMethod::VALUE
     );
     assert_eq!(
-        busbar_mcp_codec::codec::METHOD_RESOURCES_SUBSCRIBE,
+        busbar_plane_mcp::codec::METHOD_RESOURCES_SUBSCRIBE,
         rmcp::model::SubscribeRequestMethod::VALUE
     );
     assert_eq!(
-        busbar_mcp_codec::codec::METHOD_RESOURCES_UNSUBSCRIBE,
+        busbar_plane_mcp::codec::METHOD_RESOURCES_UNSUBSCRIBE,
         rmcp::model::UnsubscribeRequestMethod::VALUE
     );
     assert_eq!(
-        busbar_mcp_codec::codec::METHOD_NOTIFY_TOOLS_LIST_CHANGED,
+        busbar_plane_mcp::codec::METHOD_NOTIFY_TOOLS_LIST_CHANGED,
         rmcp::model::ToolListChangedNotificationMethod::VALUE
     );
     assert_eq!(
-        busbar_mcp_codec::codec::METHOD_NOTIFY_RESOURCES_UPDATED,
+        busbar_plane_mcp::codec::METHOD_NOTIFY_RESOURCES_UPDATED,
         rmcp::model::ResourceUpdatedNotificationMethod::VALUE
     );
     // SEP-2575's listen method, which joined the codec when `IMPLEMENTED_METHODS` did — the dispatch
     // list has to be readable by `busbar-plane-mcp`, and this crate is where the SDK edge still is.
     assert_eq!(
-        busbar_mcp_codec::codec::METHOD_SUBSCRIPTIONS_LISTEN,
+        busbar_plane_mcp::codec::METHOD_SUBSCRIPTIONS_LISTEN,
         rmcp::model::SubscriptionsListenRequestMethod::VALUE
     );
 

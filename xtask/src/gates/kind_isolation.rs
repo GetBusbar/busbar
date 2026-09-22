@@ -34,7 +34,7 @@
 //!   A NEW class is refused; a class that no longer exists is refused as a
 //!   dead allowance. The measured graph is printed in the row's detail so the owner can tighten it
 //!   by deleting lines rather than by re-deriving it. Inside the plane family a crate may only
-//!   name its OWN instance, so `busbar-plane-llm` naming `busbar-mcp-codec` is refused.
+//!   name its OWN instance, so `busbar-plane-llm` naming `busbar-a2a-codec` is refused.
 //! * `kind-isolation:test-deps` — THE OTHER HALF OF THE BUILD GRAPH. `[dev-dependencies]` was read
 //!   by the battery rule and by nothing else, on the sentence "a test edge is not a shipped edge" —
 //!   which is true, and is not a reason to leave it unmeasured. A plane declared in a transport's
@@ -5338,7 +5338,7 @@ impl Gate for KindIsolationGate {
             manifest_plant(
                 "crates/busbar-plane-llm",
                 "busbar-plane-llm",
-                &["busbar-contract", "busbar-mcp-codec"],
+                &["busbar-contract", "busbar-a2a-codec"],
             ),
             &["cross-instance", "busbar-plane-llm"],
         ));

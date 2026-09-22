@@ -64,13 +64,13 @@ use super::sanitize;
 ///
 /// Exposed as a slice so `server/discover` advertises exactly what dispatch accepts: two lists that
 /// can disagree is a client told it may call something it may not. The LIST lives in
-/// `busbar-mcp-codec` and this is a re-export, because a THIRD reader — `busbar-plane-mcp`, which
+/// `busbar-plane-mcp` and this is a re-export, because a THIRD reader — this crate's own cells, which
 /// carries a row per method and may not name this crate — has to be able to see it; a method this
 /// server dispatches and the plane does not carry arrives as an unsupported operation. Nothing
 /// about the list changed crossing the seam, including that `subscriptions/listen` is on it (SEP-2575
 /// made it a METHOD rather than a route, which is why `super::envelope::legacy_verb` can go on
 /// answering `405` without that being a statement that busbar cannot notify a client).
-pub(crate) use busbar_mcp_codec::codec::IMPLEMENTED_METHODS;
+pub(crate) use busbar_plane_mcp::codec::IMPLEMENTED_METHODS;
 
 /// `resultType` on every result this server returns: `complete`, never `input_required`.
 ///
@@ -1271,7 +1271,7 @@ async fn tools_call_via_gauntlet(
 /// [`CallLog::open`] seeds the record's `tool` field with the caller's OWN, unvalidated name —
 /// right, for an ordinary bad name: a refusal that matched no registration still has to say what
 /// was asked for. Wrong for an UNBOUNDED one, because that field is written verbatim into
-/// `McpCallRecord` (`busbar_mcp_codec::record::McpCallRecord::tool`), a DURABLE, HASH-CHAINED row
+/// `McpCallRecord` (`crate::record::McpCallRecord::tool`), a DURABLE, HASH-CHAINED row
 /// the instant any terminal fires — refusal included — and the row then participates in chain
 /// verification forever. Bounding the field on some later terminal is not enough: whatever `open`
 /// was called with is already the value every terminal after it writes. So the ordering IS the fix
@@ -2616,21 +2616,21 @@ fn refuse_catalogue(
 /// a refusal by policy is: the request was well formed, the method exists, and the server declined.
 /// `-32602` would say the arguments were wrong and `-32601` would say the method was missing, and
 /// both would send an operator debugging the wrong thing.
-pub(super) const CODE_REFUSED: i64 = busbar_mcp_codec::codec::CODE_REFUSED;
+pub(super) const CODE_REFUSED: i64 = busbar_plane_mcp::codec::CODE_REFUSED;
 
 /// `MissingRequiredClientCapability` — the MCP-band sibling of `-32020` (header mismatch) and
 /// `-32022` (unsupported protocol version). Emitted on ONE arm only; see the comment at its single
 /// call site in `refuse_ask` for why this is one arm rather than a class.
-const CODE_MISSING_CLIENT_CAPABILITY: i64 = busbar_mcp_codec::codec::CODE_MISSING_CLIENT_CAPABILITY;
+const CODE_MISSING_CLIENT_CAPABILITY: i64 = busbar_plane_mcp::codec::CODE_MISSING_CLIENT_CAPABILITY;
 /// JSON-RPC standard: the params were structurally wrong.
-const CODE_INVALID_PARAMS: i64 = busbar_mcp_codec::codec::CODE_INVALID_PARAMS;
+const CODE_INVALID_PARAMS: i64 = busbar_plane_mcp::codec::CODE_INVALID_PARAMS;
 
 /// THE TRIPPED-UPSTREAM ERROR — the owner-agreed rendering for a tripped MCP upstream. In the
 /// implementation-defined `-32000..-32099` band beside busbar's other extensions, because every
 /// reserved code is wrong for a specific reason: `-32603` says busbar broke (it did not), `-32601`
 /// says the tool does not exist (it does), `-32602` blames the caller. The call NEVER HAPPENED, so
 /// this is a JSON-RPC error and never an `isError` tool result — see `refuse_upstream_unavailable`.
-const CODE_UPSTREAM_UNAVAILABLE: i64 = busbar_mcp_codec::codec::CODE_UPSTREAM_UNAVAILABLE;
+const CODE_UPSTREAM_UNAVAILABLE: i64 = busbar_plane_mcp::codec::CODE_UPSTREAM_UNAVAILABLE;
 
 /// The call-log reason token for a breaker refusal. `refused` is exact here: the call did not go
 /// out, which is precisely what that disposition documents.

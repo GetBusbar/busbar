@@ -223,7 +223,7 @@ fn an_error_carries_its_detail() {
 fn every_code_is_the_codecs_own() {
     for code in CODES {
         assert!(
-            busbar_mcp_codec::codec::CODES.contains(code),
+            crate::codec::CODES.contains(code),
             "the codec no longer names the code {code}"
         );
     }

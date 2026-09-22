@@ -9,10 +9,11 @@
 
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
 
-/// The `call` kind — the MCP per-call log record's neutral `PlaneRecord.kind` tag.
-pub const KIND_CALL: &str = "call";
-/// The `demotion` kind — the MCP upstream-demotion record's neutral `PlaneRecord.kind` tag.
-pub const KIND_DEMOTION: &str = "demotion";
+// THE TWO KIND STRINGS ARE THE PLANE'S, AND ARE READ FROM IT. A record kind is the name the plane
+// declares its schema under (`busbar_plane_mcp::records::SCHEMA_CALL`), so it is named once, there,
+// and this crate reads it. Spelling it on both sides is how two answers to "what is this record
+// called" come to differ, and the schema id is what a store indexes by.
+pub use busbar_plane_mcp::records::{KIND_CALL, KIND_DEMOTION};
 
 /// One MCP TOOL-CALL record, as it crosses the store seam for DURABLE persistence — the per-call
 /// evidence the audit claim rests on. The chain is scoped to the PRINCIPAL. A store persists these

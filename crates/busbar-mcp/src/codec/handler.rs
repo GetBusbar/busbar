@@ -48,7 +48,7 @@ use busbar_substrate_values::handlers::{Cell, OperationHandler, RequestHandler};
 
 use super::invoke::InvokeOperation;
 use super::subscribe::SubscribeOperation;
-use super::{
+use busbar_plane_mcp::codec::{
     METHOD_RESOURCES_SUBSCRIBE, METHOD_RESOURCES_UNSUBSCRIBE, METHOD_TOOLS_CALL, PATH_MCP,
 };
 

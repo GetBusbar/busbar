@@ -241,6 +241,6 @@ fn actual_type(v: &Value) -> &'static str {
     }
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "tests/outputschema_tests.rs"]
 mod outputschema_tests;

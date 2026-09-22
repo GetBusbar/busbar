@@ -18,7 +18,7 @@ use busbar_substrate_values::ir::SourceScopedExtra;
 use busbar_substrate_values::wire::WireBody;
 
 #[cfg(any(test, feature = "test-support"))]
-use super::METHOD_TOOLS_CALL;
+use busbar_plane_mcp::codec::METHOD_TOOLS_CALL;
 
 /// The `tools/call` codec.
 pub struct InvokeOperation;
@@ -143,7 +143,7 @@ pub(crate) fn read_invoke_response(wire: &[u8]) -> Result<InvokeResp, CodecError
     }
     let mut extra = SourceScopedExtra::new();
     if !carried.is_empty() {
-        extra.insert(crate::PLANE_KEY.to_string(), carried);
+        extra.insert(busbar_plane_mcp::PLANE_KEY.to_string(), carried);
     }
     Ok(InvokeResp {
         content,
@@ -194,7 +194,7 @@ pub(crate) fn invoke_write_response(r: &InvokeResp) -> WireBody {
     // CARRIED VERBATIM, NEVER SYNTHESISED. This IR relays the structured content the tool produced
     // and emits the member only where there was some; it does not check it. Holding the result to
     // the schema busbar published for the tool is a separate job with separate inputs, and it lives
-    // at the plane in `crate::outputschema::check`.
+    // at the plane in `busbar_plane_mcp::outputschema::check`.
     if let Some(s) = &r.structured {
         result["structuredContent"] = s.clone();
     }

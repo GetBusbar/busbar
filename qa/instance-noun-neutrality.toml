@@ -6,7 +6,15 @@
 [[leak]]
 noun = "a2a"
 kind = "plane"
-file = "crates/busbar-admin/src/lib.rs"
+file = "crates/busbar-contract/tests/grammar_overlaps.rs"
+count = 28
+category = "shared-crate"
+wave = "shared-crate neutralization — the ABI-side crates must compile with every plugin removed"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar-core-admin/src/lib.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -14,7 +22,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "a2a"
 kind = "plane"
-file = "crates/busbar-admin/src/tests/tests.rs"
+file = "crates/busbar-core-admin/src/tests/tests.rs"
 count = 7
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -22,18 +30,10 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "a2a"
 kind = "plane"
-file = "crates/busbar-admin/src/v1/json/tests/tests.rs"
+file = "crates/busbar-core-admin/src/v1/json/tests/tests.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "a2a"
-kind = "plane"
-file = "crates/busbar-contract/tests/grammar_overlaps.rs"
-count = 28
-category = "shared-crate"
-wave = "shared-crate neutralization — the ABI-side crates must compile with every plugin removed"
 
 [[leak]]
 noun = "a2a"
@@ -47,7 +47,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 noun = "a2a"
 kind = "plane"
 file = "crates/busbar-kernel/src/admin/tests/planeverbs_tests.rs"
-count = 8
+count = 2
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -62,16 +62,8 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "a2a"
 kind = "plane"
-file = "crates/busbar-kernel/src/config/tests/migrate_tests.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "a2a"
-kind = "plane"
 file = "crates/busbar-kernel/src/config/tests/tests.rs"
-count = 3
+count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -96,38 +88,6 @@ noun = "a2a"
 kind = "plane"
 file = "crates/busbar-kernel/src/governance/tests/signing_tests.rs"
 count = 6
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "a2a"
-kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/config_tests.rs"
-count = 12
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "a2a"
-kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/plane_tests.rs"
-count = 27
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "a2a"
-kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/registry_tests.rs"
-count = 43
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "a2a"
-kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/sections_tests.rs"
-count = 8
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -174,14 +134,6 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "a2a"
 kind = "plane"
-file = "crates/busbar-kernel/src/tests/transport_tests.rs"
-count = 3
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "a2a"
-kind = "plane"
 file = "crates/busbar-kernel/src/trust/tests/genericity_tests.rs"
 count = 1
 category = "core"
@@ -206,8 +158,72 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "a2a"
 kind = "plane"
+file = "crates/busbar-kernel/tests/admin_planeverbs_cross_plane.rs"
+count = 8
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar-kernel/tests/config_cross_plane.rs"
+count = 3
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar-kernel/tests/config_migrate_cross_plane.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar-kernel/tests/named_map_cross_plane.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar-kernel/tests/plane_config_cross_plane.rs"
+count = 13
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar-kernel/tests/plane_dispatch_cross_plane.rs"
+count = 31
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar-kernel/tests/plane_host_dispatch_cross_plane.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
 file = "crates/busbar-kernel/tests/plane_integration.rs"
 count = 40
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "a2a"
+kind = "plane"
+file = "crates/busbar-kernel/tests/registry_cross_plane.rs"
+count = 45
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -222,16 +238,16 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "a2a"
 kind = "plane"
-file = "crates/busbar-plane-a2a-host/src/diagnostics.rs"
-count = 133
+file = "crates/busbar-plane-decision/tests/invariance.rs"
+count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
 noun = "a2a"
 kind = "plane"
-file = "crates/busbar-plane-a2a-host/src/tests/diagnostics_tests.rs"
-count = 3
+file = "crates/busbar-plane-decision/tests/purity.rs"
+count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -335,7 +351,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 noun = "a2a"
 kind = "plane"
 file = "crates/busbar/src/root/tests/units_a2a.rs"
-count = 33
+count = 58
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -343,7 +359,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 noun = "a2a"
 kind = "plane"
 file = "crates/busbar/src/root/units_a2a.rs"
-count = 22
+count = 23
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -590,38 +606,6 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-admin/src/keys.rs"
-count = 3
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "bearer"
-kind = "auth"
-file = "crates/busbar-admin/src/tests/core_moved_tests.rs"
-count = 17
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "bearer"
-kind = "auth"
-file = "crates/busbar-admin/src/tests/tests.rs"
-count = 3
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "bearer"
-kind = "auth"
-file = "crates/busbar-admin/src/v1/json/handlers.rs"
-count = 5
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "bearer"
-kind = "auth"
 file = "crates/busbar-contract/src/caps/tests/mod.rs"
 count = 1
 category = "shared-crate"
@@ -642,6 +626,46 @@ file = "crates/busbar-contract/tests/grammar_overlaps.rs"
 count = 7
 category = "shared-crate"
 wave = "shared-crate neutralization — the ABI-side crates must compile with every plugin removed"
+
+[[leak]]
+noun = "bearer"
+kind = "auth"
+file = "crates/busbar-core-admin/src/admin_codec/claims.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "bearer"
+kind = "auth"
+file = "crates/busbar-core-admin/src/keys.rs"
+count = 3
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "bearer"
+kind = "auth"
+file = "crates/busbar-core-admin/src/tests/core_moved_tests.rs"
+count = 17
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "bearer"
+kind = "auth"
+file = "crates/busbar-core-admin/src/tests/tests.rs"
+count = 3
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "bearer"
+kind = "auth"
+file = "crates/busbar-core-admin/src/v1/json/handlers.rs"
+count = 5
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
 noun = "bearer"
@@ -910,14 +934,6 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-kernel/src/tests/key_expires_at_tests.rs"
-count = 2
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "bearer"
-kind = "auth"
 file = "crates/busbar-kernel/src/tests/metrics_tests.rs"
 count = 1
 category = "core"
@@ -934,7 +950,15 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-kernel/tests/arena_and_masking.rs"
+file = "crates/busbar-kernel/tests/key_expires_at_cross_plane.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "bearer"
+kind = "auth"
+file = "crates/busbar-kernel/tests/mask.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -1150,7 +1174,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-mcp-codec/src/codec/mod.rs"
+file = "crates/busbar-mcp/src/codec/mod.rs"
 count = 1
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -1302,7 +1326,31 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-plane-admin/src/claims.rs"
+file = "crates/busbar-plane-decision/src/claims.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "bearer"
+kind = "auth"
+file = "crates/busbar-plane-decision/src/plane.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "bearer"
+kind = "auth"
+file = "crates/busbar-plane-decision/src/tests/claims.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "bearer"
+kind = "auth"
+file = "crates/busbar-plane-decision/tests/purity.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -1588,22 +1636,6 @@ category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
-noun = "gcp"
-kind = "auth"
-file = "crates/busbar-a2a/src/a2a/tests/fetch_tests.rs"
-count = 5
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "gcp"
-kind = "auth"
-file = "crates/busbar-substrate-values/src/diagnostics/mod.rs"
-count = 1
-category = "substrate"
-wave = "substrate neutralization — opaque PlaneRecord across the ABI, never an instance noun"
-
-[[leak]]
 noun = "grpc"
 kind = "transport"
 file = "crates/busbar-plane-a2a/src/claims.rs"
@@ -1710,6 +1742,30 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "http"
 kind = "transport"
+file = "crates/busbar-plane-decision/src/claims.rs"
+count = 3
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "http"
+kind = "transport"
+file = "crates/busbar-plane-decision/src/plane.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "http"
+kind = "transport"
+file = "crates/busbar-plane-decision/src/tests/claims.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "http"
+kind = "transport"
 file = "crates/busbar-plane-mcp/src/claims.rs"
 count = 3
 category = "cross-plugin"
@@ -1790,6 +1846,14 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 [[leak]]
 noun = "http"
 kind = "transport"
+file = "crates/busbar/src/root/tests/transports.rs"
+count = 2
+category = "composition-root"
+wave = "keystone / composition-root — register_planes both-ways self-registration"
+
+[[leak]]
+noun = "http"
+kind = "transport"
 file = "crates/busbar/src/root/tests/units_mcp.rs"
 count = 20
 category = "composition-root"
@@ -1838,18 +1902,18 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "llm"
 kind = "plane"
-file = "crates/busbar-admin/src/lib.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
 file = "crates/busbar-contract/tests/destination_kinds.rs"
 count = 2
 category = "shared-crate"
 wave = "shared-crate neutralization — the ABI-side crates must compile with every plugin removed"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-core-admin/src/lib.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
 noun = "llm"
@@ -1864,22 +1928,6 @@ noun = "llm"
 kind = "plane"
 file = "crates/busbar-kernel/src/config/mod.rs"
 count = 4
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar-kernel/src/config/tests/migrate_tests.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar-kernel/src/config/tests/tests.rs"
-count = 2
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -1904,54 +1952,6 @@ noun = "llm"
 kind = "plane"
 file = "crates/busbar-kernel/src/handlers/tests/chat_fixture.rs"
 count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar-kernel/src/ingress/tests/body_ingress_builtins.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar-kernel/src/ingress/tests/path_ingress_builtins.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/config_tests.rs"
-count = 1
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/plane_tests.rs"
-count = 22
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/registry_tests.rs"
-count = 7
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "llm"
-kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/sections_tests.rs"
-count = 13
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -2014,15 +2014,95 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "llm"
 kind = "plane"
-file = "crates/busbar-kernel/src/tests/telemetry_tests.rs"
-count = 5
+file = "crates/busbar-kernel/src/tests/tests.rs"
+count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
 noun = "llm"
 kind = "plane"
-file = "crates/busbar-kernel/src/tests/tests.rs"
+file = "crates/busbar-kernel/tests/alarm_silence_cross_plane.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-kernel/tests/auth_cross_plane.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-kernel/tests/config_cross_plane.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-kernel/tests/config_migrate_cross_plane.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-kernel/tests/endpoints_cross_plane.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-kernel/tests/key_expires_at_cross_plane.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-kernel/tests/metrics_cross_plane.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-kernel/tests/named_map_cross_plane.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-kernel/tests/plane_config_cross_plane.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-kernel/tests/plane_dispatch_cross_plane.rs"
+count = 23
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-kernel/tests/plane_host_dispatch_cross_plane.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -2032,6 +2112,14 @@ noun = "llm"
 kind = "plane"
 file = "crates/busbar-kernel/tests/plane_integration.rs"
 count = 15
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-kernel/tests/registry_cross_plane.rs"
+count = 9
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -2094,6 +2182,22 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "llm"
 kind = "plane"
+file = "crates/busbar-plane-decision/tests/invariance.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar-plane-decision/tests/purity.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
 file = "crates/busbar-plane-mcp/src/meta.rs"
 count = 1
 category = "cross-plugin"
@@ -2143,7 +2247,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 noun = "llm"
 kind = "plane"
 file = "crates/busbar/src/main.rs"
-count = 25
+count = 29
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -2190,6 +2294,14 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 [[leak]]
 noun = "llm"
 kind = "plane"
+file = "crates/busbar/src/root/tests/transports.rs"
+count = 2
+category = "composition-root"
+wave = "keystone / composition-root — register_planes both-ways self-registration"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
 file = "crates/busbar/src/root/tests/units_llm.rs"
 count = 40
 category = "composition-root"
@@ -2208,6 +2320,14 @@ noun = "llm"
 kind = "plane"
 file = "crates/busbar/src/root/units_llm.rs"
 count = 40
+category = "composition-root"
+wave = "keystone / composition-root — register_planes both-ways self-registration"
+
+[[leak]]
+noun = "llm"
+kind = "plane"
+file = "crates/busbar/src/tests/tests.rs"
+count = 7
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -2342,30 +2462,6 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "mcp"
 kind = "plane"
-file = "crates/busbar-admin/src/lib.rs"
-count = 3
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
-file = "crates/busbar-admin/src/tests/tests.rs"
-count = 9
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
-file = "crates/busbar-admin/src/v1/tests/service_tests.rs"
-count = 8
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
 file = "crates/busbar-contract/tests/grammar_overlaps.rs"
 count = 3
 category = "shared-crate"
@@ -2390,6 +2486,30 @@ wave = "shared-crate neutralization — the ABI-side crates must compile with ev
 [[leak]]
 noun = "mcp"
 kind = "plane"
+file = "crates/busbar-core-admin/src/lib.rs"
+count = 3
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-core-admin/src/tests/tests.rs"
+count = 9
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-core-admin/src/v1/tests/service_tests.rs"
+count = 8
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
 file = "crates/busbar-kernel-egress/src/trust/tests/net_tests.rs"
 count = 6
 category = "core"
@@ -2406,7 +2526,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "mcp"
 kind = "plane"
-file = "crates/busbar-kernel-ledger/src/records_tests.rs"
+file = "crates/busbar-contract/src/tests/records_tests.rs"
 count = 19
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -2415,7 +2535,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 noun = "mcp"
 kind = "plane"
 file = "crates/busbar-kernel/src/admin/tests/planeverbs_tests.rs"
-count = 8
+count = 2
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -2479,7 +2599,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 noun = "mcp"
 kind = "plane"
 file = "crates/busbar-kernel/src/config/tests/migrate_tests.rs"
-count = 6
+count = 3
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -2487,7 +2607,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 noun = "mcp"
 kind = "plane"
 file = "crates/busbar-kernel/src/config/tests/tests.rs"
-count = 8
+count = 2
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -2496,14 +2616,6 @@ noun = "mcp"
 kind = "plane"
 file = "crates/busbar-kernel/src/config_validate/tests/secret_ref_coverage.rs"
 count = 4
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
-file = "crates/busbar-kernel/src/config_validate/tests/tests.rs"
-count = 3
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -2575,7 +2687,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 noun = "mcp"
 kind = "plane"
 file = "crates/busbar-kernel/src/plane/registry.rs"
-count = 2
+count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -2583,7 +2695,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 noun = "mcp"
 kind = "plane"
 file = "crates/busbar-kernel/src/plane/tests/config_tests.rs"
-count = 12
+count = 2
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -2598,32 +2710,8 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "mcp"
 kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/plane_tests.rs"
-count = 37
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/registry_tests.rs"
-count = 24
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
 file = "crates/busbar-kernel/src/plane/tests/sections_tests.rs"
-count = 14
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "mcp"
-kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/spentledger_tests.rs"
-count = 5
+count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -2631,7 +2719,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 noun = "mcp"
 kind = "plane"
 file = "crates/busbar-kernel/src/plane_host/tests/dispatch_tests.rs"
-count = 6
+count = 2
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -2734,8 +2822,88 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "mcp"
 kind = "plane"
+file = "crates/busbar-kernel/tests/admin_planeverbs_cross_plane.rs"
+count = 8
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-kernel/tests/config_cross_plane.rs"
+count = 8
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-kernel/tests/config_migrate_cross_plane.rs"
+count = 4
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-kernel/tests/config_validate_cross_plane.rs"
+count = 3
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-kernel/tests/named_map_cross_plane.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-kernel/tests/plane_config_cross_plane.rs"
+count = 13
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-kernel/tests/plane_dispatch_cross_plane.rs"
+count = 38
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-kernel/tests/plane_host_dispatch_cross_plane.rs"
+count = 5
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
 file = "crates/busbar-kernel/tests/plane_integration.rs"
 count = 78
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-kernel/tests/registry_cross_plane.rs"
+count = 24
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mcp"
+kind = "plane"
+file = "crates/busbar-kernel/tests/spentledger_cross_plane.rs"
+count = 5
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -2798,16 +2966,16 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "mcp"
 kind = "plane"
-file = "crates/busbar-plane-mcp-host/src/diagnostics.rs"
-count = 57
+file = "crates/busbar-plane-decision/tests/invariance.rs"
+count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
 noun = "mcp"
 kind = "plane"
-file = "crates/busbar-plane-mcp-host/src/tests/diagnostics_tests.rs"
-count = 3
+file = "crates/busbar-plane-decision/tests/purity.rs"
+count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -3086,7 +3254,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "mtls"
 kind = "auth"
-file = "crates/busbar-admin/src/v1/json/handlers.rs"
+file = "crates/busbar-core-admin/src/v1/json/handlers.rs"
 count = 7
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -3144,6 +3312,14 @@ noun = "mtls"
 kind = "auth"
 file = "crates/busbar-kernel/src/tests/tls_tests.rs"
 count = 5
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "mtls"
+kind = "auth"
+file = "crates/busbar-kernel/tests/config_cross_plane.rs"
+count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
@@ -3374,7 +3550,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "sigv4"
 kind = "auth"
-file = "crates/busbar-admin/src/keys.rs"
+file = "crates/busbar-core-admin/src/keys.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -3406,7 +3582,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "sigv4"
 kind = "auth"
-file = "crates/busbar-kernel-ledger/src/records_tests.rs"
+file = "crates/busbar-contract/src/tests/records_tests.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -3870,7 +4046,15 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "spki"
 kind = "auth"
-file = "crates/busbar-admin/src/tests/tests.rs"
+file = "crates/busbar-a2a/src/diagnostics.rs"
+count = 7
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "spki"
+kind = "auth"
+file = "crates/busbar-core-admin/src/tests/tests.rs"
 count = 2
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -3878,7 +4062,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "spki"
 kind = "auth"
-file = "crates/busbar-admin/src/v1/tests/service_tests.rs"
+file = "crates/busbar-core-admin/src/v1/tests/service_tests.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -4222,14 +4406,6 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "spki"
 kind = "auth"
-file = "crates/busbar-plane-a2a-host/src/diagnostics.rs"
-count = 7
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
-
-[[leak]]
-noun = "spki"
-kind = "auth"
 file = "crates/busbar-plugin/src/hot/pod.rs"
 count = 2
 category = "core"
@@ -4247,7 +4423,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 noun = "spki"
 kind = "auth"
 file = "crates/busbar-transport-http/src/lib.rs"
-count = 9
+count = 8
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
@@ -4255,7 +4431,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 noun = "spki"
 kind = "auth"
 file = "crates/busbar-transport-http/src/tests/mod.rs"
-count = 7
+count = 6
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
@@ -4270,7 +4446,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 [[leak]]
 noun = "sqlite"
 kind = "store"
-file = "crates/busbar-admin/src/v1/tests/service_tests.rs"
+file = "crates/busbar-core-admin/src/v1/tests/service_tests.rs"
 count = 6
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -4630,6 +4806,14 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "streaming"
 kind = "plane"
+file = "crates/busbar-a2a/src/diagnostics.rs"
+count = 5
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "streaming"
+kind = "plane"
 file = "crates/busbar-kernel-egress/src/tests/deadline_tests.rs"
 count = 1
 category = "core"
@@ -4758,7 +4942,23 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "streaming"
 kind = "plane"
+file = "crates/busbar-llm-codec/src/gemini/tests/float_usage_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "streaming"
+kind = "plane"
 file = "crates/busbar-llm-codec/src/openai_chat/mod.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "streaming"
+kind = "plane"
+file = "crates/busbar-llm-codec/src/openai_chat/tests/float_usage_tests.rs"
 count = 1
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
@@ -4776,6 +4976,14 @@ noun = "streaming"
 kind = "plane"
 file = "crates/busbar-llm-codec/src/openai_responses/tests/field_carry_tests.rs"
 count = 9
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "streaming"
+kind = "plane"
+file = "crates/busbar-llm-codec/src/openai_responses/tests/float_usage_tests.rs"
+count = 1
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 
@@ -4926,18 +5134,10 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "streaming"
 kind = "plane"
-file = "crates/busbar-mcp-codec/src/codec/mod.rs"
+file = "crates/busbar-mcp/src/codec/mod.rs"
 count = 1
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "streaming"
-kind = "plane"
-file = "crates/busbar-plane-a2a-host/src/diagnostics.rs"
-count = 5
-category = "core"
-wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
 noun = "streaming"
@@ -4986,6 +5186,22 @@ file = "crates/busbar-plane-a2a/tests/conformance.rs"
 count = 2
 category = "cross-plugin"
 wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "streaming"
+kind = "plane"
+file = "crates/busbar-plane-decision/tests/invariance.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "streaming"
+kind = "plane"
+file = "crates/busbar-plane-decision/tests/purity.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
 
 [[leak]]
 noun = "streaming"
@@ -5174,7 +5390,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 [[leak]]
 noun = "valkey"
 kind = "store"
-file = "crates/busbar-admin/src/v1/tests/service_tests.rs"
+file = "crates/busbar-core-admin/src/v1/tests/service_tests.rs"
 count = 4
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -5286,7 +5502,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "valkey"
 kind = "store"
-file = "crates/plugin-loader/src/tests/sign_tests.rs"
+file = "crates/plugin-sign/src/tests/lib_tests.rs"
 count = 36
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -5294,7 +5510,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "voice"
 kind = "plane"
-file = "crates/busbar-kernel/src/plane/tests/registry_tests.rs"
+file = "crates/busbar-kernel/tests/registry_cross_plane.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -5391,7 +5607,7 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 noun = "voice"
 kind = "plane"
 file = "crates/busbar/src/main.rs"
-count = 30
+count = 32
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
@@ -5439,7 +5655,7 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 noun = "voice"
 kind = "plane"
 file = "crates/busbar/src/root/tests/transports.rs"
-count = 1
+count = 3
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 

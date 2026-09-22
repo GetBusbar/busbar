@@ -197,11 +197,11 @@ fn the_correlation_carries_the_declared_key() {
 fn the_metadata_keys_are_the_codecs_own() {
     assert_eq!(
         super::META_PROTOCOL_VERSION,
-        busbar_mcp_codec::codec::META_PROTOCOL_VERSION
+        crate::codec::META_PROTOCOL_VERSION
     );
     assert_eq!(
         super::META_CLIENT_CAPABILITIES,
-        busbar_mcp_codec::codec::META_CLIENT_CAPABILITIES
+        crate::codec::META_CLIENT_CAPABILITIES
     );
 }
 

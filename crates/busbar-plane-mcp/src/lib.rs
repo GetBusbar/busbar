@@ -42,12 +42,24 @@
 #![deny(missing_docs)]
 
 pub mod claims;
+pub mod codec;
 pub mod facts;
 pub mod jsonrpc;
 pub mod meta;
 pub mod ops;
+pub mod outputschema;
 pub mod plane;
 pub mod records;
+pub mod sanitize;
+
+/// THE REGISTRY KEY MCP IS KNOWN BY, in the protocol registry and in the plane registry alike.
+///
+/// Named ONCE, here, because three declarations read it and all three must agree: this crate's
+/// [`plane`] kind `KEY`, the engine's `PLANE_DECL.key`, and the engine's `ProtocolDecl.name`. It
+/// lives on the PLANE side because a plane is the thing being named — a key spelled engine-side
+/// would be a key the plane could only copy, which is how two answers to "what is this plane
+/// called" start to differ.
+pub const PLANE_KEY: &str = "mcp";
 
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};

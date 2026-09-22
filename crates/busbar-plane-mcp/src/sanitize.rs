@@ -216,6 +216,6 @@ fn utf8_len(b: u8) -> usize {
     }
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "tests/sanitize_tests.rs"]
 mod sanitize_tests;
