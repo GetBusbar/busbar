@@ -1759,6 +1759,38 @@ precisely because *"plugins can never touch secrets"* and secret handling is ker
 journal is the other half of that ruling — the half that makes the kernel actually audit what it took
 custody of.
 
+## #40's REAL blocker, named: the ABI seams live in the wrong crates
+
+Three separate measurements this session converge on one root cause, and it is not "somebody forgot
+to tidy a dependency."
+
+| Symptom | Edge | Why it exists |
+|---|---|---|
+| plugin closure is 6 busbar crates, not 1 | `busbar-api` → `busbar-kernel-ledger` | #35 relocated the durable money records and the `Store` trait into the ledger; `busbar-api` stayed standing as a re-export shim until W5.b. A **store plugin implements `Store`** — so those types are genuinely plugin-facing ABI, and they live in the money crate |
+| `busbar-plane-decision` fails its OWN invariance test | `busbar-plane-decision` → `busbar-kernel` | `PlaneDecl` — the seam an extracted plane hands back — is defined in `busbar_kernel::plane::registry` and **types dozens of fields against kernel-internal types** (`axum::body::Bytes`, `PlaneStore`, `EngineHost`, `PlaneSlots`) |
+| kernel depends on its own foundation | `busbar-kernel` → `busbar-substrate-values` | #37 says the kernel must NOT depend on substrate; it takes a normal dep, inherits four of its features, and names it across 23 files |
+
+**The pattern: the ABI a plugin must implement is defined in the crate that consumes it, not in the
+crate both sides meet on.** #40 is unsatisfiable until the seams move, and no amount of dependency
+tidying gets there — the types themselves have to stop naming internals.
+
+**Two of these are already documented as deliberate stops, and both refusals were right.** The
+decision plane carries a STOP report in `registry.rs:39` explaining precisely why it still names
+`busbar_kernel` rather than `busbar_contract`, and an earlier attempt to move `PlaneDecl`/`BuildCtx`
+into contract was correctly refused for the same reason. Moving a type that names `EngineHost` into
+the neutral crate does not make it neutral; it drags the internals along and makes contract the
+thing it was created to prevent.
+
+**So the work is not a move, it is a redefinition:** `PlaneDecl` and the store record shapes need
+plugin-facing forms expressed in contract's own vocabulary, with the kernel-internal forms staying
+kernel-side and converting at the seam. That is real design work, it is the largest single item
+standing between the tree and #40, and it should be scoped deliberately rather than attempted as a
+refactor.
+
+**Meanwhile `busbar-plane-decision`'s invariance test is HONESTLY RED** and should stay red. It is
+the only automated thing in the tree that currently notices this, and silencing it would remove the
+one witness to the gap.
+
 ## PARKED (money) — a second, ungated shutdown flush may double-count
 
 **Found by the survivor review of `origin/integration/reland` (B13). Not self-approved — it is
