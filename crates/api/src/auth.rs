@@ -305,23 +305,15 @@ pub fn sha256_hex(data: &[u8]) -> String {
 #[path = "tests/auth_tests.rs"]
 mod tests;
 
-/// The UPSTREAM-credential mode (`upstream_credentials:`) — whose credential reaches the provider.
-/// DISTINCT from authentication (which auth module, if any, ran at the front door — that's the
-/// `auth.chain`): `Own` (default) signs the upstream call with busbar's configured lane key;
-/// `Passthrough` forwards the CALLER's credential upstream. A proto writer uses THIS to resolve an
-/// otherwise-ambiguous credential scheme to the single native header the caller's real client
-/// produces. (Split out of the old `AuthMode`, now its own config key — `AuthMode` is gone.)
-// `Serialize` is additive and is what lets a config section carrying this field be projected back
-// to a raw definition document — the base half of the config overlay's per-entry MERGE
-// (`NamedMapSection::entry_as_document`). A section whose entry cannot round-trip to a document
-// cannot be patched per field, only replaced wholesale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UpstreamCreds {
-    #[default]
-    Own,
-    Passthrough,
-}
+// `UpstreamCreds` LEFT THIS CRATE and is re-exported, not defined, here. It is a config-grammar
+// value — `own` / `passthrough`, two unit variants and two serde derives — and it is the ONE thing
+// the jev decision plane needed from `busbar-api`. Keeping it here forced that pure plane's
+// manifest to name this crate, and this crate carries `sha2` (for `sha256_hex` above), so the plane
+// inherited `sha2 -> cpufeatures -> libc`: a banned transitive source in a pure plugin kind, and the
+// only plane with that edge. The definition now lives beside the other reserved model-serving
+// member, `ModelCfg`, in the contract crate a plugin may name on its own. This line keeps
+// `busbar_api::UpstreamCreds` resolving for every caller that already spells it that way.
+pub use busbar_contract::config::UpstreamCreds;
 
 /// WHY a chain verdict did not resolve to an admitted identity. The DECISION is closed here; the
 /// WORDS are the caller's — the HTTP middleware renders an RFC 6750 challenge or a native envelope,
