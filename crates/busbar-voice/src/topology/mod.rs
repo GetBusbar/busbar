@@ -390,7 +390,10 @@ where
     // ARCHITECTURE.md's Admit step describes for an already-dialed provider push: a refused reserve above never
     // reaches here, so nothing is owed and nothing is journaled for it.
     rt.audit_session(
-        "voice.session.open",
+        // The ONE action literal, named where the REJECTED twin names it (`mount::hook_tap` refuses a
+        // committed rewrite busbar cannot read back under this same action) — so the two outcomes of
+        // one mutation cannot drift into two spellings.
+        crate::mount::SESSION_AUDIT_ACTION,
         &format!("voice:{call_id}"),
         "applied",
         &owner,

@@ -78,6 +78,12 @@ const FRONT_DOOR_POOL: &str = "voice-server";
 /// operator's gate reads.
 const SESSION_OPEN_METHOD: &str = "session.open";
 
+/// THE ADMIN-AUDIT ACTION every voice session-open mutation lands under. Named ONCE here because two
+/// sites write it: the APPLIED row a governed open seals ([`crate::topology::begin_session`]) and the
+/// REJECTED row a committed-but-unreadable rewrite refuses under ([`hook_tap`]). An operator reading
+/// the audit stream must see ONE action with two outcomes, not two spellings that drift apart.
+pub(crate) const SESSION_AUDIT_ACTION: &str = "voice.session.open";
+
 /// The coarse over-estimate (nanodollars) a session debits up front at reserve. It is an audit tap,
 /// not a ceiling — the ceiling is the presenting key's own remaining budget, read per session.
 const SESSION_ESTIMATE_NANOS: u64 = 1_000;
@@ -732,7 +738,7 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
     }
     // (2) HOOKS-TAP — rewrite the session-open params before the credential is leased. Byte-identical
     // (params untouched) when no rewrite hook is attached or the chain abstains.
-    match hook_tap(&host, key, &call_id, now, &session_cfg).await {
+    match hook_tap(&host, key, &owner, &call_id, now, &session_cfg).await {
         Ok(Some(rewritten)) => session_cfg = rewritten,
         Ok(None) => {}
         Err(refused) => return finish(*refused),
@@ -844,12 +850,78 @@ async fn hook_gate(
     }
 }
 
+/// THE SESSION-OPEN PARAMS A COMMITTED REWRITE PRODUCED, or the reason they cannot be used — the
+/// voice twin of the MCP plane's `committed_arguments` and the A2A plane's `committed_params`, with
+/// the same signature for the same reason: the rule the plane owns is what happens when the seam
+/// misbehaves, and it has to be drivable without a host that misbehaves.
+///
+/// # Two fail-open readings this one function replaces
+///
+/// **(1) Bytes busbar cannot read back.** The apply site was
+/// `if let Ok(v) = serde_json::from_slice::<SessionConfig>(&args_json) { … }`, so a hook that
+/// COMMITTED a rewrite (`applied: true`) and produced bytes that would not deserialize fell through
+/// to `Ok(None)` — which both callers read as "the hook made no rewrite" — and the session opened
+/// carrying the plane's OWN params. For the hook class this seam exists for that is fail-OPEN in the
+/// precise sense: a redaction hook says "I have removed the secret from these session params", its
+/// output is unreadable, and busbar opens the session with the secret still in it. The hook ran,
+/// reported applied, and was silently undone.
+///
+/// Unlike the MCP/A2A twins this arm is REACHABLE THROUGH CORE'S REAL HOST, which is why voice is the
+/// severe instance rather than the third copy of a dormant one. There the target type is
+/// `serde_json::Value` and `plane_host::transform_over_over` only ever commits a JSON object
+/// re-serialised with `to_vec`, so the bytes always parse. Here the target is [`SessionConfig`], and
+/// core's `apply_rewrite_to_invoke_args` admits ANY JSON object as the replacement: a hook whose
+/// rewrite reply carries `{"voice": 7}` or `{"input_audio_format": "flac"}` makes core commit bytes
+/// this type rejects — a type mismatch, and an audio format the plane does not speak.
+///
+/// **(2) A patch that blanks everything it did not name.** `SessionConfig` derives `Deserialize` with
+/// `#[serde(default)]` on every field, so an object that DOES parse — `{"voice": "marin"}` — parsed
+/// into a config whose every OTHER field was the type default, wiping the plane's locked
+/// `instructions` on its way through. That is the same fail-open pointed the other way: the plane's
+/// own lock disappears because a hook touched an unrelated field. The wire contract of this type is
+/// PATCH semantics (its own doc comment: "Every field is optional on the wire — a partial
+/// `session.update` patches only what it names"), so the committed object is MERGED over the locked
+/// params: a key the hook named wins, a key it did not name keeps the plane's value. Clearing stays
+/// expressible, because naming a key with an explicit `null` is naming it.
+///
+/// The merge happens BEFORE the decode, so rule (1) still judges the whole config: a patch that names
+/// one bad field refuses the open rather than being quietly dropped.
+///
+/// A well-formed JSON SCALAR is refused too. These params are an object on every wire the plane
+/// speaks, and the value is substituted for the plane's locked [`SessionConfig`]; admitting `7` would
+/// mean telling the hook its rewrite landed and then opening the session with something that is not a
+/// session config at all.
+pub(crate) fn committed_session_config(
+    locked: &SessionConfig,
+    args_json: &[u8],
+) -> Result<SessionConfig, String> {
+    let patch: serde_json::Value =
+        serde_json::from_slice(args_json).map_err(|e| format!("the output is not JSON: {e}"))?;
+    let serde_json::Value::Object(patch) = patch else {
+        return Err("the output is JSON but not a session-params object".to_string());
+    };
+    // The locked params as the hook itself was handed them (`serde_json::to_vec(cfg)` at the call
+    // seam), so the merge is over exactly the key set the hook screened.
+    let Ok(serde_json::Value::Object(mut merged)) = serde_json::to_value(locked) else {
+        return Err(
+            "the plane's own locked session params did not project to an object".to_string(),
+        );
+    };
+    // A key the hook NAMED wins; a key it did not name keeps the plane's locked value.
+    merged.extend(patch);
+    serde_json::from_value::<SessionConfig>(serde_json::Value::Object(merged))
+        .map_err(|e| format!("the output is not a session config: {e}"))
+}
+
 /// The hooks-TAP leg (`host.transform_over`) over the session-open params. `Ok(Some(cfg))` is a
 /// committed rewrite the caller substitutes for the locked params; `Ok(None)` is "no change" (no
-/// attached rewrite, or an abstaining chain — BYTE-IDENTICAL); `Err` is a rewrite-gate rejection.
+/// attached rewrite, or an abstaining chain — BYTE-IDENTICAL); `Err` is a refusal — the rewrite
+/// gate's own `Reject`, or a committed rewrite busbar could not read back (see
+/// [`committed_session_config`]).
 async fn hook_tap(
     host: &Arc<dyn EngineHost>,
     key: Option<(String, String)>,
+    owner: &str,
     session_id: &str,
     now: u64,
     cfg: &SessionConfig,
@@ -859,9 +931,11 @@ async fn hook_tap(
     }
     let args_json = serde_json::to_vec(cfg).unwrap_or_default();
     let sid = session_id.to_string();
-    let host = Arc::clone(host);
+    // The `'static` handle the blocking leg owns. Named apart from the `host` param rather than
+    // shadowing it, because the refusal below audits through the SAME host after the join.
+    let hook_host = Arc::clone(host);
     let verdict = tokio::task::spawn_blocking(move || {
-        host.transform_over(
+        hook_host.transform_over(
             crate::PLANE_DECL.key,
             GATE_CONTAINER,
             now,
@@ -873,19 +947,57 @@ async fn hook_tap(
     })
     .await
     // A join panic is FAIL-SAFE on the transform path (the gate already admitted): proceed unchanged.
-    .unwrap_or(TransformVerdict::Proceed {
-        applied: false,
-        args_json: Vec::new(),
+    .unwrap_or_else(|e| {
+        // ...but never SILENT. This is the one disposition on this seam where a hook failure used to
+        // leave no trace at all: `transform_over_over` logs its own `Failed`/timeout arms, so a join
+        // panic is the only way a `prompt: rw` hook can stop answering without a line naming it.
+        tracing::error!(
+            session = %session_id,
+            error = %e,
+            "the voice session-open rewrite (prompt: rw) leg did not join; the session-open proceeds \
+             with the plane's own locked params (fail-safe: the admission gate already ran)"
+        );
+        TransformVerdict::Proceed {
+            applied: false,
+            args_json: Vec::new(),
+        }
     });
     match verdict {
         TransformVerdict::Proceed { applied, args_json } => {
-            if applied {
-                // A committed rewrite REPLACES the locked session params the mint/dial carries.
-                if let Ok(v) = serde_json::from_slice::<SessionConfig>(&args_json) {
-                    return Ok(Some(v));
+            if !applied {
+                return Ok(None);
+            }
+            // A COMMITTED REWRITE BUSBAR CANNOT READ BACK REFUSES THE OPEN. There is no safe fallback
+            // here: `Ok(None)` is read by both callers as "the hook made no rewrite", so falling
+            // through with it opens the session carrying the params the hook said it had REPLACED —
+            // and that is the defect, not a degraded mode. The unreadable bytes are not a session
+            // config, so the answer is the same one the hook's own `Reject` gets. The MCP
+            // (`mcp/method.rs`) and A2A (`a2a/receive.rs`) twins answer the identical question the
+            // identical way; `busbar-llm`'s pipeline rejects rather than forward un-rewritten too.
+            match committed_session_config(cfg, &args_json) {
+                Ok(v) => Ok(Some(v)),
+                Err(why) => {
+                    host.audit_record(
+                        SESSION_AUDIT_ACTION,
+                        &format!("voice:{session_id}"),
+                        "rejected",
+                        owner,
+                    );
+                    tracing::error!(
+                        session = %session_id,
+                        error = %why,
+                        "a rewrite (prompt: rw) hook committed a rewrite of the voice session-open \
+                         params whose output busbar could not read back; the session-open is REFUSED \
+                         rather than opened with the params the hook said it had replaced"
+                    );
+                    Err(Box::new(refusal(
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "a rewrite hook attached to this deployment committed a rewrite of the voice \
+                         session-open params that busbar could not read back. The session-open is \
+                         refused rather than opened with the params the hook said it had replaced.",
+                    )))
                 }
             }
-            Ok(None)
         }
         TransformVerdict::Reject {
             status, message, ..
@@ -1325,7 +1437,7 @@ where
     }
     // (2) HOOKS-TAP — a committed rewrite replaces the locked session posture BEFORE the gauntlet judges
     // the destination and BEFORE the socket binds; byte-identical when no rewrite hook is attached.
-    match hook_tap(&host, key, &call_id, now, &session_cfg).await {
+    match hook_tap(&host, key, &owner, &call_id, now, &session_cfg).await {
         Ok(Some(rewritten)) => session_cfg = rewritten,
         Ok(None) => {}
         Err(refused) => return *refused,
