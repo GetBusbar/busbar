@@ -1435,7 +1435,53 @@ byte-identical and oracle-proven.
 | `api`, `busbar-grammar`, `busbar-timing`, `busbar-unit-transport-key` | fold into their one consumer | none is named in #39 |
 | `auth-admin-tokens`, `auth-static-plugin`, `export-example-plugin`, `hook-test-plugin`, `hooks-ranking`, `plane-example`, `secret-example-plugin`, `secret-ref`, `store-example-plugin`, `store-memory` | **leave the repo** | #39: "the busbar repo holds NO plugin source… There is no in-tree plugin" |
 
-### #40 is violated today, transitively — and the fix is also a roster fold
+### #40 IS VIOLATED BY SEVEN CRATES, AND ONE OF THEM IS THE MONEY BOOK
+
+**#40 says the plugin dependency closure is `busbar-contract` and nothing else.** Measured with
+`cargo tree -p busbar-auth-static-plugin --edges normal`, a real plugin's actual closure is **seven**
+busbar crates:
+
+```
+busbar-api · busbar-contract · busbar-grammar · busbar-kernel-ledger
+busbar-plugin · busbar-plugin-sdk · busbar-secret-ref
+```
+
+**`busbar-kernel-ledger` — the money one-book — is in every third-party plugin's compile closure.**
+Note also that plugins do not depend on `busbar-contract` *directly* at all; they name
+`busbar-plugin-sdk` and `busbar-api`, and reach contract only transitively.
+
+**Root cause, and it is a known staging state rather than an accident.** `crates/api/src/store.rs`
+is an explicit re-export shim: #35 / W3.a relocated the durable money records and the `Store` trait
+into `busbar_kernel_ledger::records`, and `busbar-api` was kept standing to re-export them under
+their original names so dependents did not have to move. Its own header says it "does NOT retire yet
+(that is W5.b)". So the ledger rides into the plugin closure through a back-compat shim that has not
+been retired.
+
+**But retiring `busbar-api` alone does not fix it, and this is the part that needs a ruling.** A
+**store plugin implements the `Store` trait** and handles `PlaneRecord`, `UsageLedger`, `VirtualKey`
+and the unit constants. Those are not incidental to plugins — they are the store kind's whole ABI. So
+the types genuinely must be reachable from a plugin, and today the only place they exist is the
+ledger crate.
+
+That puts **#35 and #40 in direct tension**: #35 says the money records live in the one book, #40
+says a plugin sees only the contract.
+
+**The seam I would draw** — recorded as a recommendation, not executed, because it moves money-path
+record types and the tree currently has five agents live in it:
+
+> **Record SHAPES are ABI and belong in `busbar-contract`. Ledger SEMANTICS — one book, settlement,
+> postings, derivation — stay in `busbar-kernel-ledger`.**
+
+A plugin must agree on the *shape* of what it persists; it must never participate in what the book
+*means*. That split honours #35 (the book is still one place, and it is the only thing that settles)
+and #40 (the plugin closure collapses to contract) without weakening either. It also keeps the locked
+money model intact: planes write the ledger, money stays a view, and a plugin linking against a
+record shape gains no ability to price anything.
+
+Until that lands, **#40 cannot be claimed as satisfied**, and the neatest single step toward it is
+the `busbar-grammar` fold below — necessary, but nowhere near sufficient.
+
+### #40 is also violated by grammar — and that fix is a roster fold
 
 **#40 states the plugin dependency closure is `busbar-contract` and nothing else.** Measured, it is
 not: `busbar-contract/Cargo.toml` depends on `busbar-grammar`, so every plugin compiling against the
