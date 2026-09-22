@@ -87,6 +87,30 @@
       "changelog": "An inline literal where a secret reference belongs is refused without echoing it."
     },
     {
+      "id": "F-019 a service-account key file that cannot be read is not echoed",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-22 credential-leak triage (parked by the agent with cell, diff, root cause and recommendation; approved on that report -- the path-shaped-heuristic alternative was offered and rejected)",
+      "cells": "^boot\\.refusal\\|BOOT-036\\|validate$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.stderr"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "could not read service-account key file named by this lane's credential",
+            "could not read service-account key file <REF>"
+          ],
+          [
+            "could not read service-account key file '[^']*'",
+            "could not read service-account key file <REF>"
+          ]
+        ]
+      },
+      "rationale": "BOOT-036 drives `auth: jwt-bearer` with an api_key reference the recorder resolves to a value that is not a readable path, so the lane falls to `jwt_bearer::read_credential`'s `fs::read_to_string` arm (crates/busbar-kernel/src/egress_auth/jwt_bearer.rs). 1.5.5 interpolated that ARGUMENT into the failure: `could not read service-account key file '<the argument>': <io error>`. On that branch the argument is a PATH ONLY BY ASSUMPTION -- the sole thing that tells a pasted service-account JSON from a path to one is a leading `{` -- so an operator who pasted the key BODY, or whose `env:`/`file:` reference resolved to key MATERIAL rather than to a filename, reaches that line holding the RS256 SIGNING KEY, and 1.5.5 printed it. REACHABILITY WAS PROVED, NOT ASSUMED, on both ends: the `--validate` / admin config dry-run path reaches it at crates/busbar-kernel/src/config_validate/mod.rs:2194 (`jwt_bearer::validate_credential` -> `parse_service_account` -> `read_credential`), whose Err is pushed into the `errors` list the CLI prints and the dry-run returns; and the boot/apply path reaches it at crates/busbar-llm/src/engine/build_runtime.rs:155, where `jwt_bearer::build(...)` is followed by `.unwrap_or_else(|e| panic!(\"provider for '{}' (jwt-bearer auth): {e}\", li.model))` -- so the key also lands in a PANIC MESSAGE and therefore in a crash log. 1.6.0 reports the io failure and nothing else: `could not read service-account key file named by this lane's credential: <io error>`. The caller already names the lane and the secret's configured source (`provider '<name>' jwt-bearer credential (from env:VAR) is invalid: <this>`), so the misconfiguration is exactly as diagnosable and the key is no longer in the output. THE DIVERGENCE IS NOT ELIMINABLE: this cell pins the 1.5.5 SENTENCE, and keeping the argument in that sentence IS the leak -- there is no wording that is both byte-identical to 1.5.5 and not a key disclosure. A 'render it only when it looks path-shaped' heuristic was offered to the owner and REJECTED, on the grounds that a shape guess about the argument is the same assumption that produced the leak. SCOPE IS ONE CELL ID, ANCHORED, and the refusal around it is untouched: exit code 1, empty stdout, the same preceding BUSBAR_PROVIDERS deprecation warning, the same `config validation failed:` frame and the same `provider 'gemini' jwt-bearer credential (from env:ORACLE_UPSTREAM_KEY) is invalid:` prefix, byte for byte. Only the clause naming the unreadable file moves. WHY A `transform` AND NOT F-015's BARE `classes`, which this entry otherwise copies: a bare `classes: [effects.stderr]` would forgive EVERY stderr difference on this cell, and this cell currently carries a SECOND one that is deliberately NOT accepted here. Its `[error]` line reads `[error] BUSBAR-3015: config validation failed:` against the golden's uncoded `[error] config validation failed:`. That prefix is D-1's, already owner-accepted, and F-015's rationale says of the same prefix that it 'is already rewritten away before this entry is consulted'. It is NOT being rewritten away today: D-1's transform replacement is written `\\1 ` (Python `re.sub` backreference syntax), and the Phase-C Rust judge rewrites through `regex::Regex::replace_all`, whose replacer spells a capture `$1` and emits a literal `\\1` for anything else -- so the candidate's line becomes the literal `\\1 config validation failed:` and still diverges. That is a judge/register syntax mismatch introduced by the Python->Rust cutover, it is D-1's to repair (one character, `\\1` -> `$1`, across ~462 cells in D-1's scope -- an owner-sized movement), and it is NOT approved by this entry. The two transform rules below collapse BOTH sides' key-file clause to a single `<REF>` token, so this entry forgives exactly that clause and leaves the `[error]`-prefix difference to report itself. [UPDATE 2026-09-22, after this entry was written: D-1's rewrite HAS been repaired, but NOT the way this rationale proposed. Do NOT edit the register's `\\1` to `$1` -- the register is shared with the Python reference differ, where `$1` is not a backreference and the edit would break it there. The repair translates the Python template at the LOAD boundary instead (`\\1`..`\\99`, `\\g<name>`, `\\\\`, `$`->`$$`), and refuses an untranslatable entry rather than silently substituting empty, which is what Rust's regex would have done. Measured effect: effects.stderr divergences fell 190 -> 3 on a 630-cell candidate, and 203 of 206 on the full 916-cell baseline carried the artifact, with ZERO newly-red cells. The judge pin moved to that fix in the same pass.] ONCE D-1'S REWRITE IS REPAIRED this entry may be simplified to F-015's exact shape -- drop `transform`, keep `classes` -- and the cell will report ACCEPTED rather than diverging.",
+      "changelog": "A service-account key file that cannot be read no longer echoes the credential into the error."
+    },
+    {
       "id": "F-003 CLI text",
       "kind": "breaking",
       "changelog": "`--help` documents `-c`/`--config` and `--providers`; `--version` prints a second line.",
