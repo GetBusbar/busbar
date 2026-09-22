@@ -474,6 +474,73 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
     assert_eq!(breaks[0].node_seq, overflows[0].chain_break_seq);
 }
 
+/// B57 — THE RECORD THAT SAYS RECORDS WERE DROPPED SURVIVES A RETENTION PASS.
+///
+/// The overflow's `ChainBreak` was sealed with a bare `Entry::new(...)`, which stamps `wall: 0` —
+/// 1970. Retention in this tree is everywhere the same predicate over a record's own instant
+/// (`purge_plane_records_before` drops any row with `r.ts < before`; every `compact(before)` above
+/// it is that call), so a record dated 0 is older than EVERY positive cutoff and the FIRST sweep at
+/// any window deletes it. The evidence of loss was itself the first thing lost — the exact defect
+/// already fixed on the plane-record path, where `append_scoped` hardcoded `ts: 0`.
+///
+/// This crate ships opaque `Record` bytes and owns no purge of its own (the chain's time axis is
+/// decoded only on replay), so the sweep is applied here as the predicate every caller uses, against
+/// a cutoff safely in the PAST of the batch that caused the break. A break dated to the batch
+/// outlives it; a break dated to 1970 does not.
+#[test]
+fn the_overflow_break_is_dated_so_a_retention_pass_does_not_delete_the_evidence() {
+    let mut journal = Journal::memory_buffered_to(4, Box::new(RefusingShipper)).with_capacity(4);
+    let token = durability_token();
+
+    // The store refuses, so the batch is retained. That is the buffer filling toward the bound.
+    journal
+        .append(
+            &token,
+            StepName::Meter,
+            &entries(RecordClass::Transaction, 3, 1),
+        )
+        .expect_err("a store that refuses is a durability loss on a node with no data directory");
+
+    // This batch reaches the bound and seals the break. Its clocks are the moment the displacement
+    // happened, and the break must take them.
+    let batch = entries(RecordClass::Transaction, 3, 2);
+    let batch_wall = batch.iter().map(|e| e.wall).max().expect("a non-empty batch");
+    let batch_mono = batch.iter().map(|e| e.mono).max().expect("a non-empty batch");
+    journal
+        .append(&token, StepName::Meter, &batch)
+        .expect_err("the store is still refusing");
+
+    let on_the_medium =
+        decode_run(&journal.log().read_back().expect("readable").records).expect("journal records");
+    let brk = on_the_medium
+        .iter()
+        .find(|r| r.class == RecordClass::ChainBreak)
+        .expect("the overflow sealed a break");
+
+    // THE RETENTION PASS. The cutoff is safely BEFORE the batch, so nothing this test wrote is old
+    // enough to go — the same `record instant < cutoff` test every purge in this tree applies.
+    let cutoff = batch_wall - 1_000_000;
+    assert!(cutoff > 0, "the cutoff has to be a real window, not epoch 0");
+    let survivors: Vec<&JournalRecord> =
+        on_the_medium.iter().filter(|r| r.wall >= cutoff).collect();
+
+    assert!(
+        survivors
+            .iter()
+            .any(|r| r.class == RecordClass::ChainBreak),
+        "the break that records the drop must survive a retention cutoff older than the batch that \
+         caused it — a break left at `wall: 0` is older than every positive cutoff, so the FIRST \
+         sweep deletes the one record saying entries were lost"
+    );
+
+    // And the instant it survives on is the one it actually marks, not merely some non-zero value.
+    assert_eq!(
+        brk.wall, batch_wall,
+        "the break takes the appending batch's own wall clock"
+    );
+    assert_eq!(brk.mono, batch_mono, "and its monotonic clock too");
+}
+
 /// A single batch bigger than the whole capacity has nothing already buffered to evict, but the
 /// bound was still reached and still has to seal a break — not silently accept a buffer left over
 /// the bound for as long as the outage lasts.

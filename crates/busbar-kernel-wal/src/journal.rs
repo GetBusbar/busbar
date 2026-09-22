@@ -917,7 +917,27 @@ impl Journal {
 
         let mut sealed = Vec::with_capacity(entries.len() + usize::from(overflow.is_some()));
         if let Some(overflow) = &overflow {
-            sealed.push(self.seal(&Entry::new(RecordClass::ChainBreak, overflow.body())));
+            // THE BREAK IS DATED TO THIS BATCH'S OWN CLOCK, NOT LEFT AT EPOCH 0.
+            //
+            // Sealed with a bare `Entry`, the break carries `wall: 0` — 1970 — because
+            // [`Entry::new`] stamps both clocks at zero and only [`Entry::at`] moves them. Every
+            // retention pass in this tree is the same predicate over a record's own instant
+            // (`r.ts < before` in `purge_plane_records_before`, and each `compact(before)` above
+            // it), so a record dated 0 is older than EVERY positive cutoff and the FIRST sweep at
+            // any window deletes it. The one record that says entries were lost here would be the
+            // first thing lost — the audit evidence a store outage most needs to keep, and the same
+            // defect already fixed on the plane-record path where `append_scoped` hardcoded `ts: 0`.
+            //
+            // The break marks the moment THIS batch displaced the older records, so it takes the
+            // latest clock the batch carries. A batch is stamped from the unit's pinned arrival
+            // epoch (the composition root reads the clock, never this crate), so the newest entry in
+            // it is the instant the displacement happened. An empty batch cannot reach the bound and
+            // so cannot produce an overflow; `unwrap_or(0)` is the unreachable arm, not a default.
+            let wall = entries.iter().map(|e| e.wall).max().unwrap_or(0);
+            let mono = entries.iter().map(|e| e.mono).max().unwrap_or(0);
+            sealed.push(
+                self.seal(&Entry::new(RecordClass::ChainBreak, overflow.body()).at(wall, mono)),
+            );
         }
         for entry in entries {
             sealed.push(self.seal(entry));
