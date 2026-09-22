@@ -1,11 +1,13 @@
-//! `cargo xtask gate no-float-money` — NO FLOATING POINT ON ANY MONEY RUNTIME PATH (DECISION
-//! #77(8), #66).
+//! `cargo xtask gate no-float-money` — NO BINARY FLOATING POINT, AND NO SILENTLY-DEFAULTED COUNT
+//! READ, ON ANY MONEY PATH (DECISIONS #77(8), #66, #81, #81a).
 //!
-//! The 1.6.0 money model is UNITLESS integer arithmetic: a rate is an integer nano-unit, an
-//! accumulation is a `u128`, a projection truncates once with an integer divisor. `f32`/`f64` on the
-//! money path is exactly the failure this bans — a float sums differently depending on order, rounds
-//! in ways nobody configured, and turns "the bill equals the sum of the lines" from a proof into a
-//! hope. So the crate that owns the money arithmetic (`busbar-kernel-ledger`) and the binary's
+//! The 1.6.0 money model is exact arithmetic: a rate is an integer nano-unit, an accumulation is a
+//! `u128`, a count is an `i128` mantissa at one fixed decimal scale (`busbar_contract::count`), and
+//! a projection truncates once with an integer divisor. `f32`/`f64` on the money path is exactly the
+//! failure this bans — a float sums differently depending on order, rounds in ways nobody
+//! configured, cannot hold `27.1` at all, and turns "the bill equals the sum of the lines" from a
+//! proof into a hope. So the crate that owns the money arithmetic (`busbar-kernel-ledger`), the
+//! crate that owns the exact count type (`busbar-contract`'s count module) and the binary's
 //! dedicated money-unit files carry no float in production source.
 //!
 //! # THE ONE EXEMPT BOUNDARY (#44)
@@ -20,14 +22,56 @@
 //! binary (the admin correction parser, `card_from_config`) lives in files this gate does not scan,
 //! for the same reason: it is the boundary, and the boundary is where a decimal is allowed.
 //!
-//! Two rows:
+//! # THE SECOND BAN: A COUNT READ THAT QUIETLY BECOMES ZERO (#81)
 //!
-//! * `no-float-money:scan-floor` — the money scan set is the set it claims to be. The ledger crate
-//!   holds production `.rs` above a floor (a shrunken scan reads exactly like a clean tree and is
-//!   not one), AND every named binary money-unit file is present (a rename must move the scope in a
-//!   reviewed diff, never silently drop a file out of the ban).
+//! `serde_json`'s integer accessor answers "not an integer" for ANY float-spelled number, including
+//! `27.0`. The house idiom paired it with a zero default, so a provider that spelled a count as a
+//! float had that count recorded as ZERO — the float reaching the money path not as an `f64` in a
+//! signature but as a hole in the ledger. Under #81 a count is read from decimal TEXT and a value
+//! that will not fit the scale is a REFUSAL; a silent zero is never an answer.
+//!
+//! THE GUARD THIS REPLACES WAS BLIND TWICE, AND BOTH BLINDNESSES WERE MEASURED.
+//!
+//! 1. **It matched one SPELLING, not the shape.** It looked for the METHOD form `as_u64().unwrap_or(0)`
+//!    and was invisible to the PATH form `and_then(Value::as_u64).unwrap_or(0)` — which is how the
+//!    live sites are actually written. So this row matches by SHAPE: any of the JSON number
+//!    accessors ([`NUMBER_ACCESSORS`]), reached as a method, as a path, through a turbofish or
+//!    through an aliased import, followed by a default that is a zero
+//!    (`unwrap_or(0)`, `unwrap_or_default()`, `unwrap_or_else(|| 0)`, and the suffixed literals).
+//! 2. **It scanned one CRATE.** It lived inside the crate it guarded, so the "seventh dialect" it
+//!    existed to prevent — a whole other codec crate — was unreachable from it by construction. So
+//!    this row's scan set is [`COUNT_READ_ROOTS`], every money AREA enumerated with every directory
+//!    it can live in and one floor over their union, rather than a wildcard a crate rename could
+//!    drop out of silently. The group, not the single path, is what lets the 57 → 35 crate fold move
+//!    a codec into its plane crate without the ban going quiet — and what makes a move OUT of every
+//!    known home a red that names the area.
+//!
+//! The surviving sites are named, one by one, in [`ALLOWED_COUNT_READS`] with the reason each is
+//! there. Two classes: [`AllowClass::NotACount`] (a frame index, an audio timing, a media sample
+//! rate, the #44 config boundary — permanent) and [`AllowClass::PendingConversion`] (a real count,
+//! owed to the #81 conversion wave). The gate's job is that the list never GROWS: a defaulted count
+//! read that is not on it is a finding.
+//!
+//! # THE THIRD BAN: A PERSISTED COUNT WITHOUT ITS SCALE (#81a)
+//!
+//! A count is written down as its MANTISSA, which is meaningless without the scale beside it. #81a
+//! fixes the form: one `#[serde(default)]` scale field per record, ABSENT meaning the v1.5.5 whole
+//! units and PRESENT meaning scale 6, with the branch at the read and NO rescale of stored bytes. So
+//! a record struct that holds a `Count` and no scale discriminator is a row nobody can read back,
+//! and this row refuses it. It is armed and currently vacuous — no persisted record holds a `Count`
+//! yet — which is the point: it arms the instant the conversion wave lands.
+//!
+//! Four rows:
+//!
+//! * `no-float-money:scan-floor` — every scan set is the set it claims to be. Each enumerated money
+//!   area clears its floor across its homes and every named file is present (a rename must move the
+//!   scope in a reviewed diff, never silently drop a file out of the ban).
 //! * `no-float-money:no-float` — the finding: an `f32`/`f64` token in money production source outside
 //!   the one exempt boundary.
+//! * `no-float-money:count-read-shape` — the finding: a JSON-number count read that defaults to zero
+//!   instead of refusing, in any spelling, anywhere on the money path.
+//! * `no-float-money:count-scale-discriminator` — the finding: a persisted record that holds a
+//!   `Count` without the scale field that says what its mantissa means.
 
 use crate::ctx::{Ctx, Edit, Overlay, WalkSpec};
 use crate::gates::{prove_green, prove_red, Case, Gate, Report};
@@ -36,6 +80,8 @@ use crate::scan;
 
 pub const ROW_SCAN_FLOOR: &str = "no-float-money:scan-floor";
 pub const ROW_NO_FLOAT: &str = "no-float-money:no-float";
+pub const ROW_COUNT_READ: &str = "no-float-money:count-read-shape";
+pub const ROW_COUNT_SCALE: &str = "no-float-money:count-scale-discriminator";
 
 /// The consolidated one-book money crate (W3.a). Its whole job is integer money arithmetic.
 const LEDGER_SRC: &str = "crates/busbar-kernel-ledger/src";
@@ -45,10 +91,12 @@ const LEDGER_SRC: &str = "crates/busbar-kernel-ledger/src";
 /// of the `/`-prefixed relative path, so it is this file and not a directory.
 const CARD_BUILD_BOUNDARY: &str = "busbar-kernel-ledger/src/cost/rate.rs";
 
-/// The `*_tests.rs` sibling and the `/tests/` tree are fixtures: a float in a test is a test's
-/// number, not the money path's.
+/// The `*_tests.rs` sibling, the `tests.rs` module and the `/tests/` tree are fixtures: a float in a
+/// test is a test's number, not the money path's, and a wire value a fixture spells any way it likes
+/// is the fixture's business.
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 const EXCLUDE_TESTS_FILE: &str = "_tests.rs";
+const EXCLUDE_TESTS_MOD: &str = "/tests.rs";
 
 /// The denominator floor for the ledger scan. Twenty-three production files (excluding the exempt
 /// boundary) when this was written; the floor tracks the real tree rather than `> 0`, because one
@@ -70,38 +118,382 @@ const BINARY_MONEY_FILES: &[&str] = &[
 /// The directory the binary money files live under — walked once, then filtered to the named set.
 const BINARY_ROOT: &str = "crates/busbar/src/root";
 
+/// The contract's EXACT COUNT module (#81): the type every count is measured in, and its parser.
+/// Named rather than walked, because the rest of the contract is not the money path and a wholesale
+/// scan of it would flag a transport window or a backoff curve.
+const CONTRACT_MONEY_FILES: &[&str] = &[
+    "crates/busbar-contract/src/count.rs",
+    "crates/busbar-contract/src/tests/count_tests.rs",
+];
+
+/// The directory the contract money files live under.
+const CONTRACT_ROOT: &str = "crates/busbar-contract/src";
+
 /// The float tokens a money path may not name. Word-boundary matched so `nf64` or an identifier that
 /// merely contains the text is not a hit, but the bare type is.
 pub const FLOAT_TOKENS: &[&str] = &["f64", "f32"];
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// The count-read scan set, the shape it hunts, and the sites it knows about
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// One money AREA scanned for defaulted count reads: every directory it can live in, and the floor
+/// its files must clear between them.
+///
+/// A GROUP rather than one path, because the crate roster is mid-fold (57 → 35) and a codec crate
+/// merging into its plane crate must not read as the ban being dropped. The floor is over the UNION,
+/// so a fold that moves files between two homes in the same group changes nothing, and a fold that
+/// moves them OUT of every home this list knows about is a RED that names the group — which is the
+/// correct outcome: a money crate that moves must move the ban with it, in the diff that moves it.
+pub struct CountRoot {
+    /// What this area is, for the row that names it.
+    pub area: &'static str,
+    /// Every repo-relative directory the area's files can live in.
+    pub homes: &'static [&'static str],
+    /// How few production files the homes may hold BETWEEN THEM before the scan is not the scan it
+    /// claims to be.
+    pub floor: usize,
+}
+
+/// EVERY MONEY-PATH ROOT, ENUMERATED. A wildcard would let a crate rename drop a whole codec out of
+/// the ban in silence, which is precisely how the guard this replaces came to be unable to see the
+/// second codec crate at all. Each floor is set below the tree's real count so ordinary churn does
+/// not trip it and an emptied or relocated root does.
+pub const COUNT_READ_ROOTS: &[CountRoot] = &[
+    CountRoot {
+        area: "the LLM codecs, engine and plane",
+        homes: &[
+            "crates/busbar-llm-codec/src",
+            "crates/busbar-llm/src",
+            "crates/busbar-plane-llm/src",
+        ],
+        floor: 70,
+    },
+    CountRoot {
+        area: "the audio codecs, engine and plane",
+        homes: &[
+            "crates/busbar-voice-codec/src",
+            "crates/busbar-voice/src",
+            "crates/busbar-plane-voice/src",
+            "crates/busbar-plane-streaming/src",
+        ],
+        floor: 28,
+    },
+    CountRoot {
+        area: "the tool codec and plane",
+        homes: &["crates/busbar-mcp-codec/src", "crates/busbar-plane-mcp/src"],
+        floor: 12,
+    },
+    CountRoot {
+        area: "the agent codec, node and plane",
+        homes: &[
+            "crates/busbar-a2a-codec/src",
+            "crates/busbar-a2a/src",
+            "crates/busbar-plane-a2a/src",
+        ],
+        floor: 40,
+    },
+    CountRoot {
+        area: "the kernel",
+        homes: &["crates/busbar-kernel/src"],
+        floor: 150,
+    },
+    CountRoot {
+        area: "the money book and the budget",
+        homes: &[
+            "crates/busbar-kernel-ledger/src",
+            "crates/busbar-kernel-budget/src",
+        ],
+        floor: 24,
+    },
+    CountRoot {
+        area: "the contract",
+        homes: &["crates/busbar-contract/src"],
+        floor: 33,
+    },
+    CountRoot {
+        area: "the neutral carriers",
+        homes: &[
+            "crates/busbar-substrate-values/src",
+            "crates/busbar-plugin/src",
+        ],
+        floor: 27,
+    },
+    CountRoot {
+        area: "the loader and the store seam",
+        homes: &["crates/plugin-loader/src", "crates/api/src"],
+        floor: 18,
+    },
+    CountRoot {
+        area: "the composition root",
+        homes: &["crates/busbar/src/root"],
+        floor: 17,
+    },
+];
+
+/// THE SEAM BEING REPLACED. Its own body is a list of the needle strings it hunts, so scanning it
+/// finds its own patterns rather than a defect. It is excluded for the same reason its in-crate
+/// ancestor excluded itself, and it goes away with the conversion wave.
+const SUPERSEDED_SEAM: &str = "crates/busbar-llm-codec/src/usage_count.rs";
+
+/// The JSON-number accessors a count could be read through. `as_f64` is here as well as the integer
+/// pair because a count that arrives through a double has already lost the exactness #81 requires.
+pub const NUMBER_ACCESSORS: &[&str] = &["as_u64", "as_i64", "as_f64", "as_u128", "as_i128"];
+
+/// A default's argument, whitespace removed, that silently substitutes NOTHING for a count. A
+/// NON-zero default (`unwrap_or(idx as u64)`) is deliberately out of scope: it substitutes a value
+/// the author chose and named, which is a different act from recording that no work happened.
+const ZERO_DEFAULT_ARGS: &[&str] = &[
+    "",
+    "0",
+    "0.0",
+    "0u8",
+    "0u32",
+    "0u64",
+    "0u128",
+    "0i32",
+    "0i64",
+    "0i128",
+    "0f32",
+    "0f64",
+    "0usize",
+    "0_u32",
+    "0_u64",
+    "0_i64",
+    "0_usize",
+    "Default::default()",
+    "||0",
+    "||0.0",
+    "||0u64",
+    "||0i64",
+    "||Default::default()",
+];
+
+/// Why a surviving defaulted read is on the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllowClass {
+    /// Not a count at all, and never will be. Permanent.
+    NotACount,
+    /// A real count that the #81 conversion wave owes. Temporary, and the gate says how many are
+    /// left on every run so the number is never quietly forgotten.
+    PendingConversion,
+}
+
+/// One named, reasoned survivor.
+pub struct Allow {
+    /// The repo-relative file it lives in.
+    pub file: &'static str,
+    /// Text that appears in the expression, within [`ALLOW_WINDOW`] bytes before the match's end.
+    /// A needle rather than a line number, so a reformat or an edit elsewhere in the file does not
+    /// turn a reasoned allowance into a spurious red.
+    pub needle: &'static str,
+    /// Permanent, or owed to the conversion wave.
+    pub class: AllowClass,
+    /// Why.
+    pub why: &'static str,
+}
+
+/// How far back from a match the allowance needle is looked for.
+const ALLOW_WINDOW: usize = 200;
+
+/// THE SURVIVING SITES, EVERY ONE NAMED AND REASONED. Measured 2026-09-22 against this tree.
+///
+/// This list may SHRINK freely and must never grow without a reviewed diff that says why. A
+/// [`AllowClass::PendingConversion`] entry whose site is gone is retired debt, reported in the
+/// passing row's detail rather than failed, because the agents converting these sites are live in
+/// the tree right now and a gate that reds the moment they succeed is a gate that punishes the fix.
+pub const ALLOWED_COUNT_READS: &[Allow] = &[
+    // ── Not a count, permanently ──────────────────────────────────────────────────────────────
+    Allow {
+        file: "crates/busbar-llm-codec/src/bedrock/mod.rs",
+        needle: "contentBlockIndex",
+        class: AllowClass::NotACount,
+        why: "a frame's position in a sequence, not a quantity anybody is billed for",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/cohere/mod.rs",
+        needle: "clamp_frame_index",
+        class: AllowClass::NotACount,
+        why: "a frame's position in a sequence, not a quantity anybody is billed for",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        needle: "audio::Segment",
+        class: AllowClass::NotACount,
+        why: "a transcription segment's own id — metadata echoed back, never metered",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        needle: "get(\"start\")",
+        class: AllowClass::NotACount,
+        why: "a transcription timing offset — metadata echoed back, never metered",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        needle: "get(\"end\")",
+        class: AllowClass::NotACount,
+        why: "a transcription timing offset — metadata echoed back, never metered",
+    },
+    Allow {
+        file: "crates/busbar-voice-codec/src/topology/twilio.rs",
+        needle: "get(\"sampleRate\")",
+        class: AllowClass::NotACount,
+        why: "a media format's sample rate, not a metered quantity",
+    },
+    Allow {
+        file: "crates/busbar-voice-codec/src/topology/twilio.rs",
+        needle: "get(\"channels\")",
+        class: AllowClass::NotACount,
+        why: "a media format's channel count, not a metered quantity",
+    },
+    Allow {
+        file: "crates/busbar-plane-voice/src/twilio.rs",
+        needle: "get(\"sampleRate\")",
+        class: AllowClass::NotACount,
+        why: "a media format's sample rate, not a metered quantity",
+    },
+    Allow {
+        file: "crates/busbar-plane-voice/src/twilio.rs",
+        needle: "get(\"channels\")",
+        class: AllowClass::NotACount,
+        why: "a media format's channel count, not a metered quantity",
+    },
+    Allow {
+        file: "crates/busbar-plane-streaming/src/twilio.rs",
+        needle: "get(\"sampleRate\")",
+        class: AllowClass::NotACount,
+        why: "a media format's sample rate, not a metered quantity",
+    },
+    Allow {
+        file: "crates/busbar-plane-streaming/src/twilio.rs",
+        needle: "get(\"channels\")",
+        class: AllowClass::NotACount,
+        why: "a media format's channel count, not a metered quantity",
+    },
+    Allow {
+        file: "crates/busbar-kernel/src/config/migrate.rs",
+        needle: "price_per_1k_tokens_cents",
+        class: AllowClass::NotACount,
+        why: "the #44 config boundary: a configured decimal read once at parse, not a runtime count",
+    },
+    // ── A real count, owed to the #81 conversion wave ─────────────────────────────────────────
+    Allow {
+        file: "crates/busbar-llm-codec/src/gemini/handler.rs",
+        needle: "get(\"promptTokenCount\")",
+        class: AllowClass::PendingConversion,
+        why: "a billed count that reads zero when the provider spells it as a float",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/gemini/handler.rs",
+        needle: "get(\"candidatesTokenCount\")",
+        class: AllowClass::PendingConversion,
+        why: "a billed count that reads zero when the provider spells it as a float",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        needle: "get(\"prompt_tokens\")",
+        class: AllowClass::PendingConversion,
+        why: "a billed count that reads zero when the provider spells it as a float",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        needle: "get(\"input_tokens\")",
+        class: AllowClass::PendingConversion,
+        why: "a billed count that reads zero when the provider spells it as a float",
+    },
+    Allow {
+        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
+        needle: "get(\"output_tokens\")",
+        class: AllowClass::PendingConversion,
+        why: "a billed count that reads zero when the provider spells it as a float",
+    },
+    Allow {
+        file: "crates/busbar-voice-codec/src/ir/codec/mod.rs",
+        needle: "fn u64_at",
+        class: AllowClass::PendingConversion,
+        why: "the crate's own count helper — every billed read in it defaults to zero",
+    },
+    Allow {
+        file: "crates/busbar-voice-codec/src/ir/codec/mod.rs",
+        needle: "let field =",
+        class: AllowClass::PendingConversion,
+        why: "the crate's own count helper — every billed read in it defaults to zero",
+    },
+    Allow {
+        file: "crates/busbar-voice-codec/src/ir/codec/mod.rs",
+        needle: "let stated =",
+        class: AllowClass::PendingConversion,
+        why: "the crate's own count helper — every billed read in it defaults to zero",
+    },
+    Allow {
+        file: "crates/busbar-voice-codec/src/ir/codec/gemini/mod.rs",
+        needle: "let stated_total =",
+        class: AllowClass::PendingConversion,
+        why: "the crate's own count helper — every billed read in it defaults to zero",
+    },
+    Allow {
+        file: "crates/busbar-voice-codec/src/ir/codec/gemini/mod.rs",
+        needle: "get(\"cachedContentTokenCount\")",
+        class: AllowClass::PendingConversion,
+        why: "a billed count that reads zero when the provider spells it as a float",
+    },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// The persisted-record scan set (#81a)
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Where a persisted money record can live. A struct in one of these that holds a `Count` without a
+/// scale discriminator is a row nobody can read back.
+///
+/// EVERY HOME IS NAMED, AND ONLY AN EMPTY SET IS A FAILURE. The record shapes have already moved
+/// twice — out of `busbar-api`, into the ledger, and out again into the contract under #83/#84 — so
+/// pinning one path would red the gate for a relocation and pinning none would let the ban follow
+/// the file out of the tree. The rule is: scan every home that is there, and refuse only when none
+/// of them is.
+const PERSISTED_RECORD_HOMES: &[&str] = &[
+    "crates/busbar-contract/src/records.rs",
+    "crates/busbar-kernel-ledger/src/records.rs",
+    "crates/api/src/usage_migration.rs",
+    "crates/plugin-loader/src/legacy_usage.rs",
+];
+
+/// What a record must name beside a `Count` for the mantissa to mean anything. Any of them: the
+/// constant, the serde default function, or a field whose name is the discriminator itself.
+const SCALE_DISCRIMINATORS: &[&str] = &[
+    "scale",
+    "SCALE_MICRO_UNITS",
+    "SCALE_WHOLE_UNITS",
+    "stored_scale_default",
+];
+
 pub struct NoFloatMoneyGate;
 
-/// The one line a finding is written as. Built by `run` from its own scan; a stable shape so the
-/// row detail reads the same way for every offender.
+/// The one line a float finding is written as. Built by `run` from its own scan; a stable shape so
+/// the row detail reads the same way for every offender.
 fn finding(rel: &str, line: usize, token: &str) -> String {
-    format!("{rel}:{line}: `{token}` on the money path (integer-only, #77.8) outside the #44 card-build boundary")
+    format!("{rel}:{line}: `{token}` on the money path (exact arithmetic only, #77.8) outside the #44 card-build boundary")
 }
 
 /// Is `needle` present in `hay` at an identifier boundary? The characters either side must not be
 /// alphanumeric or `_`, so `f64` matches `x: f64` and `as f64` but not `nf64` or `f640`.
 fn word_hit(hay: &str, needle: &str) -> bool {
+    word_positions(hay, needle).next().is_some()
+}
+
+/// Every identifier-boundary position of `needle` in `hay`.
+fn word_positions<'a>(hay: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
     let bytes = hay.as_bytes();
     let n = needle.as_bytes();
-    if n.is_empty() || n.len() > bytes.len() {
-        return false;
-    }
     let wordy = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    for i in 0..=(bytes.len() - n.len()) {
-        if &bytes[i..i + n.len()] != n {
-            continue;
+    (0..bytes.len()).filter(move |&i| {
+        if n.is_empty() || i + n.len() > bytes.len() || &bytes[i..i + n.len()] != n {
+            return false;
         }
         let before_ok = i == 0 || !wordy(bytes[i - 1]);
         let after_ok = i + n.len() == bytes.len() || !wordy(bytes[i + n.len()]);
-        if before_ok && after_ok {
-            return true;
-        }
-    }
-    false
+        before_ok && after_ok
+    })
 }
 
 /// A PASSING row's detail carries no run-specific count: the denominator is guarded by the floor,
@@ -140,13 +532,302 @@ fn scan_file(rel: &str, text: &str, offenders: &mut Vec<String>) {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// The count-read shape
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A file's production code with comments stripped and every line joined, plus the source line each
+/// byte came from.
+///
+/// The join is what makes the scan blind to FORMATTING: a chain rustfmt broke across six lines and
+/// the same chain on one line are the same text here, so a defect cannot hide behind a line break.
+/// String literals are kept, because the wire key a read names is the evidence that says which
+/// quantity it is reading.
+struct Flat {
+    text: String,
+    line_of: Vec<usize>,
+}
+
+fn flatten(src: &str) -> Flat {
+    let mut text = String::new();
+    let mut line_of: Vec<usize> = Vec::new();
+    let mut in_block = false;
+    for (i, raw) in src.lines().enumerate() {
+        let code = scan::strip_comment_line(raw, &mut in_block);
+        let trimmed = code.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !text.is_empty() {
+            text.push(' ');
+            line_of.push(i + 1);
+        }
+        let before = text.len();
+        text.push_str(trimmed);
+        line_of.resize(line_of.len() + (text.len() - before), i + 1);
+    }
+    Flat { text, line_of }
+}
+
+/// One defaulted count read, as found.
+struct CountHit {
+    line: usize,
+    accessor: &'static str,
+    /// The text leading up to the read, which is what an allowance needle is matched against.
+    window: String,
+}
+
+/// Step past whitespace, the accessor's own parens, a closing paren that ends an `and_then(…)`, and
+/// a turbofish — everything that can sit between the accessor's name and the `.` that follows it.
+fn skip_to_dot(bytes: &[u8], text: &str, mut i: usize) -> Option<usize> {
+    let mut budget = 64usize;
+    while i < bytes.len() && budget > 0 {
+        budget -= 1;
+        match bytes[i] {
+            b' ' | b')' => i += 1,
+            // The accessor's own call, whatever it was handed: `as_u64()` reached as a method and
+            // `Json::as_u64(v)` reached as a path are the same read, and the path form is precisely
+            // the spelling the guard this replaces could not see.
+            b'(' => i = balanced(bytes, i, b'(', b')')?,
+            b':' if text[i..].starts_with("::<") => {
+                i = text[i..].find('>')? + i + 1;
+            }
+            _ => break,
+        }
+    }
+    (i < bytes.len() && bytes[i] == b'.').then_some(i + 1)
+}
+
+/// The index just past the group that opens at `i`, or `None` if it never closes.
+fn balanced(bytes: &[u8], i: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut j = i;
+    while j < bytes.len() {
+        if bytes[j] == open {
+            depth += 1;
+        } else if bytes[j] == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(j + 1);
+            }
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Read the identifier at `i`, returning it and the index past it.
+fn read_ident(bytes: &[u8], text: &str, mut i: usize) -> (String, usize) {
+    while i < bytes.len() && bytes[i] == b' ' {
+        i += 1;
+    }
+    let start = i;
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    (text[start..i].to_string(), i)
+}
+
+/// Read the parenthesised argument at `i` with whitespace removed, and the index of its closing
+/// paren. `None` when there is no balanced argument list there.
+fn read_args(bytes: &[u8], text: &str, mut i: usize) -> Option<(String, usize)> {
+    while i < bytes.len() && bytes[i] == b' ' {
+        i += 1;
+    }
+    if i >= bytes.len() || bytes[i] != b'(' {
+        return None;
+    }
+    let start = i + 1;
+    let end = balanced(bytes, i, b'(', b')')?;
+    let arg: String = text[start..end - 1]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    Some((arg, end))
+}
+
+/// Does a silent zero default follow the accessor that ends at `i`? Returns the index past it.
+fn zero_default_after(flat: &Flat, i: usize) -> Option<usize> {
+    let bytes = flat.text.as_bytes();
+    let dot = skip_to_dot(bytes, &flat.text, i)?;
+    let (name, after) = read_ident(bytes, &flat.text, dot);
+    match name.as_str() {
+        "unwrap_or_default" | "unwrap_or" | "unwrap_or_else" => {
+            let (arg, end) = read_args(bytes, &flat.text, after)?;
+            ZERO_DEFAULT_ARGS
+                .contains(&arg.as_str())
+                .then_some(end)
+        }
+        _ => None,
+    }
+}
+
+/// Every defaulted JSON-number read in one file, by shape.
+fn scan_count_reads(text: &str) -> Vec<CountHit> {
+    let flat = flatten(text);
+    let mut hits = Vec::new();
+    for &accessor in NUMBER_ACCESSORS {
+        for start in word_positions(&flat.text, accessor) {
+            let Some(end) = zero_default_after(&flat, start + accessor.len()) else {
+                continue;
+            };
+            let mut back = start.saturating_sub(ALLOW_WINDOW);
+            while back > 0 && !flat.text.is_char_boundary(back) {
+                back -= 1;
+            }
+            hits.push(CountHit {
+                line: flat.line_of.get(start).copied().unwrap_or(0),
+                accessor,
+                window: flat.text[back..end.min(flat.text.len())].to_string(),
+            });
+        }
+    }
+    hits.sort_by_key(|h| h.line);
+    hits
+}
+
+/// The rows the count-read scan produces, and the allowances it actually used.
+struct CountReadScan {
+    offenders: Vec<String>,
+    used: std::collections::BTreeSet<usize>,
+    pending: usize,
+}
+
+fn row_count_read(scan: &CountReadScan) -> Row {
+    if !scan.offenders.is_empty() {
+        return Row::fail(
+            ROW_COUNT_READ,
+            "a count is read with a silent zero default instead of a refusal (#81)",
+            format!(
+                "{} finding(s): {} — read the number's decimal TEXT through \
+                 `busbar_contract::count` and let a value that does not fit REFUSE; a defaulted \
+                 read records zero for work that really happened",
+                scan.offenders.len(),
+                scan.offenders.join(" | ")
+            ),
+        );
+    }
+    let retired: Vec<&str> = ALLOWED_COUNT_READS
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !scan.used.contains(i))
+        .map(|(_, a)| a.needle)
+        .collect();
+    let mut detail = format!(
+        "every defaulted number read on the money path is a named, reasoned allowance; {} still \
+         owed to the #81 conversion wave",
+        scan.pending
+    );
+    if !retired.is_empty() {
+        detail.push_str(&format!(
+            " — {} allowance(s) now match nothing and can be deleted: {}",
+            retired.len(),
+            retired.join(", ")
+        ));
+    }
+    Row::pass(
+        ROW_COUNT_READ,
+        "no count is read with a silent zero default",
+        detail,
+    )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// The persisted-count scale discriminator (#81a)
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Every `struct … { … }` body in a file, with the line its header sits on.
+fn struct_bodies(text: &str) -> Vec<(usize, String)> {
+    let flat = flatten(text);
+    let bytes = flat.text.as_bytes();
+    let mut out = Vec::new();
+    for start in word_positions(&flat.text, "struct") {
+        // The body opens at the first `{` after the header, and closes at its match.
+        let Some(open) = flat.text[start..].find('{').map(|d| start + d) else {
+            continue;
+        };
+        // A `;` before the brace means this was a unit or tuple struct and the brace belongs to
+        // something else entirely.
+        if flat.text[start..open].contains(';') {
+            continue;
+        }
+        let Some(close) = balanced(bytes, open, b'{', b'}') else {
+            continue;
+        };
+        out.push((
+            flat.line_of.get(start).copied().unwrap_or(0),
+            flat.text[start..close].to_string(),
+        ));
+    }
+    out
+}
+
+fn row_count_scale(offenders: &[String]) -> Row {
+    if offenders.is_empty() {
+        return Row::pass(
+            ROW_COUNT_SCALE,
+            "every persisted count carries the scale that says what its mantissa means",
+            "no persisted record holds a bare `Count`; the row arms the moment one does (#81a)"
+                .to_string(),
+        );
+    }
+    Row::fail(
+        ROW_COUNT_SCALE,
+        "a persisted record holds a count with no scale discriminator (#81a)",
+        format!(
+            "{} finding(s): {} — a mantissa without its scale is a row nobody can read back; add a \
+             `#[serde(default = \"stored_scale_default\")] scale` field and branch at the read, and \
+             do NOT rescale stored values",
+            offenders.len(),
+            offenders.join(" | ")
+        ),
+    )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// The gate
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Walk one area's production files across every home it can live in, or say why it could not be.
+///
+/// The floor is applied to the UNION, not to each home, so a file that moved from one home in the
+/// group to another is invisible here and a set that emptied out of all of them is not.
+fn walk_area(cx: &Ctx, area: &CountRoot) -> Result<Vec<crate::ctx::SourceFile>, String> {
+    let mut files = Vec::new();
+    for home in area.homes {
+        let spec = WalkSpec::new([*home])
+            .ext("rs")
+            .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE, EXCLUDE_TESTS_MOD]);
+        // A home that is not there is a home the fold has already emptied; the floor over the union
+        // is what says whether the AREA is still being scanned.
+        if let Ok(found) = cx.walk(&spec) {
+            files.extend(found);
+        }
+    }
+    if files.len() < area.floor {
+        return Err(format!(
+            "{}: {} production file(s) across {}, below the floor of {}",
+            area.area,
+            files.len(),
+            area.homes.join(" + "),
+            area.floor
+        ));
+    }
+    Ok(files)
+}
+
 impl Gate for NoFloatMoneyGate {
     fn name(&self) -> &'static str {
         "no-float-money"
     }
 
     fn owed(&self) -> Vec<String> {
-        vec![ROW_SCAN_FLOOR.to_string(), ROW_NO_FLOAT.to_string()]
+        vec![
+            ROW_SCAN_FLOOR.to_string(),
+            ROW_NO_FLOAT.to_string(),
+            ROW_COUNT_READ.to_string(),
+            ROW_COUNT_SCALE.to_string(),
+        ]
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
@@ -158,7 +839,7 @@ impl Gate for NoFloatMoneyGate {
         let ledger_files = match cx.walk(&ledger_spec) {
             Ok(f) => f,
             Err(e) => {
-                // The scan could not be taken. It is NOT a clean money path; both owed rows say so
+                // The scan could not be taken. It is NOT a clean money path; every owed row says so
                 // rather than one being quietly omitted.
                 return Verdict::of(vec![
                     Row::fail(
@@ -174,63 +855,164 @@ impl Gate for NoFloatMoneyGate {
                         "the money-float scan did not run",
                         "nothing was read, and nothing read is not a clean money path".to_string(),
                     ),
+                    Row::fail(
+                        ROW_COUNT_READ,
+                        "the count-read scan did not run",
+                        "nothing was read, and nothing read is not a clean money path".to_string(),
+                    ),
+                    Row::fail(
+                        ROW_COUNT_SCALE,
+                        "the persisted-count scan did not run",
+                        "nothing was read, and nothing read is not a clean money path".to_string(),
+                    ),
                 ]);
             }
         };
 
-        // The binary's dedicated money files: walk the root once, keep the named set. Every named
-        // file must be present — a rename that dropped one out of the ban is a scan-set integrity
-        // failure, not a silent narrowing.
-        let bin_spec = WalkSpec::new([BINARY_ROOT]).ext("rs");
-        let (bin_files, bin_scan_err) = match cx.walk(&bin_spec) {
-            Ok(f) => (f, None),
-            Err(e) => (Vec::new(), Some(e.to_string())),
-        };
-        let present: std::collections::BTreeSet<String> =
-            bin_files.iter().map(|f| f.rel_str()).collect();
-        let missing: Vec<&str> = BINARY_MONEY_FILES
-            .iter()
-            .copied()
-            .filter(|want| !present.contains(*want))
-            .collect();
+        let mut set_problems: Vec<String> = Vec::new();
+
+        // The binary's dedicated money files and the contract's count module: walk each root once,
+        // keep the named set. Every named file must be present — a rename that dropped one out of
+        // the ban is a scan-set integrity failure, not a silent narrowing.
+        let mut named_files: Vec<crate::ctx::SourceFile> = Vec::new();
+        for (root, wanted) in [
+            (BINARY_ROOT, BINARY_MONEY_FILES),
+            (CONTRACT_ROOT, CONTRACT_MONEY_FILES),
+        ] {
+            let found = match cx.walk(&WalkSpec::new([root]).ext("rs")) {
+                Ok(f) => f,
+                Err(e) => {
+                    set_problems.push(format!("{root} could not be read: {e}"));
+                    Vec::new()
+                }
+            };
+            let present: std::collections::BTreeSet<String> =
+                found.iter().map(|f| f.rel_str()).collect();
+            for want in wanted.iter() {
+                if !present.contains(*want) {
+                    set_problems.push(format!(
+                        "{want} is missing from the scan set — a money file that moved must move \
+                         the ban with it in a reviewed diff, never drop out of it silently"
+                    ));
+                }
+            }
+            named_files.extend(found.into_iter().filter(|f| wanted.contains(&f.rel_str().as_str())));
+        }
 
         let mut offenders = Vec::new();
         for f in &ledger_files {
             scan_file(&f.rel_str(), &f.text, &mut offenders);
         }
-        for f in &bin_files {
-            if BINARY_MONEY_FILES.contains(&f.rel_str().as_str()) {
-                scan_file(&f.rel_str(), &f.text, &mut offenders);
-            }
+        for f in &named_files {
+            scan_file(&f.rel_str(), &f.text, &mut offenders);
         }
         offenders.sort();
+        offenders.dedup();
 
-        let scan_floor = if let Some(e) = bin_scan_err {
-            Row::fail(
+        // THE COUNT-READ SHAPE, over every enumerated money root.
+        let mut count_scan = CountReadScan {
+            offenders: Vec::new(),
+            used: std::collections::BTreeSet::new(),
+            pending: 0,
+        };
+        for area in COUNT_READ_ROOTS {
+            let files = match walk_area(cx, area) {
+                Ok(f) => f,
+                Err(e) => {
+                    set_problems.push(format!(
+                        "{e} — if this area legitimately moved, add its new home to the group in a \
+                         reviewed diff; do not lower the floor"
+                    ));
+                    continue;
+                }
+            };
+            for f in &files {
+                let rel = f.rel_str();
+                if rel == SUPERSEDED_SEAM {
+                    continue;
+                }
+                for hit in scan_count_reads(&f.text) {
+                    let allowed = ALLOWED_COUNT_READS.iter().enumerate().find(|(_, a)| {
+                        a.file == rel && hit.window.contains(a.needle)
+                    });
+                    match allowed {
+                        Some((i, a)) => {
+                            count_scan.used.insert(i);
+                            if a.class == AllowClass::PendingConversion {
+                                count_scan.pending += 1;
+                            }
+                        }
+                        None => count_scan.offenders.push(format!(
+                            "{rel}:{}: `{}` defaulted to zero instead of refusing (#81)",
+                            hit.line, hit.accessor
+                        )),
+                    }
+                }
+            }
+        }
+        count_scan.offenders.sort();
+        count_scan.offenders.dedup();
+
+        // THE PERSISTED-COUNT DISCRIMINATOR (#81a).
+        let mut scale_offenders = Vec::new();
+        let mut homes_read = 0usize;
+        for rel in PERSISTED_RECORD_HOMES {
+            let Ok(text) = cx.read(*rel) else {
+                continue;
+            };
+            homes_read += 1;
+            for (line, body) in struct_bodies(&text) {
+                if !word_hit(&body, "Count") {
+                    continue;
+                }
+                if SCALE_DISCRIMINATORS.iter().any(|d| word_hit(&body, d)) {
+                    continue;
+                }
+                scale_offenders.push(format!(
+                    "{rel}:{line}: a persisted struct holds a `Count` and names no scale"
+                ));
+            }
+        }
+        scale_offenders.sort();
+        scale_offenders.dedup();
+        if homes_read == 0 {
+            set_problems.push(format!(
+                "not one of the {} named persisted-record homes could be read — the record shapes \
+                 moved somewhere this gate does not know about, and a ban that scans nothing is not \
+                 a ban",
+                PERSISTED_RECORD_HOMES.len()
+            ));
+        }
+
+        let scan_floor = if set_problems.is_empty() {
+            Row::pass(
                 ROW_SCAN_FLOOR,
-                "the binary money-unit scan root could not be read",
-                format!("{BINARY_ROOT}: {e}"),
-            )
-        } else if !missing.is_empty() {
-            Row::fail(
-                ROW_SCAN_FLOOR,
-                "a named binary money-unit file is missing from the scan set",
+                "every money scan set is present and above its floor",
                 format!(
-                    "{} missing: {} — a money file that moved must move the ban with it in a \
-                     reviewed diff, never drop out of it silently",
-                    missing.len(),
-                    missing.join(", ")
+                    "the ledger crate, {} named money file(s) and {} enumerated money area(s) \
+                     all read",
+                    BINARY_MONEY_FILES.len() + CONTRACT_MONEY_FILES.len(),
+                    COUNT_READ_ROOTS.len()
                 ),
             )
         } else {
-            Row::pass(
+            Row::fail(
                 ROW_SCAN_FLOOR,
-                "the money scan set holds the ledger crate and every named binary money file",
-                CLEAN,
+                "a money scan set is missing or below its floor",
+                format!(
+                    "{} problem(s): {}",
+                    set_problems.len(),
+                    set_problems.join(" | ")
+                ),
             )
         };
 
-        Verdict::of(vec![scan_floor, row_no_float(&offenders)])
+        Verdict::of(vec![
+            scan_floor,
+            row_no_float(&offenders),
+            row_count_read(&count_scan),
+            row_count_scale(&scale_offenders),
+        ])
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
@@ -238,8 +1020,8 @@ impl Gate for NoFloatMoneyGate {
         report.push(prove_green(
             cx,
             self,
-            "the money path names no floating point",
-            &[ROW_SCAN_FLOOR, ROW_NO_FLOAT],
+            "the money path names no float, defaults no count and persists no scaleless mantissa",
+            &[ROW_SCAN_FLOOR, ROW_NO_FLOAT, ROW_COUNT_READ, ROW_COUNT_SCALE],
         ));
 
         // The token is BUILT, not written, so this gate's own source does not carry the needle it
@@ -268,6 +1050,20 @@ impl Gate for NoFloatMoneyGate {
             BINARY_MONEY_FILES[0],
             Edit::Append(format!(
                 "\npub fn planted_drift(x: {float_ty}) -> {float_ty} {{ x * 2.0 }}\n"
+            )),
+            &[&float_ty],
+        ));
+
+        // A FLOAT IN THE EXACT COUNT MODULE IS FLAGGED. The whole point of #81 is that the count
+        // type never sees a double; the ban has to reach the file that says so.
+        report.push(plant(
+            cx,
+            self,
+            "a float appended to the exact count module is flagged",
+            &[ROW_NO_FLOAT],
+            CONTRACT_MONEY_FILES[0],
+            Edit::Append(format!(
+                "\npub fn planted_count_drift(x: {float_ty}) -> i128 {{ x as i128 }}\n"
             )),
             &[&float_ty],
         ));
@@ -321,6 +1117,154 @@ impl Gate for NoFloatMoneyGate {
             got: verdict_expect(self, &cx.with_overlay(ov)),
         });
 
+        // ── THE COUNT-READ SHAPE ──────────────────────────────────────────────────────────────
+        //
+        // THE PATH FORM, which is the spelling the guard this replaces could not see at all. Planted
+        // in the first codec crate.
+        report.push(plant(
+            cx,
+            self,
+            "the PATH form of a defaulted count read is flagged in the first codec crate",
+            &[ROW_COUNT_READ],
+            "crates/busbar-llm-codec/src/planted_path_form.rs",
+            Edit::Create(
+                "use serde_json::Value;\npub fn planted(u: &Value) -> u64 {\n    u.get(\"planted_tokens\").and_then(Value::as_u64).unwrap_or(0)\n}\n"
+                    .to_string(),
+            ),
+            &["planted_path_form", "as_u64"],
+        ));
+
+        // THE SECOND CODEC CRATE, which the guard this replaces could not reach by construction.
+        report.push(plant(
+            cx,
+            self,
+            "a defaulted count read is flagged in the SECOND codec crate too",
+            &[ROW_COUNT_READ],
+            "crates/busbar-voice-codec/src/planted_second_crate.rs",
+            Edit::Create(
+                "use serde_json::Value;\npub fn planted(u: &Value) -> u64 {\n    u.get(\"planted_tokens\").and_then(Value::as_u64).unwrap_or_default()\n}\n"
+                    .to_string(),
+            ),
+            &["planted_second_crate", "as_u64"],
+        ));
+
+        // THE METHOD FORM, the turbofish, the alias, and the `as_i64`/`as_f64` siblings — every
+        // spelling the one-pattern guard would have let through.
+        for (what, body) in [
+            ("the method form", "v.as_u64().unwrap_or(0)"),
+            ("an aliased import", "Json::as_u64(v).unwrap_or(0)"),
+            ("the as_i64 sibling", "v.as_i64().unwrap_or(0)"),
+            ("the as_f64 sibling", "v.as_f64().unwrap_or(0.0)"),
+            ("an unwrap_or_else zero", "v.as_u64().unwrap_or_else(|| 0)"),
+            (
+                "a line break inside the chain",
+                "v\n        .as_u64()\n        .unwrap_or(0)",
+            ),
+        ] {
+            report.push(plant(
+                cx,
+                self,
+                &format!("{what} of a defaulted count read is flagged"),
+                &[ROW_COUNT_READ],
+                "crates/busbar-llm-codec/src/planted_spelling.rs",
+                Edit::Create(format!(
+                    "use serde_json::Value as Json;\npub fn planted(v: &Json) -> u64 {{\n    {body}\n}}\n"
+                )),
+                &["planted_spelling"],
+            ));
+        }
+
+        // A NON-ZERO DEFAULT IS OUT OF SCOPE, on purpose: it substitutes a value the author chose
+        // and named, which is a different act from recording that no work happened.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-llm-codec/src/planted_named_default.rs",
+            "use serde_json::Value;\npub fn planted(v: &Value, idx: u64) -> u64 {\n    v.as_u64().unwrap_or(idx)\n}\n",
+        );
+        report.push(Case {
+            name: "a NAMED non-zero default is not a silent zero and stays green".to_string(),
+            covers: vec![ROW_COUNT_READ.to_string()],
+            expected: crate::gates::Expect::Green,
+            got: verdict_expect(self, &cx.with_overlay(ov)),
+        });
+
+        // A READ THAT PROPAGATES `None` IS THE CORRECT SHAPE and must stay green, or the gate would
+        // be pushing authors away from the very thing it wants.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-llm-codec/src/planted_propagating.rs",
+            "use serde_json::Value;\npub fn planted(v: &Value) -> Option<u64> {\n    v.get(\"tokens\").and_then(Value::as_u64)\n}\n",
+        );
+        report.push(Case {
+            name: "a read that propagates None instead of defaulting stays green".to_string(),
+            covers: vec![ROW_COUNT_READ.to_string()],
+            expected: crate::gates::Expect::Green,
+            got: verdict_expect(self, &cx.with_overlay(ov)),
+        });
+
+        // AN ENUMERATED COUNT-READ ROOT THAT READS AS EMPTY IS REFUSED, not scanned as zero hits.
+        // This is the instrument check for blindness 2: a renamed crate must be a red, never a
+        // silent narrowing of the ban.
+        let root = COUNT_READ_ROOTS[0].homes[0];
+        let mut ov = Overlay::new();
+        match cx.walk(&WalkSpec::new([root]).ext("rs")) {
+            Ok(files) => {
+                for f in &files {
+                    ov.remove(&f.rel);
+                }
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "an enumerated count-read root that reads as empty is refused",
+                    &[ROW_SCAN_FLOOR],
+                    ov,
+                    &["floor"],
+                ));
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: count-read root {root} is unreadable ({e})"
+            )),
+        }
+
+        // ── THE PERSISTED-COUNT DISCRIMINATOR ─────────────────────────────────────────────────
+        let record_home = PERSISTED_RECORD_HOMES
+            .iter()
+            .copied()
+            .find(|p| cx.exists(p))
+            .unwrap_or(PERSISTED_RECORD_HOMES[0]);
+        report.push(plant(
+            cx,
+            self,
+            "a persisted record holding a Count with no scale field is flagged",
+            &[ROW_COUNT_SCALE],
+            record_home,
+            Edit::Append(
+                "\npub struct PlantedRow {\n    pub tokens: Count,\n    pub model: String,\n}\n"
+                    .to_string(),
+            ),
+            &["scale"],
+        ));
+
+        // AND THE SAME RECORD WITH ITS DISCRIMINATOR IS CORRECT, so the gate is a rule and not a
+        // ban on the type.
+        let mut ov = Overlay::new();
+        match Edit::Append(
+            "\npub struct PlantedRow {\n    pub tokens: Count,\n    #[serde(default = \"stored_scale_default\")]\n    pub scale: u32,\n}\n"
+                .to_string(),
+        )
+        .apply(cx, record_home, &mut ov)
+        {
+            Ok(()) => report.push(Case {
+                name: "a persisted record that DOES carry its scale stays green".to_string(),
+                covers: vec![ROW_COUNT_SCALE.to_string()],
+                expected: crate::gates::Expect::Green,
+                got: verdict_expect(self, &cx.with_overlay(ov)),
+            }),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not plant into {record_home} ({e})"
+            )),
+        }
+
         // THE INSTRUMENT: the root that reads as empty. A ledger crate that moved or was renamed must
         // be REFUSED, not scanned as zero hits and printed green.
         let mut ov = Overlay::new();
@@ -355,6 +1299,18 @@ impl Gate for NoFloatMoneyGate {
             cx,
             self,
             "a named binary money file dropping out of the tree is refused",
+            &[ROW_SCAN_FLOOR],
+            ov,
+            &["missing"],
+        ));
+
+        // AND SO IS THE EXACT COUNT MODULE VANISHING.
+        let mut ov = Overlay::new();
+        ov.remove(std::path::Path::new(CONTRACT_MONEY_FILES[0]));
+        report.push(prove_red(
+            cx,
+            self,
+            "the exact count module dropping out of the tree is refused",
             &[ROW_SCAN_FLOOR],
             ov,
             &["missing"],
