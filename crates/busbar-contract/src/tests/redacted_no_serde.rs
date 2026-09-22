@@ -4,7 +4,8 @@
 //! THE SERDE FENCE for [`Redacted`](crate::Redacted) — a compile-time pin that a secret VALUE can
 //! NEVER be serialized into an audit record, a wire payload, on-disk config, or a log line by
 //! construction. The single structural guarantee the whole secret-hygiene design rests on
-//! (`docs/design/1.6.0-secret-hygiene.md`, Part 2 §2.1(b) + Part 3, Check 3) is:
+//! (`docs/design/1.6.0-secret-hygiene.md`, Part 2's resolved-secret-value rule, and Part 3,
+//! Check 3) is:
 //!
 //!   > `Redacted<T>` deliberately implements NEITHER `Serialize` NOR `Deserialize`.
 //!

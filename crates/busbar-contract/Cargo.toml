@@ -31,9 +31,19 @@ license = "Apache-2.0"
 # the vocabulary only a transport author reads is one module tree here rather than a sibling crate.
 # The handful of names a plane still touches are re-exported at the crate root, so
 # `busbar_contract::wire` means what it always meant.
+#
+# `zeroize` and `smallvec` arrived with the `busbar-api` fold (DECISIONS #84): `Redacted<T>` zeroizes
+# its backing memory on drop, and `SignalBag` keeps the common 0-4-declared-signals case off the
+# heap. Both are LEAF crates — each resolves to a node with NO dependencies of its own in
+# `Cargo.lock`, so neither widens the closure every plugin inherits (#40(a)) by more than itself and
+# in particular neither reaches `libc`. That test is the one that matters here and is why
+# `sha256_hex` did NOT come with them: it is `sha2`, and `sha2 -> cpufeatures -> libc` is an open
+# owner ruling, not a dependency this crate may take on its own authority.
 [dependencies]
 serde = { workspace = true }
 futures = { workspace = true }
+smallvec = { workspace = true }
+zeroize = { workspace = true }
 
 # Tests only. The ABI types that seal into the policy journal are serialised by something, and a
 # test that asserts what a serialisation does NOT contain has to run a real serializer over it.

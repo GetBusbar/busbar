@@ -457,8 +457,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "smallvec",
- "zeroize",
 ]
 
 [[package]]
@@ -485,6 +483,8 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "smallvec",
+ "zeroize",
 ]
 
 [[package]]

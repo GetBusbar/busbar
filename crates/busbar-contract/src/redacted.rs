@@ -91,11 +91,52 @@ impl<T: Zeroize + Clone> Clone for Redacted<T> {
 /// go through that str-based primitive.
 impl<T: Zeroize + AsRef<str>> PartialEq for Redacted<T> {
     fn eq(&self, other: &Self) -> bool {
-        crate::auth::constant_time_eq(self.0.as_ref(), other.0.as_ref())
+        constant_time_eq(self.0.as_ref(), other.0.as_ref())
     }
 }
 
 impl<T: Zeroize + AsRef<str>> Eq for Redacted<T> {}
+
+// ── The constant-time primitive `Redacted`'s `PartialEq` is built on ───────────────────────────
+//
+// MOVED HERE VERBATIM from `busbar-api`'s `auth.rs` with `Redacted` itself, because the two are one
+// thing: `Redacted`'s whole reason to exist is that comparing secrets must not leak through timing,
+// and that guarantee IS this function. Leaving it behind would have meant a SECOND copy of a
+// security primitive on the contract side — the exact shape the duplication census ranks above
+// every other duplicate ("a duplicate that encodes a SECURITY or MONEY property outranks any
+// duplicate that is merely bigger"). `busbar-api` re-exports it at its historical path.
+//
+// ITS SIBLING `sha256_hex` DID NOT COME. It is `hex::encode(Sha256::digest(..))`, so it would drag
+// `sha2 -> cpufeatures -> libc` into the crate EVERY plugin links (DECISIONS #40(a)) — the open
+// owner ruling parked in `docs/design/BUSBAR-1.6.0.md`. This function drags nothing: `core`/`std`
+// only, no crate at all.
+
+/// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much
+/// of a token matches via timing. `#[inline(never)]` + `black_box` keep the optimizer from turning
+/// the accumulation loop into an early-exit branch (which would reintroduce a timing signal for the
+/// contents). The length check IS an early exit, and is only safe to apply to raw secret material
+/// when the material's length is not itself sensitive — which a raw token generally is NOT expected
+/// to be, but a caller comparing genuinely secret raw bytes directly (rather than through
+/// `sha256_hex`) still leaks whether the two lengths matched. Prefer hashing both sides
+/// first (see `sha256_hex`'s doc) so length never enters the comparison at all; this primitive alone
+/// does not guarantee that for its caller.
+#[inline(never)]
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+
+    // XOR all bytes and OR the results together. If any bit differs, result > 0.
+    let mut result: u8 = 0;
+    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
+        result |= x ^ y;
+    }
+
+    std::hint::black_box(result) == 0
+}
 
 #[cfg(test)]
 #[path = "tests/redacted_tests.rs"]
