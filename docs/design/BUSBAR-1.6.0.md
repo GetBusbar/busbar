@@ -1089,327 +1089,120 @@ in the default `pull_request` types.
 
 ---
 
-# PART 7 — GROUND-CLEARING SESSION LOG (2026-09-21)
+# PART 7 — THE MAP TO DONE
 
-This Part is the handoff. It records what the ground-clearing session changed, what is proven, and
-what is still open. **Everything below this line is state, not law** — it goes stale, unlike Parts
-1–5. When an item here is done, delete the row.
+**This Part is a MAP, not a log.** It says where the tree is, what is left, and what only the owner
+can decide. Everything below is state and goes stale — unlike Parts 1–6. **When an item is done,
+delete the row.** Narrative belongs in commit messages; this file holds the route.
 
-## What the session was for
+## Where the tree is — measured 2026-09-22
 
-The code was close; the ground under it was not. Three compounding problems: 980 remote branches
-across two divergent integration lineages each holding work the other needed; 187 markdown docs of
-which only three were permitted to be authoritative, so agents steered by whatever stale checklist
-they met first; and a release engine that could not promote. This session cleared the ground and
-produced this document. It deliberately did **not** run the release.
-
-## Safety net
-
-Full bundle at `~/Downloads/busbar-all-refs-2026-09-21.bundle` (all 2547 refs, `git bundle verify`
-exit 0), with a ref manifest beside it at `~/Downloads/busbar-refs-2026-09-21.txt`. Two commits
-reachable from almost nothing were tagged deliberately: `1e82b3a0f` (`integration/reland`, reachable
-from no other ref) and `004f98d89` (the trunk). **Nothing was deleted without being in that bundle
-first.**
-
-## The trunk
-
-`integration/1.6.0-dev-green` @ `004f98d89` was ruled trunk over `predev`, which was stale (a
-40-row DECISIONS table, 0 of 16 waves). The consolidated result lives on `consolidated/1.6.0` and
-becomes `predev`.
-
-## Fixes landed — each red-before-green, evidence in the commit body
-
-Checkpoint `ec21d27f0` — 77 files, +4536/−432. The substantive ones:
-
-| Area | Fix |
+| | Value |
 |---|---|
-| **SSRF / NAT64** | `embedded_ipv4()` now recognises RFC 6052 `64:ff9b::/96` and RFC 8215 `64:ff9b:1::/48` in both `busbar-kernel-egress/src/trust/net.rs` and `busbar-kernel/src/net_guard.rs`. Red proof: `resolve_and_pin` actually pinned `64:ff9b:1:fffe::a9fe:a9fe` — a DNS64-synthesised IMDS address walking straight through the cloud-metadata guard. |
-| **Plugin host ABI** | `HostCtx` became `#[repr(C)] { ptr, generation: u32, kind: u8 }` with a `HostGeneration` RAII guard and a `LIVE_GENERATIONS` thread-local, so a stale host handle is detected rather than dereferenced. `ABI_MINOR` 20 → 21. |
-| **Ledger** | `redeem_plane_token` defaulted to `Ok(true)` — fail-open on a token redemption. Now `Ok(false)`. `list_keys_since` gained the `k.revision == 0` arm it was missing. |
-| **Secrets** | `MAX_SECRET_FILE_BYTES` = 1 MiB with `read_secret_file_bounded` using `Read::take(cap+1)`; an unbounded read was previously possible. |
-| **OAuth2** | `percent_decode` now decodes over bytes instead of slicing a `&str` by index — a `%` before a multibyte character panicked an unauthenticated path. |
-| **Substrate** | `busbar-substrate-values/src/proto.rs` declaration lookup compared by pointer identity first, then by value, instead of only one. |
-| **Streaming codec** | Exact `rate=` token match (`.contains("rate=16000")` also matched `rate=160000`); usage falls back to stated totals; tool payload object-wrapped; `push_call_args` now replaces only when the held buffer is empty or the fragment extends it. |
-| **Ceiling gate** | `INTEGRATION_REF` repointed from the renamed-away `origin/integration/oracle-phase0` to `origin/predev`, and an unresolvable base is now **RED** instead of silently falling back to `HEAD~1`. That fallback meant `ceiling-rose` had been measuring one commit rather than the branch — **it surfaced 147 hidden ceiling rises.** |
-| **Done oracle** | `scripts/verify-1.6.0-done.sh` declared 21 groups while 22 `begin_group` blocks existed, so `floor_is_honest` refused to score **anything**. Now 22, `--selftest` green, with 12 environment refusals including `SKIP_BOOT_LEG` and the four `BUSBAR_ORACLE_*` vars it previously did not assert. |
-| **Cost** | `scripts/cost-watch.py` + `.github/workflows/sched-cost-watch.yml` built from nothing, implementing #78's exit-code contract with a self-test. |
+| Done-oracle (`scripts/verify-1.6.0-done.sh`) | **6 / 22 groups GREEN** |
+| `cargo xtask gate construction` | **12 FAIL rows** (was 109) |
+| `cargo check --workspace --all-targets` | builds |
+| Crates | **57** → roster target **35** |
+| Plugin dependency closure (#40) | **6** busbar crates → target **1** |
+| Money oracle (PARITY) | **GREEN — 0 divergences vs published 1.5.5** |
+| Trunk | `consolidated/1.6.0`, 85+ commits ahead of `integration/1.6.0-dev-green`, **nothing pushed** |
 
-## Branch harvest — method and result
+## THE MAP — what stands between here and done
 
-Patch-id is useless here: the rename waves moved every path, so identical work has a different
-patch-id on every branch. **Symbols survive renames.** For each branch the method is: extract the
-identifiers, string literals and test names it *adds* versus its merge-base, then grep the enriched
-trunk for each one. Code paths and doc paths are indexed **separately** — a doc claiming "Landed"
-otherwise masks absent code.
+### 1. The crate fold: 57 → 35
+Twenty-two crates still fold. Biggest single move is `busbar-llm-codec` (103k lines) into
+`busbar-plane-llm`. #19 requires each fold be a **byte-identical LOC move, oracle-proven**. A fold
+that loses tests lost code — check counts before and after, every time.
 
-This method is what caught the NAT64 loss, where `git grep -l 'ff9b'` returned only `Cargo.lock`.
+### 2. #40 — the ABI seams live in the wrong crates *(largest architectural item)*
+The ABI a plugin must implement is defined in the crate that **consumes** it:
 
-Buckets: **empty** (no source content the trunk lacks) · **harvested** (all unique symbols found in
-trunk) · **survivor** (symbols absent — review and port with path translation).
-
-Two traps worth knowing before trusting any harvest row:
-- `git grep -E` does **not** honour `\b`. Extended-regex mode silently returns zero matches for a
-  word-boundary pattern. Use `-P`. This single flag was the difference between 969 and 57,701 indexed
-  symbols.
-- **Never grep a concatenated "trunk blob".** One worker built a blob with `git archive | tar -xO`,
-  got a silently-truncated file, and reported a critical SSRF vulnerability that did not exist. Query
-  git directly, every time. A false security finding is worse than a missed one.
-
-## THE LOST REGISTER — what the branch harvest recovered
-
-The deep review read ~625 survivor branches across 12 slices, asking one question per branch:
-*does the FUNCTION this branch added exist in the current tree, under any name?* Verdicts:
-**RENAMED** (present, moved) · **DEAD** (a decision killed it) · **LOST** (gone, and wanted) ·
-**UNCLEAR** (say so, never guess).
-
-**Roughly 75–80% RENAMED.** The rename waves genuinely carried the work; the fear that the
-consolidation had silently dropped whole subsystems was mostly unfounded. What follows is the
-minority that did not survive, ranked by consequence. Each line is evidence-backed against trunk,
-not inferred from a missing symbol name.
-
-### FIXED IN THIS SESSION
-
-| What | Where | Commit |
-|---|---|---|
-| NAT64 embedding unjudged by the **host-string** SSRF guards — `ssrf_blocked_host` guards OAuth token endpoints and MCP tool-call ARGUMENT hosts, so a caller could pass `64:ff9b::a9fe:a9fe` as a literal and reach IMDS with no DNS involved | `net_guard.rs` ×3, `trust/net.rs` ×3 | `a6fe1018b` |
-| **MCP confused deputy** — an upstream naming `tools/call` on the response leg had it minted as a real unit and run under the ORIGINAL CALLER's identity, budget and approval grant. Ingress had the check; egress did not | `busbar-plane-mcp/src/plane.rs` | `489b63ab1` |
-| `NANOS_PER_CENT` declared **five** times; the admit-vs-bill pair (`price.rs` sizes the hold that gates admission, the ledger bills) could drift | root ×2 (compile-time assert), budget (re-export) | `a1019f041`, `489b63ab1` |
-| Served request path reported **zero `WrapSetup`** profiler samples, while the design doc claimed the fix had "Landed" | `unit/route.rs` | `74e0b1770` |
-
-### OPEN — SECURITY, exploitable
-
-1. **MCP task-answer merge bypasses the argument guard.** `mcp/tasks.rs::merge_answers` (:923)
-   inserts every caller-supplied key into the tool arguments with no re-screen, and the result goes
-   straight to dispatch (:762). The guard ran ONCE, at `create_task`, on the pre-merge arguments. A
-   caller passes `url: "https://legit.example.com"`, clears the screen, then `tasks/update` rewrites
-   it to `http://169.254.169.254/…` — dispatched unscreened. **Same class as the SSRF fix above, via
-   a different door.**
-2. **MCP server→busbar direction has no sender mirror** (second instance, distinct from the one
-   fixed): `busbar-plane-mcp/src/plane.rs` client-path guard exists, server path re-checked.
-3. **Rotate-replay-key idempotency collision.** `busbar-admin/src/keys.rs:1490` builds its
-   idempotency cache key by colon-joining two caller-controlled strings; a crafted pair collides and
-   a caller is served **a different key's freshly-rotated secret**. A correctly-built sibling exists
-   at `verbs.rs:92` — the router calls the wrong one.
-4. **Auth-cache revocation bypass.** `busbar-kernel/src/auth/mod.rs::run_chain_cached` re-`put`s on
-   a cache HIT, resetting the TTL, so a revoked credential presented faster than its TTL is never
-   re-checked. The correct implementation exists at `busbar-kernel-identity/src/chain.rs:198-220`
-   and was never ported to the file actually wired to admission.
-5. **Unauthenticated A2A push route has no rate limit.** `busbar-a2a/src/a2a/pushback.rs` has MAC +
-   replay + size hardening but no bound on volume; a valid token holder can spam durable hash-chain
-   writes and outbound webhook deliveries.
-6. **Unbounded MCP tool name into the audit chain.** `mcp/method.rs::tools_call` writes
-   caller-supplied `params.name` verbatim into a durable chain row with no length bound.
-7. **Credential plaintext in `Debug` + no zeroize.** `busbar-kernel/src/arena.rs::CredentialSlab`
-   derives `Debug` over raw client credentials and `clear()` is a bare `Vec::clear()`. Named in #53's
-   own top-risk list.
-8. **mTLS material not retired on config reload.** `plane_host/identity.rs` admits in its own doc
-   that it carries no config-generation tag (FIFO-256 cap only); `trust_anchor.rs` has no eviction
-   at all. A revoked identity stays live indefinitely at realistic scale.
-
-### OPEN — INTEGRITY (audit / money)
-
-9. **Admin audit-chain digest collision.** `legacy/chain.rs` joins fields with a raw unescaped `|`;
-   `resource` carries untrusted upstream text (`units_mcp.rs:1537` interpolates an MCP tool name).
-   A `|` in that name shifts every later field boundary, so a REJECTED mutation's digest can collide
-   with an APPLIED one's and the chain still "verifies". **Trunk's own `digest_framing_tests.rs`
-   already proves a collision pair exists.** PARKED — the fix changes sealed bytes, owner's call
-   (recommendation: versioned scheme tag, old records verify under scheme 1).
-10. **Audit second-writer detection regressed.** Legacy `append_audit`
-    (`store-memory/src/lib.rs:716-729`) refused a fork; the new seam's `append_plane_record`
-    (`:757-763`) is a blind upsert. Two processes on one store silently overwrite each other's rows.
-11. **Audit rows carry `ts: 0`.** `busbar-kernel/src/audit/journal.rs:543` hardcodes it, and
-    `purge_plane_records_before` deletes anything older than the cutoff — so the retention window is
-    defeated for the entire class.
-12. **Transient audit-write failure drops the record.** `plane/auditlog.rs:542` logs and moves on;
-    the old backfill/`durable_high` watermark is gone.
-13. **SSRF-blocked call recorded as "dispatched".** `mcp/client/issue.rs:211` maps
-    `TransportError::Refused` — the guard stopping the call BEFORE any socket opens — to
-    `OUTCOME_DISPATCHED`. The audit chain tells an investigator busbar sent something it never sent.
-14. **`rate_card_version: 0` hardcoded** at six sites across `units_mcp/voice/a2a` — violates #44's
-    pricing-provenance requirement.
-15. **Flat fee silently zero.** `cost/rate.rs:338 per_request_fee()` returns `0` for a currency the
-    card doesn't name a fee in. #42 says an unpriced class REFUSES, never silently zeroes.
-16. **Third un-clamped rate conversion.** `busbar-kernel/src/cost.rs::RateNanos::from_raw` lacks the
-    u64 overflow clamp its canonical sibling has — a config typo saturates to an astronomical charge.
-17. **Root ledger book hardcodes `NullShipper`** (`root/durability.rs:701-711`) — never persists,
-    whatever the config says.
-18. **Durable spend double-counted on shutdown** — `main.rs` flush sites race the spawned flusher.
-
-### OPEN — DURABILITY / AVAILABILITY
-
-19. **TLS `close_notify` has no timeout.** `busbar-transport-tls/src/lib.rs:856-872` calls
-    `w.shutdown().await` unbounded; the 250ms `CLOSE_NOTIFY_BUDGET` is gone. A peer that never ACKs
-    hangs the task.
-20. **WS close reason discarded** — `busbar-transport-ws/src/transport.rs:761` always sends bare
-    `Close(None)` despite an unchanged `CloseReason` enum.
-21. **Raw TCP connect unbounded** (only the handshake is bounded); WS read pump has no close wakeup.
-22. **`"id": null` misread as a notification** — `mcp/client/peer.rs:231` filters null, violating
-    JSON-RPC 2.0 §4. Any peer whose encoder spells an absent id as explicit null hangs.
-23. **Cohere token counts silently zero** — `llm-codec/src/cohere/reader.rs` uses
-    `.as_u64().unwrap_or(0)` on values Cohere specs as JSON floats. A float count bills as zero.
-24. **`InFlight::insert` overwrites a duplicate key** instead of refusing — orphans a `HoldCell` and
-    permanently inflates the in-flight count.
-25. **Plain container image cannot dlopen a plugin.** Not a missing feature — a REGRESSION: the
-    Dockerfile once carried `COPY plugins/${TARGETARCH}/lib/ /lib/`, a commit removed it as
-    collateral damage while CI kept building and staging those libs. Fix in flight.
-
-### OPEN — CORRECTNESS / OBSERVABILITY
-
-26. Verify's sealed `VerifiedDestination` set never reaches Route/Meter — Route re-derives its own,
-    a verify-then-act inconsistency (`teller.rs`).
-27. SNI compared byte-wise, not case-insensitively — `registry.rs::transport_overlaps` can clear two
-    genuinely overlapping claims.
-28. Voice tool-call refusal silently dropped with no client notification
-    (`busbar-voice/src/runtime/session.rs:421`).
-29. `voice_build` mounts nothing instead of refusing boot when `public_url` is absent.
-30. gRPC `MESSAGE_MAX_BYTES_KEY` entirely unwired; HTTP egress doesn't refuse TE+Content-Length
-    (the ingress twin does); SSE drops legal bare-field lines.
-31. Four xtask/CI-tooling bugs: no child-process timeout, a YAML block-scalar panic on multibyte
-    input, a TSV `splitn(4)` that corrupts real 6-column rows, and an unreadable directory read as
-    silently empty.
-
-### DELIBERATE — do NOT "restore" these
-
-`contract-kinds` (an 8-kind proposal; `PLUGIN-TREE.md` records it as rejected — the answer is 7,
-per #3) · the `Kind::Control`/`Kind::Dialect` families (D36/D37, cancelled) · `AdminSurface` ·
-the `units_*_leg.rs`/`plane_mount.rs` shape (#28 chose the gauntlet-kernel-rider design) · the whole
-`Arena` fixed-cap model (#41). These appear as survivors because their symbols are absent from
-trunk. Absent because they were **decided against**.
-
-## Branch collapse — where it actually stands, and the 39 that matter
-
-**817 remote branches.** Git-provable deletion is EXHAUSTED: 38 provable ancestors were deleted, and
-a scan for branches whose source tree under `crates/ xtask/ scripts/ conformance/ testing/` is
-already byte-identical to trunk's returned **zero**. So every remaining branch differs in source and
-no further deletion can be justified by git alone — the rest needs the content proof.
-
-**83 branches have been adjudicated** by symbol-harvest (extract the identifiers, string literals
-and test names a branch ADDS vs its merge-base, then grep the enriched trunk for each — patch-id is
-useless here because the rename waves moved every path, but symbols survive a rename). Verdicts:
-
-| Verdict | Count | Meaning |
-|---|---|---|
-| `survivor` | **43 (≈39 unique)** | symbols absent from trunk — **may hold code the trunk does not have** |
-| `harvested` | 39 | every unique symbol found in trunk, superseded under reworded names |
-| `empty` | 1 | no source content the trunk lacks |
-
-**The 39 survivors are the point, not the 40 deletions.** Deleting branches saves nothing — there is
-no `on: delete` trigger, so keeping them costs zero job-minutes. Losing code costs everything. The
-survivor list includes `r5-money-m3` (money), `r5-auth-resolvedkey` (auth), seven
-`codeaudit-fix/transport-*` branches, and `integration/reland`, which the safety-net pass found to be
-**reachable from no other ref at all**.
-
-The adjudication record — one row per branch with its sha, merge-base date, verdict and the evidence
-behind it — is preserved at **`~/Downloads/busbar-branch-harvest-ledger-2026-09-21.tsv`**, beside the
-all-refs bundle. It was produced in `~/Developer/tmp/harvest-ledger/`, which is not durable; if that
-directory is cleared, the copy in `~/Downloads` is the record.
-
-## Conformance is the LAST gate, not a task — measured 2026-09-21
-
-`cargo xtask conformance check --musts` is RED with **17 rows**, and the split matters more than the
-count, because it changes when the work can be done at all.
-
-**10 suites are STALE, not failing.** `llm-{anthropic,bedrock,cohere,gemini,openai,responses}`,
-`mcp`, `voice-gemini-live`, `voice-openai-realtime` and one more all hold a real **pass** recorded at
-commit `67ee79103050`. They are refused for one reason: the verdict commit does not equal the
-candidate sha, and a pass is honoured only if its commit IS the release sha.
-
-**Therefore re-running them now is pure waste**, and would be the exact "spend that buys nothing"
-the cost brief warns about. The next commit invalidates every fresh verdict immediately, and the six
-LLM suites exercise real provider surfaces. A verdict with a shelf life of one commit is not worth
-paying for. **These run once, on the frozen candidate, immediately before turnstile — and nowhere
-else.** Any plan that lists "make conformance green" as a mid-flight task is wrong by construction.
-
-**7 suites have genuinely never run**, and these ARE buildable now because they are about missing
-capability rather than staleness:
-
-| Suite | State |
+| Edge | Why it exists |
 |---|---|
-| `ws` | Autobahn leg not wired — **currently zero coverage** |
-| `tls` | testssl leg not green |
-| `h2spec` | HTTP/2 leg not green |
-| `slsa-verifier` | not wired as an arm-or-red verdict |
-| `oidf-oauth2` | self-hosted OIDF leg not green. The claim is "passes the suite", **never** "certified" (owner ruling 2026-09-19) |
-| `jev` | decisions-plane wiring in flight (#48) |
+| `busbar-api` → `busbar-kernel-ledger` | a store plugin implements `Store`; those records live in the money crate |
+| `busbar-plane-decision` → `busbar-kernel` | `PlaneDecl` is defined in the kernel and types its fields against `EngineHost`, `PlaneStore`, `axum::body::Bytes` |
+| `busbar-kernel` → `busbar-substrate-values` | #37 says the kernel must NOT depend on its own foundation; it does, and inherits four of its features |
 
-These seven are the real conformance work for 1.6.0. `ws` is the most glaring — a release whose
-fourth plane is streaming, carrying a WebSocket transport, with zero Autobahn coverage.
+**This is a redefinition, not a refactor.** Two prior attempts to move `PlaneDecl` into contract were
+correctly refused — moving a type that names `EngineHost` into the neutral crate drags the internals
+along and makes contract the thing it exists to prevent. The work is plugin-facing forms expressed in
+contract's own vocabulary, converting at the seam.
+`busbar-plane-decision`'s invariance test stays RED as the only automated witness.
 
-## Unattended wave, 2026-09-21 night — what landed
+### 3. The 16 red done-oracle groups
+- **Honest reds I created by making the harness truthful** — `PLANE-DELETE` (the locked 5-plane
+  roster has no on-disk `decisions` crate), `TELLER-STEPS` (`rigs-ledger` exists as no CLI anywhere —
+  upstream work in `busbar-release`), `STORE-QA`.
+- **Real gaps** — `KIND-ISOLATION` (`busbar-core-admin` is kind `core` and implements `Plane`),
+  `AUDIT-LEDGER`, `EQUALITY`, `DESIGN`, `INSTANCE-NOUN` (27 rows, burns to 0).
+- **Drift** — `BYTE-IDENTITY` (openapi goldens), `CHANGELOG`, `CONFIG-STABILITY`, `NO-DEFERRAL`,
+  `PUBLIC-HYGIENE`, `TEST`, `KERNEL`, `BUILD`.
 
-Twenty commits. Every fix below was red-before-green with the failing output captured, and every one
-was verified by re-running the suite myself rather than trusting the agent's report.
+### 4. Zero Python in the money oracle
+Engine is already Rust (`busbar-release-oracle`, Phase C). Remaining, per the engine's own
+`PORT-REMAINING.md` cutover checklist:
+1. **Re-record the golden with the Rust engine** so `meta.json.harness_rev` is Rust-native — until
+   then cross-tool replay needs `--allow-harness-skew`.
+2. **`testing/shadow-oracle/scripts/*.sh` still shell to `python3 mock-upstream.py` / `capture-exec.py`**
+   via `BUSBAR_ORACLE_TOOL_DIR`. Needs a Rust mock — a busbar-side change.
+3. **One stale MONEY golden cell**: `billing|key-usage|after-upstream-down` records a charge where a
+   down upstream should cost 0. The re-record fixes it.
+4. Only then: delete `oracle.pin` and the Python dependency.
 
-**Money — the serious one.** `serde_json`'s `as_u64()` returns `None` for a float-backed number, so
-the house idiom `.as_u64().unwrap_or(0)` recorded a real count as **zero** for any provider that
-spells counts as floats. Present in all six dialects; **shipped in v1.5.5**. One canonical reader
-now serves the whole crate, and a non-vacuous source-scan guard stops the seventh dialect
-reinventing it. Gemini was the worst case: its usage is an additive sum, so one float term
-contributed zero to a total that still looked plausible (read 89, should have been 172). **Parked
-for the owner, not self-approved** — see the PARK section. Second money item also parked: whether a
-rate-card edit reprices history.
+### 5. Branch collapse to predev / dev / qa / main (#67)
+817 remote branches. Git-provable deletion is exhausted (38 ancestors deleted; zero branches share
+trunk's tree). The rest needs the symbol-harvest content proof — **patch-id is useless because the
+rename waves moved every path; symbols survive a rename.** 78 adjudicated, 749 in flight.
+Ledger: `~/Downloads/busbar-branch-harvest-ledger-2026-09-21.tsv`.
 
-**Security and integrity.**
+### 6. One security fix ready to port
+**Every TLS private-key read in production is unaudited.** `AccessJournal` is built and tested;
+`transport_key_token()` has callers in exactly two files — its definition and the test file. Trunk
+admits it: *"the only thing that ever registered a listener's TLS config was the transport's own
+tests."* Contradicts the owner's ruling that the kernel audits secret access. Every seam exists, so
+it is a port (`origin/queue-rebased-A3plus`), not a re-implementation.
 
-| Fix | What it actually allowed |
-|---|---|
-| admin key-rotate idempotency key | A crafted `(id, header)` pair was served **another caller's cached rotate response**, token material included, without ever holding a valid id |
-| audit digest framing | Two materially different audit facts hashed identically — a rejected entry and an applied one could collide by shaping their own fields |
-| auth cache re-put on hit | A credential under steady traffic **never expired**, so revoking it did nothing for as long as it kept being used |
-| `CredentialSlab` Debug + clear | Credentials printed in the clear by any formatter, and left readable in spare capacity after release |
-| Twilio empty `streamSid` | An empty id bound vacuously, so the anti-forgery check compared empty to empty and admitted frames from anyone |
-| Twilio media format | Never validated, so a mismatched format was decoded **and timed** wrongly — and duration is a ledger quantity |
-| MCP `"id": null` | A request with an explicit null id was read as a notification and never answered — caller hangs forever |
-| MCP token exchange | No byte cap; an upstream could stream an unbounded body into memory |
-| A2A push route | No volume bound: one token, unbounded durable audit writes and outbound webhooks — busbar as an amplifier |
-| `InFlight::insert` | Overwrote a duplicate key, orphaning a hold so its budget stayed reserved forever |
-| SNI case comparison | Two overlapping transport claims judged disjoint, so boot cleared a config with two listeners on one name |
-| plane-record fork | A second writer silently overwrote a chained record and the store said nothing |
-| journal `ts: 0` | Every scoped row looked infinitely old, so retention deleted it immediately |
-| three transport hangs | TLS close, and TCP connect at two sites, could park indefinitely |
+## OWNER DECISIONS — nothing moves on these without a ruling
 
-**Verify→Route seam.** Verify sealed a destination set and dropped it; Route re-derived its own. The
-sealed set is now threaded through Route and Meter, so what was checked is provably what was used.
-No quantity or arithmetic changed — the trait signatures did, so all six implementors in the binary
-were updated.
+**Money (#10/#59 — a billed-byte change is never self-approved):**
 
-**Release engine.** `gate-mutants` removed from `qa` and `main` required checks (it was required
-while disabled — neither branch could ever go green). The turnstile bridge landed, deliberately
-`workflow_dispatch`-only rather than repointed to `predev`. Both detailed in Part 6.
+1. **Float token counts.** `serde_json`'s `as_u64()` returns `None` for `27.0`, so the house idiom
+   `.as_u64().unwrap_or(0)` recorded real counts as **zero** for any provider spelling them as
+   floats. **Shipped in v1.5.5** (five sites in the released Cohere reader). Fixed at one seam across
+   all six dialects. **Oracle-neutral** — the corpus contains no float-encoded cell, which is
+   precisely why it shipped. Question: should the corpus GAIN one? It is the only way the oracle can
+   ever see this class, and it would legitimately diverge from the 1.5.5 golden.
+2. **Rate-card history.** `GET /admin/usage` reprices off the CURRENT card; the register and a
+   published CHANGELOG line claim otherwise. Worse, `PostingStamp.rate_card_version` is hardcoded
+   `0` at all seven live posting sites and the audit chain digests that placeholder — so
+   "price by the card in force at the time" is **implementable forward, not recoverable backward**.
+   The claim is customer-facing: either the endpoint gets wired or the entry is retracted.
+3. **B13 double-count.** `main.rs` calls `flush_budgets`/`flush_metering` a second, ungated time on
+   two shutdown paths, outside the gate `spawn_budget_flusher` holds. A narrow interleaving lets B
+   snapshot against A's un-advanced baseline and double-count A's in-flight delta.
 
-### TWO OF MY OWN FINDINGS WERE OVERSTATED — read this before acting on any of them
+**Architecture:**
+4. **`busbar-core-substrate`** — kept in the roster on the owner's word (*"keep it and figure it out
+   later"*), questioned by him three times, and the measure agent he asked for was never run.
+5. **`busbar-core-admin` implements `Plane`.** The gate advises "make a new plugin kind" — but #3
+   excludes admin and the `control` kind was CANCELLED. A cleanliness crate should implement no
+   plugin entry face at all; how admin's verbs reach the loop without one is unsettled.
 
-I made the same error twice: **verified that a check was missing, never verified the code was
-reachable.** Both were caught by a second independent review, not by me. The corrections are in full
-above; the lesson generalises.
+## Traps this tree has already sprung — do not re-learn them
 
-| I said | Actually |
-|---|---|
-| A2A grant gap is live horizontal privilege escalation | **Not reachable.** `root::units_a2a` is named from `main.rs` at one line, to install scope entries. Its own comment: *"It diverts no byte."* The served path enforces the grant. Latent, not open. |
-| Budget cap bypassed on every restart, all four planes | **Not on the customer path.** `GovState::hydrate_budgets` DOES run at boot (`appbuild.rs:1158`); `ProductionUnits.door` is admin-scoped. One narrow voice question stays open. |
-
-**The rule this session earned: a missing check is not a vulnerability until you have shown the
-line executes.** "Is the guard absent?" and "does anything call it?" are two questions, and the
-second is the one that decides severity. Reporting the first as if it answered the second is how a
-dormant wart gets escalated to a breach — twice, here, in one night.
-
-It cuts the other way too, and that is the reason to fix both anyway: `units_a2a.rs` exists in order
-to BECOME a serving path. A dormant file with a missing authorization check is a trap laid for
-whoever wires it up next, who will reasonably assume the approve step authorizes what it approves.
-
-**What survived the scrutiny unchanged** — the float token-count ledger defect (shipped in v1.5.5),
-the unaudited TLS private-key reads, grpc ignoring the operator's message cap, and the three MCP
-resource-exhaustion bounds. Those were checked for reachability and are real.
-
-### One process failure, stated plainly
-
-Commit `1772c74706`, whose subject is only `refactor(#41): ArenaExhausted -> ScratchExhausted`,
-swept up **three different agents' uncommitted work**: the Cohere billing fix, the auth-cache
-revocation fix, and the arena→mask rename. A blanket `git add` ran while agents held the same
-working tree. The bytes are correct and the trail is recorded in `1b6c9d4ba`, but a billing change
-sitting inside a rename commit is exactly what an auditor fails. Every commit after that point
-stages explicit paths and deliberately leaves files belonging to still-running agents alone. **The
-habit is the defect, not the one commit.**
+- **`git grep -E` does NOT honour `\b`.** Use `-P`. And never grep a concatenated `git archive`
+  blob — that produced a false CRITICAL SSRF finding.
+- **A missing check is not a vulnerability until you show the line executes.** Two findings were
+  escalated wrongly this way in one night. "Is the guard absent?" and "does anything call it?" are
+  two questions; the second decides severity.
+- **`ledger sync --write` launders audited code into unaudited scopes.** A fold moves code, the gate
+  flags the new scope missing, sync adds it unaudited and deletes the old scope's record, and the
+  gate goes green. Moved scopes must CARRY their audit record.
+- **A checklist that outlives its decision will quietly re-litigate it.** `qa/kind-isolation.toml`
+  was steering at `busbar-control-admin` — a kind the owner killed. `ARCHITECTURE.md` §1.4 and ~20
+  references in the kind-isolation gate still call `control` a kind.
+- **Blanket `git add` with concurrent agents sweeps up their uncommitted work.** One commit absorbed
+  three agents' changes including a billing fix. Stage explicit paths.
 
 ## THE CRATE ROSTER — OWNER-LOCKED 2026-09-22, 35 crates
 
@@ -1629,816 +1422,6 @@ side; a careless "keep the correctly-named one" deletes the working plane. It al
 Do the folds **after** the current fix wave lands, not during: these are whole-crate moves and they
 will conflict with every in-flight edit.
 
-## The audit ledger has a fold-shaped blind spot — do not blind-run `ledger sync --write`
-
-`cargo xtask gate audit-ledger` is RED on `missing-scopes`, naming five paths the tree implies and
-the register does not carry: `crates/busbar-plane-decision/src` (+ its two test dirs),
-`crates/busbar-a2a/src/tests` (new, from the `-host` fold) and `testing/ws-conformance` (new, from
-the ws subject becoming a workspace member).
-
-The gate prints its own remediation, `cargo xtask ledger sync --write`. **Running that blind would
-quietly destroy audit coverage,** and the roster fold makes this worse every time it runs.
-
-A dry run shows sync would DELETE ~19 records for "path gone from the tree", including
-`crates/busbar-plane-{a2a,mcp}-host/src/tests`, `crates/busbar-grammar/tests`,
-`crates/busbar-core/**`, `crates/busbar-substrate/**` and `crates/busbar-contract-transport/**`.
-
-**But that code did not vanish — it MOVED.** The `-host` tests are now under `busbar-mcp` and
-`busbar-a2a`; grammar's are heading into `busbar-contract`; core and substrate drained into the
-kernel-8. So the sequence is:
-
-1. a fold moves audited code into a new scope,
-2. the gate flags the new scope as missing,
-3. `sync --write` adds the new scope **unaudited** and deletes the old scope's **audit record**,
-4. the gate goes green.
-
-Net effect: **audited code is laundered into an unaudited scope, and the gate reports success.** The
-ledger's purpose is to make "has this been audited" answerable, and a fold is precisely the operation
-that should CARRY an audit forward rather than drop it.
-
-The gate only checks for MISSING scopes. It has no rule for "this scope's code moved somewhere that
-is now unaudited", which is the exact shape of the 61→28 roster collapse — so the collapse can silently
-zero the audit coverage of the whole tree, one honest-looking green at a time.
-
-**Held deliberately.** The sync is not run until the roster folds settle, and when it is run the
-moved scopes need their audit records CARRIED to the new path, not deleted. That is a change to how
-`ledger sync` treats a rename-or-fold, not a one-off bookkeeping step.
-
-## Survivor review — transport hardening that was audited, then lost
-
-Seven `codeaudit-fix/transport-*` branches reviewed against trunk. **Six are LOST, one superseded.**
-These came from a code audit, so they are disproportionately real hardening — bounds, refusals,
-parser limits — and that is exactly the class that goes missing quietly and is noticed only when
-exploited. Ranked:
-
-**HIGH — grpc silently ignores the operator's configured message cap.**
-`busbar-transport-grpc/src/codec.rs:24` hardcodes `MAX_MESSAGE_BYTES = 4 MiB` and applies it
-unconditionally at `client.rs:123` and `server.rs:130`. `busbar-transport-ws` DOES read the operator
-key `limits.request_body_max_bytes` (`transport.rs:110`); grpc has zero references to it. So an
-operator who sets that key expecting it to bound every transport gets a grpc listener still accepting
-4 MiB per message — a silently-larger attack surface on a deployment they believe is capped. The
-inconsistency is the danger: the knob works where you test it and not where you don't.
-
-**MEDIUM — the http egress forwards a request-smuggling shape instead of refusing it.**
-`busbar-transport-http/src/lib.rs:1470` `complete_message()` refuses a non-chunked
-`Transfer-Encoding` but NOT the chunked-body + `Content-Length` co-presence case — which the INGRESS
-reader already refuses. It de-chunks, rebuilds with both framing headers stripped, and forwards a
-quietly-disambiguated message downstream. Two headers naming two different lengths for one body is
-the canonical smuggling primitive; resolving the ambiguity and passing it on is worse than refusing,
-because the next hop may resolve it the other way.
-
-**MEDIUM — a TLS truncation attack is indistinguishable from a clean close.**
-`busbar-transport-tls/src/lib.rs:387-392` `map_session_err` has no `io::ErrorKind::UnexpectedEof`
-arm, so it falls through to `TransportError::Closed` — the identical value an orderly
-`close_notify` shutdown produces. A peer that drops the TCP stream mid-session is reported exactly
-like an honest close, erasing the one signal that distinguishes "the exchange finished" from "it was
-cut off, possibly hiding truncated content." One match arm.
-
-**LOW — billing-honesty test coverage exists for 2 of 7 transports.**
-`frame_meta_honesty_catches_inflating_and_deflating_fixtures` exists only in
-`busbar-transport-sse` and `busbar-transport-tcp`. grpc, http, stdio, tls and ws have no red-capable
-fixture proving `FrameMeta.bytes` — **a billing figure** — cannot drift from the real payload size.
-A metering bug in any of those five would ship undetected. Given tonight's float-count defect, a
-money quantity with no red-capable test in five of seven transports deserves more weight than "LOW"
-suggests.
-
-**LOW — two SSE parsing edge cases.** `proto.rs:110,127`: `SSE_FIELDS` is colon-suffixed and matched
-with `starts_with`, so a legal bare field-name line is dropped as a comment while `datastream:` is
-wrongly admitted as a field; `proto.rs:153` over-trims `event_type` where the grammar strips only one
-leading space.
-
-**Superseded:** `transport-ws` (base) — its PoisonGuard fence, `with_max_message_bytes` and the loud
-panic on concurrent `frames()` are all landed verbatim.
-
-**On Autobahn, answered explicitly:** `transport-conformance-skeleton` does NOT hold an Autobahn
-harness. Its `tests/conformance.rs` is a trait-shape battery and never mentions Autobahn or fuzzing.
-The real harness is `testing/ws-conformance/`, now buildable but still with **zero coverage and no
-verdict** — closing that needs a real Docker run, not a branch revival.
-
-## SECURITY — every TLS private-key read in production is UNAUDITED
-
-**Found by the survivor review of `origin/queue-rebased-A3plus`, verified directly.** The audit seam
-for secret access is fully built, unit-tested, and **connected to nothing**.
-
-- `AccessJournal` / `AccessPurpose` exist in `crates/busbar-unit-transport-key/src/lib.rs:67,90` —
-  an audit trail meant to record every read of TLS/secret key material.
-- `busbar_kernel::teller::transport_key_token()` is the capability token required to call
-  `provision_server`/`provision_servers`. `git grep -n transport_key_token` finds it in **exactly
-  two files: its own definition, and `crates/busbar/src/root/tests/transports.rs`.** Zero
-  production callers.
-- Trunk's own doc comment says so in the present tense (`teller.rs:141-145`): *"without this the
-  unit's `provision_server` and `provision_client` have a parameter no caller in the tree can
-  supply, **which is why the only thing that ever registered a listener's TLS config was the
-  transport's own tests**."*
-- The REAL serving path — `main.rs`'s `serve_listener` → `busbar_core_transport::prepare` →
-  `build_server_config` (`busbar-core-transport/src/lib.rs:291,149`) — resolves secrets straight
-  through `SecretResolver`. `git grep -c "AccessJournal\|record_access"` on that file → **0**.
-
-### Why this one stings
-
-It contradicts an explicit owner ruling. From the design session: *"that way we lock down plugins
-cant touch secretes and **kernel is in charge of auditing secrets already**."* The kernel is supposed
-to be the one auditing every secret read — that is the justification for taking secret handling away
-from the transport plugin at all. On the live TLS path it audits nothing.
-
-So the property holds on paper (the seam exists), holds in tests (they mint the token), and does not
-hold in production (nothing mints it). That is the most dangerous shape a security control can take:
-it looks present to a reader, passes its own tests, and is absent where it matters.
-
-### The fix
-
-`origin/queue-rebased-A3plus` wires it: mint `transport_key_token()` at boot, construct a
-`BookAccessJournal` (one `Access`-class WAL entry per secret read), and call `provision_servers(...)`.
-The symbol is absent from trunk AND from `origin/integration/reland`. Every seam it binds to —
-`AccessJournal`, `SecretSource`, `transport_key_token` — already exists on trunk in the same shape,
-so this is a port, not a re-implementation. Its posture on failure (warn, not refuse boot) matches
-trunk's existing fail-open stance on that slot.
-
-**Note the interaction with the owner's secret ruling:** `busbar-transport-key` was killed as a crate
-precisely because *"plugins can never touch secrets"* and secret handling is kernel-side. Wiring the
-journal is the other half of that ruling — the half that makes the kernel actually audit what it took
-custody of.
-
-## MEASURED STATE at the end of the unattended wave
-
-Every number below was measured, not estimated. Where a before/after is given, the "before" was
-obtained by checking out the session's starting commit and re-running the same command.
-
-| Measure | Session start | Now |
-|---|---|---|
-| `cargo xtask gate construction` FAIL rows | **109** | **12** |
-| `cargo check --workspace --all-targets` | broken (benches) | **builds** |
-| `busbar-kernel --lib` | 1802 pass / 38 fail (99 before the plane work) | **1808 pass / 0 fail** |
-| `busbar-kernel` whole crate | 3 targets would not compile | **2069 tests, every target green** |
-| Crates | 61 | **57** (roster target 35) |
-| Transports | 1 latent red | **all 7 green** |
-| `busbar-plugin-loader` | lib test would not compile | **187 green** |
-| Plugin dependency closure (#40) | 7 busbar crates | **6** |
-
-**What actually moved the construction number** was not ceiling arithmetic. Removing core's ambient
-plane auto-registration, relocating the cross-plane tests, folding grammar into contract, and
-renaming the admin crate each removed a class of finding rather than a row.
-
-**The 12 that remain are honest**, and three of them are the most valuable output of the night
-because they are load-bearing architecture rather than lint:
-
-- `kind-isolation:faces` — `busbar-core-admin` is kind `core` and implements `Plane`. Exposed BY the
-  rename; the old name hid it by agreeing with the lie.
-- `busbar-plane-decision`'s invariance test — the plane depends on `busbar-kernel` because
-  `PlaneDecl` is defined there and types its fields against kernel internals. This is #40's real
-  blocker and it stays red as the only automated witness to it.
-- `one-pick-site` — 4 production call sites of `pick_among(` against a ceiling of 2. Pre-existing,
-  untouched, not yet diagnosed.
-
-**Six LOC ceilings were raised**, each pinned to today's measurement with no headroom and each
-carrying its reason in the file. Five are consequences of verified fixes; the sixth (`caps-contract`,
-+414) is the grammar fold, which is knowingly the inverse of D29 — D29 carved grammar OUT of contract
-to fit this ceiling, and that carve-out is precisely what #40 forbids.
-
-## Survivor-review scorecard — what was recovered, and what it cost to find
-
-Six branches' worth of "lost" work adjudicated against trunk. **Every item below had been written
-before, reviewed, and lost.** Deleting those branches unexamined would have destroyed all of it.
-
-**FIXED this session:**
-
-| Recovered | Severity | What it allowed |
-|---|---|---|
-| grpc ignores the operator's message cap | HIGH | an operator who set `limits.request_body_max_bytes` got a capped ws listener and an uncapped 4 MiB grpc one — the knob worked where they tested it and not where they didn't |
-| http egress forwards a smuggled framing | MED | chunked + `Content-Length` together was de-chunked, stripped of both framing headers, and forwarded quietly disambiguated — the next hop may disambiguate the other way |
-| TLS truncation reads as a clean close | MED | a peer dropping the stream mid-session reported identically to an orderly `close_notify` — the one signal distinguishing "finished" from "cut off, possibly hiding truncated content" |
-| `MAX_TOOL_NAME_BYTES` | MED-HIGH | the call log opened with the caller's raw name BEFORE any check, writing attacker-chosen bytes verbatim into a **durable hash-chain row**, on every refused call, permanently |
-| `MAX_TASK_ANSWERS` | MED | one task's answer map had no bound; a caller parked in `input_required` invented fresh keys forever |
-| `MAX_SUBSCRIBED_URIS` + dedup | MED | no cap and no dedup; a repeated URI was both a memory and a duplicate-delivery multiplier |
-| A2A approves the operation but never the agent | latent | not reachable today — but the file exists to BECOME a serving path, and the next person to wire it will assume approve authorizes what it approves |
-
-**STILL OPEN, verified, not yet fixed:**
-
-- **Every TLS private-key read in production is unaudited.** `AccessJournal` is built and tested;
-  `transport_key_token()` has callers in exactly two files — its own definition and the test file.
-  Trunk admits it: *"the only thing that ever registered a listener's TLS config was the transport's
-  own tests."* This one contradicts an explicit owner ruling that the kernel audits secret access,
-  and every seam it needs already exists, so it is a port rather than a re-implementation.
-
-**What the exercise cost, stated honestly.** Two of my own escalations were wrong — I verified a
-check was missing and never verified the code was reachable. Both were caught by a second review.
-Against that: seven real defects recovered that no gate in the tree was catching, three of them
-previously written and lost **three separate times** across stale branches. The ratio argues for
-running the review on the remaining survivors, and for always asking the second question.
-
-## The admin rename exposed a category error the old name was hiding
-
-Renaming `busbar-plane-admin` → `busbar-core-admin` (#3/#37) made `kind-isolation` **more truthful**,
-and it immediately caught something the old name concealed:
-
-> `foreign-entry crates/busbar-core-admin` — *"busbar-core-admin is kind `core` and implements
-> `Plane` 1 time(s) in shipped source — the entry face of kind `plane`. A trait implementation is a
-> claim made to the COMPILER, and when it disagrees with the crate's kind the compiler's claim is
-> the one that runs."*
-
-**Before the rename the name and the trait agreed — and both were wrong.** Now the name is right and
-the trait is exposed as the remaining lie. The crate's public struct is still `AdminPlane`, and it
-implements `Plane`.
-
-**The gate's own advice does not apply here, and that matters.** It says *"make a new plugin kind, do
-not fuse two."* But there is no kind to make: **#3 excludes admin from the seven kinds**, and the
-`control` kind was **CANCELLED by the owner** (D37 — admin/oauth2 are cleanliness crates, not
-plugins). So the resolution is not a new kind and not a renamed one; it is that **a cleanliness crate
-should not implement a plugin entry face at all.** How admin's verbs reach the loop without wearing
-the `Plane` face is a genuine design question, and it is the next thing to settle here.
-
-**A stale row was steering directly at the cancelled concept.** `qa/kind-isolation.toml` carried
-`drain = "R7: rename busbar-plane-admin to busbar-control-admin and move it off the Plane face onto
-the control face"`, citing *"ARCHITECTURE.md 1.4 makes `control` a kind of its own."* Any agent
-reading that row would have resurrected a kind the owner killed. The row is struck — it was also a
-dead face, since the crate it named no longer exists — but note the shape of the hazard: **a
-checklist that outlives the decision it encodes will quietly re-litigate it.** `ARCHITECTURE.md`
-§1.4 and ~20 references in `xtask/src/gates/kind_isolation.rs` still describe `control` as a kind and
-need the same treatment.
-
-## #40's REAL blocker, named: the ABI seams live in the wrong crates
-
-Three separate measurements this session converge on one root cause, and it is not "somebody forgot
-to tidy a dependency."
-
-| Symptom | Edge | Why it exists |
-|---|---|---|
-| plugin closure is 6 busbar crates, not 1 | `busbar-api` → `busbar-kernel-ledger` | #35 relocated the durable money records and the `Store` trait into the ledger; `busbar-api` stayed standing as a re-export shim until W5.b. A **store plugin implements `Store`** — so those types are genuinely plugin-facing ABI, and they live in the money crate |
-| `busbar-plane-decision` fails its OWN invariance test | `busbar-plane-decision` → `busbar-kernel` | `PlaneDecl` — the seam an extracted plane hands back — is defined in `busbar_kernel::plane::registry` and **types dozens of fields against kernel-internal types** (`axum::body::Bytes`, `PlaneStore`, `EngineHost`, `PlaneSlots`) |
-| kernel depends on its own foundation | `busbar-kernel` → `busbar-substrate-values` | #37 says the kernel must NOT depend on substrate; it takes a normal dep, inherits four of its features, and names it across 23 files |
-
-**The pattern: the ABI a plugin must implement is defined in the crate that consumes it, not in the
-crate both sides meet on.** #40 is unsatisfiable until the seams move, and no amount of dependency
-tidying gets there — the types themselves have to stop naming internals.
-
-**Two of these are already documented as deliberate stops, and both refusals were right.** The
-decision plane carries a STOP report in `registry.rs:39` explaining precisely why it still names
-`busbar_kernel` rather than `busbar_contract`, and an earlier attempt to move `PlaneDecl`/`BuildCtx`
-into contract was correctly refused for the same reason. Moving a type that names `EngineHost` into
-the neutral crate does not make it neutral; it drags the internals along and makes contract the
-thing it was created to prevent.
-
-**So the work is not a move, it is a redefinition:** `PlaneDecl` and the store record shapes need
-plugin-facing forms expressed in contract's own vocabulary, with the kernel-internal forms staying
-kernel-side and converting at the seam. That is real design work, it is the largest single item
-standing between the tree and #40, and it should be scoped deliberately rather than attempted as a
-refactor.
-
-**Meanwhile `busbar-plane-decision`'s invariance test is HONESTLY RED** and should stay red. It is
-the only automated thing in the tree that currently notices this, and silencing it would remove the
-one witness to the gap.
-
-## PARKED (money) — a second, ungated shutdown flush may double-count
-
-**Found by the survivor review of `origin/integration/reland` (B13). Not self-approved — it is
-billed bytes.**
-
-`spawn_budget_flusher` (`busbar-kernel/src/governance/mod.rs:1211-1268`) now shares one internal
-`flush_gate` mutex between its periodic tick and its own shutdown arm, via `tokio::select!` on the
-shutdown broadcast. That is a cleaner design than the branch's external `FlushGate` and closes the
-race **within that task**.
-
-But `crates/busbar/src/main.rs` still calls `gov.flush_budgets()` / `gov.flush_metering()` a
-**second, independent, ungated time** in two places:
-
-- the `--mcp-stdio` exit path (`main.rs:1622-1627`), which never sends on `shutdown_tx` at all — so
-  the periodic flusher is **still ticking** while this inline flush runs;
-- the listener shutdown tail (`main.rs:1717-1723`), whose own comment explains the intent: *"The
-  background flusher's shutdown arm also flushes, but it is a fire-and-forget task that could lose
-  the race with process exit; flushing inline here… guarantees durability."*
-
-`flush_budgets` does clear each cell's `dirty` flag under a per-shard write lock **before** the
-durable write, which defeats the crude case of two overlapping calls re-snapshotting identical state.
-It does not defeat a narrower interleaving: call A snapshots and clears dirty → a new charge lands and
-re-marks the cell dirty → call B snapshots that cell against **A's still-un-advanced `flushed_*`
-baseline** → B's delta double-counts A's in-flight portion.
-
-Narrower than the original bug, but real, and it is money. The obvious resolution is to route the two
-inline shutdown flushes through the same gate `spawn_budget_flusher` already holds — but that changes
-shutdown durability semantics on a money path, which is the owner's call, not mine.
-
-## Confirmed and being fixed — three MCP resource-exhaustion bounds
-
-All three were fixed on `integration/reland` and never merged; all three re-confirmed present today.
-
-| Gap | Where | What it allows |
-|---|---|---|
-| no `MAX_TASK_ANSWERS` | `mcp/tasks.rs:307-311` | `deliver` does an unconditional insert per key. `MAX_RETAINED_TASKS` bounds the number of TASKS, nothing bounds answer keys **within one task** — a caller parked in `input_required` invents fresh keys forever |
-| no `MAX_SUBSCRIBED_URIS` | `mcp/subscribe.rs` | no cap and **no dedup** on the URI list a `subscriptions/listen` may name; a repeated URI is both a memory multiplier and a duplicate-delivery multiplier |
-| no `MAX_TOOL_NAME_BYTES` | `mcp/method.rs:1257-1273` | **the worst.** `tools_call` opens `CallLog::open(ctx, name, …)` with the caller's raw `params.name` **before any length check**, and that name is written verbatim into `McpCallRecord` — a durable per-call **hash-chain** row. Every refused call grows the durable store by an attacker-chosen amount, permanently, in a structure that participates in chain verification |
-
-The ordering is the fix for the third: bound the name, then open the log — never the reverse. All
-three refuse rather than truncate, because a truncated tool name is a different tool name.
-
-## CORRECTION — the A2A grant gap is REAL but NOT REACHABLE. I overstated it.
-
-**I recorded this as a live horizontal privilege escalation. That was wrong, and the error was mine:
-I verified the missing check but never verified that the function is reachable.** A second
-independent review caught it.
-
-`crates/busbar/src/root/units_a2a.rs::approve()` genuinely lacks the per-agent `scope_allowed`
-check — that part stands, and `git grep -c scope_allowed` on the file is still 0. But the module is
-named from `crates/busbar/src/main.rs` at **exactly one line (960)**, and only to install scope
-entries via `scope_policy(...)`. The code says so itself:
-
-> *"It diverts no byte: the serving path is still the one `register_planes` mounted, which is why the
-> conformance battery and the neutrality cells read identically with this on and with it off."*
-
-The **actual** served A2A path is `crates/busbar-a2a/src/a2a/{inbound,receive,registry,serve}.rs`,
-and every one of those independently calls `scope_allowed("agent", agent_id)`. So no caller today
-reaches the unguarded `approve`, and **no key can reach an agent it was not granted.**
-
-**Severity corrected: not exploitable. It is a latent landmine, not an open door.**
-
-Still worth fixing, for one specific reason: `units_a2a.rs` exists to become a serving path. The
-moment it is wired up — which is the direction the root-side composition is heading — the gap
-becomes live, and it will be wired up by someone who reasonably assumes the approve step already
-authorizes what it is approving. A dormant file with a missing authorization check is a trap laid for
-a future change, so the check lands now while the cost is four tests.
-
-### The original finding, retained for the record
-
-### SECURITY — root's A2A leg authorizes the OPERATION but never the AGENT
-
-**Found by the survivor review of `origin/wip/mount-chain-auth-bindings`, and verified directly.**
-
-`crates/busbar/src/root/units_a2a.rs:1173`, `fn approve`, does exactly two checks:
-
-1. `required_scope(CLAIM_A2A, op, scope_policy)` — what scope does this OPERATION need
-2. `busbar_kernel_scope::approve(self.grants, needed)` — does the key hold it
-
-Then it proceeds. `self.draft.resource` — the agent being addressed — is read and pushed into
-`ScopeFacts`, and the code's own comment says why: *"the resource travels with the approval so the
-record names the agent rather than the method."* **It is used for the audit record only. It is never
-checked against the key's grant.**
-
-`git grep -cP '\bscope_allowed\b' crates/busbar/src/root/units_a2a.rs` → **0**.
-
-Every sibling that fronts a named resource DOES enforce it — `busbar-a2a/src/a2a/{inbound,receive,
-registry,serve}.rs` each ask `scope_allowed("agent", agent_id)`: *"may this key invoke THIS fronted
-agent?"* — as do `busbar-voice/src/mount.rs:106`, `busbar-llm/src/unit/verify.rs:300`,
-`busbar-kernel/src/plane_host/dispatch.rs:281`, `trust/validate.rs:324` and
-`egress_auth/gate.rs:187`. **Root's own A2A leg is the sole exception.**
-
-### What it allows
-
-Any key holding only the operation-class grant — "may send tasks at all" — reaches **every agent the
-deployment fronts** through root's leg, regardless of which agent it was actually granted. Two keys
-of identical operation-class standing are indistinguishable at this door. That is horizontal
-privilege escalation between tenants of the same busbar, and the audit record will faithfully name
-the agent that was reached, making it look authorized.
-
-### It has been fixed three times and never landed
-
-The branch commit is itself a `(cherry picked from commit 33cbf492…)`. That source commit exists in
-the repo, `git merge-base --is-ancestor 33cbf492 HEAD` returns **false**, and it is reachable from
-two further stale branches (`delete/keep-a2a-default-on`, `delete/keep-a2a-on-mount`). So the same
-fix was written at least three separate times and lost each time — which is exactly the argument for
-having run the survivor review rather than deleting the branches.
-
-### Scope of the fix
-
-Small and isolated: add the `scope_allowed(resource.kind, resource.name)` check beside the existing
-operation check, plus the four regression tests the branch carried — all four confirmed absent from
-trunk by name. The surrounding architecture is unchanged, so it re-lands rather than needing
-re-implementation. **Not a billed-byte change**, so it does not need the owner's sign-off — it makes
-refusals happen that policy already says should happen.
-
-## CORRECTION — the budget-hydration finding was OVERSTATED. Downgraded, and re-scoped.
-
-**I recorded this as CRITICAL: "every restart zeroes admission spend for llm/mcp/a2a/streaming."
-That claim is not supported. I verified the missing hydration and did not verify which admission
-path actually gates customer traffic.** A second review caught it. What is actually established:
-
-**VERIFIED, and still true:**
-- `busbar-kernel-budget` has **no hydration function at all** — `git grep -P "fn (hydrate|restore|seed|replay)"` over that crate returns nothing.
-- `crates/busbar/src/root/kernel.rs:650` and `units_voice.rs:797` both build `InMemoryCells::new()` empty.
-- Both the struct doc and `busbar-kernel-budget/Cargo.toml` claim the cells are "hydrated once at boot". That claim is false wherever those two constructors are the source.
-
-**VERIFIED, and it undoes the severity:**
-- **The main admission path DOES hydrate at boot.** `GovState::hydrate_budgets` is called from
-  `crates/busbar-kernel/src/appbuild.rs:1158` — production code, not a test. That is the gate
-  `ingress/mod.rs` and `plane_host/govern.rs` consult for real traffic.
-- **`ProductionUnits.door` is admin-scoped.** It is constructed exactly once in `main.rs:1515` via
-  `admin_only_sharing(...)`, mounted on the **admin router** (`root::units_admin::mount`). It is not
-  the customer request gate.
-- Governance's mechanism is also the **model-compliant** one: it restores raw usage COUNTS and
-  re-derives money from the current card at read time, never storing a settled figure. That is
-  exactly "money is a view over ledger × ratecard".
-
-**NOT established either way — the one real open question:**
-`units_voice.rs:797` builds a `VoiceNode`'s own `Door` empty, and voice IS wired from `main.rs`
-(`VoiceNode`, `NodeCalls`, `scope_policy`). Whether that per-node door gates a billing decision, or
-is secondary to the governance gate that already hydrates, is **not resolved**. That is the question
-worth answering, and it is much narrower than "every plane, every restart".
-
-**Severity: downgraded from CRITICAL to OPEN-AND-NARROW.** No demonstrated cap bypass on the
-customer path. A documentation defect is certain — two places assert a hydration guarantee that the
-constructors they describe do not provide, which is how this looked like a catastrophe to a reader
-(including me).
-
-**Also corrected: the `r5-money-m3` branch fix should NOT be re-landed as written.** Its
-`Carried`/`HydratedSpend` stores a **settled cents figure** at boot and accrues onto it. That stores
-a price, which the locked model forbids. Trunk's reprice-on-read design is the correct one. The
-branch is **OBSOLETE by design on this point**, not lost — a rare case where the un-merged branch is
-the wrong answer and trunk is right.
-
-### The original finding, retained for the record
-
-### PARKED — the budget cap is bypassed on every restart (AS ORIGINALLY WRITTEN)
-
-**Found by the survivor-branch review of `origin/r5-money-m3`. This is the single most serious
-defect in the session and it is a live budget-cap bypass, not a latent one.**
-
-`ProductionUnits.door` is the admission gate on the real request path for the llm, mcp, a2a and
-streaming planes. Its doc comment at `crates/busbar/src/root/kernel.rs:520-521` states:
-
-> *"Its ledger cells are hydrated once, at boot, and are never re-read on the request path."*
-
-**The first half of that sentence is false.** Verified directly:
-
-- `crates/busbar/src/root/kernel.rs:650` — `door: Door::new(InMemoryCells::new())`, constructed EMPTY
-- `crates/busbar/src/root/units_voice.rs:797` — a second site, also `InMemoryCells::new()`
-- `git grep -P "fn (hydrate|restore|seed|replay)" crates/busbar-kernel-budget/src/` → **no matches.**
-  There is no hydration method on `InMemoryCells`, on `CellStore`, or on `Door`. The capability does
-  not exist to be called.
-- The door is reached on the live path from `units_llm.rs:520`, `units_mcp.rs:914`,
-  `units_a2a.rs:1228,1322` and `units_voice.rs:1349,1604`.
-
-`busbar-kernel-budget/Cargo.toml`'s own header repeats the same false claim: *"The cells themselves
-are node-local, hydrated once at boot and never re-read on the request path."*
-
-### What it means in money terms
-
-Every process restart zeroes every bucket's admission spend. **A key or group that had fully
-exhausted its configured `budget_cap` is fully re-admissible the instant the node restarts**, with no
-floor until fresh post-boot traffic re-accrues enough to re-trip the cap. Restarts are routine —
-deploys, rolling updates, OOM kills, host maintenance — so a customer can exceed a dollar cap by an
-unbounded multiple without doing anything unusual.
-
-Under the locked model this is not the ledger being wrong; the ledger is journaled correctly and
-synchronously on every settle. It is the **enforcement gate never reading it back**. The book knows;
-the door does not ask.
-
-### Why it was invisible
-
-The documentation asserts the guarantee in two places, so anyone auditing by reading was told the
-opposite of the truth. The branch that implemented it — `r5-money-m3`, via `hydrate.rs` — was never
-merged, and the symbol-harvest flagged it as a survivor precisely because `hydrate`/`Carried`/
-`CarriedSpend` appear nowhere in trunk.
-
-### The owner decision
-
-This is a billed-byte-adjacent change (it makes refusals happen that do not happen today), so it is
-not mine to self-approve under #10/#59. But note the asymmetry: **leaving it costs money on every
-restart, and fixing it only ever refuses spend that the configured cap already said to refuse.**
-
-Two further findings from the same branch, both real and both lower severity:
-
-- **The audit `Book` is never replayed at boot.** `Ledger::dual_writing` starts with an empty book
-  each time (`durability.rs:748-772`), and `journal.replay()` exists but is used only to read the
-  migration marker. Every posting IS durably journaled, so the data for exact replay is on-chain and
-  simply never read back. This breaks the "ledger sums equal legacy spend" reconciliation identity
-  that `durability.rs`'s own module doc states as a release requirement.
-- **The book has no retention driver.** `Book::retain_from` and the whole `Checkpoint`/
-  `CheckpointAnchor` scaffolding exist with **zero non-test callers**, so the book grows unbounded
-  for the life of a node. (In practice the growth resets on restart — which is only true *because*
-  of the bug above, so the two defects have been masking each other.)
-
-## PARKED FOR THE OWNER — a billed-byte change I may not self-approve (#10/#59)
-
-**One item. It is the most serious finding of the session and it needs a human call, not because it
-is ambiguous but because approving a change to billed bytes is not mine to make.**
-
-### What is wrong
-
-`serde_json::Value::as_u64()` returns `None` for any float-backed JSON number — `27.0` included,
-even though it is exactly an integer. The house idiom for reading usage across the LLM dialects is
-`.as_u64().unwrap_or(0)`. So when a provider spells a token count as a float, a real count of 27 was
-recorded as **zero**. Cohere's real wire responses do exactly this.
-
-Under the locked model this is a **ledger** defect, not a money defect, and that is the worse of the
-two. Money is a view over `ledger × ratecard`; it cannot be wrong on its own. If the ledger says the
-provider returned nothing, then every view over it faithfully reports nothing, every invoice derived
-from it is internally consistent, and the error is invisible at every downstream layer. The read is
-the only place it is detectable.
-
-### It is not a 1.6.0 regression — v1.5.5 shipped it
-
-`git grep as_u64 v1.5.5 -- crates/busbar/src/proto/cohere/reader.rs` returns **five sites**
-(`416`, `721`, `725`, `970`, `975`), all using the same `.and_then(|v| v.as_u64())`. The defect is in
-the released product. The implication is a revenue fact, not an engineering one: **for every
-provider that float-encodes usage, shipped busbar has been under-recording work that was actually
-performed.** How far back it goes, and whether anything is owed in either direction, is a question
-only the owner can answer.
-
-### CORRECTION — I claimed the oracle would go red. Measured, it will not, and that is worse
-
-My first reading was that the golden was recorded by buggy code, so corrected cells would differ and
-the oracle would go red — correctly — and clearing it would need an owner re-record.
-
-**Measured against the actual corpus, that is wrong.** Searching every recorded cell and golden for a
-float-valued token-count field:
-
-```
-grep -rhoE '"[A-Za-z_]*[Tt]okens?[A-Za-z_]*":[[:space:]]*[0-9]+\.[0-9]+' testing/shadow-oracle/
-→ (no matches)
-```
-
-**There is not one float-encoded count anywhere in the corpus**, even though the corpus does contain
-Cohere cells. So:
-
-1. **The fix is oracle-NEUTRAL.** No golden needs re-recording and the oracle will not go red. That
-   materially de-risks this item — landing the parse fix does not require an accept-a-difference
-   ruling. `accepted-differences.json` is untouched and does not need touching.
-
-2. **But that is precisely why the bug reached production.** The oracle exists to catch money
-   divergence, and it recorded only integer-spelled counts — so it was structurally incapable of
-   ever seeing this. A provider spelling a count as a float is the single case that mattered, and
-   the corpus has zero coverage of it.
-
-**The second point is the more serious finding, and it outlives this bug.** A money oracle with a
-blind spot on the money path is worse than a known-red one, because it reports green over the gap.
-The corpus needs a cell that records a real float-encoded provider response — otherwise the
-regression guard for this defect is a source-scan test in one crate, and nothing at the oracle level
-would notice the same class arriving through a different door.
-
-### SECOND PARKED ITEM — does a rate-card edit reprice history?
-
-Found by the bank-auditor walk of all 40 `accepted-differences.json` entries (34 PASS, 1 fixed,
-2 parked). Entry **D-3** is **WRONG**, proven empirically rather than by reading code: the
-`rate-card-history` oracle scenario was built and run against the current binary, and
-`GET /admin/usage` after a mid-window rate-card edit returned `spend_micros: 750090000` — a pure
-read-time reprice off the CURRENT card — where the register and a published `CHANGELOG.md` line
-both claim `277530000`.
-
-The dated rate-card history engine in `busbar-kernel-ledger` is real and correct. `GET /admin/usage`
-was simply never wired to it; `money_book.rs`'s own doc comment admits the seam is "DORMANT".
-
-**This is a policy question, not a bug report, which is why it is parked and not fixed.** Both
-answers are consistent with "money is a view over ledger × ratecard" — they differ on *which*
-ratecard the view uses:
-
-- **As built:** the view multiplies the ledger by the card in force *now*, so editing a rate
-  reprices all history. `derive_spend_cents`' own doc calls this "the operator's rate-card edit
-  taking effect retroactively, which is the designed behavior."
-- **As the register and CHANGELOG claim:** the view multiplies each ledger row by the card that was
-  in force *when that row was written*, so history is immutable once billed.
-
-An auditor would want this stated explicitly, because it decides whether a published invoice can
-change after the fact. Nobody but the owner can choose. Rewiring a live billing read path under
-audit pressure to satisfy a register entry would be exactly the wrong move, so the register carries
-a dated audit note and the code is untouched.
-
-Note this is a multi-crate wiring gap (tracked in-repo as milestone "M6"), not a bounded fix.
-
-### The two parked money items are ONE root cause, and the write side is worse than the read side
-
-D-3 is usually described as "`GET /admin/usage` was never wired to the dated rate-card history".
-That is only half of it, and the smaller half.
-
-`PostingStamp` carries a `rate_card_version` field, and it is **hardcoded to `0` at all seven
-production posting sites** — `units_a2a.rs:825,1020`, `units_llm.rs:1578`, `units_mcp.rs:1399,1508`,
-`units_voice.rs:1840,1944`. The field is real and load-bearing: it is part of the hash-chained audit
-amount (`busbar-kernel-audit/src/record.rs:375` digests it), and the migration path honours it
-properly (opening balances carry a real version, asserted in tests). Only the LIVE posting path
-writes a constant zero.
-
-A real version is available. `busbar-kernel-ledger/src/cost/rate.rs:167` says it outright: *"A card
-has no version field. Which card this is, is the number of the history entry that holds it."* The
-history engine is `cost/history.rs` and it exists.
-
-**The consequence matters for the owner's decision, and it is not symmetric.** If the ruling is
-"history reprices off the current card", the code already does that and only the changelog and
-register need retracting. But if the ruling is "each row is priced by the card in force when it was
-written", then it cannot be applied to anything already recorded: **every posting ever written says
-card version 0**, so the ledger physically cannot say which card priced it. That option is
-implementable going forward and **not recoverable backwards**.
-
-So the real question is not only which behaviour is right, but whether the ledger should start
-recording the card version now regardless of which way the pricing rule goes — because until it
-does, the immutable-history option keeps getting more expensive every day, and the audit chain keeps
-attesting a version number that is a placeholder.
-
-**It is worse than an internal register error: the claim is CUSTOMER-FACING.** `CHANGELOG.md`
-presents it among the release's breaking changes as "one where a rate-card edit stops repricing
-history it should not touch". So 1.6.0 currently ships a written promise about billing behaviour
-that the code does not keep. Whichever way the owner rules, one of the two has to move — either the
-endpoint is wired to the dated history, or the changelog entry and register row are retracted. It
-cannot ship as it stands.
-
-One further register item, **F-011r**, is stale rather than wrong: its "the `at` field was removed"
-claim is false — `3c118f729` restored it and the struct's doc comment records the owner rule as
-"RESTORED". Whether it folds into F-011 or is deleted depends on the external oracle tool's class
-scoring, so it also carries a note rather than an edit.
-
-### What I did do
-
-Fixed the parse, everywhere, at one seam — `crates/busbar-llm-codec/src/usage_count.rs`,
-`read_count_u64`. It tries the integer representation, then accepts a float only when it provably
-denotes an exact integer; a fractional value is refused rather than rounded, because rounding
-invents a quantity no provider ever reported. It also refuses anything at or above 2^53, where an
-`f64` can no longer represent consecutive integers and `fract() == 0.0` stops proving anything.
-
-Applied to Cohere (buffered chat, streaming `message-end`, truncated-tail recovery, embeddings
-`billed_units`, rerank `search_units`) and being applied across `anthropic`, `bedrock`, `gemini`,
-`openai_chat` and `openai_responses`, which all carry the identical idiom.
-
-I did **not** change the `.unwrap_or(0)` fallback itself. With the parse corrected it now fires only
-when a count is genuinely absent or genuinely malformed, not on an encoding difference. That
-residual case still silently records zero for possibly-real work, and closing it properly means
-threading an "unknown" signal from the codec's `IrUsage` through `TokenUsage` into the ledger's
-existing `estimated` convention — a cross-crate change, listed below as an open item rather than
-smuggled in here.
-
-### The three questions for the owner
-
-1. ~~Re-record the affected golden cells?~~ **WITHDRAWN — measured moot.** The corpus holds no
-   float-encoded count, so nothing needs re-recording and the oracle does not go red. See the
-   correction above.
-
-   **Replaced by a sharper question: should the corpus GAIN a float-encoded cell?** Doing so is the
-   only way the oracle can ever see this class. But recorded against 1.5.5 that cell captures 1.5.5's
-   buggy zero, so 1.6.0 would then legitimately diverge from it — which is the bug becoming visible
-   at exactly the layer that should show it, and is a billed-byte difference only you can accept. I
-   have NOT added the cell, because adding it manufactures precisely the divergence #10/#59 says I
-   may not self-approve. My recommendation: add it, and accept the divergence, because an oracle that
-   cannot see the money bug it exists to catch is the real defect here.
-2. **Does the under-recording in shipped 1.5.5 need any action toward customers?** Purely yours.
-3. **Close the residual silent-zero** by threading `estimated` end-to-end, or accept
-   `.unwrap_or(0)` as the standing policy for a genuinely malformed count?
-
-### One process failure to note
-
-The Cohere fix bytes are committed in `1772c74706`, whose subject reads only
-`refactor(#41): Encode::ArenaExhausted -> ScratchExhausted`. They were uncommitted in a shared
-working tree when that commit ran `git add` and were swept up. The bytes are correct; the audit
-trail is not. `1b6c9d4ba` states this on the record. History was not rewritten because other work
-was live in the tree — but a billing change sitting inside a rename commit is exactly what an
-auditor fails, and the habit that caused it (blanket `git add` with concurrent agents editing) is
-the thing to fix, not just this one commit.
-
-## Open items — the next session's worklist
-
-**Verified defects, not yet fixed:**
-
-0. **THE PLUGIN ABI STILL SAYS `arena`, AND THE NAME IS NEW IN 1.6.0 — so the owner's own ruling
-   applies.** The `#41` rename was carried out properly *in code*: there is not one `ArenaBudget`,
-   `arena_budget` or `ArenaExhausted` left, and the wire value is `"scratch_exhausted"`. But the
-   **plugin-facing ABI was not renamed**: `busbar-contract/src/unit.rs:538` exposes
-   `pub fn arena(&self) -> &'u dyn PlaneAlloc`, and `arena:` remains a parameter name across
-   `spans.rs`, `transport/mod.rs` and `unit.rs`. `ARCHITECTURE.md` still says "`Ctx.arena` is the one
-   resource handle."
-
-   This matters more than an ordinary stale name for two reasons:
-   - **`busbar-contract` IS the plugin dependency closure (#40)** — it is the surface every plugin
-     compiles against. A name here is a published contract, not an internal detail.
-   - **It is NEW.** Measured: `git grep -P 'fn arena\b' v1.5.5` returns nothing, and `PlaneAlloc`
-     does not exist in v1.5.5 at all. So this is not an inherited name that costs compatibility to
-     change — it is a 1.6.0 invention, and the owner's standing ruling covers exactly this case:
-     *"this is brand new in 1.6.0 … if its new lets code it clean."*
-
-   Once 1.6.0 ships, every third-party plugin is written against `ctx.arena()`, and a concept the
-   architecture has explicitly retired becomes permanent in the contract. The window to fix it for
-   free closes at the cut.
-
-   **Not started deliberately.** `arena` appears as an identifier across **113 files**, and the
-   rename crosses `busbar-contract`, `busbar-kernel`, the planes and the transports — every area
-   currently under concurrent edit. It is mechanical, not subtle, and should run as one sweep on a
-   quiet tree, verified by the same `git grep -P` that measured it.
-
-
-
-1. **The plain container image could not dlopen a user-supplied plugin — FIXED, but the drop-in
-   story is still not whole.** The runtime libs now ship in the plain image, extracted once from the
-   already-pinned `rust:alpine` digest and copied in unconditionally, so the fix is a property of
-   the image rather than of any plugin. Verified by pulling the pinned image's real bytes from the
-   registry and confirming the three extracted files form a CLOSED dependency graph on both arches.
-   Docker is not available on this machine, so that is **static proof, not a demonstrated load** —
-   a real `docker run` still owes us the runtime confirmation.
-
-   **Two further gaps found while proving it, both still open:**
-
-   - **`/etc/busbar/plugins` does not exist in the image, and is not where the default points.**
-     The Dockerfile header and `docker/docker-compose.yml` both tell users to drop a plugin tarball
-     there. But `default_plugins_dir()` returns the **relative** `"plugins"`, and with no `WORKDIR`
-     set that resolves to **`/plugins`** — a different path. It only becomes real if the user mounts
-     a `config.yaml` setting `plugins.dir` explicitly. The documented action and the compiled
-     default disagree.
-   - **Probable ownership mismatch on the fetch flow.** The image runs as `USER 65532:65532`.
-     Nothing in the Dockerfile creates that directory, so Docker auto-creates the named volume at
-     start — **root-owned by default**. `appbuild.rs` only `create_dir_all`s it when `plugins.fetch`
-     is non-empty, so a plain read-only tarball drop is likely fine, but the documented
-     fetch-into-volume recipe probably cannot write. Not proven — it needs a real container run.
-
-   Deliberately not guessed at: `FROM scratch` has no shell, so creating that directory means
-   staging one through a `COPY`, and choosing between "make the default absolute" and "fix it in the
-   image only" is a behaviour decision I would not want to make blind and unverifiable.
-
-1. ~~**The plain container image cannot dlopen a user-supplied plugin.**~~ `Dockerfile:43-45` copies only
-   the binary and two YAMLs into `FROM scratch`, while every plugin cdylib must be built
-   `-C target-feature=-crt-static` (aarch64-musl silently drops the cdylib otherwise —
-   `docker.yml:554`) and therefore dynamically links musl libc/libgcc_s/libstdc++. Those libs are
-   extracted only on the `headroom: true` matrix legs and land in the bundled variant, never in the
-   plain image — yet the Dockerfile's own header tells users to drop a tarball into
-   `/etc/busbar/plugins`. The bundled variant works; the core image does not. **For a release named
-   "Protocols as Plugins" this is a blocker.** Fix must be plugin-agnostic: make the runtime libs a
-   property of the image, extracted once from the already-pinned `rust:alpine` digest.
-2. **`NANOS_PER_CENT` — mostly fixed; ONE unpinned copy remains.** Measured state, five sites:
-   `busbar-kernel-ledger/src/cost/mod.rs:86` is canonical (`pub const … u128`);
-   `busbar-kernel-budget/src/price.rs:24` is now a `pub use` of it; `units_voice.rs:163` and
-   `units_a2a.rs:1050` keep a deliberate `u64` copy (the fee math must saturate at `u64::MAX`, and
-   borrowing the ledger's `u128` would silently move that ceiling on a money path) but are pinned by
-   `const _: () = assert!(… == busbar_kernel_ledger::cost::NANOS_PER_CENT)`, so editing either copy
-   stops the build.
-
-   The remaining one is **`busbar-kernel/src/cost.rs:58`** — same `u128` type as the canonical, but
-   neither imported nor asserted, so it can drift silently. It is used once, at line 745, inside
-   `derive_spend_cents`.
-
-   It cannot simply be imported: `busbar-kernel` depends on neither `busbar-kernel-ledger` nor
-   `busbar-kernel-budget`. Two ways to close it, both dep-graph changes and therefore not made
-   blind — (a) add `busbar-kernel-ledger` to `busbar-kernel` and `pub use`, or (b) move the constant
-   to `busbar-contract`, which **both** crates already depend on. (b) is tidier but widens the plugin
-   dependency closure (#40), so it is a ruling, not a refactor: `NANOS_PER_CENT` is a unit
-   *definition* rather than a price, which is an argument for contract, but #40 is deliberately
-   narrow.
-
-   Worth stating plainly, because it reads alarming and is not: `derive_spend_cents` is **the locked
-   money model working exactly as specified.** It takes ledger units and a rate card and derives
-   cents at read time; it stores nothing. Its own doc notes that a row written under an older card
-   derives at the new rate and calls that the designed behaviour — which is precisely "money is a
-   view over ledger × ratecard". Its saturation is also correct and deliberately fail-closed: it
-   pins at `i64::MAX` rather than `as`-casting, because a wrapping cast would land negative, get
-   floored to 0 by `.max(0)`, and let an adversarially large ledger derive as **free** and bypass
-   every budget cap.
-
-   Note also that `busbar-kernel/src/cost.rs` performs cents arithmetic but is **not** in
-   `no-float-money`'s scan set (that gate scans `busbar-kernel-ledger/src` plus four named binary
-   files). The gate is correctly scoped — it guards the money *arithmetic* crate — but it does mean
-   this file's integer discipline is unenforced.
-3. **`rate_card_version: 0` is hardcoded** at six sites across `units_mcp.rs`, `units_voice.rs` and
-   `units_a2a.rs`.
-
-**Known doc/gate drift:**
-
-4. ~~`PLANE-DELETE` enumerates `llm/mcp/a2a/voice`~~ — **FIXED, and now HONESTLY RED.** Retitled to
-   the locked five. Because a title change alters no exit code, a new step asserts the locked roster
-   has no on-disk gap; it fails today naming `decisions`, which has no on-disk crate to strong-form
-   test. That red is correct and must stay until the plane is wired — it is the harness telling the
-   truth, not a defect.
-5. The neutrality mandate at Part 4's `banned set` line lists
-   `llm|mcp|a2a|tool|agent|sampling|task|server|card|round|prompt`, and the gate adds `voice`,
-   `realtime` and `audio`. It names no `streaming` token. `streaming` is a plane noun and belongs
-   there on the merits, but adding it reds the witness wherever the word appears in a neutral crate,
-   so it is a scoped burndown rather than a one-line edit — recorded here rather than slipped in
-   quietly. **Do the crate rename first** (`busbar-plane-voice` and `busbar-plane-streaming` both
-   exist today; #18 says there is one plane and it is `streaming`), then ban the noun.
-
-   **Ruling made this session — `decision` must NOT go in the ban list.** The `decisions` plane (jev,
-   #48) declares the key `plane-decision`, and the witness matches banned nouns case-insensitively as
-   *substrings*. Banning `decision` therefore forbids `Decision`, `GateDecision` and `VerifyDecision`
-   — the admit/throttle/deny verdict types that *are* the primitive governance taxonomy the plane ABI
-   is supposed to be derived from. Measured, not assumed: adding the token red `exported-declarations`
-   with 7 findings in `crates/busbar-plugin/src/hot/{host,pod}.rs` plus a blown test-path ratchet,
-   every one of them core naming its own verdict rather than a plane leaking. A substring witness
-   cannot tell those apart, so the plane key is exempted in writing at
-   `PRIMITIVE_COLLISION_KEYS` in `xtask/src/gates/plane_abi_neutrality.rs`, following the existing
-   `PLANE_DECL` precedent — the ban list is not loosened and no correct primitive is renamed to dodge
-   a grep. A genuine leak of that plane is still caught by `plane-purity` and by the
-   `law0-neutral-instance` class, both of which key on the crate edge rather than on a noun.
-   **Result: `plane-abi-neutrality` is now 6/6 green; `plane-keys-covered` had been red.**
-6. ~~`CONFIG_NOUN_FLOOR=16` vs a comment claiming 19~~ — **BOTH WERE WRONG. The measured number is
-   17** (pools 5 · tools 3 · agents 2 · streams 7), stable across three runs. It only became
-   measurable once `plane-config-noun-gate.sh`'s `CORE_ROOT` was repointed off the deleted
-   `busbar-core`. Floor set to 17 with the measurement, its date and its breakdown recorded in the
-   comment, so the next reader does not have to re-derive it.
-7. ~~Three done-oracle groups red for harness drift~~ — **ALL THREE RESOLVED, and one turned out to
-   be a real upstream gap rather than drift.**
-   - **`STORE-QA`** was already repointed to `cargo xtask gate service-images`. Its own selftest
-     proves it red-able across 10 failure scenarios; the gate runs 8/8 green.
-   - **`KERNEL`'s count of 2 is CORRECT** and is now documented rather than merely tolerated. The
-     second match is not a loose filter: it is a deliberate anti-vacuity companion added in the same
-     commit as the normalizer it guards, proving the normalizer blanks only measured latency and
-     framing bytes and never the frame's content. Without it the normalizer could pass by erasing
-     the body and make the identity rig green over nothing.
-   - **`TELLER-STEPS` is NOT drift — the capability does not exist anywhere.** `rigs-ledger` is not a
-     subcommand of the pinned oracle engine (proven by running it, by `--help`'s fourteen
-     subcommands, and by the engine's own `PORT-REMAINING.md` recording it as ported to library
-     leaves and never re-exposed as a CLI arm). xtask deliberately has no equivalent either, because
-     driving the oracle's rig ledger means RUNNING the oracle's code, which the `segregation` gate
-     forbids the gate runner from doing. So the group is now an `absent_step`, red by construction,
-     naming the upstream gap in `busbar-release` instead of dying on a cryptic clap error.
-8. ~~`oracle-rerecord.yml` hardcodes a stale "current predev tip" SHA~~ — **FIXED upstream.** The
-   ref input is now `REQUIRED, no default`, and the reasoning is recorded in the input's own
-   description: predev and integration branches are force-updated and pruned, so any hardcoded
-   default silently goes stale and eventually unreachable, and a wrong ref re-records the MONEY
-   reference golden against the wrong tree while the artifact still claims to be the 1.5.5 golden.
-
-**Deliberate design reversals — do not "restore" these:** `contract-kinds` (an 8-kind proposal;
-`PLUGIN-TREE.md` records it as rejected — the answer is 7, per #3) and the unadopted portion of
-`rename-wave-execution-map`. Both show up as harvest survivors because their symbols are absent from
-trunk. Absent because they were *decided against*, not because they were lost.
 
 ## Standing rules for anyone working this tree
 
