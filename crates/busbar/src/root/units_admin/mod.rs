@@ -55,8 +55,8 @@ use crate::root::kernel::{ProductionUnits, RegisteredUnits};
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_core_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
 use busbar_core_admin::{
-    ApprovalState, KernelVerb, PostureCtx, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS,
-    NAMED_SURFACES, NEW_VERBS,
+    verb_name, ApprovalState, KernelVerb, PostureCtx, VerbScope, AUDIT_VERBS, LEDGER_VERBS,
+    LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
 };
 
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
@@ -648,13 +648,218 @@ impl LegacyRowsRead for busbar_kernel_ledger::legacy::RecordingRows {
     }
 }
 
+// ── the audit chain's three reads ───────────────────────────────────────────────────────────────
+
+/// The evidence the three 1.6.0 audit-chain reads answer from.
+///
+/// A read seam and nothing else, for the same reason [`LedgerView`] is one: the answers are not
+/// produced by any operation's own 1.5.5 handler — there was no such surface — so the root has to
+/// reach the chain itself, and reaching it through a seam that offers no way to append is what keeps
+/// "read-only" a property of the type rather than a promise in a comment. Nothing behind it can seal
+/// a record, mint a key or move a head.
+///
+/// It is deliberately NOT the chain. An [`busbar_kernel_audit::AuditChain`] can SEAL; a read of it
+/// has no business holding one that it could. What the trait hands a reader is a borrow, for the
+/// duration of one render, under whatever lock the node keeps the chain behind.
+///
+/// PULL, NEVER PUSH. Everything here ANSWERS. No implementation of it opens an outbound connection,
+/// holds a cloud credential or phones anybody — which is exactly what lets an airgapped operator
+/// `curl` their own evidence and a firewalled node be audited at all.
+pub trait AuditView: Send + Sync {
+    /// Show the chain, and the records this node still holds, to ONE reader, as of ONE moment.
+    ///
+    /// One method rather than two, and a borrow rather than a copy, and both are load-bearing. One
+    /// method, because the range read folds the anchor this node published at or before the window's
+    /// end into the same body as the window's records: reading the two through separate calls would
+    /// let a seal landing between them tie a window to a head it does not belong under, which is the
+    /// same race [`LedgerView::identity_snapshot`] exists to close. A borrow, because
+    /// [`busbar_kernel_audit::AuditChain`] is not `Clone` — deliberately, it holds the signing key —
+    /// so a seam that handed one out would be handing out the ability to sign.
+    ///
+    /// The records are an OPTION, and `None` is not an empty window. `None` is "this node retains no
+    /// sealed records at all", which is a true and common state — a node whose records went to the
+    /// journal and were pruned has a chain, a head and no records — and it is a different fact from
+    /// "no records fall in the window you asked for". `docs/design/BUSBAR-1.6.0.md:2079`: a gap and
+    /// a measurement must never be the same output. The head read answers either way.
+    fn read(
+        &self,
+        take: &mut dyn FnMut(
+            &busbar_kernel_audit::AuditChain,
+            Option<&[busbar_kernel_audit::AuditRecord]>,
+        ),
+    );
+
+    /// The PUBLIC halves of every key this node has signed records under.
+    ///
+    /// Public halves only, and there is no path from this seam to a secret one:
+    /// [`busbar_kernel_audit::AuditKeySet`] holds verifying keys and nothing else. Keys are only
+    /// ever added — a key dropped from this answer makes every record it signed unverifiable, which
+    /// from outside is indistinguishable from those records having been forged.
+    fn keys(&self) -> busbar_kernel_audit::AuditKeySet;
+}
+
+/// The chain reads over the evidence THIS node holds.
+///
+/// A handle on the node's own durability, behind the node's own lock, for the same reason
+/// [`NodeLedger`] is one: a snapshot taken when the node was composed would freeze the published
+/// head at boot, and a stale head that still looks like a current one is worse for an auditor than
+/// no answer at all. The head is read HERE, per request, under the lock a seal holds — so no read
+/// can catch the chain half-sealed.
+///
+/// ## What it does NOT have, said out loud
+///
+/// The records. This node's sealed records go onto the journal
+/// ([`crate::root::durability::Durability::journal_audit`]) and the journal keeps a record's two
+/// digests and the facts an auditor reads it for — deliberately not the record — so there is no
+/// list of [`busbar_kernel_audit::AuditRecord`] here to hand a window read. So [`AuditView::read`]
+/// answers `None` for the records, the range verb refuses with a `NotFound` naming the absence, and
+/// the head and key reads answer in full from what the node genuinely holds. That is the honest
+/// shape: the alternative is a 200 carrying `"records": []`, which tells an auditor that the window
+/// they asked about is empty when the truth is that nobody kept it. Retention is a product decision
+/// with a storage cost attached, and it is not this seam's to invent.
+pub struct NodeAudit {
+    durability: Arc<Mutex<crate::root::durability::Durability>>,
+}
+
+impl std::fmt::Debug for NodeAudit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeAudit").finish_non_exhaustive()
+    }
+}
+
+impl NodeAudit {
+    /// Bind the three chain reads to a node's durability.
+    #[must_use]
+    pub fn new(durability: Arc<Mutex<crate::root::durability::Durability>>) -> Self {
+        NodeAudit { durability }
+    }
+
+    /// The lock, taken the way every other reader of it takes it — see [`NodeLedger`], whose doc
+    /// carries the reasoning about a poisoned one.
+    fn lock(&self) -> std::sync::MutexGuard<'_, crate::root::durability::Durability> {
+        self.durability.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+impl AuditView for NodeAudit {
+    fn read(
+        &self,
+        take: &mut dyn FnMut(
+            &busbar_kernel_audit::AuditChain,
+            Option<&[busbar_kernel_audit::AuditRecord]>,
+        ),
+    ) {
+        let durability = self.lock();
+        take(&durability.record, None);
+    }
+
+    fn keys(&self) -> busbar_kernel_audit::AuditKeySet {
+        let mut keys = busbar_kernel_audit::AuditKeySet::new();
+        // The public half of the key this chain signs with, where it was given one. A node that was
+        // given none answers with an EMPTY set, and that is the truth about it: nothing it sealed
+        // carries a signature, so there is no key with which to check one. What the set must never
+        // do is carry a key the node does not sign with.
+        let hex = self.lock().record.public_key_hex();
+        if let Some(hex) = hex {
+            if let Ok(key) = busbar_kernel_audit::AuditVerifyingKey::from_hex(&hex) {
+                keys.insert(key);
+            }
+        }
+        keys
+    }
+}
+
+/// The window a range read names, as `?from=&to=`.
+///
+/// BOTH are required, and a read that names neither is refused rather than widened. A query names
+/// ARGUMENTS to an operation, and `from`/`to` are this operation's arguments — so a range read with
+/// no window is not "the whole chain", it is a caller that did not say what it wanted, and
+/// answering it with a default window would be this file choosing an auditor's question for them.
+/// `to` before `from` is an inverted window, which selects nothing and is a malformed argument
+/// rather than an empty answer.
+///
+/// A window that runs off either end of what the node holds is NOT an error: it is simply shorter,
+/// which is [`busbar_kernel_audit::expose::range_body`]'s own rule and stays its.
+fn audit_window(target: &str) -> Option<(u64, u64)> {
+    let (_, query) = target.split_once('?')?;
+    let query = query.split('#').next().unwrap_or(query);
+    let (mut from, mut to) = (None, None);
+    for pair in query.split('&') {
+        let Some((name, value)) = pair.split_once('=') else {
+            continue;
+        };
+        match name {
+            "from" => from = Some(value.parse::<u64>().ok()?),
+            "to" => to = Some(value.parse::<u64>().ok()?),
+            _ => {}
+        }
+    }
+    let (from, to) = (from?, to?);
+    (from <= to).then_some((from, to))
+}
+
+/// The bytes one audit-chain read answers with.
+///
+/// Every refusal here is a DIFFERENT fact, and keeping them apart is the point of the function
+/// (`docs/design/BUSBAR-1.6.0.md:2079`):
+///
+/// * `Validation` (400) — the range read named no window, or named one that selects nothing. The
+///   caller's arguments are wrong and the node is fine.
+/// * `NotFound` (404) — the node retains no records to answer a window from. The node is fine and
+///   the caller's arguments are fine; the evidence is not kept. An empty `records` array would have
+///   said the window was empty, which is a different and false thing.
+/// * `Store` (500) — the bound view did not answer at all. A seam that returns without showing its
+///   reader anything is broken, and a broken instrument must not report an empty chain.
+///
+/// The head and key reads answer from what the node holds whatever the records situation is: a chain
+/// with nothing on it renders a null head, which is a true answer and a legitimate state.
+fn render_audit_view(
+    verb: KernelVerb,
+    target: &str,
+    view: &dyn AuditView,
+) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
+    use busbar_core_admin::GovernanceError;
+    match verb {
+        KernelVerb::GetAuditHead => {
+            let mut body = None;
+            view.read(&mut |chain, _records| {
+                body = Some(busbar_kernel_audit::expose::head_body(chain));
+            });
+            body.map(String::into_bytes).ok_or(GovernanceError::Store)
+        }
+        KernelVerb::GetAuditRange => {
+            let (from, to) = audit_window(target).ok_or(GovernanceError::Validation)?;
+            // Two layers, and they are two different answers: the outer says whether the view
+            // answered, the inner says whether it retains records to answer with.
+            let mut answered: Option<Option<String>> = None;
+            view.read(&mut |chain, records| {
+                answered = Some(records.map(|records| {
+                    busbar_kernel_audit::expose::range_body(chain, records, from, to)
+                }));
+            });
+            match answered {
+                None => Err(GovernanceError::Store),
+                Some(None) => Err(GovernanceError::NotFound),
+                Some(Some(body)) => Ok(body.into_bytes()),
+            }
+        }
+        KernelVerb::GetAuditKeys => {
+            Ok(busbar_kernel_audit::expose::keys_body(&view.keys()).into_bytes())
+        }
+        // Reachable only if the closed table and this match ever disagree, which is a defect in this
+        // file rather than a request to forgive.
+        _ => Err(GovernanceError::NotFound),
+    }
+}
+
 /// The verbs unit's governance seam, bound to whatever executes an admin operation.
 ///
 /// Every one of the trait's methods is a delegation. `execute_legacy` is the one that carries the
 /// 66; `execute_new_verb` carries the 17, which reach the same seam because the surface that answers
-/// them is the same surface. `execute_ledger_read` carries the 5 ledger views, and it is the one
-/// method that does NOT reach the dispatch: there is no 1.5.5 handler behind a figure 1.5.5 never
-/// kept, so the answer is rendered here, from the bound view. The four governance-store methods
+/// them is the same surface. `execute_ledger_read` carries the 5 ledger views and `execute_audit_read`
+/// the 3 chain reads, and those two are the methods that do NOT reach the dispatch: there is no
+/// 1.5.5 handler behind a figure 1.5.5 never kept or a chain 1.5.5 never sealed, so the answer is
+/// rendered here, from the bound view. The four governance-store methods
 /// answer from the request the dispatch already ran, because minting a key IS an admin operation and
 /// there is no second place this root is entitled to mint one.
 pub struct CoreGovernance {
@@ -663,6 +868,14 @@ pub struct CoreGovernance {
     /// because the two answer different halves of the surface and neither can stand in for the
     /// other: a dispatch handed a ledger path would answer the 404 its router has for it.
     ledger: Arc<dyn LedgerView>,
+    /// The evidence the three audit-chain reads answer from, where a root bound any.
+    ///
+    /// An OPTION, and the ledger beside it is not, because the two absences are different facts. A
+    /// node with no ledger has no postings and says so in the view's own body; a node with no chain
+    /// bound cannot say anything about a chain at all, and an empty head is a claim that it sealed
+    /// nothing. The first is a measurement over an empty set, the second is no measurement —
+    /// `docs/design/BUSBAR-1.6.0.md:2079`, and the reason `None` refuses rather than renders.
+    audit: Option<Arc<dyn AuditView>>,
     /// The request the current unit is executing, so the seam's argument-free methods can reach it.
     /// One unit at a time per governance value, which is what the root guarantees by building one
     /// per unit rather than sharing one across them.
@@ -676,12 +889,14 @@ impl CoreGovernance {
     pub fn new(
         dispatch: Arc<dyn AdminDispatch>,
         ledger: Arc<dyn LedgerView>,
+        audit: Option<Arc<dyn AuditView>>,
         verb: KernelVerb,
         request: AdminRequest,
     ) -> Self {
         CoreGovernance {
             dispatch,
             ledger,
+            audit,
             request,
             verb,
         }
@@ -779,17 +994,36 @@ impl busbar_core_admin::Governance for CoreGovernance {
         // kind of surface a closed table exists to prevent.
         let body = render_ledger_view(verb, self.ledger.as_ref())
             .ok_or(busbar_core_admin::GovernanceError::NotFound)?;
-        Ok(ledger_answer(body).pack())
+        Ok(json_answer(body).pack())
+    }
+
+    fn execute_audit_read(
+        &self,
+        verb: KernelVerb,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        _request: &[u8],
+    ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
+        // The request body is deliberately unread, and the request PATH deliberately is. All three
+        // reads are `GET`s: the head and the key set take no arguments at all, and the range read
+        // takes its window as a query string, because a query names ARGUMENTS to an operation and
+        // `from`/`to` are arguments. A body here would be a second way to ask the same question,
+        // which is exactly what a closed table exists to prevent.
+        let view = self
+            .audit
+            .as_deref()
+            .ok_or(busbar_core_admin::GovernanceError::NotFound)?;
+        render_audit_view(verb, &self.request.path, view).map(|body| json_answer(body).pack())
     }
 }
 
-/// The answer a ledger view produces: a 200 carrying JSON, and no other header.
+/// The answer a ledger view or an audit-chain read produces: a 200 carrying JSON, and no other
+/// header.
 ///
 /// Nothing here is derived from a legacy response, because there is no legacy response to derive it
 /// from — these paths did not exist. `content-type` is the one header a JSON body needs; a
 /// `content-length` is the transport's to add, and adding one here would be this root deciding a
 /// framing detail the listener already owns.
-fn ledger_answer(body: Vec<u8>) -> AdminAnswer {
+fn json_answer(body: Vec<u8>) -> AdminAnswer {
     AdminAnswer {
         status: 200,
         headers: vec![("content-type".to_string(), "application/json".to_string())],
@@ -987,7 +1221,7 @@ fn amend_rate_history_effect(
     out.push_str(",\"reason_sha256\":");
     json_string(&hex::encode(reason_hash), &mut out);
     out.push('}');
-    Ok(ledger_answer(out.into_bytes()).pack())
+    Ok(json_answer(out.into_bytes()).pack())
 }
 
 /// The exact bytes the operator's detached signature is verified over.
@@ -1621,6 +1855,14 @@ pub struct AdminBinding {
     /// figures that surface never kept, so they need somewhere else to reach, and giving them their
     /// own read-only seam is what stops the dispatch from acquiring a way to read money.
     pub ledger: Arc<dyn LedgerView>,
+    /// The evidence the three 1.6.0 audit-chain reads answer from.
+    ///
+    /// A fourth seam, beside the ledger for the same reason the ledger is beside the dispatch: what
+    /// a chain read answers with is not money and not a mounted router's response, and an integrator
+    /// that bound one of those has not thereby bound this. `None` is a node no root gave a chain to,
+    /// and it REFUSES the three reads rather than rendering an empty head — an unbound chain and a
+    /// chain that has sealed nothing are different facts, and only the second is a measurement.
+    pub audit: Option<Arc<dyn AuditView>>,
     /// Where the money-governance posture is read from.
     ///
     /// A third seam, and it has to be one: the two gates the 17 verbs are checked against are sealed
@@ -1749,6 +1991,7 @@ impl AdminBinding {
         AdminBinding {
             dispatch,
             ledger: Arc::new(UnopenedLedger),
+            audit: None,
             posture: Arc::new(UnsealedPosture),
             units: AdminUnits::new(),
         }
@@ -1758,6 +2001,16 @@ impl AdminBinding {
     #[must_use]
     pub fn with_ledger_view(mut self, ledger: Arc<dyn LedgerView>) -> Self {
         self.ledger = ledger;
+        self
+    }
+
+    /// Bind the three chain reads to the evidence a node actually holds.
+    ///
+    /// Until a root calls this the three verbs refuse with a `NotFound` that says the node has no
+    /// chain bound — never with an empty head, which would be a node claiming it had sealed nothing.
+    #[must_use]
+    pub fn with_audit_view(mut self, audit: Arc<dyn AuditView>) -> Self {
+        self.audit = Some(audit);
         self
     }
 
@@ -1801,46 +2054,21 @@ pub fn kernel_verb(resolved: &ResolvedVerb) -> Option<KernelVerb> {
         .chain(AUDIT_VERBS.iter())
         .chain(NAMED_SURFACES.iter())
         .copied()
-        .find(|verb| verb_name(*verb) == resolved.verb)
+        .find(|verb| verb_name(*verb) == Some(resolved.verb))
 }
 
-/// The design's own spelling of a 1.6.0 verb, as the plane's table names it.
-///
-/// The two crates were written against the same list and spell it two ways — one in the enumeration's
-/// Rust casing, one in the operation-name casing the plane's table uses. This is the one place the
-/// two spellings meet, so it is the one place either can change without the other noticing, which is
-/// why the round trip below is a test rather than a comment.
-fn verb_name(verb: KernelVerb) -> &'static str {
-    match verb {
-        KernelVerb::Verify => "verify",
-        KernelVerb::PlaneFacts => "plane_facts",
-        KernelVerb::PlaneRecordWrite => "plane_record_write",
-        KernelVerb::SetOperatorKey => "set_operator_key",
-        KernelVerb::SetEscrow => "set_escrow",
-        KernelVerb::ChainBreak => "chain_break",
-        KernelVerb::StoreRestore => "store_restore",
-        KernelVerb::ResealEpochFloor => "reseal_epoch_floor",
-        KernelVerb::SetDualControl => "set_dual_control",
-        KernelVerb::SetOverdraftCeiling => "set_overdraft_ceiling",
-        KernelVerb::SetDisputeMaxAge => "set_dispute_max_age",
-        KernelVerb::CommitUpgrade => "commit_upgrade",
-        KernelVerb::ResolveDispute => "resolve_dispute",
-        KernelVerb::ResolveSlice => "resolve_slice",
-        KernelVerb::Adjust => "adjust",
-        KernelVerb::ExportKeyset => "export_keyset",
-        KernelVerb::Approve => "approve",
-        KernelVerb::AmendRateHistory => "amend_rate_history",
-        KernelVerb::GetLedgerTotals => "get_ledger_totals",
-        KernelVerb::GetLedgerCheckpoints => "get_ledger_checkpoints",
-        KernelVerb::GetLedgerReconciliation => "get_ledger_reconciliation",
-        KernelVerb::GetLedgerMigration => "get_ledger_migration",
-        KernelVerb::GetLedgerOpenapiJson => "get_ledger_openapi_json",
-        KernelVerb::GetAuditHead => "get_audit_head",
-        KernelVerb::GetAuditRange => "get_audit_range",
-        KernelVerb::GetAuditKeys => "get_audit_keys",
-        _ => "",
-    }
-}
+// THE NAMING OF A 1.6.0 VERB IS NOT THIS FILE'S ANY MORE. It was, through 1.6.0's development, and
+// that is what made it a seam: the closed table is DECLARED in `busbar-core-admin` and was COMPLETED
+// here, joined by `verb_name(v) == row.verb` over a `_ => ""` arm. A row nobody wrote an arm for
+// resolved to the empty string, matched no verb, and the operation refused — with no compile error,
+// because neither side could see that the other was incomplete. It cost this tree the three audit
+// reads, which shipped resolving and answering nothing.
+//
+// `busbar_core_admin::verb_name` is that function now, beside both spellings it joins — the
+// enumeration and the table rows are both that crate's — and the agreement between them is a
+// `const` assertion in `admin_codec/verbs.rs` rather than a test. A row with no arm, or an arm with
+// no row, does not build. See `docs/design/BUSBAR-1.6.0.md:2064` for the class of defect and `:2079`
+// for the rule: A GAP AND A FAILURE MUST NEVER BE THE SAME OUTPUT.
 
 /// The mutation rate class the verbs unit's table puts a verb in.
 ///
@@ -2091,6 +2319,7 @@ pub(crate) fn route(
         CoreGovernance::new(
             Arc::clone(&binding.dispatch),
             Arc::clone(&binding.ledger),
+            binding.audit.clone(),
             verb,
             request.clone(),
         ),

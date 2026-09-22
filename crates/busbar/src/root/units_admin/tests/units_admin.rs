@@ -2776,6 +2776,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             CoreGovernance::new(
                 Arc::new(CountingDispatch(Arc::clone(&calls))),
                 Arc::new(SeededLedger),
+                None,
                 *verb,
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
@@ -2817,6 +2818,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
         CoreGovernance::new(
             Arc::new(CountingDispatch(Arc::clone(&calls))),
             Arc::new(SeededLedger),
+            None,
             KernelVerb::Adjust,
             a_ledger_request("/api/v1/admin/adjust"),
         ),
@@ -2840,6 +2842,330 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             b"",
         )
         .is_err());
+}
+
+// ── the three audit-chain reads ─────────────────────────────────────────────────────────────────
+
+/// The three paths, as the closed table declares them.
+#[cfg(feature = "root-admin")]
+const AUDIT_PATHS: &[&str] = &[
+    "/api/v1/admin/audit/head",
+    "/api/v1/admin/audit/range",
+    "/api/v1/admin/audit/keys",
+];
+
+/// A chain with three records actually sealed onto it, signed by a key the set publishes.
+///
+/// Sealed rather than hand-built: a record whose `seq`, `prev_hash` and `hash` were written by this
+/// test would prove the renderer runs and nothing about what it renders. These three went through
+/// [`busbar_kernel_audit::Audit::seal`], so the positions are contiguous, each `prev_hash` is the
+/// previous record's digest, and the signatures are over the digests the recipe took.
+#[cfg(feature = "root-admin")]
+struct SealedChain {
+    chain: busbar_kernel_audit::AuditChain,
+    records: Vec<busbar_kernel_audit::AuditRecord>,
+    keys: busbar_kernel_audit::AuditKeySet,
+}
+
+#[cfg(feature = "root-admin")]
+impl AuditView for SealedChain {
+    fn read(
+        &self,
+        take: &mut dyn FnMut(
+            &busbar_kernel_audit::AuditChain,
+            Option<&[busbar_kernel_audit::AuditRecord]>,
+        ),
+    ) {
+        take(&self.chain, Some(&self.records));
+    }
+
+    fn keys(&self) -> busbar_kernel_audit::AuditKeySet {
+        self.keys.clone()
+    }
+}
+
+/// Seal three records onto a signing chain, and publish the key's public half.
+#[cfg(feature = "root-admin")]
+fn a_sealed_chain() -> SealedChain {
+    use busbar_contract::caps::{
+        Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome as UnitOutcome, Pass, UnitKey,
+    };
+    use busbar_kernel_audit::{
+        Amount, Audit as _, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject,
+        What,
+    };
+
+    let signer = busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]);
+    let mut keys = busbar_kernel_audit::AuditKeySet::new();
+    keys.insert_signer(&signer);
+    let mut chain = busbar_kernel_audit::AuditChain::new().signing_with(signer);
+
+    let token: Pass<AuditStep> = Pass::mint(&KernelSeal::acquire_for_kernel());
+    let mut records = Vec::new();
+    for unit in 1..=3u64 {
+        records.push(chain.seal(
+            AuditInputs {
+                subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
+                what: What {
+                    unit_key: UnitKey::new(unit),
+                    op_class: OpClassId::new("chat.completion"),
+                    destination: Some("upstream-a".into()),
+                    parent: None,
+                    pre_hook_head: None,
+                    post_hook_head: None,
+                },
+                wall: 1_700_000_000 + unit,
+                mono: unit * 1_000,
+                origin: Origin::seal(&KernelSeal::acquire_for_kernel(), OriginKind::Client),
+                outcome: OutcomeFacts {
+                    unit_end: UnitOutcome::Completed,
+                    step: None,
+                    finish: FinishClass::Complete,
+                    hook_failed: false,
+                    emission_delta: 0,
+                    stale_policy: false,
+                },
+                amount: Amount {
+                    lines: Vec::new(),
+                    pre_tier: 600,
+                    priced: 540,
+                    tier_bp: 9_000,
+                    fee_count: 1,
+                    currency: "USD".into(),
+                    rate_card_version: 3,
+                    bucket_chain_ref: "chain:free>paid".into(),
+                },
+                controls: Controls {
+                    lease_epoch: 4,
+                    policy_epoch: 7,
+                    ..Controls::default()
+                },
+                correlation_label: None,
+            },
+            &token,
+        ));
+    }
+    SealedChain {
+        chain,
+        records,
+        keys,
+    }
+}
+
+/// Walk one request through the whole loop against a node whose chain holds those three records.
+#[cfg(feature = "root-admin")]
+fn answer_over_a_sealed_chain(request: AdminRequest) -> AdminAnswer {
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch))
+        .with_audit_view(Arc::new(a_sealed_chain()) as Arc<dyn AuditView>);
+    AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
+}
+
+/// ALL THREE CHAIN READS ANSWER, over the whole loop, with the chain's own bytes.
+///
+/// This is the test the verbs were missing. They were mounted on the closed table in `b1a448454`
+/// and resolved from that moment — right scope, right rate class, right row — and then `execute`
+/// fell past the ledger branch and past the posture-gated branch into the legacy catch-all, where
+/// the mounted router answered a 404 for a path that release never had. Resolving is not answering.
+///
+/// So the assertion is on the BODIES, not on the statuses: a 200 could come from the dispatch
+/// standing in (`AnsweringDispatch` answers `{"entries":[]}` to anything), and what proves the
+/// audit arm ran is that the head read names the signature domain, the range read carries the
+/// sealed positions, and the key read publishes the public half of the key that signed them.
+#[test]
+#[cfg(feature = "root-admin")]
+fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
+    let head = answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/head"));
+    assert_eq!(head.status, 200, "the head read did not answer");
+    let head_body = String::from_utf8(head.body).expect("the head read answers UTF-8");
+    assert!(
+        head_body.contains(r#""signature_domain":"busbar.audit.record.v1""#),
+        "the head read did not come from the chain: {head_body}"
+    );
+    // Three records sealed, so the NEXT position is four and the tip is the third.
+    assert!(
+        head_body.contains(r#""next_seq":4"#),
+        "the head read does not see the sealed records: {head_body}"
+    );
+    assert!(
+        head_body.contains(r#""head":{"#) && head_body.contains(r#""seq":3"#),
+        "the head read reports no tip: {head_body}"
+    );
+
+    let range =
+        answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/range?from=2&to=3"));
+    assert_eq!(range.status, 200, "the range read did not answer");
+    let range_body = String::from_utf8(range.body).expect("the range read answers UTF-8");
+    assert!(
+        range_body.contains(r#""from":2"#) && range_body.contains(r#""to":3"#),
+        "the range read did not take its window from the query: {range_body}"
+    );
+    // The window is inclusive at both ends and selects only what it names: the first record is
+    // sealed and is NOT in the answer, which is what says the selection happened.
+    assert!(
+        range_body.contains("pseudonym-2") && range_body.contains("pseudonym-3"),
+        "the range read is missing records inside its window: {range_body}"
+    );
+    assert!(
+        !range_body.contains("pseudonym-1"),
+        "the range read returned a record outside its window: {range_body}"
+    );
+
+    let keys = answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/keys"));
+    assert_eq!(keys.status, 200, "the key read did not answer");
+    let keys_body = String::from_utf8(keys.body).expect("the key read answers UTF-8");
+    let signer = busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]);
+    assert!(
+        keys_body.contains(&signer.public_key_hex()),
+        "the key read does not publish the key that signed the chain: {keys_body}"
+    );
+    assert!(
+        keys_body.contains(r#""algorithm":"ed25519""#),
+        "the key read names no algorithm: {keys_body}"
+    );
+    // The CONTROL that makes the three greens mean something: the secret half is not on the wire.
+    // `from_seed` is deterministic, so the seed's own bytes are checkable, and a key set that
+    // published a signing key would carry them.
+    assert!(
+        !keys_body.contains(&"07".repeat(32)),
+        "the key read published secret key material: {keys_body}"
+    );
+}
+
+/// A node no root bound a chain into REFUSES the three reads. It does not answer an empty head.
+///
+/// `docs/design/BUSBAR-1.6.0.md:2079` — a gap and a failure must never be the same output. A node
+/// that has sealed nothing and a node nobody wired a chain into are different facts: the first has
+/// a chain whose head is null, the second has no chain to have a head. Rendering the first for the
+/// second is an instrument reporting over nothing.
+///
+/// The 404 is `NoDestination` at the loop's edge, which is the same status this surface gives any
+/// path it cannot answer — correct, because from outside, a node with no chain bound genuinely does
+/// not have that surface.
+#[test]
+#[cfg(feature = "root-admin")]
+fn an_unbound_chain_refuses_rather_than_answering_an_empty_head() {
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    // `AnsweringDispatch` answers 200 to ANYTHING, which is what makes this a real test: if the
+    // audit verbs fell through to the legacy catch-all — the defect this slice fixes — they would
+    // come back 200 with `{"entries":[]}` and look like they worked.
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch));
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+    for path in AUDIT_PATHS {
+        let answer = node.answer(a_ledger_request(path));
+        assert_eq!(answer.status, 404, "{path} answered over an unbound chain");
+        assert!(
+            !String::from_utf8_lossy(&answer.body).contains("entries"),
+            "{path} reached the legacy dispatch"
+        );
+    }
+}
+
+/// A range read that names no window is refused as a BAD REQUEST, not answered with a default one.
+///
+/// And the distinction from the refusal above is the point: 400 says the caller did not say what it
+/// wanted, 404 says the node has nothing to say. A single status for both would make an auditor
+/// debug their firewall over a missing query parameter.
+#[test]
+#[cfg(feature = "root-admin")]
+fn a_range_read_that_names_no_window_is_refused_rather_than_widened() {
+    for target in [
+        "/api/v1/admin/audit/range",
+        "/api/v1/admin/audit/range?from=2",
+        "/api/v1/admin/audit/range?to=3",
+        "/api/v1/admin/audit/range?from=3&to=2",
+        "/api/v1/admin/audit/range?from=two&to=three",
+    ] {
+        let answer = answer_over_a_sealed_chain(a_ledger_request(target));
+        assert_eq!(answer.status, 400, "{target} was not refused as malformed");
+    }
+    // The control: the same node, asked properly, answers.
+    assert_eq!(
+        answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/range?from=1&to=3"))
+            .status,
+        200
+    );
+}
+
+/// Both of the unit's own answers about a chain read put it on the read side, and the plane's row
+/// agrees — the same three-table check the ledger views get, for the same reason.
+///
+/// The rung matters more here than anywhere else on the surface: these three exist so that somebody
+/// who does NOT trust the node can check it, and a full-scope gate would mean the only party who
+/// can read the evidence is the party the evidence is about.
+#[test]
+#[cfg(feature = "root-admin")]
+fn a_chain_read_is_read_only_in_every_table_that_has_an_opinion() {
+    for path in AUDIT_PATHS {
+        let row = busbar_core_admin::admin_codec::verbs::resolve("GET", path)
+            .unwrap_or_else(|| panic!("{path} is not in the plane's table"));
+        assert!(
+            row.read_only,
+            "{path} is not read-only in the plane's table"
+        );
+        assert_eq!(
+            row.op_class(),
+            busbar_contract::ids::OpClassId::new("admin_read")
+        );
+
+        let verb = kernel_verb(&row).unwrap_or_else(|| panic!("{path} names no kernel verb"));
+        assert!(AUDIT_VERBS.contains(&verb), "{path} is not an audit verb");
+        assert_eq!(
+            busbar_core_admin::required_scope(verb),
+            busbar_core_admin::required_scope(KernelVerb::GetAudit),
+            "{path} does not require what the legacy /audit read requires"
+        );
+        assert_eq!(
+            mutation_class(verb),
+            MutationClass::Forbidden,
+            "{path} would spend a mutation slot per read"
+        );
+        assert_eq!(
+            busbar_kernel_scope::admin_required_scope("GET", path),
+            Scope::ReadOnly
+        );
+    }
+}
+
+/// THE JOIN BETWEEN THE TWO SPELLINGS IS TOTAL, and nothing in it resolves to an empty name.
+///
+/// Every row of the closed table that is joined by NAME reaches a kernel verb, and every 1.6.0
+/// kernel verb has a name. The `_ => ""` arm this file used to carry meant a row nobody named
+/// resolved to the empty string, matched no verb, and refused — which is how the three chain reads
+/// shipped resolving and answering nothing. The compiler enforces the agreement now
+/// (`crates/busbar-core-admin/src/admin_codec/verbs.rs`, the `const` assertions); this is the
+/// behavioural half of it, over the function the live path actually calls.
+#[test]
+#[cfg(feature = "root-admin")]
+fn every_1_6_0_row_names_a_kernel_verb_and_no_name_is_empty() {
+    for verb in NEW_VERBS
+        .iter()
+        .chain(LEDGER_VERBS.iter())
+        .chain(AUDIT_VERBS.iter())
+    {
+        let name = busbar_core_admin::verb_name(*verb)
+            .unwrap_or_else(|| panic!("{verb:?} has no name, so no row can ever reach it"));
+        assert!(!name.is_empty(), "{verb:?} names the empty string");
+        let row = busbar_core_admin::admin_codec::verbs::table()
+            .into_iter()
+            .find(|row| row.verb == name)
+            .unwrap_or_else(|| panic!("{verb:?} ({name}) has no row in the closed table"));
+        assert_eq!(
+            kernel_verb(&row),
+            Some(*verb),
+            "{name} resolves to a different verb than the one that names it"
+        );
+    }
+    // The CONTROL: a legacy verb is deliberately NOT joined by name, and says so with `None` rather
+    // than with an empty string. It still resolves — by method and path, which is the stronger join.
+    assert_eq!(busbar_core_admin::verb_name(KernelVerb::GetAudit), None);
+    assert_eq!(
+        kernel_verb(
+            &busbar_core_admin::admin_codec::verbs::resolve("GET", "/api/v1/admin/audit")
+                .expect("the legacy audit read is in the table")
+        ),
+        Some(KernelVerb::GetAudit)
+    );
 }
 
 /// The additive document describes exactly the operations the closed table declares, and not one

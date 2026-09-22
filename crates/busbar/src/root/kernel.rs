@@ -842,7 +842,20 @@ impl ProductionUnits {
         // because what they read is the durability the constructor took ownership of — the handle
         // does not exist until it has. Binding it here is what makes the served figures this node's
         // rather than an empty table that looks like a balanced one.
-        units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(durability, read));
+        units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(
+            Arc::clone(&durability),
+            read,
+        ));
+        // The three audit-chain reads are bound off the SAME handle, for the same reason and at the
+        // same moment. A chain read and a ledger view answer different halves of what this node
+        // holds — evidence and money — and binding one is not binding the other, but both read the
+        // durability this constructor took ownership of and neither exists before it has.
+        //
+        // Until this line the three verbs resolved and refused: a node served its own chain to
+        // nobody, which makes a signed chain a claim rather than evidence.
+        units.admin.audit = Some(Arc::new(crate::root::units_admin::NodeAudit::new(
+            durability,
+        )));
         units
     }
 

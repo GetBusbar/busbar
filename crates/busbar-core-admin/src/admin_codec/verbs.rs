@@ -18,6 +18,7 @@
 //! (`find_verb`, path-pattern matching) does not know these are synthetic.
 
 use crate::admin_codec::generated::verb_table_1_5_5::VERB_TABLE_1_5_5;
+use crate::verb::KernelVerb;
 use busbar_contract::ids::OpClassId;
 
 /// One row of the closed verb table.
@@ -234,6 +235,119 @@ const AUDIT_VERBS_1_6_0: &[VerbEntry] = &[
 /// money-governance verbs (the seventeen plus `amend_rate_history`), the 5 1.6.0 ledger
 /// views, and the 3 audit-chain reads.
 pub(crate) const VERB_COUNT: usize = 66 + 18 + 5 + 3;
+
+// ── THE ROWS AND THEIR NAMES CANNOT DRIFT, AND THE COMPILER IS WHAT SAYS SO ────────────────────
+//
+// A 1.6.0 row is declared HERE, as a string; the verb it names is declared in [`crate::verb`], as
+// an enumeration variant; and the two are joined by [`crate::verb::verb_name`]. Until 1.6.0 that
+// join ran through a `_ => ""` arm in the composition root, so a row nobody wrote a name for
+// resolved to the empty string, matched nothing, and the verb REFUSED — with no compile error and
+// no test naming the cause. `docs/design/BUSBAR-1.6.0.md:2064` names the shape: "a list that must
+// agree with code, with nothing forcing the agreement", and `:2020` names the rule it breaks — A
+// GAP AND A FAILURE MUST NEVER BE THE SAME OUTPUT.
+//
+// So the agreement is forced, at compile time, in BOTH directions and over all three tables: every
+// row has a verb that names it, every verb has a row that carries its name, and the two lists are
+// the same length (which is what catches a row added twice with one of its pair missing). A table
+// and a name list that disagree do not produce a red test; they produce no binary at all.
+
+/// Two `&str`s compared where `==` is not available — a `const` context.
+const fn str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Whether any verb in `verbs` is the one [`crate::verb::verb_name`] spells `name`.
+const fn some_verb_is_named(verbs: &[KernelVerb], name: &str) -> bool {
+    let mut i = 0;
+    while i < verbs.len() {
+        if let Some(spelling) = crate::verb::verb_name(verbs[i]) {
+            if str_eq(spelling, name) {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Whether any row in `rows` carries `name`.
+const fn some_row_carries(rows: &[VerbEntry], name: &str) -> bool {
+    let mut i = 0;
+    while i < rows.len() {
+        if str_eq(rows[i].verb, name) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Whether one table's rows and one list's verbs name exactly each other.
+const fn rows_and_names_agree(rows: &[VerbEntry], verbs: &[KernelVerb]) -> bool {
+    if rows.len() != verbs.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < rows.len() {
+        if !some_verb_is_named(verbs, rows[i].verb) {
+            return false;
+        }
+        i += 1;
+    }
+    let mut j = 0;
+    while j < verbs.len() {
+        match crate::verb::verb_name(verbs[j]) {
+            None => return false,
+            Some(name) => {
+                if !some_row_carries(rows, name) {
+                    return false;
+                }
+            }
+        }
+        j += 1;
+    }
+    true
+}
+
+const _: () = assert!(
+    rows_and_names_agree(NEW_VERBS_1_6_0, crate::verb::NEW_VERBS),
+    "NEW_VERBS_1_6_0 and crate::verb::NEW_VERBS disagree: a row here has no `verb_name` arm in \
+     crates/busbar-core-admin/src/verb.rs, or an arm there has no row here. Add both."
+);
+
+const _: () = assert!(
+    rows_and_names_agree(LEDGER_VERBS_1_6_0, crate::verb::LEDGER_VERBS),
+    "LEDGER_VERBS_1_6_0 and crate::verb::LEDGER_VERBS disagree: a row here has no `verb_name` arm \
+     in crates/busbar-core-admin/src/verb.rs, or an arm there has no row here. Add both."
+);
+
+const _: () = assert!(
+    rows_and_names_agree(AUDIT_VERBS_1_6_0, crate::verb::AUDIT_VERBS),
+    "AUDIT_VERBS_1_6_0 and crate::verb::AUDIT_VERBS disagree: a row here has no `verb_name` arm in \
+     crates/busbar-core-admin/src/verb.rs, or an arm there has no row here. Add both."
+);
+
+/// The declared count is the count of what is actually declared. A row added without bumping this
+/// used to be a runtime assertion in one test; it is now a condition of the crate existing.
+const _: () = assert!(
+    VERB_COUNT
+        == VERB_TABLE_1_5_5.len()
+            + NEW_VERBS_1_6_0.len()
+            + LEDGER_VERBS_1_6_0.len()
+            + AUDIT_VERBS_1_6_0.len(),
+    "VERB_COUNT does not equal the number of rows the closed table declares"
+);
 
 /// The operation class every read-only verb prices under.
 ///

@@ -1308,6 +1308,15 @@ impl Governance for RoutingGovernance {
         self.0.lock().unwrap().push((verb, "ledger"));
         Ok(b"ledger".to_vec())
     }
+    fn execute_audit_read(
+        &self,
+        verb: KernelVerb,
+        _admin: &Grant<AdminVerb>,
+        _request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        self.0.lock().unwrap().push((verb, "audit"));
+        Ok(b"audit".to_vec())
+    }
 }
 
 /// A ledger view reaches the read seam, and reaches it under the posture that refuses every
@@ -1478,6 +1487,197 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
             .unwrap_err();
         assert_eq!(err.reason, crate::refusal::ReasonCode::NotFound);
     }
+}
+
+/// AN AUDIT-CHAIN READ REACHES A SEAM AT ALL — which is the whole of this test.
+///
+/// The three verbs were mounted on the closed table before anything answered them. They resolved,
+/// they carried the right scope and the right mutation class, and then `execute` fell past the
+/// ledger branch and past the posture-gated branch into the legacy catch-all, where the mounted
+/// router answered a 404 for a path that release never had. A verb that resolves and then refuses
+/// is worse than one that does not resolve: the table says the surface exists and the surface says
+/// it does not.
+///
+/// The posture is the same one the ledger test uses, and for the same reason: `operator: unset`
+/// with `dual_control: required` refuses every one of the 17 money-governance verbs outright. A
+/// chain read answers anyway — there is nothing about looking at a sealed head for a maker-checker
+/// step to interpose on — and the control below is one of those 17 being refused on the same
+/// executor, so the green is the reads being exempt rather than the posture check being unwired.
+#[test]
+fn an_audit_chain_read_reaches_the_read_seam_under_a_posture_that_refuses_every_mutation() {
+    let admin = admin();
+    let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
+    let posture = Some(PostureCtx {
+        operator: OperatorState::Unset,
+        dual_control: DualControl::Required,
+    });
+
+    for verb in crate::verb::AUDIT_VERBS {
+        let body = verbs
+            .execute(
+                *verb,
+                &admin,
+                "alice",
+                VerbScope::ReadOnly,
+                0,
+                posture,
+                ApprovalState::NotYetApproved,
+                b"",
+            )
+            .unwrap_or_else(|e| panic!("{verb:?} was refused: {e:?}"));
+        assert_eq!(body, b"audit", "{verb:?} did not reach the audit read seam");
+    }
+
+    let refused = verbs
+        .execute(
+            KernelVerb::Adjust,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            posture,
+            ApprovalState::NotYetApproved,
+            b"",
+        )
+        .unwrap_err();
+    assert_eq!(refused.reason, crate::refusal::ReasonCode::OperatorUnset);
+
+    let reached = log.lock().unwrap().clone();
+    assert!(
+        reached.iter().all(|(_, seam)| *seam == "audit"),
+        "a chain read reached a seam that is not the audit one: {reached:?}"
+    );
+    assert_eq!(reached.len(), crate::verb::AUDIT_VERBS.len());
+}
+
+/// A chain read asks for exactly what the legacy `GET /audit` asks for, and no more.
+///
+/// A full-scope gate here would mean the only party who can check the evidence is the party the
+/// evidence is about.
+#[test]
+fn an_audit_chain_read_requires_what_the_legacy_audit_read_requires() {
+    for verb in crate::verb::AUDIT_VERBS {
+        assert_eq!(
+            crate::verbs::required_scope(*verb),
+            crate::verbs::required_scope(KernelVerb::GetAudit),
+            "{verb:?} does not require what /audit requires"
+        );
+        assert_eq!(crate::verbs::required_scope(*verb), VerbScope::ReadOnly);
+    }
+}
+
+/// A chain read never spends a mutation slot: an auditor pulling a window must not exhaust the
+/// budget an operator needs to change a config with.
+#[test]
+fn an_audit_chain_read_never_spends_a_mutation_slot() {
+    for verb in crate::verb::AUDIT_VERBS {
+        assert_eq!(
+            crate::rate::MutationClass::for_verb(*verb, CONFIG_CLASS_RULES),
+            crate::rate::MutationClass::Forbidden,
+            "{verb:?} is classified as a mutation"
+        );
+    }
+    // The control: a verb that IS a mutation still classifies as one.
+    assert_ne!(
+        crate::rate::MutationClass::for_verb(KernelVerb::Adjust, CONFIG_CLASS_RULES),
+        crate::rate::MutationClass::Forbidden
+    );
+}
+
+/// An integrator who has bound no chain serves nothing, and says so.
+///
+/// `NotFound` rather than an empty head, and the distinction is the thirteenth instrument defect's
+/// rule (`docs/design/BUSBAR-1.6.0.md:2079`): a node that has sealed nothing and a node nobody wired
+/// a chain into are different facts, and an answer that cannot tell them apart is an instrument
+/// reporting over nothing. A `Governance` written before these three verbs existed compiles
+/// unchanged and answers the true thing.
+#[test]
+fn an_unbound_integrator_serves_no_chain_read_rather_than_an_empty_head() {
+    struct NoChain;
+    impl Governance for NoChain {
+        fn group_exists(&self, _name: &str) -> bool {
+            true
+        }
+        fn actual_parent(&self, _name: &str) -> Option<String> {
+            None
+        }
+        fn provision_group(
+            &self,
+            _admin: &Grant<AdminVerb>,
+            _group: &str,
+            _parent: &str,
+        ) -> Result<(), GovernanceError> {
+            Ok(())
+        }
+        fn mint_key(
+            &self,
+            _admin: &Grant<AdminVerb>,
+            _group: Option<&str>,
+        ) -> Result<MintedKey, GovernanceError> {
+            Err(GovernanceError::Validation)
+        }
+        fn rotate_key(
+            &self,
+            _admin: &Grant<AdminVerb>,
+            _id: &str,
+        ) -> Result<RotateOutcome, GovernanceError> {
+            Err(GovernanceError::Validation)
+        }
+        fn execute_legacy(
+            &self,
+            _verb: KernelVerb,
+            _admin: &Grant<AdminVerb>,
+            _request: &[u8],
+        ) -> Result<Vec<u8>, GovernanceError> {
+            Ok(Vec::new())
+        }
+        fn execute_new_verb(
+            &self,
+            _verb: KernelVerb,
+            _admin: &Grant<AdminVerb>,
+            _request: &[u8],
+            _operator: OperatorState,
+        ) -> Result<Vec<u8>, GovernanceError> {
+            Ok(Vec::new())
+        }
+        // `execute_audit_read` is DELIBERATELY not written here. That absence is the test.
+    }
+
+    let admin = admin();
+    let verbs = make_verbs(NoChain);
+    for verb in crate::verb::AUDIT_VERBS {
+        let err = verbs
+            .execute(
+                *verb,
+                &admin,
+                "alice",
+                VerbScope::ReadOnly,
+                0,
+                None,
+                ApprovalState::NotYetApproved,
+                b"",
+            )
+            .unwrap_err();
+        assert_eq!(err.reason, crate::refusal::ReasonCode::NotFound);
+    }
+    // THE CONTROL that makes the three refusals mean something: the same executor answers a legacy
+    // verb, so the `NotFound` above is the unbound chain and not a dead executor.
+    assert_eq!(
+        verbs
+            .execute(
+                KernelVerb::GetAudit,
+                &admin,
+                "alice",
+                VerbScope::ReadOnly,
+                0,
+                None,
+                ApprovalState::NotYetApproved,
+                b"",
+            )
+            .expect("the legacy audit read still answers"),
+        Vec::<u8>::new()
+    );
 }
 
 /// THE TWO MINTING VERBS ARE REFUSED ON THE GENERIC PATH, IN EVERY BUILD.

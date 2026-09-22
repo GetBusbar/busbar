@@ -170,4 +170,41 @@ pub trait Governance {
         let (_, _, _) = (verb, admin, request);
         Err(GovernanceError::NotFound)
     }
+
+    /// `// contract:` the answer to one of the three 1.6.0 audit-chain reads
+    /// ([`crate::verb::AUDIT_VERBS`]), once `Verbs::execute` has checked its scope.
+    ///
+    /// A seam of its own for the same reason [`Governance::execute_ledger_read`] is one, and for one
+    /// more. The same reason first: these three are READS — they mutate nothing, so there is no
+    /// maker-checker step for dual control to interpose and no ceremony a read has to wait for, and
+    /// folding them into [`Governance::execute_new_verb`] would make a posture-gated mutation and an
+    /// ungated read indistinguishable to an implementor. The one more: what they read is not what
+    /// the ledger holds. The ledger seam answers with money; this one answers with the chain — where
+    /// it is, what is in a window of it, and which public keys signed it — and an integrator that
+    /// has bound one has not thereby bound the other.
+    ///
+    /// PULL, NEVER PUSH. The node ANSWERS through this seam. Nothing behind it opens an outbound
+    /// connection, holds a cloud credential or phones anybody: that is what lets an airgapped
+    /// operator `curl` their own evidence, and it is why counter-signing is somebody else's product.
+    ///
+    /// The default answers `NotFound`, which is the truthful answer for an integrator that has bound
+    /// no chain: there is no chain behind the read, so there is no head to report, and answering
+    /// with an empty one would be this seam claiming a node had sealed nothing when in fact nobody
+    /// had asked it. `docs/design/BUSBAR-1.6.0.md:2079` — A GAP AND A FAILURE MUST NEVER BE THE SAME
+    /// OUTPUT — is exactly that distinction: an unbound chain and an empty chain are different
+    /// facts and must not be one answer. It is also what keeps this addition additive: an existing
+    /// implementor compiles unchanged and serves nothing it does not have.
+    ///
+    /// # Errors
+    ///
+    /// The read could not be answered. The default returns [`GovernanceError::NotFound`].
+    fn execute_audit_read(
+        &self,
+        verb: KernelVerb,
+        admin: &Grant<AdminVerb>,
+        request: &[u8],
+    ) -> Result<Vec<u8>, GovernanceError> {
+        let (_, _, _) = (verb, admin, request);
+        Err(GovernanceError::NotFound)
+    }
 }
