@@ -426,12 +426,17 @@ async fn a_second_concurrent_frames_consumer_is_a_loud_panic_not_a_silent_close(
     // The first consumer, parked IN the socket read: polled once and kept alive, so it holds the
     // one reader. Kept pinned rather than let a timeout drop it — dropping the read future would
     // hand the reader back and there would be nothing for the second consumer to collide with.
+    //
+    // A single synchronous `poll!` rather than a real-time race (`timeout(50ms, ...)`): nothing is
+    // ever written to `a`, so the first consumer can only be `Pending` after one poll — asserting
+    // that directly is both stronger (an exact claim, not "didn't finish within some window") and
+    // immune to CI scheduling variance, where a real sleep can be flaky, not slow.
     let mut first = t.frames(b.clone());
     let first_next = first.next();
     tokio::pin!(first_next);
-    let parked = tokio::time::timeout(Duration::from_millis(50), first_next.as_mut()).await;
+    let parked = futures::poll!(first_next.as_mut());
     assert!(
-        parked.is_err(),
+        parked.is_pending(),
         "the first consumer must be parked in the read, holding the reader"
     );
 
@@ -706,6 +711,84 @@ async fn half_close_is_the_ws_closing_handshake() {
     assert_eq!(frame.bytes.as_slice(), b"last words");
     // The Close frame ends the stream cleanly (`None`), never as a `Reset` error.
     assert!(frames.next().await.is_none());
+}
+
+/// `close` must carry the [`CloseReason`] it was given onto the wire as the matching RFC 6455 close
+/// code, not a bare `Message::Close(None)`. A peer that gets 1009 (message too big) can act on it —
+/// back off, split the payload, log the specific cause; a peer that gets no code at all cannot tell
+/// an orderly shutdown from a policy revocation from a capacity limit.
+///
+/// This drives busbar's server role against a RAW `tokio_tungstenite` client rather than through
+/// `t.frames()`, because `frames()` discards a Close frame's code entirely (`Message::Close(_) =>
+/// break None`) — the exact bug this test exists to catch would be invisible through that seam. The
+/// raw peer sees the literal frame this transport put on the wire.
+#[tokio::test]
+async fn close_maps_the_reason_to_its_rfc6455_code() {
+    async fn observed_close_code(t: &WsTransport, reason: CloseReason) -> u16 {
+        let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+        // Both roles' opening handshakes run concurrently, exactly like `pair()`: each is waiting
+        // on bytes only the other side's handshake produces, so awaiting either sequentially first
+        // deadlocks before a single byte moves.
+        let server_fut = t.handshake_over(end_a, true, WS_TARGET, "peer");
+        let client_fut = tokio_tungstenite::client_async(WS_TARGET, end_b);
+        let (server_conn, client_res) = tokio::join!(server_fut, client_fut);
+        let server_conn = server_conn.unwrap();
+        let (mut raw_client, _resp) = client_res.unwrap();
+
+        t.close(server_conn, reason);
+
+        let msg = tokio::time::timeout(Duration::from_secs(5), raw_client.next())
+            .await
+            .expect("the close frame must arrive rather than hang")
+            .expect("the stream must not end before the close frame")
+            .expect("a valid WS frame");
+        match msg {
+            tokio_tungstenite::tungstenite::Message::Close(Some(frame)) => u16::from(frame.code),
+            other => panic!("expected a Close frame carrying a code, got {other:?}"),
+        }
+    }
+
+    let t = WsTransport::new();
+    assert_eq!(
+        observed_close_code(&t, CloseReason::Normal).await,
+        1000,
+        "an orderly close is Normal Closure"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::CapacityExhausted).await,
+        1009,
+        "a money reason maps onto Message Too Big, the closest RFC 6455 resource-limit code"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::Revoked).await,
+        1008,
+        "a withdrawn authority is a Policy Violation"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::Drain).await,
+        1012,
+        "a draining node is restarting, telling the peer to reconnect elsewhere"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::PeerClosed).await,
+        1001,
+        "completing a peer-initiated close is this endpoint going away too"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::Poisoned).await,
+        1011,
+        "a codec poisoned by a panic is this endpoint's own internal error"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::Timeout).await,
+        1013,
+        "a deadline expiry tells the peer to try again later"
+    );
+    assert_eq!(
+        observed_close_code(&t, CloseReason::TransportFailed).await,
+        1002,
+        "the transport itself failing is a protocol error"
+    );
 }
 
 #[tokio::test]

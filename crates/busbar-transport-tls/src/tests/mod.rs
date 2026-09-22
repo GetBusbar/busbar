@@ -352,6 +352,62 @@ async fn a_close_sends_the_alert_the_peer_is_owed() {
     );
 }
 
+/// The `close_notify` alert self-bounds on [`CLOSE_NOTIFY_BUDGET`] rather than parking forever on
+/// the writer lock a peer that stopped reading — or a `close` racing an in-flight write — leaves
+/// held.
+///
+/// `send_close_notify` is what `close` spawns and what `unit0_refusal` awaits inline, and both take
+/// the connection's one writer lock. Holding that lock here is the same standstill a full receive
+/// window or a still-running write produces; without a budget the alert waits on it for the life of
+/// the process, and on the `unit0_refusal` path the caller waits with it.
+///
+/// Paused clock: the writer lock is genuinely never released within this test (`held` is dropped
+/// only after the assertions), so `send_close_notify` can only return by its own internal timeout
+/// firing. Under a paused clock that firing costs no real wall-clock time — nothing here sleeps for
+/// real — while the elapsed *virtual* time, checked against [`CLOSE_NOTIFY_BUDGET`], is still the
+/// witness that the budget (and not some other accident) is what ended it.
+///
+/// Time is paused only AFTER the handshake completes, not for the whole test: `bound_pair`'s
+/// accept/dial run over real loopback sockets, and racing a paused clock's auto-advance against
+/// real (if fast) socket I/O is exactly the flakiness paused time exists to avoid — the clock can
+/// jump past `HANDSHAKE_TIMEOUT` before the loopback bytes that were already on their way arrive.
+/// Once the connection is up, everything left (the writer `Mutex`, `CLOSE_NOTIFY_BUDGET`'s own
+/// timer) is a plain Tokio primitive with no reactor dependency, so pausing here is exact rather
+/// than approximate.
+#[tokio::test]
+async fn a_close_notify_self_bounds_on_a_held_writer_lock() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let _client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let inner = server
+        .inner(server_conn.id())
+        .expect("the accepted connection is registered");
+    tokio::time::pause();
+    // Hold the writer lock the alert must take — the standstill a peer that stopped reading, or a
+    // close racing an in-flight write, produces on the real socket.
+    let held = inner.write.lock().await;
+    let started = tokio::time::Instant::now();
+    let bounded = tokio::time::timeout(Duration::from_secs(3), send_close_notify(&inner)).await;
+    assert!(
+        bounded.is_ok(),
+        "send_close_notify must self-bound on CLOSE_NOTIFY_BUDGET, not park on the writer lock"
+    );
+    assert!(
+        started.elapsed() >= CLOSE_NOTIFY_BUDGET,
+        "the budget is what ended it, not some other accident"
+    );
+    drop(held);
+}
+
 #[tokio::test]
 async fn close_ends_a_live_frame_stream() {
     let (server, listener, client) = bound_pair().await;
@@ -1686,6 +1742,51 @@ async fn a_stalled_dial_handshake_times_out_without_leaking() {
     );
 
     held.abort();
+}
+
+/// One upstream that never answers the SYN at all must not be able to hold a dial task — and the
+/// half-open socket it stands on — forever either.
+///
+/// `a_stalled_dial_handshake_times_out_without_leaking` covers the leg AFTER the TCP connect
+/// completes (a peer that stalls the ServerHello); this covers the leg BEFORE it. The raw
+/// `TcpStream::connect` a dial makes carried no bound of its own: a SYN to a black-holed address —
+/// routed nowhere, answered by nothing — left the OS retransmitting for its own multi-minute window
+/// while the dial task and its half-open socket sat pinned. It runs under the same
+/// [`HANDSHAKE_TIMEOUT`]-shaped budget as the handshake leg rather than a second knob, because this
+/// crate's own doc on that budget already says the two ends of its tolerance for a peer that will
+/// not talk are one number.
+///
+/// `192.0.2.1` is TEST-NET-1 (RFC 5737): reserved for documentation and routed nowhere, so the SYN
+/// is black-holed rather than refused. Paused clock: a real black hole never answers, so there is no
+/// real completion the clock's auto-advance could race ahead of — whichever timer fires first does
+/// so at no real wall-clock cost.
+#[tokio::test(start_paused = true)]
+async fn a_dial_gives_up_on_a_peer_that_never_answers_the_connect() {
+    let (_server_cfg, client_cfg) = self_signed();
+    let client =
+        StdArc::new(TlsTransport::new().with_handshake_timeout(Duration::from_millis(150)));
+    client.register_client_config(0, client_cfg);
+
+    let started = tokio::time::Instant::now();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(3),
+        client.dial(&upstream_dest("192.0.2.1:9"), &fixture_key(0)),
+    )
+    .await
+    .expect("an unbudgeted connect parks here until the operating system gives up");
+    assert_eq!(
+        outcome.unwrap_err(),
+        TransportError::Timeout,
+        "an upstream that never answers the SYN is a dial Timeout"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(150),
+        "the budget is what ended it, not the outer bound"
+    );
+    assert!(
+        client.conns.lock().expect("poisoned").is_empty(),
+        "a dial that timed out on the connect must leave no connection in the registry"
+    );
 }
 
 /// A corrupted or tampered TLS record arriving mid-session is not a handshake failure.

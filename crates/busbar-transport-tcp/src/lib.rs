@@ -28,6 +28,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::transport::wire::ArrivalRecord;
@@ -56,6 +57,18 @@ use tokio_util::compat::TokioAsyncReadCompatExt;
 /// stream never has more than one outstanding read of this size in flight, because the next read
 /// does not start until the previous frame has been consumed by whatever is polling the stream.
 pub const READ_CHUNK_BYTES: usize = 16 * 1024;
+
+/// How long a `dial` may spend waiting for the TCP handshake to complete before the connection is
+/// given up.
+///
+/// `TcpStream::connect` carries no bound of its own: a SYN sent to an upstream that never answers it
+/// — a black-holed address, a host behind a firewall that drops rather than rejects — leaves the OS
+/// retransmitting for minutes before it surfaces an error, and until it does the dial task and the
+/// half-open socket it holds are pinned. A completed connect is the whole of what this budget
+/// covers; ten seconds is generous for a handshake that is a single round trip when the peer is
+/// there at all, and still bounds the wait when it is not. The sibling `tls` crate bounds its own
+/// handshake the same way.
+pub const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One connection's live state. Never reachable from the opaque [`Conn`] handle directly; only
 /// through this transport's own registry, keyed by [`ConnHandle::id`].
@@ -138,6 +151,9 @@ pub struct TcpTransport {
     /// reference to `self`.
     conns: Arc<Mutex<HashMap<u64, Arc<Inner>>>>,
     listeners: Mutex<HashMap<String, Arc<TcpListener>>>,
+    /// How long a `dial` waits for the TCP handshake before giving the socket up;
+    /// [`DIAL_TIMEOUT`] unless a caller — or a battery cell — said otherwise.
+    dial_timeout: Duration,
 }
 
 impl Default for TcpTransport {
@@ -160,7 +176,16 @@ impl TcpTransport {
             next_id: AtomicU64::new(1),
             conns: Arc::new(Mutex::new(HashMap::new())),
             listeners: Mutex::new(HashMap::new()),
+            dial_timeout: DIAL_TIMEOUT,
         }
+    }
+
+    /// Set the budget a `dial` has to complete the TCP handshake in, for a deployment — or a
+    /// battery cell — whose tolerance is not the default ten seconds.
+    #[must_use]
+    pub fn with_dial_timeout(mut self, budget: Duration) -> Self {
+        self.dial_timeout = budget;
+        self
     }
 
     fn register(&self, stream: TcpStream, peer: SocketAddr) -> io::Result<Conn> {
@@ -388,9 +413,16 @@ impl Transport for TcpTransport {
             let addr: SocketAddr = authority
                 .parse()
                 .map_err(|_| TransportError::AddressRefused)?;
-            let stream = TcpStream::connect(addr)
-                .await
-                .map_err(|e| Self::map_io_err(&e))?;
+            // Bounded: a `connect` to an upstream that never answers the SYN would otherwise pin
+            // this task and the half-open socket for the OS's own multi-minute retransmit window.
+            // A budget that elapses is a `Timeout`, the same fact the io layer reports when it is
+            // the one that gives up first — the caller reads one outcome for "the upstream did not
+            // answer in time" however that verdict was reached.
+            let stream =
+                match tokio::time::timeout(self.dial_timeout, TcpStream::connect(addr)).await {
+                    Ok(result) => result.map_err(|e| Self::map_io_err(&e))?,
+                    Err(_) => return Err(TransportError::Timeout),
+                };
             self.register(stream, addr)
                 .map_err(|e| Self::map_io_err(&e))
         })

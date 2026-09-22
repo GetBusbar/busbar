@@ -339,6 +339,38 @@ async fn every_transport_error_is_mapped() {
     assert_eq!(err, TransportError::Closed);
 }
 
+/// A dial to an upstream that never answers the SYN self-bounds on the dial timeout rather than
+/// hanging for the OS's own multi-minute retransmit window.
+///
+/// `192.0.2.1` is TEST-NET-1 (RFC 5737): reserved for documentation and routed nowhere, so a SYN
+/// to it is black-holed and `TcpStream::connect` on its own would sit in the connecting state until
+/// the kernel gives up. The outer timeout is the red-before-green witness: without the transport's
+/// own budget the dial never returns and this test hangs past the outer wait; with it the dial
+/// answers `Timeout` inside its own (here deliberately tiny) budget and the outer wait never fires.
+///
+/// A real address that will genuinely never answer is what makes a paused clock safe here (unlike
+/// racing a paused clock against a loopback peer that WILL answer, just not synchronously): there is
+/// no real completion this could jump ahead of, so the clock can fast-forward straight to whichever
+/// timer fires first at no real wall-clock cost.
+#[tokio::test(start_paused = true)]
+async fn a_dial_to_a_black_hole_self_bounds_on_the_dial_timeout() {
+    let client = TcpTransport::new().with_dial_timeout(Duration::from_millis(150));
+    let dest = upstream_dest("192.0.2.1:80");
+    let started = tokio::time::Instant::now();
+    let outcome = tokio::time::timeout(Duration::from_secs(3), client.dial(&dest, &fixture_key()))
+        .await
+        .expect("a dial to a black-holed upstream must self-bound on the dial timeout, not hang");
+    assert_eq!(
+        outcome.unwrap_err(),
+        TransportError::Timeout,
+        "an upstream that never answers the SYN is a dial Timeout"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(150),
+        "the dial timeout is what ended it, not some other accident"
+    );
+}
+
 /// One synthetic `io::Error` per `map_io_err` arm, so swapping two arms is caught here rather than
 /// only by whichever live-dial cell happens to provoke that kind. Ported from `busbar-transport-
 /// http`'s table cell, which this transport's mapping matches arm for arm; the `tls` sibling's cell

@@ -26,6 +26,8 @@ use busbar_contract::{
     grammar::SelectorForm, ScratchBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::conn::{ConnState, LowerFacts, LowerIo, Sock, WsConnHandle};
@@ -35,6 +37,46 @@ use crate::conn::{ConnState, LowerFacts, LowerIo, Sock, WsConnHandle};
 /// hold the writer lock — and the socket — for the process's lifetime, because `close` has already
 /// dropped the only handle that could cancel it.
 pub(crate) const CLOSE_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The RFC 6455 close code a [`CloseReason`] puts on the wire.
+///
+/// `close` used to send a bare `Message::Close(None)` regardless of why: a peer that gets no code
+/// cannot tell an orderly shutdown from a policy revocation from a capacity limit, and one that
+/// gets 1009 (Message Too Big) can act on the specific cause — back off, split the payload, log it
+/// — where a bare close leaves it guessing. Every arm below is a code [`CloseCode::is_allowed`]
+/// accepts for sending: the reserved codes (1005 Status, 1006 Abnormal, 1015 Tls) describe a
+/// condition to a *local* API caller and must never appear in a frame an endpoint actually sends, so
+/// none of `busbar`'s own reasons are routed to them. Kept a distinct code per reason rather than
+/// folding several onto the closest match: a caller that later wants to distinguish, say, `Revoked`
+/// from `CapacityExhausted` on the wire should not find both already spent on the same number.
+fn close_code_for(reason: CloseReason) -> CloseCode {
+    match reason {
+        // "An orderly close" is exactly what 1000 means.
+        CloseReason::Normal => CloseCode::Normal,
+        // This endpoint is completing a closing handshake the FAR side started: from the peer's own
+        // point of view, its counterpart is the one departing, which is what "going away" names.
+        CloseReason::PeerClosed => CloseCode::Away,
+        // Node draining is a deliberate, orderly shutdown for maintenance/redeploy — "the server is
+        // restarting" is 1012's own definition, reconnect-elsewhere guidance included.
+        CloseReason::Drain => CloseCode::Restart,
+        // A panic mid-codec is this endpoint's own unexpected condition, not the peer's fault or the
+        // wire's: 1011 is the generic internal-error code the RFC reserves for exactly that.
+        CloseReason::Poisoned => CloseCode::Error,
+        // Authority withdrawn is an access-control decision, and 1008 is the RFC's policy-violation
+        // code for a termination with no more specific status to give.
+        CloseReason::Revoked => CloseCode::Policy,
+        // No RFC 6455 code names "a deadline expired"; 1013 ("Try Again Later") is the closest
+        // registered meaning — it tells the peer the same thing a timeout implies, that a retry may
+        // succeed where this attempt did not.
+        CloseReason::Timeout => CloseCode::Again,
+        // The transport layer failing is, from the wire's perspective, a protocol-level error.
+        CloseReason::TransportFailed => CloseCode::Protocol,
+        // No RFC 6455 code names "a spend/budget cap was hit" either; 1009 (Message Too Big) is the
+        // closest registered meaning — a resource ceiling was exceeded — of the codes left unclaimed
+        // by every other reason above.
+        CloseReason::CapacityExhausted => CloseCode::Size,
+    }
+}
 
 /// How long the WebSocket opening handshake may take before this transport gives the socket up.
 ///
@@ -758,13 +800,19 @@ impl Transport for WsTransport {
         self.lower.as_ref().map(|l| l.key())
     }
 
-    fn close(&self, conn: Conn, _reason: CloseReason) {
+    fn close(&self, conn: Conn, reason: CloseReason) {
         let id = conn.id();
         if let Some(state) = self.conns.lock().unwrap().remove(&id) {
             // The fence goes up before anything is spawned, and before the courtesy frame goes
             // out: leaving the registry is invisible to a pump that already holds this state, and
             // a frame delivered after the close is one nothing upstream still owns.
             state.closed.store(true, Ordering::Release);
+            // The code this peer is told, not a bare close: a peer that gets 1009 can act on the
+            // specific cause where a bare close leaves it guessing.
+            let close_frame = CloseFrame {
+                code: close_code_for(reason),
+                reason: "".into(),
+            };
             // The Close frame is a courtesy, and the connection is already finalised: the state has
             // left the registry, so nothing can cancel the task that sends it. It therefore cancels
             // itself. A peer whose receive window is full never accepts the frame, and without this
@@ -772,7 +820,7 @@ impl Transport for WsTransport {
             tokio::spawn(async move {
                 let _ = tokio::time::timeout(CLOSE_BUDGET, async {
                     let mut w = state.writer.lock().await;
-                    let _ = futures::SinkExt::send(&mut *w, Message::Close(None)).await;
+                    let _ = futures::SinkExt::send(&mut *w, Message::Close(Some(close_frame))).await;
                 })
                 .await;
             });
