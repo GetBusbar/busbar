@@ -1598,8 +1598,17 @@ smuggled in here.
 
 ### The three questions for the owner
 
-1. **Re-record the affected golden cells?** Without it the oracle stays red and nothing can promote.
-   My recommendation: yes — the golden currently encodes a bug as expected behaviour.
+1. ~~Re-record the affected golden cells?~~ **WITHDRAWN — measured moot.** The corpus holds no
+   float-encoded count, so nothing needs re-recording and the oracle does not go red. See the
+   correction above.
+
+   **Replaced by a sharper question: should the corpus GAIN a float-encoded cell?** Doing so is the
+   only way the oracle can ever see this class. But recorded against 1.5.5 that cell captures 1.5.5's
+   buggy zero, so 1.6.0 would then legitimately diverge from it — which is the bug becoming visible
+   at exactly the layer that should show it, and is a billed-byte difference only you can accept. I
+   have NOT added the cell, because adding it manufactures precisely the divergence #10/#59 says I
+   may not self-approve. My recommendation: add it, and accept the divergence, because an oracle that
+   cannot see the money bug it exists to catch is the real defect here.
 2. **Does the under-recording in shipped 1.5.5 need any action toward customers?** Purely yours.
 3. **Close the residual silent-zero** by threading `estimated` end-to-end, or accept
    `.unwrap_or(0)` as the standing policy for a genuinely malformed count?
