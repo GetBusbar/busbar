@@ -1414,14 +1414,6 @@ wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/busbar-plane-voice/src/claims.rs"
-count = 2
-category = "cross-plugin"
-wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
-
-[[leak]]
-noun = "bearer"
-kind = "auth"
 file = "crates/busbar-substrate-values/src/diagnostics/mod.rs"
 count = 2
 category = "substrate"

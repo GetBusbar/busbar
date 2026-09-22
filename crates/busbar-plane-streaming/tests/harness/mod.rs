@@ -1,6 +1,6 @@
 //! The smallest thing that can call the streaming plane.
 //!
-//! The same minimum-size harness `busbar-plane-voice` and `busbar-plane-llm` build for their own tests:
+//! The same minimum-size harness `busbar-plane-llm` and every other plane crate builds for its tests:
 //! an arena, a clock, a configuration view, a transport view and a label set, plus the kernel-built
 //! values (a unit, a verified destination) handed through a seal. Nothing here is shipped — it is the
 //! test binary's own scaffolding, the same way every plane crate carries one.
