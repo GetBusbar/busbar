@@ -67,7 +67,6 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 [gate.plugin_kinds]
 plane = [
   "crates/busbar-plane-a2a",
-  "crates/busbar-plane-admin",
   "crates/busbar-plane-llm",
   "crates/busbar-plane-mcp",
   "crates/busbar-plane-streaming",
@@ -1466,11 +1465,14 @@ plane_crates = 4
 # going from five crates to one. The count catches the narrowing and leaves the intended zeros
 # alone; the day the codec split creates the first dialect crate, this number is raised with it.
 #
-# `plane` is 6 (busbar-plane-{a2a,admin,llm,mcp,streaming,voice}): `crates/busbar-plane-admin`
-# matches the plane glob while being the `control` kind — see the note above
-# `[gate.plugin_kinds]` — and `busbar-plane-a2a-host`/`busbar-plane-mcp-host` are deliberately NOT
-# in the explicit list above (IMPURE HOST crates, same note). Pinning the number the glob ACTUALLY
-# matches is the point: this table records what is scanned, not what ought to be.
+# `plane` is PINNED 6 and the list above now names 5 (busbar-plane-{a2a,llm,mcp,streaming,voice}):
+# `crates/busbar-plane-admin` was renamed to `crates/busbar-core-admin` (R7, shipped), so its list
+# entry matched no directory and is struck. The pin is NOT lowered to 5 here — `[gate.census]` reds
+# a floor that goes down — so `ceiling-census` stays RED on the measured 5 until the commit that
+# owns the roster move re-pins it. `busbar-plane-a2a-host`/`busbar-plane-mcp-host` are deliberately
+# NOT in the explicit list above (IMPURE HOST crates, see the note over `[gate.plugin_kinds]`).
+# Pinning the number the glob ACTUALLY matches is the point: this table records what is scanned,
+# not what ought to be.
 [gate.census.plugin_kinds]
 plane = 6
 dialect = 0

@@ -92,11 +92,6 @@ reason = "legacy drain"
 # the row is REDUNDANT and the gate is RED for it. So the rename lands and the row goes in the same
 # commit; there is no window in which the tree carries both.
 
-[[registered]]
-crate = "busbar-plane-admin"
-kind = "cleanliness"
-reason = "the admin surface — a compiled-in CLEANLINESS crate, not a plugin and not a `control` kind (DECISIONS #5). Its name still says `plane`; the rename to busbar-admin (which resolves to cleanliness by name) is what strikes this row. busbar-admin and busbar-oauth2 need no registered row — their names resolve to cleanliness directly."
-
 [[announced]]
 crate = "busbar-core-config"
 kind = "core"
@@ -1100,51 +1095,6 @@ kind = "transport"
 count = "14"
 
 [[cell]]
-crate = "busbar-admin"
-kind = "api"
-count = "84"
-
-[[cell]]
-crate = "busbar-admin"
-kind = "auth"
-count = "29"
-
-[[cell]]
-crate = "busbar-admin"
-kind = "core"
-count = "550"
-
-[[cell]]
-crate = "busbar-admin"
-kind = "hooks"
-count = "11"
-
-[[cell]]
-crate = "busbar-admin"
-kind = "plane"
-count = "132"
-
-[[cell]]
-crate = "busbar-admin"
-kind = "plugin-tooling"
-count = "91"
-
-[[cell]]
-crate = "busbar-admin"
-kind = "secret"
-count = "10"
-
-[[cell]]
-crate = "busbar-admin"
-kind = "store"
-count = "3"
-
-[[cell]]
-crate = "busbar-admin"
-kind = "transport"
-count = "614"
-
-[[cell]]
 crate = "busbar-api"
 kind = "auth"
 count = "2"
@@ -1278,16 +1228,6 @@ count = "2"
 crate = "busbar-export-example-plugin"
 kind = "store"
 count = "1"
-
-[[cell]]
-crate = "busbar-grammar"
-kind = "contract"
-count = "2"
-
-[[cell]]
-crate = "busbar-grammar"
-kind = "transport"
-count = "12"
 
 [[cell]]
 crate = "busbar-hook-test-plugin"
@@ -1630,51 +1570,6 @@ kind = "transport"
 count = "103"
 
 [[cell]]
-crate = "busbar-plane-a2a-host"
-kind = "codec"
-count = "4"
-
-[[cell]]
-crate = "busbar-plane-a2a-host"
-kind = "plane"
-count = "10"
-
-[[cell]]
-crate = "busbar-plane-a2a-host"
-kind = "transport"
-count = "2"
-
-[[cell]]
-crate = "busbar-plane-admin"
-kind = "cleanliness"
-count = "2"
-
-[[cell]]
-crate = "busbar-plane-admin"
-kind = "contract"
-count = "61"
-
-[[cell]]
-crate = "busbar-plane-admin"
-kind = "plane"
-count = "3"
-
-[[cell]]
-crate = "busbar-plane-admin"
-kind = "secret"
-count = "1"
-
-[[cell]]
-crate = "busbar-plane-admin"
-kind = "transport"
-count = "24"
-
-[[cell]]
-crate = "busbar-plane-admin"
-kind = "unit"
-count = "16"
-
-[[cell]]
 crate = "busbar-plane-llm"
 kind = "codec"
 count = "18"
@@ -1713,16 +1608,6 @@ count = "37"
 crate = "busbar-plane-mcp"
 kind = "transport"
 count = "83"
-
-[[cell]]
-crate = "busbar-plane-mcp-host"
-kind = "codec"
-count = "2"
-
-[[cell]]
-crate = "busbar-plane-mcp-host"
-kind = "transport"
-count = "11"
 
 [[cell]]
 crate = "busbar-plane-streaming"
@@ -1985,81 +1870,6 @@ kind = "plugin-tooling"
 count = "3"
 
 [[cell]]
-crate = "busbar-substrate"
-kind = "api"
-count = "120"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "auth"
-count = "3"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "cleanliness"
-count = "1"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "codec"
-count = "1"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "contract"
-count = "5"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "core"
-count = "57"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "hooks"
-count = "2"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "plane"
-count = "697"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "plugin-tooling"
-count = "1"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "secret"
-count = "37"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "store"
-count = "5"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "substrate"
-count = "26"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "timing"
-count = "3"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "transport"
-count = "1169"
-
-[[cell]]
-crate = "busbar-substrate"
-kind = "unit"
-count = "4"
-
-[[cell]]
 crate = "busbar-substrate-values"
 kind = "api"
 count = "31"
@@ -2240,16 +2050,6 @@ kind = "transport"
 count = "106"
 
 [[cell]]
-crate = "busbar-unit-verbs"
-kind = "contract"
-count = "10"
-
-[[cell]]
-crate = "busbar-unit-verbs"
-kind = "transport"
-count = "6"
-
-[[cell]]
 crate = "busbar-voice"
 kind = "api"
 count = "65"
@@ -2335,11 +2135,6 @@ kind = "transport"
 note = "segment scanner 8, window scanner 14. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
 [[disagreement]]
-crate = "busbar-admin"
-kind = "transport"
-note = "segment scanner 612, window scanner 614. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
 crate = "busbar-contract"
 kind = "plane"
 note = "segment scanner 115, window scanner 113. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
@@ -2378,11 +2173,6 @@ note = "segment scanner 230, window scanner 228. The two read the brand and acro
 crate = "busbar-plane-a2a"
 kind = "transport"
 note = "segment scanner 100, window scanner 103. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-substrate"
-kind = "plane"
-note = "segment scanner 695, window scanner 694. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
 [[disagreement]]
 crate = "busbar-substrate-values"
@@ -4440,7 +4230,6 @@ reason = "legacy drain: a2a adminverbs tests build against the extracted admin c
 from = "busbar-mcp"
 to = "busbar-admin"
 reason = "legacy drain: mcp adminverbs tests build against the extracted admin cleanliness crate"
-
 
 [[dep]]
 from    = "busbar"

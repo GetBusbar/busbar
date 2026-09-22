@@ -1333,14 +1333,12 @@ prepared; only the word is missing.
 - **Blanket `git add` with concurrent agents sweeps up their uncommitted work.** One commit absorbed
   three agents' changes including a billing fix. Stage explicit paths.
 
-## THE CRATE ROSTER — 33 crates. THE ROSTER *IS* THE DEFINITIONS (#83/#84)
+## THE CRATE ROSTER — OWNER-LOCKED 2026-09-22, 34 crates. THE ROSTER *IS* THE DEFINITIONS (#83)
 
 **This supersedes every earlier count in this document.** It is the owner's own roster, recovered
 verbatim from the 2026-09-20 transcript where he pasted it himself, re-presented to him on
 2026-09-22 and locked: *"OTHER than substrate I agree 100% so keep it and figure it out later"* →
-*"lock it in"*. **Not 35:** `busbar-core-substrate` was ruled a SPLIT (#83a) ⇒ 34; then **#84**
-ruled `busbar-contract` and `busbar-plugin-sdk` share one definition — *"the plugin contract"* —
-so they MERGE (#83 step 4) ⇒ **33**.
+*"lock it in"*. **34, not 35:** `busbar-core-substrate` was ruled a SPLIT on 2026-09-22 (#83a).
 
 Per **#83**, each row is a DEFINITION of the KIND that lives there, not a list of contents. A file's
 home is decided by asking which definition it fits. Nothing fits ⇒ owner conversation (#83 step 3).
@@ -1359,24 +1357,25 @@ home is decided by asking which definition it fits. Nothing fits ⇒ owner conve
 | 10 | `busbar-kernel-audit` | The tamper-evident record of what was done and by whom, written onto that medium. |
 | 11 | `busbar-core-admin` | The operator-facing verbs and their HTTP/OpenAPI surface. Serves operators, never traffic. |
 | 12 | `busbar-core-oauth2` | The OAuth 2.1 authorization-server protocol as busbar speaks it. |
-| 13 | `busbar-contract` **+ `busbar-plugin-sdk`** (#84: one definition, one crate) | THE PLUGIN CONTRACT: the shape of everything crossing the plugin seam in BOTH encodings (JSON schema + `repr(C)` layout), plus the author-facing ergonomics. **Its own busbar closure is EMPTY.** No rule an honest implementation could set differently; no dependency heavier than the seam. |
-| 14 | `busbar-plugin-loader` | The host-facing machinery for FETCHING, VERIFYING, LOADING and SUPERVISING a plugin. |
-| 15–19 | `busbar-plane-{llm,mcp,a2a,streaming,decision}` | Everything ONE protocol needs and no other protocol may name — its wire dialects, its decode/encode face, its session and turn rules. Nothing that prices, admits or dials. |
-| 20–26 | `busbar-transport-{grpc,http,sse,stdio,tcp,tls,ws}` | One carrier's framing and connection lifecycle, driven blind. Moves bytes; names no plane, protocol or policy. |
-| 27 | `busbar-store-memory` | The in-process `store` instance the default distribution ships. |
-| 28 | `busbar-auth-static` | The static-token `auth` instance the default distribution ships. |
-| 29 | `busbar-hook-ranking` | The ranking `hook` instance the default distribution ships. |
-| 30–33 | `busbar-export-{prometheus,webhook,file,otlp}` | One `export` instance per delivery backend, reaching the engine only over the ABI. |
+| 13 | `busbar-contract` | The SHAPE of everything crossing the plugin seam — the data, its wire encoding, the traits a plugin implements. No rule an honest implementation could set differently; no dependency heavier than the seam. |
+| 14 | `busbar-plugin-sdk` | The author-facing machinery for WRITING a plugin: the macros and entry glue an author links. Never anything the host calls. |
+| 15 | `busbar-plugin-loader` | The host-facing machinery for FETCHING, VERIFYING, LOADING and SUPERVISING a plugin. |
+| 16–20 | `busbar-plane-{llm,mcp,a2a,streaming,decision}` | Everything ONE protocol needs and no other protocol may name — its wire dialects, its decode/encode face, its session and turn rules. Nothing that prices, admits or dials. |
+| 21–27 | `busbar-transport-{grpc,http,sse,stdio,tcp,tls,ws}` | One carrier's framing and connection lifecycle, driven blind. Moves bytes; names no plane, protocol or policy. |
+| 28 | `busbar-store-memory` | The in-process `store` instance the default distribution ships. |
+| 29 | `busbar-auth-static` | The static-token `auth` instance the default distribution ships. |
+| 30 | `busbar-hook-ranking` | The ranking `hook` instance the default distribution ships. |
+| 31–34 | `busbar-export-{prometheus,webhook,file,otlp}` | One `export` instance per delivery backend, reaching the engine only over the ABI. |
 
 ### THE 57 ON DISK, AGAINST THOSE DEFINITIONS — measured at `1cc110dbd`, 2026-09-22
 
 `git ls-files 'crates/*/Cargo.toml'` = **57**. Closure measured at **6** (`busbar-grammar` already folded).
-**21 CLEAN + 4 FOLD + 12 SPLIT + 5 MERGE + 12 HOMELESS + 3 no-content = 57.** Every crate is placed.
+**22 CLEAN + 4 FOLD + 12 SPLIT + 4 MERGE + 12 HOMELESS + 3 no-content = 57.** Every crate is placed.
 
-**CLEAN — one definition, contents fit (21).** `busbar-kernel-{identity,scope,budget,egress,breaker,wal}`
-(defs 3,4,5,7,8,9) · `busbar-oauth2` (12, rename only) · `busbar-contract` (13) ·
-`plugin-loader` (14) · `busbar-plane-{llm,mcp,a2a}` (15–17) · the 7 `busbar-transport-*` (20–26) ·
-`store-memory` (27) · `hooks-ranking` (29). **`plugin-sdk` left this bucket for MERGE on #84.**
+**CLEAN — one definition, contents fit (22).** `busbar-kernel-{identity,scope,budget,egress,breaker,wal}`
+(defs 3,4,5,7,8,9) · `busbar-oauth2` (12, rename only) · `busbar-contract` (13) · `plugin-sdk` (14) ·
+`plugin-loader` (15) · `busbar-plane-{llm,mcp,a2a}` (16–18) · the 7 `busbar-transport-*` (21–27) ·
+`store-memory` (28) · `hooks-ranking` (30).
 
 **FOLD — clean, one definition, destination already known (4).** `busbar-llm-codec` (63,070 surf) ·
 `busbar-mcp-codec` · `busbar-a2a-codec` · `busbar-voice-codec` → each is a WIRE DIALECT, which def
@@ -1388,7 +1387,7 @@ home is decided by asking which definition it fits. Nothing fits ⇒ owner conve
 |---|---|---|
 | `busbar-substrate-values` | ABI-shaped value leaves / runtime machinery | `ir/*` `billing` `media` `wire` `lossless` → 13. `diagnostics` (2,940) `proto` `handlers` `sigv4` `eventstream` `breaker` `proxy` `profile` **and `json`** → 2. Crate dies. |
 | `busbar-kernel-ledger` | Record SHAPES / ledger SEMANTICS | `records.rs` (604 surf) → 13, **less** its `scope_kinds` `RwLock` registry (~30), which is runtime state ⇒ 2. `settle` `checkpoint` `recompute` `cost/*` `usage/*` `totals` `verify` `identity` `migration` `legacy` stay (def 6). |
-| `api` | Plugin contracts / I-O machinery / migration logic / shim | `auth` `hooks` `secret` `operation` `signal` `redacted` (727) → 13. `durable.rs` (110, real `fsync` path) → 2. `usage_migration.rs` (66) → 6. `store.rs` (9) is a pure `pub use` shim → delete. Crate dies — **#84 names it *"the villain"***, the one crate dragging the ledger onto the plugin path. |
+| `api` | Plugin contracts / I-O machinery / migration logic / shim | `auth` `hooks` `secret` `operation` `signal` `redacted` (727) → 13. `durable.rs` (110, real `fsync` path) → 2. `usage_migration.rs` (66) → 6. `store.rs` (9) is a pure `pub use` shim → delete. Crate dies. |
 | `busbar-kernel` | ≥6 kinds | Residual grab-bag: `config/`+`config_validate/` (31k), `plane_host/` (18k), `governance/` (12k), `auth/` (11k, duplicates def 3's territory), `plane/` (11k), `egress/` (9k, duplicates def 7's). Def 2 is `teller.rs` + the seams; the rest is owed a home. |
 | `busbar-core-admin` | Wire codec / HTTP surface / verb semantics | `admin_codec/` carries `impl Plane for AdminPlane` (`admin_codec/codec.rs:103`) — that is def 16–20's face on a crate that is def 11. `v1/` (12.8k) = def 11. Top-level `keys/verb/rate/restart/posture/…` (4.7k) = verb-execution semantics. This is the `KIND-ISOLATION` red. |
 | `busbar-llm` · `busbar-mcp` · `busbar-a2a` · `busbar-voice` | Protocol orchestration / plane entry face | Session, turn and dialect rules → 16–20. But `unit/{admit,approve,meter,route}` and `runtime/metering.rs` decide admission and price — that is defs 5/6, not a plane. |
@@ -1396,12 +1395,11 @@ home is decided by asking which definition it fits. Nothing fits ⇒ owner conve
 | `busbar-kernel-audit` | Record shape / a second chain mechanism | `record.rs`+`amend.rs` = def 10. `legacy/{chain,entry}.rs` (1,019) is a self-contained hash chain — def 9's KIND, kept only so 1.5.5 digests still verify. |
 | `busbar` | Composition / real logic | `root/{policy,money_book,ledger_identity,gauntlet_kernel}.rs` is unit logic in the wiring harness. |
 
-**MERGE — two crates, one definition (5 crates + 1 type pair).**
+**MERGE — two crates, one definition (4 crates + 1 type pair).**
 
 | Pair | Shared definition | Survivor |
 |---|---|---|
-| `busbar-plane-streaming` ↔ `busbar-plane-voice` | def 16–20 | **`busbar-plane-streaming`** (the #18 name). 6 files byte-identical; `claims.rs` differs by one literal; `meta.rs` by renamed consts. **`-streaming` is the DEAD fork** (registered 0 times; no crate depends on it) and **`-voice` is live** (`root/registry.rs` names `VoicePlane` 3×). Keep the working code, take the correct name. |
-| `busbar-plugin-sdk` ↔ `busbar-contract` | def 13 | **One crate (#84).** Owner: *"plugins use sdk, sdk uses nothing busbar-*"*. A plugin's busbar closure is EXACTLY the SDK; the SDK's is EMPTY. Whether the shapes then sit in one module or four is internal — a third party never sees it. |
+| `busbar-plane-streaming` ↔ `busbar-plane-voice` | def 16–20 | **`busbar-plane-streaming`** (the #18 name). 6 files byte-identical; `claims.rs` differs by one literal; `meta.rs` by renamed consts. **CORRECTED 2026-09-22 — the earlier 'dead fork' call was WRONG and is withdrawn.** `-streaming` is indeed registered 0 times with 0 dependents, but that means UNWIRED, not stale: it is the NEWER code. **Neither crate is a superset.** `-voice` has ONE fix `-streaming` lacks (`74712b303` P5 — folds every decoded IR event in order, dispatches a tool call on `CallClose` with accumulated arguments). `-streaming` has THREE `-voice` lacks, one of them MONEY: `e15713578` *\"paired turn routes to the DIALED upstream (money-byte fix)\"* — voice `plane.rs:433` hardcodes `UpstreamIdx(0)` and `:439` `.first()`, so a gemini-live session with openai declared first bills EVERY TURN on the wrong provider's lane; `9882d8122` CRITICAL empty/raw Unit-0 egress (voice's `encode_egress` is still a raw pass-through, so the provider gets an empty first message and `session.update` is silently never applied); and `dd3bfbda9`'s plane-half error-code fix. Test counts also invert the earlier claim: **streaming 44, voice 37**, and 8 streaming-only tests are the red-before-green witnesses for those three fixes. **RULING: `busbar-plane-streaming` is the BASE**; port `74712b303` forward (one commit, ~112 lines + 108 of tests) rather than three including a money fix. The two fix-sets are disjoint by function — voice's touches `decode_response`/`progress_from_server_event`, streaming's touch `encode_egress`/`verify`/`decode_twilio_frame`/`open_or_relay`/`ingress_from_client_event`. We accept losing voice's git history on the rename: a known money-path regression outranks history. |
 | `busbar-plugin` ↔ `busbar-contract` | def 13 | `busbar-contract`. `hot/host.rs` is `PlaneHostVtable`, a `#[repr(C)]` fn-pointer struct; `cold/*` is the JSON wire schema for the six C symbols. Both are *the shape of what crosses the seam* — contract's definition verbatim. Collapses a closure crate. |
 | `secret-ref` ↔ `busbar-contract` | def 13 | `busbar-contract`. `SecretRef{module,settings}` + its hand-written grammar + the schema mirror. Pure shape, `serde`+`serde_json` only. **Name collision to de-conflict on the move:** `busbar_contract::kinds::SecretRef` is already a different type (`pub struct SecretRef(pub String)`) — do what #35 did with `Store`→`RecordStore`. |
 | `busbar_contract::kinds::Store` ↔ `busbar_kernel_ledger::records::RecordStore` | def 13 | One crate, two traits, one plugin kind. Both are the persistence face a store plugin implements. Resolve on the `records.rs` move. |
@@ -1416,7 +1414,7 @@ home is decided by asking which definition it fits. Nothing fits ⇒ owner conve
 | `plugin-sign` | 451 | Manifest schema + canonical signing bytes + trust-policy evaluation. | Split by #83(d): the manifest/canonical-bytes half is SHAPE, the trust policy is not. But the shape half drags `ed25519-dalek`+`sha2` ⇒ barred from 13 by downside (b). |
 | `plugin-pack` | 383 | `[[bin]]` CLI that packs/signs a plugin tarball — for third-party authors, not this build. | Not def 1 (that is the busbar binary). No tooling slot in the roster. |
 | `auth-admin-tokens` | 29 | Live, default-on: `kernel/src/auth/mod.rs:978` dispatches `"admin-tokens"` to it. Constant-time both-carrier admin credential compare. | **It DOES fit def 3** — "a presented credential resolved to a principal" — and `kernel-identity/admin.rs` already holds the admin chain's no-module posture. So MERGE into 3, *unless* the owner holds that an auth module is always an INSTANCE (def 29's kind), in which case the roster owes a second auth-instance slot. **That is the ruling needed.** |
-| `plane-example` · `store-example-plugin` · `auth-static-plugin` · `secret-example-plugin` · `export-example-plugin` · `hook-test-plugin` | 128/656/59/39/11/183 | Six hermetic `cdylib` ABI-crossing conformance FIXTURES. Each self-describes as "used only as TEST support"; none has a production dep edge. | One coherent kind — *the in-tree fixture that proves the ABI loads* — with no roster slot. **`auth-static-plugin` is the sharp one:** the roster names `busbar-auth-static` a shipped instance (def 28), but on disk it is test-only. Either the roster row is a fixture, or a real instance is owed. **#84 adds a slot they cannot fill:** all six depend on `busbar-plugin-sdk`, so none is the zero-`busbar-*`-import reference plugin #84 makes the acceptance witness. A seventh is owed. |
+| `plane-example` · `store-example-plugin` · `auth-static-plugin` · `secret-example-plugin` · `export-example-plugin` · `hook-test-plugin` | 128/656/59/39/11/183 | Six hermetic `cdylib` ABI-crossing conformance FIXTURES. Each self-describes as "used only as TEST support"; none has a production dep edge. | One coherent kind — *the in-tree fixture that proves the ABI loads* — with no roster slot. **`auth-static-plugin` is the sharp one:** the roster names `busbar-auth-static` a shipped instance (def 29), but on disk it is test-only. Either the roster row is a fixture, or a real instance is owed. |
 
 **Not homeless, no content:** `busbar-core-hooks` (31 LOC of doc comment, **0 surface, 0 dependents**) —
 an announced empty namespace; delete. `busbar-core-config` (12 surf) — a fragment of def 2's config
@@ -1444,17 +1442,8 @@ owner decision measured two ways."* First owed raise: **7,012 → 7,426**, carry
 | **#83 subtotal** | **~2,311** |
 | `busbar-plugin` (MERGE; ~3,269 with its tests re-homed under `src/tests/`) | +3,269 |
 
-**#84 REVERSES THE DIRECTION, and it landed after the table above was measured.** #84 rules that
-contract's non-plugin two-thirds *"were never the plugin contract and leave"*. Measured at
-`1cc110dbd`: `caps/*` **3,019** + `transport/*` **1,082** + `grammar`+`json_grammar`+`spans` **795**
-= **4,896 surface OUT**. Against ~2,311 in (+3,269 for `busbar-plugin`), contract lands near
-**4,800** on #83 alone, or **~8,100** with the `busbar-plugin` merge — i.e. **under the 7,012
-ceiling on #83 alone, and needing only a modest raise with #84's own merges.**
-
-So the ceiling is NOT the binding constraint once #84's outflow is counted; it was, on #83 read
-alone. Both numbers are recorded because the outflow is a larger, later job than the inflow, and
-**between the two the ceiling is breached.** The 7,012→7,426 repair below is owed regardless.
-Precedent is on the record: *"#40 is owner-locked and the ceiling is not."*
+So **`contract_caps` 7,012 → ~9,750** for #83 as ruled, and **→ ~13,100** if the `busbar-plugin`
+merge lands with it. Precedent is on the record: *"#40 is owner-locked and the ceiling is not."*
 
 **Counting artifact, so the raise is not over-spent:** the counter skips `src/tests/**` but NOT
 tests elsewhere under `src/`. **1,532 of contract's current 7,426 is `caps/tests/*`**, and
