@@ -1790,6 +1790,36 @@ Against that: seven real defects recovered that no gate in the tree was catching
 previously written and lost **three separate times** across stale branches. The ratio argues for
 running the review on the remaining survivors, and for always asking the second question.
 
+## The admin rename exposed a category error the old name was hiding
+
+Renaming `busbar-plane-admin` → `busbar-core-admin` (#3/#37) made `kind-isolation` **more truthful**,
+and it immediately caught something the old name concealed:
+
+> `foreign-entry crates/busbar-core-admin` — *"busbar-core-admin is kind `core` and implements
+> `Plane` 1 time(s) in shipped source — the entry face of kind `plane`. A trait implementation is a
+> claim made to the COMPILER, and when it disagrees with the crate's kind the compiler's claim is
+> the one that runs."*
+
+**Before the rename the name and the trait agreed — and both were wrong.** Now the name is right and
+the trait is exposed as the remaining lie. The crate's public struct is still `AdminPlane`, and it
+implements `Plane`.
+
+**The gate's own advice does not apply here, and that matters.** It says *"make a new plugin kind, do
+not fuse two."* But there is no kind to make: **#3 excludes admin from the seven kinds**, and the
+`control` kind was **CANCELLED by the owner** (D37 — admin/oauth2 are cleanliness crates, not
+plugins). So the resolution is not a new kind and not a renamed one; it is that **a cleanliness crate
+should not implement a plugin entry face at all.** How admin's verbs reach the loop without wearing
+the `Plane` face is a genuine design question, and it is the next thing to settle here.
+
+**A stale row was steering directly at the cancelled concept.** `qa/kind-isolation.toml` carried
+`drain = "R7: rename busbar-plane-admin to busbar-control-admin and move it off the Plane face onto
+the control face"`, citing *"ARCHITECTURE.md 1.4 makes `control` a kind of its own."* Any agent
+reading that row would have resurrected a kind the owner killed. The row is struck — it was also a
+dead face, since the crate it named no longer exists — but note the shape of the hazard: **a
+checklist that outlives the decision it encodes will quietly re-litigate it.** `ARCHITECTURE.md`
+§1.4 and ~20 references in `xtask/src/gates/kind_isolation.rs` still describe `control` as a kind and
+need the same treatment.
+
 ## #40's REAL blocker, named: the ABI seams live in the wrong crates
 
 Three separate measurements this session converge on one root cause, and it is not "somebody forgot

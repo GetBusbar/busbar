@@ -4268,14 +4268,6 @@ question = "OWNER RULING WANTED. busbar-plugin-sdk -> busbar-store-memory matche
 #   drain — the line that deletes it.
 
 [[face]]
-crate = "busbar-plane-admin"
-face = "Plane"
-count = "1"
-cite = "none. ARCHITECTURE.md 1.4 makes `control` a kind of its own, and a control surface is not a metered plane; this crate is registered `control` by the [[registered]] row above and still carries the plane face."
-why = "the admin surface predates the control kind: it was written as a plane, it is registered as control, and the trait it implements has not moved yet. One implementation, in shipped source."
-drain = "R7: rename busbar-plane-admin to busbar-control-admin and move it off the Plane face onto the control face. kind-isolation:control-path is the ship criterion that refuses the tag until it lands."
-
-[[face]]
 crate = "busbar-a2a"
 face = "Transport"
 count = "1"
