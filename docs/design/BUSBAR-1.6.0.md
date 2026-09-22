@@ -1318,6 +1318,21 @@ structural limit of the oracle as a money witness, and no amount of re-recording
 corpus is OWED money cells for every post-1.5.5 plane, authored rather than recorded — and until they
 exist, "oracle green" on a plane money path is an absence of evidence, not evidence of absence.
 
+**AND THE CONFORMANCE RIGS DO NOT COVER THE GAP — checked, second independent route.** The obvious
+rebuttal is that the oracle was only ever a 1.5.5 PARITY net and new-plane correctness belongs to the
+conformance rigs. Measured: it does not. The a2a harness and supplement contain **zero** mentions of
+`spend`/`billing`/`ledger`/`rate_card` (an earlier 9-of-27 count was matching `usage`/`meter` in
+unrelated senses). The mcp rig has no money assertion. The voice rig's 16 "money" files are
+**COMMENTS asserting the NEGATIVE** — e.g. `voice-conformance/legs/admit-refusal.sh:16`, *"(c) no
+ledger posting landed"*. That is genuine coverage of the refusal path and worth keeping, but it
+proves only that nothing was posted when nothing should be — never that the RIGHT amount was posted
+when something should be.
+
+*Evidential caveat, stated because it matters:* a negative grep is weak on its own. The claim rests
+on TWO independent routes agreeing — no 1.5.5 golden can exist for a post-1.5.5 plane (structural,
+not a gap), and no rig asserts a positive money value (grep, refutable). If someone finds a positive
+money assertion in a rig, the second leg falls and only the first stands.
+
 **Corollary for every agent report:** a NEUTRAL oracle on a post-1.5.5 plane must be reported as
 "the oracle cannot see this", never as "no divergence". Those are different claims.
 
