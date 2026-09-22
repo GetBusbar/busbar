@@ -1435,6 +1435,25 @@ byte-identical and oracle-proven.
 | `api`, `busbar-grammar`, `busbar-timing`, `busbar-unit-transport-key` | fold into their one consumer | none is named in #39 |
 | `auth-admin-tokens`, `auth-static-plugin`, `export-example-plugin`, `hook-test-plugin`, `hooks-ranking`, `plane-example`, `secret-example-plugin`, `secret-ref`, `store-example-plugin`, `store-memory` | **leave the repo** | #39: "the busbar repo holds NO plugin source… There is no in-tree plugin" |
 
+### #40 is violated today, transitively — and the fix is also a roster fold
+
+**#40 states the plugin dependency closure is `busbar-contract` and nothing else.** Measured, it is
+not: `busbar-contract/Cargo.toml` depends on `busbar-grammar`, so every plugin compiling against the
+contract drags a second busbar crate into its closure. Grammar types also surface through contract's
+own ABI files (`src/bounded.rs`, `src/spans.rs`), so this is not a private implementation detail
+hiding behind the seam.
+
+`busbar-grammar` is 568 lines in a single `lib.rs` whose only dependency is `serde`, named by seven
+files in total. Folding it into `busbar-contract` as a module satisfies #40 exactly **and** removes a
+crate from the roster — the same move answers an architectural invariant and a count.
+
+Two things to carry through the fold rather than lose:
+- `busbar-grammar/tests/{adversarial,json_scanner,mutation_hardening}.rs` are adversarial and
+  mutation-hardening tests **on a parser**. They must be re-homed, not dropped. Parser hardening
+  tests are exactly the coverage that disappears quietly in a crate move.
+- `busbar-mcp-codec` does not currently depend on `busbar-contract` and will have to. That is
+  acceptable — contract is the universal base — but it is a real dependency addition, not a no-op.
+
 ### Ordering, and the one real hazard
 
 The plane folds are the bulk of it and they are independent of each other, so llm / mcp / a2a /
