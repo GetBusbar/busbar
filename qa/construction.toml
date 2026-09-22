@@ -111,13 +111,26 @@ abi = ["crates/busbar-contract"]
 # plane-names-another-plane RED in manifest-allowlist, and a plane naming its own pure codec half is
 # the intended shape, already on that rule's reviewed list.
 #
-# OWED (PLUGIN-TREE.md, owner 2026-09-07): these four crates ARE the dialect kind, unnamed. They are
-# the only shipping crate group with no `Kind` variant, no section 1.4 row, no stated contract and no
-# ceiling. The 2026-09-06 decision to FOLD each codec into its plane is superseded: each codec SPLITS
-# into `busbar-plane-<plane>-<dialect>` crates. Sequence, and the order matters — the llm DECLS order
-# (anthropic, openai, gemini, bedrock, responses, cohere) is operator-visible and every metric-family
-# index is a position in it, so pin it with an oracle boot cell BEFORE the split, then name the
-# shared residue's destination, then split.
+# THESE ARE NOT A KIND, AND THERE IS NO DIALECT KIND TO NAME THEM (DECISIONS #3/#4; BUSBAR-1.6.0.md
+# "Rejected (do not resurrect)"). This block used to read "these four crates ARE the dialect kind,
+# unnamed" and to schedule a SPLIT of each codec into `busbar-plane-<plane>-<dialect>` crates, citing
+# the 2026-09-07 PLUGIN-TREE ruling. That is D36, and D36 is CANCELLED BY OWNER: a dialect is a thing
+# INSIDE a plane, there are no per-dialect crates and no Dialect trait/kind, and NO CRATE IS EVER OF
+# KIND `dialect`. The paragraph contradicted this file's own header ("`control` and `dialect` are
+# gone (DECISIONS #4/#5) ... a dialect is a thing inside a plane with no crate of its own"), its own
+# `[gate.census.plugin_kinds]` note ("`dialect` = 0 and `control` = 0 are STRUCK"), and the gate that
+# reads this file (`xtask/src/gates/kind_isolation.rs`, which carries no `dialect` row by design). It
+# was also already false on its own terms: it says "these four crates" and the table below lists two.
+# A cancelled kind scheduled in a config file is the DECISIONS #14 resurrection hazard exactly.
+#
+# WHAT THESE CRATES ACTUALLY ARE: a plane's own PURE half, a per-plane path-dep, kept beside the
+# plane crate and scanned as part of it (DECISIONS #6; PLUGIN-TREE.md §7). They carry no `Kind`
+# variant because they are not a kind; the plane's own rules are what hold them.
+#
+# STILL TRUE AND STILL OWED, independent of D36: the llm DECLS order (anthropic, openai, gemini,
+# bedrock, responses, cohere) is operator-visible and every metric-family index is a position in it,
+# so any reshaping of these crates must land an oracle boot cell pinning that order FIRST. It has
+# been silently swapped once.
 #
 # MCP HAS NO ROW HERE ANY MORE. `busbar-mcp-codec` dissolved (#39: no `busbar-*-codec` crate): its
 # wire dialect went to `busbar-plane-mcp`, which definition 16-20 makes the home of everything one
