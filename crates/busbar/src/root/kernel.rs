@@ -931,6 +931,7 @@ pub trait RegisteredUnits: Send + Sync {
         token: &Pass<Route>,
         ctx: &UnitCtx,
         meter: &AccrualMeter,
+        destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Route>;
 
     /// The plane's Meter step. See [`Units::meter`].
@@ -941,6 +942,7 @@ pub trait RegisteredUnits: Send + Sync {
         usage: &Grant<Consumption>,
         ctx: &UnitCtx,
         provisional: &Outcome,
+        destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter>;
 
     /// The plane's Audit step. See [`Units::audit`].
@@ -1110,9 +1112,15 @@ impl Units for ProductionUnits {
         )
     }
 
-    fn route(&self, token: &Pass<Route>, ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
+    fn route(
+        &self,
+        token: &Pass<Route>,
+        ctx: &UnitCtx,
+        meter: &AccrualMeter,
+        destinations: &[busbar_contract::caps::VerifiedDestination],
+    ) -> Decision<Route> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
-            return plane.route(self, token, ctx, meter);
+            return plane.route(self, token, ctx, meter, destinations);
         }
         Decision::refuse(
             token,
@@ -1126,9 +1134,10 @@ impl Units for ProductionUnits {
         usage: &Grant<Consumption>,
         ctx: &UnitCtx,
         provisional: &Outcome,
+        destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
         if let Some(plane) = self.registry.resolve(self, ctx) {
-            return plane.meter(self, token, usage, ctx, provisional);
+            return plane.meter(self, token, usage, ctx, provisional, destinations);
         }
         Decision::refuse(
             token,

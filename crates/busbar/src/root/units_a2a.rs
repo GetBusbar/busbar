@@ -1250,7 +1250,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         decision
     }
 
-    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, meter: &AccrualMeter, _destinations: &[busbar_contract::caps::VerifiedDestination]) -> Decision<Route> {
         // The plan has to FIT before any of it happens. The route plan the loop carries is bounded,
         // and the legs are run below before they are put on it — so a plan longer than the bound
         // used to run in full and then be trimmed to what fitted, with every leg past the bound
@@ -1358,6 +1358,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
         let retained = RetainedLocatorValues::new(vec![bytes_located(&self.draft)]);
         // The kernel's own floor for this unit is what it moved on the way in. It is the tripwire

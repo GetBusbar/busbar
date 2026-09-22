@@ -1626,7 +1626,7 @@ impl Units for VoiceUnit<'_> {
         decision
     }
 
-    fn route(&self, token: &Pass<Route>, ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, ctx: &UnitCtx, meter: &AccrualMeter, _destinations: &[busbar_contract::caps::VerifiedDestination]) -> Decision<Route> {
         // **The exit for a call nobody answered.** The sweep took the wait out of the table and left
         // the ending behind; this is where the unit reads it. A call that ran out its declared
         // deadline ends under that deadline rather than settling as though the answer arrived, which
@@ -1671,6 +1671,7 @@ impl Units for VoiceUnit<'_> {
         usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
         let lines = self.usage.lines();
         // The turn's exact figure settles against the session's reservation. An exhausted lease is

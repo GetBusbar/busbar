@@ -2401,6 +2401,7 @@ impl RegisteredUnits for AdminPlane {
         token: &Pass<Route>,
         ctx: &UnitCtx,
         meter: &busbar_kernel::teller::AccrualMeter,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Route> {
         route(
             &root.admin,
@@ -2419,6 +2420,7 @@ impl RegisteredUnits for AdminPlane {
         usage: &Grant<Consumption>,
         ctx: &UnitCtx,
         provisional: &Outcome,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
         meter(token, usage, ctx, provisional)
     }

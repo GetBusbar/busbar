@@ -324,7 +324,8 @@ pub struct CapRefused {
     /// The step the refusal is stamped at: arrival for a client unit, decode for every other
     /// origin, because that is where those units are constructed.
     pub step: StepName,
-    /// Always the in-flight cap.
+    /// The in-flight cap, or a unit key that is already live in the table (see
+    /// [`ReasonCode::InFlightCap`] and [`ReasonCode::InFlight`]).
     pub reason: ReasonCode,
     /// The hold the unit arrived with.
     pub hold: Hold,
@@ -466,7 +467,38 @@ impl InFlight {
     }
 
     /// Put a unit in the table, or hand its hold back with the refusal.
+    ///
+    /// Refuses a KEY the table already holds, rather than overwriting the slot at it. A second unit
+    /// carrying a key another live unit already carries did not race for a slot the way two units
+    /// with distinct keys can; it claims an identity that is not its own, which is a bug upstream in
+    /// whatever minted the key — not a normal admission event. Overwriting would ORPHAN the
+    /// displaced entry's [`HoldCell`] (nothing left holds the key that could ever reach it to
+    /// settle, so its reservation is stuck forever) and inflate `count` against the map (the table
+    /// would hold one fewer entry than the count says it does, for good). Both are silent, permanent
+    /// corruption of the money accounting, so this is caught and refused before either can happen —
+    /// through the exact channel a full table is already refused through: the same `Result`, the
+    /// same [`CapRefused`], the same handed-back hold. See the module doc for why a `Result` and not
+    /// a panic: every other "this cannot be, caller" seam in this file (`claim_slot`'s cap check
+    /// above, and `HoldCell::admit`'s "second hold" rejection the door swap goes through) answers
+    /// with a typed refusal that keeps the hold balanced and the node running, never with a panic —
+    /// so this follows the one convention already here rather than inventing a second.
+    ///
+    /// Checked and inserted under the SAME lock on the key's shard, with the slot's own count not
+    /// yet claimed: a duplicate is caught before `claim_slot` runs at all, so there is nothing to
+    /// roll back, and no window in which a second insert of the same key could interleave between
+    /// the check and the write.
     pub fn insert(&self, request: Enter) -> Result<Arc<UnitSlot>, CapRefused> {
+        let mut shard = self
+            .shard(request.key)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if shard.contains_key(&request.key) {
+            return Err(CapRefused {
+                step: cap_refusal_step(request.origin),
+                reason: ReasonCode::InFlight,
+                hold: request.arrival,
+            });
+        }
         if !self.claim_slot(self.ceiling(&request)) {
             return Err(CapRefused {
                 step: cap_refusal_step(request.origin),
@@ -485,10 +517,7 @@ impl InFlight {
             marked: AtomicBool::new(false),
             last_progress: AtomicU64::new(request.now),
         });
-        self.shard(request.key)
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(request.key, Arc::clone(&slot));
+        shard.insert(request.key, Arc::clone(&slot));
         Ok(slot)
     }
 
@@ -883,3 +912,7 @@ pub fn hard_closes(
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "tests/inflight_tests.rs"]
+mod inflight_tests;

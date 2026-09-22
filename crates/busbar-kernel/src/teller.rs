@@ -557,15 +557,32 @@ pub trait Units {
     ) -> Decision<Admit>;
 
     /// Dial, send, relay — all under the hold, with the meter running.
-    fn route(&self, token: &Pass<Route>, ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route>;
+    ///
+    /// Lent the SAME destinations Verify sealed and Approve and Admit already saw, rather than a
+    /// second copy this step derives for itself. Verify-then-act only holds if the thing a later
+    /// step acts on is provably the thing an earlier step proved — a Route that re-derived its own
+    /// set could dial a lane nothing verified, and the sealed set on the door would have priced a
+    /// decision Route never actually made.
+    fn route(
+        &self,
+        token: &Pass<Route>,
+        ctx: &UnitCtx,
+        meter: &AccrualMeter,
+        destinations: &[VerifiedDestination],
+    ) -> Decision<Route>;
 
     /// What the unit actually cost, folded from what the legs reported.
+    ///
+    /// Lent the same sealed set Route consumed, for the same reason: a meter reading is only
+    /// evidence about what actually ran if it is read against what actually ran, not against a set
+    /// the step reconstructed on its own after the fact.
     fn meter(
         &self,
         token: &Pass<Meter>,
         usage: &Grant<Consumption>,
         ctx: &UnitCtx,
         provisional: &Outcome,
+        destinations: &[VerifiedDestination],
     ) -> Decision<Meter>;
 
     /// Seal the end for the record. The door a unit that PASSED the door leaves through.
@@ -606,11 +623,15 @@ pub trait RouteAwait {
     /// associated type turns every caller of the loop into a higher-ranked lifetime puzzle. One
     /// allocation, on the one step that is about to dial an upstream, buys a seam a plane implements
     /// by writing `async move` and the loop reads as a single await.
+    ///
+    /// Lent the same sealed destinations [`Units::route`] is, for the same reason: an awaited leg
+    /// is still Route, and Route consumes what Verify sealed rather than re-deriving it.
     fn route_leg<'a>(
         &'a self,
         token: &'a Pass<Route>,
         ctx: &'a UnitCtx,
         meter: &'a AccrualMeter,
+        destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a>;
 }
 
@@ -630,8 +651,9 @@ impl<U: Units> RouteAwait for Blocking<'_, U> {
         token: &'a Pass<Route>,
         ctx: &'a UnitCtx,
         meter: &'a AccrualMeter,
+        destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a> {
-        Box::pin(std::future::ready(self.0.route(token, ctx, meter)))
+        Box::pin(std::future::ready(self.0.route(token, ctx, meter, destinations)))
     }
 }
 
@@ -742,8 +764,10 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
         // The door answered, and its answer decides exactly two things: whether a hold goes into the
         // cell, and what the end is settled against. Everything after it — the walk, the meter, the
         // audit door, the bytes and the settle — is the same for all three shapes, so it is written
-        // once, below and in `terminal`, rather than three times.
-        Ok(admission) => {
+        // once, below and in `terminal`, rather than three times. The destinations travel alongside
+        // the admission all the way to `under_hold`, so Route and Meter see the SAME sealed set
+        // Approve and Admit already answered against.
+        Ok((admission, destinations)) => {
             let (settling, refused_cell) = match admission {
                 // A child spending against its parent's admission. It still runs the rest of the
                 // loop; what it does not do is open a reservation of its own.
@@ -786,7 +810,8 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                     // THE ONE AWAIT is inside this scope, and so is the only place a caller that
                     // goes away can drop the loop. The guard owns the terminal for the length of it.
                     let mut abandoned = Abandoned::arm(kernel, units, ctx, run, settling);
-                    let outcome = under_hold(kernel, units, route, ctx, meter).await;
+                    let outcome =
+                        under_hold(kernel, units, route, ctx, meter, &destinations).await;
                     abandoned.reached(outcome)
                 }
             }
@@ -797,17 +822,24 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
 /// THE GOVERNANCE-TO-DOOR CHAIN, factored so both the one-shot loop and a session opener run the
 /// SAME arrival→decode→authenticate→verify→approve→admit, in the same order, minting the same tokens.
 ///
-/// Returns the door's [`Admission`] on a pass, or the [`Refusal`] of the step that stopped the unit.
-/// No response is shaped here and nothing is settled — that is the caller's, whichever caller it is:
-/// [`run_unit_async`] continues under the hold, and [`open_unit`] stops at the door and hands it back.
-/// Written as the one chain it always was, moved verbatim out of [`run_unit_async`], so the order
-/// reads top to bottom and a refusal simply stops the chain.
+/// Returns the door's [`Admission`] on a pass, alongside the destinations [`Units::verify`] sealed —
+/// EMPTY for a challenge round, which never reaches verify at all — or the [`Refusal`] of the step
+/// that stopped the unit. No response is shaped here and nothing is settled — that is the caller's,
+/// whichever caller it is: [`run_unit_async`] carries the sealed set on to Route and Meter, under the
+/// hold, and [`open_unit`] stops at the door and hands it back. Written as the one chain it always
+/// was, moved verbatim out of [`run_unit_async`], so the order reads top to bottom and a refusal
+/// simply stops the chain.
+///
+/// The destinations travel in the SAME `Result` the admission does, rather than a second one beside
+/// it, because they are exactly as much this call's answer as the admission is: Approve and Admit
+/// already read them here, and a caller that carries the `Admission` forward without the set Verify
+/// sealed it against is the verify-then-act gap this return type exists to close.
 fn open_to_door<U: Units>(
     seal: &KernelSeal,
     units: &U,
     ctx: &UnitCtx,
     run: &Run<'_>,
-) -> Result<Admission, Refusal> {
+) -> Result<(Admission, Vec<VerifiedDestination>), Refusal> {
     units
         .arrival(&Pass::<Arrival>::mint(seal), ctx)
         .into_result(seal)
@@ -828,7 +860,7 @@ fn open_to_door<U: Units>(
         // reservation, which is exactly the zero-hold admission. Only an established identity walks
         // on to verify.
         .and_then(|authenticated| match authenticated {
-            Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
+            Authenticated::Challenge(_) => Ok((Admission::ZeroHold, Vec::new())),
             Authenticated::Principal(principal) => units
                 .verify(
                     &Pass::<Verify>::mint(seal),
@@ -871,7 +903,10 @@ fn open_to_door<U: Units>(
                         if admitted.is_ok() {
                             draw_lease(ctx, run, &groups);
                         }
-                        admitted
+                        // The sealed set travels WITH the admission from here on, so Route and
+                        // Meter consume the exact set Approve and Admit just read rather than a
+                        // recomputation of it.
+                        admitted.map(|admission| (admission, destinations))
                     },
                 ),
         })
@@ -921,7 +956,9 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         }
         // The door passed at ZeroHold. Record the admission (success-audit + encode) and hand the
         // door back OPEN — no `under_hold`, no `exit`. The plane opens its own reservation next.
-        Ok(_admission) => {
+        // A session's door is always ZeroHold (see the doc above), so there is no Route or Meter
+        // step here to hand the sealed destinations to; they are discarded with the admission.
+        Ok((_admission, _destinations)) => {
             let outcome = Outcome::Completed;
             let _sealed = units
                 .audit(&Pass::<Audit>::mint(seal), ctx, &outcome)
@@ -1142,16 +1179,25 @@ fn terminal<U: Units>(
 ///
 /// The Route leg is awaited here and nowhere else, which is what makes the drop that cancels a unit
 /// land in one known place with one known guard over it.
+///
+/// `destinations` is the SAME set [`Units::verify`] sealed and [`open_to_door`] carried through
+/// Approve and Admit — passed to both Route and Meter here rather than let either re-derive its own,
+/// which is what makes "verify-then-act" true of this loop rather than merely stated by it.
 async fn under_hold<U: Units, R: RouteAwait>(
     kernel: &Kernel,
     units: &U,
     route: &R,
     ctx: &UnitCtx,
     meter: &AccrualMeter,
+    destinations: &[VerifiedDestination],
 ) -> Outcome {
     let seal = &kernel.seal;
     let token = Pass::<Route>::mint(seal);
-    match route.route_leg(&token, ctx, meter).await.into_result(seal) {
+    match route
+        .route_leg(&token, ctx, meter, destinations)
+        .await
+        .into_result(seal)
+    {
         Err(refusal) => {
             Outcome::Failed(refusal.step().unwrap_or(StepName::Route), refusal.reason())
         }
@@ -1163,6 +1209,7 @@ async fn under_hold<U: Units, R: RouteAwait>(
                     &Grant::<Consumption>::mint(seal),
                     ctx,
                     &provisional,
+                    destinations,
                 )
                 .into_result(seal)
             {
@@ -1267,3 +1314,7 @@ pub fn exit<U: Units>(
 #[cfg(test)]
 #[path = "tests/call_binding_tests.rs"]
 mod call_binding_tests;
+
+#[cfg(test)]
+#[path = "tests/teller_verified_destination_tests.rs"]
+mod teller_verified_destination_tests;

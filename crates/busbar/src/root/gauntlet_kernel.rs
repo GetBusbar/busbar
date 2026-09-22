@@ -166,7 +166,7 @@ impl Units for GauntletKernelUnit<'_> {
         Decision::proceed(token, Admission::ZeroHold)
     }
 
-    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, _meter: &AccrualMeter) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, _meter: &AccrualMeter, _destinations: &[busbar_contract::caps::VerifiedDestination]) -> Decision<Route> {
         // This rider's Route AWAITS (the plane's `drive`), so the loop reaches it through the
         // `RouteAwait` arm below and this synchronous one is never taken. Answered rather than
         // unwrapped: there is no task here to run the leg on.
@@ -179,6 +179,7 @@ impl Units for GauntletKernelUnit<'_> {
         usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
         // The plane metered inside `drive`; the kernel meter reports nothing, so the exit settles a
         // zero it cannot mistake for a charge. Empty is a valid report.
@@ -242,6 +243,7 @@ impl RouteAwait for GauntletKernelUnit<'_> {
         token: &'a Pass<Route>,
         _ctx: &'a UnitCtx,
         _meter: &'a AccrualMeter,
+        _destinations: &'a [busbar_contract::caps::VerifiedDestination],
     ) -> RouteLeg<'a> {
         Box::pin(async move {
             let plane = self
