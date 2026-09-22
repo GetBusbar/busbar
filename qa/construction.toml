@@ -1267,28 +1267,62 @@ max_extra_sites = 0
 fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
 # busbar-core is DELETED (W4.a, 673ecdaaa) so it matches nothing any more and is dropped, per this
 # row's own "the list shortens as core empties, and never lengthens" -- it emptied all the way.
-# busbar-kernel and busbar-admin are ADDED: W4.a (673ecdaaa) absorbed busbar-core's config/appbuild/
-# cost fee-display code into busbar-kernel (crates/busbar-kernel/src/{appbuild.rs,cost.rs,
+# busbar-kernel and busbar-core-admin are ADDED: W4.a (673ecdaaa) absorbed busbar-core's config/
+# appbuild/cost fee-display code into busbar-kernel (crates/busbar-kernel/src/{appbuild.rs,cost.rs,
 # config/{mod,migrate,overlay}.rs,config_validate/{mod,secret_refs}.rs,test_support/fixtures.rs} are
 # ports of the identically-named busbar-core files -- `git show --stat 673ecdaaa` shows most as
 # `{busbar-core => busbar-kernel}/src/….rs | 0`, i.e. pure renames with zero line changes), and
 # cb2ba5df3 ("extract busbar-admin API service crate out of busbar-core, byte-identical") did the
-# same for crates/busbar-admin/src/v1/json/handlers.rs (every `per_request_fee` site there existed,
-# same wording, in busbar-core's admin/v1/json/handlers.rs one commit earlier). Both are the fee
-# DISPLAY/config path following the crate it moved into, same as busbar-core was on this list for.
+# same for the admin handlers (every `per_request_fee` site there existed, same wording, in
+# busbar-core's admin/v1/json/handlers.rs one commit earlier). Both are the fee DISPLAY/config path
+# following the crate it moved into, same as busbar-core was on this list for.
+#
+# THE NAME WAS DEAD, AND A DEAD NAME UN-MADE THE ALLOWANCE. 2026-09-22. This key read
+# "busbar-admin" until today, but #37 (92e823cd5 "fold the two admin crates into one
+# busbar-core-admin", reference updates 93a0d9f3d) renamed the crate and touched NO qa/ config --
+# `git show --stat 92e823cd5 -- qa/construction.toml` and the same for 93a0d9f3d are both empty.
+# `fee_reader_crates` matches on the crate NAME, so from that commit the entry matched nothing and
+# the recorded cb2ba5df3 allowance silently stopped applying: the row went to 9 findings, 5 of them
+# the very handlers.rs sites this note argues are allowed. Repointed to `busbar-core-admin` -- and
+# every one of those 5 was RE-ADJUDICATED against cb2ba5df3 first rather than restored on this
+# note's say-so, because a summary is not the authority. handlers.rs:2604/2632/2633/2683 are
+# character-identical to the authority commit except `busbar_core::` -> `busbar_kernel::` (the
+# 673ecdaaa config move already blessed above), and :4052 is a byte-identical openapi `summary`
+# string. NONE of the 5 computes a price: four are an overlay MERGE of an operator-supplied config
+# value (`if per_request_fee.is_some() { base.per_request_fee = per_request_fee; }`) plus an
+# exhaustive `per_request_fee: _` destructure, and the fifth is prose. busbar-core-admin has no
+# other production reader -- its only other hits are 22 in src/tests/tests.rs, which this rule does
+# not count -- so this repoint grants exactly the reviewed sites and nothing else. The general
+# lesson, and it is the fifth of this shape found today: a rename that skips the qa/ tables does not
+# merely stale a comment, it REVOKES a reviewed allowance in silence, and the gate cannot tell that
+# from a genuine regression. (qa/kind-isolation.toml still names `busbar-admin` in 8 rows from the
+# same miss -- out of scope for this key, reported separately.)
 #
 # NOT ADDED, and flagged for owner review rather than silently covered: `busbar` (the composition
-# root)'s crates/busbar/src/root/units_admin/mod.rs:762,793,799,891 read `per_request_fee` too, but
-# git-traces to 54dbbdfcc ("build D38 amend_rate_history money-path admin verb (additive)") -- new
-# code, not a move. It parses an operator's JSON payload into `per_request_fee: Option<i64>` and
+# root)'s crates/busbar/src/root/units_admin/mod.rs:1118,1149,1155,1247 read `per_request_fee` too
+# (line numbers refreshed 2026-09-22; they read 762,793,799,891 when first recorded and the file has
+# since grown -- the sites are the same ones), but git-trace to 54dbbdfcc ("build D38
+# amend_rate_history money-path admin verb (additive)") and 5e0336a85 -- new code, not a move, and
+# `git log -S per_request_fee -- crates/busbar/src/root/units_admin/mod.rs` lists those two commits
+# and nothing else. It parses an operator's JSON payload into `per_request_fee: Option<i64>` and
 # hands it straight to `busbar_kernel_ledger::cost::RateCard::from_micro_rates_in(...)` without
 # deriving anything itself, which reads like the same "root wiring hands the cost unit its input"
 # shape this rule already allows for the entry-verb side (`rules.one-pricing-site.allowed.
 # root-wiring`) -- but this rule's fee-fields check is crate-scoped with no path-level allowance, and
 # the money-sacred instruction for this branch is: only widen for code that GENUINELY moved. D38 is
-# new, so these 4 sites are left red for the owner to either grant `busbar` a reviewed exemption or
-# have the verb read the fee through busbar-kernel-ledger's own parsing instead.
-fee_reader_crates = ["busbar-kernel-ledger", "busbar-kernel", "busbar-admin"]
+# new, so these 4 sites STAY RED, and the repoint above deliberately does not reach them.
+#
+# RE-CONFIRMED 2026-09-22 UNDER THE GOVERNING DESIGN, which makes these 4 a real defect and not a
+# missing waiver. BUSBAR-1.6.0.md "MONEY -- the enforcement book must stop storing a price": there
+# is to be exactly ONE money function `price(ledger_slice, card_history) -> Money`, called by the
+# admin reads AND by the budget gate, and the census found `f` implemented ~20 times across 5
+# crates. `one-pricing-site` is the gate that enforces precisely that. So this row is not noise to
+# be quieted -- it is TELLING THE TRUTH that the fee is handled at a site outside the card's own
+# crates. The 4 belong to the money-function consolidation to DELETE, not to an allowlist to
+# absorb; widening `fee_reader_crates` to cover `busbar` would launder a live finding into a
+# pre-existing exception. Ceiling therefore stays 0: repointing the dead name restores 5 of the 9,
+# and the row is CORRECTLY still red on the remaining 4.
+fee_reader_crates = ["busbar-kernel-ledger", "busbar-kernel", "busbar-core-admin"]
 max_fee_readers = 0
 
 [rules.one-pricing-site.allowed.cost-unit]
