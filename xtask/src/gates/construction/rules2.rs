@@ -682,12 +682,28 @@ pub fn no_default_bodies(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         if missing.is_empty() {
             String::new()
         } else {
-            format!("; trait(s) not found yet: {}", py_list(&missing))
+            format!(
+                "; trait(s) NOT FOUND in any declaring file, so they were not scanned at all: {} \
+                 — a trait this rule cannot find is a trait it cannot judge, and a ceiling of 0 \
+                 met by scanning nothing is the passing answer to every ban. Point the rule's \
+                 `file`/`plane_file`/`transport_file` at the trait's real home, or strike the \
+                 trait from `traits` in the same commit that deletes it",
+                py_list(&missing)
+            )
         }
     );
+    // A MISSING TRAIT IS A FAILURE, NOT A FOOTNOTE. This used to be `current <= max_defaulted`
+    // alone, with the missing set mentioned only in a detail string that a green run never prints.
+    // Measured 2026-09-22: with `transport_file` naming `crates/busbar-contract/src/transport.rs`
+    // (the value this file carried until a197ad2f5 moved the trait into `transport/mod.rs`), a
+    // default body planted on `Transport` scored `PASS ... 0 defaulted kind-trait method(s)
+    // (ceiling 0): none; trait(s) not found yet: ['Transport']`. The identical plant on `Store`,
+    // whose declaring file the rule still named correctly, scored FAIL. The only difference was
+    // whether the configured path still existed, and the rule already KNEW — it said so in the
+    // detail and passed anyway.
     Ok(vec![plain(
         "no-default-bodies",
-        current <= max_defaulted,
+        current <= max_defaulted && missing.is_empty(),
         "every kind-trait method is bodiless; implementing the trait is the only way to answer it",
         detail,
         current,
