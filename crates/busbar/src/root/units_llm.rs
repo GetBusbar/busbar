@@ -408,6 +408,7 @@ impl LlmNode {
         &self,
         principal: &PrincipalId,
         arrived: Arrived,
+        card: Option<&crate::root::kernel::PinnedHistory>,
         ended: busbar_kernel::teller::Ended,
     ) {
         let Some(book) = self.book.get() else {
@@ -424,7 +425,7 @@ impl LlmNode {
         // its whole exit the way a `&mut Durability` did. The pass-through settles the identical
         // posting onto the identical shared book — the bytes on the chain are unchanged.
         let book = crate::root::durability::SharedBook::over(Arc::clone(book));
-        let _settled = settle(&book, principal, arrived, &self.durability_token, posted);
+        let _settled = settle(&book, principal, arrived, card, &self.durability_token, posted);
     }
 
     /// Walk one request through the loop and answer with what the terminal posted.
@@ -573,7 +574,10 @@ impl LlmNode {
                 // which has moved no balance and left no record until something settles it — and
                 // until this line nothing did, so a unit ran, ended, posted, and posted into a value
                 // that was dropped on the floor.
-                self.settle_end(&principal, arrived, ended);
+                // The SAME pin the late arm prices against, so the posting and the figure that
+                // follows it name one snapshot. Re-pinning here would read a history a live apply
+                // may have appended to since the door, which is the hazard the pin exists for.
+                self.settle_end(&principal, arrived, history.as_ref(), ended);
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -865,7 +869,16 @@ impl LateAccrual {
         // Through the money-book seam, as the terminal exit arm does — the same shared book, the
         // same posting, the lock taken and released behind the seam.
         let book = crate::root::durability::SharedBook::over(book);
-        let _settled = settle(&book, &principal, arrived, &durability_token, posted);
+        // The same pinned snapshot the amount above was PRICED against, so the figure and the entry
+        // number the posting claims priced it cannot come from two different reads.
+        let _settled = settle(
+            &book,
+            &principal,
+            arrived,
+            Some(&history),
+            &durability_token,
+            posted,
+        );
     }
 }
 
@@ -1556,6 +1569,7 @@ pub fn settle(
     book: &dyn crate::root::durability::MoneyBook,
     principal: &PrincipalId,
     arrived: Arrived,
+    card: Option<&crate::root::kernel::PinnedHistory>,
     token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     posted: busbar_contract::caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
@@ -1575,12 +1589,45 @@ pub fn settle(
         // second field is a copy — and two postings of one second become unorderable, which is
         // exactly what the field exists to prevent.
         stamp: crate::root::durability::PostingStamp {
-            rate_card_version: 0,
+            // The card in force when this unit ARRIVED, resolved through the dated history (#79)
+            // rather than asserted. A literal zero here was `HistorySeq::OPENING` — a real entry
+            // number, not a null — so every posting this plane made claimed the opening card had
+            // priced it, which is false on every deployment that has ever changed a price. A
+            // confident wrong answer, which is worse than none.
+            rate_card_version: card_in_force(card, arrived.ms()),
             wall: arrived.secs(),
             mono: arrived.mono(),
         },
     };
     book.settle_posted(&at, posted)
+}
+
+/// THE PROVENANCE STAMP: which rate-card entry was in force when this unit arrived.
+///
+/// #79 makes the resolution key the posting's own ARRIVAL INSTANT against the dated history — never
+/// the head of the history, and never a version stamped at settle time. The difference is the whole
+/// ruling: a head read reports the newest card ever published, so a unit that arrived two prices ago
+/// would be stamped with a card it was never charged under, and a back-dated correction would be
+/// unreachable backwards.
+///
+/// THE MILLISECOND BINDING IS LOAD-BEARING, and this is why the argument is `arrived.ms()` rather
+/// than the `wall` field beside it. `effective_from` is written on the MILLISECOND scale
+/// (`root/kernel.rs:435`); resolving at a seconds-valued instant matches only the from-zero opening
+/// entry and reports it forever — the same lie this function exists to remove, with a lookup in
+/// front of it. [`Arrived`] carries both readings for exactly this reason.
+///
+/// Falling back to `OPENING` is a statement, not a convenience: no history pinned (a build with no
+/// root ledger) or a HOLE at this instant means no entry claims to have priced the unit, and the
+/// opening entry is the only one that covers every instant by construction.
+///
+/// The same six lines as `units_a2a::A2aUnits::rate_card_version` and
+/// `units_mcp::Provenance::rate_card_version`, and the same `card_at` the admin read resolves
+/// through (`busbar-core-admin/src/v1/service.rs:2375`). FOUR COPIES OF ONE RULING IS FOUR CHANCES
+/// TO GET IT WRONG — this is the fourth, written to match rather than to differ, and #87's end
+/// state is the one kernel-side implementation that retires all four.
+fn card_in_force(card: Option<&crate::root::kernel::PinnedHistory>, arrived_ms: u64) -> u64 {
+    card.and_then(|pinned| pinned.view().card_at(arrived_ms).map(|(seq, _)| seq.get()))
+        .unwrap_or_else(|| busbar_kernel_ledger::cost::HistorySeq::OPENING.get())
 }
 
 // ---------------------------------------------------------------------------------------------
