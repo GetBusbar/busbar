@@ -179,13 +179,6 @@ drain = "delete the plane name from the api crate: a api reaches plane through t
 
 [[edge]]
 from = "api"
-to = "plugin-tooling"
-cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
-why = "crates of kind api naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the plugin-tooling name from the api crate: a api reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "api"
 to = "secret"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
 why = "crates of kind api naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1097,11 +1090,6 @@ count = "2"
 crate = "busbar-api"
 kind = "plane"
 count = "84"
-
-[[cell]]
-crate = "busbar-api"
-kind = "plugin-tooling"
-count = "2"
 
 [[cell]]
 crate = "busbar-api"
