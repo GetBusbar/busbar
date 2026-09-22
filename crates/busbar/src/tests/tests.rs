@@ -5,6 +5,12 @@
 // named failure mode — validate_worker_threads_config and signing_key_command_output have no
 // other coverage.
 use super::*;
+// The CLI helpers this file covers moved to the composition root's `cli` module when
+// main.rs was split at the flag/serve seam; `super::*` no longer reaches them.
+use crate::root::cli::{
+    config_override_notice, providers_override_notice, resolve_config_path,
+    signing_key_command_output, value_flag,
+};
 use busbar_kernel::test_support::EnvVarGuard;
 
 /// `worker_threads_from_env`: an unset var returns None (the normal default path, no warning); a

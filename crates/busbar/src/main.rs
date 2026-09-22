@@ -40,10 +40,13 @@ use std::time::Duration;
 
 use axum::Router;
 
+// `preflight_plugins_and_secrets`, `validate_builtin_secrets_resolve`, `DEFAULT_CONFIG_PATH` and
+// `ENV_PROVIDERS` left with the flag surface (`root::cli`): the first two are what `--validate`
+// checks without booting, and the last two are the config/providers path precedence the scanners
+// there answer for boot AND for every command.
 use busbar_kernel::{
-    build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
-    preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
-    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
+    build_app_from_config, build_split_routers_with_limits, load_config_from_disk, LoadedConfig,
+    ENV_CONFIG,
 };
 use busbar_kernel::{config, config_validate, export, metrics, observability, tls};
 // Read only by the jemalloc idle-purge fallback below, which is itself
@@ -139,7 +142,7 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
 /// caller falls through to the standard worker-thread default, and `run()` surfaces the real error.
 /// Lenient env interpolation so an unset `${VAR}` elsewhere in the file does not abort this probe.
 fn worker_threads_from_config() -> Option<usize> {
-    let config_path = resolve_config_path(config_path_flag().as_deref());
+    let config_path = root::cli::resolve_config_path(root::cli::config_path_flag().as_deref());
     let raw = std::fs::read_to_string(&config_path).ok()?;
     let mut unset = Vec::new();
     let interpolated =
@@ -693,7 +696,7 @@ fn main() {
     }
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
-    if let Some(code) = handle_cli_flags() {
+    if let Some(code) = root::cli::handle_cli_flags() {
         std::process::exit(code);
     }
     // Enable jemalloc's background purge thread: freed dirty/muzzy pages are returned to the OS after
@@ -975,19 +978,20 @@ async fn run(data_workers: usize) {
 
     // Locate the two config files (env-overridable paths) and run the shared disk-load pipeline —
     // the SAME pipeline `POST /api/v1/admin/config/reload` re-runs at runtime.
-    let cli_config = config_path_flag();
+    let cli_config = root::cli::config_path_flag();
     // 1.6.0 effective-source notice: only when the `--config` flag actually OVERRIDES a DIFFERENT
     // `BUSBAR_CONFIG` the operator also set (never on a bare flag / equal values), so a config value
     // that was ignored is explained rather than silent. Pre-subscriber, so it goes to stderr like the
     // other boot diagnostics.
-    if let Some(notice) = config_override_notice(
+    if let Some(notice) = root::cli::config_override_notice(
         cli_config.as_deref(),
         std::env::var(ENV_CONFIG).ok().as_deref(),
     ) {
         eprintln!("[info] {notice}");
     }
-    let providers_override = providers_override();
-    let config_path = std::path::PathBuf::from(resolve_config_path(cli_config.as_deref()));
+    let providers_override = root::cli::providers_override();
+    let config_path =
+        std::path::PathBuf::from(root::cli::resolve_config_path(cli_config.as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
     let loaded = load_config_from_disk(
         &config_path,
@@ -1011,8 +1015,8 @@ async fn run(data_workers: usize) {
     // that declares `providers_file:` while the operator ALSO passed `--providers` — the flag wins, so
     // name both rather than let the config value silently lose. Only fires when both are set (and
     // differ); a bare `--providers` with no `providers_file:` in config is unambiguous and silent.
-    if let Some(notice) = providers_override_notice(
-        value_flag(std::env::args().skip(1), "--providers", None).as_deref(),
+    if let Some(notice) = root::cli::providers_override_notice(
+        root::cli::value_flag(std::env::args().skip(1), "--providers", None).as_deref(),
         deploy.providers_file(),
     ) {
         eprintln!("[info] {notice}");

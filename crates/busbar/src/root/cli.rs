@@ -1,8 +1,50 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE FLAG SURFACE — everything busbar answers on the command line instead of on a socket.
+//!
+//! `main()` has two halves and they have nothing to do with each other. One BOOTS AND SERVES: it
+//! sizes the runtime, installs the four axes, resolves configuration, seals the composition root,
+//! binds listeners and runs until a signal. The other ANSWERS AND EXITS: `--version`, `--help`,
+//! `--build-info`, `--print-metadata-blocklist`, `--validate`, `--list-plugins`,
+//! `--migrate-config`, `--generate-signing-key` — each of which prints, returns an exit code, and
+//! never binds anything. This file is the second half, and it is here because one file over the
+//! `structure-lint:oversized` cap measures two things at once and tells you about neither.
+//!
+//! ## What binds the two halves together, and why it is not a duplicate
+//!
+//! The serving half reads the SAME flags this one does — `-c`/`--config`, `--providers`,
+//! `BUSBAR_CONFIG`, `BUSBAR_PROVIDERS` — so the scanners that resolve them ([`value_flag`],
+//! [`config_path_flag`], [`providers_override`], [`resolve_config_path`]) and the two
+//! override notices live here and are `pub(crate)` rather than copied. A `--validate` that
+//! resolved its config path by a different rule than boot does would be a clean check of a file
+//! the gateway will never read, which is the one thing `--validate` exists to rule out.
+//!
+//! ## Why it is under the composition root and not beside `main.rs`
+//!
+//! Not taste — coverage. `xtask/src/audit.rs` special-cases the binary crate (`SPLIT_CRATE`) into
+//! exactly two production audit scopes, `crates/busbar/src/root` and `crates/busbar/src/main.rs`,
+//! and pushes no scope for `crates/busbar/src` itself. A module at `src/cli.rs` would belong to
+//! neither and would be read by no audit round; under `src/root/` the directory scope already
+//! covers it. `src/build_stamp.rs` is the standing example of the other outcome.
+//!
+//! Boot ORDER already puts the flags here: the root's own note records that boot runs kernel,
+//! interner, transports, planes, the two boot checks, *then* the CLI flags — because `--validate`
+//! reads the plane and protocol lists and every axis must be installed before any reader.
+
+use busbar_kernel::{config, config_validate};
+use busbar_kernel::{
+    load_config_from_disk, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
+    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
+};
+
+use crate::{build_info_line, safe_mode_requested};
+
 /// Handle CLI flags before any environment or file access, so they work without a configured
 /// deployment. Returns `Some(exit_code)` when the process should exit (after printing), `None` to
 /// proceed to normal startup. busbar takes no positional arguments and is configured via
 /// environment + YAML; an unrecognized flag is a usage error rather than a silent server start.
-fn handle_cli_flags() -> Option<i32> {
+pub(crate) fn handle_cli_flags() -> Option<i32> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None => None, // no args → run the gateway
@@ -462,7 +504,7 @@ Review the output, then run `busbar --validate` on it before deploying.         
 /// resolver every config-path consumer routes through, so the precedence is stated once. `cli` is the
 /// value of the `--config` flag (scanned from the process args via [`config_path_flag`]); `None` ⇒
 /// no flag passed, fall through to the env layer and then the default.
-fn resolve_config_path(cli: Option<&str>) -> String {
+pub(crate) fn resolve_config_path(cli: Option<&str>) -> String {
     match cli {
         Some(p) => p.to_string(),
         None => std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
@@ -473,7 +515,7 @@ fn resolve_config_path(cli: Option<&str>) -> String {
 /// `--long value`, `--long=value`, and (when `short` is `Some("-x")`) the short `-x value` form.
 /// Takes the iterator as a parameter (like `safe_mode_requested`) so it is unit-testable against a
 /// synthetic arg list rather than the process environment.
-fn value_flag(
+pub(crate) fn value_flag(
     args: impl Iterator<Item = String>,
     long: &str,
     short: Option<&str>,
@@ -495,7 +537,7 @@ fn value_flag(
 
 /// The `-c`/`--config <path>` flag value from the process args (`None` ⇒ not passed). See
 /// [`resolve_config_path`] for the precedence this feeds.
-fn config_path_flag() -> Option<String> {
+pub(crate) fn config_path_flag() -> Option<String> {
     value_flag(std::env::args().skip(1), "--config", Some("-c"))
 }
 
@@ -503,7 +545,7 @@ fn config_path_flag() -> Option<String> {
 /// value, else the deprecated `BUSBAR_PROVIDERS` env var (`None` ⇒ neither, so the catalog resolves
 /// from `providers_file:` or the default next to config.yaml). Precedence is `--providers` flag >
 /// `BUSBAR_PROVIDERS` env > `providers_file:` config key > `providers.yaml` default.
-fn providers_override() -> Option<std::path::PathBuf> {
+pub(crate) fn providers_override() -> Option<std::path::PathBuf> {
     value_flag(std::env::args().skip(1), "--providers", None)
         .map(std::path::PathBuf::from)
         .or_else(providers_override_from_env)
@@ -528,7 +570,7 @@ fn providers_override_from_env() -> Option<std::path::PathBuf> {
 /// `BUSBAR_CONFIG` env var are set to DIFFERENT paths — the flag wins, so an operator whose env value
 /// was ignored is told why. `None` when the flag is absent, the env is unset, or the two are equal (no
 /// real override to explain). Pure so the "REAL override only" rule is unit-testable.
-fn config_override_notice(flag: Option<&str>, env: Option<&str>) -> Option<String> {
+pub(crate) fn config_override_notice(flag: Option<&str>, env: Option<&str>) -> Option<String> {
     match (flag, env) {
         (Some(f), Some(e)) if f != e => Some(format!(
             "config: using --config '{f}' (overrides BUSBAR_CONFIG='{e}')"
@@ -541,7 +583,10 @@ fn config_override_notice(flag: Option<&str>, env: Option<&str>) -> Option<Strin
 /// config.yaml ALSO declares a DIFFERENT `providers_file:` — the flag wins, so name both. `None` when
 /// the flag is absent, the config declared no `providers_file:`, or the two are equal. Pure for
 /// unit-testing the "flag alone / matching values ⇒ no notice" rule.
-fn providers_override_notice(flag: Option<&str>, providers_file: Option<&str>) -> Option<String> {
+pub(crate) fn providers_override_notice(
+    flag: Option<&str>,
+    providers_file: Option<&str>,
+) -> Option<String> {
     match (flag, providers_file) {
         (Some(f), Some(pf)) if f != pf => Some(format!(
             "providers catalog: using --providers '{f}' (overrides providers_file: '{pf}' from config.yaml)"
@@ -584,7 +629,7 @@ fn generate_signing_key_command() -> i32 {
 /// stdout-only-secret contract is unit-testable (see `signing_key_guidance_omits_secret`), not merely
 /// asserted in a comment. `auth.signing_key` is a secret REFERENCE (never an inline literal — busbar
 /// rejects that), so the snippets wire the key via `{ file }` / `{ env }`.
-fn signing_key_command_output(hex: &str) -> (String, String) {
+pub(crate) fn signing_key_command_output(hex: &str) -> (String, String) {
     let secret_line = hex.to_string();
     let guidance = "\n# ed25519 signing key for busbar-signed virtual keys (64 hex chars, printed above on stdout).\n\
          # auth.signing_key is a secret REFERENCE, not an inline value - wire the key like so:\n\
@@ -606,4 +651,3 @@ fn signing_key_command_output(hex: &str) -> (String, String) {
         .to_string();
     (secret_line, guidance)
 }
-
