@@ -1809,7 +1809,48 @@ trunk by name. The surrounding architecture is unchanged, so it re-lands rather 
 re-implementation. **Not a billed-byte change**, so it does not need the owner's sign-off — it makes
 refusals happen that policy already says should happen.
 
-## PARKED — CRITICAL: the budget cap is bypassed on every restart
+## CORRECTION — the budget-hydration finding was OVERSTATED. Downgraded, and re-scoped.
+
+**I recorded this as CRITICAL: "every restart zeroes admission spend for llm/mcp/a2a/streaming."
+That claim is not supported. I verified the missing hydration and did not verify which admission
+path actually gates customer traffic.** A second review caught it. What is actually established:
+
+**VERIFIED, and still true:**
+- `busbar-kernel-budget` has **no hydration function at all** — `git grep -P "fn (hydrate|restore|seed|replay)"` over that crate returns nothing.
+- `crates/busbar/src/root/kernel.rs:650` and `units_voice.rs:797` both build `InMemoryCells::new()` empty.
+- Both the struct doc and `busbar-kernel-budget/Cargo.toml` claim the cells are "hydrated once at boot". That claim is false wherever those two constructors are the source.
+
+**VERIFIED, and it undoes the severity:**
+- **The main admission path DOES hydrate at boot.** `GovState::hydrate_budgets` is called from
+  `crates/busbar-kernel/src/appbuild.rs:1158` — production code, not a test. That is the gate
+  `ingress/mod.rs` and `plane_host/govern.rs` consult for real traffic.
+- **`ProductionUnits.door` is admin-scoped.** It is constructed exactly once in `main.rs:1515` via
+  `admin_only_sharing(...)`, mounted on the **admin router** (`root::units_admin::mount`). It is not
+  the customer request gate.
+- Governance's mechanism is also the **model-compliant** one: it restores raw usage COUNTS and
+  re-derives money from the current card at read time, never storing a settled figure. That is
+  exactly "money is a view over ledger × ratecard".
+
+**NOT established either way — the one real open question:**
+`units_voice.rs:797` builds a `VoiceNode`'s own `Door` empty, and voice IS wired from `main.rs`
+(`VoiceNode`, `NodeCalls`, `scope_policy`). Whether that per-node door gates a billing decision, or
+is secondary to the governance gate that already hydrates, is **not resolved**. That is the question
+worth answering, and it is much narrower than "every plane, every restart".
+
+**Severity: downgraded from CRITICAL to OPEN-AND-NARROW.** No demonstrated cap bypass on the
+customer path. A documentation defect is certain — two places assert a hydration guarantee that the
+constructors they describe do not provide, which is how this looked like a catastrophe to a reader
+(including me).
+
+**Also corrected: the `r5-money-m3` branch fix should NOT be re-landed as written.** Its
+`Carried`/`HydratedSpend` stores a **settled cents figure** at boot and accrues onto it. That stores
+a price, which the locked model forbids. Trunk's reprice-on-read design is the correct one. The
+branch is **OBSOLETE by design on this point**, not lost — a rare case where the un-merged branch is
+the wrong answer and trunk is right.
+
+### The original finding, retained for the record
+
+### PARKED — the budget cap is bypassed on every restart (AS ORIGINALLY WRITTEN)
 
 **Found by the survivor-branch review of `origin/r5-money-m3`. This is the single most serious
 defect in the session and it is a live budget-cap bypass, not a latent one.**
