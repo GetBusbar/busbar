@@ -312,18 +312,26 @@ sys.stdout.write(src.replace(needle, os.environ['CARD']))" "${H2_WORKDIR}/config
     printf 'harness: this boot wrote no `rate_card: {}` line to substitute\n'
     return
   fi
-  local res
+  local res rc
   res="$(BUSBAR_CONFIG="$out" BUSBAR_ADMIN_TOKEN="$H2_ADMIN_TOKEN" "$H2_BIN" --validate 2>&1)"
+  rc=$?
   rm -f "$out"
-  case "$res" in
-    *"config valid"*) printf 'ok\n' ;;
-    # The validator prints its reasons as `  - <reason>` bullets under a BUSBAR-3015 header; take the
-    # first, else the last non-empty line so a shape this case does not know still says something.
-    *) local why
-       why="$(printf '%s' "$res" | sed -n 's/^ *- *//p' | head -1)"
-       [ -n "$why" ] || why="$(printf '%s' "$res" | grep -v '^$' | tail -1)"
-       printf '%s\n' "$(printf '%s' "$why" | tr -d '\n')" ;;
-  esac
+  # THE EXIT CODE IS THE ANSWER, AND A SUBSTRING MATCH IS NOT. `--validate`'s refusal banner reads
+  # "config validation failed", which CONTAINS "config valid" — so the obvious `*"config valid"*`
+  # case arm reports a REFUSED config as `ok`, a false green on the one question this helper exists
+  # to ask. (Found by running the helper against a stub that printed the binary's real two shapes.)
+  # The text is still required to carry the success line, so a future `--validate` that exits 0 while
+  # printing a refusal cannot slip through either.
+  if [ "$rc" -eq 0 ] && case "$res" in "ok: config valid"*) true ;; *) false ;; esac; then
+    printf 'ok\n'
+    return
+  fi
+  # The validator prints its reasons as `  - <reason>` bullets under a BUSBAR-3015 header; take the
+  # first, else the last non-empty line so a shape this does not know still says something.
+  local why
+  why="$(printf '%s' "$res" | sed -n 's/^ *- *//p' | head -1)"
+  [ -n "$why" ] || why="$(printf '%s' "$res" | grep -v '^$' | tail -1)"
+  printf 'rc=%s %s\n' "$rc" "$(printf '%s' "$why" | tr -d '\n')"
 }
 
 h2_egress_count() { find "$H2_EGRESS_DIR" -type f 2>/dev/null | wc -l | tr -d ' '; }
