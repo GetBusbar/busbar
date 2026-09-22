@@ -143,7 +143,7 @@ step() {   # $1 = label ; rest = command
 # So: the number of groups this file DEFINES is counted from the file, the declared constant must
 # agree with it (a group added or removed is a two-place edit a reviewer sees), and the environment
 # may only ever RAISE the floor. A count that cannot be taken is RED, never a floor of zero.
-DONE_GROUPS_DECLARED=22
+DONE_GROUPS_DECLARED=23
 # awk, not `grep -c ... || echo 0`: `grep -c` on a file with no matches PRINTS 0 and EXITS 1, so the
 # obvious fallback fires on top of grep's own output and the variable becomes the two-line string
 # "0\n0" — which then fails every numeric comparison below and takes the honest-floor check with it.
@@ -469,6 +469,21 @@ step "instance-noun gate"       cargo xtask gate instance-noun-neutrality
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+# REACHABILITY — every plane in #48's locked roster is served by a unit path the COMPOSITION ROOT
+# ACTUALLY CONSTRUCTS. It exists because of the 2026-09-22 a2a money findings: three real faults in
+# crates/busbar/src/root/units_a2a.rs that NO corpus cell and NO rig leg could have caught, because
+# `A2aUnits::new`'s only call site in the workspace is under `#[cfg(test)]`. There is no behaviour to
+# witness, so no behavioural witness can exist — the only instrument that sees that class is one that
+# measures the ABSENCE of a caller. RED on HEAD by design, on named rows, and every unreached unit
+# path either gets switched on or gets a written `[[dormant]]` row in qa/reachability.toml. Exactly
+# the footing instance-noun-neutrality is on above: a per-push red would only restate that the plane
+# switch-ons are in flight, so it lives here and not in ci.yml.
+begin_group "REACHABILITY — every locked plane is served by a unit path the composition root constructs"
+step "reachability --selftest" cargo xtask gate reachability --selftest
+step "reachability gate"       cargo xtask gate reachability
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 # THE LOCKED ROSTER IS 5 PLANES, NOT 4, AND NOT {llm,mcp,a2a,voice}. docs/design/BUSBAR-1.6.0.md
 # Part 2:
 #   #18 — "The fourth plane is STREAMING, not voice. Voice is ONE capability/dialect inside the
@@ -527,18 +542,20 @@ begin_group "BYTE-IDENTITY — the money path is byte-stable"
 if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   printf '  \033[32m[ok]\033[0m   bless/regen env (UPDATE_OPENAPI/BLESS_*/BUSBAR_BLESS_GOLDEN) is empty\n'
   # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide, so the plane
-  # crates' `openapi-schema` reaches busbar-admin's dev-dep edges) — the golden tests are cfg-gated on
-  # it, so without both the filter selects ZERO of them. The three byte-identity goldens (json-matches-
-  # committed, served-equals-committed, error-enum-matches) MOVED to busbar-admin with the admin service
-  # (1.6.0), so `-p busbar-admin` is REQUIRED: `-p busbar -p busbar-core` alone selects just 1 test
-  # (busbar-core's `a_plane_with_admin_verbs_documents_at_least_one_openapi_path`) against the expected
-  # 15 — a vacuity the count check catches. With busbar-admin added the `openapi` filter runs the real
-  # set (14 in busbar-admin + 1 in busbar-core = 15), so the oracle's byte-identity check is real,
-  # matching cargo xtask full-gate. Thread-count-independent: every busbar-admin openapi test installs
-  # the plane seam before reading `openapi_doc()` (see `openapi_doc_seamed` in that crate's json tests),
-  # so no `--test-threads=1` pin is needed for determinism.
-  step "openapi.json goldens match committed file"  filtered_cargo_test 15 cargo test -p busbar -p busbar-core -p busbar-admin --features openapi-schema --quiet openapi
-  step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-core --quiet resolved_billing_and_limits_config_is_byte_stable
+  # crates' `openapi-schema` reaches busbar-core-admin's dev-dep edges) — the golden tests are
+  # cfg-gated on it, so without both the filter selects ZERO of them. The three byte-identity goldens
+  # (json-matches-committed, served-equals-committed, error-enum-matches) live in busbar-core-admin
+  # with the admin service (1.6.0; W4.a absorbed busbar-core into busbar-kernel, and #37 folded
+  # busbar-plane-admin + busbar-admin into busbar-core-admin), so `-p busbar-core-admin` is REQUIRED:
+  # `-p busbar -p busbar-kernel` alone selects just 1 test (busbar-kernel's
+  # `a_plane_with_admin_verbs_documents_at_least_one_openapi_path`) against the expected 23 — a
+  # vacuity the count check catches. With busbar-core-admin added the `openapi` filter runs the real
+  # set (22 in busbar-core-admin + 1 in busbar-kernel = 23), so the oracle's byte-identity check is
+  # real, matching cargo xtask full-gate. Thread-count-independent: every busbar-core-admin openapi
+  # test installs the plane seam before reading `openapi_doc()` (see `openapi_doc_seamed` in that
+  # crate's json tests), so no `--test-threads=1` pin is needed for determinism.
+  step "openapi.json goldens match committed file"  filtered_cargo_test 23 cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --quiet openapi
+  step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-kernel --quiet resolved_billing_and_limits_config_is_byte_stable
   # The six `*_round_trip_byte_exact` oracles live in busbar-llm-codec
   # (crates/busbar-llm-codec/src/tests/proto/same_proto_fidelity_tests.rs), not in busbar-llm.
   step "6 same-proto byte-exact oracles"            filtered_cargo_test 6  cargo test -p busbar-llm-codec --quiet round_trip_byte_exact
@@ -609,7 +626,7 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # CORE_ROOT used to read "crates/busbar-core/src", which commit 673ecdaaa deleted when it absorbed
 # busbar-core into busbar-kernel (#19/#37), so the armed gate printed no residual line at all and the
 # 16 was carried forward unverified rather than measured. scripts/plane-config-noun-gate.sh has since
-# been repointed at CORE_ROOTS="crates/busbar-kernel/src crates/busbar-core-config/src" (its own
+# been repointed at CORE_ROOTS="crates/busbar-kernel/src" (its own
 # CORE_ROOTS section), so the gate runs again and the true residual is 17, not 16 -- 16 was the wrong
 # number, not the comment that used to claim 19. Lower this number the moment a section is evicted;
 # a fall is reported as a fall and tells you what to lower it to.
@@ -788,8 +805,19 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "KERNEL — the Teller loop battery, the capability fixtures and attempt identity are green"
 # The kernel crate's integration tests are the loop battery (step order, refusal stops at its step,
-# every reason posts, the settlement table, the two-sided canary, kill points). The caps crate's
-# compile-fail fixtures prove the tokens cannot be forged. attempt_identity proves the one attempt
+# every reason posts, the settlement table, the two-sided canary, kill points). The caps fixtures
+# prove the tokens cannot be forged.
+#
+# THE CAPS STEP NAMES `busbar-contract`, NOT `busbar-caps`. Commit 2c9eddecf (1.6.0 W2.c) folded
+# busbar-caps into busbar-contract as `busbar_contract::caps` and deleted the crate and its
+# workspace member. `cargo test -p busbar-caps` does not run a reduced set against the survivor --
+# cargo cannot resolve the package at all, so the step errored and the whole KERNEL group was red on
+# the harness rather than on the tree. The fixtures came with the fold: they are the ~75 tests under
+# `caps::tests::*` (crates/busbar-contract/src/caps/tests/{mod,the_posting_arithmetic,
+# what_the_record_reads,what_the_usage_report_says}.rs) plus the lint-rule table the construction
+# gate's `hold-escapes` rule reads out of caps/fixtures/lint_rules.rs. The selector is the WHOLE
+# crate, exactly as the busbar-caps line was a whole-crate run -- a superset of what it used to
+# cover, and a whole-crate run is the one shape that cannot go vacuously green on a moved filter. attempt_identity proves the one attempt
 # seam produces the bytes and breaker mutations the two legacy twins produced.
 #
 # THE FILTER MATCHES 2 TESTS, BOTH LEGITIMATE, NOT A LOOSENED FILTER. `attempt_identity` selects by
@@ -806,7 +834,7 @@ begin_group "KERNEL — the Teller loop battery, the capability fixtures and att
 #     accident, so the expected count is 2, not the module's previous 1.
 if [ -d crates/busbar-kernel ]; then
   step "busbar-kernel battery"           cargo test -p busbar-kernel --quiet
-  step "busbar-caps fixtures"            cargo test -p busbar-caps --quiet
+  step "caps fixtures (busbar-contract)" cargo test -p busbar-contract --quiet
   step "attempt identity (busbar-llm)"   filtered_cargo_test 2 cargo test -p busbar-llm --quiet attempt_identity
 else
   absent_step "kernel battery" "crates/busbar-kernel"

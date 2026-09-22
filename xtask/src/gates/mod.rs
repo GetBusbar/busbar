@@ -49,6 +49,7 @@ pub mod plane_purity;
 pub mod plane_transport_neutrality;
 pub mod population;
 pub mod qa_gate_dispatch;
+pub mod reachability;
 pub mod release_order;
 pub mod response_header;
 pub mod seal_witness;
@@ -138,10 +139,10 @@ pub const REPORT_ONLY: &[Posture] = &[
     },
     Posture {
         name: "plane-pricing-blindness",
-        why: "DECISION #87's WITNESS - planes always ledger, and the money acts are kernel-side. \
+        why: "DECISION #87's WITNESS — planes always ledger, and the money acts are kernel-side. \
               RED BY DESIGN on HEAD: the #83 roster's own SPLIT row says of busbar-{llm,mcp,a2a,\
               voice} that `unit/{admit,approve,meter,route}` and `runtime/metering.rs` decide \
-              admission and price, `that is defs 5/6, not a plane` - so the debt is named in the \
+              admission and price, `that is defs 5/6, not a plane` — so the debt is named in the \
               roster before this gate ever measured it, and every live file is a row in \
               qa/plane-pricing-blindness.toml. The five EXTRACTED busbar-plane-* crates are \
               already clean and the gate is what keeps them that way. It goes green when the \
@@ -149,6 +150,22 @@ pub const REPORT_ONLY: &[Posture] = &[
               `:stale-baseline` rows do NOT, so a NEW money reference landing in a plane, or a \
               ledger row that outlived its debt, is scored under `--all` like any regression.",
         excuse: Excused::OnlyAbout("tracked money debt"),
+    },
+    Posture {
+        name: "reachability",
+        why:
+            "THE PLANE-ROSTER REACHABILITY WITNESS, and it is RED BY DESIGN on HEAD: it was built \
+              on 2026-09-22 to red on `crates/busbar/src/root/units_a2a.rs`, which ships three \
+              money faults in a module whose unit's only construction site in the crate is under \
+              `#[cfg(test)]`. A gate that did not red there would not work. It also reds on four \
+              more nobody had written down (units_voice, units_mcp, money_book, vocabulary) and \
+              PASSES units_llm, which is live. It is a release-time claim — \
+              scripts/verify-1.6.0-done.sh runs it, full_gate's own excuse table is where that is \
+              written down and checked — and every row it is red about is printed in full on every \
+              run, so a red that is not counted here is never a red that was not mentioned. DELETE \
+              THIS POSTURE when qa/reachability.toml's findings are drained (each either switched \
+              on or declared) and the gate is green on HEAD.",
+        excuse: Excused::ReleaseTime,
     },
     Posture {
         name: "ship-ready",
@@ -1991,6 +2008,13 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(plane_purity::PlanePurityStrictGate),
         summary:
             "test-scope side-channel debt stays under the ceilings in qa/plane-purity-strict.toml",
+    },
+    Registration {
+        name: "reachability",
+        batch: 2,
+        tier: Tier::Full,
+        build: || Box::new(reachability::ReachabilityGate),
+        summary: "every plane in the #48 roster is served by a unit path the root constructs",
     },
     Registration {
         name: "segregation",

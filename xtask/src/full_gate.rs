@@ -98,8 +98,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo clippy --no-default-features --locked -- -D warnings",
     "cargo build --no-default-features --locked",
     "cargo test --no-default-features --locked",
-    "cargo clippy -p busbar -p busbar-kernel -p busbar-admin --all-targets --features openapi-schema --locked -- -D warnings",
-    "cargo test -p busbar -p busbar-kernel -p busbar-admin --features openapi-schema --locked openapi -- --nocapture",
+    "cargo clippy -p busbar -p busbar-kernel -p busbar-core-admin --all-targets --features openapi-schema --locked -- -D warnings",
+    "cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --locked openapi -- --nocapture",
     "cargo build --locked --bin busbar",
     "cargo test -p busbar --test migration_corpus --locked -- --nocapture",
     "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked",
@@ -194,8 +194,8 @@ pub const CARGO_CI_ONLY: &[(&str, &str)] = &[
     ("cargo clippy --workspace --all-targets -- -D warnings", "the WINDOWS job's clippy. It exists to catch the platform-gated code no local run compiles at all -- a #[cfg(unix)] item whose #[cfg(windows)] twin was never written is a warning THERE and nowhere here. A macOS/Linux clippy cannot substitute: it takes the other arm of every cfg. Approximated locally with 'cargo xwin clippy --target x86_64-pc-windows-msvc', which type-checks the Windows arms without a Windows host but still executes nothing."),
     ("cargo test --release --locked timing_gate -- --ignored", "a RELEASE-profile wall-clock gate on a dedicated runner. A debug tree with a compiler and a browser competing for the CPU measures the laptop, not the engine; run it directly when touching the timing path."),
     ("cargo build -p busbar --release --locked", "the RELEASE-profile build that feeds build-provenance-gate.sh (it asserts the shipped binary's optimized posture). The local build mirror is the debug 'cargo build --locked --bin busbar' above; a release build here would re-measure the laptop, not prove anything the debug build does not."),
-    ("cargo build -p busbar-core -p busbar-substrate -p busbar-api --no-default-features --features \"$FEATS\" --locked", "the plane-DELETION matrix build. $FEATS is '${{ matrix.features }}', which expands per kept-plane combination -- a CI matrix construct with no single local form, and the literal string is not a runnable command. It is mirrored locally by the delete-test gate (PLANE-DELETE group), which compiles the neutral crates with a plane removed."),
-    ("cargo build -p busbar-core -p busbar-substrate -p busbar-api --no-default-features --locked", "the same plane-DELETION matrix build's EMPTY-features arm (every plane removed). Same matrix job, same local mirror in the delete-test gate; listed separately because the step branches on $FEATS and both arms are real invocations."),
+    ("cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-api --no-default-features --features \"$FEATS\" --locked", "the plane-DELETION matrix build. $FEATS is '${{ matrix.features }}', which expands per kept-plane combination -- a CI matrix construct with no single local form, and the literal string is not a runnable command. It is mirrored locally by the delete-test gate (PLANE-DELETE group), which compiles the neutral crates with a plane removed."),
+    ("cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-api --no-default-features --locked", "the same plane-DELETION matrix build's EMPTY-features arm (every plane removed). Same matrix job, same local mirror in the delete-test gate; listed separately because the step branches on $FEATS and both arms are real invocations."),
     ("cargo test -p busbar-llm --lib alloc_gate -- --nocapture", "the deterministic alloc-count perf gate, invoked BY NAME so a regression reds this one line rather than a 400-test workspace run. The same tests are also executed by 'cargo test --workspace --locked' above, which DOES run locally. (It read '-p busbar-core' here for as long as ci.yml did, matching zero tests in both places — a libtest filter that selects nothing exits 0.)"),
     ("cargo xtask gate ship-ready --selftest", "the SHIP-criterion gate's self-proof. It drives its own `run()` end to end, which means running the construction gate and the kind-isolation SHIP twin over the whole tree AND asking the GitHub checks API for the mutation verdict. The network read is the reason it is not local: `full-gate` is what an agent runs on a laptop before handing back, and a gate leg that needs an authenticated `gh` would make the local runner red for the operator's credentials rather than for the tree. ci.yml's `ship-ready` job runs it on every push, with a token."),
     ("cargo xtask gate ship-ready", "the SHIP criterion itself, and the integration line is not the ship SHA -- the kind-isolation ship twin is red on HEAD by design and the standing-red list is not empty, so this gate is red here for exactly the reasons `gates::REPORT_ONLY` names it. It is a REQUIRED CHECK on `qa` and `main` (scripts/ci-branch-protection.sh), which is the event it is about; running it as part of a local full-gate would red every dev-line run for being on the dev line. DELETE this entry when CONSTRUCTION_STANDING_REDS is empty and the ship twin is green on HEAD."),
@@ -328,22 +328,45 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
         Excuse::XtaskTest("run(&[\"gate\", \"hot-path-alloc\"])"),
     ),
     (
+        "reachability",
+        "every plane in #48's locked roster is served by a unit path the COMPOSITION ROOT actually \
+         reaches from `fn main()`. It is RED on HEAD BY DESIGN and it was built to be: the \
+         2026-09-22 a2a money findings sat in `crates/busbar/src/root/units_a2a.rs`, whose unit's \
+         only call site in the whole crate is under `#[cfg(test)]`, so no corpus cell and no rig \
+         leg could have caught them. The gate reds on that module and on four more nobody had \
+         written down — `units_voice.rs` (48 construction sites, every one a test), `units_mcp.rs` \
+         (1 884 lines declaring no `impl Units for` at all), `money_book.rs` and `vocabulary.rs` \
+         (reached by no chain from main) — and PASSES `units_llm.rs`, which is live. That \
+         separation is its red-before-green proof. Every unreached path either gets switched onto \
+         the serving path or gets a written `[[dormant]]` row in qa/reachability.toml, and a \
+         declaration whose subject is reached again is STALE and reds. A release-time DONE question \
+         on the exact same footing as plane-purity-strict, kind-isolation-ship and \
+         instance-noun-neutrality: run by scripts/verify-1.6.0-done.sh (`cargo xtask gate \
+         reachability`), not on every push, because a gate that is red every push is a gate \
+         somebody puts a `|| true` in front of. MOVE IT TO ci.yml when qa/reachability.toml's \
+         findings are drained to declarations or switch-ons.",
+        Excuse::ReleaseScript(
+            "scripts/verify-1.6.0-done.sh",
+            "cargo xtask gate reachability",
+        ),
+    ),
+    (
         "plane-pricing-blindness",
-        "DECISION #87's witness - planes always ledger, and the money acts (resolve a card, price, \
+        "DECISION #87's witness — planes always ledger, and the money acts (resolve a card, price, \
          mint a unit key, arithmetic a hold) are kernel-side. It is RED ON HEAD BY DESIGN, and the \
          #83 roster said so before this gate ever measured it: the SPLIT row for \
          busbar-{llm,mcp,a2a,voice} reads `Session, turn and dialect rules -> 16-20. But \
          unit/{admit,approve,meter,route} and runtime/metering.rs decide admission and price - \
          that is defs 5/6, not a plane.` This gate is that sentence made mechanical. It reds on 11 \
-         files across busbar-llm and busbar-voice - including `engine/usage.rs`'s \
-         `if host.cost_pricing_enabled(..)`, which is the literal branch #87 outlaws - and is \
+         files across busbar-llm and busbar-voice — including `engine/usage.rs`'s \
+         `if host.cost_pricing_enabled(..)`, which is the literal branch #87 outlaws — and is \
          GREEN on all five EXTRACTED busbar-plane-* crates, whose 125 `rate_card|nanos|price|spend` \
          grep hits are prose. That separation is its red-before-green proof. Excused from ci.yml \
          because a gate that is red every push is a gate somebody puts a `|| true` in front of; \
          MOVE IT TO ci.yml when qa/plane-pricing-blindness.toml is empty. Unlike its release-time \
-         siblings the coverage route is a per-push one: the SELFTEST - the proof the scanner can \
+         siblings the coverage route is a per-push one: the SELFTEST — the proof the scanner can \
          still be driven red, and still ignores prose, string literals and a clock spelled in \
-         nanos - runs in xtask/tests/plane_pricing_blindness.rs under `cargo test --workspace \
+         nanos — runs in xtask/tests/plane_pricing_blindness.rs under `cargo test --workspace \
          --locked` on every push.",
         Excuse::XtaskTest("run(&[\"gate\", \"plane-pricing-blindness\", \"--selftest\"])"),
     ),
