@@ -1034,6 +1034,19 @@ fn draft(op: OpClassId) -> A2aDraft {
     }
 }
 
+/// The fixture draft, addressing a NAMED agent rather than the default `"probe"` — the seam the
+/// approve-step grant tests hook into to hold the operation fixed and vary only which agent is
+/// addressed.
+fn draft_for(op: OpClassId, agent: &'static str) -> A2aDraft {
+    A2aDraft {
+        resource: Some(ResourceLocator {
+            kind: SCOPE_KIND_AGENT,
+            name: agent,
+        }),
+        ..draft(op)
+    }
+}
+
 /// The eight governance methods the store contract requires and this file's legs never touch.
 ///
 /// Written once as a macro rather than twice by hand: what these fixtures exist to exercise is
@@ -1634,6 +1647,10 @@ struct Deployment {
     /// The node's monotonic source, as the composition root holds it: a counter that only ever
     /// goes up, whatever the wall clock does.
     mono: AtomicU64,
+    /// The caller's resolved key, where a test names one. `None` is the ordinary posture of every
+    /// fixture above this one — no test before the approve-step gate needed a key at all, and
+    /// none of them names one now.
+    key: Option<busbar_api::VirtualKey>,
 }
 
 fn deployment(groups: busbar_kernel_budget::GroupTable) -> Deployment {
@@ -1667,6 +1684,7 @@ fn deployment_priced(groups: busbar_kernel_budget::GroupTable, pricer: Pricer) -
         origin: busbar_kernel::teller::Kernel::new()
             .origin(busbar_contract::caps::OriginKind::Client),
         mono: AtomicU64::new(0),
+        key: None,
     }
 }
 
@@ -1696,6 +1714,17 @@ impl Deployment {
         chain: Option<&'r busbar_kernel_budget::BucketChain>,
         now: u64,
     ) -> A2aUnits<'r, busbar_kernel_budget::InMemoryCells> {
+        self.calling_draft_at(chain, now, draft(ops::OP_MESSAGE_SEND))
+    }
+
+    /// The same unit, over a caller-supplied draft — the seam a test that varies WHICH agent is
+    /// addressed hooks into, rather than the wall clock `calling_at` varies.
+    fn calling_draft_at<'r>(
+        &'r self,
+        chain: Option<&'r busbar_kernel_budget::BucketChain>,
+        now: u64,
+        draft: A2aDraft,
+    ) -> A2aUnits<'r, busbar_kernel_budget::InMemoryCells> {
         A2aUnits::new(
             A2aBindings {
                 auth: &self.auth,
@@ -1715,6 +1744,7 @@ impl Deployment {
                 records: &self.records,
                 meter_policy: &self.meter_policy,
                 scope_policy: &self.scope,
+                key: self.key.as_ref(),
                 durability: &self.durability,
                 pool: "agents",
                 now,
@@ -1727,7 +1757,7 @@ impl Deployment {
                 mono: self.mono.fetch_add(1, Ordering::AcqRel),
                 origin: self.origin,
             },
-            draft(ops::OP_MESSAGE_SEND),
+            draft,
             Grants::of(Scope::Full),
         )
     }
@@ -1780,6 +1810,139 @@ fn ask_the_door_as(
         &slip,
     );
     (decision.into_result(&seal), slip)
+}
+
+/// Run one unit's approve step to a result — the same mint-a-pass-and-unseal pattern
+/// `ask_the_door` uses for admit, over the step directly above it in the loop.
+fn ask_for_scope(
+    unit: &A2aUnits<'_, busbar_kernel_budget::InMemoryCells>,
+    who: &PrincipalId,
+) -> Result<ScopeFacts, busbar_contract::caps::Refusal> {
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let decision = Units::approve(
+        unit,
+        &busbar_contract::caps::Pass::mint(&seal),
+        &a2a_ctx(),
+        who,
+        &[],
+    );
+    decision.into_result(&seal)
+}
+
+/// **A key reaches the agent it was granted, and no other.**
+///
+/// The operation-class grant every fixture in this file holds (`Grants::of(Scope::Full)`) answers
+/// "may this key do A2A at all" — nothing about WHICH agent. Before the resource-level gate, this
+/// step never asked that second question: it read `self.draft.resource` and pushed it straight
+/// onto the audit facts, so a key granted only agent `"a"` reached agent `"b"` exactly as readily
+/// as `"a"` itself, and the record — naming the agent actually reached — read as authorized.
+///
+/// So this proves both directions on the SAME key: addressing the agent it was not granted is
+/// refused, and addressing the one it was granted still succeeds. Proving only the refusal would
+/// be equally true of a gate that refuses every caller.
+#[test]
+fn a_key_reaches_the_agent_it_was_granted_and_no_other() {
+    let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+    deployment.key = Some(busbar_api::VirtualKey {
+        allowed_scopes: Some(vec![busbar_api::ScopeRef {
+            kind: SCOPE_KIND_AGENT.to_string(),
+            value: "a".to_string(),
+        }]),
+        ..Default::default()
+    });
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+
+    let wrong_agent =
+        deployment.calling_draft_at(chain.as_ref(), 1_700_000_000, draft_for(ops::OP_MESSAGE_SEND, "b"));
+    assert_eq!(
+        ask_for_scope(&wrong_agent, &who)
+            .expect_err("granted \"a\" only, addressing \"b\"")
+            .reason(),
+        ReasonCode::ScopeDenied,
+        "a key granted one agent must not reach a different one"
+    );
+
+    let granted_agent =
+        deployment.calling_draft_at(chain.as_ref(), 1_700_000_000, draft_for(ops::OP_MESSAGE_SEND, "a"));
+    let facts = ask_for_scope(&granted_agent, &who).expect("granted \"a\", addressing \"a\"");
+    assert_eq!(
+        facts.resources.as_slice(),
+        &[ResourceLocator {
+            kind: SCOPE_KIND_AGENT,
+            name: "a"
+        }],
+        "the gate that refuses \"b\" still admits \"a\" — and the record still names it"
+    );
+}
+
+/// **An empty grant list grants no agent.** `Some(vec![])` is the wire-explicit empty SET, never
+/// "unrestricted" — the same freeze `VirtualKey::scope_allowed` already carries for every other
+/// kind. A key minted with no resource entries at all reaches nothing this plane fronts, however
+/// solid its operation-class grant is.
+#[test]
+fn an_empty_grant_list_grants_no_agent() {
+    let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+    deployment.key = Some(busbar_api::VirtualKey {
+        allowed_scopes: Some(Vec::new()),
+        ..Default::default()
+    });
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+    let unit = deployment.calling(chain.as_ref());
+    assert_eq!(
+        ask_for_scope(&unit, &who)
+            .expect_err("an explicit empty list is the empty set, not a wildcard")
+            .reason(),
+        ReasonCode::ScopeDenied
+    );
+}
+
+/// **A grant under another kind does not reach this plane.** The key names the exact same VALUE
+/// the draft addresses (`"probe"`, the fixture default) but under kind `"pool"` rather than
+/// `"agent"`. `scope_allowed` is a `(kind, value)` pair, never a value alone — this is the case
+/// that catches a fix keyed on the name and blind to the kind.
+#[test]
+fn a_grant_under_another_kind_does_not_reach_this_plane() {
+    let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+    deployment.key = Some(busbar_api::VirtualKey {
+        allowed_scopes: Some(vec![busbar_api::ScopeRef {
+            kind: "pool".to_string(),
+            value: "probe".to_string(),
+        }]),
+        ..Default::default()
+    });
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+    // The default fixture draft addresses agent "probe" — the exact value the key's "pool" grant
+    // also names, so a kind-blind check would wrongly pass this.
+    let unit = deployment.calling(chain.as_ref());
+    assert_eq!(
+        ask_for_scope(&unit, &who)
+            .expect_err("the grant is a pool named \"probe\", not an agent named \"probe\"")
+            .reason(),
+        ReasonCode::ScopeDenied
+    );
+}
+
+/// **An unkeyed caller is refused on a credentialed address.** `key: None` — this file's own
+/// default, unless a test sets one — is not "every agent admitted"; it is a caller this
+/// deployment resolved no key for at all. The fixture draft still addresses a named agent, and a
+/// caller with no key reaches no credentialed resource: fail-closed, the same as an absent policy
+/// entry above it.
+#[test]
+fn an_unkeyed_caller_is_refused_on_a_credentialed_address() {
+    let deployment = deployment(one_call_at_a_time("a2a-team"));
+    assert!(deployment.key.is_none(), "the fixture default: no key resolved");
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+    let unit = deployment.calling(chain.as_ref());
+    assert_eq!(
+        ask_for_scope(&unit, &who)
+            .expect_err("no key at all, addressing a named agent")
+            .reason(),
+        ReasonCode::ScopeDenied
+    );
 }
 
 /// **The cap is a cap.** A deployment that wrote `concurrent: 1` against an A2A group gets one

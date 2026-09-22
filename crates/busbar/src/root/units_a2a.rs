@@ -662,6 +662,15 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub meter_policy: &'r crate::root::policy::MeterPolicyHandle,
     /// What the scope unit reads at approve.
     pub scope_policy: &'r crate::root::policy::ScopePolicy,
+    /// The caller's virtual key, where this deployment resolved one for the credential presented.
+    ///
+    /// `grants` above is the OPERATION-class grant — does this key hold A2A at all. This is the
+    /// second, independent question the approve step has to ask of a plane that fronts more than
+    /// one agent: does this key reach THE ONE the draft names. `None` is not "every agent
+    /// admitted"; it is a caller this deployment could not resolve a key for, and a caller with no
+    /// key reaches no credentialed resource — the same fail-closed rule an absent policy entry
+    /// already gets, asked of the resource rather than the operation.
+    pub key: Option<&'r busbar_api::VirtualKey>,
     /// The journal, the ledger and the two audit chains.
     pub durability: &'r Mutex<crate::root::durability::Durability>,
     /// The pool this unit's agent is reached on.
@@ -920,6 +929,28 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             DestinationFacts::SessionUpstream { .. } => true,
             _ => false,
         }
+    }
+
+    /// Whether the caller's key may reach one resource — the approve step's SECOND scope
+    /// question.
+    ///
+    /// `busbar_kernel_scope::approve` above already answered "may this key do A2A at all" from
+    /// the operation-class grant; this answers "may this key reach THIS agent" from the key's own
+    /// resource list, and the two are independent checks over independent evidence. Without this
+    /// one, any key holding the operation-class grant reaches every agent this deployment fronts,
+    /// whichever it was actually granted — the horizontal escalation between tenants the sibling
+    /// planes (`busbar-a2a`, `busbar-voice`, `busbar-llm`) all close with the same question, asked
+    /// the same way: `key.scope_allowed(kind, name)`.
+    ///
+    /// Fails closed on both axes a mismatch can hide on: no key at all denies every credentialed
+    /// resource, and a key whose list names another kind, another name, or nothing at all (an
+    /// explicit empty list) denies this one too. The single admitting answer is the key's own list
+    /// naming this exact `(kind, name)` pair, which is `VirtualKey::scope_allowed`'s question and
+    /// not a second reading of it.
+    fn grant_held(&self, resource: ResourceLocator) -> bool {
+        self.bindings
+            .key
+            .is_some_and(|key| key.scope_allowed(resource.kind, resource.name))
     }
 
     /// Run the network guard over one candidate, converting its refusal into the loop's.
@@ -1192,9 +1223,17 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied)),
             Ok(()) => {
                 // The plane says WHAT is being asked for; the resource travels with the approval so
-                // the record names the agent rather than the method.
+                // the record names the agent rather than the method. Where the plane named one, it
+                // is also the SECOND scope question this step owes: the operation check above is
+                // "may this key do A2A at all", and a key that holds the class grant still has not
+                // been asked whether it may reach THIS agent until `grant_held` runs. Refused the
+                // same way the operation check refuses, over the resource that would otherwise have
+                // gone straight onto the record unexamined.
                 let mut facts = ScopeFacts::default();
                 if let Some(resource) = self.draft.resource {
+                    if !self.grant_held(resource) {
+                        return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+                    }
                     let _ = facts.resources.push(resource);
                 }
                 Decision::proceed(token, facts)
