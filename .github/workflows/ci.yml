@@ -2049,7 +2049,7 @@ jobs:
           path: target/release
       - name: Make the downloaded binary executable
         run: chmod +x target/release/busbar
-      # ── the MCP plane's six ───────────────────────────────────────────────────────────────────
+      # ── the MCP plane's nine ──────────────────────────────────────────────────────────────────
       - name: mcp.rig authenticate-refusal
         run: ./scripts/mcp-subject/h2-authenticate-refusal.sh
       - name: mcp.rig verify-refusal
@@ -2062,7 +2062,7 @@ jobs:
         run: ./scripts/mcp-subject/h2-audit-record.sh
       - name: mcp.rig exit-terminal
         run: ./scripts/mcp-subject/h2-exit-terminal.sh
-      # ── the A2A plane's six ───────────────────────────────────────────────────────────────────
+      # ── the A2A plane's nine ──────────────────────────────────────────────────────────────────
       - name: a2a.rig verify-refusal
         run: ./scripts/a2a-subject/h2-verify-refusal.sh
       - name: a2a.rig admit-refusal
@@ -2075,6 +2075,38 @@ jobs:
         run: ./scripts/a2a-subject/h2-audit-record.sh
       - name: a2a.rig exit-terminal
         run: ./scripts/a2a-subject/h2-exit-terminal.sh
+      # ── THE PRICING LEGS, both planes ─────────────────────────────────────────────────────────
+      # These six are the money half of step 6, and they were UNWRITEABLE until the rigs' subject
+      # became a billing-ON deployment: `h2-lib.sh` wrote `per_request_fee: 1` and NO `rate_card:`
+      # key, which under #42 is billing OFF, so a priced meter class could not be exercised at all.
+      # One config key converted two already-gating rigs, and these are what the conversion bought.
+      #
+      # THEY GATE, AND THEY ARE EXPECTED RED TODAY. No `continue-on-error`, deliberately: each one
+      # is a decision the tree does not yet keep, and a red that says which is worth more than a
+      # green that says nothing. Do not delete one to make this job pass — each names its defect in
+      # its own failure text, and the headline of each is:
+      #   class-price      the declared meter classes (a2a `bytes`; mcp `tool_calls`+`bytes`) are
+      #                    neither reportable NOR priceable: the plane posts a quantity of zero
+      #                    (`receive.rs:729`, `method.rs:2510`), and `rate_card:` keys are validated
+      #                    against `models:` so no card can name a class at all (#71).
+      #   card-epoch       `GET /admin/usage` and `GET /keys/<id>/usage` reprice flat off the
+      #                    CURRENT card, so publishing a card reprices windows that closed before
+      #                    its `effective_from` (#79's own remaining item).
+      #   unpriced-refuses billing ON with the hit class unpriced serves 200 and bills the flat fee,
+      #                    i.e. the class prices at a SILENT ZERO — which #42 permits only when
+      #                    `rate_card:` is ABSENT.
+      - name: mcp.rig class-price
+        run: ./scripts/mcp-subject/h2-class-price.sh
+      - name: mcp.rig card-epoch
+        run: ./scripts/mcp-subject/h2-card-epoch.sh
+      - name: mcp.rig unpriced-refuses
+        run: ./scripts/mcp-subject/h2-unpriced-refuses.sh
+      - name: a2a.rig class-price
+        run: ./scripts/a2a-subject/h2-class-price.sh
+      - name: a2a.rig card-epoch
+        run: ./scripts/a2a-subject/h2-card-epoch.sh
+      - name: a2a.rig unpriced-refuses
+        run: ./scripts/a2a-subject/h2-unpriced-refuses.sh
   # ── WHERE THE OTHER FORTY NON-DEFAULT FEATURES ARE BUILT ──────────────────────────────────────
   # `cargo xtask gate feature-sets` requires EVERY non-default feature in the tree to appear either
   # in the matrix above or on one of these lines, and requires every line to name a feature that
