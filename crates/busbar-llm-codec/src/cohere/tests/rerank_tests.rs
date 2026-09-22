@@ -407,3 +407,44 @@ fn cohere_rerank_return_documents_round_trips_the_document() {
         "the ranked document echo must round-trip: {v}"
     );
 }
+
+/// MONEY BUG regression: Cohere *specs* `meta.billed_units.search_units` as a JSON number, but the
+/// wire carries it as a FLOAT (`3.0`), not a bare integer. `Value::as_u64()` returns `None` for a
+/// float-backed number even when it is exactly `3.0`, so the rerank search-unit charge was silently
+/// dropped to `None` (not even a billed `0` — the field vanished) instead of the real count.
+#[test]
+fn read_rerank_response_search_units_survives_as_float_on_the_wire() {
+    let resp = serde_json::to_vec(&json!({
+        "id": "r1",
+        "results": [{"index": 0, "relevance_score": 0.5}],
+        "meta": {"billed_units": {"search_units": 3.0}}
+    }))
+    .unwrap();
+    let ir_resp = read_rerank_response(&resp).expect("parses");
+    assert_eq!(
+        ir_resp.search_units,
+        Some(3),
+        "a float-encoded search_units count must survive as the exact integer, not None/0"
+    );
+}
+
+/// MONEY BUG regression: same float-encoded-count defect as `search_units` above, but on
+/// `meta.billed_units.input_tokens` in an embeddings response — the count busbar bills the caller
+/// for.
+#[test]
+fn read_embeddings_response_usage_survives_as_float_on_the_wire() {
+    let resp = serde_json::to_vec(&json!({
+        "id": "e1",
+        "embeddings": {"float": [[0.1, 0.2]]},
+        "meta": {"billed_units": {"input_tokens": 8.0}}
+    }))
+    .unwrap();
+    let ir_resp = read_embeddings_response(&resp).expect("parses");
+    let usage = ir_resp
+        .usage
+        .expect("a billed_units.input_tokens object must produce a usage record");
+    assert_eq!(
+        usage.input, 8,
+        "a float-encoded input_tokens count must survive as the exact integer, not 0"
+    );
+}
