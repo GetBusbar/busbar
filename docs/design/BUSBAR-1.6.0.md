@@ -1626,26 +1626,76 @@ The test's value is that it is not a judgement. Every prior argument about wheth
 "counts" was a judgement, and judgements drift — which is how the same kind came to be implemented
 four and five times over in different crates without anything catching it.
 
-**Applied to the tree as measured 2026-09-22, it indicts:**
+**Applied to the tree, CENSUSED 2026-09-22. The seed list below was 8 items; the census
+confirmed 4, KILLED 3, and reduced 1 by 93%. Both numbers are kept, because the kills are the
+more useful half.**
 
-| code | kind | where it lives now |
-|---|---|---|
-| `export/{prometheus,webhook,file}.rs` | export | `busbar-kernel/src/export/` — not crates |
-| the otlp `tracing-subscriber` layer (`observability.rs:~421`) | export | `init_logging`, not even in `export/` |
-| `hooks/scrape.rs:192-377` (141 LOC, a 2nd Prometheus renderer) | export | inside core, inside the FROZEN hook kind (#86) |
-| `busbar-mcp/src/mcp/client/*` (8,233 LOC, **36% of that crate**) | transport | inside a plane crate |
-| `busbar-llm`'s private `Hop`/`attempt` | transport | inside a plane crate |
-| `busbar-a2a`'s `pub(crate) trait Transport` (`fetch.rs:293`) | transport | inside a plane crate |
-| `busbar-voice`'s `ProviderDial`/`Detached` | transport | inside a plane crate |
-| `serve_listener` (`main.rs:2179`) raw `TcpListener` + axum | transport | **core's own data + admin listener** |
+| code | kind | raw/code | verdict |
+|---|---|---|---|
+| `export/{prometheus,webhook,file}.rs` | export | 572/329 | CONFIRMED |
+| the otlp layer (`observability.rs:758-816`, NOT `:421`) | export | 138/85 | CONFIRMED |
+| `hooks/scrape.rs:191-372` — a 2nd Prometheus renderer | export | 182/**141** | CONFIRMED exactly |
+| `serve_listener` + socket2 bind + `busbar-kernel/src/tls.rs` | transport | 1,012/**641** | CONFIRMED, ~6× larger than seeded |
+| `busbar-mcp/src/mcp/client/*` | transport | ~8,233 claimed → **527 code** | **REDUCED 93%** — `pool.rs` holds `busbar_kernel::egress::PinnedClientPool`; `transport.rs::send` calls `seam::send_pinned_buffered`. Only `client/stdio.rs` + a private SSE de-framer survive. |
+| `busbar-llm`'s `Hop`/`attempt` | — | — | **KILLED** — a borrowed per-attempt request VIEW plus retry orchestration; sends via `EngineTables::client()` → `UpstreamClients` in `busbar-kernel/src/topology/`. A caller. |
+| `busbar-a2a/src/a2a/fetch.rs:293 trait Transport` | — | — | **KILLED TWICE** — a one-method seam declaration, and its implementor `ReqwestTransport` also routes through `seam::send_pinned_*`, holding no client, resolver or TLS config. Its header still describes a stack that was removed. |
+| `busbar-voice`'s `ProviderDial`/`Detached` | — | — | **KILLED** — a trait declaration plus a null implementor whose `dial` returns `Err(DialRefusal::Detached)`. ZERO production implementors; `dial_provider` is called directly, never through the seam. |
 
-**The listener row is the test biting hardest and it is the right bite:** if core binds its own socket
-rather than acquiring a carrier through the transport kind, the kind is decorative.
+**THE CORRECTION THAT MATTERS: "4 of 4 protocols wrote their own private dial stack" was WRONG,
+and this document asserted it twice.** The HTTP leg is genuinely shared — every consumer funnels
+into `engine::build_client`, verified at 7 call sites, and there is **no plane-private HTTP client
+stack left**. What is duplicated is **core's own stacks against each other**: 5 dial stacks (the
+egress engine, `egress/duplex_ws.rs` with its own second `rustls::ClientConfig`, `build_otlp` with
+a third, `plane_host/pipe.rs`, `mcp/client/stdio.rs`), 4 pool holders, SSE framing **×9** of which
+6 bypass the shared grammar, WS framing ×2 structurally line-for-line identical.
 
-**This is also a large part of the answer to the size question.** Production code excluding the four
-new planes measures **2.42× v1.5.5 on code alone** (200,763 vs 69,171 true production; +131,592). A
-meaningful share of that excess is kind-work implemented inside core — the same kind, four and five
-times over — because until now there was no one-line test to apply to it.
+### THE CENSUS TOTAL — and an honest negative on the hypothesis
+
+| kind | raw | code | concentration |
+|---|---|---|---|
+| transport | 7,121 | 4,189 | `busbar-kernel` 59% |
+| auth | 4,461 | 2,859 | core 66% |
+| store | 2,946 | 1,910 | `busbar-kernel-wal` 79% (CONTESTED — if the WAL is a *unit*, store drops to ~400 code) |
+| plane | 2,304 | 1,030 | `substrate-values` + `kernel/src/ingress` |
+| export | 1,225 | 743 | 100% `busbar-kernel` |
+| secret | 865 | 537 | spread |
+| hook | 794 | 462 | `kernel-egress/src/trust` |
+| **TOTAL** | **19,716** | **11,730** | 85% core-resident |
+
+**This does NOT explain the 2.42×.** Against the +131,592-line excess it is **~15% raw**, and
+**6.1% of all production code**. The misplacement is real, systematic and concentrated — and it is
+roughly an eighth of the growth, not a majority. Recorded as a negative result rather than padded,
+because the next reader will otherwise assume the fold plus this census closes the size question.
+It does not, and what remains unexplained is still unexplained.
+
+### THE HEADLINE THE CENSUS ACTUALLY FOUND
+
+**The seven `busbar-transport-*` crates — 8,757 raw / 5,527 code — serve ZERO production bytes.**
+Verified four independent ways: `root::transports::listen_all` has exactly one caller and it is a
+test; `ComposedTransports::dialer` has four callers, all tests; the only production read of
+`sealed.transports` hands `.tls` to `provision_servers` for key material; and `main.rs:893` states
+it outright — *"WHY NOTHING IS BOUND HERE … This boot does not call `listen_all`."* They are
+registered, composition-checked and key-provisioned, and neither accept nor dial a byte.
+
+The same shape recurs one level down: `EgressAuth::decorate` and `busbar_contract::EgressAuthScheme`
+have **no in-tree implementor** outside test harnesses, while core implements bearer, JWT-bearer,
+OAuth-client-credentials and api-key schemes itself. **The two auth-kind crates that legitimately
+own the kind hold 237 lines; auth-kind code outside them is 12× larger.**
+
+**Auth is the worst-duplicated kind: 18 independent implementations.** SigV4 exists TWICE,
+completely, with no shared code — and the second (`busbar-kernel-identity`) has no production
+caller, so nobody reviews it. `Authorization: Bearer` is constructed at **7 independent sites**,
+HTTP Basic at 3, HMAC-SHA256 at 3–4 (one comment admitting it *"mirrors ... (which is private, so
+it cannot be reused)"*). Two of four planes go through the `ProtocolDecl::egress_auth_headers`
+seam and two do not — `busbar-mcp/src/codec/mod.rs:80` is literally `egress_auth_headers: None`.
+They were unified on the authz CHECK and left un-unified on the CREDENTIAL.
+
+**Two `/metrics*` endpoints answer with different content-types.** `PROMETHEUS_CONTENT_TYPE` has
+two references tree-wide and `hooks/scrape.rs:387` re-spells the literal **differently**
+(`; charset=utf-8`). On code-only the hand-rolled duplicate (141) is **twice** the adapter it
+duplicates (69).
+
+
 
 **THE `export` KIND — OWNER-LOCKED 2026-09-22 ("AGREED 100%"), six properties.** The roster rows
 above name the INSTANCES; this names the KIND, and the absence of a kind definition is precisely how
