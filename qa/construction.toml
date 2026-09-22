@@ -50,20 +50,21 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 # `kind-isolation:truths` reconciles this file, the gate's kind table and qa/kind-isolation.toml, in
 # both directions, on the DECISIONS #3 taxonomy: a key naming a struck kind (control/dialect/
 # egress_auth/pure_auth), or a plugin kind with no key here, is RED.
-# `plane` is an EXPLICIT list, not `crates/busbar-plane-*`, because two of the directories the glob
-# would match are not the pure plane kind: `busbar-plane-a2a-host` and `busbar-plane-mcp-host` are
-# each plane's IMPURE HOST crate (their own Cargo.toml header and lib.rs doc comment say so in
-# those words) — the bridged-ABI half that holds the runtime slot, `serve`, and the engine glue, and
-# that legitimately path-deps `busbar-kernel` and `busbar-substrate-values` the way a pure plane
-# never may. Scanning them under this glob would make manifest-allowlist and source-denylist run
-# the PURE kind's rule (no I/O, no `busbar-kernel` edge — "no allow-list can excuse it") over a
-# crate whose own docs declare it impure; excluding them here is the reclassification, and
-# `[gate.census.plugin_kinds].plane` below is the count that proves the exclusion is exact rather
-# than a glob nobody re-reads. Their `#![forbid(unsafe_code)]` and their `busbar-kernel`/
-# `busbar-substrate-values`/host-runtime deps (hyper, tokio, reqwest, libc transitively) are
-# reviewed like any other IMPURE crate's: by `kind-isolation`'s own dependency ledger
-# (`qa/kind-isolation.toml`), which already carries their `plane -> kernel` / `plane -> substrate`
-# rows — this file's purity rules are simply not the ones that apply to them.
+# `plane` is an EXPLICIT list, not `crates/busbar-plane-*`, AND THE REASON HAS CHANGED — read this
+# before anyone widens it to a glob. It was written because two directories the glob would match
+# were each plane's IMPURE HOST crate: the bridged-ABI half that holds the runtime slot, `serve`
+# and the engine glue, and that path-deps `busbar-kernel` and `busbar-substrate-values` the way a
+# pure plane never may. Scanning them here would have run the PURE kind's rule (no I/O, no
+# `busbar-kernel` edge — "no allow-list can excuse it") over a crate whose own docs declared it
+# impure.
+# BOTH HOST CRATES ARE GONE. `busbar-plane-a2a-host` folded back into `busbar-a2a` (858c93966) and
+# `busbar-plane-mcp-host` into `busbar-mcp` (f6561224b) — qa/kind-isolation.toml records both in
+# those words — and DECISIONS #39 spells the roster "no `busbar-plane-mcp-host`". MEASURED
+# 2026-09-22: `crates/busbar-plane-*` matches exactly the five directories listed below and nothing
+# else, so this list EXCLUDES NOTHING TODAY.
+# It stays an EXPLICIT list anyway, and not because of those two: a glob silently re-absorbs the
+# next host crate the day one appears, which is the case this paragraph was written for, and
+# `[gate.census.plugin_kinds].plane` below is the count that keeps the list honest either way.
 [gate.plugin_kinds]
 plane = [
   "crates/busbar-plane-a2a",
@@ -703,8 +704,9 @@ patterns = [
   'tokio::net', 'tokio::fs', 'tokio::process',
   'async_std', 'libc', 'reqwest', 'hyper',
 ]
-# kinds scanned: plane, hook, pure_auth, egress_auth (gate.plugin_kinds); store/secret/export are
-# I/O kinds and are out of scope for this rule by design (section 1.2 exempts them).
+# kinds scanned: plane, hook, auth (gate.plugin_kinds); store/secret/export are I/O kinds and are
+# out of scope for this rule by design (section 1.2 exempts them). UNTIL 2026-09-22 THIS LINE READ
+# `plane, hook, pure_auth, egress_auth`, in the present tense, and that is the defect below.
 # `pure_auth`/`egress_auth` named NO key in [gate.plugin_kinds] -- both resolved to an EMPTY glob
 # list, so the whole auth kind went unscanned. Proven, not inferred: `use std::net::TcpStream`
 # planted in crates/auth-static-plugin/src/lib.rs scored `PASS denylist:hits`.
@@ -917,14 +919,27 @@ known_sites = [
 
 # ── 22. forbid-unsafe ────────────────────────────────────────────────────────────────────────────
 [rules.forbid-unsafe]
-why = """Plane, hook, pure-auth, egress-auth and secret crates carry `#![forbid(unsafe_code)]` — a \
+why = """Plane, hook, auth and secret crates carry `#![forbid(unsafe_code)]` — a \
 lint level nothing inside the crate can locally override, matching that these kinds are structurally \
 barred from unsafe by design, not merely asked nicely. Transport, ABI, loader, store and export \
 crates carry at least `#![deny(unsafe_code)]` (weaker: a reviewed site may locally `#[allow]` it), \
 because these kinds legitimately touch FFI or the wire. This checks the attribute is present at the \
 crate root — not that every individual unsafe site is itself reviewed, which is a finer-grained \
 check left to `cargo xtask gate blocking-ffi`-style tooling outside this gate."""
-forbid_kinds = ["plane", "hook", "pure_auth", "egress_auth", "secret"]
+# THE FOURTH TABLE THAT NAMED A KIND THAT DOES NOT EXIST. `[gate.plugin_kinds].plane` was missing
+# the fifth plane (2b2de9712), `[gate.plugin_kinds].export` pointed its family glob at the wrong
+# path (2b5727416), `[rules.source-denylist].kinds` named `pure_auth`/`egress_auth` and so scanned
+# no auth crate at all (383f23875) — and THIS list carried the same two struck names. LOCKED
+# DECISION #3 collapsed them into ONE `auth` kind (inbound-verify and outbound-sign are two
+# OPERATIONS of it), `[gate.plugin_kinds]` has no `pure_auth` or `egress_auth` key, so both
+# resolved to an EMPTY glob list and the auth kind was never held to this rule.
+# MEASURED, NOT INFERRED, 2026-09-22: this gate emitted nine `forbid-unsafe:<crate>` rows — the
+# five planes, both hooks, both secret crates — and NONE for `crates/auth-admin-tokens` or
+# `crates/auth-static-plugin`, NEITHER OF WHICH CARRIES THE ATTRIBUTE. Both are already named on
+# `known_missing_forbid` below, so spelling the kind correctly re-opens the ratchet over them
+# rather than reddening the row. That is the point of the correction: a debt that is scanned is a
+# debt somebody can close, and a debt filed under a kind nobody scans is a debt nobody can see.
+forbid_kinds = ["plane", "hook", "auth", "secret"]
 deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # Ratchet: crates known to be missing the attribute today, so the gate does not go red the moment
 # this rule is born. Each is real debt the owner closes by adding the attribute and deleting the
@@ -1506,29 +1521,67 @@ plane_crates = 4
 # and four crates silently stop being scanned by manifest-allowlist, source-denylist and
 # forbid-unsafe.
 #
-# A COUNT, NOT "AT LEAST ONE". The header above this file's `[gate.plugin_kinds]` records that a
-# glob matching no directory today is the intended state for a kind with no crate yet — `dialect`
-# and `control` are both legitimately 0, and `egress_auth` has no crate under its own glob. A
-# blanket "at least one" would red three documented zeros while still saying nothing about `plane`
-# going from five crates to one. The count catches the narrowing and leaves the intended zeros
-# alone; the day the codec split creates the first dialect crate, this number is raised with it.
+# A COUNT, NOT "AT LEAST ONE". A glob matching no directory today is the intended state for a kind
+# with no crate yet, and a blanket "at least one" would red such a documented zero while still
+# saying nothing about `plane` going from five crates to one. The count catches the narrowing and
+# leaves an intended zero alone; the day a kind's first crate appears, its number is raised with it.
+# `export`'s `crates/busbar-export-*` half matches no directory today and is the live example: the
+# kind still counts 1, from `crates/export-example-plugin`, and the second glob is the #34 landing
+# zone rather than a miscount.
 #
-# `plane` is PINNED 6 and the list above now names 5 (busbar-plane-{a2a,llm,mcp,streaming,voice}):
-# `crates/busbar-plane-admin` was renamed to `crates/busbar-core-admin` (R7, shipped), so its list
-# entry matched no directory and is struck. The pin is NOT lowered to 5 here — `[gate.census]` reds
-# a floor that goes down — so `ceiling-census` stays RED on the measured 5 until the commit that
-# owns the roster move re-pins it. `busbar-plane-a2a-host`/`busbar-plane-mcp-host` are deliberately
-# NOT in the explicit list above (IMPURE HOST crates, see the note over `[gate.plugin_kinds]`).
-# Pinning the number the glob ACTUALLY matches is the point: this table records what is scanned,
-# not what ought to be.
+# ── RE-PINNED 2026-09-22, AND EVERY DECREMENT NAMES ITS CAUSE ───────────────────────────────────
+#
+# This is the ceremony the rule above asks for. ADDING a kind crate needs none; REMOVING one is the
+# manoeuvre, `actual < pinned` is RED, and a decrement with NO NAMED CAUSE is exactly what that RED
+# exists to catch. Measured on this tree, 2026-09-22, by the globs exactly as they are written
+# above — the number each glob ACTUALLY matches, not the number it ought to:
+#
+#   * `plane` 6 -> 5. TWO removals and one addition, netting one. `busbar-plane-voice` was FOLDED
+#     into `busbar-plane-streaming` and its directory DELETED (#18/#83, fbead1a31) — the streaming
+#     plane is the one plane. `crates/busbar-plane-admin` IS NOT IN THIS TREE and
+#     `crates/busbar-core-admin` is: DECISIONS #3 excludes admin from the plugin kinds outright
+#     ("admin & oauth2 are NOT plugins ... There is no `control` plugin kind"), so that list entry
+#     had been naming a directory that does not exist, for a kind admin never was.
+#     Against those two removals, `busbar-plane-decision` was ADDED (#48, 2b2de9712): the fifth
+#     plane, which had been in no kind list at all and which source-denylist therefore could not
+#     see. DECISIONS #39 pins the roster — "planes = exactly 5 crates
+#     `busbar-plane-{llm,mcp,a2a,streaming,decision}`" — the explicit list above names exactly
+#     those five, and all five directories exist on this tree.
+#   * `unit` 14 -> 1. The W2.c unit fold (2c9eddecf, "12 units -> 8 busbar-kernel-<name>"): the
+#     glob `crates/busbar-unit-*` now matches exactly one directory,
+#     `crates/busbar-unit-transport-key`. THE SAME LANDING IS ALREADY RE-PINNED TWICE IN THIS FILE
+#     — `[rules.loc-ceilings].unit_total_ceiling` 14423 -> 268 and
+#     `[rules.loc-ceilings].verbs_ceiling` 1431 -> 0, both on this date, both citing this fold —
+#     and this row is its third figure, the one nobody re-pinned alongside the other two. The glob
+#     is deliberately NOT repointed at `crates/busbar-kernel-*`: those eight are KERNEL crates,
+#     held by `[rules.loc-ceilings]`, and moving them under a plugin-kind glob would run the unit
+#     kind's rules over the kernel rather than restore a count.
+#   * `pure_auth` = 2 and `egress_auth` = 0 are STRUCK and `auth` = 2 takes their place. This is a
+#     RENAME, not a decrement: LOCKED DECISION #3 makes auth ONE kind — inbound-verify and
+#     outbound-sign are two OPERATIONS of it, direction is a usage mode — and `[gate.plugin_kinds]`
+#     now carries a single `auth` key whose glob `crates/auth-*` matches the same two directories
+#     (`crates/auth-admin-tokens`, `crates/auth-static-plugin`) that the split spelling claimed
+#     between them. Neither struck key named a glob: both resolved to the empty list, which is how
+#     `[rules.source-denylist].kinds` left the whole auth kind unscanned (383f23875).
+#   * `dialect` = 0 and `control` = 0 are STRUCK. Both are kinds DECISIONS #3 cancelled, neither
+#     names a key in `[gate.plugin_kinds]`, and `ceiling-census` reds a pin naming no glob in
+#     exactly the way a ceiling naming no row is red. NOTHING STOPS BEING COUNTED by striking them:
+#     there was no glob under either key for the count to have been reading.
+#
+# THE BASE COMPARISON STILL REPORTS THE THREE DECREMENTS (plugin_kinds.plane 6->5,
+# plugin_kinds.unit 14->1, plugin_kinds.pure_auth 2->0), AND THAT IS THIS ROW WORKING RATHER THAN
+# FAILING. `[gate.census]` reds a floor that went DOWN versus the base commit precisely because it
+# cannot tell a narrowed glob from a folded-away crate, so the commit that owns a roster move is
+# the commit that carries the report and names the cause — above, and in its own message. It
+# EXPIRES BY ITSELF, exactly as a declared ceiling raise does: the moment this lands, the base
+# carries these numbers, the decrement disappears and the comparison is quiet. Re-pinning without
+# naming the fold, or leaving the pins stale so the row reds on `actual < pinned` forever, are the
+# two things this table is written to prevent.
 [gate.census.plugin_kinds]
-plane = 6
-dialect = 0
-control = 0
-unit = 14
+plane = 5
+unit = 1
 hook = 2
-pure_auth = 2
-egress_auth = 0
+auth = 2
 secret = 2
 store = 2
 export = 1
