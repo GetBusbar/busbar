@@ -37,12 +37,12 @@
 //! [`busbar_contract::config::UpstreamCreds`] verbatim — the same type `PoolCfg` already names for
 //! its own per-section override — rather than a second `own`/`passthrough` enum.
 //!
-//! That type used to be `busbar_api::UpstreamCreds`, and naming it was the ONLY reason this crate
-//! depended on `busbar-api` — the only pure plane that did. The dependency was not free: it reached
-//! banned source through `busbar_api -> sha2 -> cpufeatures -> libc`, which the transitive source
+//! That type used to live in the legacy plugin-facing crate, and naming it was the ONLY reason this
+//! plane depended on that crate — the only one of the five that did. The dependency was not free:
+//! it reached banned source through `sha2 -> cpufeatures -> libc`, which the transitive source
 //! denylist forbids any pure plugin kind, and which went unreported for as long as this crate was
-//! in no kind list. The type moved to the contract crate beside `ModelCfg`, both reserved shapes
-//! now arrive from the one crate a plugin may name, and the edge is deleted rather than waived.
+//! in no kind list. The type moved to the contract beside `ModelCfg`, so both reserved shapes now
+//! arrive from the one crate a plugin may name, and the edge is deleted rather than waived.
 
 use std::collections::HashMap;
 

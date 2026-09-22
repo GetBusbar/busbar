@@ -1,12 +1,12 @@
 //! The plane is pure, and this is what says so.
 //!
 //! Mirrors `busbar-plane-a2a`'s own `purity.rs`, and no longer carries the ONE difference it used
-//! to: `busbar_api` was exempted here, because this crate named it for `UpstreamCreds`. It is on
-//! the forbidden list now, like every other non-contract busbar crate, because the exemption had a
-//! price nobody was paying attention to — `busbar_api` depends on `sha2`, and
-//! `busbar-plane-decision -> busbar_api -> sha2 -> cpufeatures -> libc` is banned source in a pure
-//! plugin kind. `UpstreamCreds` moved to `busbar_contract::config` verbatim and the edge is gone,
-//! so the exemption has nothing left to excuse. `ModelCfg` needed no exception either — it is
+//! to. The legacy plugin-facing crate was exempted from the "names no kernel-side crate" scan here,
+//! because this crate named it for `UpstreamCreds`; it is on the forbidden list now, like every
+//! other non-contract busbar crate. The exemption had a price nobody was paying attention to: that
+//! crate depends on `sha2`, and `sha2 -> cpufeatures -> libc` is banned source in a pure plugin
+//! kind. `UpstreamCreds` moved to `busbar_contract::config` verbatim and the edge is gone, so the
+//! exemption has nothing left to excuse. `ModelCfg` needed no exception either — it is
 //! `busbar_contract::config::ModelCfg` (DECISIONS #40/#38), the crate's ordinary contract
 //! dependency. `busbar_kernel` stays ON the forbidden list and this crate no longer names it
 //! anywhere: `src/registry.rs` and its sibling `src/tests/registry.rs` were the only two lines of
@@ -125,11 +125,12 @@ fn the_plane_performs_no_input_or_output() {
 
 /// The plane names no GENUINELY kernel-side crate.
 ///
-/// `busbar_api` IS on this list now. It was the deliberate exception for as long as this crate
-/// named it for `UpstreamCreds`, and that exception was the single edge by which a pure plane
-/// reached banned source (`busbar_api -> sha2 -> cpufeatures -> libc`). The type moved to
-/// `busbar_contract::config` and this line is what stops the edge coming back by the same door.
-/// `busbar_kernel` has been on it throughout, and this test was RED on exactly two source lines —
+/// The legacy plugin-facing crate IS on this list now (first entry). It was the deliberate
+/// exception for as long as this crate named it for `UpstreamCreds`, and that exception was the
+/// single edge by which a pure plane reached banned source (`sha2 -> cpufeatures -> libc`). The
+/// type moved to `busbar_contract::config` and the entry below is what stops the edge coming back
+/// by the same door. `busbar_kernel` has been on it throughout, and this test was RED on exactly
+/// two source lines —
 /// `src/registry.rs`'s `use` of `PlaneDecl` and `src/tests/registry.rs`'s `BuildCtx` literal —
 /// until both files were deleted as unreachable code. It is GREEN now and is the source-side half
 /// of this crate's #40 witness (the manifest-side half is `invariance.rs`'s
