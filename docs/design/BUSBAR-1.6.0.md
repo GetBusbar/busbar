@@ -1541,6 +1541,41 @@ side; a careless "keep the correctly-named one" deletes the working plane. It al
 Do the folds **after** the current fix wave lands, not during: these are whole-crate moves and they
 will conflict with every in-flight edit.
 
+## The audit ledger has a fold-shaped blind spot — do not blind-run `ledger sync --write`
+
+`cargo xtask gate audit-ledger` is RED on `missing-scopes`, naming five paths the tree implies and
+the register does not carry: `crates/busbar-plane-decision/src` (+ its two test dirs),
+`crates/busbar-a2a/src/tests` (new, from the `-host` fold) and `testing/ws-conformance` (new, from
+the ws subject becoming a workspace member).
+
+The gate prints its own remediation, `cargo xtask ledger sync --write`. **Running that blind would
+quietly destroy audit coverage,** and the roster fold makes this worse every time it runs.
+
+A dry run shows sync would DELETE ~19 records for "path gone from the tree", including
+`crates/busbar-plane-{a2a,mcp}-host/src/tests`, `crates/busbar-grammar/tests`,
+`crates/busbar-core/**`, `crates/busbar-substrate/**` and `crates/busbar-contract-transport/**`.
+
+**But that code did not vanish — it MOVED.** The `-host` tests are now under `busbar-mcp` and
+`busbar-a2a`; grammar's are heading into `busbar-contract`; core and substrate drained into the
+kernel-8. So the sequence is:
+
+1. a fold moves audited code into a new scope,
+2. the gate flags the new scope as missing,
+3. `sync --write` adds the new scope **unaudited** and deletes the old scope's **audit record**,
+4. the gate goes green.
+
+Net effect: **audited code is laundered into an unaudited scope, and the gate reports success.** The
+ledger's purpose is to make "has this been audited" answerable, and a fold is precisely the operation
+that should CARRY an audit forward rather than drop it.
+
+The gate only checks for MISSING scopes. It has no rule for "this scope's code moved somewhere that
+is now unaudited", which is the exact shape of the 61→28 roster collapse — so the collapse can silently
+zero the audit coverage of the whole tree, one honest-looking green at a time.
+
+**Held deliberately.** The sync is not run until the roster folds settle, and when it is run the
+moved scopes need their audit records CARRIED to the new path, not deleted. That is a change to how
+`ledger sync` treats a rename-or-fold, not a one-off bookkeeping step.
+
 ## Survivor review — transport hardening that was audited, then lost
 
 Seven `codeaudit-fix/transport-*` branches reviewed against trunk. **Six are LOST, one superseded.**
