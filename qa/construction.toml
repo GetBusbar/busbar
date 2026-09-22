@@ -705,7 +705,13 @@ patterns = [
 ]
 # kinds scanned: plane, hook, pure_auth, egress_auth (gate.plugin_kinds); store/secret/export are
 # I/O kinds and are out of scope for this rule by design (section 1.2 exempts them).
-kinds = ["plane", "hook", "pure_auth", "egress_auth"]
+# `pure_auth`/`egress_auth` named NO key in [gate.plugin_kinds] -- both resolved to an EMPTY glob
+# list, so the whole auth kind went unscanned. Proven, not inferred: `use std::net::TcpStream`
+# planted in crates/auth-static-plugin/src/lib.rs scored `PASS denylist:hits`.
+# The spelling is stale against LOCKED DECISION #3: auth is ONE kind -- inbound-verify and
+# outbound-sign are two OPERATIONS of it, direction is a usage mode, and there is no separate
+# egress-auth kind. The config still encoded a split the architecture cancelled.
+kinds = ["plane", "hook", "auth"]
 # Reviewed exceptions: crate -> list of patterns from above accepted for that crate, with the reason
 # living in the commit that added it. Empty at hour 0.
 [rules.source-denylist.allowlist]
