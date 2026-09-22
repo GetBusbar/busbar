@@ -15,7 +15,9 @@ fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, ou
     input.extend_from_slice(&audit_suffix(ts, act, res, out, pr));
     let via_seam = busbar_api::sha256_hex(&input);
 
-    // The legacy digest: the AuditEntry's own `digest_fields` through the ONE canonicaliser.
+    // The legacy digest: the AuditEntry's own `digest_fields` through the ONE canonicaliser, forced
+    // to scheme 1 -- the framing this suffix (a raw pipe join, built by `audit_suffix` above) is
+    // actually in.
     let entry = AuditEntry {
         seq,
         ts,
@@ -25,6 +27,7 @@ fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, ou
         principal: pr.to_string(),
         prev_hash: prev_hash.to_string(),
         hash: String::new(),
+        scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: true,
     };
     let legacy = digest(&entry);
@@ -80,7 +83,8 @@ fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
         audit_suffix(ts + 60, "hook.delete", res, out, pr),
     );
 
-    // The legacy ring's records for the SAME fields at the SAME chain positions.
+    // The legacy ring's records for the SAME fields at the SAME chain positions -- scheme 1, the
+    // framing the manually-built `audit_suffix` fed through the seam above is actually in.
     let mk = |seq, ts, action: &str, prev: String| AuditEntry {
         seq,
         ts,
@@ -90,6 +94,7 @@ fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
         principal: pr.to_string(),
         prev_hash: prev,
         hash: String::new(),
+        scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: true,
     };
     assert_eq!((seq1, prev1.as_str()), (1, ""), "genesis position");
@@ -282,7 +287,9 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
     );
 
     // The legacy admin ring's records for the SAME fields at the SAME positions — the byte-identity
-    // reference. `digest` is the ONE canonicaliser both paths share.
+    // reference. `digest` is the ONE canonicaliser both paths share. Scheme 1: these fields went
+    // through the seam as a raw `audit_suffix` (legacy) suffix above, so a correct restore must read
+    // them back as scheme 1 too — see the `scheme` check added to `same` below.
     let mk = |seq, ts, action: &str, prev: String| AuditEntry {
         seq,
         ts,
@@ -292,6 +299,7 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
         principal: pr.to_string(),
         prev_hash: prev,
         hash: String::new(),
+        scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: false,
     };
     let legacy_head = mk(1, ts, "hook.register", String::new());
@@ -318,6 +326,7 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
             &a.principal,
             &a.prev_hash,
             &a.hash,
+            a.scheme,
         ) == (
             b.seq,
             &b.ts,
@@ -327,6 +336,7 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
             &b.principal,
             &b.prev_hash,
             &b.hash,
+            b.scheme,
         )
     };
     // Newest-first: the tail leads. Fill the reference hashes so every field is compared.
@@ -602,7 +612,12 @@ fn legacy_pipe_suffix_lets_an_embedded_pipe_forge_the_readback() {
     // it with the rest of the record it wants read back instead.
     let forged_resource = "innocuous|applied|root";
     let suffix = audit_suffix(ts, "hook.register", forged_resource, "rejected", "attacker");
-    let (_, action, resource, outcome, principal) = parse_audit_suffix(&suffix);
+    let (_, action, resource, outcome, principal, scheme) = parse_audit_suffix(&suffix);
+    assert_eq!(
+        scheme,
+        crate::audit_ring::AUDIT_SCHEME_PIPE,
+        "an unmarked, pipe-joined suffix must read back as scheme 1"
+    );
     assert_eq!(action, "hook.register");
     // The real outcome/principal ("rejected"/"attacker") were swallowed into `resource` and the
     // forged tail split out as if they were the real outcome/principal.
@@ -629,7 +644,12 @@ fn safe_suffix_round_trips_a_pipe_carrying_payload_without_forgery() {
     let ts = 1_700_000_000u64;
     let forged_resource = "innocuous|applied|root";
     let suffix = audit_suffix_safe(ts, "hook.register", forged_resource, "rejected", "attacker");
-    let (got_ts, action, resource, outcome, principal) = parse_audit_suffix(&suffix);
+    let (got_ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&suffix);
+    assert_eq!(
+        scheme,
+        crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED,
+        "a marker-prefixed, length-prefixed suffix must read back as scheme 2"
+    );
     assert_eq!(got_ts, ts);
     assert_eq!(action, "hook.register");
     assert_eq!(
@@ -644,7 +664,8 @@ fn safe_suffix_round_trips_a_pipe_carrying_payload_without_forgery() {
 #[test]
 fn safe_suffix_round_trips_pipes_in_every_field_and_empty_fields() {
     let suffix = audit_suffix_safe(42, "a|b", "", "o|u|t", "p|r");
-    let (ts, action, resource, outcome, principal) = parse_audit_suffix(&suffix);
+    let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&suffix);
+    assert_eq!(scheme, crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED);
     assert_eq!(ts, 42);
     assert_eq!(action, "a|b");
     assert_eq!(resource, "");
@@ -657,7 +678,8 @@ fn safe_suffix_round_trips_pipes_in_every_field_and_empty_fields() {
 #[test]
 fn parse_audit_suffix_still_reads_legacy_bodies() {
     let suffix = audit_suffix(7, "hook.delete", "hook:compress", "applied", "admin");
-    let (ts, action, resource, outcome, principal) = parse_audit_suffix(&suffix);
+    let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&suffix);
+    assert_eq!(scheme, crate::audit_ring::AUDIT_SCHEME_PIPE);
     assert_eq!(ts, 7);
     assert_eq!(action, "hook.delete");
     assert_eq!(resource, "hook:compress");
@@ -707,7 +729,7 @@ fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
 #[test]
 fn parse_audit_suffix_does_not_panic_on_a_truncated_safe_body() {
     // Marker only, nothing after it.
-    let (ts, action, resource, outcome, principal) = parse_audit_suffix(&[SAFE_SUFFIX_MARKER]);
+    let (ts, action, resource, outcome, principal, _scheme) = parse_audit_suffix(&[SAFE_SUFFIX_MARKER]);
     assert_eq!(
         (
             ts,
@@ -732,7 +754,7 @@ fn parse_audit_suffix_does_not_panic_on_a_truncated_safe_body() {
     over_declared.extend_from_slice(&1_700_000_000u64.to_be_bytes()); // ...and gets them.
     over_declared.extend_from_slice(&1_000u64.to_be_bytes()); // action field claims 1000 bytes...
     over_declared.extend_from_slice(b"short"); // ...but only 5 follow.
-    let (ts, action, resource, outcome, principal) = parse_audit_suffix(&over_declared);
+    let (ts, action, resource, outcome, principal, _scheme) = parse_audit_suffix(&over_declared);
     assert_eq!(ts, 1_700_000_000);
     assert_eq!(
         action, "",
@@ -741,4 +763,162 @@ fn parse_audit_suffix_does_not_panic_on_a_truncated_safe_body() {
     assert_eq!(resource, "");
     assert_eq!(outcome, "");
     assert_eq!(principal, "");
+}
+
+// ── AUDIT-INTEGRITY FIX: THE PENDING RECOVERY QUEUE (defect #3) ────────────────────────────────────
+//
+// `PendingAuditQueue` is tested directly, driven over an injected `mint` closure, rather than through
+// `emit`/`emit_admin_hostless` themselves: those two are hardwired to the PRODUCTION `KIND_ID_AUDIT`
+// stream (a process-wide singleton other parallel tests share via `global_audit_host_app`), so forcing
+// a durable-write failure through them would either race those tests or require re-registering the
+// shared stream mid-suite. The queue is the actual recoverability mechanism under test; driving it
+// directly is a tighter, deterministic proof of the same fix.
+
+fn pending(scope: &str, tag: u8) -> PendingAudit {
+    PendingAudit {
+        scope: scope.to_string(),
+        suffix: vec![tag],
+    }
+}
+
+/// RED-before-green shape: before this fix, a durable-write failure inside `emit`/`emit_admin_hostless`
+/// was logged and the record was gone the instant the call returned — nothing existed to retry it.
+/// GREEN: a record that fails to mint while the backend is down stays queued (not dropped), and is
+/// delivered on the FIRST successful drain once the backend recovers.
+#[test]
+fn pending_audit_queue_recovers_a_write_once_the_backend_recovers() {
+    let q = PendingAuditQueue::new(4);
+    q.enqueue(pending("admin", 1));
+
+    // First drain: the backend is STILL down — nothing recovers, and the record must stay queued.
+    let mut recovered: Vec<(String, u64)> = Vec::new();
+    q.drain_with(
+        |_scope, _suffix| Err(()),
+        |p, seq, _prev, _hash| recovered.push((p.scope.clone(), seq)),
+    );
+    assert!(
+        recovered.is_empty(),
+        "nothing recovers while the backend is still down"
+    );
+    assert_eq!(
+        q.len(),
+        1,
+        "the record must stay queued, not be dropped, while the backend is down — this is the fix: \
+         before it, the record vanished the instant `emit` returned"
+    );
+
+    // Second drain: the backend has recovered — the SAME record must now be delivered.
+    q.drain_with(
+        |_scope, _suffix| Ok((7, "prev".to_string(), "hash".to_string())),
+        |p, seq, _prev, _hash| recovered.push((p.scope.clone(), seq)),
+    );
+    assert_eq!(
+        recovered,
+        vec![("admin".to_string(), 7)],
+        "the queued record must be delivered on the first successful drain once the backend recovers"
+    );
+    assert_eq!(q.len(), 0, "a delivered record leaves the queue");
+}
+
+/// Multiple queued records drain OLDEST-FIRST, in the order they failed — a recovery that reordered
+/// evidence would itself be a form of corruption.
+#[test]
+fn pending_audit_queue_drains_in_fifo_order() {
+    let q = PendingAuditQueue::new(8);
+    q.enqueue(pending("admin", 1));
+    q.enqueue(pending("admin", 2));
+    q.enqueue(pending("admin", 3));
+
+    let mut seen: Vec<u8> = Vec::new();
+    let next_seq = std::cell::Cell::new(100u64);
+    q.drain_with(
+        |_scope, _suffix| {
+            let s = next_seq.get();
+            next_seq.set(s + 1);
+            Ok((s, String::new(), String::new()))
+        },
+        |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
+    );
+    assert_eq!(seen, vec![1, 2, 3], "drained oldest-failed-first");
+    assert_eq!(q.len(), 0);
+}
+
+/// A mint that fails partway through a multi-record drain stops WITHOUT losing or reordering the
+/// records that had not yet been tried — they must still be queued, in their original order.
+#[test]
+fn pending_audit_queue_stops_at_the_first_failure_and_preserves_the_rest() {
+    let q = PendingAuditQueue::new(8);
+    q.enqueue(pending("admin", 1));
+    q.enqueue(pending("admin", 2));
+
+    let mut seen: Vec<u8> = Vec::new();
+    // The FIRST row (tag 1) recovers; the SECOND (tag 2) still fails.
+    q.drain_with(
+        |_scope, suffix| {
+            if suffix == [1] {
+                Ok((1, String::new(), String::new()))
+            } else {
+                Err(())
+            }
+        },
+        |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
+    );
+    assert_eq!(seen, vec![1], "the recoverable row was delivered");
+    assert_eq!(
+        q.len(),
+        1,
+        "the still-failing row stays queued rather than being dropped"
+    );
+
+    // A later, fully-healthy drain finishes the job.
+    q.drain_with(
+        |_scope, _suffix| Ok((2, String::new(), String::new())),
+        |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
+    );
+    assert_eq!(seen, vec![1, 2], "the remaining row recovers once the backend is healthy");
+}
+
+/// THE WATERMARK: once the recovery queue itself is full, the OLDEST entry is evicted to admit the
+/// newest failure, and that eviction is a DETECTED, COUNTED gap — never a silent one. Proven both on
+/// the counter and on the coded diagnostic actually firing at the eviction site.
+#[test]
+fn pending_audit_queue_reports_a_gap_when_it_overflows() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let q = PendingAuditQueue::new(2);
+
+    let cap = DiagCapture::default();
+    {
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let _g = tracing::subscriber::set_default(subscriber);
+        for tag in 0..3u8 {
+            q.enqueue(pending("admin", tag));
+        }
+    }
+
+    assert_eq!(q.len(), 2, "bounded: the queue never exceeds its cap");
+    assert_eq!(
+        q.dropped(),
+        1,
+        "the third failure, over the cap, evicted the oldest — a detected, counted gap"
+    );
+
+    // The SURVIVING two are the newest two: the oldest (tag 0) was evicted to make room.
+    let mut seen: Vec<u8> = Vec::new();
+    q.drain_with(
+        |_s, _suffix| Ok((1, String::new(), String::new())),
+        |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
+    );
+    assert_eq!(
+        seen,
+        vec![1, 2],
+        "tag 0 was evicted by overflow; tags 1 and 2 survived"
+    );
+
+    let diags = cap.0.lock().unwrap();
+    assert!(
+        diags.iter().any(|d| d.contains("BUSBAR-2044")),
+        "the overflow eviction must emit PLANE_AUDITLOG_WRITE_FAILED (BUSBAR-2044) at ERROR — a \
+         silent counter with no guaranteed log sink is exactly the regression being fixed; \
+         captured: {diags:?}"
+    );
 }

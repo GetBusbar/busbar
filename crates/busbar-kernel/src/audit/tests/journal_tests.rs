@@ -740,3 +740,39 @@ fn an_evicted_neutral_scopes_tampered_tail_surfaces_a_break_on_resume() {
         "the neutral runtime resume-path tamper must be RECORDED, not swallowed: {breaks:?}"
     );
 }
+
+/// AUDIT-INTEGRITY FIX: `append_scoped` hardcoded every row's `PlaneRecord::ts` to `0`, which defeats
+/// retention entirely — `purge_plane_records_before` drops any row with `r.ts < before`, so a `ts` of
+/// 0 makes every row look infinitely old and the FIRST retention sweep deletes the whole class
+/// regardless of how recently it was written. Proven over the REAL `busbar-store-memory` backend
+/// (not this file's in-RAM `MockStore`, whose `purge_plane_records_before` is a stub that always
+/// answers 0 and so cannot exercise this): a record appended just now must SURVIVE a retention sweep
+/// whose cutoff is safely in the past.
+#[test]
+fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
+    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_store_memory::MemoryStore::new());
+    let plane_store = crate::plane::store::PlaneStoreView::narrow(store.clone());
+    let j: Journal<NeutralRec> = Journal::new(1024);
+    j.set_sink(plane_store);
+    write_neutral(&j, "acme", b"|fresh");
+
+    // A cutoff safely BEFORE "now": a record written during this test must be newer than it.
+    let cutoff = busbar_kernel::store::now().saturating_sub(3600);
+    let purged = store
+        .purge_plane_records_before(KIND_NEUTRAL, cutoff)
+        .expect("purge");
+    assert_eq!(
+        purged, 0,
+        "a row written just now must survive a retention cutoff an hour in the past — this fails \
+         today because `append_scoped` stamps `ts: 0`, which is always < any positive cutoff"
+    );
+
+    let remaining = store
+        .list_plane_records(KIND_NEUTRAL, &PlaneSelector::Parent("acme".to_string()))
+        .expect("list");
+    assert_eq!(
+        remaining.len(),
+        1,
+        "the fresh record must still be present after the retention sweep"
+    );
+}

@@ -19,6 +19,7 @@
 //! sees a credential" is a property of the bytes rather than a rule planes are asked to follow.
 
 use busbar_contract::caps::ReasonCode;
+use zeroize::Zeroize;
 
 use crate::grammar::{ArrivalLocation, MaskKind, Span};
 
@@ -197,10 +198,29 @@ impl MaskedSpan {
 /// One allocation, made when the connection is accepted, sized by the cursor cap. Nothing on the
 /// frame path grows it: an oversize credential is refused with `CredentialBudget`, which is a
 /// different answer from `CursorBudget` on purpose — the slab is full, not the cursor.
-#[derive(Debug)]
+///
+/// NO derived `Debug` — see the hand-written impl below. `buf` is raw client-credential plaintext
+/// (exactly what [`CredentialSlab::mask`] copied out of the cursor); a derived `Debug` would print
+/// it verbatim, so any `{:?}` of a containing struct — a log line, a panic message, a trace span —
+/// would leak the credential.
 pub struct CredentialSlab {
     buf: Vec<u8>,
     cap: usize,
+}
+
+/// `Debug` REDACTS `buf` and only `buf` — the same shape as
+/// `busbar_plugin::cold::auth::CompleteLoginRequest`'s hand-written impl, so the codebase has ONE
+/// redaction idiom rather than two. What survives is the non-secret shape: how many bytes are
+/// currently held and the slab's fixed capacity — useful for diagnosing a `CredentialBudget` refusal
+/// without ever printing the credential that triggered it.
+impl std::fmt::Debug for CredentialSlab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialSlab")
+            .field("buf", &"[REDACTED]")
+            .field("used", &self.buf.len())
+            .field("cap", &self.cap)
+            .finish()
+    }
 }
 
 impl CredentialSlab {
@@ -296,8 +316,15 @@ impl CredentialSlab {
 
     /// Forget everything. Called when a connection upgrades in band, because the facts and the
     /// principal are cleared there too, and a credential that survived would outlive its context.
+    ///
+    /// A bare `Vec::clear()` only drops the LENGTH to zero; the allocation itself is untouched, so
+    /// every credential byte this slab ever held keeps sitting in freed-but-not-overwritten heap —
+    /// readable by a heap dump, a core file, or a use-after-free/OOB read elsewhere in the process.
+    /// `Zeroize::zeroize` overwrites every byte with `0` (via a volatile write the compiler is not
+    /// permitted to elide as a dead store, unlike a plain loop-and-assign) before truncating the
+    /// length, so "forget everything" is actually true of the memory, not just the `len()`.
     pub fn clear(&mut self) {
-        self.buf.clear();
+        self.buf.zeroize();
     }
 }
 
@@ -306,3 +333,7 @@ impl Default for CredentialSlab {
         CredentialSlab::new()
     }
 }
+
+#[cfg(test)]
+#[path = "tests/mask_tests.rs"]
+mod tests;

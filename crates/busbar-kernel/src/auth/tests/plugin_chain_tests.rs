@@ -1068,3 +1068,101 @@ fn an_identified_chain_still_caches_the_leading_pass() {
         "an identified chain must still cache both the leading Pass and the Identify"
     );
 }
+
+/// `Identify`s any candidate that equals `"revocable"` with a module-suggested TTL, else `Pass`es.
+/// Cacheable, and COUNTS every `authenticate` call (shared via the `Arc` the test holds onto) so a
+/// revocation-bypass regression can prove the module was RE-CONSULTED rather than served from a
+/// cache entry whose lifetime a hit silently extended.
+struct CountingIdentify {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl busbar_api::AuthModule for CountingIdentify {
+    fn name(&self) -> &'static str {
+        "counting-identify-module"
+    }
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_api::AuthOutcome {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match candidate {
+            Some("revocable") => busbar_api::AuthOutcome::Identify(crate::auth::Principal {
+                id: "test:revocable".to_string(),
+                name: None,
+                roles: vec![],
+                ttl_secs: Some(10),
+            }),
+            _ => busbar_api::AuthOutcome::Pass,
+        }
+    }
+    fn cacheable(&self) -> bool {
+        true
+    }
+}
+
+/// AUTH-CACHE REVOCATION BYPASS (RED before the fix). `run_chain_cached` must never refresh a
+/// cache entry's TTL just because it was PRESENTED again — the TTL bounds how stale an admission
+/// decision may be, and a hit that resets it makes that bound unreachable: a credential presented
+/// more often than its own TTL would never be re-verified against the module, so a revocation would
+/// never take effect. This proves the opposite: hit the entry repeatedly at an interval SHORTER
+/// than its TTL (each hit must be served from cache, module NOT re-consulted), then query PAST the
+/// ORIGINAL TTL boundary (not any hit-refreshed one) and prove the chain is RE-RUN.
+///
+/// The call counter is the oracle: 1 after the first (miss) call, still 1 after every in-window
+/// hit, and 2 only once queried past the entry's ORIGINAL expiry. A buggy re-`put`-on-hit would
+/// have pushed the entry's expiry out to `last_hit_time + TTL` on each hit, so the exact instant
+/// chosen below (`t0 + TTL + 1`) sits PAST the original boundary but still INSIDE that
+/// bug-extended one — it would read as a HIT (calls staying at 1) under the bug and only reads as a
+/// MISS (calls becoming 2) once the fix lands.
+#[test]
+fn a_credential_hit_within_ttl_does_not_extend_the_cache_entrys_lifetime() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let auth = AuthMiddleware::from_chain_for_test(
+        vec![(
+            "counting-identify".to_string(),
+            Box::new(CountingIdentify {
+                calls: calls.clone(),
+            }) as Box<dyn crate::auth::AuthModule>,
+        )],
+        /* has_plugin_module = */ false,
+    );
+    let cache = crate::auth_cache::CredentialCache::new();
+    let t0 = 1_000_000u64;
+    const TTL: u64 = 10;
+
+    // First call: a cache MISS, so the module runs and the verdict is cached with its 10s TTL
+    // (expires_at == t0 + TTL).
+    let v0 = auth.run_chain_cached(Some("revocable"), Some(&cache), None, t0, None);
+    assert!(matches!(v0, ChainVerdict::Identified { .. }));
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the first presentation must consult the module (cache starts empty)"
+    );
+
+    // Hit it repeatedly at an interval SHORTER than the TTL (3s steps, well under 10s), all still
+    // inside the ORIGINAL window (t0+3 and t0+6 are both < t0+TTL == t0+10). Every one of these
+    // must be served from the cache: the module call count must not move.
+    for offset in [3u64, 6] {
+        let v = auth.run_chain_cached(Some("revocable"), Some(&cache), None, t0 + offset, None);
+        assert!(matches!(v, ChainVerdict::Identified { .. }));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a hit inside the TTL window must be served from cache, not re-consult the module \
+             (offset {offset})"
+        );
+    }
+
+    // Advance PAST the ORIGINAL TTL boundary (t0 + TTL == t0 + 10), to t0 + 11 — which is still
+    // INSIDE a bug-extended window (the last hit was at t0 + 6, so a buggy re-put would have set
+    // expires_at = t0 + 6 + TTL == t0 + 16). The chain MUST be re-run here: a revoked credential
+    // presented on this steady cadence must be re-checked against the module, not served stale.
+    let past_original_ttl = t0 + TTL + 1;
+    let v_after = auth.run_chain_cached(Some("revocable"), Some(&cache), None, past_original_ttl, None);
+    assert!(matches!(v_after, ChainVerdict::Identified { .. }));
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "past the ORIGINAL TTL the chain must be RE-RUN — a hit must never have refreshed the \
+         entry's expiry, or a revoked credential would silently keep working forever"
+    );
+}

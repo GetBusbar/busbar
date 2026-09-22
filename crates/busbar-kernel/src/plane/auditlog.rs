@@ -44,7 +44,7 @@
 //! seam keeps chain positions in RAM and persists nothing, exactly as the legacy ring did.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::audit::journal::NeutralBody;
@@ -73,6 +73,20 @@ const ADMIN_LOG: &str = "admin";
 /// The admin audit stream's framing facts, held here (the record's, not the seam's). `PipeSeparated`
 /// because that is how the records already on disk were written; the scope does NOT participate in the
 /// digest — the one divergence from the task/call streams (see the module header).
+///
+/// UNLIKE [`crate::audit_ring::AuditEntry::scheme`], this stays a plain constant rather than growing
+/// a per-record tag of its own, and deliberately: it frames only the PRELUDE
+/// (`prev_hash`/`seq` — see `frame_prelude`), and neither field is ever caller-influenced text, so
+/// there is no boundary here for a caller-controlled `|` to move. The collision this whole change
+/// closes lives in the CONTENT suffix instead — `ts`/`action`/`resource`/`outcome`/`principal` — and
+/// that suffix already carries its own per-record scheme, self-described in the bytes: a leading
+/// [`SAFE_SUFFIX_MARKER`] means [`crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED`]
+/// ([`audit_suffix_safe`], every write since [`emit_admin_hostless`]/[`mirror`] existed); its absence
+/// means [`crate::audit_ring::AUDIT_SCHEME_PIPE`] ([`audit_suffix`], kept only to reproduce bytes
+/// already sealed). [`parse_audit_suffix`] reads that marker back into
+/// [`AuditEntry::scheme`](crate::audit_ring::AuditEntry::scheme) on restore, so this stream can
+/// always say which rules a given record's CONTENT was actually sealed under — same property,
+/// different byte the tag rides on.
 const AUDIT_FRAMING: Framing = Framing::PipeSeparated;
 const AUDIT_DIGESTS_SCOPE: bool = false;
 
@@ -232,11 +246,15 @@ fn take_lp(rest: &mut &[u8]) -> Vec<u8> {
     field.to_vec()
 }
 
-/// Parse an admin audit SUFFIX back into its typed fields — the inverse of BOTH [`audit_suffix_safe`]
-/// (tried first, keyed off [`SAFE_SUFFIX_MARKER`]) and the legacy [`audit_suffix`] (the fallback, for
-/// suffixes a store already holds from before this stream wrote the safe framing), for reconstructing
-/// an [`AuditEntry`] from a stored neutral body.
-fn parse_audit_suffix(content: &[u8]) -> (u64, String, String, String, String) {
+/// Parse an admin audit SUFFIX back into its typed fields plus the [`AuditEntry::scheme`] the
+/// content itself reveals — the inverse of BOTH [`audit_suffix_safe`] (tried first, keyed off
+/// [`SAFE_SUFFIX_MARKER`], read back as [`crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED`]) and the
+/// legacy [`audit_suffix`] (the fallback, for suffixes a store already holds from before this stream
+/// wrote the safe framing, read back as [`crate::audit_ring::AUDIT_SCHEME_PIPE`]), for reconstructing
+/// an [`AuditEntry`] from a stored neutral body. The marker byte is itself the on-disk scheme tag for
+/// this content shape — which sub-format a body is in IS which scheme it was written under — so the
+/// scheme returned here is read off the bytes, never assumed for the whole stream.
+fn parse_audit_suffix(content: &[u8]) -> (u64, String, String, String, String, u8) {
     if let Some(rest) = content.strip_prefix(&[SAFE_SUFFIX_MARKER]) {
         let mut rest = rest;
         let ts_bytes = take_lp(&mut rest);
@@ -248,7 +266,14 @@ fn parse_audit_suffix(content: &[u8]) -> (u64, String, String, String, String) {
         let resource = String::from_utf8_lossy(&take_lp(&mut rest)).into_owned();
         let outcome = String::from_utf8_lossy(&take_lp(&mut rest)).into_owned();
         let principal = String::from_utf8_lossy(&take_lp(&mut rest)).into_owned();
-        return (ts, action, resource, outcome, principal);
+        return (
+            ts,
+            action,
+            resource,
+            outcome,
+            principal,
+            crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED,
+        );
     }
     // LEGACY fallback: the `|`-joined shape (see [`audit_suffix`]'s doc for why this split is only
     // trusted for old, already-sealed bodies and never chosen for a new write).
@@ -260,6 +285,7 @@ fn parse_audit_suffix(content: &[u8]) -> (u64, String, String, String, String) {
         f.get(2).copied().unwrap_or_default().to_string(),
         f.get(3).copied().unwrap_or_default().to_string(),
         f.get(4).copied().unwrap_or_default().to_string(),
+        crate::audit_ring::AUDIT_SCHEME_PIPE,
     )
 }
 
@@ -309,7 +335,7 @@ fn reframe_audit(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
 /// constant `admin` log, never read from the body.
 pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> StoreResult<AuditEntry> {
     if let Ok(nb) = decode::<NeutralBody>(body) {
-        let (ts, action, resource, outcome, principal) = parse_audit_suffix(&nb.content);
+        let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&nb.content);
         return Ok(AuditEntry {
             seq: nb.seq,
             ts,
@@ -319,9 +345,13 @@ pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> StoreResult<Au
             principal,
             prev_hash: nb.prev_hash,
             hash: nb.hash,
+            scheme,
             recorded_here: false,
         });
     }
+    // The OLD pre-cleave `serde(AuditRecord)` row shape: it predates the safe suffix entirely, so it
+    // is unconditionally scheme 1 (pipe-joined) — never anything the marker byte could have said,
+    // since this branch never sees a content suffix at all.
     let row: busbar_api::AuditRecord = decode(body)?;
     Ok(AuditEntry {
         seq: row.seq,
@@ -332,6 +362,7 @@ pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> StoreResult<Au
         principal: row.principal,
         prev_hash: row.prev_hash,
         hash: row.hash,
+        scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
         recorded_here: false,
     })
 }
@@ -528,19 +559,190 @@ impl PlaneAuditLog {
     }
 }
 
+// ── FIX: THE ADMIN-AUDIT RECOVERY QUEUE — a transient durable-write failure must be RECOVERABLE ────
+//
+// [`emit`]/[`emit_admin_hostless`] are FIRE-AND-FORGET by design (see each's own doc): a durable-store
+// outage must never fail the mutation it is recording. Without a queue that made the failure
+// TERMINAL, not merely reported: the record was gone the instant the call returned, with nothing left
+// to retry. [`PendingAuditQueue`] closes that — a failed write is queued (bounded, oldest-evicted) and
+// replayed oldest-first the next time either emitter runs and the backend is healthy again, so a
+// transient blip becomes a DELAY, not a loss. If the queue itself fills (the backend has been down
+// longer than this process is willing to hold evidence in RAM for), the oldest entry is evicted to
+// admit the newest failure and that eviction is COUNTED and reported LOUDLY — a DETECTED gap, never a
+// silent one.
+
+/// Bound on [`PendingAudit`] rows held in RAM at once. An order of magnitude short of
+/// [`MAX_AUDIT_ENTRIES`] on purpose: this queue exists to bridge a TRANSIENT durable outage, not to
+/// become a second, unbounded audit log riding in RAM.
+const MAX_PENDING_AUDIT: usize = 256;
+
+/// One admin-audit mutation whose durable write failed on its first attempt. `scope` plus the
+/// already pre-framed `suffix` are everything a retry needs to replay the write byte-identically to
+/// what would have been sent the first time — nothing is re-derived, so a recovered record is
+/// indistinguishable from one that landed on the first try.
+#[derive(Clone)]
+struct PendingAudit {
+    scope: String,
+    suffix: Vec<u8>,
+}
+
+/// A BOUNDED FIFO of [`PendingAudit`] rows a durable-write failure could not persist, drained oldest-
+/// first the next time a write through it succeeds. See the section header above for the design.
+struct PendingAuditQueue {
+    rows: Mutex<VecDeque<PendingAudit>>,
+    /// THE WATERMARK: rows evicted from `rows` to admit a newer failure once the queue was already at
+    /// `cap` — each one a PERMANENT, DETECTED gap (as opposed to a row still queued, which is merely
+    /// delayed). Zero means every failure since boot has either recovered or is still queued.
+    dropped: AtomicU64,
+    cap: usize,
+}
+
+impl PendingAuditQueue {
+    const fn new(cap: usize) -> Self {
+        Self {
+            rows: Mutex::new(VecDeque::new()),
+            dropped: AtomicU64::new(0),
+            cap,
+        }
+    }
+
+    /// Queue `p`, evicting the OLDEST row first if already at `cap`. A full queue means the backend
+    /// has been down longer than this process holds evidence for, so the newest failure (likelier to
+    /// recover soon) is kept over the stalest one — but the eviction is never silent: it is counted on
+    /// `dropped` and reported at the coded [`crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED`] site so
+    /// the gap is visible rather than riding only on an aggregate nobody reads.
+    fn enqueue(&self, p: PendingAudit) {
+        let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
+        let evicted = q.len() >= self.cap;
+        if evicted {
+            q.pop_front();
+        }
+        q.push_back(p);
+        drop(q);
+        if evicted {
+            let dropped_total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            crate::diagnostics::diag_error!(
+                crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
+                gap_detected = true,
+                dropped_total,
+                "the admin audit recovery queue is full (bound {MAX_PENDING_AUDIT}); the OLDEST \
+                 queued record was evicted to admit this new failure and its evidence is now \
+                 PERMANENTLY LOST — a DETECTED GAP in the audit trail, not a delayed recovery. \
+                 {dropped_total} record(s) lost to this gap since boot."
+            );
+        }
+    }
+
+    /// Replay every queued row, oldest first, through `mint`, stopping at the FIRST failure (the
+    /// backend is still down) so the rest stay queued IN ORDER rather than being retried out of
+    /// sequence. A row that mints successfully is handed to `on_recovered` — production pushes it into
+    /// [`AUDIT_LOG`] so a recovered record becomes visible on `GET /audit` exactly as a live one would;
+    /// a test can hand it a local collector instead of touching the process-wide ring.
+    fn drain_with(
+        &self,
+        mint: impl Fn(&str, &[u8]) -> Result<(u64, String, String), ()>,
+        mut on_recovered: impl FnMut(&PendingAudit, u64, String, String),
+    ) {
+        loop {
+            let next = self
+                .rows
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop_front();
+            let Some(p) = next else { return };
+            match mint(&p.scope, &p.suffix) {
+                Ok((seq, prev_hash, hash)) => on_recovered(&p, seq, prev_hash, hash),
+                Err(()) => {
+                    // Still down: put it back at the FRONT so order is preserved, and stop for this
+                    // call — no point burning through the rest of the queue right now.
+                    self.rows
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push_front(p);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// TEST ONLY: how many rows are currently queued.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.rows.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// TEST ONLY: the watermark — how many rows have been permanently evicted by overflow.
+    #[cfg(test)]
+    fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
+/// THE PROCESS-WIDE admin-audit recovery queue — process state, not config-derived, for the same
+/// reason [`AUDIT_LOG`] is a global: a config apply must not open a second, empty queue that forgets
+/// what an earlier configuration's outage left pending.
+static PENDING_AUDIT: PendingAuditQueue = PendingAuditQueue::new(MAX_PENDING_AUDIT);
+
+/// Queue one failed write for later recovery — see [`PendingAuditQueue::enqueue`].
+fn enqueue_pending_audit(scope: &str, suffix: Vec<u8>) {
+    PENDING_AUDIT.enqueue(PendingAudit {
+        scope: scope.to_string(),
+        suffix,
+    });
+}
+
+/// Drain [`PENDING_AUDIT`] through the REAL seam — [`KIND_ID_AUDIT`], hostless (draining never has a
+/// live `HostCtx` to reuse, since a queued row may outlive the call that queued it). Called by both
+/// [`emit`] and [`emit_admin_hostless`] before their own write, so a healthy backend recovers
+/// everything an earlier outage queued before today's mutation is recorded. A row that recovers is
+/// rebuilt into an [`AuditEntry`] via [`parse_audit_suffix`] (the same decode [`audit_entry_from_body`]
+/// uses) and pushed into [`AUDIT_LOG`], so it becomes visible on `GET /audit` exactly as a live write
+/// would — recovery is not merely durable, it is also VISIBLE.
+fn drain_pending_audit() {
+    PENDING_AUDIT.drain_with(
+        |scope, suffix| {
+            crate::plane_host::journal::journal_append_scoped_full_hostless(
+                KIND_ID_AUDIT,
+                scope,
+                suffix,
+            )
+            .map_err(|_| ())
+        },
+        |p, seq, prev_hash, hash| {
+            let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&p.suffix);
+            AUDIT_LOG.push_entry(AuditEntry {
+                seq,
+                ts,
+                action,
+                resource,
+                outcome,
+                principal,
+                prev_hash,
+                hash,
+                scheme,
+                recorded_here: true,
+            });
+        },
+    );
+}
+
 /// THE ONE PRODUCTION EMITTER for a mutation recorded through the seam. Mint the seq/prev_hash/hash
 /// through the ONE core chain (host-side, under [`KIND_ID_AUDIT`]) and persist the neutral body.
 ///
-/// FIRE-AND-FORGET, loudly. A durable-store write failure must NEVER fail the mutation it records: the
-/// log is EVIDENCE, not ADMISSION, and a gateway whose control plane stops when its audit backend
-/// blinks has converted an observability dependency into an availability dependency — the same call the
-/// legacy audit sink made, for the same reason. The failure is surfaced at `error!` on the TRANSITION
-/// into the failing state (a store outage recurs per mutation) and held at `debug!` thereafter; a
-/// success clears the latch so a future outage re-errors. The chain position is left untouched on
-/// failure, so the next mutation reuses the sequence and the chain stays contiguous.
+/// FIRE-AND-FORGET, loudly — but RECOVERABLE, not silently terminal (see the [`PendingAuditQueue`]
+/// section above). A durable-store write failure must NEVER fail the mutation it records: the log is
+/// EVIDENCE, not ADMISSION, and a gateway whose control plane stops when its audit backend blinks has
+/// converted an observability dependency into an availability dependency — the same call the legacy
+/// audit sink made, for the same reason. A failed write is QUEUED rather than dropped, and every call
+/// drains whatever an earlier failure left queued before attempting its own write. The failure is
+/// still surfaced at `error!` on the TRANSITION into the failing state (a store outage recurs per
+/// mutation) and held at `debug!` thereafter; a success clears the latch so a future outage re-errors.
+/// The chain position is left untouched on failure, so the next mutation reuses the sequence and the
+/// chain stays contiguous.
 #[allow(dead_code)] // wired at the converted admin/plane call sites; no caller until then
 pub(crate) fn emit(host: HostCtx, scope: &str, suffix: Vec<u8>) {
     static WRITE_FAILED_LATCHED: AtomicBool = AtomicBool::new(false);
+    drain_pending_audit();
     let seq = crate::plane_host::journal::journal_append_scoped(
         host,
         KIND_ID_AUDIT,
@@ -550,19 +752,22 @@ pub(crate) fn emit(host: HostCtx, scope: &str, suffix: Vec<u8>) {
         suffix.len(),
     );
     if seq == Seq::NONE {
+        enqueue_pending_audit(scope, suffix);
         if !WRITE_FAILED_LATCHED.swap(true, Ordering::Relaxed) {
             crate::diagnostics::diag_error!(
                 crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
                 "the durable admin audit record could NOT be written through the journal seam: this \
-                 mutation is being served and its evidence is being LOST on that path. The chain \
-                 position is unchanged, so the chain stays contiguous — what is missing is this \
-                 record, not the ones after it."
+                 mutation is being served and its evidence is QUEUED for recovery rather than lost — \
+                 it will be retried the next time this stream writes successfully. The chain position \
+                 is unchanged, so the chain stays contiguous — what is missing FOR NOW is this record, \
+                 not the ones after it."
             );
         } else {
             crate::diagnostics::diag_debug!(
                 crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
                 "the durable admin audit record could NOT be written through the journal seam; its \
-                 evidence is being LOST. The chain position is unchanged, so the chain stays contiguous."
+                 evidence is QUEUED for recovery. The chain position is unchanged, so the chain stays \
+                 contiguous."
             );
         }
     } else {
@@ -703,6 +908,11 @@ pub(crate) fn emit_admin_hostless(
     principal: &str,
 ) {
     static WRITE_FAILED_LATCHED: AtomicBool = AtomicBool::new(false);
+    // Recover whatever an EARLIER failure left queued before this event, so records land in the
+    // chain in their original order ahead of today's — see the `PendingAuditQueue` section above.
+    // This is the LIVE production chokepoint (`record_by`'s ONE caller), so this is where the fix
+    // actually has to run, not just on the still-dead-code `emit`.
+    drain_pending_audit();
     let suffix = audit_suffix_safe(ts, action, resource, outcome, principal);
     match crate::plane_host::journal::journal_append_scoped_full_hostless(
         KIND_ID_AUDIT,
@@ -720,24 +930,31 @@ pub(crate) fn emit_admin_hostless(
                 principal: principal.to_string(),
                 prev_hash,
                 hash,
+                // This entry's content was just written via `audit_suffix_safe` -- scheme 2.
+                scheme: crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED,
                 recorded_here: true,
             });
         }
         Err(_e) => {
+            // RECOVERABLE, not terminal: queue this record so the next successful write (through
+            // this function's own `drain_pending_audit()` above, or `emit`'s) delivers it instead of
+            // losing it — see the `PendingAuditQueue` section above.
+            enqueue_pending_audit(ADMIN_LOG, suffix);
             if !WRITE_FAILED_LATCHED.swap(true, Ordering::Relaxed) {
                 crate::diagnostics::diag_error!(
                     crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
                     "the durable admin audit record could NOT be written through the journal seam: \
-                     this mutation is being served and its evidence is being LOST on that path. The \
-                     chain position is unchanged, so the chain stays contiguous — what is missing is \
-                     this record, not the ones after it."
+                     this mutation is being served and its evidence is QUEUED for recovery rather \
+                     than lost — it will be retried the next time this stream writes successfully. \
+                     The chain position is unchanged, so the chain stays contiguous — what is \
+                     missing FOR NOW is this record, not the ones after it."
                 );
             } else {
                 crate::diagnostics::diag_debug!(
                     crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
                     "the durable admin audit record could NOT be written through the journal seam; \
-                     its evidence is being LOST. The chain position is unchanged, so the chain stays \
-                     contiguous."
+                     its evidence is QUEUED for recovery. The chain position is unchanged, so the \
+                     chain stays contiguous."
                 );
             }
         }

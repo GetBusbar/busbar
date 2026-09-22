@@ -40,7 +40,8 @@ use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
 
 /// One admin audit record. `outcome` is a stable token tooling can branch on. The record is
 /// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
-/// outcome | principal)`, and `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any
+/// outcome | principal)` FRAMED UNDER THIS RECORD'S OWN `scheme` (see [`AuditEntry::scheme`]), and
+/// `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any
 /// altered/reordered/deleted entry (detection, not prevention; a compromised host can still rewrite
 /// the whole chain; prevention is shipping the log off-box to a SIEM).
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -66,6 +67,17 @@ pub struct AuditEntry {
     pub prev_hash: String,
     /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)`: the tamper-evidence digest.
     pub hash: String,
+    /// WHICH FRAMING RULES this entry was sealed under: [`AUDIT_SCHEME_PIPE`] (1) or
+    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`] (2) — see `crate::audit::Framing`.
+    ///
+    /// `#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed
+    /// simply lacks the key, and an absent tag means exactly scheme 1, because that is what every
+    /// such row actually is — no migration of stored data is required. `link` always writes
+    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`] on a FRESH entry; nothing mints scheme 1 going forward. A
+    /// verifier reads this straight off the record (`ChainedRecord::framing`), so a chain mixing
+    /// both eras checks each entry under the rules it actually used.
+    #[serde(default = "audit_scheme_default")]
+    pub scheme: u8,
     /// TRUE only for entries THIS process appended live (via `record_by` on this ring, or the seam's
     /// live emit). Seeded entries — restored from the durable store — are FALSE. `#[serde(skip)]` gives
     /// the right default (false) on the encoded/store-seeding paths; the live-append sites set it true
@@ -99,6 +111,24 @@ pub struct AuditInput {
 /// such chain.
 const ADMIN_LOG: &str = "admin";
 
+/// Scheme 1: pipe-separated — every entry already on disk, whether its stored tag is explicitly `1`
+/// or simply absent (see [`AuditEntry::scheme`]'s `#[serde(default)]`). Nothing seals a FRESH entry
+/// under this any longer; it exists so an old entry keeps verifying under the exact rules it was
+/// always sealed with.
+pub const AUDIT_SCHEME_PIPE: u8 = 1;
+
+/// Scheme 2: length-prefixed — the framing that makes the split between fields unforgeable, so a
+/// caller-controlled `|` inside `resource` (or any other field) can no longer move a field boundary
+/// and collide two different mutations onto one digest. `link` seals every entry built fresh under
+/// this scheme; it is what closes the collision [`AUDIT_SCHEME_PIPE`] admits.
+pub const AUDIT_SCHEME_LENGTH_PREFIXED: u8 = 2;
+
+/// The [`AuditEntry::scheme`] a store's silence means. A free function because `serde`'s `default`
+/// attribute needs one to call, not the const directly.
+fn audit_scheme_default() -> u8 {
+    AUDIT_SCHEME_PIPE
+}
+
 impl ChainedRecord for AuditEntry {
     type Input = AuditInput;
 
@@ -106,10 +136,30 @@ impl ChainedRecord for AuditEntry {
         chain: "the admin audit chain",
         scope: "log",
     };
-    /// PIPE-SEPARATED because that is how the entries already on disk were written, and
-    /// `busbar_api::AuditRecord`'s own doc publishes the formula. A new record type takes
-    /// [`Framing::LengthPrefixed`] instead — see [`crate::audit::Framing`].
+    /// PIPE-SEPARATED: [`AUDIT_SCHEME_PIPE`]'s framing, and what an absent [`AuditEntry::scheme`] tag
+    /// means — every entry already on disk, implicitly or explicitly, and the formula
+    /// `busbar_api::AuditRecord`'s own doc publishes. NOT what a fresh entry seals under any longer;
+    /// see `framing` below for the framing that actually governs a given instance's digest.
     const FRAMING: Framing = Framing::PipeSeparated;
+
+    /// THE PER-RECORD OVERRIDE: read the framing straight off this entry's own
+    /// [`AuditEntry::scheme`] tag rather than assume one framing for the whole stream. `FRAMING`
+    /// above still names scheme 1's framing — the type's historical default, and what an absent tag
+    /// reads as — but a live chain mixes scheme-1 entries already on disk with scheme-2 entries this
+    /// build seals, and this is what lets `crate::audit::digest` check each one under the rules it
+    /// actually used instead of the rules every OTHER entry of this type happens to use.
+    fn framing(&self) -> Framing {
+        if self.scheme == AUDIT_SCHEME_LENGTH_PREFIXED {
+            Framing::LengthPrefixed
+        } else {
+            // AUDIT_SCHEME_PIPE, or a tag this build has never minted and does not recognise: fall
+            // back to the framing every entry already on disk was actually sealed with, rather than
+            // silently promoting an unrecognised value to a stronger framing it was never sealed
+            // under -- a wrong framing here reports an intact entry as tampered, which is the safe
+            // direction for a tamper-evidence surface to fail in.
+            Framing::PipeSeparated
+        }
+    }
 
     fn scope_of(&self) -> &str {
         ADMIN_LOG
@@ -139,6 +189,10 @@ impl ChainedRecord for AuditEntry {
             hash: String::new(),
             // Reached only from `record_by`: THIS process is appending it live right now.
             recorded_here: true,
+            // EVERY entry built fresh seals under the current scheme -- never caller-chosen
+            // (`AuditInput` carries no scheme field), exactly like `seq`/`prev_hash`/`hash` are
+            // never caller-chosen. Nothing mints scheme 1 going forward.
+            scheme: AUDIT_SCHEME_LENGTH_PREFIXED,
         }
     }
 

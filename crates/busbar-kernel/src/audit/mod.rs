@@ -213,8 +213,24 @@ pub(crate) trait ChainedRecord: Sized {
     /// which a large `Err` variant becomes its own defect (`clippy::result_large_err`). A pointer to
     /// a promoted static costs eight bytes and says the same thing.
     const LABELS: &'static ChainLabels;
-    /// See [`Framing`] — a wire fact of the records already on disk, not a preference.
+    /// See [`Framing`] — the TYPE's default framing, and the only one most streams ever need. A
+    /// stream whose own history spans more than one framing overrides [`ChainedRecord::framing`]
+    /// instead of relying on this const for every instance — see that method's doc.
     const FRAMING: Framing;
+
+    /// The framing THIS RECORD was (or, on the fresh-construction path, will be) sealed under.
+    /// Defaults to the type's [`ChainedRecord::FRAMING`] constant, which is correct for every stream
+    /// that has sealed under exactly one framing its whole existence.
+    ///
+    /// Overridden only by a record type that can carry MORE THAN ONE framing across its own history
+    /// — today, just [`crate::audit_ring::AuditEntry`], whose per-record scheme tag says which rules
+    /// an individual record was sealed under. That is what lets one chain mix an old record (sealed
+    /// under the framing already on disk) with a new one (sealed under the framing new records take)
+    /// and have [`digest`] check each one correctly instead of assuming one framing for the whole
+    /// stream.
+    fn framing(&self) -> Framing {
+        Self::FRAMING
+    }
 
     /// The chain this record belongs to. A chain holds exactly one scope; the verifier refuses any
     /// record whose scope is not the chain's.
@@ -247,8 +263,14 @@ pub(crate) trait ChainedRecord: Sized {
 
 /// Recompute a record's digest from its own fields — the verification primitive, and the only place
 /// a digest is ever computed.
+///
+/// Framed in `record.framing()`, NOT the bare `R::FRAMING` constant: a record type that carries a
+/// per-record scheme tag (see [`ChainedRecord::framing`]) must be digested under the rules IT was
+/// sealed under, and only the instance — not the type — knows which those are. For every other
+/// record type `record.framing()` and `R::FRAMING` are the same value, so this is not a behaviour
+/// change for them.
 pub(crate) fn digest<R: ChainedRecord>(record: &R) -> String {
-    let mut d = Digest::new(R::FRAMING);
+    let mut d = Digest::new(record.framing());
     record.digest_fields(&mut d);
     d.finish()
 }
