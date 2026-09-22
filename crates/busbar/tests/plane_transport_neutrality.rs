@@ -38,11 +38,61 @@ const NOUNS: &[&str] = &[
 ];
 
 /// The NEUTRAL crate source roots (the ABI side). A neutral crate that appears/disappears is one edit.
+///
+/// These are the SUCCESSORS of the three this gate was written against on 2026-09-03
+/// (`busbar-core`, `busbar-substrate`, `busbar-api`). Both of the first two were deleted during
+/// 1.6.0 and their contents went to four places, so the successor set is four roots:
+///   * `busbar-core` was absorbed INTO `busbar-kernel` (673ecdaaa, #19/#37);
+///   * `busbar-substrate`'s ENGINE was absorbed into `busbar-kernel` too (5fa320208), its VALUE
+///     families went down to `busbar-substrate-values` (06132b0b1) and its civil/duration/audit
+///     vocabulary went to `busbar-contract` (eee77c488), which later also took the slice ABI
+///     (b544c8bbf);
+///   * `busbar-api` is unmoved.
+///
+/// Naming all four is not a widening — it is what keeps the ORIGINAL surface covered. The
+/// 2026-09-05 split silently carried `busbar-substrate/src/billing.rs` out of this scan, and no
+/// commit since has looked at it; listing only the kernel would leave that hole open.
 const NEUTRAL_ROOTS: &[&str] = &[
-    "crates/busbar-core/src",
-    "crates/busbar-substrate/src",
+    "crates/busbar-kernel/src",
+    "crates/busbar-substrate-values/src",
+    "crates/busbar-contract/src",
     "crates/api/src",
 ];
+
+/// THE NAMED EXEMPTIONS — `(repo-relative file, identifier, reason)`. A hit whose file matches an
+/// entry AND whose code carries that entry's identifier is not a leak.
+///
+/// It is a CHECKED inventory, not a waiver list: `every_exemption_is_live_and_really_needed` below
+/// proves each entry names a file that exists, an identifier that is really in it, and a line the
+/// detector really does flag. An entry that stops being needed reds as loudly as a new leak, so the
+/// list cannot accumulate standing permission.
+///
+/// There is exactly one, and it is OLDER than this gate rather than a new concession to it. When the
+/// gate landed on 2026-09-03 the `_` was NOT a word boundary, and its own self-test named this field
+/// as the thing that must NOT flag ("the underscore-joined `input_audio` debt"). Two days later the
+/// crate split carried the field out of the scanned roots; the day after that the `_` became a
+/// boundary (389d9a0e2) — a tightening that was right, and that never had to reckon with this field
+/// because it was no longer in scope. Restoring the roots above puts it back in scope, so the
+/// judgement has to be made in the open rather than inherited from an accident of ordering.
+const NOUN_EXEMPTIONS: &[(&str, &str, &str)] = &[(
+    "crates/busbar-substrate-values/src/billing.rs",
+    "input_audio",
+    "A BILLING MODALITY, not a transport noun. `TokenUsage` partitions `input` into `input_text` / \
+     `input_audio` / `input_image` — the per-modality breakdown a transcription-style operation's \
+     usage object reports, modelled since 1.2 and a release older than the fourth plane. It names a \
+     UNIT OF BILLABLE WORK, exactly as its two siblings do; nothing about a carrier, a codec or a \
+     session reaches this type. The vocabulary this gate exists to keep out is the one a duplex \
+     session drags in (rtc/sdp/webrtc/dtmf/rtp/mulaw/g711/barge) — spelling the third modality \
+     obliquely while `input_text` and `input_image` stay plain would cost a reader the meaning of \
+     the field and buy no neutrality at all.",
+)];
+
+/// Is this hit covered by a [`NOUN_EXEMPTIONS`] entry? `path` is repo-relative.
+fn is_exempt(path: &str, code: &str) -> bool {
+    NOUN_EXEMPTIONS
+        .iter()
+        .any(|(file, ident, _)| *file == path && code.contains(ident))
+}
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -218,14 +268,16 @@ fn neutral_crates_name_no_voice_transport_noun() {
     let mut leaks: Vec<String> = Vec::new();
     for path in &files {
         let src = std::fs::read_to_string(path).expect("neutral source must be readable");
+        let rel = path
+            .strip_prefix(&root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned();
         for (line, noun, text) in scan_source(&src) {
-            leaks.push(format!(
-                "{}:{}  [{}]  {}",
-                path.strip_prefix(&root).unwrap_or(path).display(),
-                line,
-                noun,
-                text
-            ));
+            if is_exempt(&rel, &text) {
+                continue;
+            }
+            leaks.push(format!("{rel}:{line}  [{noun}]  {text}"));
         }
     }
 
@@ -281,5 +333,81 @@ fn detector_fires_on_planted_transport_nouns_and_ignores_comments() {
     assert!(
         green_hits.is_empty(),
         "detector wrongly flagged a comment: {green_hits:?}"
+    );
+}
+
+/// EVERY [`NOUN_EXEMPTIONS`] ENTRY IS LIVE AND REALLY NEEDED — the property that makes the list an
+/// inventory rather than a waiver list.
+///
+/// For each entry: the file it names exists under a scanned root, the identifier it names is really
+/// in that file, and the line carrying that identifier is one the detector REALLY DOES flag. The
+/// last clause is the one that matters: without it an entry could be pure decoration, and the day
+/// the field is renamed or deleted the exemption would sit there as standing permission for the
+/// next thing to reuse the spelling unchecked.
+#[test]
+fn every_exemption_is_live_and_really_needed() {
+    let root = repo_root();
+    assert!(
+        !NOUN_EXEMPTIONS.is_empty(),
+        "the liveness check ran over an empty list and proved nothing"
+    );
+    for (file, ident, reason) in NOUN_EXEMPTIONS {
+        assert!(
+            reason.len() > 80,
+            "`{file}`/`{ident}` is exempted with no real argument (\"{reason}\"); an exemption \
+             without a stated reason is a waiver, and there are none"
+        );
+        assert!(
+            NEUTRAL_ROOTS.iter().any(|r| file.starts_with(r)),
+            "exemption `{file}` is not under any NEUTRAL_ROOT {NEUTRAL_ROOTS:?}, so it exempts \
+             nothing this gate scans — delete it"
+        );
+        let path = root.join(file);
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "exemption names {} which cannot be read ({e}). A stale exemption is standing \
+                 permission; delete it or repoint it.",
+                path.display()
+            )
+        });
+        let flagged: Vec<(usize, &'static str, String)> = scan_source(&src)
+            .into_iter()
+            .filter(|(_, _, text)| text.contains(ident))
+            .collect();
+        assert!(
+            !flagged.is_empty(),
+            "exemption `{file}`/`{ident}` covers nothing: the detector flags no line in that file \
+             carrying `{ident}`. Either the field is gone or the detector stopped seeing it — \
+             delete the entry, in the same commit, so the list cannot rot."
+        );
+        for (_, _, text) in &flagged {
+            assert!(
+                is_exempt(file, text),
+                "the exemption does not actually cover the line it was written for: {text}"
+            );
+        }
+    }
+}
+
+/// AND THE EXEMPTION IS NARROW: it covers ONE identifier in ONE file, and nothing else. A planted
+/// leak in the exempted file, and the same identifier in a different file, both still flag — which
+/// is what stops an entry from turning into a whole-file amnesty.
+#[test]
+fn an_exemption_covers_one_identifier_in_one_file_and_nothing_else() {
+    let (file, ident, _) = NOUN_EXEMPTIONS[0];
+    assert!(
+        is_exempt(file, &format!("    pub {ident}: Option<u64>,")),
+        "the entry must cover its own field"
+    );
+    assert!(
+        !is_exempt(file, "pub struct SdpOffer;"),
+        "a DIFFERENT banned noun in the exempted file is still a leak"
+    );
+    assert!(
+        !is_exempt(
+            "crates/busbar-kernel/src/lib.rs",
+            &format!("pub {ident}: u64,")
+        ),
+        "the same identifier in a file the entry does not name is still a leak"
     );
 }
