@@ -175,7 +175,6 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
     // FOLD row: "each is a WIRE DIALECT, which def 16–20 absorbs. They are not homeless; they are
     // pre-fold." Scanned now so the fold cannot carry money across with it.
     PlaneCrate { dir: "busbar-llm-codec", placement: "#83 FOLD -> def 16-20" },
-    PlaneCrate { dir: "busbar-mcp-codec", placement: "#83 FOLD -> def 16-20" },
     PlaneCrate { dir: "busbar-a2a-codec", placement: "#83 FOLD -> def 16-20" },
     PlaneCrate { dir: "busbar-voice-codec", placement: "#83 FOLD -> def 16-20" },
     // SPLIT row: "Session, turn and dialect rules -> 16-20. But unit/{admit,approve,meter,route}
@@ -437,15 +436,97 @@ fn is_conditional(code: &str) -> bool {
     CONDITIONALS.iter().any(|c| code.contains(c))
 }
 
-/// Is this a TEST file? Test SCOPE inside a production file is handled by
+/// Is this a TEST file BY NAME? Test SCOPE inside a production file is handled by
 /// [`scan::production_lines`]; this is the file-level half. See the header for why the gate is
 /// production-scope on purpose.
+///
+/// A NAME IS NOT THE WHOLE ANSWER — see [`test_declared_files`] for the other half.
 fn is_test_file(rel: &str) -> bool {
     rel.contains("/tests/")
         || rel.contains("/benches/")
         || rel.ends_with("/tests.rs")
         || rel.ends_with("_test.rs")
         || rel.ends_with("_tests.rs")
+}
+
+/// FILES THAT ARE TEST SCOPE BUT DO NOT LOOK LIKE IT — every file some module declares under
+/// `#[cfg(test)]`, wherever it sits and whatever it is called.
+///
+/// THE FALSE POSITIVE THIS EXISTS FOR, MEASURED. `crates/busbar-voice/src/runtime/mod.rs:261-263`
+/// reads `#[cfg(test)] #[path = "voice_d2_billing_oracle.rs"] mod voice_d2_billing_oracle;` — a
+/// money oracle compiled ONLY under `cfg(test)`, living beside its parent rather than under a
+/// `tests/` directory. Nothing about its path says "test": not the directory, not the stem. And
+/// `scan::production_lines` cannot help, because it strips an INLINE `#[cfg(test)] mod { … }` body
+/// and this is a DECLARATION pointing at another file. So the gate flagged six lines of a test
+/// double as if the voice plane priced in production.
+///
+/// The fix is the same rule the reachability work states: **a `mod X;` declaration is not an edge**
+/// — and by the same token, the attribute ON that declaration is what decides the scope of the file
+/// it names. A file's scope is set by how it is DECLARED, not by what it is called.
+///
+/// Both spellings are resolved: `#[cfg(test)] mod name;` → `<dir>/name.rs` and `<dir>/name/mod.rs`,
+/// and an intervening `#[path = "rel"]` → `<dir>/rel`. Only `#[cfg(test)]` counts; a plain
+/// `#[path]` on a production module changes nothing.
+fn test_declared_files(files: &[crate::ctx::SourceFile]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for f in files {
+        let rel = f.rel_str();
+        let Some(dir) = rel.rsplit_once('/').map(|(d, _)| d.to_string()) else {
+            continue;
+        };
+        let lines: Vec<&str> = f.text.lines().collect();
+        for (i, raw) in lines.iter().enumerate() {
+            if !raw.trim_start().starts_with("#[cfg(test)]") {
+                continue;
+            }
+            // The declaration follows the attribute, possibly behind a `#[path = "…"]`. Three
+            // lines is the whole idiom in this tree; more would be reaching.
+            let mut path_override: Option<String> = None;
+            for probe in lines.iter().skip(i + 1).take(3) {
+                let t = probe.trim();
+                if let Some(rest) = t.strip_prefix("#[path") {
+                    if let Some(v) = rest.split('"').nth(1) {
+                        path_override = Some(v.to_string());
+                    }
+                    continue;
+                }
+                let Some(rest) = t.strip_prefix("mod ") else {
+                    // Anything else (including an inline `mod x {`) ends the idiom.
+                    break;
+                };
+                let name = rest.trim_end_matches(';').trim();
+                if name.is_empty() || name.contains('{') {
+                    break;
+                }
+                match &path_override {
+                    Some(p) => {
+                        out.insert(normalize(&format!("{dir}/{p}")));
+                    }
+                    None => {
+                        out.insert(format!("{dir}/{name}.rs"));
+                        out.insert(format!("{dir}/{name}/mod.rs"));
+                    }
+                }
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// `a/b/../c` → `a/c`, so a `#[path]` that climbs resolves to the key the walk yields.
+fn normalize(p: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in p.split('/') {
+        match seg {
+            "." | "" => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
 }
 
 /// One confirmed violation: a category, the crate it is in, and the file. The key the baseline
@@ -482,6 +563,9 @@ pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
 
     let mut out: BTreeMap<(Category, String), Finding> = BTreeMap::new();
     let mut clock_exemption_fired = false;
+    // Resolved BEFORE the scan, because a file's scope is decided by how it is declared and that
+    // declaration lives in a different file.
+    let test_declared = test_declared_files(&files);
 
     for f in &files {
         let rel = f.rel_str();
@@ -489,7 +573,7 @@ pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
         let Some(plane) = by_dir.get(krate.as_str()) else {
             continue;
         };
-        if is_test_file(&rel) {
+        if is_test_file(&rel) || test_declared.contains(&rel) {
             continue;
         }
 
@@ -1205,6 +1289,15 @@ impl Gate for PlanePricingBlindnessGate {
         // regressed, this would flag — and the kernel is exactly where these acts BELONG.
         report.push(scope_is_the_roster(self, cx, FIX));
 
+        // GREEN CONTROL 7 — A FILE'S SCOPE IS HOW IT IS DECLARED, NOT WHAT IT IS CALLED. This one
+        // was a REAL false positive before it was a case: the gate flagged
+        // `busbar-voice/src/runtime/voice_d2_billing_oracle.rs`, a money double compiled only
+        // under `#[cfg(test)]` via a `#[path]` declaration, sitting beside its parent with nothing
+        // test-shaped about its name. The fixture carries the identical shape, and the CONTROL
+        // that makes this a proof rather than a blind skip is `money.rs` in the same directory:
+        // it is declared `pub mod money;` and every red case above requires it to flag.
+        report.push(test_declared_is_not_production(self, cx, FIX));
+
         report
     }
 }
@@ -1329,6 +1422,46 @@ fn declaration_floor_bites(
             Expect::Red { naming: vec!["busbar-plane-llm".to_string()] }
         } else {
             Expect::Green
+        },
+    }
+}
+
+/// A FILE DECLARED UNDER `#[cfg(test)]` IS TEST SCOPE, WHATEVER IT IS CALLED — and the file beside
+/// it that is NOT so declared still flags, which is what makes this a proof and not a blind skip.
+fn test_declared_is_not_production(
+    gate: &PlanePricingBlindnessGate,
+    cx: &Ctx,
+    fixture: &str,
+) -> Case {
+    let covers = vec![ROW_PRICE.to_string()];
+    let name =
+        "a money double declared under #[cfg(test)] is test scope; its production sibling is not"
+            .to_string();
+    let Ok(fcx) = Ctx::at(cx.abs(fixture), cx.scratch().to_path_buf()) else {
+        return Case { name, covers, expected: Expect::Green, got: Expect::Skipped };
+    };
+    let verdict = execute(gate, &fcx);
+    let detail = verdict
+        .rows
+        .iter()
+        .find(|r| r.id == ROW_PRICE)
+        .map(|r| r.detail.clone())
+        .unwrap_or_default();
+    let names_double = detail.contains("oracle_double.rs");
+    let names_production = detail.contains("unit/money.rs");
+    Case {
+        name,
+        covers,
+        expected: Expect::Green,
+        got: if names_production && !names_double {
+            Expect::Green
+        } else {
+            Expect::Red {
+                naming: vec![format!(
+                    "cfg(test)-declared scope regressed: names_double={names_double} \
+                     names_production={names_production}"
+                )],
+            }
         },
     }
 }
