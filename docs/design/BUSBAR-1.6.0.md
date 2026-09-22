@@ -1001,25 +1001,66 @@ Three facts about measuring that cost, each of which cost real time to learn:
    2026-09-30). Subtracting a threshold amplifies estimate error, so the free-tier-adjusted "actual"
    figure is *less* reliable than the raw would-be figure, not more.
 
-The standing finding from the first real run: **`gate-mutants` alone is ~73% of spend.** That is the
-lever worth pulling before any other cost work.
+**Measured, 7-day window (2026-09-21):** total would-be **$1,710.23**. `gate-mutants` = **$1,245.94
+= 72.86%**, `CI` = 21.08%, `keep-proof` = 6.00%, everything else <0.1%. Two independent methods
+agree: `cost-watch.py` says $1,245.94, direct job-minute summation says $1,239.86.
 
-## Promotion is blocked today — the exact reasons
+The *shape* of that 73% matters more than the number. It was not steady-state cost — it was **23
+dispatches inside a 36-hour window, 22 of them failed or cancelled**, each one re-paying the full
+24-shard × ~45-min fan-out at ~$56 an attempt. Someone was iterating on a fix and the gate charged
+full freight for every try. The lever is therefore not "delete the gate" but **make a failing
+dispatch cheap**: the default `shards` input drops 24 → 8 for routine dispatches (24 stays available
+explicitly; the same mutants are tested either way, only the fixed per-shard overhead changes).
 
-`qa` and `main` cannot be promoted to right now. This is not a policy choice; it is four concrete
-defects, and no `gh api` call fixes them — **the train has to run**:
+A second "waste" finding was raised and then **disproved on inspection — do not act on it.** The
+claim was that `check`, `migration-corpus`, `executable-config-lint` and `no-plugins-gate` all
+compile the workspace with identical inputs under four separate cache keys, so a lockfile bump costs
+four full compiles instead of one plus three reuses. The inputs really are identical, but the
+conclusion does not follow: **all four declare `needs: [preflight]` and nothing else, so they run
+concurrently.** On a cold cache all four miss at the same instant, all four compile regardless of
+key naming, and only one save wins the race. Unifying the keys cannot convert those four compiles
+into one plus three reuses, because there is no earlier writer to reuse. The only real effect is
+second-order — one cache entry instead of four, so less storage and less LRU eviction pressure —
+which does not justify churning a 3,000-line workflow. Left alone deliberately.
 
-1. **`gate-mutants` is a required check on `qa` + `main`, but it is `workflow_dispatch`-only AND
-   `disabled_manually`.** It can never report, so the branch can never go green.
-   `ci-branch-protection.sh:43-47` claims this was removed. It was not.
-2. **`ship-ready` and `construction gate (…)` job names do not exist on `dev`/`qa`/`main`.** Those
-   branches carry a `ci.yml` from 2026-09-04 / 08-30 / 08-26. The contexts are required and never
-   report.
-3. **`busbar-release-turnstile admit` denies on a subcommand that does not exist.** It runs
-   conformance via `cargo xtask conformance check --musts`; `xtask/src/cli.rs` has no such
-   subcommand → exit 2 → Red → deny.
-4. **`turnstile-dispatch.yml` was never pushed.** It exists only in a local worktree on
-   `land/turnstile-dispatch`, and it still points at `integration/**` rather than `predev`.
+The owner's "one Rust build, all downstream jobs use it" instinct was **already implemented for the
+release slice** and should not be re-done: `build-release` (`ci.yml:1896`) builds the release binary
+once and `plane-rigs`, `perf-build-gate` and `shadow-oracle` download that artifact. The debug slice
+never got the same treatment. The other ~15 compiling jobs each prove a genuinely distinct
+feature/profile closure — collapsing those would silently drop coverage, so they are **not** waste.
+
+## Promotion — measured 2026-09-21, and mostly NOT blocked
+
+The four defects previously listed here were audited against the live repo. **Two were real and are
+now fixed, one was a misdiagnosis, and one dissolves on the first promotion.** Corrected:
+
+1. **`gate-mutants` required on `qa` + `main` while `disabled_manually` — REAL, NOW FIXED.** It was
+   still a required context on both branches, and a disabled `workflow_dispatch`-only workflow can
+   never report, so both branches could never go green. Removed from `qa` and `main` via the
+   surgical `required_status_checks/contexts` DELETE endpoint — **not** a wholesale protection PUT,
+   which would have silently reset unrelated settings. `main` went 7 contexts → 6, `qa` 5 → 4; every
+   other setting is byte-identical. Pre-change protection JSON for both branches is backed up at
+   `~/Developer/tmp/protection-backup/{main,qa}.json`. Note `ci-branch-protection.sh:43-47` declared
+   this intent but had never been run against the live repo.
+
+2. **`ship-ready` / `construction gate (…)` missing on `dev`/`qa`/`main` — REAL, but SELF-HEALING,
+   not a deadlock.** Measured job-name counts: `origin/qa` has 0 of each; `origin/main` has 0 of
+   each **plus** 0 for `record the staged digest` (three missing, not the two previously recorded);
+   the consolidated trunk has 7 and 14. This does not deadlock, because **check runs attach to a
+   SHA and qa→main is a fast-forward** — a contract `release.yml` enforces by machine, resolving the
+   staged record by head SHA and refusing outright if none exists (`release.yml:530`, and the
+   fast-forward contract stated at `release.yml:49-51`). So the first promotion that carries the
+   trunk's `ci.yml` onto `qa` produces those runs against that SHA, and `main`'s fast-forward
+   inherits them. The contexts are unreportable *on today's stale tips*; they are not unreportable
+   in the flow that will actually run.
+
+3. **`turnstile admit` denies on a missing subcommand — MISDIAGNOSIS, withdrawn.**
+   `cargo xtask conformance check --musts` **exists and runs**, and `--selftest` proves it can both
+   admit and deny. Turnstile denies for real, honest reasons: 10 suites are STALE (verdict commit ≠
+   candidate sha) and 7 have never run. That is the gate working, not a broken gate.
+
+4. **`turnstile-dispatch.yml` was never pushed — REAL, still open.** It exists only in a local
+   worktree on `land/turnstile-dispatch` and still targets `integration/**` rather than `predev`.
 
 ## Deleting branches is free
 
