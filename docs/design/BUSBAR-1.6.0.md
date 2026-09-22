@@ -1643,8 +1643,11 @@ the thing to fix, not just this one commit.
 
 **Known doc/gate drift:**
 
-4. The `PLANE-DELETE` group in `verify-1.6.0-done.sh` still enumerates `llm/mcp/a2a/**voice**` —
-   stale against #18 (streaming is the plane) and #48 (there are five planes, including `decisions`).
+4. ~~`PLANE-DELETE` enumerates `llm/mcp/a2a/voice`~~ — **FIXED, and now HONESTLY RED.** Retitled to
+   the locked five. Because a title change alters no exit code, a new step asserts the locked roster
+   has no on-disk gap; it fails today naming `decisions`, which has no on-disk crate to strong-form
+   test. That red is correct and must stay until the plane is wired — it is the harness telling the
+   truth, not a defect.
 5. The neutrality mandate at Part 4's `banned set` line lists
    `llm|mcp|a2a|tool|agent|sampling|task|server|card|round|prompt`, and the gate adds `voice`,
    `realtime` and `audio`. It names no `streaming` token. `streaming` is a plane noun and belongs
@@ -1666,13 +1669,32 @@ the thing to fix, not just this one commit.
    a grep. A genuine leak of that plane is still caught by `plane-purity` and by the
    `law0-neutral-instance` class, both of which key on the crate edge rather than on a noun.
    **Result: `plane-abi-neutrality` is now 6/6 green; `plane-keys-covered` had been red.**
-6. `CONFIG_NOUN_FLOOR=16` contradicts the comment directly above it, which claims 19.
-7. Three done-oracle groups are red for harness drift rather than product state: `TELLER-STEPS`
-   (calls the retired `testing/shadow-oracle/rigs-ledger.sh`), `STORE-QA` (calls the retired
-   `scripts/service-images-check.sh`), and `KERNEL` (`filtered_cargo_test 1 … attempt_identity` now
-   matches 2 tests, so it reds for VACUITY).
-8. `busbar-release`'s `oracle-rerecord.yml` hardcodes `e2194e422…` as "the current predev tip" — a
-   literal SHA that will keep resolving while being silently wrong.
+6. ~~`CONFIG_NOUN_FLOOR=16` vs a comment claiming 19~~ — **BOTH WERE WRONG. The measured number is
+   17** (pools 5 · tools 3 · agents 2 · streams 7), stable across three runs. It only became
+   measurable once `plane-config-noun-gate.sh`'s `CORE_ROOT` was repointed off the deleted
+   `busbar-core`. Floor set to 17 with the measurement, its date and its breakdown recorded in the
+   comment, so the next reader does not have to re-derive it.
+7. ~~Three done-oracle groups red for harness drift~~ — **ALL THREE RESOLVED, and one turned out to
+   be a real upstream gap rather than drift.**
+   - **`STORE-QA`** was already repointed to `cargo xtask gate service-images`. Its own selftest
+     proves it red-able across 10 failure scenarios; the gate runs 8/8 green.
+   - **`KERNEL`'s count of 2 is CORRECT** and is now documented rather than merely tolerated. The
+     second match is not a loose filter: it is a deliberate anti-vacuity companion added in the same
+     commit as the normalizer it guards, proving the normalizer blanks only measured latency and
+     framing bytes and never the frame's content. Without it the normalizer could pass by erasing
+     the body and make the identity rig green over nothing.
+   - **`TELLER-STEPS` is NOT drift — the capability does not exist anywhere.** `rigs-ledger` is not a
+     subcommand of the pinned oracle engine (proven by running it, by `--help`'s fourteen
+     subcommands, and by the engine's own `PORT-REMAINING.md` recording it as ported to library
+     leaves and never re-exposed as a CLI arm). xtask deliberately has no equivalent either, because
+     driving the oracle's rig ledger means RUNNING the oracle's code, which the `segregation` gate
+     forbids the gate runner from doing. So the group is now an `absent_step`, red by construction,
+     naming the upstream gap in `busbar-release` instead of dying on a cryptic clap error.
+8. ~~`oracle-rerecord.yml` hardcodes a stale "current predev tip" SHA~~ — **FIXED upstream.** The
+   ref input is now `REQUIRED, no default`, and the reasoning is recorded in the input's own
+   description: predev and integration branches are force-updated and pruned, so any hardcoded
+   default silently goes stale and eventually unreachable, and a wrong ref re-records the MONEY
+   reference golden against the wrong tree while the artifact still claims to be the 1.5.5 golden.
 
 **Deliberate design reversals — do not "restore" these:** `contract-kinds` (an 8-kind proposal;
 `PLUGIN-TREE.md` records it as rejected — the answer is 7, per #3) and the unadopted portion of
