@@ -67,7 +67,7 @@ id     = "export"
 status = "active"
 tier   = "fast"
 # The export coverage lives as in-crate unit tests rather than an integration target —
-# crates/busbar-core/src/export/tests/{projection,webhook,file,prometheus}_tests.rs plus the
+# crates/busbar-kernel/src/export/tests/{projection,webhook,file,prometheus}_tests.rs plus the
 # export surfaces outside that module (the admin export API, the config-migrate export rewrites, the
 # plugin-route export/metrics confinement). `busbar` is a BINARY-ONLY package (no [lib]), so its unit
 # tests run under `--bin busbar`.
@@ -197,7 +197,7 @@ status = "active"
 tier   = "fast"
 # THE TWO PLANE PLUGIN CRATES' OWN `test-support` SUITES — busbar-mcp's and busbar-a2a's full
 # in-crate batteries, plus the clippy invocation that sees them. NOTHING RAN THEM. Every other cargo
-# line in this manifest and in ci.yml is either a filtered `-p busbar -p busbar-core` run or a
+# line in this manifest and in ci.yml is either a filtered `-p busbar -p busbar-kernel` run or a
 # `cargo test --workspace` / `cargo clippy --workspace --all-targets`, and NONE of those turns
 # `test-support` on for these two crates — which is exactly the feature that compiles the batteries
 # in (`#[cfg(all(test, feature = "test-support"))]` on every `#[path = "tests/…"]` include). Without

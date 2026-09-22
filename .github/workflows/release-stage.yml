@@ -802,7 +802,7 @@ jobs:
         # `openapi_json_matches_committed_file` test in ci.yml).
         env:
           BUSBAR_EMIT_OPENAPI: ${{ github.workspace }}/busbar-openapi-${{ needs.plan.outputs.tag }}.json
-        run: cargo test -p busbar -p busbar-core --bins --lib --features openapi-schema emit_openapi_artifact -- --nocapture
+        run: cargo test -p busbar -p busbar-kernel -p busbar-core-admin --bins --lib --features openapi-schema emit_openapi_artifact -- --nocapture
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
