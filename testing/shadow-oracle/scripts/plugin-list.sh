@@ -4,7 +4,6 @@
 # Script-driver cell: `--list-plugins` with ONE published 1.5.5-era plugin in the dir. The STATUS
 # column (ready | SKIPPED: … | INVALID: …) is the contract (PB-11). Writes $RAW/captured.json.
 set -uo pipefail
-here="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN="${1:?plugin name}"; BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"
 # The oracle ENGINE. DECISION #80: the judge is Rust, and the leaf tools these drivers used to
 # shell out to as `python3 $BUSBAR_ORACLE_TOOL_DIR/<tool>.py` are its subcommands (mock /
