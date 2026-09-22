@@ -1663,6 +1663,36 @@ filesystem path: the host opens the destination and hands the plugin a write sin
 
 ## Traps this tree has already sprung — do not re-learn them
 
+**THE SIZE RATIO HAS BEEN MEASURED FOUR TIMES AND REPORTED WRONG FOUR TIMES. DO NOT QUOTE ONE UNTIL
+`cargo xtask loc` LANDS.**
+
+| # | figure | method | why it was wrong |
+|---|---|---|---|
+| 1 | **2.08×** | raw `.rs` minus `*/tests/*` paths | counted inline `#[cfg(test)]` blocks as production |
+| 2 | **2.90×** | first `#[cfg(test)]` → EOF | over-subtracted, and **unequally between the two trees** |
+| 3 | **2.60×** | brace-matched `#[cfg(test)]` item spans | did not correct the nested test-PATH bug |
+| 4 | **2.19×** | correct test-path rule | did not use brace-matched spans |
+
+Every one was presented with confidence. Corrections 3 and 4 fix **different** errors and neither
+applies the other's fix, so the true figure is not any of the four and is **currently unknown**.
+
+**The measurement artifact that produced #2 also produced a phantom backlog.** "357 production files
+carrying 74,660 lines of inline tests" is what a first-`#[cfg(test)]`-to-EOF rule reports, not what
+the tree contains. Checked with a real lexer: `busbar-substrate-values/src/diagnostics/mod.rs` scored
+~3,944 and its only `#[cfg(test)]` is `mod tests;` at line 38 — **the compliant form, zero inline
+test code**. `busbar-transport-http/src/lib.rs` scored 1,531 off one `#[cfg(test)] pub(crate) async fn
+scratch_addr`. **True backlog: 18 blocks / 851 lines.**
+
+**This is the whole case for the owner's "one counter" instruction, demonstrated rather than argued.**
+Four ad-hoc measurements produced four answers, and the errors were not in the same direction, so no
+amount of averaging or cross-checking would have found the truth. The resolution is not a better
+estimate — it is `cargo xtask loc` being the only thing that counts lines, with fixtures for every
+trap above and `--ref v1.5.5` so the baseline is recomputable rather than transcribed.
+
+**Until it lands, the honest statement is: production grew substantially, by an unknown factor.**
+That sentence is worth more than a fifth wrong number.
+
+
 **THE ORACLE'S BLINDNESS TO PLANE MONEY IS NOW A NUMBER, NOT AN IMPRESSION.** Measured 2026-09-22
 over the committed 2,318-cell corpus, by grepping every cell for money/billing/usage/ledger/
 rate_card/audit:
