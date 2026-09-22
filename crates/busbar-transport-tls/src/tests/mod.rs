@@ -352,6 +352,102 @@ async fn a_close_sends_the_alert_the_peer_is_owed() {
     );
 }
 
+/// A mid-session stream drop must report differently from an orderly `close_notify` close: the one
+/// signal separating "the exchange finished" from "it was cut off, possibly hiding truncated
+/// content" cannot be erased. Both directions are asserted here — a cell that only checked one is
+/// not evidence that they differ.
+///
+/// The truncation half connects a RAW `tokio_rustls` client directly (not this crate's own
+/// `TlsTransport::dial`), so the test controls the abrupt close exactly: the handshake completes,
+/// one message crosses, and the underlying socket is then simply dropped with no `shutdown()` ever
+/// called — no `close_notify` goes out, which is precisely the truncation `send_close_notify`'s own
+/// doc describes: "the peer's own rustls reports `UnexpectedEof`". The orderly half is the sibling
+/// of `a_close_sends_the_alert_the_peer_is_owed` above, reusing this crate's own `close`.
+#[tokio::test]
+async fn a_truncated_stream_reports_differently_from_an_orderly_close() {
+    // TRUNCATION.
+    let (server_cfg, client_cfg) = self_signed();
+    let server = StdArc::new(TlsTransport::new());
+    server.register_server_config(0, server_cfg);
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = server.listen(&cfg, &fixture_key(0)).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+
+    let raw_tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let connector = TlsConnector::from(client_cfg);
+    let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+    let mut attacker = connector.connect(name, raw_tcp).await.unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut attacker, b"last word before the cut")
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::flush(&mut attacker).await.unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let mut server_frames = server.frames(server_conn);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the message sent before the cut still arrives")
+        .unwrap()
+        .unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"last word before the cut");
+
+    // The cut itself: a raw TCP-level half-close on the UNDERLYING socket, bypassing rustls's own
+    // `close_notify` entirely — that lives one layer up, on the TLS stream's own `AsyncWrite::
+    // shutdown`, which this deliberately does not call. The result is a graceful FIN with no TLS
+    // goodbye ever sent: exactly the truncation this fix targets, and distinct from an abrupt
+    // `drop` of the whole socket, which on this platform's loopback answers with an OS-level RST
+    // (`io::ErrorKind::ConnectionReset`) already mapped to `Reset` by the pre-existing arm below —
+    // a cut that would not have told this fix apart from one that never shipped.
+    let (raw, _tls_state) = attacker.get_mut();
+    tokio::io::AsyncWriteExt::shutdown(raw).await.unwrap();
+
+    let truncated = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("a truncated session must be reported rather than waited on")
+        .expect("a truncated session is an error, not a clean end of stream");
+    assert_eq!(
+        truncated.unwrap_err(),
+        TransportError::Reset,
+        "a stream that just stopped, with no close_notify, must not read as a clean close"
+    );
+
+    // ORDERLY, for contrast: this crate's own `close`, which DOES send `close_notify` first.
+    let (server2, listener2, client2) = bound_pair().await;
+    let addr2 = listener2.local_addr();
+    let accept_fut2 = tokio::spawn({
+        let server2 = server2.clone();
+        async move { server2.accept(&listener2).await.unwrap() }
+    });
+    let client_conn2 = client2
+        .dial(&upstream_dest(&addr2), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn2 = accept_fut2.await.unwrap();
+    server2
+        .write(&server_conn2, StreamId(0), ScratchBytes::new(b"goodbye"))
+        .await
+        .unwrap();
+    let mut client_frames2 = client2.frames(client_conn2);
+    let (_s, frame2) = client_frames2.next().await.unwrap().unwrap();
+    assert_eq!(frame2.bytes.as_slice(), b"goodbye");
+
+    server2.close(server_conn2, CloseReason::Normal);
+    let ended = tokio::time::timeout(Duration::from_secs(5), client_frames2.next())
+        .await
+        .expect("an orderly close must be reported promptly too");
+    assert!(
+        ended.is_none(),
+        "an orderly close_notify shutdown ends the stream cleanly, never as Reset: {ended:?}"
+    );
+}
+
 /// The `close_notify` alert self-bounds on [`CLOSE_NOTIFY_BUDGET`] rather than parking forever on
 /// the writer lock a peer that stopped reading — or a `close` racing an in-flight write — leaves
 /// held.

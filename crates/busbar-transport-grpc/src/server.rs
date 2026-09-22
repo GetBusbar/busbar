@@ -125,9 +125,11 @@ async fn handle_one_rpc(
     let stream_id = StreamId(local);
     // A bounded max decoding message size, so one oversized length-prefixed message cannot make
     // the framing layer reserve unbounded memory: `tonic` refuses an over-limit prefix with
-    // `OUT_OF_RANGE` before it buffers the body. See [`crate::codec::MAX_MESSAGE_BYTES`].
-    let mut grpc = tonic::server::Grpc::new(RawCodec)
-        .max_decoding_message_size(crate::codec::MAX_MESSAGE_BYTES);
+    // `OUT_OF_RANGE` before it buffers the body. The cap is this CONNECTION's — the deployment's
+    // own, if `listen` read one, else `crate::codec::MAX_MESSAGE_BYTES` — not a crate-wide
+    // constant, so a listener the operator capped is actually capped.
+    let mut grpc =
+        tonic::server::Grpc::new(RawCodec).max_decoding_message_size(state.max_message_bytes);
     // The call is registered by the handler, not here. `Grpc::streaming` can answer entirely on
     // its own — a request naming a `grpc-encoding` this server has not enabled is refused while
     // its headers are still being read — and then the handler below, whose response stream being

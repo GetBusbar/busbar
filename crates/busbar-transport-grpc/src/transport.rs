@@ -4,7 +4,7 @@
 //! The [`busbar_contract::Transport`] implementation.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex};
 
 use futures::Stream;
@@ -41,6 +41,15 @@ fn local_port(addr: &str) -> u16 {
         .unwrap_or(0)
 }
 
+/// The configuration key naming the largest gRPC message this transport will decode — the same
+/// name [`busbar_transport_ws`]'s own message ceiling reads (`limits.request_body_max_bytes`,
+/// there `busbar_transport_ws::MESSAGE_MAX_BYTES_KEY`). A gRPC message and a WebSocket message are
+/// the same "request body" to an operator sizing a cap, and a `grpc` listener that answered to a
+/// different key than the `ws` one beside it — or to none at all — would be a cap the operator
+/// believed applied everywhere and in fact did not. Not a dependency on that crate: the string is
+/// the contract, not the constant, so this crate names its own copy of the same key.
+pub const MESSAGE_MAX_BYTES_KEY: &str = "limits.request_body_max_bytes";
+
 /// The gRPC transport: unary and multiplexed streams over HTTP/2, byte-blind. In-tree, inside the
 /// trusted computing base — see the architecture doc's transport and transports-table sections.
 ///
@@ -50,6 +59,16 @@ fn local_port(addr: &str) -> u16 {
 pub struct GrpcTransport {
     next_id: AtomicU64,
     conns: SyncMutex<HashMap<u64, Arc<ConnState>>>,
+    /// The largest gRPC message this transport will decode. Zero means `listen` has read nothing
+    /// and `codec::MAX_MESSAGE_BYTES` (today's 4 MiB) stands — the behaviour before this field
+    /// existed, preserved for a deployment that configures nothing.
+    ///
+    /// Read at `listen` from the configuration view a served instance is handed there — the seam
+    /// the deployment's limits actually arrive through — and carried on every connection this same
+    /// instance goes on to accept OR dial: the cap is the node's, not one direction's, which is why
+    /// `dial` reads this field too rather than taking a second route to the same number. See
+    /// `busbar_transport_ws`'s identical field for the two-lifecycle reasoning this mirrors.
+    max_message_bytes: AtomicUsize,
     /// The layer this one composes over. `None` for an instance that will only ever be handed a
     /// stream directly, which is all a transport owning no socket can otherwise do.
     lower: Option<Arc<dyn Transport>>,
@@ -68,6 +87,7 @@ impl GrpcTransport {
         Self {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
+            max_message_bytes: AtomicUsize::new(0),
             lower: None,
         }
     }
@@ -78,12 +98,23 @@ impl GrpcTransport {
         Self {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
+            max_message_bytes: AtomicUsize::new(0),
             lower: Some(lower),
         }
     }
 
     fn lower(&self) -> Result<&Arc<dyn Transport>, TransportError> {
         self.lower.as_ref().ok_or(TransportError::HandoffMismatch)
+    }
+
+    /// The cap every connection this instance accepts or dials from here on is decoded under: the
+    /// deployment's own, if `listen` has read one, else [`crate::codec::MAX_MESSAGE_BYTES`] — the
+    /// crate's default, unchanged from before this field existed.
+    fn message_cap(&self) -> usize {
+        match self.max_message_bytes.load(Ordering::Relaxed) {
+            0 => crate::codec::MAX_MESSAGE_BYTES,
+            cap => cap,
+        }
     }
 
     /// Take the stream out of a connection the layer below owns, with the chain it stood on.
@@ -181,7 +212,19 @@ impl Transport for GrpcTransport {
         cfg: &'a dyn TransportConfigView,
         keys: &'a TransportKeyHandle,
     ) -> Fut<'a, Listener> {
-        Box::pin(async move { self.lower()?.listen(cfg, keys).await })
+        Box::pin(async move {
+            // `listen` is the one call that carries the deployment's configuration into this
+            // transport, so it is where the message cap is read — the same seam
+            // `busbar_transport_ws::WsTransport::listen` reads its own ceiling from, under the
+            // same key. A dial made from this same instance reads the same number back out of
+            // `message_cap`, which is the intent: the cap is the node's, not the listener's.
+            if let Some(cap) = cfg.get_int(MESSAGE_MAX_BYTES_KEY) {
+                if let Ok(cap) = usize::try_from(cap) {
+                    self.max_message_bytes.store(cap, Ordering::Relaxed);
+                }
+            }
+            self.lower()?.listen(cfg, keys).await
+        })
     }
 
     /// Take the next connection off the layer below and serve HTTP/2 over the stream it gives up.
@@ -200,7 +243,7 @@ impl Transport for GrpcTransport {
             };
             let (stream, chain) = self.take(lower, &conn)?;
             let id = self.mint_id();
-            let state = ConnState::new(None, chain);
+            let state = ConnState::new(None, chain, self.message_cap());
             state.set_local_port(port);
             self.conns.lock().unwrap().insert(id, state.clone());
             crate::server::serve_connection(stream, state);
@@ -251,7 +294,11 @@ impl Transport for GrpcTransport {
             let (stream, cut) = crate::conn::Cuttable::new(stream);
             let (dialer, origin, over) = client::handshake_h2(stream, authority).await?;
             let id = self.mint_id();
-            let state = ConnState::new(Some((Arc::new(dialer), origin, method)), chain);
+            let state = ConnState::new(
+                Some((Arc::new(dialer), origin, method)),
+                chain,
+                self.message_cap(),
+            );
             state.arm_cut(cut);
             self.conns.lock().unwrap().insert(id, state.clone());
             // When the HTTP/2 connection under this dial is over, so is anything that could arrive

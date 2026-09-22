@@ -1538,6 +1538,40 @@ fn the_egress_chunked_body_is_decoded_once_across_many_write_calls() {
     );
 }
 
+/// The egress mirror of `a_message_with_both_a_transfer_encoding_and_a_content_length_is_refused`,
+/// the ingress reader's own refusal.
+///
+/// Two headers naming two different lengths for one body is the canonical request-smuggling
+/// primitive. Before this was wired, `complete_message` only refused a `Transfer-Encoding` it
+/// could not read at all (anything but `chunked`); a body that was validly `chunked` AND carried a
+/// `Content-Length` fell through to the chunked branch, was decoded, and was handed back as a
+/// message with both framing headers stripped — a quiet disambiguation forwarded to the next hop,
+/// which may resolve the same ambiguity the other way. This refuses the pair outright, mirroring
+/// the ingress reader's identical check and identical error.
+///
+/// The second half proves this is not an over-refusal: a normal chunked body with no
+/// `Content-Length` beside it — the exact shape every other egress chunked cell in this file
+/// exercises — still completes.
+#[test]
+fn egress_refuses_a_chunked_body_declared_with_a_content_length() {
+    let smuggled = b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n";
+    let mut cache = EgressHead::default();
+    assert_eq!(
+        complete_message(smuggled, &mut cache, usize::MAX).unwrap_err(),
+        TransportError::Framing,
+        "a chunked body naming a Content-Length beside it is the smuggling shape, refused rather \
+         than silently disambiguated and forwarded"
+    );
+
+    let clean = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n";
+    let mut clean_cache = EgressHead::default();
+    let done = complete_message(clean, &mut clean_cache, usize::MAX)
+        .unwrap()
+        .expect("a normal chunked body with no Content-Length still completes — this refuses the \
+                 smuggling PAIR, not chunked encoding on its own");
+    assert_eq!(done.body, b"abc", "the clean chunked body still decodes byte-exact");
+}
+
 /// One wrapping layer, standing in for the connector and pool layers a real client error arrives
 /// wrapped in: the fact this transport reports must be read off the CHAIN, not off the top.
 #[derive(Debug)]

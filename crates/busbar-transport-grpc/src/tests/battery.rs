@@ -48,6 +48,27 @@ impl busbar_contract::TransportConfigView for BindTo {
     }
 }
 
+/// A bind address, and the operator's gRPC message cap where one is declared — the same key
+/// `busbar-transport-ws`'s own `HttpCfg` test fixture answers, so a cap `listen` reads through
+/// `TransportConfigView::get_int` is exercised the same way on both crates.
+struct CapCfg(String, Option<i64>);
+impl busbar_contract::ConfigView for CapCfg {
+    fn get_str(&self, _k: &str) -> Option<&str> {
+        None
+    }
+    fn get_int(&self, k: &str) -> Option<i64> {
+        self.1.filter(|_| k == crate::transport::MESSAGE_MAX_BYTES_KEY)
+    }
+    fn get_bool(&self, _k: &str) -> Option<bool> {
+        None
+    }
+}
+impl busbar_contract::TransportConfigView for CapCfg {
+    fn bind(&self) -> Option<&str> {
+        Some(&self.0)
+    }
+}
+
 fn test_key_handle() -> busbar_contract::TransportKeyHandle {
     struct Seal;
     impl busbar_contract::plugin::KernelSeal for Seal {
@@ -1099,7 +1120,7 @@ async fn a_call_answered_before_the_handler_runs_leaves_no_entry_behind() {
 /// the call over, and the map entry must go with it.
 #[tokio::test]
 async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
     let (tx, rx) = crate::conn::outbound_channel();
     let serial = state.register(3, crate::conn::opened(tx));
     let out = crate::server::OutStream::new(rx, state.clone(), StreamId(3), serial);
@@ -1120,7 +1141,7 @@ async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
 /// complete.
 #[tokio::test]
 async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
     let one = || {
         Ok((
             StreamId(1),
@@ -1198,7 +1219,7 @@ async fn an_arrival_names_the_port_it_arrived_on() {
 /// per abandoned call, held for the life of the process.
 #[tokio::test]
 async fn a_forwarder_parked_on_a_full_inbound_buffer_ends_when_the_connection_does() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
     let one = || {
         Ok((
             StreamId(1),
@@ -1713,7 +1734,7 @@ fn a_close_off_the_runtime_holds_the_cut_for_the_same_flush_window() {
     // Held so the far end is a live peer rather than a closed one.
     let _far = far;
     let (_cuttable, cut) = crate::conn::Cuttable::new(Box::new(near));
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
     state.arm_cut(cut.clone());
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
@@ -1741,7 +1762,7 @@ fn a_close_off_the_runtime_holds_the_cut_for_the_same_flush_window() {
 /// call's sender, ending a second unit's answer for the first one's death.
 #[test]
 fn a_finished_call_cannot_end_the_one_that_reused_its_id() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
     let (first_tx, _first_rx) = crate::conn::outbound_channel();
     let first = state.register(7, crate::conn::opened(first_tx));
     assert!(
@@ -1981,6 +2002,85 @@ async fn an_oversized_message_is_refused_not_delivered() {
     assert!(
         frame.meta.bytes <= crate::codec::MAX_MESSAGE_BYTES as u64,
         "no delivered frame exceeds the message ceiling"
+    );
+}
+
+/// The operator's own configured message cap is what the decoder is built with, not the crate's
+/// hardcoded 4 MiB — the same seam `busbar-transport-ws` reads for its own message ceiling
+/// (`limits.request_body_max_bytes`), read here through `listen`.
+///
+/// Before this was wired, `listen` never looked at the configuration view it was handed at all: a
+/// deployment that capped its `ws` listener at a kilobyte got an unconfigurable, unbounded-in-
+/// practice 4 MiB `grpc` one right beside it, on a node the operator believed was capped
+/// everywhere. This cell proves three things at once: a message over the SMALL configured cap (but
+/// far under the crate's old hardcoded default) is refused, one under that same cap is delivered,
+/// and (in the sibling cell above, which names no cap at all) the 4 MiB default still stands — the
+/// knob is additive, not a new default.
+#[tokio::test]
+async fn an_operator_configured_cap_is_enforced_not_the_hardcoded_default() {
+    const CAP: usize = 64;
+    let server_t = std::sync::Arc::new(server_transport());
+    let cfg = CapCfg("127.0.0.1:0".to_string(), Some(CAP as i64));
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let sock = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let (mut send, driver) =
+        hyper::client::conn::http2::handshake::<_, _, http_body_util::Full<bytes::Bytes>>(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(sock),
+        )
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = driver.await;
+    });
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let request = |body: bytes::Bytes| {
+        http::Request::builder()
+            .method(http::Method::POST)
+            .uri(format!("http://{addr}{}", crate::server::RPC_PATH))
+            .header(http::header::CONTENT_TYPE, "application/grpc")
+            .header("te", "trailers")
+            .body(http_body_util::Full::new(body))
+            .unwrap()
+    };
+
+    // Over the operator's SMALL cap, but a length prefix the crate's old hardcoded 4 MiB default
+    // would have happily accepted. Only the prefix is sent — a refusal on the declaration must
+    // never wait on a body that was never going to arrive.
+    let over = ((CAP + 1) as u32).to_be_bytes();
+    let oversized = bytes::Bytes::from(vec![0, over[0], over[1], over[2], over[3]]);
+    let _over_resp = send.send_request(request(oversized)).await.unwrap();
+
+    // AT the cap, on a separate call, sent second: whichever frame reaches the server first must
+    // be this one — the oversized one above is refused outright, never delivered.
+    let mut at_cap = vec![0u8; 5 + CAP];
+    at_cap[1..5].copy_from_slice(&(CAP as u32).to_be_bytes());
+    at_cap[5..].fill(b'k');
+    let ok = bytes::Bytes::from(at_cap);
+    let _ok_resp = send.send_request(request(ok)).await.unwrap();
+
+    let mut server_frames = server_t.frames(server_conn);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the at-cap call still arrives")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        frame.bytes.len(),
+        CAP,
+        "a message AT the operator's cap is a message, not a smaller default"
+    );
+    assert!(
+        frame.meta.bytes <= CAP as u64,
+        "no delivered frame exceeds the operator's configured cap"
     );
 }
 

@@ -375,18 +375,34 @@ impl TlsTransport {
     /// Map an IO error that arose on an ALREADY-ESTABLISHED session — a read or write after the
     /// handshake has completed — rather than during the handshake itself.
     ///
-    /// It differs from [`map_io_err`](Self::map_io_err) on exactly one kind. During the handshake,
+    /// It differs from [`map_io_err`](Self::map_io_err) on two kinds. During the handshake,
     /// `io::ErrorKind::InvalidData` is rustls saying the peer could not be authenticated, which is a
     /// `HandshakeFailed`. On a live session the handshake already succeeded — the peer WAS
     /// authenticated — and an `InvalidData` is instead a corrupted or tampered TLS record arriving
     /// mid-stream: the record's authentication tag did not verify, or its length framing was wrong.
     /// Reporting that as `HandshakeFailed` would tell an operator the identity check failed when it
     /// did not; it is the transport's own framing that a record violated, so it maps to
-    /// [`TransportError::Framing`]. Every other kind carries the same meaning in both phases and is
-    /// deferred to [`map_io_err`](Self::map_io_err).
+    /// [`TransportError::Framing`].
+    ///
+    /// `io::ErrorKind::UnexpectedEof` is the other: rustls's own defence against a truncation
+    /// attack. A peer that sends the `close_notify` alert this session is owed produces a clean
+    /// `Ok(0)` read, never an `Err` — see [`send_close_notify`]'s own doc. `UnexpectedEof` is what
+    /// rustls reports instead, deliberately, when the underlying stream just ends with no alert:
+    /// exactly what a peer that dropped the connection, or an attacker who cut it, looks like from
+    /// the inside. Falling to [`map_io_err`](Self::map_io_err)'s catch-all reported it as
+    /// `TransportError::Closed` — the value a caller reads as "the exchange finished", the same
+    /// category a legitimate post-close write failure (`BrokenPipe`, `NotConnected`) still reports.
+    /// That erased the one signal separating an honest close from a cut one, so it is named here
+    /// instead and mapped to [`TransportError::Reset`] — "the connection was reset mid-stream" is
+    /// this closed set's own words for it, and the value every other transport in this workspace
+    /// already uses for a session that ended abnormally rather than one that simply ended.
+    ///
+    /// Every other kind carries the same meaning in both phases and is deferred to
+    /// [`map_io_err`](Self::map_io_err).
     fn map_session_err(e: &io::Error) -> TransportError {
         match e.kind() {
             io::ErrorKind::InvalidData => TransportError::Framing,
+            io::ErrorKind::UnexpectedEof => TransportError::Reset,
             _ => Self::map_io_err(e),
         }
     }

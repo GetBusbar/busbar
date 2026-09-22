@@ -290,12 +290,19 @@ pub(crate) struct ConnState {
     /// the layer below's chain plus this one, carried across the handoff — a connection that named
     /// only itself was one a location could not resolve against.
     pub(crate) chain: Vec<&'static str>,
+    /// The largest gRPC message this connection will decode, fixed at the moment the connection was
+    /// made: [`crate::transport::GrpcTransport::message_cap`], the deployment's own cap if `listen`
+    /// read one, else `codec::MAX_MESSAGE_BYTES`. Read from here rather than re-read from the
+    /// transport on every RPC, so a connection already open keeps the ceiling it was accepted or
+    /// dialled under even if a later `listen` on the same transport instance changes it.
+    pub(crate) max_message_bytes: usize,
 }
 
 impl ConnState {
     pub(crate) fn new(
         dialer: Option<(Arc<crate::client::Dialer>, http::Uri, &'static str)>,
         chain: Vec<&'static str>,
+        max_message_bytes: usize,
     ) -> Arc<Self> {
         let (inbound_tx, inbound_rx) = mpsc::channel(INBOUND_FRAME_BUFFER);
         Arc::new(Self {
@@ -310,6 +317,7 @@ impl ConnState {
             shutdown: SyncMutex::new(None),
             cut: SyncMutex::new(None),
             local_port: std::sync::atomic::AtomicU16::new(0),
+            max_message_bytes,
             chain,
         })
     }

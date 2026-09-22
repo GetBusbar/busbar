@@ -118,9 +118,11 @@ pub(crate) async fn open_stream(
     // this fix.
     // A bounded max decoding message size on the reading (upstream-answer) side too: an upstream's
     // response is as untrusted as a peer's request, and one oversized length-prefixed message must
-    // not make the framing layer reserve unbounded memory. See [`crate::codec::MAX_MESSAGE_BYTES`].
+    // not make the framing layer reserve unbounded memory. The cap is this connection's own — the
+    // deployment's, if `listen` read one on this transport instance, else the crate default — see
+    // `ConnState::max_message_bytes`.
     let mut grpc = tonic::client::Grpc::with_origin(dialer, origin)
-        .max_decoding_message_size(crate::codec::MAX_MESSAGE_BYTES);
+        .max_decoding_message_size(state.max_message_bytes);
     grpc.ready().await.map_err(|_| TransportError::Refused)?;
     let path = PathAndQuery::try_from(method).map_err(|_| TransportError::AddressRefused)?;
     let response = match grpc
