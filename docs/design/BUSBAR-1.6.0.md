@@ -1377,6 +1377,30 @@ were updated.
 while disabled — neither branch could ever go green). The turnstile bridge landed, deliberately
 `workflow_dispatch`-only rather than repointed to `predev`. Both detailed in Part 6.
 
+### TWO OF MY OWN FINDINGS WERE OVERSTATED — read this before acting on any of them
+
+I made the same error twice: **verified that a check was missing, never verified the code was
+reachable.** Both were caught by a second independent review, not by me. The corrections are in full
+above; the lesson generalises.
+
+| I said | Actually |
+|---|---|
+| A2A grant gap is live horizontal privilege escalation | **Not reachable.** `root::units_a2a` is named from `main.rs` at one line, to install scope entries. Its own comment: *"It diverts no byte."* The served path enforces the grant. Latent, not open. |
+| Budget cap bypassed on every restart, all four planes | **Not on the customer path.** `GovState::hydrate_budgets` DOES run at boot (`appbuild.rs:1158`); `ProductionUnits.door` is admin-scoped. One narrow voice question stays open. |
+
+**The rule this session earned: a missing check is not a vulnerability until you have shown the
+line executes.** "Is the guard absent?" and "does anything call it?" are two questions, and the
+second is the one that decides severity. Reporting the first as if it answered the second is how a
+dormant wart gets escalated to a breach — twice, here, in one night.
+
+It cuts the other way too, and that is the reason to fix both anyway: `units_a2a.rs` exists in order
+to BECOME a serving path. A dormant file with a missing authorization check is a trap laid for
+whoever wires it up next, who will reasonably assume the approve step authorizes what it approves.
+
+**What survived the scrutiny unchanged** — the float token-count ledger defect (shipped in v1.5.5),
+the unaudited TLS private-key reads, grpc ignoring the operator's message cap, and the three MCP
+resource-exhaustion bounds. Those were checked for reachability and are real.
+
 ### One process failure, stated plainly
 
 Commit `1772c74706`, whose subject is only `refactor(#41): ArenaExhausted -> ScratchExhausted`,
