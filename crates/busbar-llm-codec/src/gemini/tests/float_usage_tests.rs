@@ -163,3 +163,64 @@ fn additive_sum_is_correct_when_exactly_one_term_is_float_spelled() {
          false positive) rather than the parse bug it actually is"
     );
 }
+
+// ── AN UNREADABLE COUNT REFUSES, IT DOES NOT BILL ZERO (#81/#42) ────────────────────────────────
+//
+// The float-spelled counts above are the case busbar CAN read. This is the case it cannot: a
+// `usageMetadata` field that is there and is not a number busbar understands. The old readers
+// defaulted it to zero, writing "no work happened" into the ledger for work that did.
+
+/// THE BUFFERED IMAGE READER REFUSES AN UNREADABLE BILLED COUNT.
+#[test]
+fn an_unreadable_image_count_refuses_instead_of_billing_zero() {
+    let wire = br#"{"predictions":[{"bytesBase64Encoded":"aGk="}],"usageMetadata":{"promptTokenCount":"27","candidatesTokenCount":5}}"#;
+    let err = crate::gemini::handler::read_image_response(wire)
+        .expect_err("a present, unreadable billed count is a refusal, never a zero");
+    assert!(
+        format!("{err:?}").contains("promptTokenCount"),
+        "the refusal names the field: {err:?}"
+    );
+
+    // The same body, float-spelled, still reads: the refusal is about unreadability only.
+    let ok = br#"{"predictions":[{"bytesBase64Encoded":"aGk="}],"usageMetadata":{"promptTokenCount":27.0,"candidatesTokenCount":5}}"#;
+    let resp = crate::gemini::handler::read_image_response(ok).expect("a float-spelled count reads");
+    match resp.billing() {
+        Some(busbar_substrate_values::billing::Billing::Tokens(t)) => {
+            assert_eq!(t.input, 27);
+            assert_eq!(t.output, 5);
+        }
+        other => panic!("expected token billing, got {other:?}"),
+    }
+}
+
+/// THE TRANSCRIPTION READER REFUSES AN UNREADABLE BILLED COUNT — and this one is reached on the
+/// CROSS-PROTOCOL seam (the op does not tap same-protocol usage), which is exactly where a
+/// zeroed count would have been hardest to notice.
+#[test]
+fn an_unreadable_transcription_count_refuses_instead_of_billing_zero() {
+    let wire = br#"{"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":[],"candidatesTokenCount":5}}"#;
+    let err = crate::gemini::handler::read_transcription_response(wire)
+        .expect_err("a present, unreadable billed count is a refusal, never a zero");
+    assert!(
+        format!("{err:?}").contains("promptTokenCount"),
+        "the refusal names the field: {err:?}"
+    );
+}
+
+/// AN ABSENT COUNT IS STILL ZERO, AND A RESPONSE WITH NO `usageMetadata` STILL READS.
+#[test]
+fn an_absent_count_still_reads_as_zero_and_no_usage_object_still_reads() {
+    let wire = br#"{"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":27}}"#;
+    let resp = crate::gemini::handler::read_transcription_response(wire)
+        .expect("absent candidatesTokenCount reads");
+    match resp.billing() {
+        Some(busbar_substrate_values::billing::Billing::Tokens(t)) => {
+            assert_eq!(t.input, 27);
+            assert_eq!(t.output, 0, "an absent count is zero, exactly as before");
+        }
+        other => panic!("expected token billing, got {other:?}"),
+    }
+    let wire = br#"{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}"#;
+    crate::gemini::handler::read_transcription_response(wire)
+        .expect("a usageMetadata-less response reads");
+}

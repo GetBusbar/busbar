@@ -117,3 +117,67 @@ fn buffered_read_response_reads_float_encoded_counts() {
     assert_eq!(ir.usage.detail.accepted_prediction_tokens, Some(11));
     assert_eq!(ir.usage.detail.rejected_prediction_tokens, Some(2));
 }
+
+// ── AN UNREADABLE COUNT REFUSES, IT DOES NOT BILL ZERO (#81/#42) ────────────────────────────────
+//
+// The float-spelled count above is the case busbar CAN read. This is the case it cannot: a usage
+// field that is there and is not a number busbar understands. The old readers defaulted it to zero,
+// which wrote "no work happened" into the ledger for work that did — and money is a view over
+// `ledger x ratecard`, so every figure derived from that row was faithfully wrong and nothing
+// downstream could tell. These pin the live reader paths, which is where the ledger row comes from.
+
+/// THE BUFFERED IMAGE READER REFUSES AN UNREADABLE BILLED COUNT.
+#[test]
+fn an_unreadable_image_count_refuses_instead_of_billing_zero() {
+    // `"27"` is a string, not a number: present, and not a count.
+    let wire = br#"{"data":[{"b64_json":"aGk="}],"usage":{"input_tokens":"27","output_tokens":5}}"#;
+    let err = crate::openai_chat::handler::read_image_response(wire)
+        .expect_err("a present, unreadable billed count is a refusal, never a zero");
+    let text = format!("{err:?}");
+    assert!(text.contains("input_tokens"), "the refusal names the field: {text}");
+
+    // And the same body with a READABLE count still reads, float-spelled included — the refusal is
+    // about unreadability, not about strictness for its own sake.
+    let ok = br#"{"data":[{"b64_json":"aGk="}],"usage":{"input_tokens":27.0,"output_tokens":5}}"#;
+    let resp = crate::openai_chat::handler::read_image_response(ok).expect("a float-spelled count reads");
+    match resp.billing() {
+        Some(busbar_substrate_values::billing::Billing::Tokens(t)) => {
+            assert_eq!(t.input, 27);
+            assert_eq!(t.output, 5);
+        }
+        other => panic!("expected token billing, got {other:?}"),
+    }
+}
+
+/// THE BUFFERED EMBEDDINGS READER REFUSES AN UNREADABLE BILLED COUNT.
+#[test]
+fn an_unreadable_embeddings_count_refuses_instead_of_billing_zero() {
+    let wire = br#"{"model":"m","data":[],"usage":{"prompt_tokens":{"n":27}}}"#;
+    let err = crate::openai_chat::handler::read_embeddings_response(wire)
+        .expect_err("a present, unreadable billed count is a refusal, never a zero");
+    assert!(
+        format!("{err:?}").contains("prompt_tokens"),
+        "the refusal names the field: {err:?}"
+    );
+}
+
+/// AN ABSENT COUNT IS STILL ZERO, AND A RESPONSE WITH NO USAGE OBJECT STILL READS.
+///
+/// The guard on the guard: if the refusal had been written as "anything I cannot turn into a
+/// number", every well-formed response that simply omits a count would start failing. Absence is a
+/// fact and it is worth zero — that is v1.5.5's behaviour and it does not move.
+#[test]
+fn an_absent_count_still_reads_as_zero_and_no_usage_object_still_reads() {
+    let wire = br#"{"data":[{"b64_json":"aGk="}],"usage":{"input_tokens":27}}"#;
+    let resp = crate::openai_chat::handler::read_image_response(wire).expect("absent output_tokens reads");
+    match resp.billing() {
+        Some(busbar_substrate_values::billing::Billing::Tokens(t)) => {
+            assert_eq!(t.input, 27);
+            assert_eq!(t.output, 0, "an absent count is zero, exactly as before");
+        }
+        other => panic!("expected token billing, got {other:?}"),
+    }
+    // No `usage` object at all: unchanged, bills via the per-image cost basis.
+    let wire = br#"{"data":[{"b64_json":"aGk="}]}"#;
+    crate::openai_chat::handler::read_image_response(wire).expect("a usage-less image response reads");
+}

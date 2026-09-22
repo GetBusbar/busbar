@@ -48,9 +48,15 @@
 //!
 //! The surviving sites are named, one by one, in [`ALLOWED_COUNT_READS`] with the reason each is
 //! there. Two classes: [`AllowClass::NotACount`] (a frame index, an audio timing, a media sample
-//! rate, the #44 config boundary — permanent) and [`AllowClass::PendingConversion`] (a real count,
-//! owed to the #81 conversion wave). The gate's job is that the list never GROWS: a defaulted count
-//! read that is not on it is a finding.
+//! rate, the #44 config boundary — permanent) and [`AllowClass::PendingConversion`] (a real count
+//! still owed a fix). The gate's job is that the list never GROWS: a defaulted count read that is
+//! not on it is a finding.
+//!
+//! THE LIST IS SHRINKING, WHICH IS THE POINT. The eight billed reads in the LLM codec's own
+//! handlers were fixed to REFUSE rather than default (#81/#42) and their allowances are gone. What
+//! remains on the pending side is the SECOND copy of the same seam, in the other codec crate — one
+//! ruling implemented twice, which is resolved to one implementation and not to a shim, and which
+//! is not touched here because that crate is inside a live crate fold.
 //!
 //! # THE THIRD BAN: A PERSISTED COUNT WITHOUT ITS SCALE (#81a)
 //!
@@ -174,7 +180,6 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
         homes: &[
             "crates/busbar-voice-codec/src",
             "crates/busbar-voice/src",
-            "crates/busbar-plane-voice/src",
             "crates/busbar-plane-streaming/src",
         ],
         floor: 28,
@@ -347,18 +352,6 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
         why: "a media format's channel count, not a metered quantity",
     },
     Allow {
-        file: "crates/busbar-plane-voice/src/twilio.rs",
-        needle: "get(\"sampleRate\")",
-        class: AllowClass::NotACount,
-        why: "a media format's sample rate, not a metered quantity",
-    },
-    Allow {
-        file: "crates/busbar-plane-voice/src/twilio.rs",
-        needle: "get(\"channels\")",
-        class: AllowClass::NotACount,
-        why: "a media format's channel count, not a metered quantity",
-    },
-    Allow {
         file: "crates/busbar-plane-streaming/src/twilio.rs",
         needle: "get(\"sampleRate\")",
         class: AllowClass::NotACount,
@@ -377,36 +370,6 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
         why: "the #44 config boundary: a configured decimal read once at parse, not a runtime count",
     },
     // ── A real count, owed to the #81 conversion wave ─────────────────────────────────────────
-    Allow {
-        file: "crates/busbar-llm-codec/src/gemini/handler.rs",
-        needle: "get(\"promptTokenCount\")",
-        class: AllowClass::PendingConversion,
-        why: "a billed count that reads zero when the provider spells it as a float",
-    },
-    Allow {
-        file: "crates/busbar-llm-codec/src/gemini/handler.rs",
-        needle: "get(\"candidatesTokenCount\")",
-        class: AllowClass::PendingConversion,
-        why: "a billed count that reads zero when the provider spells it as a float",
-    },
-    Allow {
-        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
-        needle: "get(\"prompt_tokens\")",
-        class: AllowClass::PendingConversion,
-        why: "a billed count that reads zero when the provider spells it as a float",
-    },
-    Allow {
-        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
-        needle: "get(\"input_tokens\")",
-        class: AllowClass::PendingConversion,
-        why: "a billed count that reads zero when the provider spells it as a float",
-    },
-    Allow {
-        file: "crates/busbar-llm-codec/src/openai_chat/handler.rs",
-        needle: "get(\"output_tokens\")",
-        class: AllowClass::PendingConversion,
-        why: "a billed count that reads zero when the provider spells it as a float",
-    },
     Allow {
         file: "crates/busbar-voice-codec/src/ir/codec/mod.rs",
         needle: "fn u64_at",

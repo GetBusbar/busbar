@@ -483,27 +483,34 @@ pub fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
 }
 
 /// OpenAI transcription `usage` → `Billing`: `{type:"duration",seconds}` (whisper) or a token shape.
-fn parse_transcription_usage(u: &Value) -> Option<Billing> {
+///
+/// # Errors
+/// A token field is PRESENT and cannot be read as a count (#81/#42). Absence still means no token
+/// billing at all — the presence of `input_tokens` is what says this response is token-metered, and
+/// that gating is unchanged.
+fn parse_transcription_usage(u: &Value) -> Result<Option<Billing>, CodecError> {
     match u.get("type").and_then(Value::as_str) {
-        Some("duration") => u
+        Some("duration") => Ok(u
             .get("seconds")
             .and_then(Value::as_f64)
-            .map(|seconds| Billing::Duration { seconds }),
-        // BILLED COUNTS: read through the one seam (`usage_count::read_count_u64`), not a bare
-        // `as_u64`, which returns `None` for a float-spelled count and silently ledgers zero.
-        _ => u
-            .get("input_tokens")
-            .and_then(crate::usage_count::read_count_u64)
-            .map(|input| {
-                Billing::Tokens(busbar_substrate_values::billing::TokenUsage {
-                    input,
-                    output: u
-                        .get("output_tokens")
-                        .and_then(crate::usage_count::read_count_u64)
-                        .unwrap_or(0),
+            .map(|seconds| Billing::Duration { seconds })),
+        // BILLED COUNTS: absent is not billed, UNREADABLE IS A REFUSAL (#81/#42). `.unwrap_or(0)`
+        // on the output leg used to record "no output tokens" for a count the provider really sent
+        // and this build could not read — a ledger row that is faithfully wrong all the way down.
+        _ => match u.get("input_tokens") {
+            // Absent, or spelled `null`: this response is not token-metered. Unchanged.
+            None => Ok(None),
+            Some(v) if v.is_null() => Ok(None),
+            Some(_) => Ok(Some(Billing::Tokens(
+                busbar_substrate_values::billing::TokenUsage {
+                    input: crate::usage_count::billed_count(u, "input_tokens")
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                    output: crate::usage_count::billed_count(u, "output_tokens")
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
                     ..Default::default()
-                })
-            }),
+                },
+            ))),
+        },
     }
 }
 
@@ -1078,7 +1085,10 @@ pub fn read_transcription_response(
         duration_seconds: v.get("duration").and_then(Value::as_f64),
         segments,
         words,
-        usage: v.get("usage").and_then(parse_transcription_usage),
+        usage: match v.get("usage") {
+            Some(u) => parse_transcription_usage(u)?,
+            None => None,
+        },
         ..Default::default()
     })
 }
@@ -1278,14 +1288,17 @@ pub fn read_embeddings_response(
         .unwrap_or_default();
     let usage = v
         .get("usage")
-        .map(|u| busbar_substrate_values::billing::TokenUsage {
-            // BILLED COUNT: through the seam, so a float-spelled count is the count, not zero.
-            input: u
-                .get("prompt_tokens")
-                .and_then(crate::usage_count::read_count_u64)
-                .unwrap_or(0),
-            ..Default::default()
-        });
+        .map(
+            |u| -> Result<busbar_substrate_values::billing::TokenUsage, CodecError> {
+                // BILLED COUNT: absent is zero, UNREADABLE IS A REFUSAL (#81/#42).
+                Ok(busbar_substrate_values::billing::TokenUsage {
+                    input: crate::usage_count::billed_count(u, "prompt_tokens")
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                    ..Default::default()
+                })
+            },
+        )
+        .transpose()?;
     Ok(EmbeddingsResp {
         model: v.get("model").and_then(Value::as_str).map(str::to_string),
         object_kind: Some("list".into()),
@@ -1411,18 +1424,19 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, C
     // are unset. Parse the token object when present so `billing()` yields `Billing::Tokens`.
     let usage = v
         .get("usage")
-        .map(|u| busbar_substrate_values::billing::TokenUsage {
-            // BILLED COUNTS: through the seam, so a float-spelled count is the count, not zero.
-            input: u
-                .get("input_tokens")
-                .and_then(crate::usage_count::read_count_u64)
-                .unwrap_or(0),
-            output: u
-                .get("output_tokens")
-                .and_then(crate::usage_count::read_count_u64)
-                .unwrap_or(0),
-            ..Default::default()
-        });
+        .map(
+            |u| -> Result<busbar_substrate_values::billing::TokenUsage, CodecError> {
+                // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42).
+                Ok(busbar_substrate_values::billing::TokenUsage {
+                    input: crate::usage_count::billed_count(u, "input_tokens")
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                    output: crate::usage_count::billed_count(u, "output_tokens")
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                    ..Default::default()
+                })
+            },
+        )
+        .transpose()?;
     // Per-image (dall-e-style) providers carry no `usage` — record the per-image cost basis so the
     // op is billed as `Billing::Images` rather than nothing. The billable COUNT is recoverable from
     // the response itself (one image per `data` entry). The size/quality TIERS live on the request

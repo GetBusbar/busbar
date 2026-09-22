@@ -637,32 +637,32 @@ pub fn read_transcription_response(
                 .join("")
         })
         .unwrap_or_default();
-    let usage = v.get("usageMetadata").map(|u| {
-        // The transcription writer emits `audioDurationSeconds` (not a token count) when the source
-        // billing was whisper-1's `Billing::Duration` (an openai->gemini hop). Reading it back as
-        // Duration preserves the billable seconds; forcing Tokens{0,0} — as the old reader did —
-        // silently discarded the duration. Real Gemini upstreams emit only the token fields, which
-        // take the Tokens branch as before.
-        if let Some(seconds) = u.get("audioDurationSeconds").and_then(Value::as_f64) {
-            busbar_substrate_values::billing::Billing::Duration { seconds }
-        } else {
-            busbar_substrate_values::billing::Billing::Tokens(
+    let usage = v
+        .get("usageMetadata")
+        .map(|u| -> Result<busbar_substrate_values::billing::Billing, CodecError> {
+            // The transcription writer emits `audioDurationSeconds` (not a token count) when the
+            // source billing was whisper-1's `Billing::Duration` (an openai->gemini hop). Reading it
+            // back as Duration preserves the billable seconds; forcing Tokens{0,0} — as the old
+            // reader did — silently discarded the duration. Real Gemini upstreams emit only the
+            // token fields, which take the Tokens branch as before.
+            if let Some(seconds) = u.get("audioDurationSeconds").and_then(Value::as_f64) {
+                return Ok(busbar_substrate_values::billing::Billing::Duration { seconds });
+            }
+            // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42). The old
+            // `.unwrap_or(0)` wrote "no work happened" for a count the provider really sent and
+            // this build could not read, and every money view over that row was then faithfully
+            // wrong with nothing to show for it.
+            Ok(busbar_substrate_values::billing::Billing::Tokens(
                 busbar_substrate_values::billing::TokenUsage {
-                    // BILLED COUNTS: through the one seam, never a bare `as_u64` (which reads a
-                    // float-spelled count as `None` and then ledgers zero).
-                    input: u
-                        .get("promptTokenCount")
-                        .and_then(crate::usage_count::read_count_u64)
-                        .unwrap_or(0),
-                    output: u
-                        .get("candidatesTokenCount")
-                        .and_then(crate::usage_count::read_count_u64)
-                        .unwrap_or(0),
+                    input: crate::usage_count::billed_count(u, "promptTokenCount")
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                    output: crate::usage_count::billed_count(u, "candidatesTokenCount")
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
                     ..Default::default()
                 },
-            )
-        }
-    });
+            ))
+        })
+        .transpose()?;
     Ok(TranscriptionResp {
         text,
         usage,
@@ -876,18 +876,20 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, C
     // as the Gemini transcription/embeddings usage readers).
     let usage = v
         .get("usageMetadata")
-        .map(|u| busbar_substrate_values::billing::TokenUsage {
-            // BILLED COUNTS: through the one seam — see `usage_count::read_count_u64`.
-            input: u
-                .get("promptTokenCount")
-                .and_then(crate::usage_count::read_count_u64)
-                .unwrap_or(0),
-            output: u
-                .get("candidatesTokenCount")
-                .and_then(crate::usage_count::read_count_u64)
-                .unwrap_or(0),
-            ..Default::default()
-        });
+        .map(
+            |u| -> Result<busbar_substrate_values::billing::TokenUsage, CodecError> {
+                // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42) — see
+                // `usage_count::billed_count`.
+                Ok(busbar_substrate_values::billing::TokenUsage {
+                    input: crate::usage_count::billed_count(u, "promptTokenCount")
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                    output: crate::usage_count::billed_count(u, "candidatesTokenCount")
+                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                    ..Default::default()
+                })
+            },
+        )
+        .transpose()?;
     // Per-image (Imagen `:predict`) responses carry no `usageMetadata` — record the per-image cost
     // basis so the op bills as `Billing::Images` rather than nothing. The billable COUNT is
     // recoverable from the response itself (one image per `predictions` entry). Size/quality tiers

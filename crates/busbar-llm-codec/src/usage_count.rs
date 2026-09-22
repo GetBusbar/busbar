@@ -5,7 +5,13 @@
 //! [`serde_json::Value::as_u64`] returns `None` for ANY float-backed `Number` — including `27.0`,
 //! which is exactly representable as an integer. The house idiom across this crate's dialects was
 //! `.as_u64().unwrap_or(0)`, so a provider that spells a count as a float turned a genuine count of
-//! 27 into a recorded count of **zero**. Cohere's real wire responses do exactly that.
+//! 27 into a recorded count of **zero**. Cohere's published spec types every usage count as a JSON
+//! `number`, which PERMITS a float spelling — so a reader that cannot read one is a reader that can
+//! bill zero for real work. (This module used to assert that Cohere's *real wire responses* do
+//! spell them as floats. Measured 2026-09-22, nothing in this tree supports that: the only
+//! float-spelled counts under `crates/busbar-llm-codec/` are this crate's own hand-written test
+//! fixtures. The spec claim is weaker, checkable, and already sufficient; the wire claim was not
+//! ours to make.)
 //!
 //! Under the locked money model this is not a money bug — it is a **ledger** bug, which is worse.
 //! Money is a view over `ledger x ratecard` and cannot be wrong on its own; if the ledger says the
@@ -52,9 +58,82 @@ pub fn read_count_u64(v: &serde_json::Value) -> Option<u64> {
     }
 }
 
+/// A usage field that was THERE and could not be read as a count.
+///
+/// Distinct from absence on purpose: "the provider reported nothing" and "the provider reported
+/// something this build does not understand" are different facts, and only the first of them is
+/// honestly worth zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadableCount {
+    /// Which usage field it was.
+    pub field: &'static str,
+    /// How it was spelled on the wire, so the operator can see what arrived. Bounded, because a
+    /// hostile body must not be able to write an unbounded string into a log line.
+    pub spelling: String,
+}
+
+impl std::fmt::Display for UnreadableCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "usage field `{}` is present but is not a count: {}",
+            self.field, self.spelling
+        )
+    }
+}
+
+impl std::error::Error for UnreadableCount {}
+
+/// How much of an unreadable value is quoted back. Enough to diagnose, bounded so a hostile body
+/// cannot write an essay into an operator's log.
+const SPELLING_BUDGET: usize = 64;
+
+/// READ ONE BILLED COUNT OUT OF A USAGE OBJECT — ABSENT IS ZERO, UNREADABLE IS A REFUSAL.
+///
+/// # Why this exists rather than `.and_then(read_count_u64).unwrap_or(0)`
+///
+/// That idiom collapses two different facts into one number. A usage field the provider did not
+/// send is genuinely zero of that unit — an embeddings response reports no output tokens because
+/// there are none, and billing zero for it is correct and is what v1.5.5 did. But a field that IS
+/// there and cannot be read is the provider telling us something this build does not understand,
+/// and writing zero for it is the worst available answer: the ledger records that no work happened,
+/// every money view over that row is faithfully derived and faithfully wrong, and nothing anywhere
+/// downstream can tell. Money is a VIEW over `ledger x ratecard`, so a zeroed count is not a
+/// display bug — it is a book that disagrees with reality and says nothing about it.
+///
+/// So the three cases are kept apart:
+///
+/// * **absent, or JSON `null`** — no such quantity was reported. `Ok(0)`, exactly as before. `null`
+///   counts as absence because that is what `null` means, and because a provider spelling "nothing"
+///   that way must not fail a request that works today.
+/// * **readable** — the count, through [`read_count_u64`], including the float-spelled integer that
+///   the bare `as_u64` reads as nothing at all.
+/// * **present, not `null`, unreadable** — [`UnreadableCount`], which the caller turns into a
+///   refusal (#42: money-sacred, never a silent 0).
+///
+/// # Errors
+/// The field is present, is not `null`, and is not a count.
+pub fn billed_count(usage: &serde_json::Value, field: &'static str) -> Result<u64, UnreadableCount> {
+    match usage.get(field) {
+        None => Ok(0),
+        Some(v) if v.is_null() => Ok(0),
+        Some(v) => read_count_u64(v).ok_or_else(|| UnreadableCount {
+            field,
+            spelling: {
+                let mut s = v.to_string();
+                if s.len() > SPELLING_BUDGET {
+                    s.truncate(SPELLING_BUDGET);
+                    s.push('…');
+                }
+                s
+            },
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::read_count_u64;
+    use super::{billed_count, read_count_u64, SPELLING_BUDGET};
     use serde_json::json;
 
     #[test]
@@ -107,6 +186,86 @@ mod tests {
         let inf = serde_json::Number::from_f64(f64::INFINITY);
         assert!(inf.is_none(), "serde_json refuses non-finite numbers at construction");
         assert_eq!(read_count_u64(&json!(f64::MAX)), None);
+    }
+
+    // ── `billed_count`: absent is zero, unreadable is a refusal (#81/#42) ──────────────────────
+
+    /// THE DEFECT, STATED AS THE DIFFERENCE BETWEEN THE TWO SEAMS.
+    ///
+    /// This is the red-before-green in one assertion: the old idiom and the new one are handed the
+    /// SAME wire value, and the old one says "no work happened" while the new one refuses.
+    #[test]
+    fn an_unreadable_count_was_a_silent_zero_and_is_now_a_refusal() {
+        let usage = json!({ "output_tokens": "27" });
+
+        // THE OLD IDIOM, reproduced exactly: `None` from the seam, then a default of zero. A
+        // provider sent us a count and the ledger recorded that it sent nothing.
+        let old = usage
+            .get("output_tokens")
+            .and_then(read_count_u64)
+            .unwrap_or(0);
+        assert_eq!(old, 0, "the defect: a count that would not read billed ZERO");
+
+        // THE NEW SEAM: a refusal that names the field and quotes what arrived.
+        let new = billed_count(&usage, "output_tokens");
+        let err = new.expect_err("a count that will not read must refuse, never default");
+        assert_eq!(err.field, "output_tokens");
+        assert!(err.to_string().contains("output_tokens"), "{err}");
+        assert!(err.to_string().contains("27"), "the refusal quotes what arrived: {err}");
+    }
+
+    #[test]
+    fn an_absent_count_is_zero_and_stays_zero() {
+        // Absence is a real fact and it really is worth zero: an embeddings response reports no
+        // output tokens because there are none. This is the v1.5.5 behaviour and it does not move.
+        let usage = json!({ "prompt_tokens": 27 });
+        assert_eq!(billed_count(&usage, "completion_tokens"), Ok(0));
+        assert_eq!(billed_count(&json!({}), "prompt_tokens"), Ok(0));
+    }
+
+    #[test]
+    fn a_null_count_reads_as_absent_not_as_a_refusal() {
+        // `null` is how a provider spells "nothing here", and it must not fail a request that works
+        // today. It is absence, not an unreadable value.
+        let usage = json!({ "output_tokens": null });
+        assert_eq!(billed_count(&usage, "output_tokens"), Ok(0));
+    }
+
+    #[test]
+    fn a_readable_count_is_the_count_however_it_was_spelled() {
+        assert_eq!(billed_count(&json!({ "n": 27 }), "n"), Ok(27));
+        // The float-spelled integer this module exists for.
+        assert_eq!(billed_count(&json!({ "n": 27.0 }), "n"), Ok(27));
+        assert_eq!(billed_count(&json!({ "n": 0 }), "n"), Ok(0));
+    }
+
+    #[test]
+    fn everything_that_is_not_a_count_refuses_rather_than_defaulting() {
+        for bad in [
+            json!({ "n": "27" }),
+            json!({ "n": 27.5 }),
+            json!({ "n": -1 }),
+            json!({ "n": {} }),
+            json!({ "n": [] }),
+            json!({ "n": true }),
+            json!({ "n": 1.0e30 }),
+        ] {
+            assert!(
+                billed_count(&bad, "n").is_err(),
+                "{bad} must refuse, not bill zero"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hostile_spelling_cannot_write_an_essay_into_the_refusal() {
+        let long = "x".repeat(10_000);
+        let err = billed_count(&json!({ "n": long }), "n").expect_err("a string is not a count");
+        assert!(
+            err.spelling.chars().count() <= SPELLING_BUDGET + 1,
+            "the quoted spelling is bounded, got {} chars",
+            err.spelling.chars().count()
+        );
     }
 
     /// NO DIALECT MAY REINTRODUCE THE BARE READ.
