@@ -79,9 +79,26 @@ resolve_bin() {
     git -C "$checkout" fetch --depth 1 origin "$RELEASE_REF" >&2 2>/dev/null || git -C "$checkout" fetch origin >&2
     git -C "$checkout" checkout --force "$RELEASE_REF" >&2
   fi
-  ( cd "$checkout" && cargo build --release -p "$CRATE" --bin "$BINNAME" >&2 )
-  built="$checkout/target/release/$BINNAME"
-  [ -x "$built" ] || { echo "oracle: build produced no $BINNAME under $checkout/target/release" >&2; exit 1; }
+  # ASK CARGO WHERE IT PUT THE BINARY; never assume `<checkout>/target/release`. That assumption is
+  # wrong whenever the caller has a target directory of its own — `CARGO_TARGET_DIR` in the
+  # environment (a `cargo test` run launched under one exports it straight through to the test
+  # process, which is how this shim is reached), `CARGO_BUILD_TARGET_DIR`, or a `[build] target-dir`
+  # in any `.cargo/config.toml` above the checkout (the checkout lives UNDER this repo, so this
+  # repo's own config is one of them). In every one of those cases cargo built the engine perfectly
+  # and wrote it somewhere else, and the old hard-coded path turned that into
+  # "build produced no busbar-oracle" — a green build reported as a missing judge.
+  #
+  # `--message-format=json-render-diagnostics` keeps human diagnostics on stderr exactly as before
+  # and puts one `compiler-artifact` JSON line per artifact on stdout; the `--bin` target's line
+  # carries `"executable":"<path>"` (other artifacts carry `"executable":null`, which has no quotes
+  # and so cannot match). Cargo emits the artifact line on a FRESH build too, so the path is
+  # available whether or not anything recompiled.
+  local artifacts
+  artifacts="$( cd "$checkout" && cargo build --release -p "$CRATE" --bin "$BINNAME" --message-format=json-render-diagnostics )"
+  built="$(printf '%s\n' "$artifacts" | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)"
+  # Fallback for an engine/cargo that emitted no artifact line at all: the historical path.
+  [ -n "$built" ] || built="$checkout/target/release/$BINNAME"
+  [ -x "$built" ] || { echo "oracle: build produced no $BINNAME (cargo reported ${built:-no executable}; checkout $checkout)" >&2; exit 1; }
   printf '%s\n' "$built"
 }
 RUST_BIN="$(resolve_bin)"
