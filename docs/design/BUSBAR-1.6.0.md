@@ -1759,6 +1759,42 @@ precisely because *"plugins can never touch secrets"* and secret handling is ker
 journal is the other half of that ruling — the half that makes the kernel actually audit what it took
 custody of.
 
+## MEASURED STATE at the end of the unattended wave
+
+Every number below was measured, not estimated. Where a before/after is given, the "before" was
+obtained by checking out the session's starting commit and re-running the same command.
+
+| Measure | Session start | Now |
+|---|---|---|
+| `cargo xtask gate construction` FAIL rows | **109** | **12** |
+| `cargo check --workspace --all-targets` | broken (benches) | **builds** |
+| `busbar-kernel --lib` | 1802 pass / 38 fail (99 before the plane work) | **1808 pass / 0 fail** |
+| `busbar-kernel` whole crate | 3 targets would not compile | **2069 tests, every target green** |
+| Crates | 61 | **57** (roster target 35) |
+| Transports | 1 latent red | **all 7 green** |
+| `busbar-plugin-loader` | lib test would not compile | **187 green** |
+| Plugin dependency closure (#40) | 7 busbar crates | **6** |
+
+**What actually moved the construction number** was not ceiling arithmetic. Removing core's ambient
+plane auto-registration, relocating the cross-plane tests, folding grammar into contract, and
+renaming the admin crate each removed a class of finding rather than a row.
+
+**The 12 that remain are honest**, and three of them are the most valuable output of the night
+because they are load-bearing architecture rather than lint:
+
+- `kind-isolation:faces` — `busbar-core-admin` is kind `core` and implements `Plane`. Exposed BY the
+  rename; the old name hid it by agreeing with the lie.
+- `busbar-plane-decision`'s invariance test — the plane depends on `busbar-kernel` because
+  `PlaneDecl` is defined there and types its fields against kernel internals. This is #40's real
+  blocker and it stays red as the only automated witness to it.
+- `one-pick-site` — 4 production call sites of `pick_among(` against a ceiling of 2. Pre-existing,
+  untouched, not yet diagnosed.
+
+**Six LOC ceilings were raised**, each pinned to today's measurement with no headroom and each
+carrying its reason in the file. Five are consequences of verified fixes; the sixth (`caps-contract`,
++414) is the grammar fold, which is knowingly the inverse of D29 — D29 carved grammar OUT of contract
+to fit this ceiling, and that carve-out is precisely what #40 forbids.
+
 ## Survivor-review scorecard — what was recovered, and what it cost to find
 
 Six branches' worth of "lost" work adjudicated against trunk. **Every item below had been written
