@@ -339,6 +339,17 @@ pub enum KernelVerb {
     /// operations, served beside the 1.5.5 document rather than inside it.
     GetLedgerOpenapiJson,
 
+    // ---- the three 1.6.0 audit-chain reads ----
+    /// `GET /api/v1/admin/audit/head` — the chain's tip: position, digest, signature, key
+    /// identifier and clock. The one fact an external party timestamps and counter-signs.
+    GetAuditHead,
+    /// `GET /api/v1/admin/audit/range` — records by position, each carrying every field its digest
+    /// was taken over, so a puller VERIFIES the chain rather than trusting an answer about it.
+    GetAuditRange,
+    /// `GET /api/v1/admin/audit/keys` — the public keys the chain is signed with, published so a
+    /// verifier never has to ask us for the key out of band.
+    GetAuditKeys,
+
     // ---- named non-admin surfaces ----
     /// `POST /auth/token` — the self-serve exchange (exempt from dual control in both postures).
     PostAuthToken,
@@ -720,6 +731,24 @@ pub const LEDGER_VERBS: &[KernelVerb] = &[
     KernelVerb::GetLedgerReconciliation,
     KernelVerb::GetLedgerMigration,
     KernelVerb::GetLedgerOpenapiJson,
+];
+
+/// THE THREE AUDIT-CHAIN READS, in the order the admin surface lists them.
+///
+/// Their own list, for the same reason the ledger views have one: membership of [`NEW_VERBS`] is
+/// what makes a verb posture-gated and `Full`-scoped, and neither is true of a read. These three
+/// answer with what the node has already sealed — the head, a window of records, the public keys.
+/// They mutate nothing, so there is no maker-checker step for dual control to interpose, and a read
+/// held behind an approval is not delayed, it is refused forever.
+///
+/// They are also the one group whose whole purpose is to be read by somebody who does NOT trust the
+/// node: an auditor, a counter-signing service, an operator with `curl` behind a firewall. Gating
+/// them behind a full-scope credential would mean the only party who can check the evidence is the
+/// party the evidence is about.
+pub const AUDIT_VERBS: &[KernelVerb] = &[
+    KernelVerb::GetAuditHead,
+    KernelVerb::GetAuditRange,
+    KernelVerb::GetAuditKeys,
 ];
 
 /// The named non-admin surfaces, each pinned by its own handler in 1.5.5, not by this crate's

@@ -157,8 +157,9 @@ impl MintOutcome {
 /// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; fifteen of the
 /// 17 money-governance verbs are `Full` (they mutate state or read privileged material) and the two
 /// the document binds as `GET` ([`READ_ONLY_NEW_VERBS`]) are `ReadOnly`, by exactly 1.5.5's own
-/// method rule; the five ledger views are `ReadOnly` (the one group of 1.6.0 additions that only
-/// looks); the named surfaces split by their own nature (`Get*` reads, the two
+/// method rule; the five ledger views and the three audit-chain reads
+/// ([`crate::verb::AUDIT_VERBS`]) are `ReadOnly` (the 1.6.0 additions that only look); the named
+/// surfaces split by their own nature (`Get*` reads, the two
 /// `/auth/token` methods are their own thing and never checked against this two-rung scope model at
 /// all — see the module doc on why `Verbs::execute` is not the caller for them).
 pub fn required_scope(verb: KernelVerb) -> VerbScope {
@@ -181,6 +182,13 @@ pub fn required_scope(verb: KernelVerb) -> VerbScope {
     // fallthrough is tightened to `Full` — the safe direction for an unknown — every ledger view
     // would silently start demanding a full-scope credential.
     if LEDGER_VERBS.contains(&verb) {
+        return VerbScope::ReadOnly;
+    }
+    // The three audit-chain reads, answered here for the same reason as the ledger views: the rung
+    // must be a decision this function MAKES, not a coincidence of where the fallthrough lands. A
+    // chain read is the one surface whose whole point is that somebody who does not trust the node
+    // can check it, so it asks for the same rung as `GET /audit` has since 1.5.5 and no more.
+    if crate::verb::AUDIT_VERBS.contains(&verb) {
         return VerbScope::ReadOnly;
     }
     // Named surfaces: every `Get*` is a read; `PostAuthToken`/`GetAuthToken` are exempt from this

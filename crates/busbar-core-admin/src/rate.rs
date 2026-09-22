@@ -137,7 +137,8 @@ impl MutationClass {
     /// ADMIN_PREFIX-relative path (a new 1.6.0 verb or named surface has none, and falls through to
     /// `Crud`, exactly as 1.5.5's path-only classifier implicitly did for surfaces it never saw).
     ///
-    /// The five 1.6.0 ledger views, the eight named surfaces AND the two 1.6.0 verbs the design
+    /// The five 1.6.0 ledger views, the three audit-chain reads
+    /// ([`crate::verb::AUDIT_VERBS`]), the eight named surfaces AND the two 1.6.0 verbs the design
     /// binds as `GET` ([`crate::verb::READ_ONLY_NEW_VERBS`]) are named in the read-only check
     /// EXPLICITLY, and this is the one place that matters: none of them has a legacy row, so the row
     /// lookup below cannot see them, and without the name they would fall through to `Crud` and
@@ -153,6 +154,7 @@ impl MutationClass {
             return MutationClass::PluginInspect;
         }
         let is_read_only = crate::verb::LEDGER_VERBS.contains(&verb)
+            || crate::verb::AUDIT_VERBS.contains(&verb)
             || crate::verb::NAMED_SURFACES.contains(&verb)
             || crate::verb::READ_ONLY_NEW_VERBS.contains(&verb)
             || crate::verb::LEGACY_VERBS
