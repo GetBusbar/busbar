@@ -2826,16 +2826,23 @@ mod dated_rate_card_history {
 /// test's job to hide it, it is this test's job to make it impossible to forget.
 const MONEY_READS: &[(&str, &str, &str, bool)] = &[
     (
-        "v1/service.rs",
+        "v1/service_operations.rs",
         "get_usage",
         "metering rows (MeteringRow, one UTC-day bucket)",
         true,
     ),
     (
-        "v1/service.rs",
+        "v1/service_operations.rs",
         "get_group_usage",
         "enforcement ledger (UsageLedger, per limit window)",
         false,
+    ),
+    (
+        "v1/service.rs",
+        "derive_spend_micros_row / derive_spend_micros_row_at_card",
+        "the two row pricers themselves — the definitions the reads above call, \
+         the second of which is the dated-history one",
+        true,
     ),
     (
         "keys.rs",
@@ -2902,8 +2909,10 @@ fn every_money_read_in_this_crate_is_registered() {
     // grew a second conversion, or a new file that converts at all, lands here as a diff.
     let registered: std::collections::BTreeSet<&str> =
         MONEY_READS.iter().map(|(file, ..)| *file).collect();
-    // `v1/service.rs` carries the definition of its two row pricers as well as the call sites, so
-    // it is matched by file rather than by an exact count; an unregistered FILE is the signal.
+    // Matched by FILE rather than by an exact count, because no registered file carries a fixed
+    // number of conversion lines: `v1/service.rs` holds the two row pricers' DEFINITIONS and
+    // `v1/service_operations.rs` the two operations that CALL them — one subject, two files, since
+    // the impl block was carved out under the oversized cap. An unregistered FILE is the signal.
     let strays: Vec<&String> = found
         .iter()
         .filter(|site| {

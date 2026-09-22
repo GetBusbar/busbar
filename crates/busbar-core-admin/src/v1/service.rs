@@ -977,6 +977,14 @@ pub(crate) struct AdminService {
     rate_history: Option<&'static dyn UsageRateHistory>,
 }
 
+// EVERY ADMIN OPERATION — the `impl AdminService` block — is in the file this line names, moved
+// there byte-identically because the two of them together were over the impl-file cap.
+//
+// DECLARED AS A CHILD, WHICH IS WHAT MAKES THE SPLIT FREE: `operations` sees this module's private
+// items, so the methods still reach `AdminService`'s private fields and every helper above through
+// a single `use super::*`, and every caller still names them on the type exactly as before.
+#[path = "service_operations.rs"]
+mod operations;
 
 /// Project a `HookCfg` into the ONE wire `HookView` shape, against an explicit global-wiring list —
 /// shared by the live reads (`self.app.global_hooks`) AND the version-history read (the SNAPSHOT's

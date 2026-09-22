@@ -1,3 +1,22 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! EVERY ADMIN v1 OPERATION — the one `impl AdminService` block, carved out of `service.rs`.
+//!
+//! The struct, the module-private helpers these methods call, and the view projectors they hand
+//! their results to all stay in [`super`]; what lives here is the operation surface itself, which
+//! was 1,570 of that file's 2,723 lines and pushed it over the `structure-lint:oversized` cap.
+//!
+//! A CHILD MODULE OF `service`, NOT A SIBLING — declared through `#[path]` the way the tree's other
+//! carved modules are. A child sees its ancestors' private items, so one `use super::*` restores
+//! every name these methods already resolved: `AdminService`'s own private fields, the private
+//! helpers (`installed_usage_rate_history`, `catalog_cache`, `validate_plugin_filename`, the `App`
+//! builders), and the imports the parent module had already pulled in. That relationship is the
+//! reason the move needed no rewriting — nothing here changed except the two lines it took to say
+//! where the block now lives.
+
+use super::*;
+
 impl AdminService {
     pub(crate) fn new(app: Arc<App>) -> Self {
         Self {
@@ -565,7 +584,7 @@ impl AdminService {
     /// either way: the cache is a pure performance layer over a deterministic scan, so the worst
     /// case is one extra rescan on the next call, never a wrong answer served indefinitely (the
     /// fingerprint fix below is what actually prevents a wrong answer being served indefinitely).
-    fn store_plugin_catalog(&self) -> Vec<PluginView> {
+    pub(super) fn store_plugin_catalog(&self) -> Vec<PluginView> {
         // The compiled-in RAM default is always present. Which store backend is ACTIVE is a
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
