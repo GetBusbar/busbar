@@ -41,9 +41,30 @@
 #   reason  = "..."          # >= 40 characters. A shrug is not a reason.
 #   switch  = "..."          # the event that retires this row
 #
+# The per-module construction-site evidence behind every red row is written up once, citably, in
+# qa/reachability-evidence.md — so the agents folding these modules read it rather than tracing it
+# a third time. The gate names that file in its own failure details.
+#
 # ── DECLARATIONS ─────────────────────────────────────────────────────────────────────────────────
 #
-# DELIBERATELY EMPTY ON THE COMMIT THAT INTRODUCED THE GATE. The gate is RED on this tree today, on
+# ONE ROW, AND IT IS A MOVE RATHER THAN A SILENCE. `decision` being registered nowhere is a
+# correct RED and it stays visible: a declared row PASSES but PRINTS its reason and its switch on
+# every single run, which is strictly more than the script comment it replaces ever did. The
+# sentence below is lifted verbatim from scripts/verify-1.6.0-done.sh, which is where this fact was
+# living — in a shell comment, next to a group that does not measure it, with no expiry and nothing
+# that would notice when it stopped being true. Here it expires: the moment `register_planes()` or
+# `plane_claims()` names the plane, `reachability:stale-declaration` reds until this row is struck.
+#
+# Nothing else is declared. See below for why.
+
+[[dormant]]
+subject = "decision"
+aspect  = "registered"
+module  = "crates/busbar-plane-decision/src/lib.rs"
+reason  = "`busbar-plane-decision` exists but is DELIBERATELY UNWIRED — no root Cargo.toml entry, no main.rs entry, and no on-disk `busbar-decision(s)` I/O crate. #48 locks the roster at five and the fifth plane's crate has landed ahead of its wiring; the fold that wires it is tracked separately from this gate. Verbatim from scripts/verify-1.6.0-done.sh, moved here so it has an expiry."
+switch  = "the commit that adds the busbar-plane-decision dependency edge to crates/busbar/Cargo.toml and pushes its PLANE_DECL in register_planes() (or chains DecisionPlane in registry.rs::plane_claims) — strike this row in that same commit"
+
+# THE OTHER FOUR FINDINGS ARE DELIBERATELY NOT DECLARED ON THE COMMIT THAT INTRODUCED THE GATE. The gate is RED on this tree today, on
 # five named rows, and that red IS the instrument working — it is the red-before-green proof that it
 # can see the known case. Declaring those rows here in the same commit would have shipped a gate
 # with its own findings pre-suppressed, which teaches nobody anything. The owning agents either

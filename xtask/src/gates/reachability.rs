@@ -121,6 +121,11 @@ use crate::scan::{test_scope, ScopeLine};
 /// writes the sentence and a reviewer reads it in a diff.
 pub const DECLARATIONS: &str = "qa/reachability.toml";
 
+/// The per-module construction-site evidence behind whatever this gate is red about, written up
+/// once so the agents folding these modules cite it instead of tracing it a third time. Named in
+/// the failure details themselves, because the place a reader meets this gate is a red row.
+pub const EVIDENCE: &str = "qa/reachability-evidence.md";
+
 /// THE ONE CRATE THIS GATE MEASURES, and the manifest whose shape makes that scope sound.
 pub const CRATE_SRC: &str = "crates/busbar/src";
 pub const CRATE_MANIFEST: &str = "crates/busbar/Cargo.toml";
@@ -1125,7 +1130,8 @@ impl Gate for ReachabilityGate {
                              for a unit path and declares no `impl … Units for` — there is no \
                              ten-step unit here for anything to reach. Its siblings each declare \
                              one. Give it a unit path, fold it into whatever does the work, or \
-                             declare it in {DECLARATIONS} with the reason and the switch.",
+                             declare it in {DECLARATIONS} with the reason and the switch. The \
+                             site-by-site evidence is written up in {EVIDENCE}.",
                             m.lines.len()
                         ))
                     } else {
@@ -1156,7 +1162,8 @@ impl Gate for ReachabilityGate {
                                  nothing `fn main()` reaches builds its unit — code in a money \
                                  path that nobody is aware never runs. Switch it onto the serving \
                                  path, or declare it in {DECLARATIONS} with the reason and the \
-                                 switch that retires it.",
+                                 switch that retires it. The site-by-site evidence is written up \
+                                 in {EVIDENCE}.",
                                 dormant.join("; ")
                             ))
                         }
@@ -1296,7 +1303,7 @@ impl Gate for ReachabilityGate {
                     "{} unreached and undeclared module(s) under {ROOT_DIR}/: {} — each ships, \
                      compiles, and no chain from `fn main()` arrives at it. Wire it up, delete it, \
                      or declare it in {DECLARATIONS} (aspect `root-module`) with the reason and \
-                     the switch.",
+                     the switch. The reference-by-reference evidence is written up in {EVIDENCE}.",
                     undeclared.len(),
                     undeclared
                         .iter()
@@ -1559,6 +1566,24 @@ impl Gate for ReachabilityGate {
                 ov
             },
         ));
+        // THE EXPIRY, WHICH IS THE HALF THAT STOPS THE LIST ONLY EVER GROWING. The same declaration
+        // as the case above, over the UNPLANTED green fixture — where a2a's unit path is reached —
+        // must red the stale row. Without this, a declaration written once would excuse its subject
+        // forever, which is the blanket waiver every other list in this tree had to be rescued from.
+        report.push(red_over(
+            self,
+            cx,
+            FIX_GREEN,
+            "a declaration whose subject is REACHED again reds the stale row",
+            &[ROW_STALE.to_string()],
+            {
+                let mut ov = Overlay::new();
+                ov.set(DECLARATIONS, FIXTURE_DECLARED_A2A);
+                ov
+            },
+            "is declared dormant and is REACHED again",
+        ));
+
         report.push(red_over(
             self,
             cx,
