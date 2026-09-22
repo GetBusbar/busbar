@@ -1875,7 +1875,19 @@ had tests; neither suite could see the difference, because neither suite could s
 
 **THE RULE THIS ADDS TO THIS DOCUMENT: a duplicate that encodes a SECURITY or MONEY property
 outranks any duplicate that is merely bigger, and a PARITY TEST is not a fix — it is the admission
-that a fix is owed.** Three more in that class, all already diverged, all under 200 lines each:
+that a fix is owed.**
+
+> **THIS ONE IS PAID.** The bypass was closed first and on its own (`b0d232ebd`, `14dbf65ac`): the
+> live list went to six and the shadowing private copy inside `ssrf_blocked_host` was struck. Then
+> the fork itself: `crates/busbar-kernel-egress/src/trust/net.rs` is the ONE judge (#36 gives that
+> unit the pre-dial guard), `crates/busbar-kernel/src/net_guard.rs` is a 117-line re-export shim, and
+> the three plane crates keep naming `busbar_kernel::net_guard` so no plane→unit edge is grown. The
+> async entry point `resolve_and_pin_async` was DELETED rather than moved — `resolve_and_pin`
+> already takes a `Resolver`, so the guard became pure and the `⊆ {contract, plugin-sdk}` dep-wall
+> (W2.c, above) stopped being a constraint instead of being worked around. The parity test is now
+> `crates/busbar/tests/net_guard_one_judge.rs`.
+
+Three more in that class, all already diverged, all under 200 lines each:
 
 1. `crates/busbar-kernel/src/cost.rs:138-144` is a **third** rate conversion missing the
    `v <= u64::MAX as f64` clamp that `busbar-kernel-ledger/src/cost/rate.rs:40-47` carries — reached
@@ -2418,6 +2430,48 @@ all** (mcp 912, core 789, a2a 468, llm 149), and `neutrality|routes|voice-shaped
 the recorded binary configures no `streams:` block — so the realtime path is unmounted and this seam
 executes in ZERO cells. Nothing to park. **That the oracle cannot see this seam is a coverage gap,
 not a safety proof.**
+
+#### IMPLEMENTED 2026-09-22 — the three oracle rulings, with what they measured
+
+Engine at `7e00b54`, pinned by `891219cdf`. The section below describes the state BEFORE these
+landed; what changed:
+
+**1,402 CELLS WENT FROM INVISIBLE TO VISIBLE.** `diff --baseline-version 1.5.5` now emits **2,318
+ledger rows (916 PASS + 1,402 UNBASELINED)** where it emitted 916. Those 1,402 previously produced
+**no row at all** — mcp 912, a2a 468, boot.refusal 10, llm 9, http.crosscut 2, billing 1. Both
+definitions of "no prior golden" agree (ledger rows and golden cell-files map onto the same 916), and
+the engine now notes it on stderr if they ever stop agreeing. **`rc` is deliberately untouched** and a
+test pins that separation, so making gaps fail the run has to be a decided change rather than a drift.
+
+**THE RULE, FOUND IN THE WILD IN THIS EXACT CODE.** The old check printed
+`PASS  ACCEPTED named gap` — *a gap and a success under one word, on one line.* That is the failure
+this document keeps recording, shipped and running. It now prints `UNBASELINED`, which is neither.
+
+**THE CLOCK BLIND SPOT IS CLOSED, AND PROVEN ON THE REAL CELL'S SHAPE.** Two captures of
+`ledger|rate-history|as-of` differing ONLY in rate-card epoch and billing window, **spend figure
+identical to the byte**:
+
+```
+unpinned:  both normalize to {"as_of":0, …, "window":{"end":0,"start":0}}  -> BYTE-IDENTICAL, INVISIBLE
+pinned:    right keeps as_of:1758499200000 verbatim
+           wrong  becomes "<CLOCK-PIN-MISS:as_of>" + both window markers   -> DIVERGES
+```
+
+**That is precisely the class of the two-clocks defect** — which this tree caught only because it
+*also* moved a spend value. A defect moving only the window now diverges. The mechanism is a pin, not
+un-normalisation: a cell declares `"clock": {…}`, the recorder binds it through the same
+`subst_placeholders` seam already used for minted key ids, and the echo is compared exactly — so it is
+MORE deterministic than flattening, because the value comes from the corpus rather than the boot.
+`latency_ms` still normalises and is REFUSED as a pin. An unpinned cell normalises byte-identically to
+before, which is why this landed without re-recording a single golden.
+
+**A LATENT BUG FOUND ON THE WAY:** both `HarnessConfig` construction sites hardcoded `"1.5.5"`. A
+`golden/1.6.0` recording would have been checked against **1.5.5's** pinned digests and called a
+mismatch — i.e. the per-release baseline ruling would have failed on its first use, in a way that
+looked like a product regression.
+
+**Still owed and correctly not done here:** no cell declares `clock` yet, so `golden/1.6.0` remains a
+cut-time job on a release build.
 
 #### WHAT A GREEN ORACLE PROVES — measured 2026-09-22, and it is narrower than assumed
 
