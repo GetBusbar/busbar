@@ -59,14 +59,10 @@ pub const CONTENT_FACTS: &[&str] = &[
 /// The member every modern request of this protocol carries its own metadata under.
 pub const META_MEMBER: &str = "_meta";
 
-/// The metadata key naming the revision a caller is speaking. The CODEC's, read by identity: the
-/// server half requires it inbound and writes it outbound, and a key this plane merely copied is a
-/// key the two spellings can drift apart on while each side stays consistent with itself.
-pub const META_PROTOCOL_VERSION: &str = crate::codec::META_PROTOCOL_VERSION;
-
-/// The metadata key naming what the caller can answer if asked. The codec's, for the reason
-/// [`META_PROTOCOL_VERSION`] states.
-pub const META_CLIENT_CAPABILITIES: &str = crate::codec::META_CLIENT_CAPABILITIES;
+// THE TWO `_meta` KEYS ARE THE DIALECT'S, AND THERE IS ONE OF EACH. Same reasoning as the error
+// codes in `jsonrpc`: restated here while the dialect lived one crate away, re-exported now that it
+// does not. A key spelled twice in one crate is a key that can come to differ in one of them.
+pub use crate::codec::{META_CLIENT_CAPABILITIES, META_PROTOCOL_VERSION};
 
 /// The metadata key naming a token progress should be reported under.
 pub const META_PROGRESS_TOKEN: &str = "progressToken";

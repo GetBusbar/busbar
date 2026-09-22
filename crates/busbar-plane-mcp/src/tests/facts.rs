@@ -187,23 +187,10 @@ fn the_correlation_carries_the_declared_key() {
 
 /// The metadata keys are spelled the way the codec spells them.
 ///
-/// A VALUE comparison. This read the server half's SOURCE once, with `include_str!` over
-/// `../../busbar-mcp/src/…` — a coupling to a sibling crate the manifest does not name, which
-/// left this plane unable to be built or deleted on its own. Both keys are the codec's now, so
-/// a spelling can no longer differ between the side that requires it inbound and the side that
-/// writes it outbound. The same keys stay pinned against the conformance battery's own table in
-/// the integration tests.
-#[test]
-fn the_metadata_keys_are_the_codecs_own() {
-    assert_eq!(
-        super::META_PROTOCOL_VERSION,
-        crate::codec::META_PROTOCOL_VERSION
-    );
-    assert_eq!(
-        super::META_CLIENT_CAPABILITIES,
-        crate::codec::META_CLIENT_CAPABILITIES
-    );
-}
+// `the_metadata_keys_are_the_codecs_own` IS GONE for the same reason as `jsonrpc`'s code test:
+// this module re-exports the codec's two keys rather than restating them, so the assertion read
+// `X == X`. The pin that still bites — that each QUOTED needle says the same thing as the name it
+// was written from — is below, because those two really are two spellings.
 
 /// Each quoted needle is its own key, in quotes, and nothing else.
 ///

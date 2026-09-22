@@ -212,22 +212,11 @@ fn an_error_carries_its_detail() {
     );
 }
 
-/// Every code this plane may write is one the codec names.
-///
-/// A VALUE comparison against the codec's own table. It read the server half's SOURCE for this
-/// once — `include_str!` over `../../busbar-mcp/src/…` — which coupled this crate to a sibling
-/// the manifest does not name, so the plane could not be built, or deleted, on its own. The
-/// codes are the codec's now, so the question that is left is about the SET rather than about
-/// any one value.
-#[test]
-fn every_code_is_the_codecs_own() {
-    for code in CODES {
-        assert!(
-            crate::codec::CODES.contains(code),
-            "the codec no longer names the code {code}"
-        );
-    }
-}
+// `every_code_is_the_codecs_own` IS GONE, AND SO IS THE QUESTION IT ASKED. It compared this
+// module's ten codes against the codec's table. The two are one table now (`jsonrpc` re-exports
+// `codec`'s), so the loop read `CODES ⊆ CODES` and could not fail for any edit anyone could make.
+// A test that cannot go red is not evidence; the compiler holds this one. The SET question that is
+// still real — that none of the retired codes is writable — is below and is untouched.
 
 /// This plane writes none of the codes the current revision retired.
 #[test]

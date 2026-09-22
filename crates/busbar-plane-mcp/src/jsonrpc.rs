@@ -70,64 +70,19 @@ pub const RESULT_TYPE_INPUT_REQUIRED: &str = "input_required";
 /// The discriminator on a result that hands back a task rather than an answer.
 pub const RESULT_TYPE_TASK: &str = "task";
 
-// Every code below is the CODEC's, read by identity rather than restated. This plane and the server
-// half both write these onto the same wire and the plane cannot name the server half, so a value
-// spelled on both sides is a value the two sides can silently come to disagree about — and a wrong
-// JSON-RPC code reads entirely plausibly. The compiler holds the equality now; the assertion below
-// holds the remaining question, which is whether the SET this plane may write is one the codec knows.
-
-/// The bytes could not be read at all.
-pub const CODE_PARSE_ERROR: i64 = crate::codec::CODE_PARSE_ERROR;
-
-/// The envelope was not a request.
-pub const CODE_INVALID_REQUEST: i64 = crate::codec::CODE_INVALID_REQUEST;
-
-/// The method named is not one this node answers.
-pub const CODE_METHOD_NOT_FOUND: i64 = crate::codec::CODE_METHOD_NOT_FOUND;
-
-/// The parameters were not admissible.
-pub const CODE_INVALID_PARAMS: i64 = crate::codec::CODE_INVALID_PARAMS;
-
-/// Something on this side failed.
-pub const CODE_INTERNAL: i64 = crate::codec::CODE_INTERNAL;
-
-/// A mirrored header did not agree with the body it was mirrored from.
-pub const CODE_HEADER_MISMATCH: i64 = crate::codec::CODE_HEADER_MISMATCH;
-
-/// The caller did not declare a capability the answer would have needed.
-pub const CODE_MISSING_CLIENT_CAPABILITY: i64 =
-    crate::codec::CODE_MISSING_CLIENT_CAPABILITY;
-
-/// The revision the caller asked for is not one this node speaks.
-pub const CODE_UNSUPPORTED_PROTOCOL_VERSION: i64 =
-    crate::codec::CODE_UNSUPPORTED_PROTOCOL_VERSION;
-
-/// A policy said no.
-pub const CODE_REFUSED: i64 = crate::codec::CODE_REFUSED;
-
-/// The server this call would have reached could not be reached.
-pub const CODE_UPSTREAM_UNAVAILABLE: i64 = crate::codec::CODE_UPSTREAM_UNAVAILABLE;
-
-/// Every code this plane may write.
-pub const CODES: &[i64] = &[
-    CODE_PARSE_ERROR,
-    CODE_INVALID_REQUEST,
-    CODE_METHOD_NOT_FOUND,
-    CODE_INVALID_PARAMS,
-    CODE_INTERNAL,
-    CODE_HEADER_MISMATCH,
-    CODE_MISSING_CLIENT_CAPABILITY,
-    CODE_UNSUPPORTED_PROTOCOL_VERSION,
-    CODE_REFUSED,
-    CODE_UPSTREAM_UNAVAILABLE,
-];
-
-/// The codes the current revision retired, which a conformant node must never write.
-///
-/// Declared so the test below can assert this plane writes none of them. A retired code is worse
-/// than an unknown one: a peer that still recognises it will act on a meaning this node did not
-/// intend.
-pub const RETIRED_CODES: &[i64] = crate::codec::RETIRED_CODES;
+// THE ERROR-CODE TABLE IS THE DIALECT'S, AND THERE IS ONE OF IT.
+//
+// Until the codec fold these ten lived in a crate this one could only READ, so they were restated
+// here and pinned to the originals by construction (`= busbar_mcp_codec::codec::CODE_…`). The
+// dialect came home (#39), and a value restated inside the crate that defines it is a second name
+// for one number — the shape a divergence hides in, and one a `pub use` cannot grow. So the
+// restatement is gone and these are re-exports: one definition, in `codec`, where the rest of the
+// MCP wire vocabulary is, reachable on the path callers already spell.
+pub use crate::codec::{
+    CODES, CODE_HEADER_MISMATCH, CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_INVALID_REQUEST,
+    CODE_METHOD_NOT_FOUND, CODE_MISSING_CLIENT_CAPABILITY, CODE_PARSE_ERROR, CODE_REFUSED,
+    CODE_UNSUPPORTED_PROTOCOL_VERSION, CODE_UPSTREAM_UNAVAILABLE, RETIRED_CODES,
+};
 
 /// What kind of scalar the identifier member held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
