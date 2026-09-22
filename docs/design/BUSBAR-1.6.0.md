@@ -1477,16 +1477,36 @@ provider that float-encodes usage, shipped busbar has been under-recording work 
 performed.** How far back it goes, and whether anything is owed in either direction, is a question
 only the owner can answer.
 
-### Why it cannot just be fixed and forgotten
+### CORRECTION — I claimed the oracle would go red. Measured, it will not, and that is worse
 
-The fix changes what gets billed. The oracle diffs 1.6.0 against the recorded 1.5.5 golden, and the
-golden was recorded by code carrying this bug — so for any corpus cell containing a float-encoded
-count, the golden holds `0` and the corrected build holds the true count. **The oracle will go red,
-and it will be right to.** That red is not a regression to fix; it is the bug becoming visible.
+My first reading was that the golden was recorded by buggy code, so corrected cells would differ and
+the oracle would go red — correctly — and clearing it would need an owner re-record.
 
-Resolving it means re-recording those golden cells, which is precisely the "accept a difference in
-billed bytes" act that #10/#59 reserves to the owner. I have not touched
-`accepted-differences.json`.
+**Measured against the actual corpus, that is wrong.** Searching every recorded cell and golden for a
+float-valued token-count field:
+
+```
+grep -rhoE '"[A-Za-z_]*[Tt]okens?[A-Za-z_]*":[[:space:]]*[0-9]+\.[0-9]+' testing/shadow-oracle/
+→ (no matches)
+```
+
+**There is not one float-encoded count anywhere in the corpus**, even though the corpus does contain
+Cohere cells. So:
+
+1. **The fix is oracle-NEUTRAL.** No golden needs re-recording and the oracle will not go red. That
+   materially de-risks this item — landing the parse fix does not require an accept-a-difference
+   ruling. `accepted-differences.json` is untouched and does not need touching.
+
+2. **But that is precisely why the bug reached production.** The oracle exists to catch money
+   divergence, and it recorded only integer-spelled counts — so it was structurally incapable of
+   ever seeing this. A provider spelling a count as a float is the single case that mattered, and
+   the corpus has zero coverage of it.
+
+**The second point is the more serious finding, and it outlives this bug.** A money oracle with a
+blind spot on the money path is worse than a known-red one, because it reports green over the gap.
+The corpus needs a cell that records a real float-encoded provider response — otherwise the
+regression guard for this defect is a source-scan test in one crate, and nothing at the oracle level
+would notice the same class arriving through a different door.
 
 ### SECOND PARKED ITEM — does a rate-card edit reprice history?
 
