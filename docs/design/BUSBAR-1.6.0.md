@@ -1946,7 +1946,26 @@ neither would have been found without a planted answer to check against.
 A gate run against a tree it has already been tuned on tells you nothing — it will pass, because it
 was shaped until it did. A gate run against a violation it has never seen tells you whether it can
 see at all. That is a **positive control**, and it is the single cheapest defence against the failure
-mode that has produced twelve instrument defects here: *reporting green over nothing*.
+mode that has produced repeated instrument defects here: *reporting green over nothing*.
+
+> **A CORRECTION, AND A RULE ABOUT COUNTS.** This document used to say "twelve instrument defects"
+> and that number was cited onward as if it were measured. It was a running tally, **never
+> enumerated**, so nobody — including its author — could audit it. At least one entry in it was
+> wrong: the claim that three plane gates *"scan zero bytes of the five `busbar-plane-*` crates"* is
+> FALSE and was struck 2026-09-22 after measurement. `plane-purity` resolves its population through
+> `kind_isolation::plane_kind_src_roots` (a kind-family census, not a hand-kept list),
+> `plane-purity:scan-denominator` PASSES — *"the scan opened files to answer with"* — and
+> `plane_kind_src_roots` already REFUSES an empty population with the exact reasoning this section
+> preaches: *"an empty population is the passing answer to every ban."* The gate had been repaired
+> before the claim was made; the claim described a fixed defect and was never re-measured.
+> `plane-transport-neutrality` scans `neutral_src_roots()` **by design** and was never supposed to
+> read plane crates. The only real residue is `plane-purity-strict`'s per-plane `test-reach`
+> CEILING rows, which still iterate the legacy four — a ratchet gap, not a ban gap.
+>
+> **So cite the defect, not the count.** An unenumerated tally is the same shape as every instrument
+> failure below: a number that reports confidence without exposing what it measured. This one was
+> repeated across a dozen messages before anyone checked it, which is precisely how the false
+> figures in the size measurement propagated too.
 
 Almost none of this tree's gates have one. The exceptions are instructive — `bin/oracle
 replay-selftest` checks that the ratchet actually names every golden PASS id, and the reachability
@@ -1963,9 +1982,9 @@ Two consequences to hold on to:
   the clearest case: it is about what core NAMES, and a hex escape defeats it while changing nothing
   about what the binary contains.
 
-#### The thirteenth instrument defect, and it runs the OTHER WAY: red over nothing
+#### An instrument defect that runs the OTHER WAY: red over nothing
 
-The twelve above report **green over nothing**. This one reports **red over nothing** — the same
+The defects above report **green over nothing**. This one reports **red over nothing** — the same
 disease, mirrored. An instrument whose output cannot distinguish *"I measured, and it is fine"* from
 *"I never measured"* is broken in both directions, and the second direction is easier to miss
 because a red looks like the instrument working.
@@ -2006,7 +2025,7 @@ production call sites.** The routing knowledge was ported; the branch that consu
    must agree with code, with nothing forcing the agreement.**
 
 **SKIP is the honest outcome, and that was checked rather than assumed** — the obvious way to "fix"
-this is to convert 1,380 reds into passes, which would be the twelve-defect disease exactly.
+this is to convert 1,380 reds into passes, which would be that same disease exactly.
 `harness.rs:2115` scores `Unsupported` as **SKIP**, distinct from PASS. Corroborating: the 1.5.5
 golden holds **916 cells and zero mcp/a2a ones** (both planes are new in 1.6.0), and
 `accepted-gaps.json` names neither — which its own header says is correct: *"Coverage GROWING … needs
