@@ -1938,6 +1938,10 @@ impl PostureView for UnsealedPosture {
 /// a maker-checker state out of. Stating the true values rather than inventing a `Required`/`Approved`
 /// pair is what keeps this view from becoming a gate that reports whatever it wishes; when a later
 /// increment seals those, they resolve here beside the operator key, through this same seam.
+///
+/// [`OperatorState::Set`]: busbar_core_admin::OperatorState::Set
+/// [`OperatorState::Unset`]: busbar_core_admin::OperatorState::Unset
+/// [`DualControl::Single`]: busbar_core_admin::DualControl::Single
 #[derive(Debug, Clone, Copy)]
 pub struct SealedPosture {
     operator: busbar_core_admin::OperatorState,
@@ -1947,6 +1951,8 @@ impl SealedPosture {
     /// Build the production posture from the boot-resolved operator public key. `Some(key)` ⇒ the
     /// ceremony ran and sealed `key`; `None` ⇒ it has not, which is [`OperatorState::Unset`] and is
     /// byte-identical to [`UnsealedPosture`].
+    ///
+    /// [`OperatorState::Unset`]: busbar_core_admin::OperatorState::Unset
     #[must_use]
     pub fn new(operator_key: Option<[u8; 32]>) -> Self {
         SealedPosture {

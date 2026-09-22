@@ -463,9 +463,10 @@ fn jobs_arg(args: &[String]) -> Option<usize> {
 
 /// ONE BATTERY, AND A RED ONE RE-TAKEN SERIALLY BEFORE IT IS BELIEVED.
 ///
-/// The cases are taken across the cores, and a case is isolated by construction — an [`Overlay`]
-/// is per-plant and `with_overlay` never touches the base context. That is an argument, and the
-/// harness's own `two_cases_planted_at_the_same_path_never_see_each_other` is the proof of it. But
+/// The cases are taken across the cores, and a case is isolated by construction — an
+/// [`Overlay`](crate::ctx::Overlay) is per-plant and `with_overlay` never touches the base
+/// context. That is an argument, and the harness's own
+/// `two_cases_planted_at_the_same_path_never_see_each_other` is the proof of it. But
 /// a runner reading a red row cannot re-derive either, and "it only fails when the box is busy" is
 /// how a gate earns a `|| true`. So a battery that goes red at more than one job is TAKEN AGAIN AT
 /// ONE, and BOTH answers are printed: a finding that survives the serial run is the gate's, and a

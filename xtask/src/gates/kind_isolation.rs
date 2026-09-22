@@ -26,11 +26,11 @@
 //!   `busbar-transport-a2a`, `busbar-plane-http`, `busbar-unit-mcp` and `busbar-plane-transport`
 //!   are all refused.
 //! * `kind-isolation:deps` — the kind-to-kind edge CLASSES in the manifests are the ones measured
-//!   in [`MEASURED_EDGES`]. EVERY SHIPPED DEPENDENCY TABLE IS A MANIFEST EDGE — `[dependencies]`,
-//!   `[build-dependencies]` and the per-target forms of both, with `package = "…"` and
-//!   `[workspace.dependencies]` renames resolved to the package they name; see [`crate::manifest`]
-//!   for the five spellings the one-section reader could not see, every one of which was proven to
-//!   carry a plane into a transport with this row green.
+//!   into [`REGISTRY_FILE`]'s `[[dep]]` rows. EVERY SHIPPED DEPENDENCY TABLE IS A MANIFEST EDGE —
+//!   `[dependencies]`, `[build-dependencies]` and the per-target forms of both, with
+//!   `package = "…"` and `[workspace.dependencies]` renames resolved to the package they name;
+//!   see [`crate::manifest`] for the five spellings the one-section reader could not see, every
+//!   one of which was proven to carry a plane into a transport with this row green.
 //!   A NEW class is refused; a class that no longer exists is refused as a
 //!   dead allowance. The measured graph is printed in the row's detail so the owner can tighten it
 //!   by deleting lines rather than by re-deriving it. Inside the plane family a crate may only

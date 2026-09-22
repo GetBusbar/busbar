@@ -12,9 +12,9 @@
 //!
 //! In-process, the gate set IS enumerable: [`crate::gates::REGISTRY`] is the list. So the floor is
 //! replaced by **SET EQUALITY** — every registered gate must appear in `ci.yml` and every
-//! `cargo xtask gate <name>` in `ci.yml` must be registered, modulo [`GATE_SKIP`], whose every entry
-//! carries a written reason. A registered gate absent from `ci.yml` is RED, which is the failure
-//! `MIN_GATES` could only approximate.
+//! `cargo xtask gate <name>` in `ci.yml` must be registered, modulo the skip register at
+//! [`REGISTER_REL`], whose every [`Skip`] row carries a written reason. A registered gate absent
+//! from `ci.yml` is RED, which is the failure `MIN_GATES` could only approximate.
 //!
 //! The cargo floor moves too. In the shell it lived ONLY inside `--selftest`, never on the run path,
 //! so a run whose parser had broken read as a clean tree. Here it is on both.
