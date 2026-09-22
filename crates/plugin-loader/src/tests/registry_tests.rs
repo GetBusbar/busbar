@@ -4,7 +4,7 @@
 //! Tests for `crates/plugin-loader/src/registry.rs`.
 
 use super::*;
-use busbar_plugin_sign::{sign, SigningKey};
+use crate::sign::{sign, SigningKey};
 
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
@@ -789,7 +789,7 @@ fn crafted_publisher_cannot_forge_signature_label() {
     assert!(reg.resolve("acme").is_none());
     assert_eq!(
         reg.skipped()[0].kind,
-        busbar_plugin_sign::RejectKind::UnknownPublisher
+        crate::sign::RejectKind::UnknownPublisher
     );
 
     let rows = inventory(&dir, &policy(&release));
@@ -818,7 +818,7 @@ fn crafted_publisher_cannot_forge_signature_label() {
     assert!(reg.resolve("acme").is_none());
     assert_eq!(
         reg.skipped()[0].kind,
-        busbar_plugin_sign::RejectKind::UntrustedFloored,
+        crate::sign::RejectKind::UntrustedFloored,
         "a floored untrusted artifact must resolve to UntrustedFloored, not AntiDowngrade"
     );
     let rows = inventory(&dir, &floored);
@@ -853,12 +853,14 @@ fn auth_supported_abi_reads_the_shared_const() {
 /// is a recognized kind with a non-empty supported range.
 #[test]
 fn export_supported_abi_reads_the_shared_const() {
+    // The CEILING is the shared const, so the window and the SDK's declared version cannot drift
+    // apart. The FLOOR is deliberately NOT the ceiling: 2 is the 1.5.3 stream vocabulary, and
+    // DECISIONS #85 moved the ceiling to 3 (the response became `{result, metrics[], diagnostics[]}`)
+    // by WIDENING the window rather than moving it, so a sink built against the bare v2 response
+    // keeps loading — the loader reads whichever shape a plugin speaks, decided once at load.
     assert_eq!(
         supported_abi("export"),
-        &[
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
-            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
-        ]
+        &[2, busbar_plugin::cold::export::EXPORT_ABI_VERSION]
     );
     assert!(!supported_abi("export").is_empty());
 }

@@ -174,19 +174,6 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `totalTokens` lost every cache token. Both the buffered Converse body and the streamed `metadata`
   frame now publish the AWS sum. The component fields are unchanged, as is a response with no cache
   activity. See [Spec fidelity](#spec-fidelity).
-- **A Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.**
-  Vertex reports `usageMetadata.toolUsePromptTokenCount` BESIDE `promptTokenCount`, not inside it —
-  on a real `gemini-2.5-flash` capture the field is `32` while the entire `promptTokenCount` is
-  `18`, and Google's own `totalTokenCount` reconciles only when the term is added. 1.5.5 read it as
-  a slice of the prompt and left it out of the bill, so every grounded / server-tool Gemini turn was
-  under-counted by exactly that term (32 of 222 tokens — 14% — on that capture), and the shortfall
-  scaled with tool use. Busbar now counts it in the input tier, where Google charges it, on the
-  buffered path and on the recovery path a response too large to reassemble takes. A Gemini client
-  reading a cross-protocol response still sees the term beside the prompt count exactly as Vertex
-  spells it, and the `totalTokenCount` busbar synthesizes now reproduces Google's. Nothing else
-  about a Gemini response changed, and a turn with no server-side tool use bills exactly as it did.
-  See [Spec fidelity](#spec-fidelity) and
-  [the recorded discrepancy](docs/design/gemini-usage-metadata-spec-discrepancy.md).
 - **Bedrock text blocks no longer open with an empty `contentBlockStart`.** On the ConverseStream
   wire a text block starts with its first `contentBlockDelta`; `contentBlockStart` is emitted for
   tool-use blocks only, as AWS does. See [Spec fidelity](#spec-fidelity).
@@ -343,16 +330,19 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly eight entries of kind `breaking`:
-two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
-both), one confined to Cohere backends that report `usage.billed_units`, one field removed
-from the hook view, one refusal that now comes out of the resolver rather than the validator, one
-key-rotate endpoint that now refuses an overlong id like its siblings, one where a rate-card
-edit stops repricing history it should not touch, and one provider credential that no longer
-degrades to an empty key.
-(A ninth register entry, F-003, is also of kind `breaking` — the CLI `--help`/`--version` text is a
-parseable contract surface — but it is caller-additive and so is presented above under Improvements
-rather than here; a reader counting `kind: breaking` rows in the register will find nine, not eight.)
+The accepted-differences register for this release has exactly eight entries of kind `breaking`
+presented here: two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is
+unchanged in both), one confined to Cohere backends that report `usage.billed_units`, one field
+removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
+endpoint that now refuses an overlong id like its siblings, one where rate cards become a dated
+history so a card's own effective date bounds what it reprices, and one provider credential that no
+longer degrades to an empty key.
+(Two more register entries are also of kind `breaking` but are presented above under Improvements
+instead, because each waives only a caller-additive or documentation-only surface rather than a
+money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
+and F-011c — `openapi.json`'s overlay-delete endpoint prose, registered breaking only because the
+oracle tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
+changed. A reader counting `kind: breaking` rows in the register will find ten, not eight.)
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
@@ -383,6 +373,22 @@ identically, and every 1.5.5 key and minted secret carries over.
   fields; every other backend's ledgered counts are byte-identical to 1.5.5. **Migration:** if a
   Cohere lane's `billed_units` exceed its raw `tokens`, expect that key's recorded spend and
   token-limit consumption to rise to the figure Cohere itself invoices; no config change is needed.
+- 1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google
+  charges for. Vertex reports `usageMetadata.toolUsePromptTokenCount` beside `promptTokenCount`,
+  not inside it — on a real `gemini-2.5-flash` capture the field is `32` while the entire
+  `promptTokenCount` is `18`, and Google's own `totalTokenCount` reconciles only when the term is
+  added. 1.5.5 read it as a slice of the prompt and left it out of the bill, so every grounded /
+  server-tool Gemini turn was under-counted by exactly that term (32 of 222 tokens — 14% — on that
+  capture), and the shortfall scaled with tool use. 1.6.0 counts it in the input tier, where Google
+  charges it, on the buffered path and on the recovery path a response too large to reassemble
+  takes. A Gemini client reading a cross-protocol response still sees the term beside the prompt
+  count exactly as Vertex spells it, and the `totalTokenCount` busbar synthesizes now reproduces
+  Google's. Nothing else about a Gemini response changed, and a turn with no server-side tool use
+  bills exactly as it did. See [Spec fidelity](#spec-fidelity) and
+  [the recorded discrepancy](docs/design/gemini-usage-metadata-spec-discrepancy.md). **Migration:**
+  if your traffic uses Gemini server-side tools (grounding, code execution, function calling),
+  expect those keys' recorded spend to rise to what Google actually invoices; no config change is
+  needed.
 - 1.6.0 Changed: the always-null `at` field on the hook view gives way to `fires_at` (rewritten for
   you by --migrate-config). Every hook object served by `GET /api/v1/admin/hooks[/{name}]`, and the
   follow-up read of a hook write, gains `fires_at` (the resolved stage set), `groups` and `phase`
@@ -397,15 +403,18 @@ identically, and every 1.5.5 key and minted secret carries over.
   through to a misleading 404 `not_found` instead of the siblings' 400 `invalid_request` / "id must
   be <= 64 characters". **Migration:** a client that relied on the 404 for an overlong rotate id
   must expect a 400 instead, matching every other `/keys/{id}` handler; no config change is needed.
-- 1.6.0 Changed: a rate-card edit prices what happens after it, not what happened before it. 1.5.5
-  derived every row's spend at read time from the current cost model, so a `PUT
-  /config/settings` rate-card edit re-priced every past row with no restart and no boundary.
-  1.6.0 keeps deriving spend at read time but reads it against the card in force at the posting's
-  instant, from an append-only dated rate-card history. A window with no mid-window card change
-  answers byte-identically; a window that had one now answers with the money each request was
-  actually earned under. **Migration:** if you rely on `GET /admin/usage` totals recalculating
-  after a rate-card change, they no longer do; use the new `amend-rate-history` verb to post an
-  attributed correction instead. See [the 1.6.0 migration guide](docs/migration-1.6.md).
+- 1.6.0 Changed: rate cards are now a dated history, not a single mutable price. Publishing a card
+  with an effective date leaves every posting before that date priced exactly as it was; a signed
+  back-dated correction reprices exactly the window it names — `[effective_from, effective_until)`
+  — and nothing outside it, posted as an attributed, append-only entry rather than an edit to a
+  booked row. 1.5.5 derived every row's spend at read time from the current cost model, so a `PUT
+  /config/settings` rate-card edit re-priced every past row with no restart and no boundary; that
+  blanket repricing is now available only as an explicit, signed correction naming its own window,
+  never as a side effect of publishing a new card. **Migration:** `GET /admin/usage` itself still
+  derives spend from the current card at read time and does not yet resolve through the dated
+  history; to correct what a past window was charged, post a signed correction through the new
+  `POST /api/v1/admin/ledger/amend-rate-history` verb rather than editing the live card. See [the
+  1.6.0 migration guide](docs/migration-1.6.md).
 
 - 1.6.0 Breaking: a provider whose `api_key` reference does not resolve now refuses boot; keyless
   local upstreams must declare `api_key: none`. 1.5.5 logged
@@ -452,6 +461,30 @@ the eight new plane-record verbs with "unsupported", which the engine treats as 
 and hook plugins are untouched. Stores built against ABI 4 — the ones that persist MCP call
 records and A2A tasks durably — are a later release; nothing you have installed needs rebuilding
 for 1.6.0. See [the plugin guide](docs/plugins.md).
+
+**Every plugin response now carries an observability envelope**, and the `export` kind's payload
+schema moves to v3 because of it. A plugin answers `{ result, metrics[], diagnostics[] }`: `result`
+is the kind-specific answer it always sent, and the other two are a back-channel that did not exist.
+The plugin REPORTS on it; Busbar validates, bounds and decides — a plugin can neither write a
+counter nor mint a diagnostic code of its own, and a metric named `busbar_*` is dropped so nothing
+can impersonate a first-party series. The bound is the one hook metrics have had since 1.5.0 (64
+entries, 8 labels, a charset on every name, finite numbers, sanitised strings, a malformed entry
+dropped whole), reached through the same function rather than a second copy of it.
+
+This exists because the export wire could not carry what a sink DID. `Delivered` was a unit variant
+and the cold tier has no host callback, so a telemetry sink that rotated a file or shed a line had
+nowhere to say so — which is why the built-in file, webhook and Prometheus exporters are still
+compiled in rather than shipped as the plugins they are supposed to be. It also closes a hole in the
+compiled-in ≡ dropped-in guarantee that was asserted and false: a compiled-in plugin could reach
+Busbar's own metrics recorder, while the same source built as a dropped-in `.so` links its own and
+silently lost every counter. Reaching a recorder is no longer representable from either build.
+
+**Nothing you have installed needs rebuilding.** The export window widens to `2..=3` rather than
+moving: a sink built before the envelope answers the bare response and keeps loading, and Busbar
+reads whichever shape a plugin speaks — decided once, when it loads. The store, secret, auth and
+hook payload schemas are unchanged, as is the transport version (`busbar_abi() == 1`) and the six
+exported symbols. A sink that wants the back-channel implements one new defaulted SDK method,
+`drain_observations`.
 
 ### Spec fidelity
 

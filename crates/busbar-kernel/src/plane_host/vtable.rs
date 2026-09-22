@@ -18,7 +18,7 @@
 //!    clock), never to a permissive one;
 //! 3. translates POD ↔ primitive by pointer, writing any out-param only on the `Ok` path.
 
-use super::{recover, trust, HostState};
+use super::{recover, trust};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{
     AuthQuery, AuthResolved, Decision, EgressDesc, EgressId, EgressOpen, Facts, GovRefusal,
@@ -161,7 +161,9 @@ extern "C-unwind" fn card_sign(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if input_ptr.is_null() || out.is_null() {
             return StatusClass::Refused;
         }
@@ -195,35 +197,68 @@ extern "C-unwind" fn card_sign(
 extern "C-unwind" fn clock_now(host: HostCtx) -> u64 {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: the host passes a live `HostState` ptr for the dispatch duration (see `recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return 0;
+        };
         busbar_kernel::store::now_ms().saturating_mul(1_000_000)
     }))
     .unwrap_or(0) // fail-closed: a panicked clock reads 0, never a wild value.
 }
 
-/// WIRED `metrics_emit` → the real `metrics` recorder (`crate::metrics`). Reads the borrowed
-/// [`MetricSample`] and emits its value as a gauge under the plane-supplied name. Label passthrough /
-/// cardinality policy is the Phase-2 host's job; this proves the sample reaches the process recorder.
+/// WIRED `metrics_emit` → the real `metrics` recorder (`crate::metrics`), through the SAME rule the
+/// COLD lane's envelope is folded by.
+///
+/// A plane REPORTS a sample; the host decides whether it is allowed to have said it (DECISIONS #85).
+/// This slot is the hot lane's half of that, and it used to have no half at all: it took whatever
+/// name the plane handed over, verbatim, and — when the plane handed over no name — INVENTED
+/// `busbar_plane_metric`, writing into the reserved first-party namespace on the plane's behalf.
+/// Nothing checked the charset, so a plane could emit a name Prometheus cannot parse and cost the
+/// whole exposition; nothing checked the value, so a `NaN` from `f64::from_bits` went straight to
+/// the recorder; and nothing stopped a plane shadowing a real `busbar_*` series.
+///
+/// Now: the name goes through [`crate::metrics::observe::admits_metric_name`] — the one predicate both lanes
+/// ask — and a non-finite value is refused. A rejected sample is `Refused`, not `Ok`, because the
+/// plane is entitled to know its telemetry did not land; and it is `Refused` rather than a fault
+/// because a badly-named metric is bad DATA, not a broken peer.
+///
+/// STILL OWED, and named rather than left to be rediscovered: this slot carries no PROVENANCE. The
+/// cold lane attaches `plugin="<name>"` from the loaded handle, so a folded series says who reported
+/// it; `metrics_emit`'s signature carries only a `HostCtx`, so a plane's series is anonymous and two
+/// planes reporting one name are indistinguishable. Label passthrough (`labels_ptr`/`labels_len`) is
+/// likewise still unread, so plane label cardinality is unbounded the moment it is wired.
 extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if sample.is_null() {
             return StatusClass::Refused;
         }
         // SAFETY: a non-null `sample` is a live, initialized `MetricSample` for the call (ABI).
         let s = unsafe { &*sample };
         let value = f64::from_bits(s.value_bits);
-        let name: String = if s.name_ptr.is_null() || s.name_len == 0 {
-            "busbar_plane_metric".to_string()
-        } else {
-            // SAFETY: `(name_ptr, name_len)` is a live borrowed range for the call (ABI discipline).
-            let bytes = unsafe { std::slice::from_raw_parts(s.name_ptr, s.name_len) };
-            String::from_utf8_lossy(bytes).into_owned()
-        };
+        // A non-finite sample is not a value. `from_bits` will hand back `NaN`/`inf` for bit
+        // patterns a plane can produce by accident or on purpose, and the cold lane's validator has
+        // always dropped those; there is no reading of #85 on which one lane admits what the other
+        // refuses.
+        if !value.is_finite() {
+            return StatusClass::Refused;
+        }
+        if s.name_ptr.is_null() || s.name_len == 0 {
+            // No name is not a metric. Inventing one put a plane's sample in the reserved namespace
+            // under a name no plane chose and no operator could attribute.
+            return StatusClass::Refused;
+        }
+        // SAFETY: `(name_ptr, name_len)` is a live borrowed range for the call (ABI discipline).
+        let bytes = unsafe { std::slice::from_raw_parts(s.name_ptr, s.name_len) };
+        let name = String::from_utf8_lossy(bytes);
+        if !crate::metrics::observe::admits_metric_name(&name) {
+            return StatusClass::Refused;
+        }
         // Routes to the process-wide `metrics-exporter-prometheus` recorder installed by
         // `crate::metrics::init` (a no-op sink when the operator did not opt in).
-        metrics::gauge!(name).set(value);
+        metrics::gauge!(name.into_owned()).set(value);
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
@@ -237,7 +272,9 @@ extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) ->
 extern "C-unwind" fn govern_admit(host: HostCtx, facts: *const Facts) -> Decision {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return Decision::Deny;
+        };
         if facts.is_null() {
             return Decision::Deny;
         }
@@ -306,7 +343,9 @@ extern "C-unwind" fn govern_admit_reason(
         // SAFETY: ABI out-param discipline (writable/aligned or null; see `write_gov_refusal`).
         unsafe { write_gov_refusal(out, 0, 0) };
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return Decision::Deny;
+        };
         if facts.is_null() {
             return Decision::Deny;
         }
@@ -339,7 +378,9 @@ extern "C-unwind" fn govern_admit_reason(
 extern "C-unwind" fn meter_charge(host: HostCtx, usage: *const Usage) -> MeterOutcome {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return MeterOutcome::Rejected;
+        };
         if usage.is_null() {
             return MeterOutcome::Rejected;
         }
@@ -409,7 +450,9 @@ extern "C-unwind" fn auth_resolve(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if query.is_null() {
             return StatusClass::Refused;
         }

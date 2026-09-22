@@ -24,7 +24,7 @@ use crate::state::App;
 /// An empty `allowed_pools` (or `key: None` — governance disabled, or the operator/admin default
 /// `GovCtx`) means "all pools", so those callers see the full topology exactly as before: this
 /// preserves today's operator/admin behavior.
-pub(crate) async fn stats(
+pub async fn stats(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Extension(gov): Extension<GovCtx>,
 ) -> Response {
@@ -152,7 +152,7 @@ pub(crate) async fn stats(
 /// Governance-scoped with the same rules as `/stats`: a virtual key with a non-empty
 /// `allowed_pools` sees only its visible pools and the models reachable through them —
 /// the model list must not leak topology the pool ACL hides.
-pub(crate) async fn list_models(
+pub async fn list_models(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Extension(gov): Extension<GovCtx>,
     headers: axum::http::HeaderMap,
@@ -161,7 +161,7 @@ pub(crate) async fn list_models(
 }
 
 /// `GET /v1beta/models` — the same list under a second dialect's discovery path.
-pub(crate) async fn list_models_v1beta(
+pub async fn list_models_v1beta(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Extension(gov): Extension<GovCtx>,
     headers: axum::http::HeaderMap,
@@ -287,6 +287,8 @@ pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) ->
     }
 }
 
-#[cfg(test)]
-#[path = "tests/endpoints_tests.rs"]
-mod tests;
+
+// `tests` (the `/stats`/`/v1/models` topology suite) MOVED to `tests/endpoints_cross_plane.rs` (the
+// "fix the 38" pass after the A6/HostCtx dev-dependency-cycle cleanup): every test in it builds real
+// lanes/pools, which only materialize through the REAL `busbar_llm` plane's `build_runtime`/`viewer`
+// — an integration-test target, never this `#[cfg(test)]` unit module. See that file's header.

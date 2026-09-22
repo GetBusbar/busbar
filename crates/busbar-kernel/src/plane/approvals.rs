@@ -230,13 +230,11 @@ impl SpentTokenLedger {
 #[path = "tests/askstate_tests.rs"]
 mod askstate_tests;
 
-// ONE APPROVAL, REDEEMED ONCE — across a restart and across a fleet. Kept in its own file rather
-// than folded into the battery above because it is about a DIFFERENT seam: everything in
-// `askstate_tests` is the seal, exercised in memory, and everything here crosses the real plugin ABI
-// into a real durable store and is judged through `callerask::decide` rather than through `spend`.
-#[cfg(test)]
-#[path = "tests/spentledger_tests.rs"]
-mod spentledger_tests;
+// ONE APPROVAL, REDEEMED ONCE — across a restart and across a fleet. MOVED to
+// `tests/spentledger_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle cleanup): it crosses the
+// real plugin ABI into a real durable store and is judged through the REAL `busbar_mcp::mcp::
+// callerask::decide`, which only type-checks with ONE `busbar_kernel` in the graph — an
+// integration-test target, never this `#[cfg(test)]` unit module. See that file's header.
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;

@@ -5,6 +5,7 @@ pub fn a2a_leak() {}
 pub fn llm_leak() {}
 pub fn streaming_leak() {}
 pub fn voice_leak() {}
+pub fn jev_leak() {}
 pub fn busbar_transport_http_leak() {}
 pub fn busbar_transport_ws_leak() {}
 pub fn busbar_transport_stdio_leak() {}

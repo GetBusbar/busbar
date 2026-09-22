@@ -5,7 +5,7 @@
 //! not a price. Nothing in this file opens a connection, reads a file, reads a clock other than the
 //! one the context hands it, or keeps a byte across a call.
 
-use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir};
+use busbar_contract::bounded::{ScratchBytes, FactValue, Facts, Ir};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::SchemeAlt;
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -114,7 +114,7 @@ fn refusal_render(reason: RefusalReason) -> (&'static str, &'static str) {
         | RefusalReason::StaleSlice
         | RefusalReason::TierMismatch
         | RefusalReason::SpillBudget
-        | RefusalReason::ArenaBudget
+        | RefusalReason::ScratchExhausted
         | RefusalReason::RateLimited
         | RefusalReason::ChallengeExhausted
         | RefusalReason::NoRate
@@ -221,12 +221,12 @@ impl Plane for DecisionPlane {
         // Byte-identity passthrough: the caller's body goes to the provider UNCHANGED. jev performs
         // none of A2A's task-identifier rewrite — there is no busbar-minted identifier in a
         // `systemone` request to swap out.
-        let body = ArenaBytes::new(u.body().body());
+        let body = ScratchBytes::new(u.body().body());
         let mut envelope = TransportEnvelope::default();
         let content_type = ctx
             .arena()
             .alloc_bytes(CONTENT_TYPE_JSON)
-            .map_err(|_| Encode::ArenaExhausted)?;
+            .map_err(|_| Encode::ScratchExhausted)?;
         let _ = envelope.fields.push(busbar_contract::wire::EnvelopeField {
             name: FIELD_CONTENT_TYPE,
             value: content_type,
@@ -245,7 +245,7 @@ impl Plane for DecisionPlane {
         _dest: &VerifiedDestination,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // Both of jev's operations are complete in one request/response pair; there is no open
         // unit an extra inbound frame could belong to.
         Ok(None)
@@ -303,12 +303,12 @@ impl Plane for DecisionPlane {
         r: &Response<'u>,
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         // Byte-identity passthrough on the way back too: the provider's own bytes reach the caller
         // unchanged. jev composes no answer of its own — both operations are always a relay.
         ctx.arena()
             .alloc_bytes(r.ir.body())
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_refusal<'u>(
@@ -317,11 +317,11 @@ impl Plane for DecisionPlane {
         _draft: Option<&UnitDraft<'u>>,
         _st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         let (code, message) = refusal_render(refusal.reason);
         ctx.arena()
             .alloc_bytes(&error_body(code, message))
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_end<'u>(
@@ -330,7 +330,7 @@ impl Plane for DecisionPlane {
         _end: &UnitEnd,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // Neither jev operation writes anything to end a unit: the answer's own document IS the
         // end.
         Ok(None)

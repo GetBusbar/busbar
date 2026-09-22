@@ -42,24 +42,12 @@ fn every_section_round_trips_its_three_route_shapes() {
     assert_eq!(NamedMapSection::parse_rel("/groups/{name}"), None);
 }
 
-/// F2 — BYTE-IDENTITY PIN. `sections()` is folded from the plane registry, so its ORDER is what the
-/// router mounts and the OpenAPI generator emits in. Under the default/test/openapi-generating
-/// build's set of registered planes it MUST equal the frozen 1.5.3 order
-/// `[identity-providers, export, tools, agents]` — anything else drifts `openapi.json`. `streams:`
-/// is a SINGULAR plane section (no `named_def_list`), so it never joins this named-map list.
-#[test]
-fn sections_holds_the_frozen_named_map_order_under_the_default_feature_set() {
-    let keys: Vec<&'static str> = NamedMapSection::sections()
-        .iter()
-        .map(|s| s.key())
-        .collect();
-    assert_eq!(
-        keys,
-        vec!["identity-providers", "export", "tools", "agents"],
-        "sections() must yield the frozen 1.5.3 order so the router/OpenAPI surface stays \
-         byte-identical"
-    );
-}
+// `sections_holds_the_frozen_named_map_order_under_the_default_feature_set` MOVED to
+// `tests/named_map_cross_plane.rs`: it pins `sections()`'s fold over the REAL registered roster
+// (`"tools"`/`"agents"` are the real `busbar_mcp`/`busbar_a2a` config sections) — naming that real
+// vocabulary here (even via a synthetic `#[cfg(test)]` decl) is exactly what `cargo xtask gate
+// construction`'s `neutral-no-dialect` rule (ceiling 0) forbids. See that file for the relocated
+// test.
 
 /// A definition is parsed into its typed, `deny_unknown_fields` config struct at the insert seam —
 /// so an unknown key is rejected by the API exactly as `config.yaml` would reject it, and the

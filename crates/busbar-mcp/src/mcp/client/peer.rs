@@ -215,10 +215,23 @@ impl ServerNotification {
 /// JSON-RPC object at all. The caller correlates the former and refuses the latter; neither is this
 /// module's decision.
 ///
-/// The discriminator is the presence of `method`, and then of `id`, which is the JSON-RPC base
-/// specification's own rule and not a heuristic. A `null` id on a request is treated as a
-/// NOTIFICATION rather than as a request with a null id: answering it would produce a response
-/// nothing can correlate, which the base protocol reserves for errors about un-parseable requests.
+/// ## THE HANG THIS FUNCTION USED TO PRODUCE
+///
+/// JSON-RPC 2.0 §4 is explicit: a notification is a request whose `id` member is ABSENT — not one
+/// whose `id` holds `null`. This function used to decide notification-ness by filtering `id` on
+/// nullness (`.filter(|v| !v.is_null())`), which collapses a PRESENT-but-null id into "absent". Many
+/// JSON-RPC encoders — serde's default among them, for any struct whose `id` field always serializes
+/// — spell an absent id as an explicit `null` on the wire. Such a peer's `roots/list` was therefore
+/// read as a notification, busbar never replied, and the child blocked forever on an answer that was
+/// never coming: a well-behaved, conformant peer produced a permanent, silent hang.
+///
+/// The discriminator is now the METHOD FIRST, against the closed notification table
+/// ([`notification_of`]): a known notification method is a notification regardless of what `id`
+/// carries. Everything else is read by whether the `id` MEMBER IS PRESENT, never by its value — so a
+/// request method with an explicit `null` id is still a request, and MUST be answered, echoing that
+/// same `null` back as the JSON-RPC base specification allows. An `id`-absent line on an unrecognised
+/// method still reads as a notification (see [`ServerMessage::UnknownNotification`]): the fix is
+/// "read presence, not nullness", never "answer everything".
 pub(crate) fn classify(value: &serde_json::Value) -> Option<ServerMessage> {
     let obj = value.as_object()?;
     // A response, not a message. Checked FIRST and by the presence of the members rather than by the
@@ -228,20 +241,25 @@ pub(crate) fn classify(value: &serde_json::Value) -> Option<ServerMessage> {
         return None;
     }
     let method = obj.get("method").and_then(|m| m.as_str())?;
-    let id = obj.get("id").filter(|v| !v.is_null()).cloned();
-    match id {
-        None => Some(match notification_of(method) {
-            Some(n) => ServerMessage::Notification(n),
-            None => ServerMessage::UnknownNotification(method.to_string()),
-        }),
-        Some(id) => Some(match request_of(method) {
-            Some(verb) => ServerMessage::Request { id, verb },
-            None => ServerMessage::UnknownRequest {
-                id,
-                method: method.to_string(),
-            },
-        }),
+    // METHOD FIRST: a known notification method is a notification no matter what `id` holds — see
+    // the header above for why reading `id`'s value at all, before this check, is the defect.
+    if let Some(n) = notification_of(method) {
+        return Some(ServerMessage::Notification(n));
     }
+    // Now `id` is read by PRESENCE only. `unwrap_or(Value::Null)` cannot silently invent a value: the
+    // `contains_key` guard above already proved the member is there, so this only ever unwraps a
+    // `Some` — a defensive fallback, not a second decision.
+    if !obj.contains_key("id") {
+        return Some(ServerMessage::UnknownNotification(method.to_string()));
+    }
+    let id = obj.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    Some(match request_of(method) {
+        Some(verb) => ServerMessage::Request { id, verb },
+        None => ServerMessage::UnknownRequest {
+            id,
+            method: method.to_string(),
+        },
+    })
 }
 
 /// The method-name table for notifications. One table, read in one direction, so a name cannot be

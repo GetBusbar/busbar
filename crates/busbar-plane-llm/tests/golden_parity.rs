@@ -98,7 +98,7 @@ fn golden_dir() -> std::path::PathBuf {
 /// One request, taken in through the plane's decode step and back out through its egress step.
 fn translate_request(ingress: &str, egress: &str, body: &str) -> Vec<u8> {
     let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for(ingress), &[]);
     let labels = Labels::new();
@@ -465,7 +465,7 @@ fn comparable(ingress: &str, frozen_bytes: &[u8], produced: &[u8]) -> (String, S
 fn translate_response(egress: &str, ingress: &str, body: &str) -> Vec<u8> {
     use busbar_contract::plane::Progress;
     let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     // The elapsed figure the frozen output stamps, published the way a real transport publishes
     // it: as a fact. The plane does not measure it and does not invent it.

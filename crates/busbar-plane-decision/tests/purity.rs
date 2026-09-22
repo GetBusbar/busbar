@@ -1,9 +1,13 @@
 //! The plane is pure, and this is what says so.
 //!
 //! Mirrors `busbar-plane-a2a`'s own `purity.rs`. One deliberate difference from that file's "names
-//! no kernel-side crate" scan: this crate legitimately names `busbar_substrate`/`busbar_api` (for
-//! `ModelCfg`/`UpstreamCreds`, reused verbatim — see `Cargo.toml`'s header), so those two are
-//! removed from the forbidden list here; every genuinely kernel-side crate stays forbidden.
+//! no kernel-side crate" scan: this crate legitimately names `busbar_api` (for `UpstreamCreds`,
+//! reused verbatim — see `Cargo.toml`'s header), so it is removed from the forbidden list here.
+//! `ModelCfg` needs no such exception any more — it is `busbar_contract::config::ModelCfg` now
+//! (DECISIONS #40/#38), the crate's ordinary contract dependency. `busbar_kernel` stays ON the
+//! forbidden list and this crate still names it (`src/registry.rs`'s `PlaneDecl`/`BuildCtx`) — a
+//! KNOWN, OPEN dep-wall violation this test correctly keeps red; see that module's own STOP report
+//! for why it was not closed in the same pass that closed `ModelCfg`'s.
 
 use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
 use busbar_contract::wire::FrameCursor;
@@ -117,8 +121,10 @@ fn the_plane_performs_no_input_or_output() {
 
 /// The plane names no GENUINELY kernel-side crate.
 ///
-/// `busbar_substrate`/`busbar_api` are named deliberately (see the module doc) and are NOT on this
-/// list; every crate that is actually the kernel's side of the seam still is.
+/// `busbar_api` is named deliberately (see the module doc) and is NOT on this list. `busbar_kernel`
+/// IS still on it, and this test is expected to stay RED until `src/registry.rs`'s `PlaneDecl`/
+/// `BuildCtx` STOP report (see that module's doc) is resolved by a separate, larger extraction —
+/// see the module doc above for why closing it is not this pass's scope.
 #[test]
 fn the_plane_names_no_kernel_side_crate() {
     let forbidden = [

@@ -193,6 +193,32 @@ fn resolve_builtin_file_empty_file_is_fail_closed() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A `file:` secret over the size cap is refused (fail-closed), never read fully into memory. One
+/// byte past the cap is enough to prove the boundary is enforced without writing (or allocating)
+/// anything close to the multi-gigabyte payloads an actual OOM attempt would use.
+#[test]
+fn resolve_builtin_file_over_the_size_cap_is_a_bounded_error_not_an_oom() {
+    let path = temp_path("FILE_OVERSIZE");
+    let oversize = vec![b'a'; 1024 * 1024 + 1];
+    std::fs::write(&path, &oversize).unwrap();
+    let err = busbar_api::resolve_builtin(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("cannot resolve"), "{err}");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The cap is exclusive on the correct side: a file of EXACTLY the limit resolves normally (this is
+/// a size cap on the secret, not an off-by-one trap that rejects a legitimate credential sitting
+/// right at the boundary).
+#[test]
+fn resolve_builtin_file_exactly_at_the_size_cap_still_resolves() {
+    let path = temp_path("FILE_AT_CAP");
+    let exact = vec![b'a'; 1024 * 1024];
+    std::fs::write(&path, &exact).unwrap();
+    let got = busbar_api::resolve_builtin(&SecretRef::file(path.to_str().unwrap())).unwrap();
+    assert_eq!(got.len(), 1024 * 1024);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn resolve_builtin_file_missing_file_is_an_error() {
     let path = temp_path("FILE_MISSING"); // never created

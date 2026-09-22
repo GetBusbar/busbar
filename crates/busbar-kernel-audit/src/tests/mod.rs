@@ -8,3 +8,4 @@ mod digest_framing_tests;
 mod legacy_chain_tests;
 mod legacy_ring_tests;
 mod record_tests;
+mod sign_tests;

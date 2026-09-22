@@ -6,7 +6,7 @@
 //! units. What is here is the wiring, and it is meant to stay boring enough to check by eye.
 
 use busbar_contract::bounded::{
-    ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span, MAX_RESPONSE_PTRS,
+    ScratchBytes, BoundedVec, FactValue, Facts, Ir, Span, MAX_RESPONSE_PTRS,
 };
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::grammar::{ArrivalLocation, Location};
@@ -139,10 +139,10 @@ fn serialize(value: &serde_json::Value) -> Result<Vec<u8>, Encode> {
 }
 
 /// Copy bytes into the per-unit arena.
-fn put<'u>(ctx: &Ctx<'u>, bytes: &[u8]) -> Result<ArenaBytes<'u>, Encode> {
+fn put<'u>(ctx: &Ctx<'u>, bytes: &[u8]) -> Result<ScratchBytes<'u>, Encode> {
     ctx.arena()
         .alloc_bytes(bytes)
-        .map_err(|_| Encode::ArenaExhausted)
+        .map_err(|_| Encode::ScratchExhausted)
 }
 
 /// Copy a string into the per-unit arena.
@@ -201,7 +201,7 @@ fn refusal_shape(reason: RefusalReason) -> (u16, &'static str) {
         | RefusalReason::Replayed
         | RefusalReason::Superseded => (400, KIND_INVALID_REQUEST),
         RefusalReason::SpillBudget
-        | RefusalReason::ArenaBudget
+        | RefusalReason::ScratchExhausted
         | RefusalReason::DestinationBudgetExhausted
         | RefusalReason::BreakerOpen
         | RefusalReason::DestinationUnreachable
@@ -517,7 +517,7 @@ impl Plane for LlmPlane {
             // The relay is a BORROW, not a copy: decode already put these bytes in this unit's
             // arena (it copies them off the connection slab before reading them), so they live
             // exactly as long as the hop that carries them.
-            ArenaBytes::new(bytes)
+            ScratchBytes::new(bytes)
         } else if ingress.name == egress.name {
             // Same dialect, but the model may have to change. Only this arm needs the document.
             let mut value: serde_json::Value =
@@ -529,7 +529,7 @@ impl Plane for LlmPlane {
             if rewritten {
                 put(ctx, &serialize(&value)?)?
             } else {
-                ArenaBytes::new(bytes)
+                ScratchBytes::new(bytes)
             }
         } else {
             let value: serde_json::Value =
@@ -599,7 +599,7 @@ impl Plane for LlmPlane {
         _dest: &VerifiedDestination,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // None of the six dialects carries a client frame that belongs to an already-open request:
         // a request is one body, and everything after it flows the other way. Consuming the frame
         // and sending nothing is the honest answer, not an error.
@@ -702,7 +702,7 @@ impl Plane for LlmPlane {
         r: &Response<'u>,
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
         let source = match r.facts.get(meta::FACT_SOURCE_DIALECT) {
             Some(FactValue::Str(name)) => name,
@@ -793,7 +793,7 @@ impl Plane for LlmPlane {
         _draft: Option<&UnitDraft<'u>>,
         _st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
         let (status, kind) = refusal_shape(refusal.reason);
         // One dialect puts a minted identifier at the top of its error envelope, because a native
@@ -818,7 +818,7 @@ impl Plane for LlmPlane {
         end: &UnitEnd,
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // A completed request has already had its whole answer written; there is no separate
         // ending to send. A failure mid-answer is the one case with an ending to write, and the
         // dialect's own error frame is what a client of that dialect knows how to read.

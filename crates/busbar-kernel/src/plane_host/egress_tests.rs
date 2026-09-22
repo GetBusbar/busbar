@@ -129,7 +129,9 @@ fn host_authored_open(
     out: *mut std::mem::MaybeUninit<EgressOpen>,
 ) -> StatusClass {
     // SAFETY: `host` is the live HostState minted by `with_dispatch_scope`.
-    let scope = unsafe { recover(host) }.scope;
+    let scope = unsafe { recover(host) }
+        .expect("host generation still live inside with_dispatch_scope")
+        .scope;
     open_http(scope, desc, desc.allowlist_scope, out)
 }
 
@@ -159,7 +161,8 @@ fn http_egress_opens_streams_and_close_reclaims() {
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
         // SAFETY: live HostState minted by with_dispatch_scope.
-        let state: &HostState = unsafe { recover(host) };
+        let state: &HostState = unsafe { recover(host) }
+            .expect("host generation still live inside with_dispatch_scope");
         let scope = state.scope;
 
         // ── OPEN ──────────────────────────────────────────────────────────────────────────────

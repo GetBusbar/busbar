@@ -121,6 +121,9 @@ fn auth_mode_marker_detected() {
 /// migration path real.
 #[test]
 fn migrate_14x_round_trips_into_deploy_cfg() {
+    // This test needs a plane registered so the migrated `pools:` section resolves (not real
+    // llm/mcp/a2a behaviour — it only asserts the migrated document's SHAPE).
+    crate::test_support::register_neutral_test_plane();
     let out = migrate_config(LEGACY_14X).expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
@@ -325,6 +328,7 @@ fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::
 /// reported changes but emitted an unbootable config. The migrated document must BOOT-PARSE.
 #[test]
 fn migrate_on_exhausted_all_arms_round_trip() {
+    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 providers: {}
 models: {}
@@ -411,6 +415,7 @@ pools:
 /// boot-parse.
 #[test]
 fn migrate_real_14x_top_level_auth_surfaces() {
+    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 auth:
   chain: [tokens, oidc]
@@ -501,6 +506,7 @@ pools: {}
 /// flagged `global: true` must appear exactly ONCE in the all-pools list (no duplicate).
 #[test]
 fn migrate_global_hooks_names_resolve_and_dedup() {
+    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 providers: {}
 models: {}
@@ -616,6 +622,7 @@ pools: {}
 /// NO top-level `hooks:` registry block (the block-processing pass returns early in that case).
 #[test]
 fn migrate_pool_policy_without_hooks_block() {
+    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 providers: {}
 models: {}
@@ -982,6 +989,7 @@ observability:
 /// (the old `at:` strings would otherwise fail as unknown `HookStage` variants).
 #[test]
 fn migrate_hook_stage_at_values_are_renamed() {
+    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 providers: {}
 models: {}
@@ -1121,6 +1129,7 @@ pools: {}
 /// document had no `export:` block — these `dig` lookups return `None` on the pre-migration tree.
 #[test]
 fn migrate_observability_export_rewrites_old_to_new() {
+    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 observability:
   otlp_url: "https://otel.example.com/v1/traces"
@@ -1235,6 +1244,7 @@ pools: {}
 /// migrator over the output is a NO-OP on the config tree (idempotent / golden-stable).
 #[test]
 fn migrate_1_5_x_inline_hooks_converge_and_are_idempotent() {
+    crate::test_support::register_neutral_test_plane();
     let raw = r#"
 providers: {}
 models: {}
@@ -1348,6 +1358,7 @@ fn migrate_golden(raw: &str) -> (crate::config::migrate::MigrateOutput, serde_ya
 /// live field that parsed clean — so neither the loud-fail nor the rewrite existed.
 #[test]
 fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
+    crate::test_support::register_neutral_test_plane();
     let raw = "admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "admin_insecure");
 
@@ -1383,6 +1394,7 @@ fn golden_migrate_admin_insecure_inverts_to_admin_require_mtls() {
 /// `auth.upstream_credentials` was a live field, so there was nothing to detect and nowhere to move.
 #[test]
 fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
+    crate::test_support::register_neutral_test_plane();
     let raw = "auth:\n  chain: [keys]\n  upstream_credentials: passthrough\n\
                providers: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "auth.upstream_credentials");
@@ -1413,6 +1425,7 @@ fn golden_migrate_auth_upstream_credentials_moves_to_pools() {
 /// to go and the block could not be deleted without losing the trace sink.
 #[test]
 fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
+    crate::test_support::register_neutral_test_plane();
     let raw = "observability:\n  otlp_url: \"http://otel:4318/v1/traces\"\n\
                providers: {}\nmodels: {}\npools: {}\n";
     assert_loud_fail_with_breadcrumb(raw, "observability");
@@ -1455,6 +1468,7 @@ fn golden_migrate_observability_block_folds_into_an_otlp_export_instance() {
 /// nothing to detect and no named map to converge on.
 #[test]
 fn golden_migrate_type_keyed_export_becomes_a_named_map() {
+    crate::test_support::register_neutral_test_plane();
     let raw = "export:\n\
                \x20 prometheus: { settings: { buffer_seconds: 60 } }\n\
                \x20 request-log-webhook: { settings: { url: \"https://logs.example.com/a\" } }\n\
@@ -1510,6 +1524,7 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
 /// converge onto and the inline form was the live grammar.
 #[test]
 fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
+    crate::test_support::register_neutral_test_plane();
     let raw = "auth:\n\
                \x20 chain:\n\
                \x20   - keys\n\
@@ -1634,6 +1649,7 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
 /// migrated with no `phase:` at all and silently widened to four stages.
 #[test]
 fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
+    crate::test_support::register_neutral_test_plane();
     let raw = "global_hooks:\n  - { module: busbar-audit-hook, kind: tap }\n\
                providers: {}\nmodels: {}\npools: {}\n";
     let (_, doc) = migrate_golden(raw);
@@ -2517,6 +2533,7 @@ fn migrate_leaves_rich_pool_members_untouched() {
 /// catches a config `migrate_hooks_block` passes through untouched because it is already new-shaped.
 #[test]
 fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
+    crate::test_support::register_neutral_test_plane();
     let raw = "providers: {}\nmodels: {}\npools: {}\n\
                hooks:\n  audit:\n    kind: tap\n    module: audit-hook\n    at: response\n";
     let (out, doc) = migrate_to_value(raw);
@@ -2543,111 +2560,14 @@ fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
 /// clean, and (c) contains NONE of the deprecated spellings. This migrate→validate round-trip on a
 /// full config is the only thing that proves the migrator is comprehensive: a code read of what it
 /// "thinks" it handles is not enough.
-#[test]
-fn end_to_end_a_full_legacy_config_migrates_validates_and_drops_every_deprecated_spelling() {
-    let raw = r#"
-listen: "0.0.0.0:8080"
-providers:
-  acme:
-    api_key: { env: BUSBAR_T_E2E_ACME }
-models:
-  fast-a:
-    provider: acme
-  fast-b:
-    provider: acme
-hooks:
-  audit:
-    kind: gate
-    plugin: audit-hook
-    at: request
-tools:
-  search-eu:
-    url: "https://eu.example/mcp"
-    pin: { mechanism: unpinned }
-  search-us:
-    url: "https://us.example/mcp"
-    pin: { mechanism: unpinned }
-agents:
-  planner-eu:
-    url: "https://a1.example/card"
-    pin: { mechanism: unpinned }
-  planner-us:
-    url: "https://a2.example/card"
-    pin: { mechanism: unpinned }
-pools:
-  fast:
-    members:
-      - { model: fast-a, weight: 3 }
-      - { model: fast-b }
-    hooks: [audit]
-tool_pools:
-  search:
-    members: [search-eu, search-us]
-agent_pools:
-  planner:
-    members: [planner-eu, planner-us]
-"#;
-
-    let out = migrate_config(raw).expect("the full legacy config migrates");
-
-    // (c) NONE of the deprecated spellings survive anywhere in the migrated document.
-    for needle in ["plugin:", "at: ", "tool_pools:", "agent_pools:"] {
-        assert!(
-            !out.yaml.contains(needle),
-            "the migrated config still contains the deprecated spelling `{needle}`:\n{}",
-            out.yaml
-        );
-    }
-    // The hook keys were rewritten to their 1.6.0 spelling.
-    assert!(
-        out.yaml.contains("module: audit-hook"),
-        "`plugin: audit-hook` must become `module: audit-hook`:\n{}",
-        out.yaml
-    );
-    assert!(
-        out.yaml.contains("phase:"),
-        "the single-stage `at: request` must become a `phase:` list:\n{}",
-        out.yaml
-    );
-
-    // (a) It parses into the 1.6.0 DeployCfg (deny_unknown_fields is the real gate: a surviving
-    // `plugin:`/`at:`/tool_pools would fail HERE; the rich pool members are valid 1.6.0 grammar).
-    let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&out.yaml)
-        .unwrap_or_else(|e| {
-            panic!(
-                "migrated config must boot-parse on 1.6.0: {e}\n{}",
-                out.yaml
-            )
-        });
-
-    // (b) It resolves and validates clean on 1.6.0.
-    let defs: std::collections::HashMap<String, crate::config::ProviderDef> = serde_yaml::from_str(
-        "acme:\n  protocol: anthropic\n  base_url: https://api.acme.example\n",
-    )
-    .expect("provider defs parse");
-    let cfg = crate::config::resolve(&deploy, &defs)
-        .unwrap_or_else(|e| panic!("migrated config must resolve on 1.6.0: {e:?}"));
-    crate::config_validate::validate(&cfg)
-        .unwrap_or_else(|e| panic!("migrated config must validate clean on 1.6.0: {e:?}"));
-
-    // The tool/agent pools folded into the ONE neutral `pools:` map and resolve by INFERRED kind:
-    // `search` (tool members) onto the tool-kind pool map, `planner` (agent members) onto the
-    // agent-kind pool map, and the model pool `fast` onto the model-kind pool map.
-    assert!(
-        cfg.tool_pools.contains_key("search"),
-        "the folded tool pool resolves onto the MCP failover plane: {:?}",
-        cfg.tool_pools.keys().collect::<Vec<_>>()
-    );
-    assert!(
-        cfg.agent_pools.contains_key("planner"),
-        "the folded agent pool resolves onto the A2A failover plane: {:?}",
-        cfg.agent_pools.keys().collect::<Vec<_>>()
-    );
-    assert!(
-        cfg.pools.contains_key("fast"),
-        "the LLM pool resolves onto the model plane"
-    );
-}
+///
+/// MOVED to `tests/config_migrate_cross_plane.rs` (A6/HostCtx dev-dependency-cycle cleanup): the
+/// fixture's `tools:`/`agents:` blocks need the REAL `busbar_mcp`/`busbar_a2a` planes registered to
+/// resolve past `resolve`'s "compiled without the plane that owns it" refusal — a neutral fake plane
+/// cannot stand in, since the assertions below read `cfg.tool_pools`/`cfg.agent_pools`, which only
+/// exist once the real MCP/A2A failover planes actually claimed those sections. That only
+/// type-checks with ONE `busbar_kernel` in the graph, which is exactly what an integration-test
+/// target gives. See that file's header.
 
 /// 1.6.0 verify-on-call: the per-server `refresh_ttl:` under `tools:` is renamed to `verify_ttl:`, the value is
 /// carried over, and a loud WARNING names the server and the semantics change (a former sweep cadence

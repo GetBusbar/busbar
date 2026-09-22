@@ -68,6 +68,16 @@ pub enum TwilioEvent {
     Stop,
 }
 
+/// THE ASSUMED NEGOTIATED FORMAT — the one this reader hands `media` payloads on as (raw µ-law
+/// bytes, see the module doc) and the one every later consumer treats them as: the µ-law→PCM16
+/// widen ([`crate::ulaw::decode_frame`]) and the duration [`crate::plane`] derives from a byte
+/// count (`AudioFormat::G711Ulaw::bytes_to_ms`, which IS a LEDGER quantity — a call's billed
+/// duration rolls up from exactly this count). Twilio's own default and near-universal choice for
+/// this carrier, and the only shape the rest of this crate's Twilio path is written against.
+const ASSUMED_ENCODING: &str = "audio/x-mulaw";
+const ASSUMED_SAMPLE_RATE_HZ: u64 = 8_000;
+const ASSUMED_CHANNELS: u64 = 1;
+
 /// Why an inbound Twilio frame could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TwilioError {
@@ -77,13 +87,21 @@ pub enum TwilioError {
     UnknownEvent(String),
     /// A `media` payload was not valid base64.
     BadPayload,
+    /// `start` negotiated a `mediaFormat` other than [`ASSUMED_ENCODING`] /
+    /// [`ASSUMED_SAMPLE_RATE_HZ`] / [`ASSUMED_CHANNELS`] — the format every later frame on this
+    /// stream would otherwise be decoded and TIMED under. Refused rather than served on a wrong
+    /// assumption: a duration derived from a mismatched format is a wrong ledger entry, silently,
+    /// since nothing about a mis-decoded byte count looks broken on its own.
+    UnsupportedMediaFormat,
 }
 
 /// Decode one inbound Twilio Media Streams WS frame.
 ///
 /// # Errors
 /// Returns [`TwilioError`] when the frame is not well-formed Twilio JSON, names an event this
-/// reader does not model, or carries a `media` payload that is not valid base64.
+/// reader does not model, carries a `media` payload that is not valid base64, binds an empty or
+/// absent `streamSid` (which cannot BIND anything — see [`TwilioEvent::Start`]), or negotiates a
+/// media format other than the one this crate's Twilio path assumes throughout.
 pub fn decode(frame: &[u8]) -> Result<TwilioEvent, TwilioError> {
     let v: serde_json::Value = serde_json::from_slice(frame).map_err(|_| TwilioError::Malformed)?;
     let event = v
@@ -97,20 +115,39 @@ pub fn decode(frame: &[u8]) -> Result<TwilioEvent, TwilioError> {
             let stream_sid = str_field(start, "streamSid")
                 .or_else(|| str_field(&v, "streamSid"))
                 .ok_or(TwilioError::Malformed)?;
+            // AN EMPTY ID IS NOT A BINDING. `stream_sid` is what every later `media` frame is
+            // checked against (`crate::plane`'s per-connection anti-forgery guard). If this reader
+            // ever handed one back empty, an attacker's own `media` frame carrying an equally empty
+            // (or simply omitted — the same empty default) `streamSid` would compare EQUAL to the
+            // "bound" value and the check that exists to refuse an unbound source would pass
+            // vacuously. Refused HERE, at the one place that can still say why, rather than let a
+            // binding that cannot bind reach `decode_twilio_frame`.
+            if stream_sid.is_empty() {
+                return Err(TwilioError::Malformed);
+            }
             let call_sid = str_field(start, "callSid").unwrap_or_default();
             let mf = start.get("mediaFormat").ok_or(TwilioError::Malformed)?;
+            let encoding = str_field(mf, "encoding").unwrap_or_default();
+            let sample_rate = mf
+                .get("sampleRate")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let channels = mf
+                .get("channels")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            if encoding != ASSUMED_ENCODING
+                || sample_rate != ASSUMED_SAMPLE_RATE_HZ
+                || channels != ASSUMED_CHANNELS
+            {
+                return Err(TwilioError::UnsupportedMediaFormat);
+            }
             Ok(TwilioEvent::Start {
                 stream_sid,
                 call_sid,
-                encoding: str_field(mf, "encoding").unwrap_or_default(),
-                sample_rate: mf
-                    .get("sampleRate")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or_default(),
-                channels: mf
-                    .get("channels")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or_default(),
+                encoding,
+                sample_rate,
+                channels,
             })
         }
         "media" => {

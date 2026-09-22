@@ -85,6 +85,26 @@ impl std::fmt::Display for TransportError {
     }
 }
 
+impl TransportError {
+    /// WAS THIS BUSBAR'S OWN REFUSAL, DECIDED BEFORE ANY SOCKET OPENED — never a fact about the
+    /// upstream at all?
+    ///
+    /// [`TransportError::Refused`] is the dispatch-time SSRF/redirect guard; [`TransportError::Supervision`]
+    /// is the crash-loop supervisor's own refusal. Neither ever put a byte on a wire: `send`'s own
+    /// telemetry check below draws exactly this line for the SAME reason ("nothing left busbar" vs
+    /// "busbar tried and the network answered") and does not count either one as an upstream failure.
+    /// A caller that RECORDS what happened — an audit row, not a counter — needs the identical fact:
+    /// [`TransportError::Unreachable`] and [`TransportError::Io`] are the opposite arm, because busbar
+    /// DID attempt the hop (a connect that failed, a connection that reset mid-response), so a record
+    /// of those must say a dispatch was attempted, never that one was refused pre-connect.
+    pub(crate) fn is_own_refusal(&self) -> bool {
+        matches!(
+            self,
+            TransportError::Refused(_) | TransportError::Supervision(_)
+        )
+    }
+}
+
 /// Everything a wire needs about ONE leg that is not in the request itself.
 ///
 /// One struct rather than a widening argument list because the two wires need disjoint halves of it
@@ -271,3 +291,7 @@ pub(crate) async fn notify(
     }
     out
 }
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/wire_error_tests.rs"]
+mod wire_error_tests;

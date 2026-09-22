@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOT-PATH ALLOC INSTRUMENT — the zero-allocation witness of
-//! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 ("Alloc gate: `#[global_allocator]` counter =
+//! `docs/design/BUSBAR-1.6.0.md` Part 3 §8 ("Alloc gate: `#[global_allocator]` counter =
 //! 0 across the ISOLATED POD host-call batch"), owed alongside the perf instrument as part of the
 //! tests/benches 8→9 rise.
 //!
@@ -117,7 +117,7 @@ fn pod_facts() -> Facts {
 
 /// THE ALLOC-BUDGET ASSERTION — zero allocations across the isolated POD host-call batch.
 fn assert_zero_alloc_pod_batch() {
-    let null: HostCtx = std::ptr::null_mut();
+    let null: HostCtx = HostCtx::NULL;
     let vt = armed_vtable();
     let facts = pod_facts();
     let facts_ptr: *const Facts = &facts;
@@ -151,7 +151,7 @@ fn assert_zero_alloc_pod_batch() {
 }
 
 fn hot_path_alloc(c: &mut Criterion) {
-    let null: HostCtx = std::ptr::null_mut();
+    let null: HostCtx = HostCtx::NULL;
     let vt = armed_vtable();
     let facts = pod_facts();
     let facts_ptr: *const Facts = &facts;

@@ -222,7 +222,7 @@ pub fn read_ingress<'u>(
             // The arena running out is a budget, not a misread body, and the two carry different
             // reasons because a caller who is over a bound and a caller who sent nonsense are owed
             // different answers.
-            busbar_contract::wire::Decode::Oversize => ReasonCode::ArenaBudget,
+            busbar_contract::wire::Decode::Oversize => ReasonCode::ScratchExhausted,
             _ => ReasonCode::DecodeFailed,
         })?;
     Ok(match ingress {

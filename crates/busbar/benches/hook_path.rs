@@ -120,7 +120,7 @@
 //! number for a deployment with no hook in it** — a bench that silently measures the wrong cell is
 //! worse than one that stops.
 
-use busbar_plugin_sign::{HookNeeds, Manifest, NeedLevel};
+use busbar_plugin_loader::sign::{HookNeeds, Manifest, NeedLevel};
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -245,7 +245,7 @@ fn install_prompt_ro_hook(dir: &Path) {
         schema_derived: false,
         host: None,
     };
-    m.sha256 = busbar_plugin_sign::sha256_hex(&lib);
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(&lib);
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
     std::fs::write(dir.join("bench-hook.tar.gz"), tarball).unwrap();
 }

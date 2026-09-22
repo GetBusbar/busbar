@@ -229,12 +229,13 @@ fn delete_plane_record_default_is_ok_and_idempotent() {
 }
 
 #[test]
-fn redeem_plane_token_default_is_true_every_time() {
+fn redeem_plane_token_default_is_fail_closed() {
     let s = Bare::default();
-    // "This store keeps no ledger" — EVERY call is a fresh "first redemption", never test-and-set,
-    // which is the honest default for a backend that tracks nothing.
-    assert!(s.redeem_plane_token("ask", "tok-1", 100, 50).unwrap());
-    assert!(s.redeem_plane_token("ask", "tok-1", 100, 50).unwrap());
+    // A store that keeps no ledger cannot attest that a call is the first redemption of a
+    // single-use token, so the default refuses every redemption rather than granting one on
+    // every call — the fail-closed posture, not "this store keeps no ledger".
+    assert!(!s.redeem_plane_token("ask", "tok-1", 100, 50).unwrap());
+    assert!(!s.redeem_plane_token("ask", "tok-1", 100, 50).unwrap());
 }
 
 // ── Composed defaults: sequencing matters, not just the final `Ok`/`Err` ─────────────────────────

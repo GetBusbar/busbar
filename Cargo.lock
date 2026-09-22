@@ -335,9 +335,9 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-a2a",
- "busbar-admin",
  "busbar-api",
  "busbar-contract",
+ "busbar-core-admin",
  "busbar-core-transport",
  "busbar-kernel",
  "busbar-kernel-audit",
@@ -352,12 +352,10 @@ dependencies = [
  "busbar-mcp",
  "busbar-oauth2",
  "busbar-plane-a2a",
- "busbar-plane-admin",
  "busbar-plane-llm",
  "busbar-plane-mcp",
  "busbar-plane-voice",
  "busbar-plugin-loader",
- "busbar-plugin-sign",
  "busbar-store-example-plugin",
  "busbar-substrate-values",
  "busbar-transport-grpc",
@@ -402,14 +400,12 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "busbar-a2a-codec",
- "busbar-admin",
  "busbar-api",
  "busbar-contract",
+ "busbar-core-admin",
  "busbar-kernel",
- "busbar-plane-a2a-host",
  "busbar-plugin",
  "busbar-plugin-loader",
- "busbar-plugin-sign",
  "busbar-secret-ref",
  "busbar-store-memory",
  "busbar-substrate-values",
@@ -451,44 +447,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-admin"
-version = "1.6.0"
-dependencies = [
- "axum",
- "base64 0.23.1",
- "busbar-a2a",
- "busbar-api",
- "busbar-contract",
- "busbar-kernel",
- "busbar-llm",
- "busbar-mcp",
- "busbar-plugin-loader",
- "busbar-plugin-sign",
- "busbar-store-memory",
- "bytes",
- "flate2",
- "hex",
- "http",
- "http-body-util",
- "reqwest 0.12.28",
- "ring",
- "schemars",
- "serde",
- "serde_json",
- "serde_urlencoded",
- "serde_yaml_ng",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
 name = "busbar-api"
 version = "1.6.0"
 dependencies = [
  "async-trait",
- "busbar-kernel-ledger",
+ "busbar-contract",
  "busbar-secret-ref",
  "hex",
  "serde",
@@ -519,22 +482,43 @@ dependencies = [
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
- "busbar-grammar",
  "futures",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "busbar-core-config"
+name = "busbar-core-admin"
 version = "1.6.0"
 dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "busbar-a2a",
+ "busbar-api",
  "busbar-contract",
+ "busbar-kernel",
+ "busbar-kernel-ledger",
+ "busbar-llm",
+ "busbar-mcp",
+ "busbar-plugin-loader",
+ "busbar-store-memory",
+ "bytes",
+ "flate2",
+ "hex",
+ "http",
+ "http-body-util",
+ "reqwest 0.12.28",
+ "ring",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "serde_yaml_ng",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
-
-[[package]]
-name = "busbar-core-hooks"
-version = "1.6.0"
 
 [[package]]
 name = "busbar-core-transport"
@@ -557,13 +541,6 @@ version = "1.5.0"
 dependencies = [
  "busbar-plugin-sdk",
  "serde_json",
-]
-
-[[package]]
-name = "busbar-grammar"
-version = "1.6.0"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -599,14 +576,11 @@ dependencies = [
  "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-contract",
- "busbar-core-config",
- "busbar-grammar",
  "busbar-hooks-ranking",
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin",
  "busbar-plugin-loader",
- "busbar-plugin-sign",
  "busbar-secret-ref",
  "busbar-store-example-plugin",
  "busbar-store-memory",
@@ -673,9 +647,11 @@ name = "busbar-kernel-audit"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "ed25519-dalek",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -718,8 +694,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-budget",
- "serde",
- "serde_json",
  "sha2 0.11.0",
 ]
 
@@ -806,16 +780,14 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
- "busbar-admin",
  "busbar-api",
  "busbar-contract",
+ "busbar-core-admin",
  "busbar-kernel",
  "busbar-llm",
  "busbar-mcp-codec",
- "busbar-plane-mcp-host",
  "busbar-plugin",
  "busbar-plugin-loader",
- "busbar-plugin-sign",
  "busbar-secret-ref",
  "busbar-store-memory",
  "busbar-substrate-values",
@@ -847,7 +819,7 @@ name = "busbar-mcp-codec"
 version = "1.6.0"
 dependencies = [
  "busbar-api",
- "busbar-grammar",
+ "busbar-contract",
  "busbar-substrate-values",
  "bytes",
  "http",
@@ -885,28 +857,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plane-a2a-host"
-version = "1.6.0"
-dependencies = [
- "busbar-kernel",
- "busbar-substrate-values",
-]
-
-[[package]]
-name = "busbar-plane-admin"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "serde_json",
-]
-
-[[package]]
 name = "busbar-plane-decision"
 version = "1.6.0"
 dependencies = [
  "busbar-api",
  "busbar-contract",
- "busbar-substrate",
+ "busbar-kernel",
  "serde",
  "serde_json",
 ]
@@ -928,14 +884,6 @@ dependencies = [
  "busbar-contract",
  "busbar-mcp-codec",
  "serde_json",
-]
-
-[[package]]
-name = "busbar-plane-mcp-host"
-version = "1.6.0"
-dependencies = [
- "busbar-kernel",
- "busbar-substrate-values",
 ]
 
 [[package]]
@@ -984,33 +932,23 @@ dependencies = [
  "async-trait",
  "busbar-api",
  "busbar-contract",
+ "busbar-export-example-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin",
  "busbar-plugin-example-plane",
- "busbar-plugin-sign",
+ "ed25519-dalek",
  "flate2",
  "getrandom 0.3.4",
+ "hex",
  "libc",
  "libloading",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tar",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "busbar-plugin-pack"
-version = "1.5.0"
-dependencies = [
- "busbar-plugin-loader",
- "busbar-plugin-sign",
- "busbar-secret-ref",
- "getrandom 0.3.4",
- "hex",
- "jsonschema",
- "serde_json",
 ]
 
 [[package]]
@@ -1019,30 +957,15 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-plugin",
+ "busbar-plugin-loader",
+ "busbar-secret-ref",
  "busbar-store-memory",
+ "getrandom 0.3.4",
+ "hex",
+ "jsonschema",
  "serde_json",
  "tracing",
  "tracing-core",
-]
-
-[[package]]
-name = "busbar-plugin-sign"
-version = "1.5.0"
-dependencies = [
- "ed25519-dalek",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.11.0",
-]
-
-[[package]]
-name = "busbar-plugin-testkit"
-version = "1.5.0"
-dependencies = [
- "busbar-api",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -1071,7 +994,6 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-plugin-sdk",
- "busbar-plugin-testkit",
  "libc",
  "serde",
  "serde_json",
@@ -1083,7 +1005,8 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-contract",
- "busbar-plugin-testkit",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -5203,6 +5126,17 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "ws-conformance-subject"
+version = "0.0.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-transport-tcp",
+ "busbar-transport-ws",
+ "futures",
+ "tokio",
+]
 
 [[package]]
 name = "x509-parser"

@@ -293,8 +293,8 @@ impl std::error::Error for Decode {}
 pub enum Encode {
     /// The unit cannot be expressed in this dialect.
     Unrepresentable,
-    /// The arena had no room.
-    ArenaExhausted,
+    /// The per-call scratch pad hit its abuse ceiling.
+    ScratchExhausted,
     /// A minted secret's placeholder did not appear exactly once at its declared location.
     SecretPlaceholder,
     /// Codec state for this connection is poisoned.

@@ -33,7 +33,7 @@ use crate::plane::Ingress;
 /// `shaping_wire_format` for why a MOUNTED plane with several dialects must still name one for an
 /// error body, and for what reading `wire_format` here did the day a mounted plane grew a second
 /// dialect.
-pub(crate) fn envelope_dialect(ingress: Ingress) -> &'static str {
+pub fn envelope_dialect(ingress: Ingress) -> &'static str {
     // The residual fallback dialect is the one the protocol registry declares as its
     // `residual_default` (whichever dialect declares itself the most widely understood — declared on
     // its `ProtocolDecl`, read here so core spells no dialect). A build that registers no such default

@@ -1,13 +1,19 @@
 //! This plane is the same plane everywhere it is compiled.
 //!
 //! Mirrors `busbar-plane-a2a`/`busbar-plane-mcp`'s own `invariance.rs`, with ONE deliberate
-//! difference: this crate's manifest names `busbar-substrate` and `busbar-api` (for `ModelCfg` and
-//! `UpstreamCreds`, reused verbatim per the config-model ruling — see `Cargo.toml`'s header and
-//! `src/config.rs`'s module doc), which its pure siblings do not. So the "names only what a plane
-//! may name" check here allows those two and still forbids every genuinely kernel-side crate:
-//! `busbar-core`, `busbar-caps`, `busbar-kernel`, `busbar-unit-*`, and the sibling PLANE crates
-//! (naming another plane would be a plane reading another plane's private surface, never legitimate
-//! for any plane).
+//! difference: this crate's manifest names `busbar-api` (for `UpstreamCreds`, reused verbatim per
+//! the config-model ruling — see `Cargo.toml`'s header and `src/config.rs`'s module doc), which its
+//! pure siblings do not. `ModelCfg` used to be a second such exception (`busbar-substrate`, then
+//! `busbar-kernel`) but needs none any more — it moved to `busbar_contract::config::ModelCfg`
+//! (DECISIONS #40/#38), the crate's ordinary contract dependency. So the "names only what a plane
+//! may name" check here allows `busbar-api` alone and still forbids every genuinely kernel-side
+//! crate: `busbar-core`, `busbar-caps`, `busbar-kernel`, `busbar-unit-*`, and the sibling PLANE
+//! crates (naming another plane would be a plane reading another plane's private surface, never
+//! legitimate for any plane). This crate STILL names `busbar-kernel` in `Cargo.toml`
+//! (`src/registry.rs`'s `PlaneDecl`/`BuildCtx`) — a KNOWN, OPEN DECISIONS #40 violation, not an
+//! allowed exception, so `the_manifest_names_only_what_this_plane_may_name` below is expected to
+//! stay RED until that is closed by a separate, larger extraction (see `src/registry.rs`'s own STOP
+//! report).
 
 use std::path::{Path, PathBuf};
 

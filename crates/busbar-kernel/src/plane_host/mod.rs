@@ -54,7 +54,7 @@ pub use scope::{DispatchScope, DurableScope, SessionScope};
 pub use vtable::build_plane_host_vtable;
 
 use crate::state::App;
-use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
+use busbar_plugin::hot::host::{HostCtx, HostGeneration, PlaneHostVtable};
 use std::sync::Arc;
 
 /// Core's own state behind the opaque [`HostCtx`] the plane ABI threads through every host call. A
@@ -71,26 +71,49 @@ pub struct HostState<'a> {
     pub scope: &'a DispatchScope,
 }
 
-/// Recover core's [`HostState`] from the opaque [`HostCtx`] the plane handed back.
+/// Recover core's [`HostState`] from the opaque [`HostCtx`] the plane handed back — or refuse it.
+///
+/// ## Generation guard (ABI review A6 use-after-free hardening, DECISIONS #40/#65)
+///
+/// A plane that stashes a `HostCtx` and replays it AFTER the dispatch that minted it has ended (its
+/// [`HostGeneration`] token dropped) is exactly the use-after-free A6 found: the host slot the pointer
+/// addressed may already be reclaimed/reused. Before ever dereferencing `host.ptr()`, this checks
+/// `host.kind()` (the type-confusion guard — only [`HostCtx::KIND_PLANE_HOST`] is a live `HostState`
+/// handle) and [`HostGeneration::is_live`] (the use-after-free guard — the generation stamped into
+/// `host` must still be open on THIS thread). Either check failing returns `None`; the pointer is never
+/// read. A null handle (`host.is_null()`) also refuses, one branch earlier.
 ///
 /// # Invariant
 ///
-/// The host ALWAYS passes, as the `HostCtx` of every vtable call, exactly a `*const HostState` that is
-/// LIVE for the entire dispatch duration — it is [`with_dispatch_scope`] that mints the `HostCtx` from
-/// a stack `HostState` and keeps that `HostState` alive across the whole `f(host, &vtable)` call. The
-/// plane never fabricates, mutates, or outlives the pointer (it only stores and returns it). Under that
-/// invariant this is sound: the pointer is non-null, aligned, and points at a live `HostState` for a
-/// lifetime the caller's frame bounds.
+/// The host ALWAYS passes, as the `HostCtx` of every vtable call, exactly a handle over a
+/// `*const HostState` that is LIVE for the entire dispatch duration — it is [`with_dispatch_scope`]
+/// (and its sibling mint sites) that mints the `HostCtx` from a stack `HostState`, stamps it with a
+/// freshly opened [`HostGeneration`], and keeps both alive across the whole `f(host, &vtable)` call. The
+/// plane never fabricates, mutates, or outlives the pointer (it only stores and returns it) — but MAY
+/// replay a stale one, which the generation check above catches. Under that invariant, once the checks
+/// pass, dereferencing is sound: the pointer is non-null, aligned, and points at a live `HostState` for
+/// a lifetime the caller's frame bounds.
 ///
 /// # Safety
 ///
-/// `host` MUST be a `HostCtx` produced by [`with_dispatch_scope`] for a dispatch that is still on the
-/// stack, per the invariant above. Calling with any other pointer is undefined behavior.
+/// `host`, WHEN its kind/generation checks pass, MUST be a `HostCtx` produced by
+/// [`with_dispatch_scope`] (or a sibling mint site) for a dispatch that is still on the stack, per the
+/// invariant above. Calling with any other non-null, correctly-kinded, live-generation pointer is
+/// undefined behavior — the checks above narrow the input space but do not themselves prove the pointer
+/// is a real `HostState` (a forged-but-live-looking handle is still out of contract).
 #[must_use]
-pub unsafe fn recover<'a>(host: HostCtx) -> &'a HostState<'a> {
-    debug_assert!(!host.is_null(), "HostCtx must never be null in a live call");
-    // SAFETY: by the documented invariant `host` is a live `*const HostState` for the call's duration.
-    unsafe { &*(host as *const HostState<'a>) }
+pub unsafe fn recover<'a>(host: HostCtx) -> Option<&'a HostState<'a>> {
+    if host.is_null() || host.kind() != HostCtx::KIND_PLANE_HOST {
+        return None;
+    }
+    // The use-after-free check: a handle whose minting dispatch already ended (its `HostGeneration`
+    // token dropped, popping it off this thread's live set) is REFUSED here, never dereferenced.
+    if !HostGeneration::is_live(host.generation()) {
+        return None;
+    }
+    // SAFETY: by the documented invariant, once the kind/generation checks above pass, `host` is a
+    // live `*const HostState` for the call's duration.
+    Some(unsafe { &*(host.ptr() as *const HostState<'a>) })
 }
 
 /// Open a [`DispatchScope`], build the host vtable, and hand a plane a [`HostCtx`] + `&PlaneHostVtable`
@@ -122,10 +145,15 @@ pub fn with_borrowed_host<R>(
 ) -> R {
     let state = HostState { app, scope };
     let vtable = build_plane_host_vtable();
+    // Open a fresh generation for exactly this `f` call, on THIS thread (`HostGeneration` is
+    // thread-local — see its doc). It drops at the end of this fn, right after `f` returns, so a
+    // `HostCtx` that escapes `f` and is replayed later is stamped with a generation no longer live.
+    let generation = HostGeneration::open();
     // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
-    let host: HostCtx = (&state as *const HostState)
+    let ptr = (&state as *const HostState)
         .cast_mut()
         .cast::<std::os::raw::c_void>();
+    let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
     let out = f(host, &vtable);
     let _keep_alive = &state;
     out
@@ -1682,14 +1710,18 @@ impl<'a> HostDispatch<'a> {
 
     /// Run `f` SYNCHRONOUSLY with a materialized [`HostCtx`] + the host `&PlaneHostVtable` — the
     /// between-awaits seam a plane call rides. The `HostState` backing the `HostCtx` is stack-pinned
-    /// for exactly the duration of `f` (the [`recover`] invariant); the pointer must not escape it.
+    /// for exactly the duration of `f` (the [`recover`] invariant); the pointer must not escape it. A
+    /// fresh [`HostGeneration`] opens for exactly this call and drops when it returns, so a `HostCtx`
+    /// that escapes `f` anyway is refused (its generation is no longer live) rather than dereferenced.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
         let state = self.host_state();
         let vtable = build_plane_host_vtable();
+        let generation = HostGeneration::open();
         // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
-        let host: HostCtx = (&state as *const HostState)
+        let ptr = (&state as *const HostState)
             .cast_mut()
             .cast::<std::os::raw::c_void>();
+        let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
         let out = f(host, &vtable);
         let _keep_alive = &state;
         out
@@ -1744,12 +1776,18 @@ impl SendHostDispatch {
     }
 
     /// Run `f` synchronously with a materialized [`HostCtx`] + host vtable, INSIDE the blocking body.
+    /// The [`HostGeneration`] opens HERE (on the blocking thread the closure actually runs on —
+    /// `HostGeneration` is thread-local, so opening it back on the async task's thread in
+    /// [`new`](Self::new) would mint a stamp that is never live on the thread that checks it) and
+    /// drops when this call returns.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
         let state = self.host_state();
         let vtable = build_plane_host_vtable();
-        let host: HostCtx = (&state as *const HostState)
+        let generation = HostGeneration::open();
+        let ptr = (&state as *const HostState)
             .cast_mut()
             .cast::<std::os::raw::c_void>();
+        let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
         let out = f(host, &vtable);
         let _keep_alive = &state;
         out
@@ -1820,13 +1858,17 @@ impl DurableHostDispatch {
         }
     }
 
-    /// Run `f` synchronously with a materialized [`HostCtx`] + host vtable over the durable arena.
+    /// Run `f` synchronously with a materialized [`HostCtx`] + host vtable over the durable arena. A
+    /// fresh [`HostGeneration`] opens for exactly this call (on this thread) and drops when it
+    /// returns, so a `HostCtx` from a prior/foreign call is refused rather than dereferenced.
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
         let state = self.host_state();
         let vtable = build_plane_host_vtable();
-        let host: HostCtx = (&state as *const HostState)
+        let generation = HostGeneration::open();
+        let ptr = (&state as *const HostState)
             .cast_mut()
             .cast::<std::os::raw::c_void>();
+        let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
         let out = f(host, &vtable);
         let _keep_alive = &state;
         out

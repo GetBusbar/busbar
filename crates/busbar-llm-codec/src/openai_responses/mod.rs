@@ -4,6 +4,7 @@
 //! OpenAI Responses API protocol reader/writer implementation.
 
 use crate::ir::IrStreamEvent;
+use crate::usage_count::read_count_u64;
 use http::StatusCode;
 // `bearer_error_code` and `CODE_INVALID_API_KEY` now live in the neutral substrate; read them there
 // so this plugin names no `busbar-core` implementation path for them.
@@ -1148,7 +1149,27 @@ fn read_cached_tokens(usage_val: &serde_json::Value) -> Option<u64> {
     usage_val
         .get("input_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64())
+        .and_then(read_count_u64)
+}
+
+/// Read the Responses CACHE-WRITE count from a `usage` object:
+/// `usage.input_tokens_details.cache_write_tokens` — "the number of input tokens that were written
+/// to the cache". It is a SLICE OF the `input_tokens` total, exactly as `cached_tokens` is
+/// (`input_tokens` = cached + cache-write + uncached). Mapping it into the IR's ADDITIVE
+/// `cache_creation_input_tokens` (the field Anthropic's `cache_creation_input_tokens` and Bedrock's
+/// `cacheWriteInputTokens` populate) is what prices those tokens at the cache-WRITE tier instead of
+/// leaving them inside the plain input total. `None` when the nested field is absent (never a
+/// spurious `Some(0)`). Shared by the non-streaming `read_response` and the streaming terminal.
+///
+/// This closes a READER/WRITER asymmetry that was live in trunk: [`build_responses_usage`] has
+/// always EMITTED `cache_write_tokens` (the pinned `ResponseUsage` schema requires the member), so
+/// a Responses body that stated a cache write was re-emitted with the total intact and the write
+/// count zeroed — the tokens silently moved from the cache-write tier to the plain input rate.
+fn read_cache_write_tokens(usage_val: &serde_json::Value) -> Option<u64> {
+    usage_val
+        .get("input_tokens_details")
+        .and_then(|d| d.get("cache_write_tokens"))
+        .and_then(read_count_u64)
 }
 
 /// OpenAI Responses streaming writer.
@@ -1960,3 +1981,7 @@ mod input_hardening_tests;
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/float_usage_tests.rs"]
+mod float_usage_tests;

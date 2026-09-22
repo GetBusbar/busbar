@@ -73,6 +73,73 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
     }
 }
 
+// ── THE NEUTRAL FALLBACK-PLANE FIXTURE ────────────────────────────────────────────────────────────
+// `plane::config::split_section_for_plane` REFUSES (not panics — see that fn's doc) when it resolves
+// `plane::fallback_key()` and finds no plane registered to own it: since the A6/HostCtx
+// dev-dependency-cycle cleanup moved every test that asserts REAL llm/mcp/a2a behaviour out to
+// `tests/*_cross_plane.rs` (the only place with ONE `busbar_kernel` in the graph — see that target's
+// docs), this crate's OWN `#[cfg(test)]` unit tests can no longer reach a real plane's `PLANE_DECL` at
+// all: calling `busbar_llm::testkit::install_test_seams()` from here would register the REAL `llm`
+// PlaneDecl into busbar_llm's OWN dependency-copy of this crate's process statics, not this compiled
+// unit's — completely inert. A unit test that merely needs "some plane exists" so `pools:`/config
+// resolution has an owner (not one that asserts what that plane DOES) calls this instead.
+//
+// Registers ONE neutral, all-stub `PlaneDecl` — no real dialect, no real wire format, nothing a
+// production match arm or an assertion about llm/mcp/a2a could key off — flagged `fallback: true` so
+// `plane::fallback_key()` resolves to it exactly the way the shipped LLM plane's flag does in
+// production. Every hook is `None`/no-op: this stands for "a plane is installed", never for what a
+// plane does. Idempotent (`register_test_plane` dedupes by key) and NOT isolated — a test that also
+// asserts against the registered SET (or needs a plane-free registry) wraps its own body in
+// `crate::plane::registry::TestRegistryIsolation::empty()` around this call, the same as any other
+// `register_test_plane` caller.
+static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    key: "neutral-test-fallback",
+    fallback: true,
+    config_section: "pools",
+    scope_kinds: &["pool"],
+    subject_noun: "pool",
+    admin_noun: "pool",
+    audit_kind: "pool_request",
+    wire_format_names: || &[],
+    claims: |_| Vec::new(),
+    admission: |_| None,
+    build: |_| None,
+    routes: None,
+    admin_routes: None,
+    openapi: None,
+    hydrate: None,
+    start: None,
+    config_validate: None,
+    card_signing_domain: None,
+    card_kid_prefix: None,
+    named_def_list: None,
+    named_def_get: None,
+    registry_contains: None,
+    reresolve_gates: None,
+    #[cfg(feature = "openapi-schema")]
+    openapi_schemas: None,
+    on_swap: None,
+    parse_section: None,
+    parse_endpoint: None,
+    lower_endpoint: None,
+    build_runtime: None,
+    viewer: None,
+    retain_verify_gates: None,
+    default_section: None,
+    owned_config_sections: &[],
+    resolve_provider: None,
+};
+
+/// SAY, IN ONE LINE, THAT THIS TEST NEEDS A PLANE TO EXIST — not what it does, only that config
+/// resolution has somewhere to put a `pools:`/fallback section rather than refusing with "no plane is
+/// registered to own this config section". Call at the top of a test that builds/parses a
+/// `RootCfg`/`DeployCfg` (directly or via `resolve`) but asserts nothing about real llm/mcp/a2a
+/// behaviour; a test that DOES assert real plane behaviour belongs in `tests/*_cross_plane.rs`
+/// instead, where the real `busbar_llm`/`busbar_mcp`/`busbar_a2a` crates are reachable.
+pub fn register_neutral_test_plane() {
+    crate::plane::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
+}
+
 pub fn build_once(
     cfg: crate::config::RootCfg,
     prior: Option<&crate::state::App>,

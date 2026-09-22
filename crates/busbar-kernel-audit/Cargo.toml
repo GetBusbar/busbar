@@ -12,6 +12,13 @@
 #   serde        the previous release's record is serialised onto a wire with eight fields and one
 #                skipped provenance flag. That is part of what "unchanged" means, so the derives
 #                travel with the record rather than being reimplemented at the boundary.
+#   ed25519-dalek the signature over a sealed record's digest. The SAME primitive the plugin
+#                signing crate already uses, deliberately: a second curve or a second library
+#                would be a second thing to audit and a second way to be wrong. Verify + sign
+#                only, no key generation, so this crate stays RNG-free exactly as the artifact
+#                signing crate beside it does.
+#   zeroize      a decoded seed is wiped before the reader that decoded it returns. Key material
+#                that outlives its use is key material in freed heap.
 [package]
 name = "busbar-kernel-audit"
 version = "1.6.0"
@@ -29,6 +36,8 @@ path = "src/lib.rs"
 busbar-contract = { path = "../busbar-contract" }
 sha2 = { workspace = true }
 serde = { workspace = true }
+ed25519-dalek = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 # The wire shape of the previous release's record — eight fields, one of them skipped — is a claim

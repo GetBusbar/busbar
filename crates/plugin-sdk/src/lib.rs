@@ -847,6 +847,19 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
 pub use busbar_plugin::cold::export::{ExportField, ExportRequest, ExportResponse, ExportStream};
 
+/// Re-export the observability envelope (#85) so a plugin author names
+/// `busbar_plugin_sdk::PluginMetric` (etc.) without a direct `busbar-plugin` dependency, mirroring
+/// every other wire type this SDK re-exports.
+///
+/// These are what a plugin uses to REPORT. Nothing here makes anything happen: the host validates
+/// what arrives, bounds it, and decides. A plugin that wants a counter incremented says so and the
+/// host increments it — which is also why a dropped-in build and a compiled-in build of the same
+/// crate produce the same exposition (#11) instead of one of them reaching a recorder the other
+/// cannot see.
+pub use busbar_plugin::cold::observe::{
+    DiagLevel, Envelope, Observations, PluginDiagnostic, PluginMetric,
+};
+
 /// Re-export the endpoint wire types (plugin route registration + dispatch) so an export/hook
 /// author names `busbar_plugin_sdk::Route` / `EndpointRequest` (etc.) without a direct
 /// `busbar-plugin` dependency.
@@ -880,6 +893,27 @@ pub trait ExportHandler: Send + Sync {
             headers: Vec::new(),
             body: Vec::new(),
         }
+    }
+
+    /// TAKE what this sink observed since the last call — the author side of the observability
+    /// envelope (DECISIONS #85).
+    ///
+    /// A sink that rotates a file, sheds a line, or fails to open a path has produced an
+    /// operator-visible FACT, and before the envelope there was nowhere on the wire to put it:
+    /// `ExportResponse::Delivered` is a unit variant and the cold tier has no host-callback vtable.
+    /// The only way a compiled-in sink could keep its counters was to reach the process-global
+    /// recorder directly — which the same crate built as a dropped-in `cdylib` cannot do, because it
+    /// links its own. That is the live #11 hole this closes.
+    ///
+    /// **DRAINING, not reading.** The name is the contract: the SDK calls this ONCE per `busbar_call`
+    /// and puts whatever it returns on that call's envelope, so an implementation must hand over its
+    /// accumulated observations and reset. Returning the same samples twice reports them twice; a
+    /// counter the host folds is a DELTA, not a running total.
+    ///
+    /// Default: nothing to report. That is what makes the envelope additive for every sink that
+    /// already exists — a handler written before #85 compiles unchanged and answers bare envelopes.
+    fn drain_observations(&self) -> Observations {
+        Observations::none()
     }
 }
 
@@ -915,6 +949,24 @@ pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> Expor
     }
 }
 
+/// Run one [`ExportRequest`] and wrap the answer in the observability envelope (#85) — what actually
+/// goes on the wire.
+///
+/// Split from [`dispatch_export`] so the op-dispatch match and the envelope fold are separately
+/// testable, and so a caller that only wants the kind-specific answer (every existing test) keeps
+/// the type it had.
+///
+/// **ORDER IS LOAD-BEARING.** The handler runs FIRST and is drained AFTER, so observations the call
+/// itself produced ride the SAME response. Draining first would report the previous call's samples
+/// on this call's envelope and lose this call's entirely on the last call before shutdown.
+pub fn dispatch_export_enveloped(
+    handler: &dyn ExportHandler,
+    req: ExportRequest,
+) -> Envelope<ExportResponse> {
+    let result = dispatch_export(handler, req);
+    handler.drain_observations().into_envelope(result)
+}
+
 /// The per-kind `dispatch` closure `export_export_plugin!` hands to [`boundary::call_boundary`]: decode
 /// an [`ExportRequest`], run it via [`dispatch_export`], and encode the [`ExportResponse`] into a
 /// [`BoundaryOutcome`]. An undecodable request is the only [`BoundaryOutcome::Unsupported`] case; a
@@ -928,7 +980,7 @@ pub unsafe fn export_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
         Ok(r) => r,
         Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
     };
-    let resp = dispatch_export(handler.as_ref(), request);
+    let resp = dispatch_export_enveloped(handler.as_ref(), request);
     match serde_json::to_vec(&resp) {
         Ok(payload) => BoundaryOutcome::Ok(payload),
         Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),

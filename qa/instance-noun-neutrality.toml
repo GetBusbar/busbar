@@ -1558,7 +1558,15 @@ wave = "keystone / composition-root — register_planes both-ways self-registrat
 [[leak]]
 noun = "bearer"
 kind = "auth"
-file = "crates/plugin-testkit/src/store_conformance.rs"
+file = "crates/store-memory/tests/store_conformance.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "bearer"
+kind = "auth"
+file = "crates/store-example-plugin/src/tests/store_conformance.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
@@ -3606,7 +3614,15 @@ wave = "substrate neutralization — opaque PlaneRecord across the ABI, never an
 [[leak]]
 noun = "sigv4"
 kind = "auth"
-file = "crates/plugin-testkit/src/store_conformance.rs"
+file = "crates/store-memory/tests/store_conformance.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "sigv4"
+kind = "auth"
+file = "crates/store-example-plugin/src/tests/store_conformance.rs"
 count = 2
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"

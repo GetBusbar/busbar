@@ -98,6 +98,18 @@ const MAX_RETAINED_TASKS: usize = 4096;
 /// sweep (no background timer to schedule or leak).
 const ACTIVE_TASK_ABANDON_MS: u64 = 86_400_000;
 
+/// THE CEILING ON DISTINCT ANSWER KEYS RETAINED BY ONE TASK'S `answers` MAP.
+///
+/// [`MAX_RETAINED_TASKS`] bounds how many TASKS the registry keeps; nothing bounded how many
+/// ANSWER KEYS one of them accumulates. `tasks/update` lets a caller deliver `inputResponses` under
+/// keys OF ITS OWN CHOOSING (see [`McpTask::deliver`]), and a key the task is not waiting on is
+/// accepted rather than refused — by design, so a client answering something already satisfied is
+/// not made to fail. Without a ceiling that same tolerance is the hole: a caller parked in
+/// `input_required` can repeat `tasks/update` under freshly-invented keys forever, growing one
+/// task's map without bound. 256, matching the lost fix and the crate's other per-item ceilings
+/// (`stdio_serve::MAX_RESOURCE_SUBS`, `method::MAX_TOOL_NAME_BYTES`).
+pub(crate) const MAX_TASK_ANSWERS: usize = 256;
+
 /// Has this caller declared the tasks extension?
 ///
 /// Reads `capabilities.extensions[TASKS_EXTENSION_ID]`, and PRESENCE is the declaration: the value
@@ -302,10 +314,24 @@ impl McpTask {
     /// a client answering a key that was already satisfied, or one it invented, has not made the
     /// request malformed, and the ack is the same either way.
     ///
-    /// Returns nothing — the resulting task state is observed on the next `tasks/get`, which is
-    /// what makes the ack an empty `{resultType:"complete"}` rather than a task envelope.
-    fn deliver(&self, responses: &serde_json::Map<String, serde_json::Value>, now_ms: u64) {
+    /// Returns `false`, applying NOTHING, when this batch would grow the task's answer map past
+    /// [`MAX_TASK_ANSWERS`] DISTINCT keys — refused whole, never truncated to what would have fit:
+    /// a caller that sent one request must not have to guess which of its own keys silently landed.
+    /// A key already held by the task is a REPEAT, not new, so re-answering one never counts
+    /// against the ceiling and is why the count below is of keys ABSENT from the map, not of the
+    /// batch's own size.
+    ///
+    /// Otherwise returns `true` — the resulting task state is observed on the next `tasks/get`,
+    /// which is what makes the ack an empty `{resultType:"complete"}` rather than a task envelope.
+    fn deliver(&self, responses: &serde_json::Map<String, serde_json::Value>, now_ms: u64) -> bool {
         let mut state = self.lock();
+        let new_keys = responses
+            .keys()
+            .filter(|k| !state.answers.contains_key(k.as_str()))
+            .count();
+        if state.answers.len() + new_keys > MAX_TASK_ANSWERS {
+            return false;
+        }
         for (key, value) in responses {
             state.answers.insert(key.clone(), value.clone());
         }
@@ -318,6 +344,7 @@ impl McpTask {
         }
         drop(state);
         self.resumed.notify_waiters();
+        true
     }
 
     /// Wait until every ask of the current round has been answered, or the task leaves
@@ -525,16 +552,19 @@ impl Registry {
     }
 
     /// Deliver `inputResponses` to a task this caller owns.
+    ///
+    /// `None` when the id does not resolve for this caller (unchanged). Otherwise `Some(bool)`: the
+    /// [`McpTask::deliver`] outcome — `Some(false)` is [`MAX_TASK_ANSWERS`] refusing this batch
+    /// whole, `Some(true)` is the ordinary ack.
     pub(crate) fn update(
         &self,
         id: &str,
         principal: &str,
         responses: &serde_json::Map<String, serde_json::Value>,
         now_ms: u64,
-    ) -> Option<()> {
+    ) -> Option<bool> {
         let task = self.get(id, principal)?;
-        task.deliver(responses, now_ms);
-        Some(())
+        Some(task.deliver(responses, now_ms))
     }
 
     /// Cancel a task this caller owns. Idempotent — see [`McpTask::cancel`].
@@ -598,6 +628,16 @@ pub(crate) struct Runner {
     /// decision about THIS field as much as about retention.
     pub(crate) authorised: super::upstream::Authorised,
     pub(crate) arguments: serde_json::Value,
+    /// THE OPERATOR'S APPROVED SCHEMA for this tool, carried so the argument guard can run AGAIN on
+    /// the merged answers.
+    ///
+    /// `upstream::authorise` screens arguments once, at ingress, against this same schema. The task
+    /// path does not go through `authorise` — it dispatches via `upstream::call` — so without this
+    /// the guard saw only the PRE-merge arguments and a `tasks/update` answer reached the upstream
+    /// unjudged. Carried rather than re-read from the catalogue at dispatch time: the document the
+    /// walk reads must be the one the operator signed off when the task was created, not whatever a
+    /// refresh has since replaced it with.
+    pub(crate) input_schema: Option<serde_json::Value>,
     pub(crate) server_id: String,
     pub(crate) max_rounds: u32,
     /// The rounds of input busbar asks its caller for from inside the task, already filtered to
@@ -760,6 +800,38 @@ async fn dispatch(task: Arc<McpTask>, runner: Runner) {
     // gate means by it, and what makes the gathered answer observable in the task's own result
     // rather than discarded at busbar.
     let arguments = merge_answers(&runner.arguments, &task.answers());
+
+    // THE GUARD, RUN AGAIN, on what is actually about to be dispatched.
+    //
+    // The arguments were screened once at ingress, against the arguments as they were THEN. The
+    // answers just merged in are caller-supplied and were never screened at all, so screening only
+    // the pre-merge value is a time-of-check/time-of-use hole: a caller creates the task with a
+    // benign `url`, clears the ingress screen, then rewrites that same key to an internal address
+    // through `tasks/update` and the walk never looks again. Re-running here judges the bytes that
+    // actually travel.
+    //
+    // The same schema and the same policy `upstream::authorise` used, for the same reason it gives:
+    // an absent schema is walked as `{"type": "object"}` rather than skipped, because skipping would
+    // make "declare no schema" the way past the check.
+    {
+        let schema = runner
+            .input_schema
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
+        if let Err(refusal) =
+            super::client::argguard::guard(&schema, &arguments, runner.authorised.policy)
+        {
+            // The same terminal shape a refusal from inside the loop takes, so a caller cannot tell
+            // from the task's own record whether the screen caught it before the first round or
+            // during one -- and either way no byte reached the upstream.
+            task.fail(
+                TASK_PROTOCOL_ERROR_CODE,
+                refusal.to_string(),
+                host.clock_now_ms(),
+            );
+            return;
+        }
+    }
 
     // (3) THE UPSTREAM LEG, through the SAME bounded, per-round-gated loop the synchronous path
     // uses. Not a second dispatcher: an upstream's own `input_required` must terminate at busbar on

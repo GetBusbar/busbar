@@ -25,7 +25,7 @@ use busbar_contract::transport::AbiVersion;
 use busbar_contract::unit::Refusal;
 use busbar_contract::wire::Frame;
 use busbar_contract::{
-    grammar::SelectorForm, ArenaBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
+    grammar::SelectorForm, ScratchBytes, Fut, Kind, Plugin, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 
@@ -421,7 +421,7 @@ impl Transport for StdioTransport {
         &'a self,
         conn: &'a Conn,
         _stream: StreamId,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize> {
         let id = conn.id();
         Box::pin(async move {
@@ -477,8 +477,8 @@ impl Transport for StdioTransport {
         &self,
         _fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
         // The same two bytes `write` refuses, refused here too: a body spelling this wire's own
         // delimiter cannot be expressed as ONE frame, and answering the plane at the point it
         // builds the frame says so where the plane can still do something about it.
@@ -487,7 +487,7 @@ impl Transport for StdioTransport {
         }
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)
     }
 
     fn adopt<'a>(
@@ -551,7 +551,7 @@ impl Transport for StdioTransport {
         // stdio is one channel; the connection is the whole of what can be refused.
         _stream: Option<StreamId>,
         _refusal: &'a Refusal,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let id = conn.id();

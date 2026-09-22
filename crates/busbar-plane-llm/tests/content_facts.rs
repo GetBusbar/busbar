@@ -44,7 +44,7 @@ fn whole_answer_facts(
     answer: &[u8],
 ) -> Vec<(String, String)> {
     let plane = LlmPlane::new(upstreams);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for(dialect), &[]);
     let labels = Labels::new();
@@ -269,7 +269,7 @@ fn event(name: &str, data: &str) -> Vec<u8> {
 #[test]
 fn a_stream_opening_frame_names_model_and_identity() {
     let plane = LlmPlane::new(ANTHROPIC_UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("anthropic"), &[]);
     let labels = Labels::new();
@@ -322,7 +322,7 @@ fn a_stream_opening_frame_names_model_and_identity() {
 #[test]
 fn a_stream_closing_frame_names_the_finish_reason_only() {
     let plane = LlmPlane::new(ANTHROPIC_UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("anthropic"), &[]);
     let labels = Labels::new();

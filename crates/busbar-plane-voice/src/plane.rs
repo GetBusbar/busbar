@@ -64,7 +64,7 @@
 //!   implemented; a future pass that wants server-side tool EXECUTION (rather than delivering the call
 //!   to whatever session member answers it) is the one that should add the `NestedPlane` path.
 
-use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir};
+use busbar_contract::bounded::{ScratchBytes, FactValue, Facts, Ir};
 use busbar_contract::dest::{
     ClientMode, DestinationFacts, EgressBody, RoutePlan, VerifiedDestination,
 };
@@ -191,7 +191,7 @@ impl Plane for VoicePlane {
         let body = ctx
             .arena()
             .alloc_bytes(u.body().body())
-            .map_err(|_| Encode::ArenaExhausted)?;
+            .map_err(|_| Encode::ScratchExhausted)?;
         Ok(EgressBody {
             envelope: TransportEnvelope::default(),
             body,
@@ -206,7 +206,7 @@ impl Plane for VoicePlane {
         dest: &VerifiedDestination,
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         let state = st
             .ok_or(Encode::Poisoned)?
             .get_mut::<VoiceSessionState>()
@@ -292,7 +292,7 @@ impl Plane for VoicePlane {
         ctx.arena()
             .alloc_bytes(&out.0)
             .map(Some)
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn decode_response<'u>(
@@ -347,12 +347,12 @@ impl Plane for VoicePlane {
         r: &Response<'u>,
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         // See the module doc comment's `encode_response` note: `decode_response` already rendered
         // client-dialect bytes into `r.ir`; this is the passthrough.
         ctx.arena()
             .alloc_bytes(r.ir.body())
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_refusal<'u>(
@@ -361,7 +361,7 @@ impl Plane for VoicePlane {
         _draft: Option<&UnitDraft<'u>>,
         _st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         let (code, message) = refusal_render(refusal.reason);
         let event = IrServerEvent::Error {
             code: code.to_string(),
@@ -384,7 +384,7 @@ impl Plane for VoicePlane {
             .0;
         ctx.arena()
             .alloc_bytes(&bytes)
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_end<'u>(
@@ -393,7 +393,7 @@ impl Plane for VoicePlane {
         _end: &UnitEnd,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // A turn's own ending is always rendered as a `Progress::Terminal` `Response` through
         // `encode_response` (the upstream's `response.done`/error IS the ending); there is no further
         // trailer this dialect writes at the unit's own close.
@@ -946,7 +946,7 @@ fn ingress_from_client_event<'u>(
                 fact_key: FACT_TOOL_CORRELATION,
                 value: CorrelationValue::Str(id),
             }),
-            relay: ArenaBytes::new(&[]),
+            relay: ScratchBytes::new(&[]),
             facts: Box::new(facts),
         });
     }
@@ -964,8 +964,8 @@ fn ingress_from_client_event<'u>(
         }
         IrClientEvent::Control(IrDuplexControl::ItemTruncate {
             audio_played_ms, ..
-        }) => (ArenaBytes::new(&[]), Some(*audio_played_ms), None),
-        IrClientEvent::Control(_) | IrClientEvent::Tool(_) => (ArenaBytes::new(&[]), None, None),
+        }) => (ScratchBytes::new(&[]), Some(*audio_played_ms), None),
+        IrClientEvent::Control(_) | IrClientEvent::Tool(_) => (ScratchBytes::new(&[]), None, None),
     };
     open_or_relay(state, dialect, relay, interrupt_ms, audio_ms, ctx)
 }
@@ -981,7 +981,7 @@ fn ingress_from_client_event<'u>(
 fn open_or_relay<'u>(
     state: &mut VoiceSessionState,
     dialect: Dialect,
-    relay: ArenaBytes<'u>,
+    relay: ScratchBytes<'u>,
     interrupt_ms: Option<u64>,
     audio_ms: Option<u64>,
     ctx: &Ctx<'u>,

@@ -3,7 +3,7 @@
 
 //! The one-file-per-plugin **signed tarball** format: a `.tar.gz` containing EXACTLY
 //!
-//! - `manifest.json` - the signed [`busbar_plugin_sign::Manifest`];
+//! - `manifest.json` - the signed [`crate::sign::Manifest`];
 //! - one library file - the cdylib the manifest's `sha256` pins.
 //!
 //! [`unpack`] extracts FULLY IN MEMORY on every platform (the manifest never touches disk; the
@@ -12,7 +12,7 @@
 //! path-traversal names) is refused before it can cost anything. [`package`] is the inverse, used
 //! by the release pipeline, the packaging CLI, and tests.
 
-use busbar_plugin_sign::Manifest;
+use crate::sign::Manifest;
 use std::io::Read as _;
 
 /// The manifest member name inside every plugin tarball.

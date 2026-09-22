@@ -10,8 +10,9 @@
 //! ## What moved here, byte-identical
 //!
 //! [`HttpTransport::dial`] builds ONE pooled `hyper_util` client per transport instance, with the
-//! exact posture 1.5.5's egress client used (`busbar_kernel::egress::engine`, read before this
-//! was written): redirects never followed (hyper's client is structurally incapable of following
+//! exact posture 1.5.5's egress client used (read off that client before this was written; the
+//! module is deliberately not named here, because a transport is a wire and names no core path —
+//! see this crate's `no_plane_names` test): redirects never followed (hyper's client is structurally incapable of following
 //! one — no policy to set), `connect_timeout` 10s, TCP keepalive 60s + nodelay, HTTP/2 keep-alive
 //! interval 30s / timeout 10s with the adaptive window on, `pool_max_idle_per_host` /
 //! `pool_idle_timeout` from [`ClientSettings`], and `upstream_http1_only` /
@@ -83,7 +84,7 @@ use busbar_contract::transport::wire::TransportError;
 use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::{
-    ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    ScratchBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 use bytes::Bytes;
@@ -923,7 +924,7 @@ impl Transport for HttpTransport {
         &'a self,
         conn: &'a Conn,
         _stream: StreamId,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
@@ -1099,8 +1100,8 @@ impl Transport for HttpTransport {
         &self,
         fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
         let field = |name: &str| {
             fields
                 .iter()
@@ -1147,7 +1148,7 @@ impl Transport for HttpTransport {
         out.extend_from_slice(body);
         arena
             .alloc_bytes(&out)
-            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)
     }
 
     fn adopt<'a>(
@@ -1210,7 +1211,7 @@ impl Transport for HttpTransport {
         // One request per connection here, so a refusal is always the whole of it.
         _stream: Option<StreamId>,
         _refusal: &'a Refusal,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
@@ -1467,10 +1468,19 @@ fn complete_message(
         };
         let message = raw::parse_message(&buffered[..header_end]).ok_or(TransportError::Framing)?;
         cache.parses += 1;
-        if raw::has_transfer_encoding(&message.headers) && !raw::is_chunked(&message.headers) {
-            // A declared coding this transport cannot frame. Falling through to `Content-Length`
-            // would be answering a question the sender did not ask.
-            return Err(TransportError::Framing);
+        if raw::has_transfer_encoding(&message.headers) {
+            if !raw::is_chunked(&message.headers) {
+                // A declared coding this transport cannot frame. Falling through to
+                // `Content-Length` would be answering a question the sender did not ask.
+                return Err(TransportError::Framing);
+            }
+            if raw::header(&message.headers, "content-length").is_some() {
+                // Two headers describing two framings of the same bytes. The coding wins the
+                // reading, but forwarding the pair on — as this used to do — hands the next hop a
+                // length the bytes do not have, the smuggling shape itself. Refused rather than
+                // silently disambiguated, mirroring the ingress reader's identical refusal.
+                return Err(TransportError::Framing);
+            }
         }
         cache.head = Some(CachedHead {
             end: header_end,

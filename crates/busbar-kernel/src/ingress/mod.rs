@@ -13,29 +13,16 @@ use axum::{
 
 use crate::state::App;
 
-// PRODUCTION / `test-support`: the body-model arrival catch-all resolves straight off the installed
-// table (the composition root wrote it via `install_body_ingress`; a `test-support` consumer seeds the
-// hook through the dialect crate's testkit).
-#[cfg(not(test))]
+// The body-model arrival catch-all resolves straight off the installed table (the composition root
+// wrote it via `install_body_ingress`) or the test hook (`set_test_body_ingress`). Core's OWN
+// `#[cfg(test)]` binary used to auto-seed the test hook here with the extracted dialects'
+// `BODY_INGRESS` slice — the A6/HostCtx dev-dependency-cycle cleanup removed that (it named
+// `busbar_llm` directly, which only type-checks with ONE `busbar_kernel` in the graph): a test that
+// needs a real body-model arrival now registers it itself
+// (`busbar_kernel::ingress::arrival::set_test_body_ingress(|| busbar_llm::BODY_INGRESS)`, idempotent,
+// first-wins) from an integration-test target, exactly the posture an external `test-support`
+// consumer already used — so this neutral source names no dialect crate under any build surface.
 pub(crate) use busbar_kernel::ingress::arrival::body_ingress_for;
-
-/// CORE'S OWN `#[cfg(test)]` BINARY has no composition root, so — exactly as `path_ingress_for` seeds
-/// `set_test_path_ingress` and `proto::registry` seeds `set_test_builtins` — this seeds the neutral
-/// body-arrival hook with the extracted dialects' `BODY_INGRESS` slice (named in a `tests/` file the
-/// neutral-purity lint excludes) before every resolve, so a `/v1/messages` (named/adhoc) or body-model
-/// dispatch request in a core test resolves its universal ingress.
-#[cfg(test)]
-pub(crate) fn body_ingress_for(name: &str) -> Option<busbar_kernel::ingress::arrival::BodyIngress> {
-    busbar_kernel::ingress::arrival::set_test_body_ingress(test_body_ingress::test_body_ingress);
-    busbar_kernel::ingress::arrival::body_ingress_for(name)
-}
-
-/// The extracted-dialect body arrival list for core's OWN test binary — the shipped dialect crate's
-/// `BODY_INGRESS`, named in a `tests/` file the neutral-purity lint excludes so the neutral source
-/// spells no crate.
-#[cfg(test)]
-#[path = "tests/body_ingress_builtins.rs"]
-mod test_body_ingress;
 
 /// enforce a virtual key's allowed-pools list against the resolved target pool. No-op
 /// when governance is off (`gov.key` is None) or the key allows all pools. Returns a 403 response
@@ -728,7 +715,7 @@ pub mod duplex_ws;
 pub mod protocol;
 
 // The error-shaping boundary: the ONE place a resolved ingress becomes a native error envelope.
-pub(crate) mod native;
+pub mod native;
 
 /// The protocol catch-all.
 pub mod dispatch;

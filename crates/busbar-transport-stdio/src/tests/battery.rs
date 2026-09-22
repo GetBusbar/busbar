@@ -14,7 +14,7 @@ use tokio::io::{split, AsyncWriteExt};
 
 use busbar_contract::transport::wire::Direction;
 use busbar_contract::transport::wire::TransportError;
-use busbar_contract::{ArenaBytes, Transport};
+use busbar_contract::{ScratchBytes, Transport};
 
 use crate::StdioTransport;
 
@@ -51,7 +51,7 @@ async fn round_trip_byte_exact() {
 
     let payload = b"the quick brown fox jumps over the lazy dog \xE2\x9C\x93".to_vec();
     let n = t
-        .write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&payload))
+        .write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&payload))
         .await
         .expect("write succeeds");
     assert_eq!(n, payload.len());
@@ -89,7 +89,7 @@ async fn a_payload_carrying_the_delimiter_is_refused_rather_than_split_at_the_pe
 
     let injected = b"{\"id\":1}\n{\"method\":\"admin\"}".to_vec();
     let err = t
-        .write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&injected))
+        .write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&injected))
         .await
         .expect_err("a payload spelling the frame delimiter must not go on the wire");
     assert_eq!(err, TransportError::Framing);
@@ -99,7 +99,7 @@ async fn a_payload_carrying_the_delimiter_is_refused_rather_than_split_at_the_pe
         .write(
             &a,
             busbar_contract::StreamId(0),
-            ArenaBytes::new(&trailing_cr),
+            ScratchBytes::new(&trailing_cr),
         )
         .await
         .expect_err("a payload the reader would strip a byte off is not one this can carry");
@@ -116,7 +116,7 @@ async fn a_payload_carrying_the_delimiter_is_refused_rather_than_split_at_the_pe
 
     // And a carriage return that is not the last byte still travels, byte-exact.
     let inner_cr = b"a\rb".to_vec();
-    t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&inner_cr))
+    t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&inner_cr))
         .await
         .expect("only the delimiter and the byte the reader strips are refused");
 }
@@ -134,7 +134,7 @@ async fn multiple_frames_in_order_no_data_loss() {
         t.write(
             &a,
             busbar_contract::StreamId(0),
-            ArenaBytes::new(line.as_bytes()),
+            ScratchBytes::new(line.as_bytes()),
         )
         .await
         .unwrap();
@@ -154,7 +154,7 @@ async fn half_close_peer_sees_clean_eof_and_can_still_be_written_to() {
     t.write(
         &a,
         busbar_contract::StreamId(0),
-        ArenaBytes::new(b"last words"),
+        ScratchBytes::new(b"last words"),
     )
     .await
     .unwrap();
@@ -186,7 +186,7 @@ async fn cancel_mid_frame_fences_the_connection() {
     let (a, _b) = pair(&t, 8);
 
     let big = vec![b'x'; 1_000_000];
-    let write_fut = t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&big));
+    let write_fut = t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&big));
     // Race the write against an immediate timeout: with an 8-byte duplex and a megabyte payload,
     // the write cannot have finished, so the timeout always wins and the future is dropped.
     let raced = tokio::time::timeout(Duration::from_millis(1), write_fut).await;
@@ -197,7 +197,7 @@ async fn cancel_mid_frame_fences_the_connection() {
     // ends.
     let small = b"x";
     let err = t
-        .write(&a, busbar_contract::StreamId(0), ArenaBytes::new(small))
+        .write(&a, busbar_contract::StreamId(0), ScratchBytes::new(small))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::Framing);
@@ -221,7 +221,7 @@ async fn cancel_mid_frame_fences_the_connection() {
     t.write(
         &a,
         busbar_contract::StreamId(0),
-        ArenaBytes::new(b"after the cancel"),
+        ScratchBytes::new(b"after the cancel"),
     )
     .await
     .unwrap();
@@ -254,7 +254,7 @@ async fn backpressure_is_bidirectional() {
         let payload = payload.clone();
         let a = a.clone_for_test();
         async move {
-            t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&payload))
+            t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&payload))
                 .await
         }
     });
@@ -276,7 +276,7 @@ async fn backpressure_is_bidirectional() {
         let t = t.clone();
         let payload = payload.clone();
         async move {
-            t.write(&b, busbar_contract::StreamId(0), ArenaBytes::new(&payload))
+            t.write(&b, busbar_contract::StreamId(0), ScratchBytes::new(&payload))
                 .await
         }
     });
@@ -364,7 +364,7 @@ async fn k_writers_serialise_without_interleaving() {
             t.write(
                 &a,
                 busbar_contract::StreamId(0),
-                ArenaBytes::new(line.as_bytes()),
+                ScratchBytes::new(line.as_bytes()),
             )
             .await
             .unwrap();
@@ -415,7 +415,7 @@ fn a_refusal() -> busbar_contract::unit::Refusal<'static> {
 async fn unit0_refusal_writes_then_closes() {
     let t = StdioTransport::new();
     let (a, b) = pair(&t, 4096);
-    t.unit0_refusal(a, None, &a_refusal(), ArenaBytes::new(b"refused"))
+    t.unit0_refusal(a, None, &a_refusal(), ScratchBytes::new(b"refused"))
         .await
         .unwrap();
     let mut frames = t.frames(b);
@@ -437,7 +437,7 @@ async fn a_refusal_that_never_reached_the_peer_is_reported() {
     drop(end_a);
 
     let err = t
-        .unit0_refusal(b, None, &a_refusal(), ArenaBytes::new(b"refused"))
+        .unit0_refusal(b, None, &a_refusal(), ScratchBytes::new(b"refused"))
         .await
         .expect_err("a refusal that could not be written is not a delivered refusal");
     assert_eq!(err, TransportError::Reset);
@@ -459,7 +459,7 @@ async fn a_refusal_on_a_fenced_connection_is_reported_closed() {
         .poisoned
         .store(true, std::sync::atomic::Ordering::Release);
     let err = t
-        .unit0_refusal(a, None, &a_refusal(), ArenaBytes::new(b"refused"))
+        .unit0_refusal(a, None, &a_refusal(), ScratchBytes::new(b"refused"))
         .await
         .expect_err("a fenced connection cannot carry a refusal");
     assert_eq!(err, TransportError::Closed);
@@ -664,7 +664,7 @@ async fn a_write_dropped_while_queued_for_the_lock_does_not_fence_the_connection
     // Stand in for another writer holding the lock: the queued write cannot even begin.
     let held = state.writer.lock().await;
     {
-        let queued = t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(b"queued"));
+        let queued = t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(b"queued"));
         tokio::pin!(queued);
         let raced = tokio::time::timeout(Duration::from_millis(20), queued.as_mut()).await;
         assert!(raced.is_err(), "the write cannot have taken the lock");
@@ -674,7 +674,7 @@ async fn a_write_dropped_while_queued_for_the_lock_does_not_fence_the_connection
     t.write(
         &a,
         busbar_contract::StreamId(0),
-        ArenaBytes::new(b"after the queue"),
+        ScratchBytes::new(b"after the queue"),
     )
     .await
     .expect("a write that never began leaves the connection usable");
@@ -722,7 +722,7 @@ async fn a_line_within_the_maximum_is_still_a_frame() {
         let t = t.clone();
         let payload = payload.clone();
         async move {
-            t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&payload))
+            t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&payload))
                 .await
                 .unwrap()
         }

@@ -9,26 +9,26 @@
 use super::*;
 use busbar_contract::unit::ConfigView;
 use busbar_contract::{
-    Arena, ArenaBudget, ArenaBytes as ContractArenaBytes, Plugin, Transport, TransportConfigView,
+    PlaneAlloc, PlaneAllocBudget, ScratchBytes as ContractScratchBytes, Plugin, Transport, TransportConfigView,
     TransportMeta,
 };
 
 /// A trivial arena, leaking rather than tracking a budget: this crate's `encode_envelope` battery
 /// only needs somewhere to copy bytes into, never a budget to exhaust.
-struct TestArena;
-impl Arena for TestArena {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ContractArenaBytes<'a>, ArenaBudget> {
+struct TestPlaneAlloc;
+impl PlaneAlloc for TestPlaneAlloc {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ContractScratchBytes<'a>, PlaneAllocBudget> {
         let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
-        Ok(ContractArenaBytes::new(leaked))
+        Ok(ContractScratchBytes::new(leaked))
     }
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
         let leaked: &'static str = Box::leak(src.to_string().into_boxed_str());
         Ok(leaked)
     }
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, busbar_contract::Span)],
-    ) -> Result<&'a [(&'a str, busbar_contract::Span)], ArenaBudget> {
+    ) -> Result<&'a [(&'a str, busbar_contract::Span)], PlaneAllocBudget> {
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
     fn remaining(&self) -> usize {
@@ -212,7 +212,7 @@ async fn a_too_long_line_is_recovered_and_the_next_line_delivered() {
 #[test]
 fn encode_envelope_refuses_either_half_of_the_delimiter_check_on_its_own() {
     let t = StdioTransport::new();
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
 
     let embedded_newline = b"one\ntwo";
     assert!(
@@ -245,7 +245,7 @@ async fn a_line_of_exactly_the_maximum_is_still_a_frame() {
     let t = StdioTransport::new();
     let (a, b) = pair(&t, 256 * 1024);
     let payload = vec![b'z'; crate::transport::MAX_LINE_BYTES];
-    t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&payload))
+    t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&payload))
         .await
         .expect("a line of exactly the maximum byte count is still one frame");
 

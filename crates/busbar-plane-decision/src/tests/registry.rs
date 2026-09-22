@@ -26,7 +26,7 @@ fn decl_builds_no_runtime_slot_yet() {
     // with a real `BuildCtx` value from the substrate crate so a future field addition that makes
     // this constructible does not silently drift the constant it is built from.
     let nothing: &dyn std::any::Any = &();
-    let ctx = busbar_substrate::plane::registry::BuildCtx {
+    let ctx = busbar_kernel::plane::registry::BuildCtx {
         endpoint_slot: None,
         agent_defs: nothing,
         public_url: None,

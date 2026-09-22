@@ -144,7 +144,7 @@ gating scenarios `qa/teller-steps.json` cites as the proof of a Teller step — 
 to be NAMED by a step of `ci.yml`. `cargo xtask gate teller-steps` already asserts that a cell names
 a real script; naming a file is not running it, and no job in any workflow ran one.
 
-`ci.yml`'s new `plane-rigs` job runs all twelve, one named step each, fast tier, after the matrix
+`ci.yml`'s `plane-rigs` job runs all TWENTY, one named step each, fast tier, after the matrix
 self-test and the release build the rigs boot. It is one step per scenario rather than a
 `for f in scripts/*-subject/h2-*.sh` loop on purpose: a loop names none of them, and a glob expands
 on the runner where nobody reads the expansion, so a rig added tomorrow would be covered by a loop
@@ -213,7 +213,6 @@ Covering leg is the FIRST leg that compiles the feature; several are compiled by
 | `busbar-mcp/openapi-schema` | non-default | `openapi-schema` | yes |
 | `busbar-mcp/test-support` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
 | `busbar-mcp-codec/test-support` | non-default | `feature-sets` (this change) | NO |
-| `busbar-plugin-testkit/store` | non-default | `check` — `--all-targets` dev-dep unification | yes (incidental) |
 | `busbar-substrate/dispatch` | non-default | `check` — reached from a workspace default | yes |
 | `busbar-substrate/openapi-schema` | non-default | `openapi-schema` | yes |
 | `busbar-substrate/plane-a2a` | non-default | `check` — reached from a workspace default | yes |

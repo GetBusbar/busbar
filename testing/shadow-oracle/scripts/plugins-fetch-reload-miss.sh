@@ -27,6 +27,12 @@ repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
 
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
+# The oracle ENGINE. DECISION #80: the judge is Rust, and the leaf tools these drivers used to
+# shell out to as `python3 $BUSBAR_ORACLE_TOOL_DIR/<tool>.py` are its subcommands (mock /
+# capture / capture-exec / fetch-plugin / config). `:?` on purpose: an engine this driver cannot
+# find is a HARNESS failure that must stop the cell loudly. Degrading here instead is exactly how
+# 33 script cells recorded nothing while the ledger still read green.
+ORACLE_BIN="${BUSBAR_ORACLE_BIN:?the Rust oracle engine must be published as BUSBAR_ORACLE_BIN}"
 LP="${FETCH_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49751}}" AP="${FETCH_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-49752}}" FP="${FETCH_FILE_PORT:-${SCRIPT_MOCK_PORT:-49761}}"
 fail() { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"$1\"}}" >"$RAW/captured.json"; exit 0; }
 for p in "$LP" "$AP" "$FP"; do assert_port_free "$p" || fail "port $p busy"; done
@@ -38,7 +44,7 @@ rm -rf "$W"; mkdir -p "$W/plugins" "$W/serve" "$W/tmp"
 # see durable-governance-precondition.sh's header comment: isolate `sweep_dead_staging`'s host-wide
 # `$TMPDIR` scan so its opportunistic `[info] removed N orphaned ...` line never fires here.
 export TMPDIR="$W/tmp"
-tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" store-sqlite)" || fail "store-sqlite plugin fetch failed"
+tarball="$("$ORACLE_BIN" fetch-plugin store-sqlite)" || fail "store-sqlite plugin fetch failed"
 asset="$(basename "$tarball")"
 cp "$tarball" "$W/serve/"
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
@@ -99,9 +105,9 @@ i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); 
 
 : >"$RAW/stdout"
 grep -a "plugins.fetch" "$W/busbar.log" >"$RAW/stderr" || cp "$W/busbar.log" "$RAW/stderr"
-python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/capture-exec.py" "$st" "$RAW/body" "$RAW/stderr" \
+"$ORACLE_BIN" capture-exec "$st" "$RAW/body" "$RAW/stderr" \
   --strip-path "$W" --strip-path "$RAW" --strip-path "$repo" --strip-path "$BIN" >"$RAW/captured.json" 2>"$RAW/capture.err" \
-  || fail "capture-exec.py failed: $(tail -c 300 "$RAW/capture.err")"
+  || fail "capture-exec failed: $(tail -c 300 "$RAW/capture.err")"
 
 # The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
 # out loud on the success path rather than inheriting whatever the last command happened to return.

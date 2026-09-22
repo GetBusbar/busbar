@@ -33,8 +33,8 @@
 //! `Key.scope` field. A lane past the fixed [`MAX_POOL_MEMBERS`] table, a null/empty key, or
 //! non-UTF-8 key bytes all fail closed to a refusal rather than risk indexing the lane table.
 
+use super::recover;
 use super::scope::SettleAdmission;
-use super::{recover, HostState};
 use crate::breaker::{CanonicalSignal, StatusClass as BreakerClass};
 use crate::store::{PlaneAdmission, PlaneBreakers, MAX_POOL_MEMBERS};
 use busbar_plugin::hot::host::HostCtx;
@@ -313,7 +313,10 @@ unsafe fn resolve_key(key: *const Key) -> Option<(String, usize)> {
 pub(super) extern "C-unwind" fn breaker_admit(host: HostCtx, key: *const Key) -> AdmissionId {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            // A null / stale (generation no longer live) handle refuses like any other bad input.
+            return AdmissionId::NONE;
+        };
         // SAFETY: ABI key discipline (see `resolve_key`).
         let Some((pool, lane)) = (unsafe { resolve_key(key) }) else {
             return AdmissionId::NONE;
@@ -396,7 +399,10 @@ pub(super) extern "C-unwind" fn breaker_admit_reason(
         // SAFETY: ABI out-param discipline (writable/aligned or null; see `write_refusal`).
         unsafe { write_refusal(out, Unavailability::Unspecified, 0) };
         // SAFETY: recovery invariant (see `super::recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            // A stale handle is not an availability fact either → Unspecified, same as a bad key.
+            return AdmissionId::NONE;
+        };
         // SAFETY: ABI key discipline (see `resolve_key`).
         let Some((pool, lane)) = (unsafe { resolve_key(key) }) else {
             return AdmissionId::NONE; // a bad key is not an availability fact → Unspecified.
@@ -435,7 +441,9 @@ pub(super) extern "C-unwind" fn breaker_settle(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if signal.is_null() {
             return StatusClass::Refused;
         }

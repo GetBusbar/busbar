@@ -486,7 +486,9 @@ fn register_stream(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let state = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if desc.is_null() {
             return StatusClass::Refused;
         }
@@ -531,7 +533,11 @@ pub(crate) fn journal_append_scoped_full(
 ) -> Result<(u64, String, String), busbar_api::StoreError> {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return Err(busbar_api::StoreError(
+                "host handle is stale (its dispatch generation is no longer live)".to_string(),
+            ));
+        };
         let Some(h) = stream_handle(kind_id) else {
             return Err(busbar_api::StoreError(
                 "journal stream is not registered".to_string(),
@@ -597,7 +603,7 @@ pub(crate) fn journal_append_scoped_full_hostless(
         };
         // The reframe is reached ONLY on an LRU-evicted-scope resume; the shipped in-core reframes
         // ignore the `host` argument (see `reframe_bridge`), so a null host here is never dereferenced.
-        let null_host: HostCtx = core::ptr::null_mut();
+        let null_host: HostCtx = HostCtx::NULL;
         let reframe = |sc: &str, body: &[u8]| {
             call_reframe(null_host, kind_id, h.reframe, h.framing, sc, body)
         };
@@ -644,7 +650,9 @@ pub(crate) extern "C-unwind" fn journal_append_scoped(
 ) -> Seq {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return Seq::NONE;
+        };
         let Some(h) = stream_handle(kind_id) else {
             return Seq::NONE;
         };
@@ -683,7 +691,9 @@ pub(crate) extern "C-unwind" fn journal_read_scoped(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if out_written.is_null() {
             return StatusClass::Refused;
         }
@@ -738,7 +748,9 @@ pub(crate) extern "C-unwind" fn journal_restore(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if out.is_null() {
             return StatusClass::Refused;
         }
@@ -785,7 +797,9 @@ pub(crate) extern "C-unwind" fn journal_seed(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if out.is_null() {
             return StatusClass::Refused;
         }
@@ -844,7 +858,9 @@ pub(crate) extern "C-unwind" fn journal_forget(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         let Some(h) = stream_handle(kind_id) else {
             return StatusClass::Refused;
         };
@@ -866,7 +882,9 @@ pub(crate) extern "C-unwind" fn journal_compact(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if out_removed.is_null() {
             return StatusClass::Refused;
         }
@@ -898,7 +916,9 @@ pub(crate) extern "C-unwind" fn journal_verify_scoped(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if out.is_null() {
             return StatusClass::Refused;
         }
@@ -1035,7 +1055,9 @@ pub(crate) extern "C-unwind" fn journal_append(
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`). The state is recovered even though this
         // slot draws the chain from the process registry, keeping the boundary discipline uniform.
-        let _state = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return Seq::NONE;
+        };
         if framing.is_null() {
             return Seq::NONE;
         }
@@ -1088,7 +1110,9 @@ pub(crate) extern "C-unwind" fn journal_read(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if query.is_null() || out_written.is_null() {
             return StatusClass::Refused;
         }

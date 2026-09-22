@@ -12,7 +12,7 @@
 //! so every draft below hands the loop a body the kernel does not have to re-walk. The plane once
 //! handed back an empty table because the arena could not allocate one; it can, and this does.
 
-use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
+use busbar_contract::bounded::{ScratchBytes, BoundedVec, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -235,7 +235,7 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
         | RefusalReason::StaleSlice
         | RefusalReason::TierMismatch
         | RefusalReason::SpillBudget
-        | RefusalReason::ArenaBudget
+        | RefusalReason::ScratchExhausted
         | RefusalReason::RateLimited
         | RefusalReason::ChallengeExhausted
         | RefusalReason::NoRate
@@ -542,14 +542,14 @@ impl Plane for A2aPlane {
             Some(backend) => ctx
                 .arena()
                 .alloc_bytes(&rewrite_task_id(body, backend)?)
-                .map_err(|_| Encode::ArenaExhausted)?,
-            None => ArenaBytes::new(body),
+                .map_err(|_| Encode::ScratchExhausted)?,
+            None => ScratchBytes::new(body),
         };
         let mut envelope = TransportEnvelope::default();
         let content_type = ctx
             .arena()
             .alloc_bytes(CONTENT_TYPE_JSON)
-            .map_err(|_| Encode::ArenaExhausted)?;
+            .map_err(|_| Encode::ScratchExhausted)?;
         let _ = envelope.fields.push(busbar_contract::wire::EnvelopeField {
             name: FIELD_CONTENT_TYPE,
             value: content_type,
@@ -558,7 +558,7 @@ impl Plane for A2aPlane {
             let value = ctx
                 .arena()
                 .alloc_bytes(version.as_bytes())
-                .map_err(|_| Encode::ArenaExhausted)?;
+                .map_err(|_| Encode::ScratchExhausted)?;
             let _ = envelope.fields.push(busbar_contract::wire::EnvelopeField {
                 name: FIELD_VERSION,
                 value,
@@ -586,7 +586,7 @@ impl Plane for A2aPlane {
         _dest: &VerifiedDestination,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // An OPEN unit of this plane is one whose ANSWER streams; the request itself was complete in
         // the frame that opened it. So an inbound frame arriving under an open unit belongs to no
         // outbound request, and the honest answer is that it is consumed and nothing goes out for
@@ -691,7 +691,7 @@ impl Plane for A2aPlane {
         r: &Response<'u>,
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         let body = r.ir.body();
         // An answer that already IS an envelope goes back exactly as it arrived. This is the common
         // path and it is byte-identical by construction: the agent answered the caller's own
@@ -700,7 +700,7 @@ impl Plane for A2aPlane {
             return ctx
                 .arena()
                 .alloc_bytes(body)
-                .map_err(|_| Encode::ArenaExhausted);
+                .map_err(|_| Encode::ScratchExhausted);
         }
         // An answer this node composed itself — the ones served out of its own records — arrives as
         // a bare result and is wrapped here, with the identifier the decode step recorded.
@@ -711,7 +711,7 @@ impl Plane for A2aPlane {
         let bytes = jsonrpc::success(&id, body)?;
         ctx.arena()
             .alloc_bytes(&bytes)
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_refusal<'u>(
@@ -720,7 +720,7 @@ impl Plane for A2aPlane {
         draft: Option<&UnitDraft<'u>>,
         _st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         let id = match draft.and_then(|d| d.facts.get(f::FACT_RPC_ID)) {
             Some(FactValue::Str(text)) => jsonrpc::id_value(text.as_bytes())?,
             _ => serde_json::Value::Null,
@@ -729,7 +729,7 @@ impl Plane for A2aPlane {
         let bytes = jsonrpc::error(&id, code, message)?;
         ctx.arena()
             .alloc_bytes(&bytes)
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_end<'u>(
@@ -738,7 +738,7 @@ impl Plane for A2aPlane {
         _end: &UnitEnd,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // This protocol writes nothing to end a unit. A single answer ends when its document has
         // been written; a streamed answer ends when its last event has. Emitting a closing frame
         // would be a byte on the wire that is not there today.

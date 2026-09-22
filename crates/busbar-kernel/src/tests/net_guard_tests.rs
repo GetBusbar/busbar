@@ -240,3 +240,121 @@ fn cloud_metadata_is_judged_separately_and_covers_every_vendor() {
         &"10.0.0.1".parse::<IpAddr>().unwrap()
     ));
 }
+
+/// NAT64 / RFC 6052 EMBEDDING MUST BE JUDGED, not left to fall through to the v6 range checks that
+/// do not cover `64:ff9b::/96` at all.
+///
+/// A DNS64 resolver on an IPv6-only network answers a AAAA query with the NAT64 synthesis of the
+/// queried name's IPv4 address rather than the address itself. A guard that unwraps only
+/// `to_ipv4()` (IPv4-MAPPED/IPv4-COMPATIBLE) does not recognise `64:ff9b::/96` at all, so
+/// `64:ff9b::a9fe:a9fe` — the IMDS target `169.254.169.254` re-encoded — matches no v6 range and
+/// reads as an ordinary public v6 address. This asserts the embedding is judged in both the
+/// well-known (RFC 6052) and RFC 8215 local-use forms, including the local-use form with a
+/// NON-ZERO middle (RFC 8215 Section 6's own `64:ff9b:1:fffe::/96` worked example).
+#[test]
+fn nat64_embedded_ipv4_is_judged_by_the_shared_predicates() {
+    use std::net::{IpAddr, Ipv6Addr};
+
+    for meta in [
+        "64:ff9b::a9fe:a9fe",        // RFC 6052 well-known
+        "64:ff9b:1::a9fe:a9fe",      // RFC 8215 local-use, zero-padded
+        "64:ff9b:1:fffe::a9fe:a9fe", // RFC 8215 local-use, non-zero middle (RFC 8215 Section 6 example)
+    ] {
+        let addr: IpAddr = meta.parse().expect(meta);
+        assert!(
+            ip_is_cloud_metadata(&addr),
+            "{meta} is the NAT64 synthesis of the IMDS target 169.254.169.254 and must be judged \
+             metadata"
+        );
+        assert!(
+            ip_is_internal(&addr),
+            "{meta} is also internal — every cloud-metadata address is internal"
+        );
+    }
+    for internal in [
+        "64:ff9b::7f00:1",         // 127.0.0.1 loopback
+        "64:ff9b::a01:203",        // 10.1.2.3 private
+        "64:ff9b:1::7f00:1",       // local-use loopback
+        "64:ff9b:1:fffe::a01:203", // non-zero-padded local-use private
+    ] {
+        let addr: IpAddr = internal.parse().expect(internal);
+        assert!(
+            ip_is_internal(&addr),
+            "{internal} is a NAT64 embedding of an internal IPv4 target and must be internal"
+        );
+        assert!(
+            !ip_is_cloud_metadata(&addr),
+            "{internal} is internal but not metadata"
+        );
+    }
+
+    // `embedded_ipv4` decodes the low 32 bits regardless of the operator-chosen local-use middle.
+    assert_eq!(
+        embedded_ipv4(&"64:ff9b:1:fffe::a9fe:a9fe".parse::<Ipv6Addr>().unwrap()),
+        Some(Ipv4Addr::new(169, 254, 169, 254)),
+    );
+    // RFC 6052 fixes the ENTIRE well-known /96 to zero: a non-zero middle there is an ordinary
+    // address, not an embedding, and must NOT be unwrapped.
+    assert_eq!(
+        embedded_ipv4(&"64:ff9b::1:0:a9fe:a9fe".parse::<Ipv6Addr>().unwrap()),
+        None,
+    );
+}
+
+/// THE HOST-STRING GUARDS MUST JUDGE THE NAT64 EMBEDDING TOO, not just the address predicates.
+///
+/// [`ip_is_cloud_metadata`] and [`ip_is_internal`] take an already-parsed `IpAddr` and were fixed
+/// first. The three guards below take a HOST STRING and parse it themselves, and each kept its own
+/// `to_ipv4()` unwrap — so `64:ff9b::a9fe:a9fe` parsed clean, matched no v6 range, and read as an
+/// ordinary public address. That gap was live after the address-level fix landed, which is exactly
+/// why this test exists separately from
+/// `nat64_embedded_ipv4_is_judged_by_the_shared_predicates`: fixing the predicate does NOT fix the
+/// callers that never call it.
+///
+/// [`ssrf_blocked_host`] is the pre-flight guard for OAuth token-endpoint URLs and for MCP
+/// tool-call ARGUMENT hosts — attacker-influenced input on the classic SSRF injection path — so a
+/// bypass here is reachable without any DNS answer at all.
+#[test]
+fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
+    // Every spelling of the IMDS target 169.254.169.254 that a caller can hand us.
+    for meta in [
+        "169.254.169.254",             // bare v4
+        "::ffff:169.254.169.254",      // v4-mapped
+        "64:ff9b::a9fe:a9fe",          // NAT64 well-known (RFC 6052)
+        "64:ff9b:1::a9fe:a9fe",        // NAT64 local-use (RFC 8215), zero middle
+        "64:ff9b:1:fffe::a9fe:a9fe",   // NAT64 local-use, non-zero middle
+    ] {
+        let url = format!("http://[{meta}]/latest/meta-data/");
+        let url = if meta.contains(':') { url } else { format!("http://{meta}/latest/meta-data/") };
+        assert!(
+            ssrf_blocked_host(&url, &[], false, &[]).is_some(),
+            "{meta} reaches the cloud-metadata service and must be refused pre-flight; \
+             a NAT64 spelling is the same target as the bare form"
+        );
+    }
+
+    // The private/loopback host predicate must see through the embedding as well.
+    for internal in [
+        "64:ff9b::7f00:1",         // 127.0.0.1
+        "64:ff9b::a01:203",        // 10.1.2.3
+        "64:ff9b:1:fffe::c0a8:1",  // 192.168.0.1 via local-use NAT64
+    ] {
+        assert!(
+            host_is_private_or_loopback(internal),
+            "{internal} is a NAT64 embedding of an internal target and must read as internal"
+        );
+    }
+
+    // An operator denylist entry written in the bare v4 form must also catch the NAT64 spelling —
+    // otherwise the denylist is trivially evaded by re-encoding the same address.
+    assert!(
+        host_matches_any("64:ff9b::a9fe:a9fe", &["169.254.169.254".to_string()]),
+        "a denylist entry naming the v4 address must match its NAT64 embedding"
+    );
+
+    // Public addresses are unaffected: 8.8.8.8 embedded in NAT64 is still public.
+    assert!(
+        !host_is_private_or_loopback("64:ff9b::808:808"),
+        "64:ff9b::808:808 embeds public 8.8.8.8 and must NOT read as internal"
+    );
+}

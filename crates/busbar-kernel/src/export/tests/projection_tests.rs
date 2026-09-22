@@ -434,6 +434,7 @@ fn projection_keys_are_instance_level_not_settings() {
 /// Without this test the whole grammar could be validated in a function nothing fatal ever calls.
 #[test]
 fn a_producerless_stream_fails_the_boot_validate_pipeline() {
+    crate::test_support::register_neutral_test_plane();
     let yaml = r#"
 listen: "0.0.0.0:8080"
 auth:

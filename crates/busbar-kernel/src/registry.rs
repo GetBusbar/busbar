@@ -493,12 +493,24 @@ fn path_overlaps(left: &Selector, right: &Selector) -> bool {
 }
 
 /// Transport forms: same form compares its value, different forms coincide.
+///
+/// The case rule is per selector kind, not blanket over the function — the same principle
+/// [`header_overlaps`] already applies to a header NAME (`registry.rs:468`,
+/// `a.eq_ignore_ascii_case(b)`) rather than to a header VALUE. SNI is the name offered in a TLS
+/// handshake and ALPN is the protocol negotiated there; both are names, and DNS names — which is
+/// what a TLS server name IS — are case-insensitive, so `Example.com` and `example.com` are the
+/// SAME name and two claims naming them are the SAME claim fighting over one listener. Comparing
+/// them byte-wise let a boot's claim-disjointness proof clear that fight as "disjoint" when it is
+/// not. A client certificate's subject and a multiplexed stream's name are not DNS names — nothing
+/// here says they fold case — so they keep the exact comparison, and so does the port, which is a
+/// number and has no case at all.
 fn transport_overlaps(left: &Selector, right: &Selector) -> bool {
     match (left, right) {
-        (Selector::Sni(a), Selector::Sni(b))
-        | (Selector::ClientCertSubject(a), Selector::ClientCertSubject(b))
-        | (Selector::StreamName(a), Selector::StreamName(b))
-        | (Selector::Alpn(a), Selector::Alpn(b)) => a == b,
+        (Selector::Sni(a), Selector::Sni(b)) | (Selector::Alpn(a), Selector::Alpn(b)) => {
+            a.eq_ignore_ascii_case(b)
+        }
+        (Selector::ClientCertSubject(a), Selector::ClientCertSubject(b))
+        | (Selector::StreamName(a), Selector::StreamName(b)) => a == b,
         (Selector::Port(a), Selector::Port(b)) => a == b,
         _ => true,
     }
@@ -529,3 +541,7 @@ pub fn bootstrap(prior: Option<[u8; 32]>, ours: Option<[u8; 32]>) -> BootstrapVe
         (Some(_), _) => BootstrapVerdict::KeysetMissing,
     }
 }
+
+#[cfg(test)]
+#[path = "tests/registry_tests.rs"]
+mod registry_tests;

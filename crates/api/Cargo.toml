@@ -15,10 +15,19 @@ async-trait = { workspace = true }
 # (or any consumer that already depends on busbar-api) can name `busbar_api::SecretRef` without a
 # separate path dep. This crate depends only on serde/serde_json, so no dependency cycle.
 busbar-secret-ref = { path = "../secret-ref" }
-# The money-path durable records + the `Store` trait relocated to `busbar-kernel-ledger` (#35, W3.a).
-# `busbar-api` re-exports them under their original names for staged back-compat (retires W5.b). No
-# cycle: `busbar-kernel-ledger` depends only on `busbar-contract` (which does not depend on api).
-busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
+# The money-path durable record SHAPES + the `RecordStore` trait, which now live in
+# `busbar_contract::records` (DECISIONS #83: contract = shapes; #84: nothing on the plugin path may
+# link a crate holding semantics). `busbar-api` re-exports them under their original names for
+# staged back-compat (retires W5.b).
+#
+# THIS EDGE USED TO NAME THE MONEY ONE-BOOK, AND THAT WAS THE #84 DEFECT. Every plugin names
+# `busbar-api`, so that edge put the book in every third-party plugin's compile closure: change a
+# ledger type and every plugin rebuilt, though nothing it names moved. The shapes moved to the
+# contract and this edge follows them; the book's SEMANTICS (settlement, postings, totals, the
+# identity, the recompute) are no longer nameable from here AT ALL — not in code, and deliberately
+# not in a comment either, because #40's dep-wall counts both. No cycle: `busbar-contract` depends
+# on no busbar crate.
+busbar-contract = { path = "../busbar-contract" }
 sha2 = { workspace = true }
 hex = { workspace = true }
 zeroize = { workspace = true }

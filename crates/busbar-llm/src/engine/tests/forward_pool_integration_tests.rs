@@ -1785,7 +1785,7 @@ async fn test_rate_limit_429_bedrock_native_envelope() {
 // NOTE: `test_governance_admin_api` was RELOCATED (1.6.0) to busbar-admin's
 // `src/tests/core_moved_tests.rs`. The admin `/api/v1/admin/keys*` routes mount only through the
 // admin seam, which this PLANE crate's test binary never installs (busbar-admin is not — and must
-// not become — a dependency of busbar-llm, per DECISIONS.md #37). The duplicate here was
+// not become — a dependency of busbar-llm, per BUSBAR-1.6.0.md Part 2 #37). The duplicate here was
 // deterministically RED; busbar-admin is its correct home, where the seam is mounted.
 
 #[tokio::test]

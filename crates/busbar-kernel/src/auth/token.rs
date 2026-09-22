@@ -407,6 +407,22 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
     {
         // REDIRECT (OAuth) flow: 302 to the IdP; the callback (a GET) completes it.
         LoginOutcome::Authorize(url) => {
+            // The `Location` value is the PLUGIN's, not ours — the one plugin-authored header on
+            // this path, and the only one that skips `sanitize_hop_header`. `HeaderValue` refuses
+            // CR, LF and NUL, so an authorize URL carrying a raw newline (a `login_hint`/
+            // `domain_hint` a module interpolated without encoding it) is unrepresentable. Building
+            // it with `expect` treated it as static and turned that plugin bug into a panic on an
+            // ANONYMOUSLY-reachable path, with no catch-panic layer anywhere in the tree — the
+            // request task dies and the connection is aborted with no response at all. Convert it
+            // fallibly instead and fall into the SAME fail-closed "misbehaving module" answer the
+            // match's last arm gives, which is what an unusable authorize URL is.
+            let Ok(location) = header::HeaderValue::try_from(url) else {
+                return error_page(
+                    StatusCode::BAD_GATEWAY,
+                    "Sign-in unavailable",
+                    "This sign-in method couldn't be started right now. Please try again in a moment.",
+                );
+            };
             let cookie = LoginCookie {
                 method: method.to_string(),
                 code_verifier,
@@ -417,10 +433,10 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
             .encode();
             let mut resp = Response::builder()
                 .status(StatusCode::FOUND)
-                .header(header::LOCATION, url)
+                .header(header::LOCATION, location)
                 .header(header::CACHE_CONTROL, "no-store")
                 .body(Body::empty())
-                .expect("static 302");
+                .expect("302 with a pre-validated Location");
             resp.headers_mut().append(
                 header::SET_COOKIE,
                 set_cookie(&cookie).parse().expect("cookie"),

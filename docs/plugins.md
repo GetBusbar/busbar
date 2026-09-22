@@ -359,6 +359,74 @@ method. It renders a username/password form and binds against the directory itse
 login-capable (Auth ABI v2), so they can mint a self-serve key via `/auth/token`; a v1 verify-only
 build still loads for chain use but a hosted-login (`browser_login`) method requires a v2 build.
 
+## What a plugin reports back: the observability envelope
+
+Every plugin response carries the same three-part shape, whatever its kind:
+
+```json
+{"result": {"…": "the kind's own answer"}, "metrics": [], "diagnostics": []}
+```
+
+`result` is what the kind has always answered. `metrics` and `diagnostics` are the back-channel: what
+the plugin OBSERVED while producing that answer. **The plugin reports; Busbar validates, bounds and
+decides.** There is no symbol a plugin can call to move a Busbar counter, raise a Busbar diagnostic
+or perform any other host-owned effect. It says what happened, and Busbar decides what that means.
+
+A `metrics` entry is Prometheus-shaped and is the same entry a hook has reported through its
+`status` reply since 1.5.0:
+
+```json
+{"name": "logs_rotated_total", "type": "counter", "value": 1,
+ "labels": {"sink": "audit"}, "help": "log files rotated"}
+```
+
+`type` is `counter`, `gauge` or `histogram`. A counter is a **delta** — what happened since your last
+response, not a running total. Everything beyond `name` and `type` is optional.
+
+A `diagnostics` entry names a code from Busbar's own catalogue:
+
+```json
+{"code": "BUSBAR-1234", "level": "warn", "message": "rename failed",
+ "fields": {"path": "/var/log/x.jsonl"}}
+```
+
+What Busbar refuses, so you do not discover it by watching a series never appear:
+
+- **`busbar_`-prefixed metric names.** Reserved, so no plugin can impersonate a first-party series.
+- **A code the catalogue does not hold.** A `BUSBAR-NNNN` code is a promise that an operator can
+  paste it into the docs and land on an entry telling them what to do. Only Busbar can make that
+  promise, so an unknown code is dropped.
+- **An escalated severity.** The catalogue decides whether a condition is worth an operator's
+  attention; your `level` cannot raise it above that.
+- **Anything out of bounds.** At most 64 metric entries and 16 diagnostics per response, 8 labels
+  per metric, `^[a-z][a-z0-9_]{0,63}$` on every name and label key, finite numbers only, every string
+  sanitised and length-capped. A malformed entry is dropped whole; its siblings survive, and your
+  `result` is never at risk because of a telemetry line.
+
+**Never put request content in a metric label, a diagnostic message or a diagnostic field.** They go
+to the operator's log and to anyone scraping Busbar.
+
+In the Rust SDK this is one defaulted method — implement it only if you have something to say:
+
+```rust
+fn drain_observations(&self) -> Observations {
+    let rotated = self.rotated.swap(0, Ordering::Relaxed);
+    if rotated == 0 { return Observations::none(); }
+    Observations::none().metric(PluginMetric::counter("logs_rotated_total", rotated as f64))
+}
+```
+
+It is a **drain**: Busbar calls it once per `busbar_call` and puts the result on that call's
+response, so hand over what has accumulated and reset. Report a running total instead and the folded
+counter climbs quadratically against a flat workload.
+
+Writing a plugin in another language? Wrap your response in `{"result": …}` and add the two arrays
+when you have something to report; omit them when you do not. A plugin built before the envelope
+answers `result` bare and keeps working — Busbar reads whichever shape your plugin speaks, decided
+once when it loads. Today only `kind: export` declares the enveloped payload schema (`abi_version: 3`);
+the other kinds' schemas are unchanged, and so are the six exported symbols and
+`busbar_abi() == 1`.
+
 ## Hook plugins (`kind: hook`)
 
 Hook plugins load over the same signed hybrid ABI as store, secret, and auth plugins. They are

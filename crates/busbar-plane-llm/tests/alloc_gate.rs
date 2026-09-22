@@ -94,7 +94,7 @@ const PASSTHROUGH_ALLOCS: u64 = 5;
 #[test]
 fn same_dialect_relay_does_not_reparse_the_request() {
     let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("openai"), &[]);
     let labels = Labels::new();

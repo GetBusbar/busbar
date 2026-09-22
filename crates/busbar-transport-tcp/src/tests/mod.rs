@@ -88,7 +88,7 @@ async fn byte_exact_round_trip_inbound_and_outbound() {
 
     let payload = b"the quick brown fox jumps over the lazy dog";
     let n = client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(payload))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(payload))
         .await
         .unwrap();
     assert_eq!(n, payload.len());
@@ -115,7 +115,7 @@ async fn byte_exact_round_trip_the_outbound_leg_too() {
 
     let reply = b"woof";
     server
-        .write(&server_conn, StreamId(0), ArenaBytes::new(reply))
+        .write(&server_conn, StreamId(0), ScratchBytes::new(reply))
         .await
         .unwrap();
     let mut client_frames = client.frames(client_conn);
@@ -142,7 +142,7 @@ async fn half_close_lets_the_other_side_keep_writing() {
     // client sent before closing, and its read side then reaches a clean end-of-stream rather
     // than an error.
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"bye"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"bye"))
         .await
         .unwrap();
     client.close(client_conn, CloseReason::Normal);
@@ -180,7 +180,7 @@ async fn cancel_mid_frame_leaves_the_connection_usable() {
 
     // The connection is still usable: a fresh frame pump on the same conn sees the next write.
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"still alive"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"still alive"))
         .await
         .unwrap();
     let mut frames = server.frames(server_conn);
@@ -204,7 +204,7 @@ async fn close_ends_a_live_frame_stream() {
 
     let mut frames = server.frames(server_conn.clone());
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"first"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -214,7 +214,7 @@ async fn close_ends_a_live_frame_stream() {
     // must drop: bytes the peer writes afterwards are never yielded.
     server.close(server_conn, CloseReason::Normal);
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after close"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after close"))
         .await
         .unwrap();
     assert!(
@@ -296,7 +296,7 @@ async fn a_detach_that_cannot_take_the_stream_leaves_the_connection_alone() {
 
     // And the connection is still this transport's: the write goes out and the reader sees it.
     server
-        .write(&server_conn, StreamId(0), ArenaBytes::new(b"still here"))
+        .write(&server_conn, StreamId(0), ScratchBytes::new(b"still here"))
         .await
         .expect("the connection the detach refused to take is still usable");
     let mut client_frames = client.frames(client_conn);
@@ -333,10 +333,42 @@ async fn every_transport_error_is_mapped() {
     }
     let ghost = Conn::new(StdArc::new(Ghost));
     let err = client
-        .write(&ghost, StreamId(0), ArenaBytes::new(b"x"))
+        .write(&ghost, StreamId(0), ScratchBytes::new(b"x"))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::Closed);
+}
+
+/// A dial to an upstream that never answers the SYN self-bounds on the dial timeout rather than
+/// hanging for the OS's own multi-minute retransmit window.
+///
+/// `192.0.2.1` is TEST-NET-1 (RFC 5737): reserved for documentation and routed nowhere, so a SYN
+/// to it is black-holed and `TcpStream::connect` on its own would sit in the connecting state until
+/// the kernel gives up. The outer timeout is the red-before-green witness: without the transport's
+/// own budget the dial never returns and this test hangs past the outer wait; with it the dial
+/// answers `Timeout` inside its own (here deliberately tiny) budget and the outer wait never fires.
+///
+/// A real address that will genuinely never answer is what makes a paused clock safe here (unlike
+/// racing a paused clock against a loopback peer that WILL answer, just not synchronously): there is
+/// no real completion this could jump ahead of, so the clock can fast-forward straight to whichever
+/// timer fires first at no real wall-clock cost.
+#[tokio::test(start_paused = true)]
+async fn a_dial_to_a_black_hole_self_bounds_on_the_dial_timeout() {
+    let client = TcpTransport::new().with_dial_timeout(Duration::from_millis(150));
+    let dest = upstream_dest("192.0.2.1:80");
+    let started = tokio::time::Instant::now();
+    let outcome = tokio::time::timeout(Duration::from_secs(3), client.dial(&dest, &fixture_key()))
+        .await
+        .expect("a dial to a black-holed upstream must self-bound on the dial timeout, not hang");
+    assert_eq!(
+        outcome.unwrap_err(),
+        TransportError::Timeout,
+        "an upstream that never answers the SYN is a dial Timeout"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(150),
+        "the dial timeout is what ended it, not some other accident"
+    );
 }
 
 /// One synthetic `io::Error` per `map_io_err` arm, so swapping two arms is caught here rather than
@@ -390,7 +422,7 @@ async fn backpressure_bounds_the_per_unit_frame_buffer() {
         let payload = payload.clone();
         async move {
             client
-                .write(&client_conn, StreamId(0), ArenaBytes::new(&payload))
+                .write(&client_conn, StreamId(0), ScratchBytes::new(&payload))
                 .await
                 .unwrap()
         }
@@ -457,7 +489,7 @@ async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     let on_the_wire: u64 = payloads.iter().map(|p| p.len() as u64).sum();
     for payload in &payloads {
         client
-            .write(&client_conn, StreamId(0), ArenaBytes::new(payload))
+            .write(&client_conn, StreamId(0), ScratchBytes::new(payload))
             .await
             .unwrap();
     }
@@ -562,7 +594,7 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
     // A pump that is live before the refusal, holding its own clone of the state.
     let mut frames = server.frames(server_conn.clone());
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"first"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -585,7 +617,7 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
         correlates: None,
     };
     let err = server
-        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .unit0_refusal(server_conn, None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .expect_err("a refusal that never left this host is not a delivered refusal");
     assert!(
@@ -604,7 +636,7 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
 
     // The pump ends, which is what the flag exists for.
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after refusal"))
         .await
         .unwrap();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
@@ -634,7 +666,7 @@ async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_fra
     let mut frames = server.frames(server_conn.clone());
     let long = vec![b'L'; 4096];
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(&long))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(&long))
         .await
         .unwrap();
     let mut got = Vec::new();
@@ -646,7 +678,7 @@ async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_fra
     let first_buffer = server.scratch_addr(server_conn.id()).await.unwrap();
 
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"short"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"short"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -686,7 +718,7 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_socket() {
     // A pump that is live before the refusal: it already holds the connection state.
     let mut frames = server.frames(server_conn.clone());
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"first"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -700,13 +732,13 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_socket() {
         correlates: None,
     };
     server
-        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .unit0_refusal(server_conn, None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .unwrap();
 
     // The peer keeps writing, as a peer that has not yet read the refusal will.
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after refusal"))
         .await
         .unwrap();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
@@ -767,7 +799,7 @@ async fn a_write_blocked_on_a_nonreading_peer_is_interrupted_by_close() {
         let conn = server_conn.clone();
         tokio::spawn(async move {
             server
-                .write(&conn, StreamId(0), ArenaBytes::new(&big))
+                .write(&conn, StreamId(0), ScratchBytes::new(&big))
                 .await
         })
     };
@@ -827,7 +859,7 @@ async fn a_read_error_deregisters_the_connection() {
         .write(
             &server_conn,
             StreamId(0),
-            ArenaBytes::new(&vec![0_u8; 4096]),
+            ScratchBytes::new(&vec![0_u8; 4096]),
         )
         .await
         .unwrap();

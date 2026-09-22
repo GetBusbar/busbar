@@ -196,50 +196,61 @@ wrong would silently disarm a provider that does need one.
 
 ---
 
-## 7. Money is priced as of a dated rate-card history
+## 7. Rate cards became a dated history; `GET /admin/usage` did not move with them
 
-**What changed.** 1.5.5 stored raw token quantities and derived each row's spend AT READ TIME from
-the CURRENT cost model, so a `PUT /api/v1/admin/config/settings` rate-card edit re-priced every past
-row with no restart and no boundary — `GET /admin/usage` totals recalculated the moment the card
-changed. 1.6.0 keeps quantities as the stored truth and keeps deriving the amount at read time, but
-derives it against the card in force AT THE POSTING'S INSTANT, read from an append-only dated
-rate-card history. **A card edit prices only what happens AFTER it; past usage is not retroactively
-repriced.**
+**What shipped.** A rate card is no longer a single mutable price. Cards are an append-only DATED
+HISTORY: each entry carries an `effective_from`, publishing one never touches the window before that
+date, and a back-dated correction reprices exactly the window it names —
+`[effective_from, effective_until)` — as an attributed, signed append rather than an edit to a booked
+row. The engine is real and reachable: the history append is `crates/busbar/src/root/kernel.rs:262`
+(`effective_from`), the window recompute is `:291`, and the signed back-dated correction is
+`crates/busbar/src/root/units_admin/mod.rs:679`, wired at
+`POST /api/v1/admin/ledger/amend-rate-history`.
 
-- A window with **no** mid-window card change answers **byte-identically** to 1.5.5: a single-entry
-  history effective from instant 0 is that card — same rates, same order, same rounding.
-- A window that **had** a mid-window edit now answers with the money each request was actually earned
-  under, rather than re-pricing the whole window at the newest rates.
+**`GET /admin/usage` still prices flat off the current card, exactly as 1.5.5 did.** The legacy
+endpoint stores raw token quantities and derives each row's spend AT READ TIME from the CURRENT cost
+model — `busbar_core_admin::v1::service::get_usage` calls `derive_spend_micros_row`, whose own doc
+comment still reads *"Recomputed on every read (reprice-on-read: a rate-card correction changes
+historical figures on the next read; tokens are the stored truth)"*. Two things follow, and both are
+1.5.5's behaviour carried forward unchanged:
 
-These are the D-3 (`1.6.0 Changed: a rate-card edit prices what happens after it…`) and D-4
-(`The 1.6.0 ledger endpoints read money as of a rate-card history snapshot`) entries in
-[the changelog](../CHANGELOG.md#breaking).
+- A `PUT /api/v1/admin/config/settings` rate-card edit still re-prices every past row on the next
+  read, with no restart and no boundary. If you relied on `/usage` totals recalculating after a card
+  change, they still do.
+- `get_usage` takes a window and nothing else. It parses **no** `as_of` request parameter; the
+  `as_of` field in its response is an OUTPUT, always stamped with the read's own instant. A query
+  string naming one is ignored, as it was in 1.5.5.
+
+Resolving the `/usage` read path through the dated history — by each posting's own arrival instant,
+rather than off the newest card — is **owed work, not shipped behaviour**
+(`docs/design/BUSBAR-1.6.0.md` decision #79). Do not write a client that depends on `/usage` pricing
+by date until that lands. This is what the D-3 entry in
+[the changelog](../CHANGELOG.md#breaking) (`1.6.0 Changed: rate cards are now a dated history, not a
+single mutable price…`) and its **Migration** note describe.
 
 **Native currencies.** A rate card prices in one or more currencies natively, with no pivot and no
-conversion.
+conversion. On the correction verb the currency is a field of the request BODY
+(`units_admin/mod.rs:757`), defaulting to the one a 1.5.5 deployment's figures are read as.
 
 **New, additive ledger surface.** No 1.5.5 path, field or byte is touched — the committed
-`openapi.json` is unchanged, and the 1.6.0 operations are described at
-`docs/openapi-1.6.0-additive.json`, reached by name at `GET /api/v1/admin/ledger/openapi.json`.
+`openapi.json` is unchanged, and the 1.6.0 reads are described at
+`docs/openapi-1.6.0-additive.json`, reached by name at `GET /api/v1/admin/ledger/openapi.json`. What
+is served today is exactly these:
 
-- `GET /api/v1/admin/ledger/rate-history` and `GET /api/v1/admin/ledger/repricings` — new reads.
-- The existing ledger reads gain optional `?as_of=<history_seq>` and `?currency=<CCY>`, and echo
-  `history_seq`, `head`, `currency` and the adjusting entries.
-- `POST /api/v1/admin/ledger/amend-rate-history` — a new **operator-signed** write.
+- `GET /api/v1/admin/ledger/totals`, `/checkpoints`, `/reconciliation`, `/migration` and
+  `/openapi.json` — the five additive reads.
+- `POST /api/v1/admin/ledger/amend-rate-history` — the operator-signed write.
 
-**Back-dating is still available, and now attributable.** The signed `amend-rate-history` verb
-appends a dated entry and emits one journaled, operator-signed repricing record per affected
-`(window, bucket)` carrying the old and new card, the quantities, both amounts and the delta. The
-original line and the correction are both visible forever, and no booked line is rewritten.
+**Back-dating is available, and it is attributable.** The signed `amend-rate-history` verb appends a
+dated entry and emits one journaled, operator-signed repricing record per affected `(window,
+bucket)` carrying the old and new card, the quantities, both amounts and the delta. The original
+line and the correction are both visible forever, and no booked line is rewritten.
 
-**What to do if you relied on `/usage` totals recalculating.**
-
-- If you relied on `GET /admin/usage` totals recalculating after a rate-card change, they no longer
-  do — a card edit prices only subsequent usage. To correct usage that is already booked, post an
-  attributed correction with the new `amend-rate-history` verb instead.
-- On the legacy `/usage` endpoint, `?as_of=<history_seq>` is now honoured. 1.5.5 ignored the
-  parameter silently, returned the current-card reprice, and reported its own `as_of` as `0`
-  (contradicting the URL); 1.6.0 reads money as of the history point you name.
+**What to do if a rate was wrong.** Post a signed correction through
+`POST /api/v1/admin/ledger/amend-rate-history` naming the window it repairs, rather than editing the
+live card. The correction is an append, it leaves an attributed record, and it does not depend on
+the `/usage` read path. Editing the live card reprices the past silently and leaves no record of who
+changed what.
 
 ---
 

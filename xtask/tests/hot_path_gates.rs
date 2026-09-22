@@ -1,6 +1,6 @@
 //! THE HOT-PATH GATES, DRIVEN THROUGH THE DISPATCHER.
 //!
-//! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 owes a perf gate and an alloc gate; §11b counts
+//! `docs/design/BUSBAR-1.6.0.md` Part 3 §8 owes a perf gate and an alloc gate; §11b counts
 //! their criterion benches toward the core-engine tests/benches 8→9 rise. Both are registered but
 //! deliberately NOT invoked by `ci.yml` yet (the keystone wave owns `.github`), so
 //! `full_gate::REGISTRY_NOT_IN_CI` excuses them with `Excuse::XtaskTest` pointing HERE: this file is

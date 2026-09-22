@@ -50,7 +50,7 @@ fn event(name: &str, data: &str) -> Vec<u8> {
 #[test]
 fn a_stop_reason_buffered_on_one_frame_is_read_on_the_next() {
     let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("bedrock"), &[]);
     let labels = Labels::new();
@@ -100,7 +100,7 @@ fn a_stop_reason_buffered_on_one_frame_is_read_on_the_next() {
 #[test]
 fn the_deltas_after_the_opening_frame_are_written_to_the_client() {
     let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     // The client speaks a different dialect from the upstream, so the frames are rewritten rather
     // than relayed and the bytes below are the bytes the client reads.

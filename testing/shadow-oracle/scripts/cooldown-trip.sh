@@ -45,6 +45,12 @@ source "${repo}/testing/fleet-fixtures/lib.sh"
 source "${BUSBAR_ORACLE_TOOL_DIR:-$here}/oracle-config.sh"
 
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"
+# The oracle ENGINE. DECISION #80: the judge is Rust, and the leaf tools these drivers used to
+# shell out to as `python3 $BUSBAR_ORACLE_TOOL_DIR/<tool>.py` are its subcommands (mock /
+# capture / capture-exec / fetch-plugin / config). `:?` on purpose: an engine this driver cannot
+# find is a HARNESS failure that must stop the cell loudly. Degrading here instead is exactly how
+# 33 script cells recorded nothing while the ledger still read green.
+ORACLE_BIN="${BUSBAR_ORACLE_BIN:?the Rust oracle engine must be published as BUSBAR_ORACLE_BIN}"
 LISTEN_PORT="${COOLDOWN_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48861}}" ADMIN_PORT="${COOLDOWN_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48862}}" MOCK_PORT="${COOLDOWN_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48796}}"
 fail() { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"$1\"}}" >"$RAW/captured.json"; exit 0; }
 for p in "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT"; do assert_port_free "$p" || fail "port $p busy"; done
@@ -53,7 +59,7 @@ W="$RAW/cooldown-work"; mkdir -p "$W"
 export WORK="$W" BUSBAR_BIN="$BIN"
 CONTROL="$W/mock.control"
 
-python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MOCK_PORT" oracle-marker "$CONTROL" >"$W/mock.log" 2>&1 & track_pid $!
+"$ORACLE_BIN" mock "$MOCK_PORT" oracle-marker "$CONTROL" >"$W/mock.log" 2>&1 & track_pid $!
 wait_for_http "http://127.0.0.1:${MOCK_PORT}/" 8 || fail "mock upstream did not come up"
 
 oracle_write_config "$W" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || fail "oracle config could not be written"
@@ -113,8 +119,8 @@ snap "$after_dir"
 
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 
-python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/capture.py" "$RAW/headers" "$status" "$RAW/body" "$before_dir" "$after_dir" >"$RAW/captured.json" 2>"$RAW/capture.err" \
-  || fail "capture.py failed: $(tail -c 300 "$RAW/capture.err")"
+"$ORACLE_BIN" capture "$RAW/headers" "$status" "$RAW/body" "$before_dir" "$after_dir" >"$RAW/captured.json" 2>"$RAW/capture.err" \
+  || fail "capture failed: $(tail -c 300 "$RAW/capture.err")"
 
 # The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
 # out loud on the success path rather than inheriting whatever the last command happened to return.

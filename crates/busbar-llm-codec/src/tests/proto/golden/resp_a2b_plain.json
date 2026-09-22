@@ -1,1 +1,1 @@
-{"metrics":{"latencyMs":123},"output":{"message":{"content":[{"text":"Hello there!"}],"role":"assistant"}},"stopReason":"end_turn","usage":{"cacheReadInputTokens":3,"cacheWriteInputTokens":7,"inputTokens":10,"outputTokens":5,"totalTokens":25}}
+{"metrics":{"latencyMs":123},"output":{"message":{"content":[{"text":"Hello there!"}],"role":"assistant"}},"stopReason":"end_turn","usage":{"cacheDetails":[{"inputTokens":3,"ttl":"1h"},{"inputTokens":4,"ttl":"5m"}],"cacheReadInputTokens":3,"cacheWriteInputTokens":7,"inputTokens":10,"outputTokens":5,"totalTokens":25}}

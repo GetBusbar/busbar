@@ -16,9 +16,14 @@
 # TOOL_DIR is a SHIM directory this shim generates beside the binary: `record.sh` there forwards to
 # `busbar-oracle record --native` so the turnstile's HarnessOracle — which drives
 # `$BUSBAR_ORACLE_TOOL_DIR/record.sh` — records 100% natively without a code change; replay is already
-# the in-process Rust differ. (The product data-driver scripts that still call the Python
-# mock-upstream.py/capture-exec.py via TOOL_DIR are the documented remaining step for full Python
-# deletion — see PHASE-C notes; this pass keeps Python as a fallback and does not delete it.)
+# the in-process Rust differ.
+#
+# THE PRODUCT DATA-DRIVERS NO LONGER SHELL OUT TO PYTHON. `testing/shadow-oracle/scripts/*.sh` used
+# to call `python3 $BUSBAR_ORACLE_TOOL_DIR/{mock-upstream,capture-exec,capture}.py` and
+# `bash $BUSBAR_ORACLE_TOOL_DIR/fetch-plugin.sh` — files the Rust tool dir does not contain, so all 33
+# script-driven cells recorded NOTHING and each one logged itself as a `named gap` rather than a
+# failure. They now call this binary's own subcommands through BUSBAR_ORACLE_BIN (exported below),
+# and `oracle-config.sh` — the one file they still SOURCE — is materialized from the engine.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -116,18 +121,23 @@ cat >"$shim_dir/replay.sh" <<SHIM
 exec "$RUST_BIN" replay "\$@"
 SHIM
 chmod +x "$shim_dir/replay.sh"
+# oracle-config.sh, materialized FROM THE ENGINE (it is embedded there). Its `oracle_write_config`
+# forwards to `busbar-oracle config`, so the config bytes have exactly one source — a shell copy that
+# drifted from `config_emit.rs` would move a golden with nobody editing a golden.
+"$RUST_BIN" tool-dir "$shim_dir" --materialize >/dev/null
 
 # ── the tool-location + data contract (unchanged names) ─────────────────────────────────────────
 # The source pin IS the harness's tool half: harness-rev folds this ref instead of the tool's files.
 export BUSBAR_ORACLE_TOOL_DIGEST="rust:${RELEASE_REPO}@${RELEASE_REF}"
 export BUSBAR_ORACLE_PRODUCT_ROOT="${BUSBAR_ORACLE_PRODUCT_ROOT:-$here}"
 export BUSBAR_ORACLE_DATA="${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}"
-# TOOL_DIR is the shim dir (record.sh -> native). NOTE (Phase C, documented): product data-driver
-# scripts under $BUSBAR_ORACLE_DATA/scripts still hardcode `python3 mock-upstream.py`/`capture-exec.py`
-# via this var; repointing them to a Rust mock is the remaining step before the Python tool can be
-# deleted. This pass keeps Python installable as a fallback but does not require it for the judge,
-# record --native, replay, cells --check, or replay-selftest.
+# TOOL_DIR is the shim dir (record.sh -> native, plus the materialized oracle-config.sh).
 export BUSBAR_ORACLE_TOOL_DIR="${BUSBAR_ORACLE_TOOL_DIR:-$shim_dir}"
+# WHERE THE ENGINE IS. The product's script-driver cells resolve their leaf tools (mock / capture /
+# capture-exec / fetch-plugin / config) as subcommands of this binary, and refuse to run without it
+# (`${BUSBAR_ORACLE_BIN:?}`) rather than degrade into a named gap. The native recorder sets this too,
+# for callers that drive it without going through this shim.
+export BUSBAR_ORACLE_BIN="$RUST_BIN"
 
 # ── argv contract (unchanged for callers) → the Rust CLI ────────────────────────────────────────
 # The committed callers (ci.yml, manual-keep-proof.yml, the turnstile's record.sh shim) speak the

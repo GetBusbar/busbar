@@ -1510,6 +1510,114 @@ fn test_read_response_missing_usage_defaults_to_zero() {
     assert_eq!(resp2.usage.output_tokens, 0);
 }
 
+/// MONEY BUG regression (buffered path): Cohere's API *specs* usage counts as JSON numbers, but its
+/// actual wire responses carry them as FLOATS (`"input_tokens": 27.0`), not bare integers.
+/// `serde_json::Value::as_u64()` returns `None` for ANY float-backed number — even `27.0`, which is
+/// exactly representable as an integer — so a naive `.as_u64().unwrap_or(0)` silently turned a real
+/// count of 27 into a billed 0. This is a real Cohere v2 `/v2/chat` response shape (both the raw
+/// `tokens` bucket and the separately-metered `billed_units` bucket arrive as floats), and every
+/// count must survive as the exact integer it names.
+#[test]
+fn test_read_response_usage_float_token_counts_survive_as_integers() {
+    let json = serde_json::json!({
+        "id": "c14c80c3-18eb-4519-9460-6c92edd8cfb4",
+        "finish_reason": COHERE_FINISH_COMPLETE,
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}]
+        },
+        "usage": {
+            "tokens": {"input_tokens": 27.0, "output_tokens": 9.0},
+            "billed_units": {
+                "input_tokens": 25.0,
+                "output_tokens": 9.0,
+                "search_units": 3.0,
+                "classifications": 1.0
+            }
+        }
+    });
+    let resp = CohereReader
+        .read_response(&json)
+        .expect("read_response should succeed");
+    assert_eq!(
+        resp.usage.input_tokens, 27,
+        "a float-encoded input_tokens count must survive as the exact integer, not 0"
+    );
+    assert_eq!(
+        resp.usage.output_tokens, 9,
+        "a float-encoded output_tokens count must survive as the exact integer, not 0"
+    );
+    assert_eq!(resp.usage.detail.billed_input_tokens, Some(25));
+    assert_eq!(resp.usage.detail.billed_output_tokens, Some(9));
+    assert_eq!(resp.usage.detail.search_units, Some(3));
+    assert_eq!(resp.usage.detail.billed_classifications, Some(1));
+}
+
+/// MONEY BUG regression (streaming path): the SAME float-encoded usage counts arrive on the
+/// terminal `message-end` stream frame's `delta.usage` object. A streamed call must not lose the
+/// count that a buffered call keeps.
+#[test]
+fn test_stream_message_end_usage_float_token_counts_survive_as_integers() {
+    let reader = CohereReader;
+    let mut state = crate::ir::StreamDecodeState::default();
+    let evs = reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "type": ET_MESSAGE_END,
+            "delta": {
+                "finish_reason": COHERE_FINISH_COMPLETE,
+                "usage": {
+                    "tokens": {"input_tokens": 27.0, "output_tokens": 9.0},
+                    "billed_units": {
+                        "input_tokens": 25.0,
+                        "output_tokens": 9.0,
+                        "search_units": 3.0,
+                        "classifications": 1.0
+                    }
+                }
+            }
+        }),
+        &mut state,
+    );
+    let crate::ir::IrStreamEvent::MessageDelta { ref usage, .. } = &evs[0] else {
+        panic!("message-end must emit a MessageDelta first, got {:?}", evs[0]);
+    };
+    assert_eq!(
+        usage.input_tokens, 27,
+        "a float-encoded streamed input_tokens count must survive as the exact integer, not 0"
+    );
+    assert_eq!(
+        usage.output_tokens, 9,
+        "a float-encoded streamed output_tokens count must survive as the exact integer, not 0"
+    );
+    assert_eq!(usage.detail.billed_input_tokens, Some(25));
+    assert_eq!(usage.detail.billed_output_tokens, Some(9));
+    assert_eq!(usage.detail.search_units, Some(3));
+    assert_eq!(usage.detail.billed_classifications, Some(1));
+}
+
+/// MONEY BUG regression (truncated-tail recovery path): a HEAD-truncated non-stream billing buffer
+/// still carries a well-formed, self-contained trailing `usage` object that `recover_truncated_usage`
+/// isolates and parses on its own. The same float-encoded counts must survive here too — this is the
+/// LAST-RESORT billing recovery path, so a silent zero here is exactly as costly as one on the
+/// primary read path.
+#[test]
+fn test_recover_truncated_usage_float_token_counts_survive_as_integers() {
+    let reader = CohereReader;
+    let tail = br#"... mangled head cut through here"}],"usage":{"tokens":{"input_tokens":27.0,"output_tokens":9.0}}}"#;
+    let usage = reader
+        .recover_truncated_usage(tail)
+        .expect("usage tail must be recoverable");
+    assert_eq!(
+        usage.input, 27,
+        "a float-encoded input_tokens count must survive as the exact integer, not 0"
+    );
+    assert_eq!(
+        usage.output, 9,
+        "a float-encoded output_tokens count must survive as the exact integer, not 0"
+    );
+}
+
 /// `write_response` must nest `tool_calls` INSIDE the `message`
 /// object (native Cohere v2 shape, `response.message.tool_calls`) — not at the top level. The
 /// emitted body must round-trip through this protocol's OWN `read_response`, which reads tool

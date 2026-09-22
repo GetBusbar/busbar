@@ -249,6 +249,97 @@ fn a_tool_with_no_approved_hash_is_listed_and_refuses_to_dispatch() {
     );
 }
 
+/// A BLANK `schema_hash` IS NO HASH, and it must not self-match.
+///
+/// [`ToolEntry::dispatch_digest`] used to stand the EMPTY STRING in for "the operator approved no
+/// hash" and claim it could admit nothing, because a tool with no hash is absent from the approval
+/// map. An operator who wrote `schema_hash: ""` — or a line of whitespace — put `Some("")` into that
+/// map, so the approval held an empty digest, the digest offered was empty, and the two MATCHED: the
+/// tool dispatched against an approval of NOTHING, on the one comparison that exists to catch a
+/// rug-pull. The operator believed they had pinned the manifest.
+///
+/// Both halves are asserted, because either alone is a different bug:
+///
+/// 1. THE GATE. A blank hash refuses exactly as an absent one does — the SAME refusal word, so the
+///    operator's audit row says `not_approved` and not something new they have to learn.
+/// 2. THE ENTRY. A blank hash is normalised to `None` on the snapshot, so "no approval recorded" and
+///    "the approval is the empty string" are not two spellings of one state. Without this half the
+///    empty string still reaches the call log's `tool_digest`, the published `_meta` schema hash and
+///    the reroute pin, where it reads as an approval that was never given.
+#[test]
+fn a_blank_approved_hash_is_no_approval_and_does_not_match_itself() {
+    for blank in ["", "   ", "\t", "\n", " \t "] {
+        let (name, mut def) = server("fs", &[], &[]);
+        def.tools_allow.insert(
+            "read".to_string(),
+            ToolAllowCfg {
+                schema_hash: Some(blank.to_string()),
+                ..ToolAllowCfg::default()
+            },
+        );
+        let cat = Catalogue::build(&cfg(vec![(name, def)]));
+        let g = grant_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+        assert_eq!(
+            cat.resolve_now(Some(&g), LiveSightings::unsighted(), "fs_read"),
+            Err(DispatchRefusal::NotApproved("fs_read".to_string())),
+            "a blank `schema_hash` ({blank:?}) approved nothing and must not dispatch — it must \
+             refuse exactly as an absent one does"
+        );
+
+        let entry = cat
+            .tools_for(&seeing(&g))
+            .into_iter()
+            .find(|t| t.namespaced == "fs_read")
+            .expect("a pending tool is still catalogued, so the approval queue stays visible");
+        assert_eq!(
+            entry.schema_hash, None,
+            "a blank `schema_hash` ({blank:?}) must be normalised to `None` on the snapshot: an \
+             empty string carried here is published as an approval in `_meta`, written to the call \
+             log as the digest this call rode, and used as the reroute pin"
+        );
+    }
+}
+
+/// AN UNAPPROVED TOOL IS NOT MATCHED BY AN EMPTY CONFIGURED VALUE, on the same registration.
+///
+/// The two states rendered the same bytes: `dispatch_digest()` answered `""` for "the operator
+/// approved no hash", and an operator's `schema_hash: ""` recorded an approval AT `""`. One
+/// registration carrying both is the shape that makes the collision concrete, so it is the shape
+/// asserted — neither tool may dispatch, and neither may borrow the other's emptiness.
+#[test]
+fn an_empty_configured_hash_and_an_unapproved_tool_are_two_refusals_not_one_match() {
+    let (name, mut def) = server("fs", &["real"], &["pending"]);
+    def.tools_allow.insert(
+        "blank".to_string(),
+        ToolAllowCfg {
+            schema_hash: Some(String::new()),
+            ..ToolAllowCfg::default()
+        },
+    );
+    let cat = Catalogue::build(&cfg(vec![(name, def)]));
+    let g = grant_of(&[
+        ("mcp_server", "fs"),
+        ("mcp_tool", "fs_real"),
+        ("mcp_tool", "fs_pending"),
+        ("mcp_tool", "fs_blank"),
+    ]);
+
+    assert!(
+        cat.resolve_now(Some(&g), LiveSightings::unsighted(), "fs_real")
+            .is_ok(),
+        "the control: a tool approved at a real digest still dispatches, so the rule refuses blanks \
+         rather than refusing everything"
+    );
+    for refused in ["fs_blank", "fs_pending"] {
+        assert_eq!(
+            cat.resolve_now(Some(&g), LiveSightings::unsighted(), refused),
+            Err(DispatchRefusal::NotApproved(refused.to_string())),
+            "`{refused}` has no approved digest to dispatch against"
+        );
+    }
+}
+
 /// An `unpinned` registration has no authenticity root — nothing the operator pinned out of band for
 /// the endpoint to be checked against — so it CANNOT SERVE TRAFFIC, whatever its tools claim and
 /// whatever the caller's grant says.

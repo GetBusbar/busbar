@@ -226,6 +226,7 @@ impl busbar_kernel::teller::RouteAwait for NeverRoutes<'_> {
         _token: &'a Pass<Route>,
         _ctx: &'a UnitCtx,
         _meter: &'a AccrualMeter,
+        _destinations: &'a [busbar_contract::caps::VerifiedDestination],
     ) -> busbar_kernel::teller::RouteLeg<'a> {
         self.units.note(StepName::Route);
         Box::pin(Never {
@@ -441,7 +442,13 @@ impl Units for TestUnits {
         }
     }
 
-    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
+    fn route(
+        &self,
+        token: &Pass<Route>,
+        _ctx: &UnitCtx,
+        meter: &AccrualMeter,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
+    ) -> Decision<Route> {
         self.note(StepName::Route);
         meter.accrue(self.spend);
         match self.refusal(StepName::Route) {
@@ -456,6 +463,7 @@ impl Units for TestUnits {
         usage_token: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
         self.note(StepName::Meter);
         match self.refusal(StepName::Meter) {

@@ -3,6 +3,21 @@
 # in per-arch; CA roots are compiled into the binary (webpki-roots), so no /etc/ssl
 # is needed. The vetted provider catalog ships inside the image as the default.
 #
+# /lib/lib{c.musl-*,gcc_s,stdc++}.* are ALSO in this image, and are NOT busbar's own runtime deps —
+# the busbar binary itself is fully static and needs none of them. They exist so a DYNAMICALLY
+# linked plugin cdylib can dlopen() successfully once dropped into plugins.dir (see below).
+# `aarch64-unknown-linux-musl` drops `cdylib` output entirely under Rust's default (crt-static-on)
+# linking, so ANY plugin cdylib built for that target — first-party or third-party, whichever of
+# the 7 kinds — has to disable crt-static (`RUSTFLAGS="-C target-feature=-crt-static"`), which
+# switches it to dynamically link musl libc/libgcc_s/libstdc++ instead. Busbar's own dlopen
+# (crates/plugin-loader) sets no LD_LIBRARY_PATH and no rpath, so those libs are resolved via the
+# dynamic linker's compiled-in default search path — `/lib` here, since a from-scratch image has
+# no /etc/ld-musl-*.path to redirect it. These are extracted in CI from the same pinned
+# `rust:alpine@sha256:...` musl-native container a `-crt-static`-disabled plugin cdylib is built
+# against (see docker.yml's "Extract musl plugin runtime libs" step), so they are a property of
+# THIS IMAGE, independent of which plugin (if any) an operator drops in — not a specific plugin's
+# bundled dependency.
+#
 # Ships with ZERO plugins pre-installed — same treatment every first-party plugin gets, store, auth,
 # and hook alike. A plugin is a plugin: none of them are baked into this image or into busbar's own
 # release. Want a specific plugin pre-wired (e.g. Headroom's prompt compression)? See that plugin's
@@ -43,6 +58,7 @@ ARG TARGETARCH
 COPY binaries/${TARGETARCH}/busbar /busbar
 COPY providers.yaml /etc/busbar/providers.yaml
 COPY docker/config.yaml /etc/busbar/config.yaml
+COPY plugins/${TARGETARCH}/lib/ /lib/
 
 ENV BUSBAR_PROVIDERS=/etc/busbar/providers.yaml \
     BUSBAR_CONFIG=/etc/busbar/config.yaml

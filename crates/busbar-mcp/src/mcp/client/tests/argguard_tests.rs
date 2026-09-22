@@ -380,6 +380,82 @@ fn bare_host_formats_are_judged_as_hosts() {
     assert_eq!(scan.declared_judged, 4);
 }
 
+/// S4: a `hostname`/`ipv4`/`ipv6`-declared field that actually carries a FULL URL — a caller smuggling
+/// a scheme and path past a check that (before S4) read the whole string as an opaque host and never
+/// stripped either. `judge_host` alone reads `https://169.254.169.254/x` as one weird hostname string
+/// that matches none of the metadata/private/obfuscated literal comparisons, so the address sails
+/// through untouched. The embedded `://` must route the value through the same absolute-URL judgement
+/// (scheme allowlist + host judgement on the REAL host) the `Reference` arm already gives a
+/// scheme-relative value.
+#[test]
+fn a_url_smuggled_into_a_bare_host_field_is_judged_on_its_real_host() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "host": {"type": "string", "format": "hostname"},
+            "v4": {"type": "string", "format": "ipv4"}
+        }
+    });
+    for (field, value) in [
+        ("host", "https://169.254.169.254/latest/meta-data/"),
+        ("host", "http://localhost:8080/admin"),
+        ("v4", "https://127.0.0.1/x"),
+    ] {
+        let args = json!({ field: value });
+        let err = guard(&schema, &args, public()).expect_err(&format!(
+            "`{value}` in `{field}` must be refused, not read as an opaque host"
+        ));
+        assert!(
+            matches!(err.why, ArgWhy::CloudMetadata(_) | ArgWhy::InternalHost(_)),
+            "the refusal must be about the REAL host inside the URL, not a scheme/parse failure: {:?}",
+            err.why
+        );
+    }
+    // A non-`http(s)` scheme smuggled the same way is refused too, but for the SCHEME, not the host —
+    // the allowlist in `judge_absolute` runs before the host is even extracted.
+    let scheme_err = guard(
+        &schema,
+        &json!({"host": "ftp://169.254.169.254/x"}),
+        public(),
+    )
+    .expect_err("a non-http(s) scheme in a bare-host field is still refused");
+    assert!(matches!(scheme_err.why, ArgWhy::Scheme(_)));
+
+    // THE CONTROL: a public host wearing a URL wrapper still passes, so this arm does not over-block
+    // a legitimate value merely for carrying a scheme.
+    let ok = guard(
+        &schema,
+        &json!({"host": "https://api.example.com/v1", "v4": "93.184.216.34"}),
+        public(),
+    )
+    .expect("a public host, wrapped in a URL or bare, still passes");
+    assert_eq!(ok.declared_judged, 2);
+}
+
+/// The NAT64/RFC 6052 form of the same smuggle: `http://[64:ff9b::a9fe:a9fe]/...` is the DNS64
+/// synthesis of the IMDS target `169.254.169.254`, and it is REFUSED.
+///
+/// This test was written asserting `is_ok()` — a deliberate canary pinning the then-current
+/// behavior, because `host_is_private_or_loopback`/`ssrf_blocked_host` unwrapped an embedded IPv4
+/// with `Ipv6Addr::to_ipv4()` rather than the NAT64-aware `embedded_ipv4` their sibling predicates
+/// already used, so this literal was NOT caught. Its own note said to flip it to `is_err()` the day
+/// someone wired the NAT64-aware unwrap into the string-based host predicates.
+///
+/// That happened: the host-string guards now call `embedded_ipv4`, so a NAT64 spelling of an
+/// internal target is judged exactly like the bare form. The canary did its job and is now the
+/// assertion it was always waiting to become — and it matters most HERE, because this crate's
+/// caller is an LLM tool-call argument, the classic injection vector.
+#[test]
+fn a_nat64_smuggled_host_is_refused() {
+    let schema = json!({
+        "type": "object",
+        "properties": { "host": {"type": "string", "format": "hostname"} }
+    });
+    let args = json!({"host": "http://[64:ff9b::a9fe:a9fe]/latest/meta-data/"});
+    guard(&schema, &args, public())
+        .expect_err("the NAT64 spelling of the IMDS target reaches the same address as the bare form and must be refused");
+}
+
 /// THE UNDECLARED CASE, and the decision it encodes. Most real MCP tools take a URL in a plain
 /// `{"type": "string"}`, so a walk that judged only declared fields would refuse almost nothing.
 /// A string whose WHOLE value is an `http(s)` URL is therefore judged wherever it appears — and

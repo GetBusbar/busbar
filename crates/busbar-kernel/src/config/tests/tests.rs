@@ -544,6 +544,7 @@ fn admin_plane_boot_guard() {
 /// `admin_require_mtls` did not exist (so the omitted-default assertion did not compile).
 #[test]
 fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg =
         serde_yaml::from_str("providers: {}\nmodels: {}\npools: {}\n").expect("parses");
     assert!(
@@ -564,6 +565,37 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
     );
 }
 
+/// A BUILD WITH NO PLANE REGISTERED AT ALL — the honest, structurally-guaranteed-reachable case
+/// under this architecture (Part 2 #1: core names zero planes; #3/#11: planes are plugins that may
+/// be compiled in, dropped out, or not yet installed when config resolves) — must REFUSE parsing a
+/// config that names a plane-owned section (`pools:`), with a named, actionable diagnostic. It must
+/// NEVER panic the process, and it must never silently default/skip the section (DECISIONS #42: an
+/// unknown is refused, never defaulted).
+///
+/// RED before the fix: `PoolsCfg::deserialize` → `plane::config::split_section_for_plane` called
+/// `super::plane_decl(fallback_key())` — the PANICKING lookup — with `fallback_key()`'s own
+/// documented, honest empty-string answer for "no fallback plane registered", so this exact
+/// scenario (a build with a registered plane count of zero) crashed the process instead of
+/// refusing the parse. `TestRegistryIsolation::empty()` forces that scenario deterministically,
+/// even though this test binary registers planes elsewhere (unlike a shipped zero-plane build, it
+/// cannot rely on ambient absence) — the guard clears the registered set and holds the process
+/// registry's serial lock for its lifetime, so no sibling test's registration can leak in.
+#[test]
+fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registered() {
+    let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::empty();
+    let result = serde_yaml::from_str::<DeployCfg>("providers: {}\nmodels: {}\npools: {}\n");
+    let err = result.expect_err(
+        "a config with a pools: section must be REFUSED, not silently accepted, when no plane \
+         is registered to own that section",
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("no plane is registered"),
+        "the refusal must name the actual problem (no plane registered), not merely fail some \
+         other way; got: {message}"
+    );
+}
+
 /// The shipped example config.yaml must parse and resolve cleanly against providers.yaml
 /// (every referenced provider/model exists; the example stays a working starting point).
 ///
@@ -573,6 +605,7 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
 /// once config.yaml is migrated.
 #[test]
 fn test_shipped_example_config_resolves() {
+    crate::test_support::register_neutral_test_plane();
     // Hold the shared-env lock across the whole set/interpolate/remove sequence (recover on
     // poison: a panic in another holder must not block this test).
     let _env_guard = CLIENT_TOKEN_ENV_LOCK
@@ -1514,44 +1547,12 @@ fn test_resolve_provider_from_def() {
     );
 }
 
-/// THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B). `resolve`'s provider merge now
-/// runs through `PlaneDecl::resolve_provider` when the LLM plane is installed (the shipped default —
-/// core's own `#[cfg(test)]` binary always registers it, so `test_resolve_provider_from_def` above
-/// already exercises this path) and through core's own `merge_provider_fallback` when no plane
-/// implements the hook. This test proves the two produce the IDENTICAL `ProviderCfg` for the same
-/// inputs, so an llm-plane-absent build's merge is byte-identical to the shipped one — the guarantee
-/// `merge_provider_fallback`'s doc comment claims.
-#[test]
-fn resolve_provider_hook_and_core_fallback_agree() {
-    let mut def = provider_def(DEFAULT_PROTOCOL, "https://api.z.ai/api/model-1");
-    def.error_map
-        .insert("1113".to_string(), "billing".to_string());
-    def.error_map
-        .insert("1302".to_string(), "rate_limit".to_string());
-    let deploy_cfg = provider_deploy("ZAI_KEY");
-
-    let hook = busbar_llm::PLANE_DECL
-        .resolve_provider
-        .expect("the LLM plane declares `resolve_provider`");
-    let via_hook = hook(&def, &deploy_cfg);
-    let via_fallback = merge_provider_fallback(&def, &deploy_cfg);
-
-    assert_eq!(via_hook.protocol, via_fallback.protocol);
-    assert_eq!(via_hook.base_url, via_fallback.base_url);
-    assert_eq!(via_hook.api_key.env_var(), via_fallback.api_key.env_var());
-    assert_eq!(via_hook.error_map, via_fallback.error_map);
-    assert_eq!(via_hook.health.is_some(), via_fallback.health.is_some());
-    assert_eq!(via_hook.path, via_fallback.path);
-    assert_eq!(via_hook.path_base, via_fallback.path_base);
-    assert_eq!(via_hook.token_url, via_fallback.token_url);
-    assert_eq!(via_hook.scope, via_fallback.scope);
-    assert_eq!(via_hook.subject, via_fallback.subject);
-    assert_eq!(via_hook.auth, via_fallback.auth);
-    assert_eq!(
-        via_hook.allow_metadata_hosts,
-        via_fallback.allow_metadata_hosts
-    );
-}
+/// THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B) MOVED to
+/// `tests/config_cross_plane.rs::resolve_provider_hook_and_core_fallback_agree` — it calls the REAL
+/// `busbar_llm::PLANE_DECL.resolve_provider` hook, which only type-checks against core's OWN
+/// `ProviderDef`/`ProviderDeploy` when there is ONE `busbar_kernel` in the graph (an integration-test
+/// target), not the two copies busbar-kernel's own `#[cfg(test)]` dev-dependency back-edge onto
+/// busbar-llm produces. See that file's header for the full rationale.
 
 /// A provider credential is a SECRET REFERENCE, never an inline literal. A plain-string
 /// `api_key:` (the pre-1.0 inline-key shape) is REJECTED AT PARSE (SecretRef deserializes only
@@ -2136,6 +2137,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
 /// inline single-key map, so neither the parse nor the shared-definition assertion compiled.
 #[test]
 fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  \
            corp-ad: { module: ad, max_admin_scope: full, settings: { server: \"ldaps://corp\" } }\n  \
@@ -2187,6 +2189,7 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
 /// narrow an existing deployment's admin ceiling.
 #[test]
 fn test_max_admin_scope_default_is_most_restrictive_except_admin_tokens() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad }\n  admin-tokens: { module: admin-tokens }\n\
          auth:\n  chain: [corp-ad]\n  admin_auth: [admin-tokens, corp-ad]\n\
@@ -2215,6 +2218,7 @@ fn test_max_admin_scope_default_is_most_restrictive_except_admin_tokens() {
 /// error, never a silently-skipped auth module (which would quietly weaken the front door).
 #[test]
 fn test_dangling_identity_provider_reference_is_an_error() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "auth: { chain: [keys, ghost] }\nproviders: {}\nmodels: {}\npools: {}\n",
     )
@@ -2263,6 +2267,7 @@ fn test_identity_provider_typo_rejected_at_parse() {
 /// must fail boot, not be silently ignored.
 #[test]
 fn test_token_on_a_non_admin_tokens_provider_is_an_error() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad, token: { env: X } }\n\
          auth: { chain: [corp-ad] }\nproviders: {}\nmodels: {}\npools: {}\n",
@@ -2787,6 +2792,7 @@ fn test_caller_in_hook_groups_scope() {
 /// the reserved `pools.hooks:` list is lifted out as the all-pools attach.
 #[test]
 fn test_pools_reserved_hooks_key() {
+    crate::test_support::register_neutral_test_plane();
     // The reserved key is the all-pools attach; the rest are pools.
     let pools: crate::config::PoolsCfg =
         serde_yaml::from_str("hooks: [pii]\nfast:\n  members: []\n  hooks: [cheapest, pii]\n")
@@ -2819,6 +2825,7 @@ fn test_pools_reserved_hooks_key() {
 /// nothing checks.
 #[test]
 fn test_pools_reserved_name_refusal_is_byte_identical_to_1_5_5() {
+    crate::test_support::register_neutral_test_plane();
     let e = serde_yaml::from_str::<crate::config::PoolsCfg>("hooks:\n  members: []\n")
         .expect_err("a pool named `hooks` must be rejected");
     assert_eq!(
@@ -2832,6 +2839,7 @@ fn test_pools_reserved_name_refusal_is_byte_identical_to_1_5_5() {
 /// BOOT-P07 above: 1.5.5's sentence, written from the shared three-plane template.
 #[test]
 fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
+    crate::test_support::register_neutral_test_plane();
     let e = serde_yaml::from_str::<crate::config::PoolsCfg>("upstream_credentials: borrowed\n")
         .expect_err("an unknown all-pools credential mode must be rejected");
     assert_eq!(
@@ -2887,7 +2895,7 @@ fn test_resolve_projects_admin_auth_names() {
 /// at the pin loads, below the pin refuses.
 #[test]
 fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
-    use busbar_plugin_sign::{evaluate, sign, Manifest, SigningKey, Verdict};
+    use busbar_plugin_loader::sign::{evaluate, sign, Manifest, SigningKey, Verdict};
 
     // A first-party release key + an OLD (below the current binary) signed first-party artifact.
     let release = SigningKey::from_bytes(&[7u8; 32]);
@@ -2899,7 +2907,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             alias: "valkey".into(),
             kind: "store".into(),
             version: "0.9.0".into(), // below any real CARGO_PKG_VERSION (1.x)
-            publisher: busbar_plugin_sign::FIRST_PARTY_PUBLISHER.into(),
+            publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
             abi_version: 2,
             sha256: String::new(),
             signature: String::new(),
@@ -2963,7 +2971,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             alias: "valkey".into(),
             kind: "store".into(),
             version: "0.8.0".into(),
-            publisher: busbar_plugin_sign::FIRST_PARTY_PUBLISHER.into(),
+            publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
             abi_version: 2,
             sha256: String::new(),
             signature: String::new(),
@@ -3419,13 +3427,13 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
 /// The pre-fix file contains the contradicting sentence this test rejects.
 #[test]
 fn the_phase_field_doc_agrees_with_the_frozen_omitted_phase_answer() {
-    // `HookCfg` (and its `phase:` field doc this test pins) moved to
-    // `busbar_kernel::config::hooks` — busbar-core re-exports it at the historical
-    // `config::HookCfg` path, but the doc comment this test greps for now lives in the substrate
-    // source file, not here.
+    // `HookCfg` (and its `phase:` field doc this test pins) used to live in the now-deleted
+    // `busbar-substrate` crate (W4.b: the substrate engine was absorbed into busbar-kernel), so the
+    // doc comment this test greps for lives in THIS crate's own `config/hooks.rs` now, not a
+    // sibling crate's source file.
     let src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../busbar-substrate/src/config/hooks.rs"
+        "/src/config/hooks.rs"
     ))
     .expect("busbar-substrate's config/hooks.rs is readable");
     assert!(
@@ -3459,6 +3467,7 @@ fn the_phase_field_doc_agrees_with_the_frozen_omitted_phase_answer() {
 /// name landed in BOTH `global_hooks` and the pool's `gates` and fired twice.
 #[test]
 fn additive_hook_lists_dedupe_at_first_position() {
+    crate::test_support::register_neutral_test_plane();
     // The rule itself, at the single combine point.
     let section = vec!["audit".to_string(), "pii".to_string()];
     let entity = vec![
@@ -3517,6 +3526,7 @@ fn additive_hook_lists_dedupe_at_first_position() {
 /// `upstream_credentials` parsed fine) and there was no frozen set to assert against.
 #[test]
 fn pools_reserved_section_keys_are_frozen() {
+    crate::test_support::register_neutral_test_plane();
     assert_eq!(
         busbar_kernel::plane::config::RESERVED_SECTION_KEYS,
         ["hooks", "upstream_credentials"],
@@ -3545,6 +3555,7 @@ fn pools_reserved_section_keys_are_frozen() {
 /// setting will be read against.
 #[test]
 fn pools_upstream_credentials_is_a_scalar_override() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "pools:\n  upstream_credentials: own\n\
          \x20 fast:\n    members: []\n    upstream_credentials: passthrough\n\
@@ -3579,6 +3590,7 @@ fn pools_upstream_credentials_is_a_scalar_override() {
 /// every `SecretRef` in every config to be rewritten for no behavioral gain.
 #[test]
 fn secrets_block_stays_module_keyed_by_design() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "secrets:\n  vault:\n    settings: { address: \"https://vault.internal\" }\n\
          providers: {}\nmodels: {}\npools: {}\n",
@@ -3723,58 +3735,10 @@ fn root_settings_doc_lists_only_fields_that_exist() {
     }
 }
 
-/// THE PUBLISHED-NAME COLLISION IS A `resolve` ERROR, which is what makes it a `--validate` error.
-///
-/// `busbar --validate`, boot, the admin config-apply rebuild and the admin dry-run validate
-/// endpoint all reach `resolve`, and none of them reaches `mcp::config::validate_published_names`
-/// any other way. If the check were wired only into the `ToolsCfg` `Deserialize` it would never see
-/// a server the admin API applied, and a config that validated would not be the config that boots.
-/// So the wiring itself is the thing under test here, not the rule.
-#[test]
-fn resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree() {
-    // The SUBTLE collision — an override against a namespaced default nobody typed — because it is
-    // the one that survives a partial implementation of the rule.
-    let tools: busbar_mcp::mcp::config::ToolsCfg = serde_yaml::from_str(
-        r#"
-foo:
-  url: "https://foo/"
-  pin: { mechanism: unpinned }
-  tools_allow: { bar: {} }
-other:
-  url: "https://other/"
-  pin: { mechanism: unpinned }
-  tools_allow: { anything: { publish_as: foo_bar } }
-"#,
-    )
-    .expect("both servers are individually valid");
-
-    let mut deploy = base_deploy();
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
-    let errors = resolve(&deploy, &HashMap::new())
-        .expect_err("resolve must refuse a config whose published names are not unique");
-    assert!(
-        errors.iter().any(|e| e.contains("published as `foo_bar`")),
-        "{errors:?}"
-    );
-
-    // GREEN, same shape, one name changed: the refusal is about the collision and nothing else.
-    let ok: busbar_mcp::mcp::config::ToolsCfg = serde_yaml::from_str(
-        r#"
-foo:
-  url: "https://foo/"
-  pin: { mechanism: unpinned }
-  tools_allow: { bar: {} }
-other:
-  url: "https://other/"
-  pin: { mechanism: unpinned }
-  tools_allow: { anything: { publish_as: other_name } }
-"#,
-    )
-    .unwrap();
-    let mut deploy = base_deploy();
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(ok));
-    resolve(&deploy, &HashMap::new()).expect("distinct published names must resolve");
-}
+/// THE PUBLISHED-NAME COLLISION IS A `resolve` ERROR MOVED to
+/// `tests/config_cross_plane.rs::resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree`
+/// — it constructs a REAL `busbar_mcp::mcp::config::ToolsCfg` and hands it to core's `resolve`,
+/// which only type-checks with ONE `busbar_kernel` in the graph. See that file's header.
 
 // ══ THE FAILOVER POOLS' CROSS-REFERENCES ═════════════════════════════════════════════════════════
 //
@@ -3797,87 +3761,16 @@ fn failover_pools_are_absent_by_default() {
     );
 }
 
-/// A member naming nothing is an operator believing a request has somewhere to go when it does not.
-/// 1.6.0: the pool lives in the ONE neutral `pools:` map; kind is INFERRED from the resolvable
-/// member (`search-eu` → a `tools:` server), so the dangling `search-us` is named against `tools:`.
-#[test]
-fn a_tool_pool_member_that_names_no_server_is_refused() {
-    let mut deploy = base_deploy();
-    let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
-    tools.servers.insert(
-        "search-eu".to_string(),
-        serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
-            .expect("a minimal server"),
-    );
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
-    deploy.pools.pools.insert(
-        "search".to_string(),
-        serde_yaml::from_str::<crate::config::PoolCfg>("{members: [search-eu, search-us]}")
-            .expect("a bare-name pool"),
-    );
-    let errs = resolve(&deploy, &HashMap::new()).expect_err("a dangling member must refuse boot");
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("search-us") && e.contains("`tools:`")),
-        "the message names the missing entry and the section it belongs in: {errs:?}"
-    );
-}
+/// A member naming nothing... MOVED to
+/// `tests/config_cross_plane.rs::a_tool_pool_member_that_names_no_server_is_refused` (needs a
+/// real `busbar_mcp::mcp::config::ToolsCfg`). See that file's header.
 
-/// KIND IS INFERRED, SO A POOL MUST BE HOMOGENEOUS: a pool whose members span two nouns cannot be
-/// assigned a single plane and is refused with the homogeneity error.
-#[test]
-fn a_pool_may_not_straddle_two_planes() {
-    let mut deploy = base_deploy();
-    let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
-    agents.agents.insert(
-        "planner".to_string(),
-        serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
-            .expect("a minimal agent"),
-    );
-    deploy.agents = crate::plane::config::AgentsSection(Box::new(agents));
-    let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
-    tools.servers.insert(
-        "search-eu".to_string(),
-        serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
-            .expect("a minimal server"),
-    );
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
-    deploy.pools.pools.insert(
-        "mixed".to_string(),
-        serde_yaml::from_str::<crate::config::PoolCfg>("{members: [planner, search-eu]}")
-            .expect("a bare-name pool"),
-    );
-    let errs =
-        resolve(&deploy, &HashMap::new()).expect_err("a cross-plane member must refuse boot");
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("more than one plane") && e.contains("same kind")),
-        "the message says the pool's members are not all one kind: {errs:?}"
-    );
-}
+/// KIND IS INFERRED... MOVED to `tests/config_cross_plane.rs::a_pool_may_not_straddle_two_planes`
+/// (needs real `busbar_mcp`/`busbar_a2a` config types). See that file's header.
 
-/// A one-member pool changes nothing, so writing one is a mistake and is named as one.
-#[test]
-fn a_failover_pool_needs_two_members() {
-    let mut deploy = base_deploy();
-    let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
-    agents.agents.insert(
-        "only-one".to_string(),
-        serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
-            .expect("a minimal agent"),
-    );
-    deploy.agents = crate::plane::config::AgentsSection(Box::new(agents));
-    deploy.pools.pools.insert(
-        "planner".to_string(),
-        serde_yaml::from_str::<crate::config::PoolCfg>("{members: [only-one]}")
-            .expect("a bare-name pool"),
-    );
-    let errs = resolve(&deploy, &HashMap::new()).expect_err("a one-member pool must refuse boot");
-    assert!(
-        errs.iter().any(|e| e.contains("at least TWO members")),
-        "{errs:?}"
-    );
-}
+/// A one-member pool changes nothing... MOVED to
+/// `tests/config_cross_plane.rs::a_failover_pool_needs_two_members` (needs a real
+/// `busbar_a2a::a2a::config::AgentsCfg`). See that file's header.
 
 /// `repeatable:` IS THE SAFETY DECLARATION, and the default is that nothing is repeatable. Asserted
 /// here rather than only in the seam's own tests because this is where an operator's document is
@@ -3914,6 +3807,7 @@ fn nothing_is_repeatable_unless_the_operator_names_it() {
 /// exercised elsewhere.)
 #[test]
 fn test_auth_policy_block_parses_and_resolves() {
+    crate::test_support::register_neutral_test_plane();
     use crate::config::BindingMode;
     // `auth.policy:` is a 1.6.0-additive key, so it is LIFTED off the document before the frozen
     // structs parse: the document entry point is the only one that sees it (a bare
@@ -3978,6 +3872,7 @@ fn test_auth_policy_block_parses_and_resolves() {
 /// predates the block behaves exactly as before (byte-identical: nothing consults it).
 #[test]
 fn test_auth_policy_absent_is_default() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg =
         serde_yaml::from_str("auth:\n  chain: [keys]\nproviders: {}\nmodels: {}\npools: {}\n")
             .expect("an auth block with no policy parses");
@@ -4001,6 +3896,7 @@ fn test_auth_policy_absent_is_default() {
 /// pools), explicit `[]` = Some(empty) (no pools), `[list]` = exactly those. Never conflated.
 #[test]
 fn test_auth_policy_ceiling_allowed_pools_three_state() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
         "auth:\n  \
            policy:\n    \

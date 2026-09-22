@@ -15,7 +15,7 @@ use busbar_contract::wire::FrameCursor;
 use serde_json::json;
 
 use crate::claims::Dialect;
-use crate::tests::harness::{ctx, destination, frame, unit, EmptyConfig, LeakArena, WsStack};
+use crate::tests::harness::{ctx, destination, frame, unit, EmptyConfig, LeakPlaneAlloc, WsStack};
 use crate::{StreamingPlane, Upstream};
 
 fn openai_plane() -> StreamingPlane {
@@ -68,7 +68,7 @@ fn session_update_fixture() -> Vec<u8> {
 #[test]
 fn session_update_opens_a_turn_and_names_the_dialect() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -96,7 +96,7 @@ fn session_update_opens_a_turn_and_names_the_dialect() {
 #[test]
 fn a_second_frame_of_the_same_turn_relays_rather_than_reopens() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -133,7 +133,7 @@ fn a_second_frame_of_the_same_turn_relays_rather_than_reopens() {
 #[test]
 fn client_truncate_writes_the_declared_interrupt_fact() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -166,7 +166,7 @@ fn client_truncate_writes_the_declared_interrupt_fact() {
 #[test]
 fn upstream_speech_started_synthesizes_the_interrupt_fact_from_playback_position() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -225,7 +225,7 @@ fn upstream_speech_started_synthesizes_the_interrupt_fact_from_playback_position
 #[test]
 fn downlink_audio_frames_carry_the_declared_pacing_fact() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -262,43 +262,89 @@ fn downlink_audio_frames_carry_the_declared_pacing_fact() {
     );
 }
 
+/// A tool call is dispatched ON CLOSE, as its own unit, carrying the arguments the model streamed.
+///
+/// The model announces the call (`output_item.added`), streams its arguments as deltas, and states
+/// them complete on the `…arguments.done` frame. Only when the arguments are complete is the call
+/// its own `tool_call` unit — dispatched with a name AND its arguments, not a name and nothing.
+/// The open and delta frames mint nothing on their own; they accumulate.
 #[test]
-fn a_tool_call_open_surfaces_as_progress_one_shot() {
+fn a_tool_call_dispatches_on_close_with_its_arguments() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
     let c = ctx(&arena, &config, &transport, &labels);
-    let mut upstream_state = SessionPlane::open_upstream(
-        &plane,
-        &destination("api.openai.com", LaneId::new("realtime")),
-        &c,
-    );
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut upstream_state = SessionPlane::open_upstream(&plane, &dest, &c);
 
+    // The announcement mints nothing — it accumulates.
     let opened = serde_json::to_vec(&json!({
         "type": "response.output_item.added",
         "item": { "type": "function_call", "call_id": "call_1", "name": "lookup" },
     }))
     .unwrap();
-    let frames = [frame(&opened)];
+    {
+        let frames = [frame(&opened)];
+        let mut cursor = FrameCursor::new(&frames);
+        assert!(
+            matches!(
+                plane
+                    .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
+                    .expect("an announcement decodes"),
+                Progress::Discard { .. }
+            ),
+            "an announcement mints no unit on its own"
+        );
+    }
+
+    // A partial argument delta mints nothing either — it accumulates.
+    let delta = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.delta",
+        "call_id": "call_1",
+        "delta": "{\"city\":\"Pa",
+    }))
+    .unwrap();
+    {
+        let frames = [frame(&delta)];
+        let mut cursor = FrameCursor::new(&frames);
+        assert!(
+            matches!(
+                plane
+                    .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
+                    .expect("a delta decodes"),
+                Progress::Discard { .. }
+            ),
+            "an argument delta mints no unit on its own"
+        );
+    }
+
+    // The close states the complete arguments and dispatches the call.
+    let done = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.done",
+        "call_id": "call_1",
+        "name": "lookup",
+        "arguments": "{\"city\":\"Paris\"}",
+    }))
+    .unwrap();
+    let frames = [frame(&done)];
     let mut cursor = FrameCursor::new(&frames);
-    let progress = plane
-        .decode_response(
-            &mut cursor,
-            &destination("api.openai.com", LaneId::new("realtime")),
-            Some(&mut upstream_state),
-            &c,
-        )
-        .expect("tool-call open decodes");
-    let Progress::OneShot(draft) = progress else {
-        panic!("expected Progress::OneShot, got {progress:?}");
+    let Progress::OneShot(draft) = plane
+        .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
+        .expect("a tool-call close decodes")
+    else {
+        panic!("a completed tool call is dispatched as its own unit");
     };
     assert_eq!(draft.op.as_str(), "tool_call");
     assert_eq!(
         draft.facts.get(crate::meta::FACT_TOOL_NAME),
         Some(busbar_contract::bounded::FactValue::Str("lookup"))
     );
+    // The arguments the model asked for reach the executor, not an empty body.
+    let args: serde_json::Value =
+        serde_json::from_slice(draft.body_ir.body()).expect("the body carries the arguments");
+    assert_eq!(args["city"], "Paris");
 }
 
 /// Two tool calls open at once are two different things to wait on.
@@ -314,7 +360,7 @@ fn a_tool_call_open_surfaces_as_progress_one_shot() {
 #[test]
 fn two_open_tool_calls_wait_on_two_different_correlations() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -322,23 +368,33 @@ fn two_open_tool_calls_wait_on_two_different_correlations() {
     let dest = destination("api.openai.com", LaneId::new("realtime"));
     let mut upstream_state = SessionPlane::open_upstream(&plane, &dest, &c);
 
-    let open_call = |call_id: &str| {
-        serde_json::to_vec(&json!({
+    let mut waits_on = |call_id: &str| {
+        // Drive the whole call: announce, then close with its arguments. The call is its own unit
+        // on close.
+        let opened = serde_json::to_vec(&json!({
             "type": "response.output_item.added",
             "item": { "type": "function_call", "call_id": call_id, "name": "lookup" },
         }))
-        .unwrap()
-    };
-
-    let mut waits_on = |call_id: &str| {
-        let opened = open_call(call_id);
+        .unwrap();
         let frames = [frame(&opened)];
+        let mut cursor = FrameCursor::new(&frames);
+        let _ = plane
+            .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
+            .expect("a tool-call announcement decodes");
+        let done = serde_json::to_vec(&json!({
+            "type": "response.function_call_arguments.done",
+            "call_id": call_id,
+            "name": "lookup",
+            "arguments": "{\"q\":\"x\"}",
+        }))
+        .unwrap();
+        let frames = [frame(&done)];
         let mut cursor = FrameCursor::new(&frames);
         let Progress::OneShot(draft) = plane
             .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
-            .expect("tool-call open decodes")
+            .expect("a tool-call close decodes")
         else {
-            panic!("a tool-call open is its own unit");
+            panic!("a completed tool call is its own unit");
         };
         let out = draft
             .correlation_out
@@ -388,7 +444,7 @@ fn two_open_tool_calls_wait_on_two_different_correlations() {
 #[test]
 fn a_client_tool_reply_names_the_call_it_answers() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -449,7 +505,7 @@ fn a_client_tool_reply_names_the_call_it_answers() {
 #[test]
 fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -540,7 +596,7 @@ fn twilio_media_after_start_admits_a_ulaw_audio_frame() {
         dialect: Dialect::OpenaiRealtime,
     }];
     let plane = StreamingPlane::new(UPSTREAMS);
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/twilio/call-123");
     let labels = Labels::new();
@@ -591,7 +647,7 @@ fn twilio_media_with_a_forged_stream_sid_is_discarded() {
         dialect: Dialect::OpenaiRealtime,
     }];
     let plane = StreamingPlane::new(UPSTREAMS);
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/twilio/call-123");
     let labels = Labels::new();
@@ -646,7 +702,7 @@ fn twilio_dtmf_decodes_and_is_discarded_as_unsupported() {
         dialect: Dialect::OpenaiRealtime,
     }];
     let plane = StreamingPlane::new(UPSTREAMS);
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/twilio/call-123");
     let labels = Labels::new();
@@ -690,7 +746,7 @@ fn twilio_unknown_event_is_dropped_and_a_non_carrier_frame_is_still_refused() {
         dialect: Dialect::OpenaiRealtime,
     }];
     let plane = StreamingPlane::new(UPSTREAMS);
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/twilio/call-123");
     let labels = Labels::new();
@@ -732,7 +788,7 @@ fn twilio_unknown_event_is_dropped_and_a_non_carrier_frame_is_still_refused() {
 #[test]
 fn an_upstream_error_still_meters_the_turn_it_ended() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -832,7 +888,7 @@ fn an_upstream_error_still_meters_the_turn_it_ended() {
 #[test]
 fn uplink_audio_meters_on_the_half_the_upstream_answer_arrives_on() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -906,7 +962,7 @@ fn uplink_audio_meters_on_the_half_the_upstream_answer_arrives_on() {
 #[test]
 fn admitted_milliseconds_meter_as_seconds() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let cfg = EmptyConfig;
     let stack = WsStack::new("/v1/realtime");
     let labels = Labels::default();
@@ -952,7 +1008,7 @@ fn admitted_milliseconds_meter_as_seconds() {
 #[test]
 fn a_one_shot_text_to_speech_unit_meters_the_text_it_was_asked_to_speak() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/audio/speech");
     let labels = Labels::new();
@@ -1005,7 +1061,7 @@ fn a_one_shot_text_to_speech_unit_meters_the_text_it_was_asked_to_speak() {
 #[test]
 fn a_one_shot_transcription_meters_the_text_it_returned() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/audio/transcriptions");
     let labels = Labels::new();
@@ -1088,7 +1144,7 @@ mod base64_stdlib {
 #[test]
 fn ws_frame_with_invalid_utf8_fails_closed_rather_than_hanging_on_need_more() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -1107,7 +1163,7 @@ fn ws_frame_with_invalid_utf8_fails_closed_rather_than_hanging_on_need_more() {
 #[test]
 fn ws_frame_with_an_unrecognised_event_is_dropped_never_left_pending() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -1135,7 +1191,7 @@ fn ws_frame_with_an_unrecognised_event_is_dropped_never_left_pending() {
 #[test]
 fn ws_frame_carrying_no_bytes_yet_is_genuinely_need_more() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -1160,7 +1216,7 @@ fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
     use busbar_contract::unit::{Refusal, RefusalReason, Step};
 
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -1222,7 +1278,7 @@ fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
 #[test]
 fn a_barge_in_on_an_open_turn_opens_the_turn_that_supersedes_it() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -1283,7 +1339,7 @@ fn a_barge_in_on_an_open_turn_opens_the_turn_that_supersedes_it() {
 #[test]
 fn unit_zero_egress_reframes_the_opening_session_update() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
@@ -1351,7 +1407,7 @@ fn unit_zero_egress_reframes_the_opening_session_update() {
 #[test]
 fn unit_zero_egress_reframes_an_opening_audio_frame() {
     let plane = openai_plane();
-    let arena = LeakArena;
+    let arena = LeakPlaneAlloc;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();

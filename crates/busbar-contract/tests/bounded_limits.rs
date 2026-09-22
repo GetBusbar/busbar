@@ -6,9 +6,9 @@
 //! ceiling the first busy afternoon removes.
 
 use busbar_contract::bounded::{
-    Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, Labels, SlabBytes, Span,
-    ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS, MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES,
-    MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
+    BoundedVec, FactValue, Facts, Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, SlabBytes,
+    Span, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS, MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES,
+    MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES, SCRATCH_BASE_BYTES,
 };
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::unit::Step;
@@ -24,7 +24,7 @@ fn the_constants_are_the_designs_numbers() {
     assert_eq!(MAX_SESSION_UPSTREAMS, 8);
     assert_eq!(MAX_LEGS, 8);
     assert_eq!(MAX_LEG_REPLIES, 2);
-    assert_eq!(ARENA_BYTES, 4 * 1024);
+    assert_eq!(SCRATCH_BASE_BYTES, 4 * 1024);
 }
 
 /// Every step of the loop, in loop order.
@@ -244,11 +244,11 @@ fn a_journal_record_refuses_past_the_record_ceiling() {
     assert_eq!(too_big.unwrap_err(), MAX_RECORD_BYTES + 1);
 }
 
-/// Arena bytes borrow and slab bytes own, and neither is the banned reference-counted buffer.
+/// PlaneAlloc bytes borrow and slab bytes own, and neither is the banned reference-counted buffer.
 #[test]
 fn the_two_byte_handles_do_what_they_say() {
     let owned = [1u8, 2, 3, 4];
-    let borrowed = ArenaBytes::new(&owned);
+    let borrowed = ScratchBytes::new(&owned);
     assert_eq!(borrowed.as_slice(), &owned);
     assert_eq!(borrowed.len(), 4);
     assert!(!borrowed.is_empty());
@@ -367,23 +367,23 @@ fn the_first_response_ceiling_pointer_that_resolves_is_the_one() {
 /// An arena that leaks, because a span table handed back from `spans::resolve` borrows the arena
 /// for as long as the caller holds it and a test's own local buffer does not live that long. A
 /// short-lived leak in a test process is the honest double; this crate forbids unsafe code.
-struct LeakArena;
+struct LeakPlaneAlloc;
 
-static ARENA: LeakArena = LeakArena;
+static PLANE_ALLOC: LeakPlaneAlloc = LeakPlaneAlloc;
 
-impl Arena for LeakArena {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
-        Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+impl PlaneAlloc for LeakPlaneAlloc {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
+        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }
 
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
         Ok(Box::leak(src.to_string().into_boxed_str()))
     }
 
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget> {
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
@@ -400,7 +400,7 @@ impl Arena for LeakArena {
 #[test]
 fn only_the_declared_pointers_the_body_carries_reach_the_table() {
     let body = br#"{"model":"model-1"}"#;
-    let table = busbar_contract::spans::resolve(body, &["/model", "/stream"], &ARENA)
+    let table = busbar_contract::spans::resolve(body, &["/model", "/stream"], &PLANE_ALLOC)
         .expect("the arena has room");
 
     assert_eq!(table.len(), 1, "one of the two pointers resolved");
@@ -439,7 +439,7 @@ fn a_plane_that_declares_more_pointers_than_the_ceiling_is_capped_at_it() {
         ));
     }
 
-    let table = busbar_contract::spans::resolve(body.as_bytes(), &pointers, &ARENA)
+    let table = busbar_contract::spans::resolve(body.as_bytes(), &pointers, &PLANE_ALLOC)
         .expect("the arena has room");
     assert_eq!(table.len(), MAX_KEYS);
     assert_eq!(table[MAX_KEYS - 1].0, pointers[MAX_KEYS - 1]);

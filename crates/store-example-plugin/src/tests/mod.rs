@@ -18,6 +18,12 @@ use super::*;
 /// didn't pin. Kept in its own file rather than folded in here.
 mod mutation_hardening;
 
+/// The `Store` contract conformance suite — THIS crate's own copy. It used to arrive as
+/// `busbar-plugin-testkit`; the owner ruled that crate deleted on 2026-09-22 and #2/#31 forbid a
+/// shared test util between plugins, so every backend owns its copy. See the module doc for the
+/// full provenance and for what the shared crate was buying.
+mod store_conformance;
+
 /// A throwaway task body. The store never decodes it; the tests use it only to prove a body written
 /// through the envelope reads back byte-for-byte.
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug, Clone)]
@@ -341,26 +347,29 @@ fn s_get(s: &FileStore, id: &str) -> Option<Vec<u8>> {
 // ── THE SHARED CROSS-BACKEND RETENTION CONFORMANCE ───────────────────────────────────────────────
 //
 // The purge cells below this comment are THIS fixture's own, written against its own tables. The two
-// here are the SHARED ones every backend answers identically (`busbar-plugin-testkit`), and they are
-// wired separately on purpose: a ruling added to the shared suite has to reach this plugin on its
-// next dependency bump rather than be hand-copied here and then drift, which is the exact failure
-// the testkit exists to prevent. A fresh store per check is already an empty namespace, so `ns` only
-// has to be stable.
+// here are the CROSS-BACKEND ones every backend answers identically, and they are wired separately
+// on purpose: they are rulings about the KIND, not about this backend's own tables. A fresh store
+// per check is already an empty namespace, so `ns` only has to be stable.
+//
+// They used to arrive as `busbar-plugin-testkit`, on the promise that a ruling added to the shared
+// suite reached this plugin on its next dependency bump rather than being hand-copied here and then
+// drifting. The owner deleted that crate on 2026-09-22 ("delete it. wtf is a testkit.") and #2/#31
+// forbid a shared test util between plugins, so the suite is this crate's own copy now
+// (`src/tests/store_conformance.rs`) and THE DRIFT IT PREVENTED IS BACK ON THE TABLE: a new ruling
+// has to be written into every backend by hand. That is the cost #2's independence buys, recorded
+// here rather than left to be rediscovered.
 
 /// The retention sweep drops rows older than the cutoff and NOTHING else — the eighth neutral verb,
 /// held to the same ruling as every other backend.
 #[test]
 fn conformance_plane_purge_honours_the_cutoff() {
-    busbar_plugin_testkit::store_conformance::assert_plane_purge_honours_the_cutoff(&store(), "cf");
+    store_conformance::assert_plane_purge_honours_the_cutoff(&store(), "cf");
 }
 
 /// The task table's retention rule is terminality AND age, not age alone.
 #[test]
 fn conformance_plane_purge_task_keeps_active_rows() {
-    busbar_plugin_testkit::store_conformance::assert_plane_purge_task_keeps_active_rows(
-        &store(),
-        "cf",
-    );
+    store_conformance::assert_plane_purge_task_keeps_active_rows(&store(), "cf");
 }
 
 #[test]
@@ -653,26 +662,21 @@ fn plane_token_live_refuses_a_lapsed_token_and_an_unknown_kind() {
 // kind, which PLUGIN-TREE.md §4 forbids without exception and which the manifest allow-list used to
 // waive for this one crate. Deleting the waiver is only honest if the behaviour it covered is now
 // asserted HERE, so the three rulings a store gets wrong invisibly are pinned below: the tombstone
-// precondition, the delete cascade, and the metering accumulate. The first two are the SHARED
-// cross-backend cells from `busbar-plugin-testkit`, wired the same way the plane-purge cells above
-// are, so a ruling added to the shared suite reaches this backend on its next dependency bump.
+// precondition, the delete cascade, and the metering accumulate. The first two are the CROSS-BACKEND
+// cells, wired the same way the plane-purge cells above are; they live in this crate's own
+// `src/tests/store_conformance.rs` since the shared testkit was deleted — see the note above that
+// block for what that costs.
 
 /// `put_key` must not clear a tombstone — the shared ruling, answered by this crate's own backend.
 #[test]
 fn conformance_ram_put_key_does_not_resurrect_a_tombstone() {
-    busbar_plugin_testkit::store_conformance::assert_put_key_does_not_resurrect_a_tombstone(
-        &RamStore::new(),
-        "ram",
-    );
+    store_conformance::assert_put_key_does_not_resurrect_a_tombstone(&RamStore::new(), "ram");
 }
 
 /// `delete_key` on an id that was never written is an ERROR, not a silent success.
 #[test]
 fn conformance_ram_delete_key_unknown_id_is_an_error() {
-    busbar_plugin_testkit::store_conformance::assert_delete_key_unknown_id_is_an_error(
-        &RamStore::new(),
-        "ram",
-    );
+    store_conformance::assert_delete_key_unknown_id_is_an_error(&RamStore::new(), "ram");
 }
 
 /// The tombstone cascade: the KEY ROW SURVIVES (attribution by id keeps resolving forever and the id
@@ -681,7 +685,7 @@ fn conformance_ram_delete_key_unknown_id_is_an_error() {
 #[test]
 fn ram_delete_key_tombstones_the_row_and_drops_its_usage_ledger() {
     let s = RamStore::new();
-    let key = busbar_plugin_testkit::store_conformance::live_key("ram_cascade");
+    let key = store_conformance::live_key("ram_cascade");
     s.put_key(&key).expect("put a live key");
     s.put_usage("ram_cascade", 0, &UsageLedger::default())
         .expect("write the ledger");

@@ -64,7 +64,7 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
 /// ratchet (R2-boot) is then drivable over an INJECTED decl — a plane whose `hydrate` returns `Err` —
 /// without the process plane `OnceLock`, which can be initialised only once per test binary. A hook's
 /// `Err` aborts the fold with `?`; a plane that half-restored its durable state must not serve.
-pub(crate) fn run_hydrate_hooks(
+pub fn run_hydrate_hooks(
     decls: &[&'static crate::plane::registry::PlaneDecl],
     ctx: &crate::plane::registry::BootCtx,
 ) -> Result<(), String> {
@@ -113,7 +113,7 @@ pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), Str
 /// drivable over an injected decl without the process plane `OnceLock` and without booting real
 /// listeners. A hook's `Err` aborts the fold with `?`, which is how a plane's outbound identity that
 /// does not resolve stops the boot rather than yielding a deployment that re-verifies nothing.
-pub(crate) fn run_start_hooks(
+pub fn run_start_hooks(
     decls: &[&'static crate::plane::registry::PlaneDecl],
     ctx: &crate::plane::registry::BootCtx,
 ) -> Result<(), String> {

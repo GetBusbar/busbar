@@ -17,6 +17,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 busbar-plugin-sdk = { path = "../plugin-sdk" }
-
-[dev-dependencies]
+# Named directly because `ExportHandler::deliver` takes a `&serde_json::Value` — the batch the engine
+# built. Not a busbar crate, so it does not widen this plugin's busbar closure (DECISIONS #84: a
+# plugin's busbar closure is exactly `busbar-plugin-sdk`).
 serde_json = { workspace = true }

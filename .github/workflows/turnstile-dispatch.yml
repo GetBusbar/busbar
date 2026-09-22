@@ -1,0 +1,81 @@
+# TURNSTILE DISPATCH — the cross-repo bridge from busbar's incoming lane to busbar-release's
+# turnstile orchestration.
+#
+# The turnstile pipeline (`.github/workflows/turnstile.yml`) lives in the SEPARATE
+# `GetBusbar/busbar-release` repo, and it is triggered by a `repository_dispatch` event of type
+# `turnstile-admit`. GitHub's native `on: push` cannot reach across repos — a workflow file can only
+# be triggered by events in the repo it lives in — so something on THIS side has to fire that
+# dispatch whenever a candidate lands on the incoming lane. This workflow is that firing step, and
+# nothing more: it does NOT itself gate anything, run any check, or decide whether the candidate is
+# admissible. All of that judgment lives in busbar-release's turnstile.yml, which reacts to the
+# event this file sends. If this workflow is red, no dispatch went out and turnstile.yml never
+# started for that push; if it is green, the candidate has only been ANNOUNCED, not admitted.
+#
+# REQUIRED SECRET: `TURNSTILE_DISPATCH_TOKEN` — a fine-grained PAT (or GitHub App installation
+# token) with Contents:read + Actions:write (or equivalent `repository_dispatch` scope) on
+# `GetBusbar/busbar-release`. The default `GITHUB_TOKEN` cannot be used here: it is scoped to the
+# repo the workflow runs in and cannot dispatch to another repo. Provision as a repo or org secret
+# named exactly `TURNSTILE_DISPATCH_TOKEN`.
+#
+# MANUAL ONLY, AND THAT IS THE DESIGN — NOT AN OVERSIGHT. This file was written when
+# `integration/**` was the incoming lane and it fired `on: push` to that lane. The lane is now
+# `predev` (#67), and predev's defining rule is that it carries NO automatic CI: developers commit
+# to it freely, many times a session, and a FINISHED session runs the turnstile to reach `dev`.
+#
+# So this must NOT be `on: push`. Turnstile is not a lint — admitting a candidate runs the full
+# battery suite in busbar-release. Firing that on every push to a branch whose whole purpose is
+# frequent unfinished commits would run the batteries dozens of times a day against trees nobody
+# is claiming are ready, which is both a false signal and a standing money leak (#78). The push
+# trigger is removed deliberately; re-adding it would reintroduce exactly the automatic-CI-on-predev
+# that #67 rules out.
+#
+# A candidate reaches the turnstile when a human (or a finished agent session) says it is ready, by
+# dispatching this workflow. `sha` defaults to the ref the dispatch runs on, so the normal case is
+# a zero-input dispatch from `predev`; pass `sha` explicitly to admit some other commit.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Candidate commit to admit (default: the dispatched ref''s head)'
+        required: false
+        default: ''
+
+# One in-flight dispatch per ref is enough. Two people declaring the same lane ready at once should
+# announce one candidate, not queue two full battery runs for turnstile.yml to churn through.
+concurrency:
+  group: turnstile-dispatch-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fire-turnstile-admit:
+    name: dispatch turnstile-admit to busbar-release
+    runs-on: ubuntu-latest
+    # This is a single API call; it either returns promptly or the token/network is broken. A small
+    # ceiling turns a hung call into a fast, visible red instead of riding the runner's 6h default.
+    timeout-minutes: 5
+    steps:
+      - name: Fire repository_dispatch (turnstile-admit) to GetBusbar/busbar-release
+        env:
+          # See the header comment above for what this token needs and where it is provisioned.
+          GH_TOKEN: ${{ secrets.TURNSTILE_DISPATCH_TOKEN }}
+          CANDIDATE_SHA: ${{ github.event.inputs.sha || github.sha }}
+          CANDIDATE_REF: ${{ github.ref }}
+          SOURCE_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::TURNSTILE_DISPATCH_TOKEN is not provisioned — cannot dispatch" \
+                 "turnstile-admit to GetBusbar/busbar-release. Provision the secret (see this" \
+                 "workflow's header comment) before candidates on this lane can reach the turnstile." >&2
+            exit 1
+          fi
+          echo "Dispatching turnstile-admit to GetBusbar/busbar-release (sha ${CANDIDATE_SHA:0:7}, ref ${CANDIDATE_REF})..."
+          gh api repos/GetBusbar/busbar-release/dispatches \
+            -f event_type=turnstile-admit \
+            -f "client_payload[sha]=${CANDIDATE_SHA}" \
+            -f "client_payload[ref]=${CANDIDATE_REF}" \
+            -f "client_payload[repo]=${SOURCE_REPO}"

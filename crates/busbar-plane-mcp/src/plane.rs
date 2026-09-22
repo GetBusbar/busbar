@@ -12,7 +12,7 @@
 //! so every draft below hands the loop a body the kernel does not have to re-walk. The plane once
 //! handed back an empty table because the arena could not allocate one; it can, and this does.
 
-use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
+use busbar_contract::bounded::{ScratchBytes, BoundedVec, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
@@ -399,7 +399,7 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
         | RefusalReason::StaleSlice
         | RefusalReason::TierMismatch
         | RefusalReason::SpillBudget
-        | RefusalReason::ArenaBudget
+        | RefusalReason::ScratchExhausted
         | RefusalReason::RateLimited
         | RefusalReason::ChallengeExhausted
         | RefusalReason::NoRate
@@ -527,12 +527,12 @@ impl Plane for McpPlane {
         // carry them, so copying them into the arena spent the unit's whole bounded budget on a
         // second copy of what it was already holding — and a request larger than that budget could
         // not be relayed at all, however small the hop it was going out on.
-        let body = ArenaBytes::new(u.body().body());
+        let body = ScratchBytes::new(u.body().body());
         let mut envelope = TransportEnvelope::default();
         let content_type = ctx
             .arena()
             .alloc_bytes(CONTENT_TYPE_JSON)
-            .map_err(|_| Encode::ArenaExhausted)?;
+            .map_err(|_| Encode::ScratchExhausted)?;
         let _ = envelope.fields.push(busbar_contract::wire::EnvelopeField {
             name: FIELD_CONTENT_TYPE,
             value: content_type,
@@ -544,7 +544,7 @@ impl Plane for McpPlane {
             let value = ctx
                 .arena()
                 .alloc_bytes(version.as_bytes())
-                .map_err(|_| Encode::ArenaExhausted)?;
+                .map_err(|_| Encode::ScratchExhausted)?;
             let _ = envelope.fields.push(busbar_contract::wire::EnvelopeField {
                 name: FIELD_PROTOCOL_VERSION,
                 value,
@@ -570,7 +570,7 @@ impl Plane for McpPlane {
         _dest: &VerifiedDestination,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // An OPEN unit of this plane is a HELD STREAM: the request that opened it was complete in
         // one frame, and what flows afterwards flows outward. So an inbound frame arriving under an
         // open unit belongs to no outbound request, and the honest answer is that it is consumed and
@@ -617,6 +617,24 @@ impl Plane for McpPlane {
                     reason: DiscardCode::Unsupported,
                 });
             };
+            // THE MIRROR OF THE INGRESS CHECK, and it must stay a mirror.
+            //
+            // Ingress refuses a caller who names a `Sender::Provider` method, because that would
+            // let a caller open a unit only a paired server may open. The same asymmetry runs the
+            // other way and is worse: `row_for` searches the WHOLE vocabulary, so without this an
+            // upstream could name `tools/call` — a `Sender::Client` method — on the response leg
+            // and have it minted as a genuine unit. That unit then runs all seven governance steps
+            // under the ORIGINAL CALLER's identity, budget and approval grant, for work the caller
+            // never asked for. A compromised or hostile upstream spending its victim's authority is
+            // the textbook confused deputy.
+            //
+            // Exactly three methods are server-initiated (`sampling/createMessage`, `roots/list`,
+            // `elicitation/create`). Everything else arriving with a method on this leg is refused.
+            if row.sender != ops::Sender::Provider {
+                return Ok(Progress::Discard {
+                    reason: DiscardCode::Unsupported,
+                });
+            }
             // The subject is read HERE, at the one step entitled to read the bytes, so the steps
             // after this one read it off the draft rather than scanning the request a second time.
             if let Some(pointer) = row.name_pointer {
@@ -701,7 +719,7 @@ impl Plane for McpPlane {
         r: &Response<'u>,
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         let body = r.ir.body();
         // An answer that already IS an envelope goes back exactly as it arrived. This is the common
         // path and it is byte-identical by construction: the server answered the caller's own
@@ -710,7 +728,7 @@ impl Plane for McpPlane {
             return ctx
                 .arena()
                 .alloc_bytes(body)
-                .map_err(|_| Encode::ArenaExhausted);
+                .map_err(|_| Encode::ScratchExhausted);
         }
         // An answer this node composed itself arrives as a bare result and is wrapped here, with
         // the identifier the decode step recorded and the discriminator this node chose.
@@ -725,7 +743,7 @@ impl Plane for McpPlane {
         let bytes = jsonrpc::success(id.as_ref(), body, kind)?;
         ctx.arena()
             .alloc_bytes(&bytes)
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_refusal<'u>(
@@ -734,7 +752,7 @@ impl Plane for McpPlane {
         draft: Option<&UnitDraft<'u>>,
         _st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
-    ) -> Result<ArenaBytes<'u>, Encode> {
+    ) -> Result<ScratchBytes<'u>, Encode> {
         let id = match draft.and_then(|d| d.facts.get(f::FACT_RPC_ID)) {
             Some(FactValue::Str(text)) => Some(jsonrpc::id_value(text.as_bytes())?),
             _ => None,
@@ -748,7 +766,7 @@ impl Plane for McpPlane {
         let bytes = jsonrpc::error(id.as_ref(), code, message, data)?;
         ctx.arena()
             .alloc_bytes(&bytes)
-            .map_err(|_| Encode::ArenaExhausted)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn encode_end<'u>(
@@ -757,7 +775,7 @@ impl Plane for McpPlane {
         _end: &UnitEnd,
         _st: Option<&mut PlaneSessionState>,
         _ctx: &Ctx<'u>,
-    ) -> Result<Option<ArenaBytes<'u>>, Encode> {
+    ) -> Result<Option<ScratchBytes<'u>>, Encode> {
         // This protocol writes nothing to end a unit. An answer ends when its document has been
         // written; a held stream ends when the connection does. Emitting a closing frame would be a
         // byte on the wire that is not there today.

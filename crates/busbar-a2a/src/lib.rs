@@ -33,14 +33,15 @@
 pub mod a2a;
 pub mod taskstore;
 
-/// THE A2A PLANE'S DIAGNOSTICS CATALOG, RE-EXPORTED FROM `busbar-plane-a2a-host`.
+/// THE A2A PLANE'S DIAGNOSTICS CATALOG.
 ///
-/// The `A2A_*` catalog entries and the `DIAGNOSTICS` slice moved into the plane's impure host crate
-/// (the first byte-safe step of the fat-crate collapse — DECISIONS #19/#20/#21). They are a
-/// self-contained leaf: they name nothing in this crate, so the move is a MOVE with no shape change,
-/// re-exported HERE under the old path so every `busbar_a2a::diagnostics::…` / `crate::diagnostics::…`
-/// caller resolves exactly what it always did.
-pub use busbar_plane_a2a_host::diagnostics;
+/// The `A2A_*` catalog entries and the `DIAGNOSTICS` slice previously lived in the standalone
+/// `busbar-plane-a2a-host` crate (the first byte-safe step of the fat-crate collapse — DECISIONS
+/// #19/#20/#21) and re-exported here under this path; that crate has since folded back into this
+/// one (#19/#39: mirrors `busbar-plane-mcp-host`'s deletion), so the module lives here directly now.
+/// Every `busbar_a2a::diagnostics::…` / `crate::diagnostics::…` caller still resolves exactly what
+/// it always did.
+pub mod diagnostics;
 
 /// THE DURABLE RECORD VOCABULARY, RE-EXPORTED FROM `busbar-a2a-codec`.
 ///

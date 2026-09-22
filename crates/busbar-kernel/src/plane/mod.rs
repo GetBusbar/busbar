@@ -135,7 +135,7 @@ pub mod store;
 /// before any reader runs, and core's own test binary carries it in `registry::builtin_plane_decls`,
 /// so exactly one fallback is always present. Core expresses "which plane handles unmatched routes"
 /// by ASKING the declared fallback plane, never by hard-coding which plane that is.
-pub(crate) fn fallback_key() -> &'static str {
+pub fn fallback_key() -> &'static str {
     let decls = registry::plane_decls();
     // The fallback is FIRST-WINS: with two fallback decls the `find` below would silently pick one
     // and the other's paths would fall through nowhere. At most one plane may flag itself fallback.
@@ -181,7 +181,7 @@ pub(crate) fn is_fallback(key: &str) -> bool {
 /// no built-in declaration, so it must not be iterated here — every [`plane_decl`] on it would
 /// fault. This is the successor to the old `Plane::ALL`, and the source of the LAYERING iteration
 /// order every map walk must borrow rather than reinvent from a map's own key order.
-pub(crate) fn plane_keys() -> impl Iterator<Item = &'static str> {
+pub fn plane_keys() -> impl Iterator<Item = &'static str> {
     registry::plane_decls().iter().map(|d| d.key)
 }
 
@@ -189,7 +189,7 @@ pub(crate) fn plane_keys() -> impl Iterator<Item = &'static str> {
 /// accessors now read through. Callers wanting a decl FIELD (`config_section`, `subject_noun`,
 /// `audit_kind`, `scope_kinds`) read it straight off this; the free fns below are the accessors
 /// that COMPUTED something rather than reading a field.
-pub(crate) fn plane_decl(key: &str) -> &'static registry::PlaneDecl {
+pub fn plane_decl(key: &str) -> &'static registry::PlaneDecl {
     registry::plane_decl_for(key)
         .unwrap_or_else(|| panic!("no built-in plane declared for key `{key}`"))
 }
@@ -213,7 +213,7 @@ pub fn wire_format_names(key: &str) -> &'static [&'static str] {
 /// does exactly this, in `ingress::finish_inner`). Derived from the format list it is a RULE, and
 /// the day a plane speaks a second dialect the boundary stops labelling it and the rule says so
 /// rather than a stale literal quietly lying.
-pub(crate) fn sole_wire_format(key: &str) -> Option<&'static str> {
+pub fn sole_wire_format(key: &str) -> Option<&'static str> {
     sole_of(wire_format_names(key))
 }
 
@@ -221,13 +221,13 @@ pub(crate) fn sole_wire_format(key: &str) -> Option<&'static str> {
 /// [`wire_format_names`] rather than written as a second literal, so a plane cannot gain a dialect
 /// in one place and keep its old count in the other — which would silently keep [`has_superset_ir`]
 /// answering the pre-change question.
-pub(crate) fn wire_formats(key: &str) -> usize {
+pub fn wire_formats(key: &str) -> usize {
     wire_format_names(key).len()
 }
 
 /// Whether this plane has EARNED a superset intermediate representation. See the module header:
 /// the threshold is two wire formats, and nothing else.
-pub(crate) fn has_superset_ir(key: &str) -> bool {
+pub fn has_superset_ir(key: &str) -> bool {
     superset_of(wire_formats(key))
 }
 
@@ -241,7 +241,7 @@ pub(crate) fn has_superset_ir(key: &str) -> bool {
 /// dialect has nothing to label a request with — but it is now a signed decision with a test
 /// (`plane/tests/`), not a match arm's accident. Same for `has_superset_ir` above: zero wire
 /// formats have earned nothing, so `superset_of(0)` is `false` BY DECISION.
-pub(crate) fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
+pub fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
     match names {
         // ZERO dialects: nothing can be labelled, deliberately — see the doc comment.
         [] => None,
@@ -251,7 +251,7 @@ pub(crate) fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
 }
 
 /// The `has_superset_ir` derivation, split out for the same zero-dialect reason as [`sole_of`].
-pub(crate) fn superset_of(wire_formats: usize) -> bool {
+pub fn superset_of(wire_formats: usize) -> bool {
     wire_formats >= 2
 }
 
@@ -353,7 +353,7 @@ impl PlaneDispatch {
     /// busbar key carries no audience at all, and the verifier rejects any token that does
     /// (`governance::signing`, the 1.6.0 plane boundary). Handing the fallback an audience here
     /// would quietly make every unclaimed path an OAuth resource server.
-    pub(crate) fn admit(self, key: &'static str, admission: PlaneAdmission) -> Self {
+    pub fn admit(self, key: &'static str, admission: PlaneAdmission) -> Self {
         // The fallback takes none — see the doc: an audience on an unmounted plane is inert, and one
         // on the fallback plane would quietly make every unclaimed path an OAuth resource server.
         if is_fallback(key) {
@@ -395,7 +395,7 @@ impl PlaneDispatch {
     /// canonical, so the order of these calls decides which path the plane calls its own. A repeated
     /// path is not claimed twice: mounting is idempotent, so a config apply that re-runs the same
     /// sequence cannot grow the table.
-    pub(crate) fn mount(self, key: &'static str, path: &str, wire: &'static str) -> Self {
+    pub fn mount(self, key: &'static str, path: &str, wire: &'static str) -> Self {
         // Mounting the fallback is a no-op: it IS the catch-all, so a second door to it is a
         // precedence question with no good answer.
         if is_fallback(key) {
@@ -443,7 +443,7 @@ impl PlaneDispatch {
     /// dialect landed — which would have silently stopped counting every request on that plane the
     /// day a second binding armed, and a metric that stops is indistinguishable from traffic that
     /// stopped.
-    pub(crate) fn wire_format_of(&self, path: &str) -> Option<&'static str> {
+    pub fn wire_format_of(&self, path: &str) -> Option<&'static str> {
         self.claims.keys().copied().find_map(|key| {
             self.claims_of(key)
                 .iter()
@@ -467,7 +467,7 @@ impl PlaneDispatch {
     /// only admits another plane's traffic once both colliding planes have a door. Unlike
     /// [`Self::mounted_plane_of`] this names a plane by its KEY, so it reports a registered plane
     /// that has no [`Plane`] variant too.
-    pub(crate) fn mounted_keys(&self) -> Vec<&'static str> {
+    pub fn mounted_keys(&self) -> Vec<&'static str> {
         self.claims.keys().copied().collect()
     }
 
@@ -500,7 +500,7 @@ impl PlaneDispatch {
     /// The fallback is reached by falling THROUGH the mount table, never by naming it, so a
     /// deployment that never enabled a given plane has no door for it and that plane's usual path is
     /// an ordinary unclaimed path. Nothing here lets a plane claim a path by URL shape.
-    pub(crate) fn ingress_of(&self, path: &str) -> Ingress {
+    pub fn ingress_of(&self, path: &str) -> Ingress {
         match self.mounted_plane_of(path) {
             Some(key) => Ingress::Mounted(key),
             // THE FALLBACK ARM, and the only place a path SHAPE decides anything. It answers
@@ -525,7 +525,7 @@ impl PlaneDispatch {
     /// The walk covers every claimed key rather than a hand-listed set of plane names: the fallback
     /// has no mount, so it is skipped by construction rather than by being left off a list a new
     /// plane would have to remember to join.
-    pub(crate) fn mounted_plane_of(&self, path: &str) -> Option<&'static str> {
+    pub fn mounted_plane_of(&self, path: &str) -> Option<&'static str> {
         self.claims.keys().copied().find(|key| {
             self.claims_of(key)
                 .iter()
@@ -555,7 +555,7 @@ impl PlaneDispatch {
 /// "unknown": an unrecognised path is not a fourth kind of thing, it is a fallback path whose
 /// dialect is not legible, which is what `Fallback(None)` says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Ingress {
+pub enum Ingress {
     /// A path a plane CLAIMS BY MOUNT, at a segment boundary, named by its registry key.
     Mounted(&'static str),
     /// The fallback plane. `Some(dialect)` when the path shape names one of the registered fallback
@@ -572,7 +572,7 @@ impl Ingress {
     /// This is the `ingress_protocol` metric-label vocabulary (see [`wire_format_names`]),
     /// so a mounted plane labels as its own dialect rather than as whichever fallback dialect its
     /// path happens to resemble.
-    pub(crate) fn wire_format(self) -> Option<&'static str> {
+    pub fn wire_format(self) -> Option<&'static str> {
         match self {
             // A plane with several dialects cannot be labelled from the boundary — which dialect
             // spoke is a fact only its reader knows. `sole_wire_format` is that rule, computed.
@@ -602,7 +602,7 @@ impl Ingress {
     /// interface list is an ORDERED list whose first entry is the preferred binding, busbar's own
     /// card publishes these in this order, and a refusal that cannot know which binding the caller
     /// intended is owed the one the card names first.
-    pub(crate) fn shaping_wire_format(self) -> Option<&'static str> {
+    pub fn shaping_wire_format(self) -> Option<&'static str> {
         match self {
             Ingress::Mounted(key) => wire_format_names(key).first().copied(),
             Ingress::Fallback(dialect) => dialect,
@@ -648,8 +648,15 @@ fn path_is_under(path: &str, mount: &str) -> bool {
 /// "that is defined on a different section of this plane". A bare not-found would send someone
 /// hunting for a typo that is not there, which is why an unknown name is a genuinely different
 /// error.
+///
+/// The TYPE (and [`RefError`], [`Self::insert`], [`Self::resolve`]) are `pub` rather than
+/// `pub(crate)` so `tests/plane_config_cross_plane.rs::the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary`
+/// can drive the resolve-time refusal directly, over the REAL plane roster, exactly as the sibling
+/// parse-time refusal in that file already does — the same "internal-only `busbar-kernel` crate
+/// (`publish = false`) pays that cost" reasoning `registry_cross_plane.rs`'s header gives for its own
+/// widened seams.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PlaneSections<T> {
+pub struct PlaneSections<T> {
     /// One section per plane, keyed by plane registry key. An absent key is an EMPTY section, read
     /// as such by every accessor — the same answer the old three hard fields gave for a plane that
     /// happened to hold nothing. Iteration order is never taken from this map's own key order:
@@ -661,7 +668,7 @@ pub(crate) struct PlaneSections<T> {
 /// Why a name did not resolve. The two arms are kept distinct because only one of them is
 /// actionable in the same way.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum RefError {
+pub enum RefError {
     /// The name exists, but on ANOTHER plane. A plane boundary violation.
     CrossPlane {
         name: String,
@@ -720,7 +727,7 @@ impl<T> PlaneSections<T> {
     }
 
     /// Declare `name` on `plane`.
-    pub(crate) fn insert(&mut self, plane: &'static str, name: &str, entry: T) -> Option<T> {
+    pub fn insert(&mut self, plane: &'static str, name: &str, entry: T) -> Option<T> {
         self.map_mut(plane).insert(name.to_string(), entry)
     }
 
@@ -741,7 +748,7 @@ impl<T> PlaneSections<T> {
     /// The sibling scan runs in [`plane_keys`] (LAYERING) order so a name defined on several other
     /// planes always diagnoses the same one. A nondeterministic diagnostic is worse than none: it
     /// makes a boot failure unreproducible.
-    pub(crate) fn resolve(&self, plane: &'static str, name: &str) -> Result<&T, RefError> {
+    pub fn resolve(&self, plane: &'static str, name: &str) -> Result<&T, RefError> {
         if let Some(entry) = self.sections.get(plane).and_then(|m| m.get(name)) {
             return Ok(entry);
         }
@@ -778,9 +785,93 @@ impl<T> PlaneSections<T> {
     }
 }
 
+// `plane_tests` MOVED to `tests/plane_dispatch_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
+// cleanup): it hard-codes the real `"llm"`/`"mcp"`/`"a2a"` keys and asserts against their REAL
+// declared wire formats (the actual dialect/plane registries), which only type-checks/behaves
+// correctly with ONE `busbar_kernel` in the graph and a real roster registered — an integration-test
+// target, never this `#[cfg(test)]` unit module. See that file's header.
+
+/// Build one ALL-STUB `PlaneDecl` for [`isolated_three_plane_test_registry`] — every hook is
+/// `None`/no-op (no dialect, no wire format, no scope kind), like
+/// [`crate::test_support::register_neutral_test_plane`]'s single fixture. `const fn` because it
+/// backs `static` initializers: a function POINTER is a compile-time constant regardless of what
+/// the function body does, so the closures below cost nothing to name here.
 #[cfg(test)]
-#[path = "tests/plane_tests.rs"]
-mod plane_tests;
+const fn neutral_sibling_decl(
+    key: &'static str,
+    config_section: &'static str,
+    subject_noun: &'static str,
+) -> registry::PlaneDecl {
+    registry::PlaneDecl {
+        key,
+        fallback: false,
+        config_section,
+        scope_kinds: &[],
+        subject_noun,
+        admin_noun: subject_noun,
+        audit_kind: subject_noun,
+        wire_format_names: || &[],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        card_signing_domain: None,
+        card_kid_prefix: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        owned_config_sections: &[],
+        resolve_provider: None,
+    }
+}
+
+/// THE NEUTRAL THREE-PLANE TEST REGISTRY — for [`PlaneSections`]'s own unit tests (`sections_tests`).
+/// Unlike [`crate::test_support::register_neutral_test_plane`] (ONE plane: "some plane exists so a
+/// config section has an owner"), these are the CONTAINER's own tests: they exercise
+/// [`PlaneSections::resolve`]'s sibling walk over THREE distinct registered keys, and one of them
+/// (`sections_tests::iteration_covers_every_plane_and_attributes_each_entry`) counts [`plane_keys`]
+/// against exactly the entries it inserted, so the registered set must be EXACTLY these three:
+/// nothing a sibling test left registered, nothing more.
+///
+/// The three keys are DELIBERATELY not `"llm"`/`"mcp"`/`"a2a"`: this generic multi-tenant container
+/// asserts nothing about what any real plane IS or DOES, and core naming those literals — even in a
+/// `#[cfg(test)]`-only synthetic `PlaneDecl` — is exactly what the A6/HostCtx dev-dependency-cycle
+/// cleanup deleted `TEST_BUILTIN_PLANE_DECLS` to stop (`cargo xtask gate construction`'s
+/// `neutral-no-dialect` rule, ceiling 0, enforces this). `"alpha"`/`"beta"`/`"gamma"` are three
+/// registry keys and nothing else. The one test in this file that DID need a real plane's own
+/// section-name prose (`the_refusal_message_is_actionable`) moved to
+/// `tests/plane_config_cross_plane.rs`, where naming the real planes is licensed.
+///
+/// Returns the [`registry::TestRegistryIsolation`] guard, which the caller holds for its test body's
+/// lifetime: the registered set stays exactly these three regardless of what ran before it or runs
+/// concurrently with it.
+#[cfg(test)]
+pub(crate) fn isolated_three_plane_test_registry() -> registry::TestRegistryIsolation {
+    static ALPHA: registry::PlaneDecl = neutral_sibling_decl("alpha", "alpha-section", "alpha thing");
+    static BETA: registry::PlaneDecl = neutral_sibling_decl("beta", "beta-section", "beta thing");
+    static GAMMA: registry::PlaneDecl = neutral_sibling_decl("gamma", "gamma-section", "gamma thing");
+    // `TestRegistryIsolation::seeded`, NOT `empty()` followed by `register_test_plane`: the guard
+    // holds `TEST_REGISTRY_SERIAL` for its whole lifetime, and `register_test_plane` takes that same
+    // (non-reentrant) lock — calling it after `empty()` on this thread would self-deadlock. `seeded`
+    // installs the three decls atomically under the one lock acquisition instead.
+    registry::TestRegistryIsolation::seeded(&[&ALPHA, &BETA, &GAMMA])
+}
 
 #[cfg(test)]
 #[path = "tests/sections_tests.rs"]

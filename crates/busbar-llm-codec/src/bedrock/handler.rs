@@ -530,7 +530,8 @@ pub fn read_embeddings_response(
     }
     let usage = v
         .get("inputTextTokenCount")
-        .and_then(Value::as_u64)
+        // BILLED COUNT: through the one seam — see `usage_count::read_count_u64`.
+        .and_then(crate::usage_count::read_count_u64)
         .map(|n| busbar_substrate_values::billing::TokenUsage {
             input: n,
             ..Default::default()

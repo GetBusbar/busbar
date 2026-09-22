@@ -1,0 +1,381 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (C) 2026 Busbar Inc and contributors -->
+
+# The busbar audit chain, `busbar.audit.digest.v1`
+
+**This is a public contract, not a description of an implementation.** It is written down so that a
+third party can verify a busbar node's audit chain *without the busbar binary* — without our code,
+our libraries, or our word for anything. If only busbar can verify busbar's chain then the chain is
+a claim, and a claim is not evidence.
+
+`scripts/verify-audit-chain.py` in this repository is an implementation of exactly this document and
+nothing else: Python standard library only, no busbar, no third-party crypto package, no `openssl`
+subprocess. It exists as the acceptance test for this page. If it could not reproduce a real chain
+from this page alone, the page would be wrong.
+
+---
+
+## 1. What a signature here does and does not prove
+
+| It proves | It does not prove |
+| --- | --- |
+| The record's fields are the ones that were sealed — any edit changes the digest. | That the operator did not rewrite the whole chain and re-sign it. |
+| The record was produced by a holder of the published key, at seal time, in the node's own process. | That the node's clock was honest. |
+| The run of records is contiguous and unbroken between the positions you fetched. | That records before or after the window you fetched exist, unless you check the head. |
+
+**The claim boundary is load-bearing and we will not blur it.** An operator holding the signing key
+can rewrite the chain AND re-sign it, and no amount of checking signatures will detect that. What
+detects it is a head recorded somewhere the operator cannot reach — an **anchor** — and a node
+cannot anchor to itself.
+
+So a self-hosted node may honestly claim *signed and tamper-evident*: "prove it to yourself and your
+auditor". Only an externally anchored head earns *"prove it to a counterparty who trusts neither of
+us"*. Do not let a marketing claim outrun which of the two is deployed.
+
+The signature is nonetheless **minted at seal time, in the sealing process, and this is the half
+that cannot be added later.** A signature applied after the fact by a receiver proves that the
+receiver got those bytes, not that the node produced them — so every record sealed before signing
+exists is permanently unprovable, whatever is built afterwards.
+
+---
+
+## 2. The three reads
+
+All three are `GET`, all three are read-only, and the node only ever **answers**. It opens no
+outbound connection for any of this, holds no cloud credential, and phones nobody. That is what lets
+a firewalled node be audited and an airgapped operator `curl` their own evidence.
+
+| Read | Answers with |
+| --- | --- |
+| `GET /api/v1/admin/audit/head` | The chain's tip: position, digest, signature, key identifier, clock — plus `next_seq`. |
+| `GET /api/v1/admin/audit/range?from=&to=` | Records by position, inclusive at both ends, each carrying **every field its digest was taken over**, plus the digest, the signature and the key identifier. |
+| `GET /api/v1/admin/audit/keys` | The public keys, so a verifier never has to ask us for a key out of band. |
+
+The range read carries the records' *digest inputs*, already reduced to the exact text or number
+that goes into the preimage. That is deliberate: a verifier should not have to reimplement our enum
+spellings to check a signature.
+
+A range whose window runs off either end of what the node holds is **shorter**, not an error.
+
+---
+
+## 3. The digest
+
+```
+hash = SHA-256( framed(field₁) ‖ framed(field₂) ‖ … ‖ framed(field₄₄) )
+```
+
+rendered as **64 lowercase hexadecimal characters**.
+
+### 3.1 Framing: length-prefixed, never separator-joined
+
+```
+framed(text)   = be_u64(len(utf8_bytes)) ‖ utf8_bytes
+framed(number) = be_u64(8)               ‖ be_u64(value)
+```
+
+`be_u64` is the unsigned 64-bit big-endian encoding. Fields are concatenated with **nothing between
+them**.
+
+**Why this and not a separator.** These fields hold arbitrary caller-named text — an operation class
+a caller named, a destination, a bucket chain reference, a tool name that came in from upstream. A
+separator-joined digest is only safe while no field can contain the separator, and that is a
+property of today's *values*, not of the code: it stops being true the first time somebody names a
+tool with a bar in it. Length prefixes make the split between fields unforgeable whatever the fields
+hold, so a caller who controls one field's bytes cannot make the same byte stream read as a
+different split.
+
+The previous release's *admin mutation* chain does use a bar-joined framing, and keeps it, because
+its records are already on disk. That is a different stream with a different tag; it is not this one.
+
+### 3.2 Text and number are different framings, and getting it wrong looks like tampering
+
+`framed(7)` and `framed("7")` are different byte strings. A verifier that treats `tier_bp` as text,
+or `priced` as a number, computes a different digest and will report an honest chain as tampered.
+The `kind` column below is not documentation, it is part of the contract. The published body keeps
+the distinction visible: recipe numbers are JSON numbers, recipe texts are JSON strings.
+
+### 3.3 Wide numbers travel as text
+
+`emission_delta`, `pre_tier`, `priced` and `hooks[].priced_delta` are signed and up to 128-bit. They
+are digested as their **decimal text** (`"-10"`, `"540"`) and published as JSON **strings**, because
+a JSON number wide enough to hold them is not safely readable by most parsers — and through an
+`f64` it is not readable at all.
+
+### 3.4 Absent optional fields digest as the empty string
+
+`destination`, `pre_hook_head`, `post_hook_head`, `step`, `hold_ref`, `settle_ref`, `slice_ref`,
+`lease_ref` and `correlation_hash` digest as `""` when absent; `parent` digests as `0`. In the
+published body they appear with their digest value (the empty string), so what you read is what you
+frame.
+
+### 3.5 The repeated groups
+
+`lines`, `hooks` and `children` are each preceded by their own **count** field, which is itself
+digested. The count is what stops two different groupings of the same values from digesting
+identically. Elements are framed in order, each element's members in the order below.
+
+### 3.6 The field order
+
+| # | Field | Kind |
+| --- | --- | --- |
+| 1 | `prev_hash` | text |
+| 2 | `seq` | number |
+| 3 | `subject_tag` | text |
+| 4 | `subject_value` | text |
+| 5 | `unit_key` | number |
+| 6 | `op_class` | text |
+| 7 | `destination` | text |
+| 8 | `parent` | number |
+| 9 | `pre_hook_head` | text |
+| 10 | `post_hook_head` | text |
+| 11 | `wall` | number |
+| 12 | `mono` | number |
+| 13 | `origin_kind` | text |
+| 14 | `outcome` | text |
+| 15 | `step` | text |
+| 16 | `finish` | text |
+| 17 | `hook_failed` | number |
+| 18 | `emission_delta` | text |
+| 19 | `stale_policy` | number |
+| 20 | `lines_count` | number |
+| 21 | `lines[].class` | text |
+| 22 | `lines[].quantity` | number |
+| 23 | `lines[].source` | text |
+| 24 | `lines[].estimated` | number |
+| 25 | `pre_tier` | text |
+| 26 | `priced` | text |
+| 27 | `tier_bp` | number |
+| 28 | `fee_count` | number |
+| 29 | `currency` | text |
+| 30 | `rate_card_version` | number |
+| 31 | `bucket_chain_ref` | text |
+| 32 | `hold_ref` | text |
+| 33 | `settle_ref` | text |
+| 34 | `slice_ref` | text |
+| 35 | `lease_ref` | text |
+| 36 | `lease_epoch` | number |
+| 37 | `policy_epoch` | number |
+| 38 | `hooks_count` | number |
+| 39 | `hooks[].hook` | text |
+| 40 | `hooks[].priced_delta` | text |
+| 41 | `replayed` | number |
+| 42 | `children_count` | number |
+| 43 | `children[]` | number |
+| 44 | `correlation_hash` | text |
+
+Fields 21–24 repeat once per usage line, 39–40 once per hook, 43 once per child unit.
+
+`subject_tag` is one of `principal`, `arrival`, `node`, `aggregate`; `subject_value` is the
+pseudonym for a principal, the node's number for a node, and empty otherwise. `outcome`, `step`,
+`finish` and `lines[].source` are frozen text spellings the node publishes verbatim — you never need
+to derive them, only to frame what you were given.
+
+---
+
+## 4. The signature
+
+```
+preimage  = "busbar.audit.record.v1" ‖ 0x00 ‖ hash_as_64_lowercase_hex_ascii
+signature = Ed25519-Sign(private_key, preimage)      # published as 128 lowercase hex characters
+```
+
+Verification is **strict** Ed25519 (RFC 8032 with the cofactorless equation and the canonical-`S`
+check), the same rule `ed25519-dalek`'s `verify_strict` applies. A small-order public key is
+refused, because it would verify every signature.
+
+The digest goes into the preimage as its **hex text**, not as the 32 raw bytes it spells, because
+the hex text is what the record carries and what a reader actually read — one less place for two
+implementations to differ over case, padding or whitespace.
+
+The domain prefix is not decoration. Without it, a signature over a bare SHA-256 could be replayed
+from any other protocol that signs a SHA-256 with the same key.
+
+### 4.1 Key identifiers are derived, not assigned
+
+```
+key_id = first 8 bytes of SHA-256(public_key_bytes), as 16 lowercase hex characters
+```
+
+Derived so that a verifier holding the published key can **recompute** it rather than be told it.
+`verify-audit-chain.py` refuses a key set whose `key_id` is not the derivation of its own key.
+
+The identifier is a name, not a fingerprint to trust: what proves a record is the **signature**
+checked against the published key, never the identifier.
+
+Keys are only ever **added** to the published set. Removing one makes every record it signed
+unverifiable, which is indistinguishable from those records having been forged.
+
+---
+
+## 5. Checking the chain, not just the records
+
+1. **Link and position.** Record *n*'s `prev_hash` is record *n−1*'s `hash`, and `seq` is
+   contiguous. The genesis record has `prev_hash == ""` and `seq == 1`.
+2. **Digest.** Recompute each `hash` from the published fields. A mismatch means that record was
+   edited.
+3. **Signature.** Check each `signature` against the published key named by `key_id`.
+4. **The tail.** A run of records whose last record was dropped still links and numbers perfectly
+   among themselves — a truncation is invisible from the records alone. Compare against the head
+   read: a window that asked for `..to` and stopped short of `min(to, head.seq)` has records missing
+   from its end.
+5. **The window's anchor.** A range you cannot trace back to the genesis is a window. Its `anchor`
+   member is the head this node published at or before `to` — and that anchor is what you compare
+   against a head you recorded yourself, earlier, elsewhere.
+
+An **empty** run verifies, deliberately: "this chain has no records" and "every record was deleted"
+are indistinguishable from the records alone, and claiming otherwise would claim a guarantee nothing
+can provide.
+
+---
+
+## 6. Head history outlives record retention
+
+Records age out; an operator is entitled to a retention window. Heads do not age out at all.
+
+A head is about a hundred bytes. Sampled hourly, that is 8 760 a year — under a megabyte. A node
+that cannot afford a megabyte a year cannot afford an audit chain either.
+
+So a puller that was offline while a window's records were pruned has lost the records, which was
+the deal, and **still has the anchor for that window**, which was never on the table. The retention
+pass cannot reach the head history: `AuditChain::prune_records_before` takes `&self`, so it cannot
+borrow the anchors mutably at all, and that is a compile error rather than a request.
+
+The genesis head is always kept, whatever the sampling rate.
+
+---
+
+## 7. A worked example
+
+A single-record chain, sealed with the RFC 8032 test key
+`9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60` (public half
+`d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a`, key id `21fe31dfa154a261`). Its
+preimage is 490 bytes; the digest is
+`6d63c9b009b359b7f573cab94fc09b03c021b3d00d34ff7b0f884986c8c77a7a`.
+
+`GET /api/v1/admin/audit/range?from=1&to=1`:
+
+```json
+{
+  "recipe": "busbar.audit.digest.v1",
+  "signature_domain": "busbar.audit.record.v1",
+  "algorithm": "ed25519",
+  "from": 1,
+  "to": 1,
+  "anchor": {
+    "seq": 1,
+    "hash": "6d63c9b009b359b7f573cab94fc09b03c021b3d00d34ff7b0f884986c8c77a7a",
+    "signature": "3c487684db7c0943388cc64ed44fd224252678bcf9d8303b34ee7e27e9fdf437fd1ffeacedf78c902dc4b323b971c1fb1d1615f101d892afb6f5236eb05eb103",
+    "key_id": "21fe31dfa154a261",
+    "wall": 1700000000
+  },
+  "records": [
+    {
+      "prev_hash": "",
+      "seq": 1,
+      "subject_tag": "node",
+      "subject_value": "7",
+      "unit_key": 9,
+      "op_class": "chat.completion",
+      "destination": "",
+      "parent": 0,
+      "pre_hook_head": "",
+      "post_hook_head": "",
+      "wall": 1700000000,
+      "mono": 42,
+      "origin_kind": "client",
+      "outcome": "Completed",
+      "step": "",
+      "finish": "Error",
+      "hook_failed": 1,
+      "emission_delta": "-7",
+      "stale_policy": 1,
+      "lines_count": 0,
+      "lines": [],
+      "pre_tier": "600",
+      "priced": "540",
+      "tier_bp": 9000,
+      "fee_count": 1,
+      "currency": "USD",
+      "rate_card_version": 3,
+      "bucket_chain_ref": "chain:free>paid",
+      "hold_ref": "",
+      "settle_ref": "",
+      "slice_ref": "",
+      "lease_ref": "",
+      "lease_epoch": 4,
+      "policy_epoch": 7,
+      "hooks_count": 0,
+      "hooks": [],
+      "replayed": 1,
+      "children_count": 0,
+      "children": [],
+      "correlation_hash": "",
+      "hash": "6d63c9b009b359b7f573cab94fc09b03c021b3d00d34ff7b0f884986c8c77a7a",
+      "signature": "3c487684db7c0943388cc64ed44fd224252678bcf9d8303b34ee7e27e9fdf437fd1ffeacedf78c902dc4b323b971c1fb1d1615f101d892afb6f5236eb05eb103",
+      "key_id": "21fe31dfa154a261"
+    }
+  ]
+}
+```
+
+`GET /api/v1/admin/audit/head`:
+
+```json
+{
+  "recipe": "busbar.audit.digest.v1",
+  "signature_domain": "busbar.audit.record.v1",
+  "algorithm": "ed25519",
+  "next_seq": 2,
+  "head": {
+    "seq": 1,
+    "hash": "6d63c9b009b359b7f573cab94fc09b03c021b3d00d34ff7b0f884986c8c77a7a",
+    "signature": "3c487684db7c0943388cc64ed44fd224252678bcf9d8303b34ee7e27e9fdf437fd1ffeacedf78c902dc4b323b971c1fb1d1615f101d892afb6f5236eb05eb103",
+    "key_id": "21fe31dfa154a261",
+    "wall": 1700000000
+  }
+}
+```
+
+`GET /api/v1/admin/audit/keys`:
+
+```json
+{
+  "recipe": "busbar.audit.digest.v1",
+  "signature_domain": "busbar.audit.record.v1",
+  "algorithm": "ed25519",
+  "keys": [
+    {
+      "key_id": "21fe31dfa154a261",
+      "algorithm": "ed25519",
+      "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    }
+  ]
+}
+```
+
+Checking it:
+
+```console
+$ ./scripts/verify-audit-chain.py --range range.json --keys keys.json --head head.json
+head: seq 1, hash 6d63c9b009b359b7f573cab94fc09b03c021b3d00d34ff7b0f884986c8c77a7a
+OK: 1 record(s) verified, 1 of them signed, 1 published key(s)
+    recipe busbar.audit.digest.v1, framing length-prefixed, signature domain busbar.audit.record.v1
+```
+
+The three bodies above are **this build's own output**, asserted by
+`the_worked_example_in_the_published_spec_is_what_this_build_answers_with` in
+`crates/busbar-kernel-audit/src/tests/sign_tests.rs`. The page cannot drift from the code without
+that test going red.
+
+---
+
+## 8. Versioning
+
+Every published body names `"recipe": "busbar.audit.digest.v1"` and
+`"signature_domain": "busbar.audit.record.v1"`. A verifier should refuse a recipe it does not know
+rather than guess.
+
+A future recipe gets a new name and lives **beside** this one. The field order here never changes:
+moving it would make every chain already on disk report its own history as tampered at the next
+boot, which is the one migration this contract may never make quietly.

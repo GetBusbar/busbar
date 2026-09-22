@@ -34,14 +34,21 @@ use busbar_contract::caps::{
     Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, Pass, UnitKey,
 };
 
-use crate::legacy::chain::{digest, seal, verify_chain, ChainedRecord, Digest, Framing};
-use crate::legacy::{AuditEntry, AuditInput, ADMIN_LOG, OUTCOME_APPLIED, OUTCOME_REJECTED};
+use crate::legacy::chain::{digest, seal, verify_chain, Chain, ChainedRecord, Digest, Framing};
+use crate::legacy::{
+    AuditEntry, AuditInput, ADMIN_LOG, AUDIT_SCHEME_LENGTH_PREFIXED, AUDIT_SCHEME_PIPE,
+    OUTCOME_APPLIED, OUTCOME_REJECTED,
+};
 use crate::record::{
     Amount, Audit, AuditChain, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts,
     QuantitySource, Subject, UsageLine, What,
 };
 
-/// An admin entry at a position, with no hash on it yet.
+/// An admin entry at a position, with no hash on it yet. Carries [`AUDIT_SCHEME_PIPE`] — every
+/// caller here is either feeding these fields straight into `admin_preimage` (which never reads
+/// `scheme` at all) or is reconstructing what an OLD, already-persisted record's fields were, so
+/// scheme 1 is what the returned entry represents either way. A test that needs a scheme-2 entry
+/// overrides `.scheme` on the value this returns, same as it would override any other field.
 fn unsealed(
     seq: u64,
     ts: u64,
@@ -60,6 +67,7 @@ fn unsealed(
         principal: principal.to_string(),
         prev_hash: prev_hash.to_string(),
         hash: String::new(),
+        scheme: AUDIT_SCHEME_PIPE,
         recorded_here: false,
     }
 }
@@ -348,12 +356,19 @@ fn a_chain_sealed_entirely_under_the_legacy_framing_verifies() {
     }
 }
 
-/// EVERY ENTRY THIS BUILD SEALS ONTO THE ADMIN CHAIN GOES THROUGH ONE CONSTRUCTION PATH.
+/// EVERY ENTRY THIS BUILD SEALS ONTO THE ADMIN CHAIN GOES THROUGH ONE CONSTRUCTION PATH, AND IT
+/// SEALS UNDER SCHEME 2.
 ///
 /// [`seal`] is the only thing that may set a hash, and it takes the sequence and the previous hash
 /// as arguments from whatever owns the position rather than from the caller's payload. So a caller
 /// cannot choose its own link, and there is no branch by which one could ask for a different
-/// framing.
+/// framing or scheme.
+///
+/// NOTE: this is deliberately NOT `<AuditEntry as ChainedRecord>::FRAMING` (which still names scheme
+/// 1 -- see that const's own doc). A fresh entry's digest is governed by `entry.framing()`, read off
+/// the `scheme` tag [`AuditEntry::link`] itself writes, and this test pins that a fresh entry's
+/// framing is [`Framing::LengthPrefixed`] -- the property that closes the collision, checked at the
+/// real construction path rather than the raw `Digest` primitive.
 #[test]
 fn the_only_construction_path_seals_with_the_chains_own_framing() {
     let entry: AuditEntry = seal(
@@ -374,9 +389,13 @@ fn the_only_construction_path_seals_with_the_chains_own_framing() {
         "a freshly sealed entry did not verify"
     );
     assert_eq!(
+        entry.scheme, AUDIT_SCHEME_LENGTH_PREFIXED,
+        "a freshly sealed entry must carry the scheme tag that closes the collision, not scheme 1"
+    );
+    assert_eq!(
         entry.hash,
         admin_preimage(
-            <AuditEntry as ChainedRecord>::FRAMING,
+            Framing::LengthPrefixed,
             &unsealed(
                 1,
                 1_700_000_000,
@@ -387,7 +406,7 @@ fn the_only_construction_path_seals_with_the_chains_own_framing() {
                 "alice",
             ),
         ),
-        "the sealed digest is not the one the record type's framing produces over its own fields"
+        "the sealed digest is not the one Framing::LengthPrefixed produces over the same fields"
     );
 }
 
@@ -474,4 +493,204 @@ fn the_legacy_framing_still_joins_on_a_bar_with_integers_in_decimal() {
     let mut empty_lead = Digest::new(Framing::PipeSeparated);
     empty_lead.text("").text("after");
     assert_eq!(empty_lead.bytes(), b"|after");
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// THE SCHEME TAG — the four properties the owner's fix has to prove, exercised through the REAL
+// `AuditEntry` + `ChainedRecord` wiring (`AuditEntry::framing`, `AuditEntry::link`, `digest`,
+// `verify_chain`), not just the raw `Digest` primitive the tests above already cover.
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+
+/// 1. THE COLLISION, CLOSED AT THE WIRING — not just the primitive.
+///
+/// The same pair `two_mutations_that_collide_under_the_pipe_join_have_distinct_length_framed_digests`
+/// demonstrates on the bare `Digest`, this time sealed as REAL `AuditEntry` records at each scheme
+/// through `AuditEntry::framing`. Scheme 1 (every record already on disk) still collides on this
+/// pair — that is the defect scheme 2 exists to close, not a property removed from scheme 1, since
+/// removing it would change what an old record hashes to. Scheme 2 (what `link` seals every fresh
+/// record under) must not.
+#[test]
+fn the_collision_pair_does_not_survive_a_records_own_scheme_2_tag() {
+    let mut honest = unsealed(
+        7,
+        1_700_000_007,
+        "cafe",
+        "hook.register",
+        "hook:x",
+        OUTCOME_REJECTED,
+        "applied|mallory",
+    );
+    let mut lie = unsealed(
+        7,
+        1_700_000_007,
+        "cafe",
+        "hook.register",
+        "hook:x|rejected",
+        OUTCOME_APPLIED,
+        "mallory",
+    );
+
+    honest.scheme = AUDIT_SCHEME_PIPE;
+    lie.scheme = AUDIT_SCHEME_PIPE;
+    assert_eq!(
+        digest(&honest),
+        digest(&lie),
+        "scheme 1 must still collide on this pair -- that is the vulnerability scheme 2 exists to \
+         close, and an old record's digest must not move"
+    );
+
+    honest.scheme = AUDIT_SCHEME_LENGTH_PREFIXED;
+    lie.scheme = AUDIT_SCHEME_LENGTH_PREFIXED;
+    assert_ne!(
+        digest(&honest),
+        digest(&lie),
+        "scheme 2, selected per-record through AuditEntry::framing, must not collide on the pair \
+         that closes over a REJECTED mutation and an APPLIED one"
+    );
+}
+
+/// 2. OLD RECORDS STILL VERIFY, DIGEST BYTE-IDENTICAL TO BEFORE.
+///
+/// The exact production golden pinned three times elsewhere in this tree
+/// (`crates/busbar-kernel/src/audit/tests/boot_verify_golden.rs`'s `AD_1`, the durable-seam golden in
+/// `plane_host/tests/journal_tests.rs`'s `G_AD_1`, and the byte-identity witness in
+/// `plane/tests/auditlog_tests.rs`): a real admin entry, genesis position. An ABSENT scheme tag on a
+/// record read back off a store this build has never touched reads as scheme 1 by
+/// `#[serde(default)]` -- exactly what `unsealed`'s own default represents -- and digests to the
+/// exact bytes a build from before this change computed.
+#[test]
+fn a_scheme_one_record_digests_to_the_exact_bytes_it_always_did() {
+    let entry = unsealed(
+        1,
+        1_700_000_000,
+        "",
+        "hook.register",
+        "hook:compress",
+        OUTCOME_APPLIED,
+        "admin",
+    );
+    assert_eq!(
+        entry.scheme, AUDIT_SCHEME_PIPE,
+        "unsealed()'s own default must be scheme 1 for this pin to mean anything"
+    );
+    assert_eq!(
+        digest(&entry),
+        "52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa",
+        "a scheme-1 record's digest moved -- every deployment's chain would report itself tampered \
+         at its next boot"
+    );
+}
+
+/// 3. NEW RECORDS SEAL UNDER SCHEME 2 AND CARRY THE TAG.
+///
+/// Covered end to end by `the_only_construction_path_seals_with_the_chains_own_framing` above (the
+/// real `seal` path, asserting both the `scheme` field and the digest it produces). This test adds
+/// the wire-level half: the tag a fresh entry carries is not merely an in-memory field, it is
+/// actually PRESENT in the encoded record, because a verifier reading it back off a store must be
+/// able to see which rules it was sealed under. `crate::tests::legacy_ring_tests` pins the
+/// analogous property for the ring's own encode (nine wire fields for a live entry, `scheme` named
+/// explicitly).
+#[test]
+fn a_freshly_sealed_entry_carries_its_scheme_on_the_wire() {
+    let entry: AuditEntry = seal(
+        ADMIN_LOG,
+        1,
+        String::new(),
+        AuditInput {
+            ts: 1_700_000_000,
+            action: "hook.register".to_string(),
+            resource: "hook:x".to_string(),
+            outcome: OUTCOME_APPLIED.to_string(),
+            principal: "alice".to_string(),
+        },
+    );
+    let json = serde_json::to_value(&entry).expect("AuditEntry encodes");
+    assert_eq!(
+        json.get("scheme").and_then(serde_json::Value::as_u64),
+        Some(u64::from(AUDIT_SCHEME_LENGTH_PREFIXED)),
+        "a freshly sealed entry's scheme tag is not on the wire -- a verifier reading it back could \
+         not tell which rules it was sealed under"
+    );
+
+    // And an OLD encoded record -- no `scheme` key at all -- decodes with the tag defaulting to
+    // scheme 1, which is what every such record actually is.
+    let old_json = serde_json::json!({
+        "seq": 1u64,
+        "ts": 1_700_000_000u64,
+        "action": "hook.register",
+        "resource": "hook:x",
+        "outcome": OUTCOME_APPLIED,
+        "principal": "alice",
+        "prev_hash": "",
+        "hash": entry.hash,
+    });
+    let decoded: AuditEntry =
+        serde_json::from_value(old_json).expect("a pre-scheme record still decodes");
+    assert_eq!(
+        decoded.scheme, AUDIT_SCHEME_PIPE,
+        "a record with no scheme key on the wire must read back as scheme 1"
+    );
+}
+
+/// 4. A CHAIN MIXING BOTH SCHEMES VERIFIES END TO END.
+///
+/// The realistic state of any store that existed before this change: an old tail sealed under scheme
+/// 1, and every record appended since under scheme 2. `verify_chain` walks both halves with no
+/// special-casing -- each record's own `scheme` tag says how to check it.
+#[test]
+fn a_chain_mixing_scheme_one_and_scheme_two_records_verifies_end_to_end() {
+    let mut legacy = unsealed(
+        1,
+        1_700_000_000,
+        "",
+        "hook.register",
+        "hook:compress",
+        OUTCOME_APPLIED,
+        "admin",
+    );
+    legacy.scheme = AUDIT_SCHEME_PIPE;
+    let legacy = sealed(legacy);
+    assert_eq!(
+        legacy.hash, "52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa",
+        "the scheme-1 half of this mixed chain is the same golden entry pinned elsewhere in this file"
+    );
+
+    // Continue the chain the REAL way -- through `Chain`/`seal` -- so record 2 is exactly what this
+    // build actually mints today: scheme 2, linked onto the scheme-1 tail.
+    let mut chain: Chain<AuditEntry> = Chain::from_persisted_unverified(std::slice::from_ref(&legacy));
+    let fresh = chain.append(
+        ADMIN_LOG,
+        AuditInput {
+            ts: 1_700_000_060,
+            action: "hook.delete".to_string(),
+            resource: "hook:compress".to_string(),
+            outcome: OUTCOME_APPLIED.to_string(),
+            principal: "admin".to_string(),
+        },
+    );
+    assert_eq!(
+        fresh.scheme, AUDIT_SCHEME_LENGTH_PREFIXED,
+        "the record appended after this change must carry the new scheme"
+    );
+    assert_eq!(fresh.prev_hash, legacy.hash, "record 2 links record 1");
+
+    let mixed = vec![legacy, fresh];
+    verify_chain(&mixed).expect(
+        "a chain mixing a scheme-1 record already on disk with a scheme-2 record appended after \
+         this change must verify end to end",
+    );
+
+    // And it is still tamper-evident across the seam: editing either half breaks the walk.
+    let mut tampered = mixed.clone();
+    tampered[0].principal = "mallory".to_string();
+    assert!(
+        verify_chain(&tampered).is_err(),
+        "a tamper on the scheme-1 half of a mixed chain went undetected"
+    );
+    let mut tampered = mixed;
+    tampered[1].resource = "hook:evil".to_string();
+    assert!(
+        verify_chain(&tampered).is_err(),
+        "a tamper on the scheme-2 half of a mixed chain went undetected"
+    );
 }

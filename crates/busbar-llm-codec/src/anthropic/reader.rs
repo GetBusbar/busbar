@@ -6,7 +6,7 @@ impl ProtocolReader for AnthropicReader {
         tail: &[u8],
     ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
+        let u64_field = |k: &str| v.get(k).and_then(crate::usage_count::read_count_u64);
         Some(
             crate::ir::IrUsage {
                 input_tokens: u64_field("input_tokens").unwrap_or(0),
@@ -419,14 +419,20 @@ impl ProtocolReader for AnthropicReader {
                     .get("message")
                     .and_then(|m| m.get("usage"))
                     .map(|u| IrUsage {
-                        input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-                        output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                        input_tokens: u
+                            .get("input_tokens")
+                            .and_then(crate::usage_count::read_count_u64)
+                            .unwrap_or(0),
+                        output_tokens: u
+                            .get("output_tokens")
+                            .and_then(crate::usage_count::read_count_u64)
+                            .unwrap_or(0),
                         cache_creation_input_tokens: u
                             .get("cache_creation_input_tokens")
-                            .and_then(|v| v.as_u64()),
+                            .and_then(crate::usage_count::read_count_u64),
                         cache_read_input_tokens: u
                             .get("cache_read_input_tokens")
-                            .and_then(|v| v.as_u64()),
+                            .and_then(crate::usage_count::read_count_u64),
                         // `message_start.message.usage` carries the same `cache_creation` tier
                         // object the buffered response does — and this is the frame that reports
                         // cache writes on an Anthropic stream, so defaulting it away lost the whole
@@ -553,18 +559,18 @@ impl ProtocolReader for AnthropicReader {
                 let usage = IrUsage {
                     input_tokens: usage_val
                         .and_then(|u| u.get("input_tokens"))
-                        .and_then(|v| v.as_u64())
+                        .and_then(crate::usage_count::read_count_u64)
                         .unwrap_or(0),
                     output_tokens: usage_val
                         .and_then(|u| u.get("output_tokens"))
-                        .and_then(|v| v.as_u64())
+                        .and_then(crate::usage_count::read_count_u64)
                         .unwrap_or(0),
                     cache_creation_input_tokens: usage_val
                         .and_then(|u| u.get("cache_creation_input_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(crate::usage_count::read_count_u64),
                     cache_read_input_tokens: usage_val
                         .and_then(|u| u.get("cache_read_input_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(crate::usage_count::read_count_u64),
                     // `message_delta.usage` repeats the `cache_creation` tier object when the turn
                     // wrote cache; read it for the same reason `message_start` does.
                     detail: read_cache_tier_detail(usage_val),
@@ -725,18 +731,18 @@ impl ProtocolReader for AnthropicReader {
         let usage = crate::ir::IrUsage {
             input_tokens: usage_val
                 .and_then(|u| u.get("input_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(crate::usage_count::read_count_u64)
                 .unwrap_or(0),
             output_tokens: usage_val
                 .and_then(|u| u.get("output_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(crate::usage_count::read_count_u64)
                 .unwrap_or(0),
             cache_creation_input_tokens: usage_val
                 .and_then(|u| u.get("cache_creation_input_tokens"))
-                .and_then(|v| v.as_u64()),
+                .and_then(crate::usage_count::read_count_u64),
             cache_read_input_tokens: usage_val
                 .and_then(|u| u.get("cache_read_input_tokens"))
-                .and_then(|v| v.as_u64()),
+                .and_then(crate::usage_count::read_count_u64),
             // The 5m/1h cache-creation TIER SPLIT. These are SLICES of
             // `cache_creation_input_tokens`, never additions to it — but the two tiers are PRICED
             // DIFFERENTLY, so collapsing them into the one total leaves a bill that reconciles in

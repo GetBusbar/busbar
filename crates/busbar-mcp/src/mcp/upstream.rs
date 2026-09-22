@@ -189,6 +189,33 @@ impl SetupRefusal {
             SetupRefusal::Trust(r) => r.reason(),
         }
     }
+
+    /// The CALLER-FACING rendering — the text `refuse_setup` puts VERBATIM into the JSON-RPC error
+    /// returned to the calling MCP client. Deliberately NOT [`std::fmt::Display`], which stays the
+    /// OPERATOR's full-detail rendering (the server log, via `refuse_setup`'s `diag_debug!`): the
+    /// two audiences need different information from the SAME refusal.
+    ///
+    /// `Credential` is the one arm that differs. Its `Display` message is built from
+    /// `busbar_api::resolve_builtin_string`'s error, whose own doc requires it to "name the source,
+    /// not the value" — correct when the reader is the operator, who must know WHICH env var or
+    /// file is missing to fix it, and wrong when the reader is the calling client: it is not the
+    /// operator, and the secret's SOURCE (`env:VAR_NAME`, `file:/path/to/secret`) is a targeting
+    /// aid — it tells an attacker exactly what to go after next, even though the secret's VALUE
+    /// stays protected. So this arm alone is redacted to a generic refusal that points at the log
+    /// the detail actually lives in, and every other arm — a malformed id, a grant refusal, an
+    /// argument violation, the ordered validator's own already-public reason — carries no secret
+    /// material and passes through [`Display`](std::fmt::Display) unchanged.
+    pub(crate) fn client_message(&self) -> String {
+        match self {
+            SetupRefusal::Credential(_) => "the upstream credential for this server could not be \
+                                             resolved; see the server log for detail"
+                .to_string(),
+            SetupRefusal::Malformed(_)
+            | SetupRefusal::Egress(_)
+            | SetupRefusal::Argument(_)
+            | SetupRefusal::Trust(_) => self.to_string(),
+        }
+    }
 }
 
 /// THE GATE. Synchronous, reaches no network, and runs before the loop is entered.
@@ -667,6 +694,11 @@ pub(crate) enum LegOutcome {
 /// busbar sends its own subject token to on the strength of a string comparison.
 /// The DEADLINE is this server's, not a constant: the exchange is a leg of the same dispatch, and a
 /// registration whose operator said "this peer is slow" meant the whole round trip.
+///
+/// The RESPONSE BODY is bounded on TWO axes, not one: the deadline above, and a BYTE CAP
+/// (`busbar_kernel::proxy::max_upstream_buffered_bytes`). The authorization server is not trusted
+/// any more than a registered MCP server's own upstream is, so its answer is read through the same
+/// capped primitive — see the read site for why a truncated body is refused rather than parsed.
 pub(super) async fn exchange(
     pool: &McpConnectionPool,
     req: &ExchangeRequest,
@@ -706,19 +738,41 @@ pub(super) async fn exchange(
         .await
         .map_err(|e| format!("the RFC 8693 exchange failed: {}", e.into_cause()))?;
     let status = response.status().as_u16();
+    // THE BODY IS CAPPED, not merely time-bounded. The prior code read this body with
+    // `response.into_body().collect()` under only the deadline above — a compromised or hostile
+    // authorization server can stream an arbitrarily large body inside that same deadline, and
+    // busbar buffered all of it, per call. `busbar_kernel::proxy::read_capped`, under
+    // `max_upstream_buffered_bytes()`, is the SAME bounded-read primitive `HttpTransport::send`
+    // already uses for an upstream MCP server's own response — reused here rather than a second
+    // limit invented for this one caller. A body that overruns the cap is refused BEFORE it is
+    // handed to `serde_json`: a truncated token response must never be parsed as a token, so
+    // truncation is its own error arm rather than falling through to "not JSON".
+    let cap = busbar_kernel::proxy::max_upstream_buffered_bytes();
     let body = {
         use http_body_util::BodyExt;
-        let collected = tokio::time::timeout_at(deadline, response.into_body().collect())
-            .await
-            .map_err(|_| {
-                format!(
-                    "the RFC 8693 exchange body could not be read: {}",
-                    busbar_kernel::egress::engine::HOP_DEADLINE_CAUSE
-                )
-            })?;
-        collected
-            .map_err(|e| format!("the RFC 8693 exchange body could not be read: {e}"))?
-            .to_bytes()
+        let read = busbar_kernel::proxy::read_capped(response.into_body().into_data_stream(), cap);
+        let (raw, read_end) = tokio::time::timeout_at(deadline, read).await.map_err(|_| {
+            format!(
+                "the RFC 8693 exchange body could not be read: {}",
+                busbar_kernel::egress::engine::HOP_DEADLINE_CAUSE
+            )
+        })?;
+        match read_end {
+            busbar_kernel::proxy::ReadEnd::Complete => raw,
+            busbar_kernel::proxy::ReadEnd::Truncated => {
+                return Err(format!(
+                    "the RFC 8693 exchange response exceeded the {cap}-byte cap; refusing to parse \
+                     a truncated token response"
+                ));
+            }
+            busbar_kernel::proxy::ReadEnd::TransportError => {
+                return Err(
+                    "the RFC 8693 exchange connection failed mid-response; refusing to parse a \
+                     partial token response"
+                        .to_string(),
+                );
+            }
+        }
     };
     if !(200..300).contains(&status) {
         // The BODY is deliberately not echoed: an authorization server's error body can carry the
@@ -751,6 +805,19 @@ mod upstream_support;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/upstream_join_tests.rs"]
 mod upstream_join_tests;
+
+// THE RFC 8693 EXCHANGE RESPONSE BODY CAP, driven directly against `exchange()` rather than through
+// a full `tools/call` round trip: the claim is about ONE function's byte accounting, not the join.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/exchange_cap_tests.rs"]
+mod exchange_cap_tests;
+
+// S6: the caller-facing refusal for an unresolvable upstream credential must name no secret
+// source. Beside the join tests because it drives the same front door and shares the same peer
+// fixture.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/credential_secret_leak_tests.rs"]
+mod credential_secret_leak_tests;
 
 // A GRANTED, OPERATOR-DECLARED `roots/list` ask, satisfied on the wire — the coverage instrument
 // for `mcp|streamable-http|client|server|roots/list`. Beside the join tests because its witness is

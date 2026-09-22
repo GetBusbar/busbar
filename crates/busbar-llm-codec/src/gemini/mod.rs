@@ -4,6 +4,7 @@
 //! Gemini protocol reader/writer implementation.
 
 use crate::ir::IrStreamEvent;
+use crate::usage_count::read_count_u64;
 #[cfg(test)]
 use busbar_substrate_values::breaker::CanonicalSignal;
 use busbar_substrate_values::breaker::StatusClass;
@@ -358,7 +359,7 @@ fn gemini_usage_identity_note(
     let u = u?;
     // ABSENT is not ZERO. A `usageMetadata` that states no total states nothing to check against;
     // treating a missing total as 0 would report every ordinary streaming frame as a discrepancy.
-    let reported_total = u.get(FIELD_TOTAL_TOKEN_COUNT).and_then(|v| v.as_u64())?;
+    let reported_total = u.get(FIELD_TOTAL_TOKEN_COUNT).and_then(read_count_u64)?;
     let summed_total = billed;
     if summed_total == reported_total {
         return None;
@@ -374,7 +375,7 @@ fn gemini_usage_identity_note(
     // reading this line should not have to guess which one they are looking at.
     let wire_sum: u64 = GEMINI_USAGE_ADDITIVE_TERMS
         .iter()
-        .map(|k| u.get(*k).and_then(|v| v.as_u64()).unwrap_or(0))
+        .map(|k| u.get(*k).and_then(read_count_u64).unwrap_or(0))
         .sum();
     let unmodelled_term = wire_sum != reported_total;
     tracing::warn!(
@@ -1678,28 +1679,28 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
     let u = data.get(FIELD_USAGE_METADATA);
     let prompt = u
         .and_then(|u| u.get(FIELD_PROMPT_TOKEN_COUNT))
-        .and_then(|v| v.as_u64())
+        .and_then(read_count_u64)
         .unwrap_or(0);
     let cached = u
         .and_then(|u| u.get(FIELD_CACHED_CONTENT_TOKEN_COUNT))
-        .and_then(|v| v.as_u64());
+        .and_then(read_count_u64);
     // What this turn will BILL, computed here so the identity cross-check below can compare it
     // against Google's own stated total. Mirrors the field construction that follows exactly:
     // uncached input + cache read + visible output + thinking output.
     let candidates = u
         .and_then(|u| u.get(FIELD_CANDIDATES_TOKEN_COUNT))
-        .and_then(|v| v.as_u64())
+        .and_then(read_count_u64)
         .unwrap_or(0);
     let thoughts = u
         .and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
-        .and_then(|v| v.as_u64())
+        .and_then(read_count_u64)
         .unwrap_or(0);
     // THE FOURTH ADDITIVE TERM. `toolUsePromptTokenCount` is not a slice of `promptTokenCount` —
     // see [`GEMINI_USAGE_ADDITIVE_TERMS`] for the recording that settles it — and Google charges it
     // at the INPUT rate, so it belongs in `input_tokens` beside the uncached prompt.
     let tool_use = u
         .and_then(|u| u.get(FIELD_TOOL_USE_PROMPT_TOKEN_COUNT))
-        .and_then(|v| v.as_u64());
+        .and_then(read_count_u64);
     let billed = prompt
         .saturating_add(candidates)
         .saturating_add(thoughts)
@@ -1738,11 +1739,11 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
         // sees a reshaped `usageMetadata`.
         output_tokens: u
             .and_then(|u| u.get(FIELD_CANDIDATES_TOKEN_COUNT))
-            .and_then(|v| v.as_u64())
+            .and_then(read_count_u64)
             .unwrap_or(0)
             .saturating_add(
                 u.and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
-                    .and_then(|v| v.as_u64())
+                    .and_then(read_count_u64)
                     .unwrap_or(0),
             ),
         cache_creation_input_tokens: None,
@@ -1755,7 +1756,7 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
         detail: crate::ir::IrUsageDetail {
             reasoning_tokens: u
                 .and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
-                .and_then(|v| v.as_u64()),
+                .and_then(read_count_u64),
             // Gemini's `toolUsePromptTokenCount`, kept here as ATTRIBUTION: it answers "how many of
             // those input tokens were server-side tool use?" and it is what lets the Gemini writer
             // put the term back BESIDE `promptTokenCount` on the wire instead of inside it.
@@ -2207,3 +2208,7 @@ mod field_carry_tests;
 #[cfg(test)]
 #[path = "tests/usage_identity_tests.rs"]
 mod usage_identity_tests;
+
+#[cfg(test)]
+#[path = "tests/float_usage_tests.rs"]
+mod float_usage_tests;

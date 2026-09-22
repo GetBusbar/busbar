@@ -197,3 +197,92 @@ async fn a_rewrite_gate_can_reject_on_the_arguments_it_screens() {
          went out stopped nothing",
     );
 }
+
+/// A COMMITTED REWRITE BUSBAR CANNOT READ BACK REFUSES THE CALL — it does not fall back to the
+/// arguments the hook said it had replaced.
+///
+/// The apply site read the verdict's bytes with `if let Ok(v) = …`, so a hook that reported
+/// `applied` and produced bytes busbar could not read left `arguments` holding the ORIGINAL values
+/// and the call went on to dispatch them. For the hook class this seam exists for that is fail-OPEN
+/// in the precise sense: a redaction hook says "I have removed the secret from these arguments", its
+/// output is unreadable, and busbar sends the arguments WITH the secret still in them.
+///
+/// Driven at the DECISION rather than through a hook chain, because the plane cannot make the host
+/// seam emit unreadable bytes and the rule under test is what the PLANE does when it does. The
+/// dispatch-side consequence — a refusal, never a dispatch — is the `Err` arm's only caller, and the
+/// scan below pins that there is no second, lenient reader of the same bytes.
+#[test]
+fn a_committed_rewrite_busbar_cannot_read_back_is_refused_rather_than_silently_undone() {
+    use crate::mcp::method::committed_arguments;
+
+    let ok = committed_arguments(br#"{"path":"/srv/rewritten-by-hook"}"#)
+        .expect("an ordinary rewrite is read back and used");
+    assert_eq!(
+        ok["path"], "/srv/rewritten-by-hook",
+        "the control: a readable rewrite still lands, so the rule refuses unusable output rather \
+         than refusing rewrites"
+    );
+
+    for unusable in [
+        &b"not json at all"[..],
+        &b""[..],
+        &b"{\"path\": "[..],
+        // Well-formed JSON that is not an arguments object. Admitting it would only move the
+        // failure to the upstream, having already told the hook its rewrite landed.
+        &b"7"[..],
+        &b"[1,2,3]"[..],
+        &b"null"[..],
+        &b"\"/etc/hosts\""[..],
+    ] {
+        assert!(
+            committed_arguments(unusable).is_err(),
+            "a committed rewrite busbar cannot use must REFUSE the call; falling back to the \
+             caller's original arguments silently undoes a redaction the hook reported as applied: \
+             {:?}",
+            String::from_utf8_lossy(unusable)
+        );
+    }
+}
+
+/// THE APPLY SITE HAS NO LENIENT READER OF THE SAME BYTES — a source scan, because the behavioural
+/// half above covers only the shapes somebody thought of and this covers the shape a future
+/// convenience would re-add.
+///
+/// The defect was one `if let Ok(v) = serde_json::from_slice…` inside the `applied` branch: a
+/// conditional that keeps the ORIGINAL arguments when the parse fails and says nothing. The rule is
+/// that the committed bytes are read in exactly one place, through `committed_arguments`, whose
+/// `Err` arm returns a refusal.
+///
+/// The COMPANION half is what makes the scan falsifiable: the predicate is run against a string that
+/// WOULD be a violation, so the scan cannot be passing because it never matches anything.
+#[test]
+fn the_rewrite_apply_site_never_falls_back_to_the_caller_s_original_arguments() {
+    /// Does this source text read the committed bytes with a conditional that can silently keep the
+    /// originals? One predicate, used on the real file and on the companion.
+    fn has_lenient_reader(src: &str) -> bool {
+        src.lines().any(|l| {
+            let l = l.trim();
+            !l.starts_with("//")
+                && (l.contains("if let Ok(") || l.contains("while let Ok("))
+                && l.contains("from_slice")
+        })
+    }
+
+    let src = include_str!("../method.rs");
+    assert!(
+        !has_lenient_reader(src),
+        "`mcp/method.rs` reads deserialized bytes through a conditional that drops the error. On \
+         the rewrite apply site that is the fail-open this case exists for: the hook committed a \
+         rewrite, busbar could not read it, and the ORIGINAL arguments went upstream."
+    );
+    assert!(
+        src.contains("committed_arguments(&args_json)"),
+        "the committed rewrite must be read through `committed_arguments`, whose `Err` arm refuses \
+         the call"
+    );
+    assert!(
+        has_lenient_reader("if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&x) {"),
+        "the scan's predicate must match a line that WOULD be a violation, or a green scan is \
+         evidence of nothing"
+    );
+}

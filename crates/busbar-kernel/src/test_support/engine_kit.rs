@@ -32,11 +32,11 @@ pub static CORE_ENGINE_KIT: CoreEngineKit = CoreEngineKit;
 /// The engine's test-kit provider. Stateless: every service it reaches is process-wide already.
 pub struct CoreEngineKit;
 
-fn need(level: HookNeed) -> busbar_plugin_sign::NeedLevel {
+fn need(level: HookNeed) -> busbar_plugin_loader::sign::NeedLevel {
     match level {
-        HookNeed::No => busbar_plugin_sign::NeedLevel::No,
-        HookNeed::Ro => busbar_plugin_sign::NeedLevel::Ro,
-        HookNeed::Rw => busbar_plugin_sign::NeedLevel::Rw,
+        HookNeed::No => busbar_plugin_loader::sign::NeedLevel::No,
+        HookNeed::Ro => busbar_plugin_loader::sign::NeedLevel::Ro,
+        HookNeed::Rw => busbar_plugin_loader::sign::NeedLevel::Rw,
     }
 }
 
@@ -85,7 +85,7 @@ impl EngineTestKit for CoreEngineKit {
     ) -> Option<HookEnvHandle> {
         super::test_hook_env(
             aliases,
-            busbar_plugin_sign::HookNeeds {
+            busbar_plugin_loader::sign::HookNeeds {
                 prompt: need(prompt),
                 user: need(user),
             },

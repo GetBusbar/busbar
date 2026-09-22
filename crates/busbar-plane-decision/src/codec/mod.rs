@@ -15,7 +15,7 @@
 //! the whole document; `Ir::pointer()` is a read into a handful of declared members of it, and
 //! nothing this plane does discards or rewrites the rest.
 
-use busbar_contract::bounded::{Arena, Ir};
+use busbar_contract::bounded::{PlaneAlloc, Ir};
 use busbar_contract::unit::Ctx;
 use busbar_contract::wire::Decode;
 
@@ -71,7 +71,7 @@ pub fn view<'u>(body: &'u [u8], pointers: &[&'u str], ctx: &Ctx<'u>) -> Result<I
 pub fn view_with_arena<'u>(
     body: &'u [u8],
     pointers: &[&'u str],
-    arena: &'u dyn Arena,
+    arena: &'u dyn PlaneAlloc,
 ) -> Result<Ir<'u>, Decode> {
     let spans =
         busbar_contract::spans::resolve(body, pointers, arena).map_err(|_| Decode::Oversize)?;

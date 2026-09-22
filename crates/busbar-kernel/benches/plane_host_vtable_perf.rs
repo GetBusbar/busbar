@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOT-PATH PERF INSTRUMENT — the `<1µs` witness of
-//! `docs/design/1.6.0-plane-extraction-LOCKED.md` §8 ("Perf gate (<1µs): criterion,
+//! `docs/design/BUSBAR-1.6.0.md` Part 3 §8 ("Perf gate (<1µs): criterion,
 //! plugin-host-vtable vs direct-call baseline, delta<1µs p50 AND p99; a per-token host-call counter
 //! on the streaming path asserted == 0"), also part of the tests/benches 8→9 rise.
 //!
@@ -121,7 +121,7 @@ fn percentiles(mut f: impl FnMut()) -> (u64, u64) {
 /// criterion's report so the bench binary EXITS NON-ZERO when the budget is blown (which is what
 /// makes it a gate and not a graph).
 fn assert_hot_path_delta_under_budget() {
-    let null: HostCtx = std::ptr::null_mut();
+    let null: HostCtx = HostCtx::NULL;
     let vt = armed_vtable();
 
     let (direct_p50, direct_p99) = percentiles(|| {
@@ -157,7 +157,7 @@ fn assert_hot_path_delta_under_budget() {
 /// crosses the host vtable NOT AT ALL. `BUSBAR_PERF_STREAM_CROSS` makes it cross per token, which is
 /// how the `== 0` assertion is proven able to fail.
 fn assert_zero_per_token_host_calls() {
-    let null: HostCtx = std::ptr::null_mut();
+    let null: HostCtx = HostCtx::NULL;
     let vt = armed_vtable();
     let cross_per_token = std::env::var_os("BUSBAR_PERF_STREAM_CROSS").is_some();
 
@@ -188,7 +188,7 @@ fn assert_zero_per_token_host_calls() {
 
 fn hot_path(c: &mut Criterion) {
     // The two published legs: the direct call and the SAME capability through the vtable slot.
-    let null: HostCtx = std::ptr::null_mut();
+    let null: HostCtx = HostCtx::NULL;
     let vt = armed_vtable();
 
     c.bench_function("HOT_PATH_DIRECT_CALL", |b| {

@@ -782,7 +782,14 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkEr
     entries.sort();
     for path in entries {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if name == "target" || name == ".git" {
+        // SKIP EVERY DOTDIR, not just `.git`. Naming the two known offenders was the bug: this walk
+        // also descended into `.claude/worktrees/`, where agent worktrees accumulate — 114 of them,
+        // ~14 GB, each a full checkout of this same tree. `workspace-deps` is documented at ~234ms
+        // and instead ran past its own 300s ceiling with one process at 9.3 GB RSS, so the gate read
+        // as HUNG rather than as walking the wrong tree. A dotdir at the repo root is tooling state
+        // by universal convention; none of it is the source this walk exists to enumerate, and the
+        // next tool to park a cache under one would reintroduce the same hang under a new name.
+        if name == "target" || name.starts_with('.') {
             continue;
         }
         if path.is_dir() {

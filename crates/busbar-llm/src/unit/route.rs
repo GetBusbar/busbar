@@ -349,6 +349,14 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     let resp = {
         use tracing::Instrument;
         async move {
+            // WRAP-SETUP TIMING, the same stage the other shell around this walk opens. This shell
+            // is the COMPOSITION-ROOT one — the served, default-on path — so without this the
+            // profiler reported zero `WrapSetup` samples for every real request, and only the
+            // legacy shell's samples ever appeared. The stage covers exactly what it covers there:
+            // the correlation stamp and the pre-walk shape capture, dropped before the walk itself.
+            let _wrap = busbar_substrate_values::profile::start(
+                busbar_substrate_values::profile::Stage::WrapSetup,
+            );
             // THE CORRELATION STAMP, taken exactly once and only here. Every routing message the
             // walk emits and the completion tap fired below carry this same value; that identity is
             // the whole join-key contract, and it is why the read is not repeated after the walk
@@ -382,6 +390,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
                 ))
             };
 
+            drop(_wrap);
             // THE WALK: the deadline check per hop, the one pick site, the one attempt, the
             // context-length narrowing and the exhaustion hand-off. Called, not copied.
             let resp = crate::engine::pipeline::forward_with_pool_parsed_inner(

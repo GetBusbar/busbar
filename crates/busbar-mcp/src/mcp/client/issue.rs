@@ -209,6 +209,21 @@ pub(crate) async fn issue(
 
     let response = match super::wire::send(auth.transport, &leg, &outbound).await {
         Ok(r) => r,
+        // `e.is_own_refusal()` is true for `TransportError::Refused` (the dispatch-time SSRF guard)
+        // and `TransportError::Supervision` (the crash-loop supervisor's own backoff/quarantine):
+        // NEITHER ever opened a socket, so `OUTCOME_DISPATCHED` here would tell an investigator
+        // reading the audit chain that busbar sent something to a destination the guard blocked
+        // pre-connect — a record that asserts something that did not happen. `OUTCOME_REFUSED`
+        // already exists for exactly this shape of refusal (see the credential-plan and argguard
+        // arms above); this is the same fact, narrowed to the two arms that never left busbar.
+        Err(e) if e.is_own_refusal() => {
+            let reason = e.to_string();
+            record(OUTCOME_REFUSED, reason.clone());
+            return Err(reason);
+        }
+        // `Unreachable` and `Io` are the opposite: busbar DID attempt the hop (a connect that
+        // failed, a connection that reset mid-response), so the record stands as a dispatch that
+        // failed — unchanged from before this fix.
         Err(e) => {
             let reason = e.to_string();
             record(OUTCOME_DISPATCHED, REASON_UPSTREAM_FAILED.to_string());

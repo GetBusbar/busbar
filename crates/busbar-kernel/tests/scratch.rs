@@ -13,11 +13,12 @@ use busbar_kernel::scratch::{ScratchPad, SCRATCH_ABUSE_CEILING_BYTES, SCRATCH_ST
 ///
 /// #41 requires the start be MEASURED and reported, not guessed. It is a perf hint — the common
 /// per-call footprint across the planes — not a cap. The kernel's constant is the contract's
-/// `ARENA_BYTES` so a plane sized against one and a pad sized against the other can never disagree.
+/// `SCRATCH_BASE_BYTES` so a plane sized against one and a pad sized against the other can never
+/// disagree.
 #[test]
 fn the_measured_starting_size_is_four_kibibytes() {
     assert_eq!(SCRATCH_START_BYTES, 4 * 1024, "the measured start is 4 KiB");
-    assert_eq!(SCRATCH_START_BYTES, busbar_contract::ARENA_BYTES);
+    assert_eq!(SCRATCH_START_BYTES, busbar_contract::SCRATCH_BASE_BYTES);
 }
 
 /// The pad hands back the exact bytes it was given, for each of the three allocation shapes.
@@ -42,21 +43,21 @@ fn the_pad_hands_back_the_exact_bytes_it_was_given() {
     assert_eq!(copied, spans);
 }
 
-/// The pad grows past its starting size for one big request — the jev ~5 KB case #41 exists to fix.
+/// The pad grows past its starting size for one big request — the ~5 KB case #41 exists to fix.
 ///
-/// On the old fixed-4-KiB arena this was `ArenaExhausted`; here it is a heap grow and a served
+/// On the old fixed-4-KiB arena this was `ScratchExhausted`; here it is a heap grow and a served
 /// request. The bytes come back whole, and the pad's backing capacity is now larger than the start.
 #[test]
 fn a_request_bigger_than_the_start_grows_the_pad_instead_of_refusing() {
     let pad = ScratchPad::new();
-    let jev = vec![0xABu8; 5 * 1024]; // bigger than the 4 KiB start
+    let scratch_payload = vec![0xABu8; 5 * 1024]; // bigger than the 4 KiB start
 
     let landed = pad
-        .alloc_bytes(&jev)
+        .alloc_bytes(&scratch_payload)
         .expect("a big request grows the pad, it does not refuse");
     assert_eq!(
         landed.as_slice(),
-        jev.as_slice(),
+        scratch_payload.as_slice(),
         "the whole 5 KB came back"
     );
     assert!(

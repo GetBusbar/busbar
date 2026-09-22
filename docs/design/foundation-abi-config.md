@@ -202,7 +202,7 @@ type-level proof that every generated signature is a real, well-typed `extern "C
 ### 3.6 Neutrality of the generated code
 
 The macro input names only NEUTRAL capability nouns (the taxonomy in
-`docs/design/1.6.0-plane-abi-taxonomy.md`: govern / meter / breaker / verify / egress / journal /
+`docs/design/BUSBAR-1.6.0.md` Part 4: govern / meter / breaker / verify / egress / journal /
 nested-dispatch / work-handle / trust / metrics / clock / auth / gate / identity / cost-lease). The
 generated output lives in `busbar-plugin` (the vtable) and `busbar-core`/`busbar-substrate` (the shims) —
 all neutral crates — and contains no plane noun. The plane-purity gate (§7, item I) runs over the crate

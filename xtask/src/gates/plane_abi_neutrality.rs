@@ -46,7 +46,7 @@ pub const ROW_EXPORTED: &str = "plane-abi-neutrality:exported-declarations";
 pub const ROW_TEST_RATCHET: &str = "plane-abi-neutrality:test-path-ratchet";
 
 const HOT_LANE: &str = "crates/busbar-plugin/src/hot";
-const TAXONOMY_DOC: &str = "docs/design/1.6.0-plane-abi-taxonomy.md";
+const TAXONOMY_DOC: &str = "docs/design/BUSBAR-1.6.0.md";
 
 /// DOCUMENTED EXEMPTION for [`declared_plane_keys`]: `crates/busbar-plugin/src/hot/mod.rs` declares
 /// `pub const PLANE_DECL: &[u8] = b"busbar_plane_decl\0";` — the ABI SYMBOL NAME a plane cdylib's
@@ -57,6 +57,22 @@ const TAXONOMY_DOC: &str = "docs/design/1.6.0-plane-abi-taxonomy.md";
 /// which the total-coverage row then fails to find in [`BANNED`] — a false positive, not a leak.
 /// Excluded by exact file, not by loosening the grammar or adding "plugin" to the ban list.
 const HOT_LANE_DECL_SITE: &str = "crates/busbar-plugin/src/hot/mod.rs";
+
+/// DOCUMENTED EXEMPTION for [`declared_plane_keys`]: the `decisions` plane (jev) declares the key
+/// `plane-decision`, whose noun COLLIDES WITH A NEUTRAL PRIMITIVE. [`BANNED`] matches
+/// case-insensitively as a substring, so banning `decision` forbids `Decision`, `GateDecision` and
+/// `VerifyDecision` — the admit/throttle/deny verdict types that ARE the primitive governance
+/// taxonomy this witness exists to derive the ABI from. Measured: adding the token reds
+/// `exported-declarations` with 7 findings in `crates/busbar-plugin/src/hot/{host,pod}.rs` and
+/// blows the test-path ratchet, every one of them core naming its own verdict rather than a plane
+/// leaking. The witness cannot distinguish the two by substring, so the plane key is exempted HERE,
+/// in writing, instead of the ban list being loosened or a correct primitive being renamed to dodge
+/// a grep. This is the same trade the `PLANE_DECL` exemption above makes.
+///
+/// NOT a licence: a genuine leak of THIS plane into a neutral crate is caught by `plane-purity` and
+/// by the `law0-neutral-instance` class in `kind_isolation::matrix`, which key on the crate edge
+/// rather than on a noun and so are immune to the collision.
+const PRIMITIVE_COLLISION_KEYS: &[&str] = &["plane-decision"];
 
 /// The banned protocol/role nouns. Matched case-insensitively as SUBSTRINGS of identifiers on
 /// declaration lines: a banned noun concatenated into a name — `McpTransport`, `server_stream` — is
@@ -225,6 +241,9 @@ fn declared_plane_keys(cx: &Ctx) -> Result<Vec<String>, String> {
             continue;
         };
         let key = krate.strip_prefix("busbar-").unwrap_or(krate).to_string();
+        if PRIMITIVE_COLLISION_KEYS.contains(&key.as_str()) {
+            continue;
+        }
         if !keys.contains(&key) {
             keys.push(key);
         }

@@ -13,7 +13,7 @@
 
 #![allow(dead_code)]
 
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Labels, SlabBytes, Span};
+use busbar_contract::bounded::{PlaneAlloc, PlaneAllocBudget, ScratchBytes, Labels, SlabBytes, Span};
 use busbar_contract::ids::{PrincipalId, SessionId};
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};
@@ -25,17 +25,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// It leaks rather than reusing a buffer, which is the right trade for a test: the real arena
 /// resets per unit, and a test that had to model the reset would be testing the arena rather than
 /// the plane.
-pub struct TestArena {
+pub struct TestPlaneAlloc {
     used: AtomicUsize,
     ceiling: usize,
 }
 
-impl TestArena {
+impl TestPlaneAlloc {
     /// An arena with the contract's own per-unit ceiling.
     pub fn new() -> Self {
         Self {
             used: AtomicUsize::new(0),
-            ceiling: busbar_contract::bounded::ARENA_BYTES,
+            ceiling: busbar_contract::bounded::SCRATCH_BASE_BYTES,
         }
     }
 
@@ -48,34 +48,34 @@ impl TestArena {
     }
 }
 
-impl Default for TestArena {
+impl Default for TestPlaneAlloc {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Arena for TestArena {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
+impl PlaneAlloc for TestPlaneAlloc {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
         let remaining = self
             .ceiling
             .saturating_sub(self.used.load(Ordering::Relaxed));
         if src.len() > remaining {
-            return Err(ArenaBudget {
+            return Err(PlaneAllocBudget {
                 wanted: src.len(),
                 remaining,
             });
         }
         self.used.fetch_add(src.len(), Ordering::Relaxed);
         let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
-        Ok(ArenaBytes::new(leaked))
+        Ok(ScratchBytes::new(leaked))
     }
 
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
         let remaining = self
             .ceiling
             .saturating_sub(self.used.load(Ordering::Relaxed));
         if src.len() > remaining {
-            return Err(ArenaBudget {
+            return Err(PlaneAllocBudget {
                 wanted: src.len(),
                 remaining,
             });
@@ -88,13 +88,13 @@ impl Arena for TestArena {
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget> {
         let wanted = std::mem::size_of_val(src);
         let remaining = self
             .ceiling
             .saturating_sub(self.used.load(Ordering::Relaxed));
         if wanted > remaining {
-            return Err(ArenaBudget { wanted, remaining });
+            return Err(PlaneAllocBudget { wanted, remaining });
         }
         self.used.fetch_add(wanted, Ordering::Relaxed);
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
@@ -258,7 +258,7 @@ pub fn response_frame(bytes: &[u8]) -> Frame {
 
 /// Everything a context borrows, held together so a test can build one.
 pub struct Scaffold {
-    pub arena: TestArena,
+    pub arena: TestPlaneAlloc,
     pub config: EmptyConfig,
     pub transport: TestTransport,
     pub session: TestSession,
@@ -269,7 +269,7 @@ impl Scaffold {
     /// A scaffold over one named transport.
     pub fn new(transport: &'static str) -> Self {
         Self {
-            arena: TestArena::new(),
+            arena: TestPlaneAlloc::new(),
             config: EmptyConfig,
             transport: TestTransport::new(transport),
             session: TestSession::new(),

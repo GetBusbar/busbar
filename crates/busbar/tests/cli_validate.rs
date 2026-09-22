@@ -96,7 +96,7 @@ fn run_busbar(dir: &Path, args: &[&str]) -> (i32, String, String) {
 
 /// An UNSIGNED (structurally valid) plugin tarball written into the fixture's plugins dir.
 fn write_tarball(dir: &Path, file: &str, name: &str, alias: &str, lib: &[u8]) {
-    let m = busbar_plugin_sign::Manifest {
+    let m = busbar_plugin_loader::sign::Manifest {
         name: name.into(),
         alias: alias.into(),
         kind: "store".into(),
@@ -106,7 +106,7 @@ fn write_tarball(dir: &Path, file: &str, name: &str, alias: &str, lib: &[u8]) {
             .iter()
             .max()
             .expect("store abi"),
-        sha256: busbar_plugin_sign::sha256_hex(lib),
+        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),
@@ -273,7 +273,7 @@ fn validate_fails_on_invalid_tarball_in_enabled_dir() {
 #[test]
 fn validate_fails_on_sha_mismatch() {
     let dir = fixture_dir("sha");
-    let m = busbar_plugin_sign::Manifest {
+    let m = busbar_plugin_loader::sign::Manifest {
         name: "acme-store-x".into(),
         alias: "x".into(),
         kind: "store".into(),
@@ -283,7 +283,7 @@ fn validate_fails_on_sha_mismatch() {
             .iter()
             .max()
             .expect("store abi"),
-        sha256: busbar_plugin_sign::sha256_hex(b"OTHER bytes"),
+        sha256: busbar_plugin_loader::sign::sha256_hex(b"OTHER bytes"),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),
@@ -590,7 +590,7 @@ fn validate_fails_when_a_plugin_is_referenced_but_plugins_are_disabled() {
 #[test]
 fn validate_fails_when_store_module_resolves_to_a_non_store_plugin_kind() {
     let dir = fixture_dir("wrongkind");
-    let m = busbar_plugin_sign::Manifest {
+    let m = busbar_plugin_loader::sign::Manifest {
         name: "acme-hook-x".into(),
         alias: "x".into(),
         kind: "hook".into(),
@@ -600,7 +600,7 @@ fn validate_fails_when_store_module_resolves_to_a_non_store_plugin_kind() {
             .iter()
             .max()
             .expect("hook abi"),
-        sha256: busbar_plugin_sign::sha256_hex(b"real bytes"),
+        sha256: busbar_plugin_loader::sign::sha256_hex(b"real bytes"),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),

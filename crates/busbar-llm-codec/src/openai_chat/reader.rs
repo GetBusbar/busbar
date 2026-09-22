@@ -6,18 +6,23 @@ impl ProtocolReader for OpenAiReader {
         tail: &[u8],
     ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
+        let u64_field = |k: &str| v.get(k).and_then(read_count_u64);
         let cached = v
             .get("prompt_tokens_details")
             .and_then(|d| d.get("cached_tokens"))
-            .and_then(|x| x.as_u64());
+            .and_then(read_count_u64);
+        // `cache_write_tokens` is the OTHER slice of `prompt_tokens`, priced at the cache-WRITE
+        // tier. A truncated body must price it like an untruncated one. See
+        // `read_cache_write_tokens`.
+        let cache_write = super::read_cache_write_tokens(&v);
         Some(
             crate::ir::IrUsage {
                 input_tokens: u64_field("prompt_tokens")
                     .unwrap_or(0)
-                    .saturating_sub(cached.unwrap_or(0)),
+                    .saturating_sub(cached.unwrap_or(0))
+                    .saturating_sub(cache_write.unwrap_or(0)),
                 output_tokens: u64_field("completion_tokens").unwrap_or(0),
-                cache_creation_input_tokens: None,
+                cache_creation_input_tokens: cache_write,
                 cache_read_input_tokens: cached,
                 detail: crate::ir::IrUsageDetail::default(),
             }
@@ -912,22 +917,29 @@ impl ProtocolReader for OpenAiReader {
         // (via the trailing-usage branch below) emit a spurious mid-stream `MessageDelta` per chunk.
         // Filter to a real usage OBJECT so `usage: null` reads as `None`.
         let chunk_usage = data.get("usage").filter(|u| u.is_object()).map(|u| {
-            let prompt_tokens = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            let prompt_tokens = u.get("prompt_tokens").and_then(read_count_u64).unwrap_or(0);
             let cached = u
                 .get("prompt_tokens_details")
                 .and_then(|d| d.get("cached_tokens"))
-                .and_then(|v| v.as_u64());
+                .and_then(read_count_u64);
+            // `cache_write_tokens` rides the STREAM's usage chunk exactly as `cached_tokens` does —
+            // the OTHER slice of `prompt_tokens`, priced at the cache-WRITE tier. See
+            // `read_cache_write_tokens`.
+            let cache_write = super::read_cache_write_tokens(u);
             IrUsage {
                 // NORMALIZE to the additive-cache convention: OpenAI's `prompt_tokens` is a
-                // TOTAL that already INCLUDES the cached prefix, so subtract the cached tokens
-                // to leave only the uncached input. `saturating_sub` guards a hostile/odd
-                // upstream where `cached_tokens > prompt_tokens` (would otherwise underflow).
-                input_tokens: prompt_tokens.saturating_sub(cached.unwrap_or(0)),
+                // TOTAL that already INCLUDES the cached prefix and the cache-write slice, so
+                // subtract both to leave only the uncached input. `saturating_sub` guards a
+                // hostile/odd upstream where the slices exceed the total (would otherwise
+                // underflow).
+                input_tokens: prompt_tokens
+                    .saturating_sub(cached.unwrap_or(0))
+                    .saturating_sub(cache_write.unwrap_or(0)),
                 output_tokens: u
                     .get("completion_tokens")
-                    .and_then(|v| v.as_u64())
+                    .and_then(read_count_u64)
                     .unwrap_or(0),
-                cache_creation_input_tokens: None,
+                cache_creation_input_tokens: cache_write,
                 cache_read_input_tokens: cached,
                 // The sub-bucket is on the STREAM's usage chunk too (a `stream_options:
                 // {include_usage: true}` stream's final chunk carries the identical `usage` object
@@ -938,7 +950,7 @@ impl ProtocolReader for OpenAiReader {
                     reasoning_tokens: u
                         .get("completion_tokens_details")
                         .and_then(|d| d.get("reasoning_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(read_count_u64),
                     // Align the streaming usage sub-buckets with the buffered path: the trailing
                     // `include_usage` chunk carries the identical `usage` object, so the audio /
                     // predicted-outputs attribution slices are present on the stream too. Reading only
@@ -947,19 +959,19 @@ impl ProtocolReader for OpenAiReader {
                     input_audio_tokens: u
                         .get("prompt_tokens_details")
                         .and_then(|d| d.get("audio_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(read_count_u64),
                     output_audio_tokens: u
                         .get("completion_tokens_details")
                         .and_then(|d| d.get("audio_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(read_count_u64),
                     accepted_prediction_tokens: u
                         .get("completion_tokens_details")
                         .and_then(|d| d.get("accepted_prediction_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(read_count_u64),
                     rejected_prediction_tokens: u
                         .get("completion_tokens_details")
                         .and_then(|d| d.get("rejected_prediction_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(read_count_u64),
                     ..Default::default()
                 },
             }
@@ -1245,22 +1257,31 @@ impl ProtocolReader for OpenAiReader {
         let cache_read_input_tokens = usage_val
             .and_then(|u| u.get("prompt_tokens_details"))
             .and_then(|d| d.get("cached_tokens"))
-            .and_then(|v| v.as_u64());
+            .and_then(read_count_u64);
+        // `prompt_tokens_details.cache_write_tokens` — the OTHER slice of `prompt_tokens`, priced at
+        // the cache-WRITE tier. See `read_cache_write_tokens`.
+        let cache_write_input_tokens = usage_val.and_then(super::read_cache_write_tokens);
 
         let usage = crate::ir::IrUsage {
             // NORMALIZE to the additive-cache convention: OpenAI's `prompt_tokens` is a TOTAL that
-            // already INCLUDES the cached prefix, so subtract the cached tokens to leave only the
-            // uncached input. `saturating_sub` guards an odd upstream where cached > prompt_tokens.
+            // already INCLUDES the cached prefix and the cache-write slice, so subtract both to
+            // leave only the uncached input. `saturating_sub` guards an odd upstream where the
+            // slices exceed the total.
             input_tokens: usage_val
                 .and_then(|u| u.get("prompt_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(read_count_u64)
                 .unwrap_or(0)
-                .saturating_sub(cache_read_input_tokens.unwrap_or(0)),
+                .saturating_sub(cache_read_input_tokens.unwrap_or(0))
+                .saturating_sub(cache_write_input_tokens.unwrap_or(0)),
             output_tokens: usage_val
                 .and_then(|u| u.get("completion_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(read_count_u64)
                 .unwrap_or(0),
-            cache_creation_input_tokens: None, // OpenAI doesn't provide this split
+            // `prompt_tokens_details.cache_write_tokens` is the cache-WRITE tier's count; hardcoded
+            // `None` ("OpenAI doesn't provide this split" — it does), a cache-writing turn billed
+            // the write at the plain input rate. Map it to the IR's ADDITIVE
+            // `cache_creation_input_tokens`.
+            cache_creation_input_tokens: cache_write_input_tokens,
             cache_read_input_tokens,
             // `completion_tokens_details.reasoning_tokens` is a SUB-BUCKET of `completion_tokens`
             // (never added to it). Unread, every cross-protocol reasoning call reported a hard `0`
@@ -1271,7 +1292,7 @@ impl ProtocolReader for OpenAiReader {
                 reasoning_tokens: usage_val
                     .and_then(|u| u.get("completion_tokens_details"))
                     .and_then(|d| d.get("reasoning_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(read_count_u64),
                 // OpenAI multimodal / predicted-outputs attribution sub-buckets (all SLICES of the
                 // totals above, never additions). Unread, they arrived as absent on every
                 // cross-protocol / pool-alias-re-serialize OpenAI response even though the totals were
@@ -1279,19 +1300,19 @@ impl ProtocolReader for OpenAiReader {
                 input_audio_tokens: usage_val
                     .and_then(|u| u.get("prompt_tokens_details"))
                     .and_then(|d| d.get("audio_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(read_count_u64),
                 output_audio_tokens: usage_val
                     .and_then(|u| u.get("completion_tokens_details"))
                     .and_then(|d| d.get("audio_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(read_count_u64),
                 accepted_prediction_tokens: usage_val
                     .and_then(|u| u.get("completion_tokens_details"))
                     .and_then(|d| d.get("accepted_prediction_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(read_count_u64),
                 rejected_prediction_tokens: usage_val
                     .and_then(|u| u.get("completion_tokens_details"))
                     .and_then(|d| d.get("rejected_prediction_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(read_count_u64),
                 ..Default::default()
             },
         };

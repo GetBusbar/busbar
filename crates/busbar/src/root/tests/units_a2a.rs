@@ -1034,6 +1034,19 @@ fn draft(op: OpClassId) -> A2aDraft {
     }
 }
 
+/// The fixture draft, addressing a NAMED agent rather than the default `"probe"` — the seam the
+/// approve-step grant tests hook into to hold the operation fixed and vary only which agent is
+/// addressed.
+fn draft_for(op: OpClassId, agent: &'static str) -> A2aDraft {
+    A2aDraft {
+        resource: Some(ResourceLocator {
+            kind: SCOPE_KIND_AGENT,
+            name: agent,
+        }),
+        ..draft(op)
+    }
+}
+
 /// The eight governance methods the store contract requires and this file's legs never touch.
 ///
 /// Written once as a macro rather than twice by hand: what these fixtures exist to exercise is
@@ -1455,9 +1468,11 @@ fn a_callback_token_past_its_deadline_is_refused() {
 /// default — which is the posture every deployment whose store predates this verb runs on. For a
 /// read, "this store remembers nothing" and "there is nothing to remember" are the same answer;
 /// for a capability check they are opposites, and this asserts which one the default takes. The
-/// sibling `redeem_plane_token` default is deliberately `Ok(true)` and stays that way — a store
-/// that keeps no ledger genuinely has spent nothing — so the two are asserted apart here rather
-/// than assumed to agree.
+/// sibling `redeem_plane_token` default is fail-closed for the SAME reason (locked decision S9,
+/// `af61c0228`): a store that keeps no ledger cannot attest that a call is the first redemption of
+/// a single-use token, so answering `Ok(true)` would let a captured token be replayed without
+/// limit. Both capability verbs default to `Ok(false)`, and the two are asserted together here so
+/// a future divergence in either default is caught.
 #[test]
 fn the_default_liveness_answer_is_a_refusal() {
     use busbar_api::Store as _;
@@ -1471,11 +1486,11 @@ fn the_default_liveness_answer_is_a_refusal() {
          deployment on an older store would accept a replayed callback"
     );
     assert!(
-        store
+        !store
             .redeem_plane_token("ask", "n-1", u64::MAX, 0)
             .expect("the default answers"),
-        "the single-use redeem's default is the opposite one on purpose, and moving it would \
-         break approvals rather than fix a replay"
+        "the single-use redeem's default answered LIVE for a store that keeps no ledger; a \
+         captured single-use token would replay without limit (locked decision S9: fail-closed)"
     );
 }
 
@@ -1632,10 +1647,86 @@ struct Deployment {
     /// The node's monotonic source, as the composition root holds it: a counter that only ever
     /// goes up, whatever the wall clock does.
     mono: AtomicU64,
+    /// The caller's resolved key, where a test names one. `None` is the ordinary posture of every
+    /// fixture above this one — no test before the approve-step gate needed a key at all, and
+    /// none of them names one now.
+    key: Option<busbar_api::VirtualKey>,
+    /// What the deployment's card charges for a byte, in nano-units. Zero for every fixture that
+    /// is not about money, which is the posture this harness had before a priced one was needed.
+    bytes_nanos: u64,
+    /// The dated rate-card history this deployment's units are admitted under, where a test builds
+    /// one. `None` is the billing-off deployment (#42) every other fixture here is.
+    history: Option<crate::root::kernel::PinnedHistory>,
 }
 
 fn deployment(groups: busbar_kernel_budget::GroupTable) -> Deployment {
     deployment_priced(groups, Pricer::flat(0))
+}
+
+/// A deployment whose card charges `bytes_nanos` for a byte of the priced document, and nothing
+/// per request — so the whole of a hold and the whole of an accrual is the byte line, and a
+/// comparison between them is a comparison of that one figure rather than of a sum a fee could
+/// hide a discrepancy inside.
+fn deployment_byte_priced(
+    groups: busbar_kernel_budget::GroupTable,
+    bytes_nanos: u64,
+) -> Deployment {
+    Deployment {
+        bytes_nanos,
+        ..deployment(groups)
+    }
+}
+
+/// A deployment whose units are admitted under a dated rate-card history.
+fn deployment_on_history(
+    groups: busbar_kernel_budget::GroupTable,
+    history: crate::root::kernel::PinnedHistory,
+) -> Deployment {
+    Deployment {
+        history: Some(history),
+        ..deployment(groups)
+    }
+}
+
+/// The same context, under a named unit key — the fact the audit record is supposed to file a
+/// row under, and the one a fixture varies to find out whether it does.
+fn a2a_ctx_keyed(key: u64) -> UnitCtx {
+    UnitCtx {
+        key: busbar_contract::caps::UnitKey::new(key),
+        ..a2a_ctx()
+    }
+}
+
+/// Run one unit's route step, keeping what it accrued. The decision itself is not the subject:
+/// the fixture draft carries no leg, so this plane refuses at the end of the step for want of an
+/// operation to carry — and the accrual happens BEFORE that arm, which is exactly the ordering
+/// the hold depends on (a unit that moved bytes and then failed to route still spent them).
+fn accrued_by_route(unit: &A2aUnits<'_, busbar_kernel_budget::InMemoryCells>) -> u64 {
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let meter = AccrualMeter::new();
+    let _ = Units::route(
+        unit,
+        &busbar_contract::caps::Pass::mint(&seal),
+        &a2a_ctx(),
+        &meter,
+        &[],
+    );
+    meter.total()
+}
+
+/// What the door actually reserved for one unit, in nano-units.
+fn reserved_by_the_door(
+    unit: &A2aUnits<'_, busbar_kernel_budget::InMemoryCells>,
+    who: &PrincipalId,
+) -> u64 {
+    match ask_the_door(unit, who)
+        .0
+        .expect("the group is uncapped on spend, so the door says yes")
+    {
+        busbar_contract::caps::Admission::Own(hold) => hold.reserved(),
+        busbar_contract::caps::Admission::ZeroHold => 0,
+        busbar_contract::caps::Admission::Accrual(_) => panic!("this unit has no parent"),
+    }
 }
 
 fn deployment_priced(groups: busbar_kernel_budget::GroupTable, pricer: Pricer) -> Deployment {
@@ -1646,6 +1737,8 @@ fn deployment_priced(groups: busbar_kernel_budget::GroupTable, pricer: Pricer) -
     )
     .expect("a memory-buffered journal cannot fail to open");
     Deployment {
+        bytes_nanos: 0,
+        history: None,
         auth: Auth::new(busbar_kernel_identity::AuthChain::new(Vec::new(), false)),
         auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
         trust: busbar_contract::caps::Grant::<busbar_contract::caps::Dial>::mint(
@@ -1665,6 +1758,7 @@ fn deployment_priced(groups: busbar_kernel_budget::GroupTable, pricer: Pricer) -
         origin: busbar_kernel::teller::Kernel::new()
             .origin(busbar_contract::caps::OriginKind::Client),
         mono: AtomicU64::new(0),
+        key: None,
     }
 }
 
@@ -1694,6 +1788,17 @@ impl Deployment {
         chain: Option<&'r busbar_kernel_budget::BucketChain>,
         now: u64,
     ) -> A2aUnits<'r, busbar_kernel_budget::InMemoryCells> {
+        self.calling_draft_at(chain, now, draft(ops::OP_MESSAGE_SEND))
+    }
+
+    /// The same unit, over a caller-supplied draft — the seam a test that varies WHICH agent is
+    /// addressed hooks into, rather than the wall clock `calling_at` varies.
+    fn calling_draft_at<'r>(
+        &'r self,
+        chain: Option<&'r busbar_kernel_budget::BucketChain>,
+        now: u64,
+        draft: A2aDraft,
+    ) -> A2aUnits<'r, busbar_kernel_budget::InMemoryCells> {
         A2aUnits::new(
             A2aBindings {
                 auth: &self.auth,
@@ -1709,10 +1814,13 @@ impl Deployment {
                 door: &self.door,
                 chain,
                 pricer: &self.pricer,
-                bytes_nanos: 0,
+                bytes_nanos: self.bytes_nanos,
+                history: self.history.as_ref(),
+                arrived_ms: now.saturating_mul(1_000),
                 records: &self.records,
                 meter_policy: &self.meter_policy,
                 scope_policy: &self.scope,
+                key: self.key.as_ref(),
                 durability: &self.durability,
                 pool: "agents",
                 now,
@@ -1725,7 +1833,7 @@ impl Deployment {
                 mono: self.mono.fetch_add(1, Ordering::AcqRel),
                 origin: self.origin,
             },
-            draft(ops::OP_MESSAGE_SEND),
+            draft,
             Grants::of(Scope::Full),
         )
     }
@@ -1778,6 +1886,139 @@ fn ask_the_door_as(
         &slip,
     );
     (decision.into_result(&seal), slip)
+}
+
+/// Run one unit's approve step to a result — the same mint-a-pass-and-unseal pattern
+/// `ask_the_door` uses for admit, over the step directly above it in the loop.
+fn ask_for_scope(
+    unit: &A2aUnits<'_, busbar_kernel_budget::InMemoryCells>,
+    who: &PrincipalId,
+) -> Result<ScopeFacts, busbar_contract::caps::Refusal> {
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let decision = Units::approve(
+        unit,
+        &busbar_contract::caps::Pass::mint(&seal),
+        &a2a_ctx(),
+        who,
+        &[],
+    );
+    decision.into_result(&seal)
+}
+
+/// **A key reaches the agent it was granted, and no other.**
+///
+/// The operation-class grant every fixture in this file holds (`Grants::of(Scope::Full)`) answers
+/// "may this key do A2A at all" — nothing about WHICH agent. Before the resource-level gate, this
+/// step never asked that second question: it read `self.draft.resource` and pushed it straight
+/// onto the audit facts, so a key granted only agent `"a"` reached agent `"b"` exactly as readily
+/// as `"a"` itself, and the record — naming the agent actually reached — read as authorized.
+///
+/// So this proves both directions on the SAME key: addressing the agent it was not granted is
+/// refused, and addressing the one it was granted still succeeds. Proving only the refusal would
+/// be equally true of a gate that refuses every caller.
+#[test]
+fn a_key_reaches_the_agent_it_was_granted_and_no_other() {
+    let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+    deployment.key = Some(busbar_api::VirtualKey {
+        allowed_scopes: Some(vec![busbar_api::ScopeRef {
+            kind: SCOPE_KIND_AGENT.to_string(),
+            value: "a".to_string(),
+        }]),
+        ..Default::default()
+    });
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+
+    let wrong_agent =
+        deployment.calling_draft_at(chain.as_ref(), 1_700_000_000, draft_for(ops::OP_MESSAGE_SEND, "b"));
+    assert_eq!(
+        ask_for_scope(&wrong_agent, &who)
+            .expect_err("granted \"a\" only, addressing \"b\"")
+            .reason(),
+        ReasonCode::ScopeDenied,
+        "a key granted one agent must not reach a different one"
+    );
+
+    let granted_agent =
+        deployment.calling_draft_at(chain.as_ref(), 1_700_000_000, draft_for(ops::OP_MESSAGE_SEND, "a"));
+    let facts = ask_for_scope(&granted_agent, &who).expect("granted \"a\", addressing \"a\"");
+    assert_eq!(
+        facts.resources.as_slice(),
+        &[ResourceLocator {
+            kind: SCOPE_KIND_AGENT,
+            name: "a"
+        }],
+        "the gate that refuses \"b\" still admits \"a\" — and the record still names it"
+    );
+}
+
+/// **An empty grant list grants no agent.** `Some(vec![])` is the wire-explicit empty SET, never
+/// "unrestricted" — the same freeze `VirtualKey::scope_allowed` already carries for every other
+/// kind. A key minted with no resource entries at all reaches nothing this plane fronts, however
+/// solid its operation-class grant is.
+#[test]
+fn an_empty_grant_list_grants_no_agent() {
+    let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+    deployment.key = Some(busbar_api::VirtualKey {
+        allowed_scopes: Some(Vec::new()),
+        ..Default::default()
+    });
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+    let unit = deployment.calling(chain.as_ref());
+    assert_eq!(
+        ask_for_scope(&unit, &who)
+            .expect_err("an explicit empty list is the empty set, not a wildcard")
+            .reason(),
+        ReasonCode::ScopeDenied
+    );
+}
+
+/// **A grant under another kind does not reach this plane.** The key names the exact same VALUE
+/// the draft addresses (`"probe"`, the fixture default) but under kind `"pool"` rather than
+/// `"agent"`. `scope_allowed` is a `(kind, value)` pair, never a value alone — this is the case
+/// that catches a fix keyed on the name and blind to the kind.
+#[test]
+fn a_grant_under_another_kind_does_not_reach_this_plane() {
+    let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+    deployment.key = Some(busbar_api::VirtualKey {
+        allowed_scopes: Some(vec![busbar_api::ScopeRef {
+            kind: "pool".to_string(),
+            value: "probe".to_string(),
+        }]),
+        ..Default::default()
+    });
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+    // The default fixture draft addresses agent "probe" — the exact value the key's "pool" grant
+    // also names, so a kind-blind check would wrongly pass this.
+    let unit = deployment.calling(chain.as_ref());
+    assert_eq!(
+        ask_for_scope(&unit, &who)
+            .expect_err("the grant is a pool named \"probe\", not an agent named \"probe\"")
+            .reason(),
+        ReasonCode::ScopeDenied
+    );
+}
+
+/// **An unkeyed caller is refused on a credentialed address.** `key: None` — this file's own
+/// default, unless a test sets one — is not "every agent admitted"; it is a caller this
+/// deployment resolved no key for at all. The fixture draft still addresses a named agent, and a
+/// caller with no key reaches no credentialed resource: fail-closed, the same as an absent policy
+/// entry above it.
+#[test]
+fn an_unkeyed_caller_is_refused_on_a_credentialed_address() {
+    let deployment = deployment(one_call_at_a_time("a2a-team"));
+    assert!(deployment.key.is_none(), "the fixture default: no key resolved");
+    let who = PrincipalId::new("vk_agent");
+    let chain = deployment.resolve(&who, Some("a2a-team"));
+    let unit = deployment.calling(chain.as_ref());
+    assert_eq!(
+        ask_for_scope(&unit, &who)
+            .expect_err("no key at all, addressing a named agent")
+            .reason(),
+        ReasonCode::ScopeDenied
+    );
 }
 
 /// **The cap is a cap.** A deployment that wrote `concurrent: 1` against an A2A group gets one
@@ -1941,4 +2182,174 @@ fn two_units_of_one_caller_are_handed_the_same_chain() {
         "one resolved chain, lent twice — not two copies of one answer"
     );
     assert!(std::ptr::eq(one, &chain), "and it is the root's own value");
+}
+
+// ── B09: the money path's three faults ───────────────────────────────────────────────────────────
+
+/// **What a unit accrues is in the denomination its hold is sized in.**
+///
+/// The hold is nano-units. `AccrualMeter` is documented as the running total of what a unit has
+/// SPENT, and the kernel's exit applies one straight to the other —
+/// `hold.spend(meter.total(), meter.headroom())`. So the two have to be the same KIND of number,
+/// and a raw byte count is not one: this step used to accrue `request_bytes` directly, so a unit
+/// holding 896 nano-units drew 128 against it and read as having spent a seventh of what it
+/// reserved. Every budget on this plane ran down at a bytes-per-nano fraction of the true rate,
+/// which is a window that never closes and an `on_exhaustion` arm that never fires.
+///
+/// Asserted THREE ways over ONE deployment, because any two of them pass on a wrong answer:
+/// against the door's own reservation (the figure that has to match, and the only one the kernel
+/// compares), against the arithmetic spelled out independently (so a hold and an accrual that
+/// were both wrong by the same factor could not agree with each other), and against the raw
+/// count (so a byte figure cannot pass by resembling a nano figure).
+///
+/// The rate and the byte count are deliberately coprime and neither is 1: at a price of one, or
+/// at a count of one, the wrong answer and the right answer are the same number.
+#[test]
+fn what_a_unit_accrues_is_the_denomination_its_hold_is_sized_in() {
+    const GROUP: &str = "a2a-team";
+    // Nano-units per byte. Not one, or the product would equal the count and the fault under
+    // test would be invisible.
+    const BYTE_NANOS: u64 = 7;
+    let who = PrincipalId::new("vk_agent");
+    let deployment = deployment_byte_priced(one_call_at_a_time(GROUP), BYTE_NANOS);
+    let chain = deployment.resolve(&who, Some(GROUP));
+
+    let bytes = draft(ops::OP_MESSAGE_SEND).request_bytes;
+    assert_ne!(bytes, 1, "a count of one would hide a missing multiply");
+
+    let reserved = reserved_by_the_door(&deployment.calling(chain.as_ref()), &who);
+    let accrued = accrued_by_route(&deployment.calling(chain.as_ref()));
+
+    assert_eq!(
+        accrued,
+        bytes * BYTE_NANOS,
+        "the accrual is this plane's declared count priced at the card's per-byte rate"
+    );
+    assert_eq!(
+        accrued, reserved,
+        "and it is the SAME figure the door reserved — a hold sized from one product and drawn \
+         down by another is a reservation that cannot be reconciled against itself"
+    );
+    assert_ne!(
+        accrued, bytes,
+        "the raw byte count is a different number, which is the whole of the fault: a count \
+         where the hold's own denomination belongs"
+    );
+}
+
+/// **The provenance stamp names the card that was in force when the unit ARRIVED.**
+///
+/// #79: "price against the latest rate card" means the latest card whose `effective_from` had
+/// arrived at the posting's instant — never the latest card ever authored. Publishing a new card
+/// does not reprice the window before it.
+///
+/// This stamp used to be a hardcoded `0`, and `0` is not a neutral placeholder: it is
+/// `HistorySeq::OPENING`, a real entry number. So every posting this plane made claimed the
+/// opening card had priced it — on a deployment that had changed a price twice, a statement that
+/// was false for every unit served after the first change.
+///
+/// Three units over ONE history of three dated entries, arriving in three different windows.
+/// Each names its own window's entry. The two that arrived before the newest card was published
+/// do NOT name it — that is the #79 property, and it is the one a "read the head of the history"
+/// implementation fails while still looking like a real lookup.
+#[test]
+fn the_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
+    const GROUP: &str = "a2a-team";
+    // Three cards, dated on the MILLISECOND scale the history is written on. The first is
+    // effective from instant zero however it is dated — one entry has to cover every instant, or
+    // an early arrival falls in a hole.
+    const SECOND_CARD_MS: u64 = 1_700_000_500_000;
+    const THIRD_CARD_MS: u64 = 1_700_000_900_000;
+
+    let holder = crate::root::kernel::RootHistory::default();
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(3), 1_000);
+    holder.apply(
+        busbar_kernel_ledger::cost::RateCard::absent(11),
+        SECOND_CARD_MS,
+    );
+    holder.apply(
+        busbar_kernel_ledger::cost::RateCard::absent(29),
+        THIRD_CARD_MS,
+    );
+    let pinned = holder.pin().expect("three applies put entries in place");
+    assert_eq!(
+        pinned.seq().get(),
+        2,
+        "the snapshot's head is the third entry, which is the figure a stamp must NOT be for a \
+         unit that arrived before it"
+    );
+
+    let who = PrincipalId::new("vk_agent");
+    let deployment = deployment_on_history(one_call_at_a_time(GROUP), pinned);
+    let chain = deployment.resolve(&who, Some(GROUP));
+
+    // The arrival epoch is in WHOLE SECONDS; the harness pins the millisecond reading beside it,
+    // as the root does.
+    let stamped = |now_secs: u64| {
+        deployment
+            .calling_at(chain.as_ref(), now_secs)
+            .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who))
+            .amount
+            .rate_card_version
+    };
+
+    assert_eq!(
+        stamped(1_700_000_100),
+        0,
+        "a unit that arrived before the second card was published is priced by the opening entry"
+    );
+    assert_eq!(
+        stamped(1_700_000_600),
+        1,
+        "a unit that arrived in the second card's window names the second entry — not the third, \
+         which did not exist for it"
+    );
+    assert_eq!(
+        stamped(1_700_000_950),
+        2,
+        "and a unit that arrived after the third card names the third"
+    );
+}
+
+/// **Two units of this plane are filed under two different keys.**
+///
+/// The audit record's `unit_key` is what says WHICH call a row is about. Hardcoded to zero, every
+/// a2a unit this node ever served collided on one key — a record that identifies nothing, and an
+/// audit trail in which no two calls can be told apart. The loop already hands this step the
+/// unit's own key on `ctx`; the fault was a literal written where a field was in scope.
+///
+/// Asserted both ways: the two keys DIFFER (the collision is gone) and each is the key its own
+/// context carried (they differ because they are right, not merely because they are two numbers).
+#[test]
+fn two_a2a_units_are_filed_under_two_different_keys() {
+    const GROUP: &str = "a2a-team";
+    let who = PrincipalId::new("vk_agent");
+    let deployment = deployment(one_call_at_a_time(GROUP));
+    let chain = deployment.resolve(&who, Some(GROUP));
+
+    let filed_under = |key: u64| {
+        deployment
+            .calling(chain.as_ref())
+            .audit_inputs(&a2a_ctx_keyed(key), Outcome::Completed, Some(&who))
+            .what
+            .unit_key
+    };
+
+    let first = filed_under(7);
+    let second = filed_under(9);
+
+    assert_ne!(
+        first, second,
+        "two units filed under one key is an audit trail that cannot tell two calls apart"
+    );
+    assert_eq!(
+        first,
+        busbar_contract::caps::UnitKey::new(7),
+        "and the key a record is filed under is the one its own unit carried"
+    );
+    assert_eq!(
+        second,
+        busbar_contract::caps::UnitKey::new(9),
+        "for both of them — a record keyed off anything but `ctx` is keyed off a guess"
+    );
 }

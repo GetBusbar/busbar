@@ -344,7 +344,21 @@ fn judge(kind: Urlish, value: &str, policy: SsrfPolicy) -> Result<(), ArgWhy> {
             }
             Ok(())
         }
-        Urlish::Host => judge_host(value, policy),
+        Urlish::Host => {
+            // A `hostname`/`ipv4`/`ipv6`-declared field is supposed to carry a bare host, but
+            // nothing stops a caller writing a full absolute URL into it instead. Left to
+            // `judge_host` as-is, a value like `https://169.254.169.254/x` is not a syntactically
+            // valid host, so the metadata/private/obfuscation checks below (which read it as an
+            // opaque host string) miss the address entirely — the scheme and path are noise to
+            // them, not a signal to strip. Any embedded `://` means this is actually a URL wearing
+            // a `hostname` declaration, so it is judged as one (scheme allowlist + host judgement
+            // on the REAL host), the same authority the `Reference` arm above already gives a
+            // scheme-relative value.
+            if value.contains("://") {
+                return judge_absolute(value, policy);
+            }
+            judge_host(value, policy)
+        }
     }
 }
 

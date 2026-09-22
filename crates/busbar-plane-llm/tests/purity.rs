@@ -132,7 +132,7 @@ struct Pass {
 #[allow(clippy::too_many_lines)]
 fn run_once() -> Pass {
     let plane = LlmPlane::new(UPSTREAMS);
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("openai"), &[]);
     let labels = Labels::new();
@@ -243,7 +243,7 @@ fn pairs(facts: &busbar_contract::bounded::Facts<'_>) -> Vec<(String, String)> {
 #[test]
 fn an_undeclared_verb_is_refused() {
     let plane = LlmPlane::EMPTY;
-    let arena = harness::LeakArena;
+    let arena = harness::LeakPlaneAlloc;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new("/v1/messages", &[]);
     let labels = Labels::new();

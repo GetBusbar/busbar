@@ -405,6 +405,20 @@ jobs:
         run: cargo xtask gate workspace-deps --selftest
       - name: Workspace-deps lint
         run: cargo xtask gate workspace-deps
+      # WHAT THIS REPOSITORY CLAIMS ABOUT CONFORMANCE, CHECKED AGAINST THE VERDICTS IT ACTUALLY
+      # HOLDS. `conformance-sync` was registered and run by NOTHING — `full-gate --selftest` caught
+      # it by its own rule that a gate nothing runs is a gate that cannot fail. It belongs in CI
+      # rather than on the deliberately-not-run list, because what it guards is customer-facing:
+      # the manifest, the README badges and the prose claims must not drift from the real suite
+      # results. The failure mode is the repository asserting a verdict it does not have — and the
+      # suites are currently ten STALE and seven never run, so the drift it exists to catch is not
+      # hypothetical. One owner ruling rides on exactly this: the OIDF claim is "passes the suite"
+      # and NEVER "certified". It reads text and runs no suite, so it costs a second and sits in
+      # the FAST tier with the other manifest checks.
+      - name: Conformance-sync self-test
+        run: cargo xtask gate conformance-sync --selftest
+      - name: Conformance-sync
+        run: cargo xtask gate conformance-sync
       # THE GATE SET ITSELF, checked against this file. Every step above runs ONE gate; nothing
       # asked whether the set of steps still covers the set of registered gates. That question lives
       # in `full-gate --selftest` — the registry-vs-ci.yml set equality, both directions, plus the
@@ -1324,14 +1338,26 @@ jobs:
       # blast radius: the shadow oracle's recorder and replayer iterate it, so a stale or hand-edited
       # cell list silently changes what the whole 1.5.5 parity battery even asks. It derives from the
       # two inventories checked immediately above, which is exactly why it can fall behind them.
+      #
+      # DECISION #80 (owner-locked 2026-09-22) made this step REAL. Until now the generator was
+      # busbar's own `testing/shadow-oracle/cells/__init__.py`, which the Rust judge could not
+      # execute — so `cells --check` validated only the committed file's internal consistency
+      # (duplicate ids, counts-vs-cells) and generator drift was not merely passing, it was NOT
+      # BEING CHECKED AT ALL. The generator is Rust now (busbar-release's `busbar-release-corpus`,
+      # byte-identical to this corpus), the Python is deleted, and `cells --check` regenerates the
+      # 2318 cells from the inventories and fixtures and refuses ANY byte difference.
       - name: shadow-oracle cells drift (committed == fresh derivation)
         run: |
           set -euo pipefail
-          # Self-test FIRST, as everywhere else here: every `*_cells()` builder returns [] for a
+          # Self-test FIRST, as everywhere else here: every cell builder yields nothing for a
           # missing fixture, so a renamed fixture deletes a whole family from the owed corpus
-          # without a word. The self-test plants exactly that and requires the per-family floor to
-          # refuse it, before the floor's verdict on this tree is trusted.
+          # without a word. The self-test plants exactly that (repointing the largest fixture-gated
+          # family at a path that cannot exist and calling its REAL builder) and requires the
+          # per-family floor to refuse it, before the floor's verdict on this tree is trusted.
           ./bin/oracle cells --selftest
+          # The drift gate: regenerate to memory, byte-compare against the committed corpus. The
+          # corpus feeds the MONEY oracle, so a changed cell is a money-byte change — if this goes
+          # red, name the change and get it signed off (#10/#59); do not regenerate to go green.
           ./bin/oracle cells --check
 
   # PUBLIC-HYGIENE gate. busbar is sold to enterprises, and this repo, the docs site and the
@@ -1796,6 +1822,15 @@ jobs:
           - name: oauth2 test-support
             features: busbar-oauth2/test-support
             tests: -p busbar-oauth2
+          # The author-side packaging CLI (roster def 14) is a `[[bin]]` behind `required-features`
+          # ON PURPOSE: DECISIONS #84 makes the SDK's own busbar closure the thing every plugin
+          # links, so `busbar-plugin-pack`'s edge to the host-facing loader -- which carries the
+          # ledger -- must not be a plain dependency. `required-features` means the DEFAULT build
+          # never type-checks pack.rs, which is precisely the rot this job exists to catch, so the
+          # feature earns its own row rather than a declaration line.
+          - name: sdk pack
+            features: busbar-plugin-sdk/pack
+            tests: -p busbar-plugin-sdk
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
@@ -2023,7 +2058,7 @@ jobs:
           path: target/release
       - name: Make the downloaded binary executable
         run: chmod +x target/release/busbar
-      # ── the MCP plane's six ───────────────────────────────────────────────────────────────────
+      # ── the MCP plane's nine ──────────────────────────────────────────────────────────────────
       - name: mcp.rig authenticate-refusal
         run: ./scripts/mcp-subject/h2-authenticate-refusal.sh
       - name: mcp.rig verify-refusal
@@ -2036,7 +2071,7 @@ jobs:
         run: ./scripts/mcp-subject/h2-audit-record.sh
       - name: mcp.rig exit-terminal
         run: ./scripts/mcp-subject/h2-exit-terminal.sh
-      # ── the A2A plane's six ───────────────────────────────────────────────────────────────────
+      # ── the A2A plane's nine ──────────────────────────────────────────────────────────────────
       - name: a2a.rig verify-refusal
         run: ./scripts/a2a-subject/h2-verify-refusal.sh
       - name: a2a.rig admit-refusal
@@ -2049,6 +2084,53 @@ jobs:
         run: ./scripts/a2a-subject/h2-audit-record.sh
       - name: a2a.rig exit-terminal
         run: ./scripts/a2a-subject/h2-exit-terminal.sh
+      # ── THE PRICING LEGS, both planes ─────────────────────────────────────────────────────────
+      # These six are the money half of step 6, and they were UNWRITEABLE until the rigs' subject
+      # became a billing-ON deployment: `h2-lib.sh` wrote `per_request_fee: 1` and NO `rate_card:`
+      # key, which under #42 is billing OFF, so a priced meter class could not be exercised at all.
+      # One config key converted two already-gating rigs, and these are what the conversion bought.
+      #
+      # THEY GATE, AND THEY ARE EXPECTED RED TODAY. No `continue-on-error`, deliberately: each one
+      # is a decision the tree does not yet keep, and a red that says which is worth more than a
+      # green that says nothing. Do not delete one to make this job pass — each names its defect in
+      # its own failure text, and the headline of each is:
+      #   class-price      the declared meter classes (a2a `bytes`; mcp `tool_calls`+`bytes`) are
+      #                    neither reportable NOR priceable: the plane posts a quantity of zero
+      #                    (`receive.rs:729`, `method.rs:2510`), and `rate_card:` keys are validated
+      #                    against `models:` so no card can name a class at all (#71).
+      #   card-epoch       `GET /admin/usage` and `GET /keys/<id>/usage` reprice flat off the
+      #                    CURRENT card, so publishing a card reprices windows that closed before
+      #                    its `effective_from` (#79's own remaining item).
+      #   unpriced-refuses billing ON with the hit class unpriced serves 200 and bills the flat fee,
+      #                    i.e. the class prices at a SILENT ZERO — which #42 permits only when
+      #                    `rate_card:` is ABSENT.
+      - name: mcp.rig class-price
+        run: ./scripts/mcp-subject/h2-class-price.sh
+      - name: mcp.rig card-epoch
+        run: ./scripts/mcp-subject/h2-card-epoch.sh
+      - name: mcp.rig unpriced-refuses
+        run: ./scripts/mcp-subject/h2-unpriced-refuses.sh
+      - name: a2a.rig class-price
+        run: ./scripts/a2a-subject/h2-class-price.sh
+      - name: a2a.rig card-epoch
+        run: ./scripts/a2a-subject/h2-card-epoch.sh
+      - name: a2a.rig unpriced-refuses
+        run: ./scripts/a2a-subject/h2-unpriced-refuses.sh
+      # ── THE UNCONDITIONAL-LEDGER LEGS, both planes ───────────────────────────────────────────
+      # RULED 2026-09-22: the metering write is UNCONDITIONAL and `plane_host/govern.rs:226` is the
+      # defect. The card decides whether a READ turns counts into money; it may not decide whether
+      # the counts are RECORDED (#43/#71 "plugins are pricing-blind, pricing is a read-time view",
+      # #77(3) "price is NEVER stored"). #42 is unchanged — rate_card presence IS the billing
+      # switch, because billing is the read, not the write.
+      #
+      # Each leg boots TWICE against one binary with the card as the only difference: card present
+      # is the CONTROL that proves the read works, card absent is the CLAIM. RED today; GREEN when
+      # the kernel fix lands, with no edit to the leg. Do not soften it to green while the defect
+      # stands — the fix is owed in `busbar-kernel/src/plane_host/`, not in these scripts.
+      - name: mcp.rig ledger-unconditional
+        run: ./scripts/mcp-subject/h2-ledger-unconditional.sh
+      - name: a2a.rig ledger-unconditional
+        run: ./scripts/a2a-subject/h2-ledger-unconditional.sh
   # ── WHERE THE OTHER FORTY NON-DEFAULT FEATURES ARE BUILT ──────────────────────────────────────
   # `cargo xtask gate feature-sets` requires EVERY non-default feature in the tree to appear either
   # in the matrix above or on one of these lines, and requires every line to name a feature that
@@ -2089,7 +2171,6 @@ jobs:
   # feature-covered: busbar-mcp/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
-  # feature-covered: busbar-plugin-testkit/store -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-admin with the feature named
   # feature-covered: busbar-contract/dispatch -- check -- reached from busbar-substrate-values/dispatch in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
   # feature-covered: busbar-contract/runtime -- check -- reached from busbar-substrate-values/runtime in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
@@ -3297,15 +3378,38 @@ jobs:
     # goes green and the list is stale. So this job can block without blocking on the standing work.
     outputs:
       verdict: ${{ steps.verdict.outputs.verdict }}
+    # THE BASE `ceiling-rose` MEASURES AGAINST, STATED RATHER THAN GUESSED.
+    #
+    # On a `push` this is EMPTY, and empty means absent: the gate derives the base itself as the
+    # remote tip of the line HEAD is on, which on a push checkout is this branch at the commit
+    # before the pushed one — exactly "what this push changed".
+    #
+    # On a `pull_request` there is no line to derive from: `actions/checkout` leaves HEAD DETACHED
+    # at `refs/remotes/pull/N/merge`, so `git symbolic-ref HEAD` fails and the gate refuses to
+    # invent a base (it is RED, never a silent fall-back — see ceilings.rs::base_ref). The honest
+    # base for a PR is the commit it would merge into, which GitHub already knows, so it is passed
+    # in rather than reconstructed. `fetch-depth: 0` is what makes that sha present in the clone.
+    env:
+      XTASK_CEILING_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # THE `ceiling-rose` ROW READS HISTORY. It compares every integer in qa/construction.toml
-          # and qa/kind-isolation.toml against the same integer at this branch's base, which it
-          # resolves as the merge-base with the integration line (or HEAD~1 where that is HEAD). A
-          # shallow clone has neither, and the row is RED when it cannot establish a base — a
-          # ratchet that switches itself off on the runner where it is cheapest to switch off is not
-          # a ratchet. So the history is fetched.
+          # and qa/kind-isolation.toml against the same integer at this branch's base. A shallow
+          # clone has no history to compare against, and the row is RED when it cannot establish a
+          # base — a ratchet that switches itself off on the runner where it is cheapest to switch
+          # off is not a ratchet. So the history is fetched.
+          #
+          # `fetch-depth: 0` ALSO DEEPENS `refs/remotes/origin/<branch>`, which is what the gate
+          # derives its base from on a push, and makes the PR's base sha reachable on a
+          # `pull_request`. It used to be paired with an explicit fetch of `predev`, because the
+          # gate measured against a merge-base with that branch; it no longer does. `predev` had
+          # DIVERGED — 88 commits ahead of a 178-commit-old fork point — and the row was reporting
+          # four days of the whole team's ceiling movement as the pushed commit's own raises, which
+          # is the second time a hardcoded branch name in that constant silently mismeasured this
+          # gate. The base is derived from the checkout now; there is no branch name to keep
+          # fetching. (`gate-mutants.yml` still fetches `predev` for `GM_DEFAULT_BASE`, which is a
+          # different instrument with a different base and is unaffected.)
           fetch-depth: 0
       - name: Construction gate self-test (every rule proves it sees its planted violation)
         # THE HANG CEILING IS A CEILING, NOT A BUDGET, AND THIS SELF-TEST IS LEGITIMATELY LONG.
@@ -3395,15 +3499,18 @@ jobs:
     runs-on: latchkey-large
 
     timeout-minutes: 30
+    # The same base `construction-gate` uses, for the same reason — this job mirrors that gate's
+    # `ceiling-rose` row (`ship-ready:ceiling-rose`), so it has to measure against the same commit
+    # or the two would disagree about whether a ceiling rose. See that job's comment.
+    env:
+      XTASK_CEILING_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Full history: `ceiling-rose` compares against a base commit, and a shallow clone has
+          # none. The explicit `predev` fetch that used to stand here is GONE with the hardcoded
+          # branch name it served — see the `construction-gate` job for why that base was wrong.
           fetch-depth: 0
-      - name: Fetch the line the branch is measured against
-        # `ceiling-rose` and the mutation verdict are both measured against the merge-base with it.
-        run: |
-          git fetch --no-tags --quiet origin \
-            +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
         uses: ./.github/actions/cargo-home

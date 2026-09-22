@@ -3,25 +3,25 @@
 //! super::*` reaches the private items it always did.
 
 use super::{correlation_for, correlation_value, FACT_RPC_ID};
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Span};
+use busbar_contract::bounded::{PlaneAlloc, PlaneAllocBudget, ScratchBytes, Span};
 use busbar_contract::ids::CorrelationValue;
 
 /// An arena that hands out leaked bytes, which is what a test arena is.
-struct TestArena;
+struct TestPlaneAlloc;
 
-impl Arena for TestArena {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
-        Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+impl PlaneAlloc for TestPlaneAlloc {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
+        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }
 
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
         Ok(Box::leak(src.to_string().into_boxed_str()))
     }
 
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget> {
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
@@ -36,7 +36,7 @@ impl Arena for TestArena {
 /// most: the battery's own identifiers arrive in a journal as the battery wrote them.
 #[test]
 fn a_bare_number_is_itself() {
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     for n in 0u64..64 {
         assert_eq!(
             correlation_value(n.to_string().as_bytes(), &arena),
@@ -48,7 +48,7 @@ fn a_bare_number_is_itself() {
 /// A quoted identifier is the text it is, not a number standing in for it.
 #[test]
 fn a_named_identifier_is_carried_as_itself() {
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     assert_eq!(
         correlation_value(br#""req-1""#, &arena),
         Some(CorrelationValue::Str("req-1"))
@@ -62,7 +62,7 @@ fn a_named_identifier_is_carried_as_itself() {
 /// are one hold. Checked over every pair of a set chosen to include the near misses.
 #[test]
 fn two_string_identifiers_of_one_principal_never_collide() {
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     let raw: [&[u8]; 8] = [
         br#""req-1""#,
         br#""req-2""#,
@@ -89,7 +89,7 @@ fn two_string_identifiers_of_one_principal_never_collide() {
 /// A string that reads like a counter is still a string, and never equals the counter.
 #[test]
 fn a_quoted_seven_is_not_the_number_seven() {
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     assert_ne!(
         correlation_value(br#""7""#, &arena),
         correlation_value(b"7", &arena)
@@ -106,7 +106,7 @@ fn a_quoted_seven_is_not_the_number_seven() {
 /// open calls of one principal on one session answer to each other.
 #[test]
 fn the_near_misses_are_carried_as_text() {
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     for raw in [
         &b"-1"[..],
         &b"1.0"[..],
@@ -131,7 +131,7 @@ fn the_near_misses_are_carried_as_text() {
 /// The one zero that is a number is the number zero written by itself.
 #[test]
 fn a_padded_identifier_is_not_the_number_it_pads() {
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     assert_eq!(
         correlation_value(b"007", &arena),
         Some(CorrelationValue::Str("007"))
@@ -155,7 +155,7 @@ fn a_padded_identifier_is_not_the_number_it_pads() {
 /// one is a caller's identifier and is carried as itself.
 #[test]
 fn the_empty_identifier_correlates_with_nothing() {
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     assert_eq!(correlation_value(b"null", &arena), None);
     assert!(correlation_for(b"null", &arena).is_none());
     assert_eq!(
@@ -167,7 +167,7 @@ fn the_empty_identifier_correlates_with_nothing() {
 /// The same bytes always give the same value.
 #[test]
 fn the_value_is_deterministic() {
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     for raw in [&b"42"[..], &br#""abc""#[..], &b"null"[..]] {
         assert_eq!(
             correlation_value(raw, &arena),
@@ -179,7 +179,7 @@ fn the_value_is_deterministic() {
 /// The correlation carries the declared key and the identifier's value.
 #[test]
 fn the_correlation_carries_the_declared_key() {
-    let arena = TestArena;
+    let arena = TestPlaneAlloc;
     let c = correlation_for(b"7", &arena).expect("it is carried");
     assert_eq!(c.fact_key, FACT_RPC_ID);
     assert_eq!(c.value, CorrelationValue::Num(7));

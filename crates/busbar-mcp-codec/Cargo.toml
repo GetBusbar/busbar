@@ -60,9 +60,12 @@ busbar-api = { path = "../api" }
 http = { workspace = true }
 # THE JSON SPAN SCANNER — the workspace's one reading of JSON, used here so routing can read the
 # body's top-level `method` without materialising a document the selected operation cell is about
-# to parse anyway. It depends on nothing of busbar's and opens nothing, so it adds no edge a pure
-# kind's closure scan could object to.
-busbar-grammar = { path = "../busbar-grammar" }
+# to parse anyway. It used to be its own crate (`busbar-grammar`) that named nothing of busbar's;
+# it folded into `busbar-contract` (DECISIONS #40) and is now reached as `busbar_contract::spans`.
+# This is the first dependency this crate takes on `busbar-contract` — the universal base, and the
+# ONLY busbar crate a plugin manifest may name — so it opens no edge a pure kind's closure scan
+# could object to.
+busbar-contract = { path = "../busbar-contract" }
 bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

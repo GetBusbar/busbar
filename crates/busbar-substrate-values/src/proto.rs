@@ -1332,10 +1332,15 @@ impl Registry {
         // Interned-name fast path: hot callers hold the registry's own `&'static` name, so pointer
         // identity settles the row without a byte compare; a foreign string falls through to the
         // equality arm of the same pass. Same result either way.
-        self.decls
-            .iter()
-            .copied()
-            .find(|d| d.name.as_ptr() == name.as_ptr() || d.name == name)
+        //
+        // A `&str` is a POINTER *and* a LENGTH — the fast path must compare both. A subslice of an
+        // interned name (e.g. a caller stripping a suffix off an already-resolved name) starts at
+        // the SAME address as the name it was sliced from, so a data-pointer match alone would
+        // answer "root" with the declaration filed under "rooted": a protocol name nothing declared,
+        // resolved to another protocol's codec, auth scheme and verbs.
+        self.decls.iter().copied().find(|d| {
+            (d.name.as_ptr() == name.as_ptr() && d.name.len() == name.len()) || d.name == name
+        })
     }
 
     /// Every declaration, in declaration order.

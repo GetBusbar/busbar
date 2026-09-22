@@ -33,7 +33,38 @@ use serde::{Deserialize, Serialize};
 /// `busbar_abi() == TRANSPORT_VERSION`. Named the same way [`crate::cold::SECRET_ABI_VERSION`] and
 /// [`crate::cold::hook::HOOK_ABI_VERSION`] are, so the loader floor and the SDK's declared version share one
 /// const and cannot silently drift apart.
-pub const EXPORT_ABI_VERSION: u32 = 2;
+///
+/// v2 -> v3 (1.6.0, DECISIONS #85 — THE OBSERVABILITY ENVELOPE): an export response is now
+/// [`crate::cold::observe::Envelope`]`<ExportResponse>` — `{ result, metrics[], diagnostics[] }` —
+/// instead of a bare `ExportResponse`. **This is the bump #85 called for and the only one it
+/// required.**
+///
+/// WHY THIS KIND AND WHY ONLY THIS KIND, so nobody has to reconstruct the reasoning later:
+///
+/// * `export` is where the defect was. [`ExportResponse::Delivered`] is a UNIT variant and the cold
+///   tier has no host-callback vtable, so a sink could not report the metrics it produced or the
+///   diagnostics it raised — which is precisely what made the four `busbar-export-*` crates
+///   unbuildable without losing operator-visible surfaces.
+/// * It costs nothing to bump. There is no published export plugin, and `DynExport::deliver` has no
+///   production caller, so widening this window refuses nobody and changes no shipped behaviour.
+/// * The other four cold kinds do NOT move here, and not because the envelope is export-only — the
+///   envelope TYPE and the host seam that folds it are kind-NEUTRAL and already carry every kind
+///   (see `plugin-loader`'s `decode_response`, which is generic over the kind's response type). They
+///   do not move because each carries a cost this change has no mandate to pay: the store's
+///   `ABI_VERSION` is coupled to `plugin-loader`'s `STORE_ABI_WITH_NEW_OPS` (=5), so bumping 4->5
+///   would silently switch every v5 store onto the eight neutral plane-record verbs — a behaviour
+///   change disguised as a version bump; `hook` and `secret` have SINGLE-POINT supported windows
+///   (`[N, N]`), so bumping either refuses every existing plugin of that kind unless the window is
+///   widened to `[1, N]` in the same breath, and `hook` is a 1.6.0 FUNCTIONAL FIXED POINT whose
+///   behaviour may not move at all. Adopting the envelope on each of those is a one-line change to
+///   that kind's constant once those costs are accepted; it is not a redesign.
+///
+/// THE FLOOR STAYS AT 2. A sink built before the envelope answers a BARE `ExportResponse` and keeps
+/// loading: the loader's decoder accepts both shapes and they are disjoint (every response variant
+/// is externally tagged by its Rust variant name, and none of them is named `result`). That is the
+/// same per-kind ADAPTER the store's usage-ledger ops already run on, not a permanent wire fork —
+/// when this kind's floor rises past 3 the bare arm is dead code and is deleted.
+pub const EXPORT_ABI_VERSION: u32 = 3;
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of
 /// the export projection grammar, the same discipline as the hook phase names.

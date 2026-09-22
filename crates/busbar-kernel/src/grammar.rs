@@ -37,7 +37,7 @@ pub use busbar_contract::{
 ///
 /// The scanner is [`busbar_grammar`]'s, and the contract re-exports the same crate, so the pointer
 /// a plane resolved and the pointer the pump resolves are resolved by one reading of one grammar.
-pub use busbar_grammar::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
+pub use busbar_contract::spans::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
 
 /// The three axes the boot-time overlap check groups selector forms onto.
 ///

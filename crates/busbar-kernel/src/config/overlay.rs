@@ -1053,7 +1053,7 @@ pub fn apply_root_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
 ///
 /// The FIRST-PARTY floor override is now PER-PLUGIN, not a single global floor. Each pin adds
 /// BOTH a `min_versions` entry (the third-party floor path) AND a `first_party_floors[name]` entry (the
-/// first-party floor path in `busbar_plugin_sign::evaluate`). `evaluate` applies the per-name
+/// first-party floor path in `busbar_plugin_loader::sign::evaluate`). `evaluate` applies the per-name
 /// first-party floor ONLY to a plugin whose manifest is actually first-party, so pinning a third-party
 /// name is a harmless no-op on the first-party path (its `min_versions` entry does the work). The
 /// earlier single global `first_party_floor` set to the LOWEST pin across all pins lowered the floor for

@@ -296,6 +296,143 @@ async fn a_subscription_that_could_deliver_nothing_is_refused() {
     );
 }
 
+// ── MAX_SUBSCRIBED_URIS: the requested `resourceSubscriptions` list is bounded and deduplicated ──
+//
+// The URI list is entirely client-written and, once accepted, is retained for the stream's whole
+// life ([`crate::mcp::subscribe::MAX_LIFETIME`]), re-walked against the catalogue on every
+// generation move and against every relayed upstream event. Nothing bounded its size or deduplicated
+// it: a caller could name an unbounded number of uris, and a repeated uri was both a memory
+// multiplier (one retained entry per COPY) and a duplicate-delivery multiplier. The cap runs on the
+// RAW requested list, before entitlement narrows it — so it is a property of the request itself,
+// provable with uris that resolve to nothing at all.
+
+/// Sixty-four distinct uris a fixture with NO resources at all cannot possibly be entitled to —
+/// deliberately, so this is a property of the REQUEST's shape, not of the catalogue.
+fn distinct_uris(n: usize) -> Vec<String> {
+    (0..n).map(|i| format!("test://uri-{i}")).collect()
+}
+
+/// A request naming more than 64 distinct uris is refused OUTRIGHT — by the cap, not by the
+/// separate "opts in to no category" refusal a fixture with no matching resources would otherwise
+/// trigger (this case includes `toolsListChanged` too, so that other refusal cannot fire here).
+#[tokio::test]
+async fn the_65th_distinct_subscribed_uri_is_refused() {
+    let (url, _h) = serve(ONE_TOOL).await;
+    let response = listen(
+        &url,
+        serde_json::json!({
+            "toolsListChanged": true,
+            "resourceSubscriptions": distinct_uris(65),
+        }),
+    )
+    .await;
+    assert_eq!(response.status().as_u16(), 400);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        body.pointer("/error/code"),
+        Some(&serde_json::json!(-32602)),
+        "{body}"
+    );
+    let message = body
+        .pointer("/error/message")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default();
+    assert!(
+        !message.contains("opts in to no category"),
+        "this must be the URI-COUNT refusal, not the unrelated no-deliverable-category one: {body}"
+    );
+    assert!(
+        message.contains("64"),
+        "the refusal should name the ceiling so an operator does not have to go and count: {body}"
+    );
+}
+
+/// Exactly 64 distinct uris is NOT refused by the cap — the boundary is inclusive.
+#[tokio::test]
+async fn sixty_four_distinct_subscribed_uris_are_not_refused_by_the_cap() {
+    let (url, _h) = serve(ONE_TOOL).await;
+    let response = listen(
+        &url,
+        serde_json::json!({
+            "toolsListChanged": true,
+            "resourceSubscriptions": distinct_uris(64),
+        }),
+    )
+    .await;
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "64 distinct uris must clear the cap and open the stream"
+    );
+}
+
+/// A registration exposing `n` real, subscribable resources (`docs://r0` .. `docs://r{n-1}`) — the
+/// fixture the dedup case needs so the ACCEPTED (entitled) list can be inspected directly, rather
+/// than inferred from a request that could never be entitled to anything.
+fn many_resources_yaml(n: usize) -> String {
+    let mut out = String::from(
+        "url: \"https://tools.example.com/mcp\"\n\
+         pin: { mechanism: unpinned }\n\
+         tools_allow:\n  alpha: {}\n\
+         resources_allow:\n",
+    );
+    for i in 0..n {
+        out.push_str(&format!(
+            "  \"docs://r{i}\":\n    name: \"r{i}\"\n    text: \"hello\"\n"
+        ));
+    }
+    out
+}
+
+/// A list naming 64 distinct uris, one of them repeated fifty times (118 raw entries), is treated
+/// as exactly 64 — accepted, not refused, and the acknowledgement carries no more than the 64
+/// distinct uris asked for. Proves the cap counts DISTINCT uris, not list length, and that a
+/// repeated uri does not consume the budget once per copy.
+#[tokio::test]
+async fn duplicate_uris_dedup_rather_than_consuming_the_cap_once_per_copy() {
+    let yaml = many_resources_yaml(64);
+    let (url, _h) = serve(&yaml).await;
+    let mut requested: Vec<String> = (0..64).map(|i| format!("docs://r{i}")).collect();
+    for _ in 0..50 {
+        requested.push("docs://r0".to_string());
+    }
+    assert_eq!(requested.len(), 114, "the raw request really does exceed the cap in length");
+
+    let response = listen(
+        &url,
+        serde_json::json!({ "resourceSubscriptions": requested }),
+    )
+    .await;
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "64 DISTINCT uris, however many times one of them is repeated, must not be refused"
+    );
+    let got = frames(response, 1, std::time::Duration::from_secs(3)).await;
+    let ack = got.first().expect("an acknowledgement");
+    let accepted_uris = ack
+        .pointer("/params/notifications/resourceSubscriptions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        accepted_uris.len(),
+        64,
+        "a repeated uri must be retained ONCE, not once per copy: {accepted_uris:?}"
+    );
+    let mut sorted: Vec<String> = accepted_uris
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        64,
+        "the accepted list itself must hold no duplicate uri"
+    );
+}
+
 // ── The delivery, which is the reason the stream is worth opening ───────────────────────────────
 
 /// A REAL catalogue change on the live handle wakes an OPEN stream with

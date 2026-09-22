@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# plane-config-noun-gate.sh — THE FOUR-NOUN CONFIG-PARSE DEBT METER for busbar-core. REPORT-ONLY.
+# plane-config-noun-gate.sh — THE FOUR-NOUN CONFIG-PARSE DEBT METER for core's config machinery
+# (busbar-core was deleted 2026-09-20; see CORE_ROOTS below for where it lives now). REPORT-ONLY.
 #
 # WHY THIS EXISTS (docs/design/playbook/gate-isomorphism.md §2, Assertion N1):
 #   Each of the four planes declares itself by the mere EXISTENCE of one top-level config.yaml section
@@ -29,8 +30,8 @@
 # WHAT IS ALLOWLISTED (the legitimate seam + the homonyms that would drown the signal):
 #   * THE SEAM — any line naming `config_section` / `owned_config_sections` / `config_sections_from` /
 #     `plane_decl_for_config_section` / `CORE_OWNED_CONCRETE_SECTIONS`: the allowed path, never counted.
-#   * THE FROZEN LEGACY MIGRATOR — crates/busbar-core/src/config/migrate*.rs operate on PAST on-disk
-#     shapes (a frozen contract), not the live grammar.
+#   * THE FROZEN LEGACY MIGRATOR — .../config/migrate*.rs (now under crates/busbar-kernel/src, see
+#     CORE_ROOTS below) operate on PAST on-disk shapes (a frozen contract), not the live grammar.
 #   * HOMONYM COMPOUNDS — `allowed_pools` (role grants), `tool_pools`/`agent_pools` (failover maps),
 #     and any `<x>_pool(s)` / `pool_<x>` identifier: the noun is a substring, not a section target.
 #   * comment/doc-comment prose (stripped before matching) and test code (`.../tests/...`, `*_tests.rs`).
@@ -63,7 +64,50 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # shellcheck source=scripts/plane-keys.sh
 . "$(dirname "$0")/plane-keys.sh"
 
-CORE_ROOT="crates/busbar-core/src"
+# ── CORE_ROOTS — where "core's generic named-map machinery" LIVES TODAY ─────────────────────────────
+# `crates/busbar-core` was deleted 2026-09-20 (commit 673ecdaaa, "W4.a: absorb busbar-core INTO
+# busbar-kernel; delete busbar-core") — its ~130k LOC, `git mv`'d whole, module-for-module, into
+# `crates/busbar-kernel`. That move carried `config/`, `config_validate/` and every other module
+# along "TEMPORARILY per W4.b/W5.d" (the commit's own words) — nothing stranded, nothing deleted. So
+# `crates/busbar-kernel/src` is not A candidate, it is THE direct, whole-crate successor: `DeployCfg`
+# (`crates/busbar-kernel/src/config/mod.rs`), `NamedMapSection` (`crates/busbar-kernel/src/config/
+# named_map.rs`) and `config_sections_from`/`parse_section` (`crates/busbar-kernel/src/plane/`) all
+# live there NOW, unmoved a second time. Verified empirically, not assumed: `DeployCfg` there still
+# carries `pub tools: ToolsSection`, `pub agents: AgentsSection`, `pub pools: PoolsCfg`, `pub
+# streams: StreamsSection` — four literal noun-bound fields, i.e. real, non-zero, parse-steering
+# debt sitting exactly where this meter is supposed to find it.
+#
+# A second, EARLIER split (commit 3cbe9b67f, pre-dating the busbar-core deletion) had already carved
+# the "config parse (neutral half)" out to `crates/busbar-core-config` — that crate's own header
+# names itself "the CONFIG ... home carved out of busbar-core" (DECISIONS #19/#20). It holds no
+# section-noun literal today (`parse_ceiling`/`parse_duration_secs` only — grepped, confirmed empty),
+# but it is explicitly billed as a config home of busbar-core's diaspora, so a noun landing there in
+# a future PR must not go unscanned. Included for that reason, not because it currently scores > 0.
+#
+# CANDIDATES CONSIDERED AND REJECTED, so the choice is defensible rather than incidental (grepped for
+# `NamedMapSection`/`DeployCfg`/a bare noun literal on a parse-steering line in each; all empty except
+# where noted):
+#   * `busbar-admin` — DOES use `NamedMapSection` (`v1/json/named_map.rs`, `v1/json/service.rs`), but
+#     only as a CONSUMER: it matches `IdentityProviders | Export | Plane(_)` — the same three arms
+#     `named_map.rs` itself exhausts — and calls `section.parse_def(...)`/`validate_def(...)`, whose
+#     bodies live in busbar-kernel. It never spells `"tools"`/`"agents"`/`"pools"`/`"streams"` on a
+#     parse-steering line of its own. It is the admin HTTP surface (`/api/v1/admin/*`), not the boot
+#     config parser — the property this meter measures never lived there.
+#   * `busbar-oauth2`, `busbar-core-transport` — "core"-kind siblings by the repo's own DECISIONS
+#     #19/#20/#40 taxonomy, but neither is config-section parsing: oauth2 is its own plane's AS
+#     surface, core-transport is TLS/mTLS connection prep. Zero grep hits in either.
+#   * `busbar-core-hooks` — hook DISPATCH, and `named_map.rs`'s own module doc says `hooks:` is
+#     "deliberately NOT" part of the named-map section set this meter polices. Zero grep hits.
+#   * `busbar-substrate-values` — the PURE value-family types a codec/plane names, not config
+#     parsing at all (a later split off `busbar-substrate`, itself split off busbar-core's session
+#     substrate, commit 7d23875b5). Zero grep hits.
+# Each plane's OWN crate (`busbar-mcp` etc.) also matches `"tools"`/`"agents"`/… freely — that is
+# EXPECTED (a plane naming its own section) and is not what this meter is about; scanning plane crates
+# here would conflate "a plane knows its own noun" with "core hard-coded a plane's noun".
+#
+# A root that stops existing is a LOUD failure (`require_root`, below), not a silent narrowing of the
+# set — exactly the failure mode that let `crates/busbar-core` disappear under this gate unnoticed.
+CORE_ROOTS="crates/busbar-kernel/src crates/busbar-core-config/src"
 
 # Resolve the four section nouns from each plane crate's DECLARED PlaneDecl.config_section — never a
 # restated literal. `<key> -> crates/busbar-<key>/src`; read the `config_section: "<noun>",` line.
@@ -104,32 +148,41 @@ section_nouns() {
   printf '%s' "$out"
 }
 
-# Non-test .rs under core, EXCLUDING the frozen legacy migrator (past on-disk shapes, not live grammar).
+# Non-test .rs under every CORE_ROOTS entry, EXCLUDING the frozen legacy migrator (past on-disk
+# shapes, not live grammar; today at crates/busbar-kernel/src/config/migrate*.rs).
 core_files() {
-  find "$CORE_ROOT" -name '*.rs' 2>/dev/null \
-    | grep -vE '/tests/|_tests?\.rs$|/test_support/|/config/migrate' | sort
+  local r
+  for r in $CORE_ROOTS; do
+    find "$r" -name '*.rs' 2>/dev/null
+  done | grep -vE '/tests/|_tests?\.rs$|/test_support/|/config/migrate' | sort
 }
 
 # ── THE ROOT GUARD and THE ZERO-FILE GUARD ────────────────────────────────────────────────────────
-# Copied, deliberately, from scripts/plane-grep-gate.sh. `find "$CORE_ROOT" … 2>/dev/null` swallows
-# the diagnostic for a root that was renamed, split or drained, and the pipe loses find's status: the
+# Copied, deliberately, from scripts/plane-grep-gate.sh. `find "$r" … 2>/dev/null` swallows the
+# diagnostic for a root that was renamed, split or drained, and the pipe loses find's status: the
 # code stream comes back empty, every noun counts 0, and the report prints "four-noun config-parse
 # debt: 0" about a crate this gate never opened. Renaming crates/busbar-core printed that PASS. The
-# two guards are separate because they are two different failures with the same number — the root is
-# not there at all, versus the root is there and holds no production .rs. Both exit the PROCESS, so
-# they are called from run_report directly, never inside a `$(…)`.
+# two guards are separate because they are two different failures with the same number — a root is
+# not there at all, versus every root is there and together they hold no production .rs. Both exit
+# the PROCESS, so they are called from run_report directly, never inside a `$(…)`. `require_root`
+# checks and reports on EVERY entry in CORE_ROOTS, not just the first missing one — two roots going
+# missing in the same change must not be reported, fixed, then rediscovered one at a time.
 require_root() {
-  [ -d "$CORE_ROOT" ] && return 0
-  red "plane-config-noun gate: FAIL — scan root \`$CORE_ROOT\` is not a directory on disk."
+  local r missing=""
+  for r in $CORE_ROOTS; do
+    [ -d "$r" ] || missing="${missing:+$missing }$r"
+  done
+  [ -z "$missing" ] && return 0
+  red "plane-config-noun gate: FAIL — scan root(s) not a directory on disk: $missing"
   note "A listed root that does not exist is scanned as ZERO files, and zero files parse no noun."
-  note "If the crate moved, point CORE_ROOT at its new home in a reviewed diff that says so."
+  note "If the crate moved, point CORE_ROOTS at its new home in a reviewed diff that says so."
   exit 1
 }
 
 require_files() {
   local n="$1"
   [ "$n" -gt 0 ] && return 0
-  red "plane-config-noun gate: FAIL — \`$CORE_ROOT\` holds $n production .rs file(s); zero is RED."
+  red "plane-config-noun gate: FAIL — CORE_ROOTS ($CORE_ROOTS) hold $n production .rs file(s); zero is RED."
   note "A scan of zero files reports zero parse targets, which is indistinguishable from zero debt."
   exit 1
 }
@@ -205,7 +258,7 @@ run_report() {
   local nouns; nouns="$(section_nouns)"
   hdr "four-noun config-parse debt in busbar-core (report-only)"
   note "section nouns (from each PlaneDecl.config_section): $nouns"
-  note "scanned root: $CORE_ROOT  (non-test, comment-stripped, frozen migrator excluded)"
+  note "scanned roots: $CORE_ROOTS  (non-test, comment-stripped, frozen migrator excluded)"
 
   require_root
   require_files "$(core_files | grep -c . || true)"

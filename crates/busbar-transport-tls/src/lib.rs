@@ -46,7 +46,7 @@ use busbar_contract::transport::wire::Listener;
 use busbar_contract::transport::wire::ListenerHandle;
 use busbar_contract::transport::wire::TransportError;
 use busbar_contract::{
-    ArenaBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
+    ScratchBytes, Frame, Fut, Kind, Plugin, Refusal, SlabBytes, StreamId, Transport,
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 use futures::Stream;
@@ -76,6 +76,20 @@ pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 /// socket. Ten seconds is one number for both ends of this crate's tolerance for a peer that will
 /// not talk, rather than two.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the courtesy `close_notify` alert may take to reach the peer — including the wait for
+/// the connection's writer lock — before this transport gives up on it.
+///
+/// The alert is a write, and every write on a connection passes through one lock: a `close` that
+/// races an in-flight write, or a peer whose receive window is full, can leave `close_notify`
+/// waiting on that lock or on the socket for as long as either lasts. On the `close` path the alert
+/// goes out on a detached task, so an unbounded wait there is a task, a rustls session and a socket
+/// pinned for the life of the process; on the `unit0_refusal` path the alert is awaited inline, so
+/// the same unbounded wait means the caller is NEVER answered. The alert is a courtesy the peer is
+/// owed, not a delivery this connection blocks on — a quarter second is long enough for a peer that
+/// is still reading and short enough that one that has stopped cannot hold anything. `ws` bounds its
+/// own courtesy Close frame the same way.
+pub const CLOSE_NOTIFY_BUDGET: Duration = Duration::from_millis(250);
 
 /// Any duplex byte stream this transport can run a handshake over: the socket it opened itself, or
 /// the one a lower layer handed up. Boxing it is what lets one connection type cover both, so an
@@ -361,18 +375,34 @@ impl TlsTransport {
     /// Map an IO error that arose on an ALREADY-ESTABLISHED session — a read or write after the
     /// handshake has completed — rather than during the handshake itself.
     ///
-    /// It differs from [`map_io_err`](Self::map_io_err) on exactly one kind. During the handshake,
+    /// It differs from [`map_io_err`](Self::map_io_err) on two kinds. During the handshake,
     /// `io::ErrorKind::InvalidData` is rustls saying the peer could not be authenticated, which is a
     /// `HandshakeFailed`. On a live session the handshake already succeeded — the peer WAS
     /// authenticated — and an `InvalidData` is instead a corrupted or tampered TLS record arriving
     /// mid-stream: the record's authentication tag did not verify, or its length framing was wrong.
     /// Reporting that as `HandshakeFailed` would tell an operator the identity check failed when it
     /// did not; it is the transport's own framing that a record violated, so it maps to
-    /// [`TransportError::Framing`]. Every other kind carries the same meaning in both phases and is
-    /// deferred to [`map_io_err`](Self::map_io_err).
+    /// [`TransportError::Framing`].
+    ///
+    /// `io::ErrorKind::UnexpectedEof` is the other: rustls's own defence against a truncation
+    /// attack. A peer that sends the `close_notify` alert this session is owed produces a clean
+    /// `Ok(0)` read, never an `Err` — see [`send_close_notify`]'s own doc. `UnexpectedEof` is what
+    /// rustls reports instead, deliberately, when the underlying stream just ends with no alert:
+    /// exactly what a peer that dropped the connection, or an attacker who cut it, looks like from
+    /// the inside. Falling to [`map_io_err`](Self::map_io_err)'s catch-all reported it as
+    /// `TransportError::Closed` — the value a caller reads as "the exchange finished", the same
+    /// category a legitimate post-close write failure (`BrokenPipe`, `NotConnected`) still reports.
+    /// That erased the one signal separating an honest close from a cut one, so it is named here
+    /// instead and mapped to [`TransportError::Reset`] — "the connection was reset mid-stream" is
+    /// this closed set's own words for it, and the value every other transport in this workspace
+    /// already uses for a session that ended abnormally rather than one that simply ended.
+    ///
+    /// Every other kind carries the same meaning in both phases and is deferred to
+    /// [`map_io_err`](Self::map_io_err).
     fn map_session_err(e: &io::Error) -> TransportError {
         match e.kind() {
             io::ErrorKind::InvalidData => TransportError::Framing,
+            io::ErrorKind::UnexpectedEof => TransportError::Reset,
             _ => Self::map_io_err(e),
         }
     }
@@ -559,8 +589,14 @@ impl Transport for TlsTransport {
                 .get(&keys.slot())
                 .cloned()
                 .ok_or(TransportError::KeyUnavailable)?;
-            let stream = TcpStream::connect(addr)
+            // The same budget the handshake below runs under, on the leg BEFORE it: the doc on
+            // `HANDSHAKE_TIMEOUT` says the two ends of this crate's tolerance for a peer that will
+            // not talk are one number, and an unbounded connect here left that untrue — an upstream
+            // that never answered the SYN held the dial task and its half-open socket for as long
+            // as the operating system did.
+            let stream = tokio::time::timeout(self.handshake_timeout, TcpStream::connect(addr))
                 .await
+                .map_err(|_| TransportError::Timeout)?
                 .map_err(|e| Self::map_io_err(&e))?;
             stream.set_nodelay(true).ok();
             let local_port = stream.local_addr().map_or(0, |a| a.port());
@@ -651,7 +687,7 @@ impl Transport for TlsTransport {
         &'a self,
         conn: &'a Conn,
         _stream: StreamId,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, usize> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
@@ -681,11 +717,11 @@ impl Transport for TlsTransport {
         &self,
         _fields: &[(&str, &[u8])],
         body: &[u8],
-        arena: &'a dyn busbar_contract::Arena,
-    ) -> Result<ArenaBytes<'a>, busbar_contract::transport::wire::Encode> {
+        arena: &'a dyn busbar_contract::PlaneAlloc,
+    ) -> Result<ScratchBytes<'a>, busbar_contract::transport::wire::Encode> {
         arena
             .alloc_bytes(body)
-            .map_err(|_| busbar_contract::transport::wire::Encode::ArenaExhausted)
+            .map_err(|_| busbar_contract::transport::wire::Encode::ScratchExhausted)
     }
 
     /// The in-band upgrade, from this side: the STARTTLS-shaped handoff the transports table names.
@@ -787,7 +823,7 @@ impl Transport for TlsTransport {
         // `tls` inherits `tcp`'s single stream; the connection is the whole of what can be refused.
         _stream: Option<StreamId>,
         _refusal: &'a Refusal,
-        bytes: ArenaBytes<'a>,
+        bytes: ScratchBytes<'a>,
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
@@ -861,15 +897,25 @@ fn split_address(
 /// truncated one has to treat every close as suspect. This transport knows which one this is, so
 /// it says so.
 async fn send_close_notify(inner: &Inner) {
-    let mut guard = inner.write.lock().await;
-    match &mut *guard {
-        InnerWrite::Server(w) => {
-            let _ = w.shutdown().await;
+    // Bounded, and the budget covers the writer lock as well as the shutdown itself: the alert is a
+    // courtesy owed to a peer that is still there, never a delivery this connection parks on. A
+    // `close` racing an in-flight write, or a peer that has stopped reading, would otherwise pin the
+    // lock — and the task, rustls session and socket behind it — with no one left to cancel it, and
+    // on the `unit0_refusal` path would leave the caller awaiting an answer that never comes. When
+    // the budget elapses the halves drop unshut, which is the same abrupt close a caller off a
+    // runtime already gets.
+    let _ = tokio::time::timeout(CLOSE_NOTIFY_BUDGET, async {
+        let mut guard = inner.write.lock().await;
+        match &mut *guard {
+            InnerWrite::Server(w) => {
+                let _ = w.shutdown().await;
+            }
+            InnerWrite::Client(w) => {
+                let _ = w.shutdown().await;
+            }
         }
-        InnerWrite::Client(w) => {
-            let _ = w.shutdown().await;
-        }
-    }
+    })
+    .await;
 }
 
 /// [`send_close_notify`] from `close`, which the trait makes synchronous.

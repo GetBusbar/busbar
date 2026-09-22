@@ -25,11 +25,12 @@ busbar-plugin-sdk = { path = "../plugin-sdk" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-[dev-dependencies]
-# The shared `Store` contract conformance suite. This fixture is a real store plugin, so it answers
-# the same cross-backend questions every shipped backend does — the retention sweep above all, whose
-# failure mode is destruction rather than a wrong answer.
-busbar-plugin-testkit = { path = "../plugin-testkit", features = ["store"] }
+# NO DEV-DEPENDENCIES. The `Store` contract conformance suite used to arrive as
+# `busbar-plugin-testkit`; the owner ruled that crate DELETED on 2026-09-22 and #2/#31 forbid a
+# shared test util between plugins, so this fixture owns its copy at
+# `src/tests/store_conformance.rs`. It still answers the same cross-backend questions every shipped
+# backend does — the retention sweep above all, whose failure mode is destruction rather than a
+# wrong answer. Everything it needs (busbar-api, serde, serde_json) is already a normal dependency.
 
 [target.'cfg(unix)'.dependencies]
 # Advisory whole-file lock (`flock`) around FileStore's read-modify-write, so two handles on one

@@ -30,6 +30,11 @@ use crate::plane::{PlaneSections, RefError};
 /// deleted, and it would go green while the derivation rotted.
 #[test]
 fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
+    // Needs a plane registered so `plane_keys()` contributes at least `pools` — the equality below
+    // is self-consistent regardless of WHICH plane (both sides derive from the same registry read),
+    // but the floor assertion needs `pools` (and the fixed `NAMED_MAP_SECTIONS` literal's
+    // `tools`/`agents`/`export`/`identity-providers`) actually present.
+    crate::test_support::register_neutral_test_plane();
     let mut expected: Vec<&'static str> = Vec::new();
     for s in crate::plane::plane_keys()
         .map(|k| crate::plane::plane_decl(k).config_section)
@@ -59,51 +64,10 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     );
 }
 
-/// EVERY section the grammar declares is refused BY BOTH PLANES' production validators, and the two
-/// refusals differ in nothing but the caller's own label for the site.
-///
-/// This is the whole point of the unit expressed as a test: it iterates the DERIVATION, so a plane
-/// or a section added to either table is covered here the moment it is added, with no edit to this
-/// test and none to either protocol's config module.
-#[test]
-fn every_section_the_grammar_declares_is_refused_on_both_planes() {
-    // Both planes' validators judge a hook reference against the PROCESS section registry, read through
-    // the neutral `plane_sections` provider seam — so every plane must be registered for them to
-    // recognise every OTHER plane's declared section as a cross-plane reach. Two of the planes under
-    // test register their own decls (and bind the provider) through their test-kits; one plane's
-    // declaration still lives in `busbar-core` (its declared config section key predates the
-    // extracted-crate shape), so it has no crate test-kit to register it and must be registered here.
-    // Without this the provider would omit that plane's declared section key and its sibling's
-    // validator would refuse a reference onto it as merely not-bare rather than a cross-plane
-    // reach. Registration is idempotent by key, so this is a no-op past the first run.
-    busbar_mcp::testkit::install_test_seams();
-    busbar_a2a::testkit::install_test_seams();
-    busbar_kernel::plane::registry::register_test_plane(&busbar_llm::PLANE_DECL);
-
-    for section in config_sections() {
-        let hook = format!("{section}.some-hook");
-
-        let a2a = busbar_a2a::a2a::config::validate_agent("x", &agent_with_hook(&hook))
-            .expect_err(&format!("the `agents:` plane must refuse `{hook}`"));
-        let mcp = busbar_mcp::mcp::config::validate_server("x", &server_with_hook(&hook))
-            .expect_err(&format!("the `tools:` plane must refuse `{hook}`"));
-
-        let a2a_body = a2a
-            .strip_prefix("`agents.x`")
-            .expect("the a2a plane keeps its own wording for WHERE");
-        let mcp_body = mcp
-            .strip_prefix("`tools.x`")
-            .expect("the mcp plane keeps its own wording for WHERE");
-        assert_eq!(
-            a2a_body, mcp_body,
-            "one rule, one sentence: the planes may differ only in the site they name"
-        );
-        assert!(
-            a2a_body.contains(&format!("reaches onto the `{section}:` plane")),
-            "the refusal must NAME the section reached onto, got: {a2a}"
-        );
-    }
-}
+/// EVERY section the grammar declares is refused BY BOTH PLANES' production validators MOVED to
+/// `tests/plane_config_cross_plane.rs::every_section_the_grammar_declares_is_refused_on_both_planes`
+/// — it registers the REAL busbar_llm/busbar_mcp/busbar_a2a planes, which only type-checks with
+/// ONE `busbar_kernel` in the graph. See that file's header.
 
 // ══ 2. A THIRD PLANE COSTS A SECTION NAME AND NOTHING ELSE ═══════════════════════════════════════
 
@@ -185,36 +149,12 @@ fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
     );
 }
 
-/// THE RESOLVE-TIME REFUSAL, on a name that EXISTS on a sibling plane.
-///
-/// The input is a BARE name — no dot, nothing for the parse-time rule to object to. It passes that
-/// rule cleanly and is refused only because the BINDING crosses the boundary. Neither check
-/// subsumes the other, which is why merging them would delete one.
-#[test]
-fn the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary() {
-    let mut sections: PlaneSections<u8> = PlaneSections::default();
-    sections.insert("a2a", "planner", 1);
-
-    // The parse-time rule has NO objection to this name.
-    refuse_cross_plane_reference("`tools.search`", "planner", &config_sections())
-        .expect("a bare name is legal in shape; the boundary it crosses is a binding, not a shape");
-
-    let err = sections
-        .resolve("mcp", "planner")
-        .expect_err("a name defined on a sibling plane is a boundary violation");
-    assert_eq!(
-        err,
-        RefError::CrossPlane {
-            name: "planner".to_string(),
-            referenced_from: "mcp",
-            defined_in: "a2a",
-        }
-    );
-    assert!(
-        err.to_string().contains("which is defined in `agents`"),
-        "the refusal DIAGNOSES rather than merely denying, got: {err}"
-    );
-}
+// `the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary` MOVED to
+// `tests/plane_config_cross_plane.rs`: it asserts `RefError::CrossPlane`'s rendered PROSE contains
+// the real A2A plane's own config-section name (`"agents"`), which needs the real roster registered
+// — naming that real plane's key/section here (even behind a synthetic `#[cfg(test)]` decl) is
+// exactly what `cargo xtask gate construction`'s `neutral-no-dialect` rule (ceiling 0) exists to
+// forbid. See that file for the relocated test.
 
 // ══ THE REMAINING SENTENCES, so the total `From` has a reader for every arm ═══════════════════════
 
@@ -241,37 +181,4 @@ fn every_refusal_arm_has_a_sentence_of_its_own() {
             rest: "planner".to_string(),
         })
     );
-}
-
-// ══ fixtures ═════════════════════════════════════════════════════════════════════════════════════
-
-/// A minimal, otherwise-VALID `agents:` entry carrying one hook reference — so the only thing that
-/// can fail the validator is the hook.
-fn agent_with_hook(hook: &str) -> busbar_a2a::a2a::config::AgentDefCfg {
-    serde_yaml::from_str::<busbar_a2a::a2a::config::AgentsCfg>(
-        "x:\n  url: \"https://a2a.vendor/x\"\n  pin: { mechanism: unpinned }\n",
-    )
-    .expect("the fixture entry must parse")
-    .agents
-    .shift_remove("x")
-    .map(|mut def| {
-        def.hooks = vec![hook.to_string()];
-        def
-    })
-    .expect("the fixture entry must be present")
-}
-
-/// The same, for the `tools:` plane.
-fn server_with_hook(hook: &str) -> busbar_mcp::mcp::config::McpServerDefCfg {
-    serde_yaml::from_str::<busbar_mcp::mcp::config::ToolsCfg>(
-        "x:\n  url: \"https://mcp.internal/x\"\n  pin: { mechanism: unpinned }\n",
-    )
-    .expect("the fixture entry must parse")
-    .servers
-    .shift_remove("x")
-    .map(|mut def| {
-        def.hooks = vec![hook.to_string()];
-        def
-    })
-    .expect("the fixture entry must be present")
 }

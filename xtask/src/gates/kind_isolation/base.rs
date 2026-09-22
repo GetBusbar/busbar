@@ -82,7 +82,7 @@ fn cache() -> &'static Cache {
 /// fixture tree, and answering that run out of the real repository's cache would be answering a
 /// different question than the one the case asked.
 pub fn read(cx: &Ctx) -> Result<std::sync::Arc<Base>, String> {
-    let commit = base_ref(cx)?;
+    let commit = base_ref(cx)?.sha;
     let key = format!("{}\u{0}{commit}", cx.root().display());
     if let Some(hit) = cache().lock().ok().and_then(|m| m.get(&key).cloned()) {
         return hit;

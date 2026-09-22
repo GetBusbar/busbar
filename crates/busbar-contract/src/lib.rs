@@ -14,13 +14,26 @@ pub mod authz;
 pub mod bounded;
 pub mod caps;
 pub mod civil;
+pub mod config;
+pub mod count;
 pub mod dest;
 pub mod duration;
 pub mod grammar;
 pub mod ids;
+pub(crate) mod json_grammar;
 pub mod kinds;
 pub mod plane;
 pub mod plugin;
+// The money-path durable record SHAPES (DECISIONS #83: contract = shapes, ledger = semantics;
+// DECISIONS #84: nothing on the plugin path may link a crate holding semantics). The module is a
+// module-path-ONLY, byte-identical relocation of the store contract that used to sit in
+// the retiring api shim and then in the money one-book; `#[allow(missing_docs)]` travels with
+// it for the same reason it did there — documenting the handful of self-evident required trait
+// methods (`get_key`/`list_keys`/…) would EDIT the moved surface, and the sacred constraint is that
+// the move changes nothing. The oracle proves the wire bytes; the module's own record tests prove
+// the serde round-trips.
+#[allow(missing_docs)]
+pub mod records;
 pub mod scratch;
 pub mod slice;
 pub mod spans;
@@ -41,10 +54,14 @@ pub mod wire;
 pub type Millis = u64;
 
 pub use bounded::{
-    Arena, ArenaBudget, ArenaBytes, BoundedVec, FactValue, Facts, FactsExhausted, Ir, IrEdit,
-    IrPatch, Labels, Overflow, SlabBytes, Span, ARENA_BYTES, MAX_CURSOR_BYTES, MAX_KEYS, MAX_LEGS,
-    MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
-    MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES,
+    BoundedVec, FactValue, Facts, FactsExhausted, Ir, IrEdit, IrPatch, Labels, Overflow,
+    PlaneAlloc, PlaneAllocBudget, ScratchBytes, SlabBytes, Span, MAX_CURSOR_BYTES, MAX_KEYS,
+    MAX_LEGS, MAX_LEG_REPLIES, MAX_NEEDMORE_FRAMES, MAX_RECORD_BYTES, MAX_RESPONSE_PTRS,
+    MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES, SCRATCH_BASE_BYTES,
+};
+pub use count::{
+    read_count, read_count_bytes, stored_scale_default, Count, CountError, COUNT_SCALE,
+    MAX_ACROSS_A_64_BIT_COLUMN, MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS, SCALE_WHOLE_UNITS,
 };
 pub use dest::{
     AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, DestinationId,

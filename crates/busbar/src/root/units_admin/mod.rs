@@ -49,12 +49,12 @@ use busbar_contract::UnitKey;
 use busbar_kernel::teller::UnitCtx;
 use busbar_kernel_identity::unit::AuthRequest;
 use busbar_kernel_scope::Scope;
-use busbar_plane_admin::verbs::ResolvedVerb;
+use busbar_core_admin::admin_codec::verbs::ResolvedVerb;
 
 use crate::root::kernel::{ProductionUnits, RegisteredUnits};
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
-use busbar_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
-use busbar_admin::{
+use busbar_core_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
+use busbar_core_admin::{
     ApprovalState, KernelVerb, PostureCtx, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
     NEW_VERBS,
 };
@@ -79,7 +79,10 @@ const ADMIN_DECLARED_SCHEMES: &[&str] = &[ADMIN_SCHEME, "bearer"];
 /// Owned rather than borrowed because it outlives the call that built it: the kernel's step seam
 /// hands a unit nothing but its context, so the request has to be somewhere the steps can find it,
 /// and that somewhere is [`AdminUnits`] keyed by the unit's own key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// NO derived `Debug` — see the hand-written impl below. This value holds the operator's LIVE
+/// credential, twice.
+#[derive(Clone, PartialEq, Eq)]
 pub struct AdminRequest {
     /// The request method.
     pub method: String,
@@ -103,6 +106,52 @@ pub struct AdminRequest {
     /// attribution would have to be re-derived on the far side of a task boundary, which is another
     /// way of saying it would be guessed.
     pub unit: u64,
+}
+
+/// `Debug` REDACTS the presented credential — the field, and the header value it arrived in.
+///
+/// A derived `Debug` prints `credential: Some("<the operator's live admin token>")` verbatim into
+/// any `{:?}` of this value or of anything holding it: a tracing line, a panic message, an
+/// `assert_eq!` failure in CI. Redacting the field alone would not be a fix, because
+/// `admin_mount::header_pairs` copies EVERY arriving header in verbatim, so the same bytes sit one
+/// line below it as `authorization: Bearer <token>` or `x-admin-token: <token>`.
+///
+/// The header redaction is matched by VALUE, not by header name, and that is deliberate: the reader
+/// that decides which carriers count (`admin_mount::presented_credential`) owns those wire names,
+/// and a second copy of a wire name here is a wire name that can be written two ways. Whatever
+/// carrier the credential came in, the bytes are the same bytes, and those are what this matches —
+/// which also catches the `Bearer `-prefixed form, where the header value merely CONTAINS the
+/// credential rather than equalling it. Where nothing was presented, nothing is redacted: the
+/// redaction never manufactures a credential out of an absent one.
+///
+/// Everything else prints as itself. `method`, `path`, `at` and `unit` are not secrets, and `body`
+/// keeps the derived rendering it always had — the admin surface's credential carriers are headers,
+/// and a request body that needed hiding would be a different finding with a different fix.
+impl std::fmt::Debug for AdminRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const REDACTED: &str = "<redacted>";
+        let presented = self.credential.as_deref().filter(|c| !c.is_empty());
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                let shown = match presented {
+                    Some(credential) if value.contains(credential) => REDACTED,
+                    _ => value.as_str(),
+                };
+                (name.as_str(), shown)
+            })
+            .collect();
+        f.debug_struct("AdminRequest")
+            .field("method", &self.method)
+            .field("path", &self.path)
+            .field("credential", &self.credential.as_ref().map(|_| REDACTED))
+            .field("headers", &headers)
+            .field("body", &self.body)
+            .field("at", &self.at)
+            .field("unit", &self.unit)
+            .finish()
+    }
 }
 
 /// One admin answer, exactly as the surface that owns the operation produced it.
@@ -276,6 +325,36 @@ pub trait LedgerView: Send + Sync {
     ) {
         (self.ledger_rows(), self.legacy_rows())
     }
+
+    /// SEAM `booked-lines`: the lines this view can price, each carrying ITS OWN ARRIVAL INSTANT.
+    ///
+    /// The totals view's money is a READ-TIME CONVERSION over these, never a figure read off a
+    /// balance (#77(3)). A booked line holds the quantities by declared class, the lane the card is
+    /// keyed by, and `arrived_ms` — and that last field is the whole reason the seam carries lines
+    /// rather than sums: an amount already summed has lost the instants, and an instant is what
+    /// [`busbar_kernel_ledger::totals_as_of`] resolves a card at (#79).
+    ///
+    /// The default is EMPTY, and empty means "this view has no lines to price", NEVER "these rows
+    /// priced at nothing". [`derived_totals_rows`] reads it that way: with no lines there is no
+    /// derivation to make and the view falls back to the balance the book already holds, exactly as
+    /// the previous release answered. A silent zero on a money path is only ever correct where no
+    /// rate card is configured at all (#42), and this is not that.
+    fn booked_lines(&self) -> Vec<busbar_kernel_ledger::Posting> {
+        Vec::new()
+    }
+
+    /// SEAM `dated-history`: the deployment's dated rate-card history, PINNED for one read.
+    ///
+    /// Pinned rather than read per row: an apply landing while the read is in flight must not price
+    /// half of one response's rows against one history and half against another.
+    ///
+    /// `None` is "no operator has said what any of this costs", which is NOT "all of it is free".
+    /// The distinction is the whole of #42: free is an explicit zero rate row, and an absent row is
+    /// a question nobody has answered. A view that collapsed the two would report a deployment
+    /// nobody has priced as a deployment that costs nothing.
+    fn rate_history(&self) -> Option<crate::root::kernel::PinnedHistory> {
+        None
+    }
 }
 
 /// The view a node has before a ledger is bound behind it.
@@ -379,7 +458,19 @@ impl NodeLedger {
         self.durability.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// The ledger's side, off a lock somebody already holds.
+    /// The ledger's side, off a lock somebody already holds: **THE BOOK'S BALANCE**.
+    ///
+    /// `settled` is what the node DREW against the bucket and posted when its units ended, at the
+    /// rates in force then — the figure the budget was enforced on. It is not a price and must not
+    /// be published as one: a figure that was computed once at settlement cannot reflect a rate row
+    /// added afterwards, which is exactly the stored price #77(3) forbids and exactly what leaves
+    /// the dated history inert for a view that echoes it.
+    ///
+    /// **It is therefore the reconciliation's side and the totals view's FALLBACK, never its
+    /// model.** The reconciliation identity compares this against the PREVIOUS release's rows,
+    /// which that release derived at settlement and never reprices, so both sides of it have to be
+    /// read at the same vintage. The totals view reaches it only through [`totals_rows`], and only
+    /// where the view has no line to convert — see [`derived_totals_rows`].
     fn rows_of(durability: &crate::root::durability::Durability) -> LedgerSnapshot {
         use crate::root::ledger_identity::{LedgerRow, RowKey};
 
@@ -480,6 +571,37 @@ impl LedgerView for NodeLedger {
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
         self.lock().migration_marker()
     }
+
+    /// The deployment's dated history, pinned — a relay and no more.
+    ///
+    /// The holder is the root's ([`crate::root::kernel::ROOT_CARD`]), the history is the ledger's,
+    /// and this method adds nothing to either. Pinned rather than borrowed, so a config apply
+    /// landing between two rows of one response cannot price the first half of the table against
+    /// one history and the second half against another.
+    fn rate_history(&self) -> Option<crate::root::kernel::PinnedHistory> {
+        crate::root::kernel::ROOT_CARD.pin()
+    }
+
+    /// SEAM `booked-lines`, UNFILLED ON THIS NODE, and named rather than faked.
+    ///
+    /// The node's book keeps BALANCES — a budget, a drawn figure, a settled figure per bucket,
+    /// dimension, scope and window — and a balance is not a quantity. There is no `tokens_input` in
+    /// it to hand back, and there is no arrival instant either: [`busbar_contract::caps::Posted`]
+    /// takes the usage report to decide its flags and keeps none of its lines, so what reaches the
+    /// book is three figures and a principal. The quantities live on the sealed facts line the
+    /// metering step writes at the end of a unit, and the ledger row that carries them into the
+    /// book is the landing this method is waiting for; until it arrives, this answers with nothing
+    /// it has.
+    ///
+    /// **Answering with nothing is the whole point of the seam being here rather than absent.** The
+    /// alternative — handing the book's settled figure over as if it were a set of lines — would
+    /// put a number in front of the derivation that no rate row produced and that no rate row added
+    /// later could ever move, which is precisely the stored price #77(3) forbids. The fallback the
+    /// empty answer selects is honest about being the previous release's arithmetic; a fabricated
+    /// line would not be.
+    fn booked_lines(&self) -> Vec<busbar_kernel_ledger::Posting> {
+        Vec::new()
+    }
 }
 
 /// The read half of the dual write.
@@ -571,7 +693,7 @@ impl CoreGovernance {
     }
 }
 
-impl busbar_admin::Governance for CoreGovernance {
+impl busbar_core_admin::Governance for CoreGovernance {
     fn group_exists(&self, _name: &str) -> bool {
         // The surface that owns groups is the one that answers whether a group exists, and it
         // answers it inside the operation rather than as a question the root may ask beforehand.
@@ -589,7 +711,7 @@ impl busbar_admin::Governance for CoreGovernance {
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _group: &str,
         _parent: &str,
-    ) -> Result<(), busbar_admin::GovernanceError> {
+    ) -> Result<(), busbar_core_admin::GovernanceError> {
         Ok(())
     }
 
@@ -597,19 +719,19 @@ impl busbar_admin::Governance for CoreGovernance {
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _group: Option<&str>,
-    ) -> Result<busbar_admin::MintedKey, busbar_admin::GovernanceError> {
+    ) -> Result<busbar_core_admin::MintedKey, busbar_core_admin::GovernanceError> {
         // A minted secret is revealed by the operation's own response and by nothing else. The root
         // does not hold one, does not copy one out of a body and does not re-render one: the answer
         // the dispatch produced is what leaves, byte for byte.
-        Err(busbar_admin::GovernanceError::Validation)
+        Err(busbar_core_admin::GovernanceError::Validation)
     }
 
     fn rotate_key(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _id: &str,
-    ) -> Result<busbar_admin::RotateOutcome, busbar_admin::GovernanceError> {
-        Err(busbar_admin::GovernanceError::Validation)
+    ) -> Result<busbar_core_admin::RotateOutcome, busbar_core_admin::GovernanceError> {
+        Err(busbar_core_admin::GovernanceError::Validation)
     }
 
     fn execute_legacy(
@@ -617,7 +739,7 @@ impl busbar_admin::Governance for CoreGovernance {
         _verb: KernelVerb,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _request: &[u8],
-    ) -> Result<Vec<u8>, busbar_admin::GovernanceError> {
+    ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
         Ok(self.run())
     }
 
@@ -626,8 +748,8 @@ impl busbar_admin::Governance for CoreGovernance {
         verb: KernelVerb,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         request: &[u8],
-        operator: busbar_admin::OperatorState,
-    ) -> Result<Vec<u8>, busbar_admin::GovernanceError> {
+        operator: busbar_core_admin::OperatorState,
+    ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
         // `amend_rate_history` is the one new verb whose effect is NOT the mounted router's:
         // its correction lands on this root's own dated rate-card history, which no 1.5.5 handler
         // knows about. The scope, rate class, operator ceremony and dual control were already run by
@@ -650,13 +772,13 @@ impl busbar_admin::Governance for CoreGovernance {
         verb: KernelVerb,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _request: &[u8],
-    ) -> Result<Vec<u8>, busbar_admin::GovernanceError> {
+    ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
         // The request body is deliberately unread. Every view is a `GET` whose whole identity is its
         // path, so a body would be an argument to an operation that takes none — and an operation
         // that quietly read one would have a second way to be asked a question, which is exactly the
         // kind of surface a closed table exists to prevent.
         let body = render_ledger_view(verb, self.ledger.as_ref())
-            .ok_or(busbar_admin::GovernanceError::NotFound)?;
+            .ok_or(busbar_core_admin::GovernanceError::NotFound)?;
         Ok(ledger_answer(body).pack())
     }
 }
@@ -705,9 +827,9 @@ fn amend_rate_history_effect(
     history: &crate::root::kernel::RootHistory,
     body: &[u8],
     arrival_secs: u64,
-    operator: busbar_admin::OperatorState,
-) -> Result<Vec<u8>, busbar_admin::GovernanceError> {
-    use busbar_admin::GovernanceError;
+    operator: busbar_core_admin::OperatorState,
+) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
+    use busbar_core_admin::GovernanceError;
     use sha2::Digest as _;
 
     let doc: serde_json::Value =
@@ -811,7 +933,7 @@ fn amend_rate_history_effect(
     // small-order keys and non-canonical signatures) against that key over the canonical payload the
     // operator signed. Every failure here is the client-safe `Validation`, the same 400 a missing
     // signer already produced.
-    let busbar_admin::OperatorState::Set(operator_key) = operator else {
+    let busbar_core_admin::OperatorState::Set(operator_key) = operator else {
         // The operator gate admits `amend_rate_history` only under `Set`, so this is unreachable in
         // an admitted call; refusing rather than trusting an unverified correction is the only safe
         // reading if the seam is ever reached without a sealed key.
@@ -908,7 +1030,14 @@ fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> 
 /// than a body invented for a verb nobody wrote one for.
 fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>> {
     Some(match verb {
-        KernelVerb::GetLedgerTotals => render_totals(&view.ledger_rows()).into_bytes(),
+        // THE MONEY IS DERIVED HERE, NOT READ. The rows the totals view renders are the lines
+        // priced through the dated history at each line's OWN arrival instant (#77(3)/#79), and
+        // the book's balance only where this view has no line to resolve. The reconciliation arm
+        // below deliberately keeps [`LedgerView::ledger_rows`]: the identity it computes is against
+        // the PREVIOUS release's rows, which are what that release's read-time derivation produced
+        // at settlement and are never repriced, so the two sides of it have to be read at the same
+        // vintage or an amendment would report every row on a healthy node as out.
+        KernelVerb::GetLedgerTotals => render_totals(&totals_rows(view)).into_bytes(),
         KernelVerb::GetLedgerCheckpoints => render_checkpoints(&view.checkpoints()).into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
             let (ledger, legacy) = view.identity_snapshot();
@@ -989,11 +1118,142 @@ fn hex32(bytes: &[u8; 32]) -> String {
     out
 }
 
-/// `GET /api/v1/admin/ledger/totals` — what the ledger posted, per bucket, day, lane and provider.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE DATED RATE-CARD HISTORY, ON THE TOTALS READ PATH — #77(3) / #79
+//
+// PRICE IS NEVER STORED. What a unit leaves behind is a line of quantities by declared class;
+// money is a conversion applied when somebody asks, against the card in force AT THE POSTING'S OWN
+// ARRIVAL — never the newest card ever authored and never the card in force at the read. So the
+// figure this endpoint publishes is a DERIVATION, and the difference is not presentational: a rate
+// row added later — including a signed back-dated correction, which the append-only history allows
+// — changes what this endpoint answers on the next read, with nothing rewritten and no posted line
+// touched. A view that echoed a stored amount could not do that, and an operator who had mispriced
+// a lane would have to choose between a wrong figure and a rewritten history.
+//
+// The resolution rule is not written here. It is `busbar_kernel_ledger::totals_as_of`, which is the
+// one function entitled to say what a set of lines comes to under a named snapshot, and it reaches
+// `HistoryView::card_at` for which entry answers for an instant. A second copy of either is how a
+// request comes to be judged at one figure and billed at another. This module chooses the rows and
+// writes down the answer; it does not add, multiply, divide or truncate.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The rows `GET /api/v1/admin/ledger/totals` renders: DERIVED where this view has lines to derive
+/// from, and the book's balance where it has none.
+///
+/// The fallback is the previous release's arithmetic and is named as such rather than presented as
+/// the model. It is what the read answers for a view with no dated history to resolve against and
+/// no per-line record to resolve — a node whose book keeps balances and nothing finer, which is
+/// every node until the sealed facts line lands in the book. It is NOT the statement that a stored
+/// sum is the money; it is the honest answer of a view that has nothing to convert.
+fn totals_rows(view: &dyn LedgerView) -> crate::root::ledger_identity::LedgerSnapshot {
+    derived_totals_rows(view).unwrap_or_else(|| view.ledger_rows())
+}
+
+/// **THE DERIVATION** — every booked line priced against the card in force AT ITS OWN ARRIVAL,
+/// summed onto the row the reconciliation is keyed at.
+///
+/// `None` is "this read has nothing better to say than the book's balance", and there are four ways
+/// to get one, each of which is a statement rather than a fallback of convenience:
+///
+/// - no dated history — a node that has resolved no configuration yet, which is a node with no
+///   entry a line could resolve to, not a node whose lines are free;
+/// - an empty snapshot — the same, one step further in;
+/// - no booked lines — a view whose ledger keeps balances and nothing finer;
+/// - **a hole**: any line the snapshot could not price at all. That is a refusal and never a zero,
+///   because pricing a gap in the record as a free request is exactly the silent zero #42 forbids,
+///   so the whole read falls back rather than one row quietly costing nothing. `totals_as_of`
+///   reports those lines rather than dropping them, which is what makes the check possible here.
+///
+/// THE RESOLUTION KEY IS THE LINE'S OWN `arrived_ms`, AND ONLY THAT. Not `PostingStamp`'s
+/// `rate_card_version`, which is reporting provenance (#44/#79) and can only ever resolve forward;
+/// not the head of the history; not the instant of the read. No clock is read on this path at all,
+/// which is what makes the seconds/milliseconds hazard structurally absent rather than merely
+/// avoided: `arrived_ms` and a history entry's `effective_from` are two readings of one scale
+/// (`root/kernel.rs` reads both from `busbar_kernel::store::now_ms`), and `window_start` — the only
+/// whole-second figure here — is used for the row's `day` and for nothing else.
+///
+/// The projection to micro-units happens ONCE PER ROW, over the summed nano-units, in
+/// [`crate::root::ledger_identity::LedgerRow::micros`], never per line. Eight lines each half a
+/// micro-unit short of a boundary are eight floors of zero where the single divide over their sum
+/// is four, and that difference is money.
+fn derived_totals_rows(
+    view: &dyn LedgerView,
+) -> Option<crate::root::ledger_identity::LedgerSnapshot> {
+    use crate::root::ledger_identity::{LedgerRow, RowKey};
+
+    let pinned = view.rate_history()?;
+    let lines = view.booked_lines();
+    if lines.is_empty() {
+        return None;
+    }
+    // THE SNAPSHOT THIS READ IS ANSWERED AT: the history as the pin holds it, for every row of it.
+    let snapshot = pinned.view();
+    let currency = crate::root::kernel::node_currency();
+    // A STATEMENT NAMES EXACTLY ONE CURRENCY, and `totals_as_of` enforces that by SKIPPING a line
+    // denominated in another — which is right for a statement and would be wrong here, because a
+    // skipped line leaves this row reporting a smaller figure rather than an incomplete one. Two
+    // currencies never sum and nothing here converts between them, so a line the node's own
+    // currency cannot express is a refusal for the whole read, exactly as a hole in the history is.
+    // Unreachable while `node_currency` is the one answer a deployment has; the guard is what keeps
+    // it unreachable the day that changes.
+    if lines.iter().any(|line| line.currency != currency) {
+        return None;
+    }
+    // The windows the lines fall in. A statement is cut per window because a window is what a row's
+    // `day` names, and a set rather than a list because a busy day is many lines on one window.
+    let windows: std::collections::BTreeSet<busbar_kernel_ledger::totals::WindowStart> =
+        lines.iter().map(|line| line.window_start).collect();
+
+    let mut rows = crate::root::ledger_identity::LedgerSnapshot::new();
+    for window in windows {
+        let statement =
+            busbar_kernel_ledger::totals_as_of(&snapshot, window, currency, lines.iter());
+        // A hole in the record is a refusal for the WHOLE read. One row quietly costing nothing is
+        // the silent zero #42 forbids, and a view that served the derivation for the priceable rows
+        // and the balance for the rest would be publishing two vintages under one field name.
+        if !statement.unpriceable.is_empty() {
+            return None;
+        }
+        for (key, figures) in statement.rows {
+            // A row nothing was posted against is not a row, which is the rule the balance arm
+            // keeps too — serving a line of zero would put a row in front of an operator for every
+            // key that was ever admitted and never billed.
+            let Ok(priced_nanos) = u128::try_from(figures.priced_nanos) else {
+                continue;
+            };
+            if priced_nanos == 0 {
+                continue;
+            }
+            // Accumulated rather than inserted, for the reason the balance arm accumulates: one
+            // bucket-window can hold several balances — a dimension and a scope apiece — and at the
+            // width this view reads they are one row.
+            let entry: &mut LedgerRow = rows
+                .entry(RowKey::new(
+                    key.bucket.as_str(),
+                    window,
+                    WIDTH_THE_NODE_KEEPS,
+                    WIDTH_THE_NODE_KEEPS,
+                ))
+                .or_default();
+            entry.priced_nanos = entry.priced_nanos.saturating_add(priced_nanos);
+            entry.fee_count = entry.fee_count.saturating_add(figures.fee_count);
+        }
+    }
+    Some(rows)
+}
+
+/// `GET /api/v1/admin/ledger/totals` — what the ledger's lines come to, per bucket, day, lane and
+/// provider, priced through the dated history at each line's own arrival instant.
 ///
 /// The row width is the reconciliation's row width, and deliberately so: this view and the
 /// reconciliation view are two readings of one set of rows, so a discrepancy an operator finds in
 /// one can be looked up in the other by the same four-part name.
+///
+/// The figures are chosen by [`totals_rows`] and this function writes them down. It performs no
+/// arithmetic beyond the row's single micro projection, which is the ledger's own — the same rule
+/// the reconciliation view keeps by calling `ledger_identity::reconcile` instead of re-deriving the
+/// identity. An endpoint that did its own arithmetic could disagree with the code that gates the
+/// release, and then there would be two answers and no way to tell which one was the money.
 fn render_totals(rows: &crate::root::ledger_identity::LedgerSnapshot) -> String {
     let mut out = String::from("{\"rows\":[");
     for (i, (row, figures)) in rows.iter().enumerate() {
@@ -1410,8 +1670,8 @@ impl PostureView for UnsealedPosture {
     fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
         Some((
             PostureCtx {
-                operator: busbar_admin::OperatorState::Unset,
-                dual_control: busbar_admin::DualControl::Single,
+                operator: busbar_core_admin::OperatorState::Unset,
+                dual_control: busbar_core_admin::DualControl::Single,
             },
             ApprovalState::NotYetApproved,
         ))
@@ -1438,7 +1698,7 @@ impl PostureView for UnsealedPosture {
 /// increment seals those, they resolve here beside the operator key, through this same seam.
 #[derive(Debug, Clone, Copy)]
 pub struct SealedPosture {
-    operator: busbar_admin::OperatorState,
+    operator: busbar_core_admin::OperatorState,
 }
 
 impl SealedPosture {
@@ -1449,8 +1709,8 @@ impl SealedPosture {
     pub fn new(operator_key: Option<[u8; 32]>) -> Self {
         SealedPosture {
             operator: match operator_key {
-                Some(key) => busbar_admin::OperatorState::Set(key),
-                None => busbar_admin::OperatorState::Unset,
+                Some(key) => busbar_core_admin::OperatorState::Set(key),
+                None => busbar_core_admin::OperatorState::Unset,
             },
         }
     }
@@ -1461,7 +1721,7 @@ impl PostureView for SealedPosture {
         Some((
             PostureCtx {
                 operator: self.operator,
-                dual_control: busbar_admin::DualControl::Single,
+                dual_control: busbar_core_admin::DualControl::Single,
             },
             ApprovalState::NotYetApproved,
         ))
@@ -1630,7 +1890,7 @@ pub(crate) fn decode(
     let Some(request) = binding.units.request(ctx.key) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
     };
-    match busbar_plane_admin::verbs::resolve(&request.method, &request.path) {
+    match busbar_core_admin::admin_codec::verbs::resolve(&request.method, &request.path) {
         None => Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
         Some(resolved) => {
             binding.units.set_verb(ctx.key, resolved);
@@ -1823,7 +2083,7 @@ pub(crate) fn route(
         return Decision::proceed(token, busbar_contract::RoutePlan::default());
     }
 
-    let verbs = busbar_admin::Verbs::new(
+    let verbs = busbar_core_admin::Verbs::new(
         CoreGovernance::new(
             Arc::clone(&binding.dispatch),
             Arc::clone(&binding.ledger),
@@ -1847,7 +2107,7 @@ pub(crate) fn route(
     let resolved_posture = binding.posture.resolve(verb, &actor);
     let (posture, approval) = match resolved_posture {
         Some((posture, approval)) => (Some(posture), approval),
-        None => (None, busbar_admin::ApprovalState::NotYetApproved),
+        None => (None, busbar_core_admin::ApprovalState::NotYetApproved),
     };
 
     // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
@@ -2052,8 +2312,8 @@ fn actor_of(binding: &AdminBinding, key: UnitKey) -> String {
 /// Two closed lists that name the same events. Mapping them here rather than merging them keeps a
 /// unit's reasons its own — the verbs unit may gain a reason the kernel has no step for, and the
 /// kernel may gain a step no verb reaches.
-fn verbs_reason(reason: busbar_admin::ReasonCode) -> ReasonCode {
-    use busbar_admin::ReasonCode as V;
+fn verbs_reason(reason: busbar_core_admin::ReasonCode) -> ReasonCode {
+    use busbar_core_admin::ReasonCode as V;
     match reason {
         V::Unauthorized => ReasonCode::ScopeDenied,
         V::RateLimited => ReasonCode::RateLimited,
@@ -2299,7 +2559,7 @@ pub(crate) fn evidence(_ctx: &UnitCtx) -> busbar_kernel::teller::Evidence {
 /// loop's registry names this plane with exactly the word the plane names itself with and the two
 /// can never drift. There is one string that says "admin" and it lives on the plane.
 pub const UNITS_KEY: &str =
-    <busbar_plane_admin::AdminPlane as busbar_contract::plane::PlaneMeta>::KEY;
+    <busbar_core_admin::admin_codec::AdminPlane as busbar_contract::plane::PlaneMeta>::KEY;
 
 /// The admin plane, registered onto the kernel's teller loop through the one seam every plane uses.
 ///
@@ -2401,6 +2661,7 @@ impl RegisteredUnits for AdminPlane {
         token: &Pass<Route>,
         ctx: &UnitCtx,
         meter: &busbar_kernel::teller::AccrualMeter,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Route> {
         route(
             &root.admin,
@@ -2419,6 +2680,7 @@ impl RegisteredUnits for AdminPlane {
         usage: &Grant<Consumption>,
         ctx: &UnitCtx,
         provisional: &Outcome,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
         meter(token, usage, ctx, provisional)
     }
@@ -2523,7 +2785,7 @@ impl busbar_contract::verb_store::Store for StoreRef {
 /// only what makes it distinct.
 struct ArrivalNonce(u64);
 
-impl busbar_admin::NonceSource for ArrivalNonce {
+impl busbar_core_admin::NonceSource for ArrivalNonce {
     fn fill(&self, buf: &mut [u8; 16]) {
         let mut material = [0u8; 16];
         getrandom_into(&mut material);
@@ -2585,8 +2847,8 @@ fn getrandom_into(buf: &mut [u8; 16]) {
 /// the register named; this returns what was written and nothing else.
 struct PackedReplay;
 
-impl busbar_admin::ReplayEncoder<busbar_admin::MintedKeyOutcome> for PackedReplay {
-    fn encode(&self, value: &busbar_admin::MintedKeyOutcome) -> Vec<u8> {
+impl busbar_core_admin::ReplayEncoder<busbar_core_admin::MintedKeyOutcome> for PackedReplay {
+    fn encode(&self, value: &busbar_core_admin::MintedKeyOutcome) -> Vec<u8> {
         // Reached only on the unit's own key-minting path, which this root does not take: the
         // operation's own surface mints and renders, so there is no second rendering here to get
         // wrong. The identity is enough to key a replay slot and carries no secret.

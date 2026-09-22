@@ -37,7 +37,7 @@ pub mod mount;
 mod server;
 mod transport;
 
-pub use transport::GrpcTransport;
+pub use transport::{GrpcTransport, MESSAGE_MAX_BYTES_KEY};
 
 #[cfg(test)]
 #[path = "tests/battery.rs"]

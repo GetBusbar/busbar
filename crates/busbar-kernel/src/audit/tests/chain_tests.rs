@@ -486,11 +486,14 @@ fn the_a2a_task_event_digest_is_unchanged_by_the_unification() {
     );
 }
 
-/// The admin audit digest is byte-for-byte what `admin/audit.rs` computed before the unification,
-/// and byte-for-byte the formula `busbar_api::AuditRecord` publishes.
+/// A SCHEME-1 admin audit digest is byte-for-byte what `admin/audit.rs` computed before the
+/// unification, and byte-for-byte the formula `busbar_api::AuditRecord` publishes — the shape a
+/// record read back off a store (or, before the scheme tag existed, every record) carries. `seal`
+/// mints scheme 2 on a fresh entry (see the paired test right after this one); this forces scheme 1
+/// back on and reseals, reproducing exactly what an already-persisted entry's digest is.
 #[test]
-fn the_admin_audit_digest_is_unchanged_by_the_unification() {
-    let entry: AuditEntry = seal(
+fn a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification() {
+    let mut entry: AuditEntry = seal(
         "admin",
         4,
         "deadbeef".to_string(),
@@ -502,6 +505,8 @@ fn the_admin_audit_digest_is_unchanged_by_the_unification() {
             principal: "admin".to_string(),
         },
     );
+    entry.scheme = crate::audit_ring::AUDIT_SCHEME_PIPE;
+    entry.hash = digest(&entry);
     let canonical = format!(
         "{}|{}|{}|{}|{}|{}|{}",
         entry.prev_hash,
@@ -515,7 +520,50 @@ fn the_admin_audit_digest_is_unchanged_by_the_unification() {
     assert_eq!(
         entry.hash,
         busbar_api::sha256_hex(canonical.as_bytes()),
-        "an admin audit digest that moved would report every persisted chain as tampered"
+        "a scheme-1 admin audit digest that moved would report every persisted chain as tampered"
+    );
+    assert_eq!(
+        entry.hash,
+        "63a37a3e0ef21edc33172093d00e991459c8b509575288d9796fefffaba166c3"
+    );
+}
+
+/// THE OTHER HALF: the SAME fields, sealed through the REAL, unmodified `seal` path this build
+/// actually uses, now produce a DIFFERENT digest — scheme 2, length-prefixed. Nothing mints scheme 1
+/// any longer; a fresh record's digest changing is exactly what closes the collision a caller-
+/// controlled `|` inside `resource` opens under scheme 1 (see `crates/busbar-kernel-audit`'s
+/// `digest_framing_tests` for the collision demonstrated end to end).
+#[test]
+fn a_freshly_sealed_admin_audit_digest_now_uses_scheme_two() {
+    let entry: AuditEntry = seal(
+        "admin",
+        4,
+        "deadbeef".to_string(),
+        AuditInput {
+            ts: 1_700_000_000,
+            action: "hook.register".to_string(),
+            resource: "hook:compress".to_string(),
+            outcome: crate::audit::vocab::OUTCOME_APPLIED.to_string(),
+            principal: "admin".to_string(),
+        },
+    );
+    assert_eq!(entry.scheme, crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED);
+    let mut d = Digest::new(Framing::LengthPrefixed);
+    d.text(&entry.prev_hash)
+        .num(entry.seq)
+        .num(entry.ts)
+        .text(&entry.action)
+        .text(&entry.resource)
+        .text(&entry.outcome)
+        .text(&entry.principal);
+    assert_eq!(
+        entry.hash,
+        d.finish(),
+        "a fresh entry's digest is not the length-prefixed formula over the same fields"
+    );
+    assert_eq!(
+        entry.hash,
+        "badff1f0c637b690487f849e6be3ed8f30924bb9a6cd20b97e77e83d4c58ff37"
     );
 }
 

@@ -4,7 +4,7 @@
 //! Tests for `crates/plugin-loader/src/tarball.rs`.
 
 use super::*;
-use busbar_plugin_sign::{sign, SigningKey};
+use crate::sign::{sign, SigningKey};
 
 fn manifest() -> Manifest {
     Manifest {

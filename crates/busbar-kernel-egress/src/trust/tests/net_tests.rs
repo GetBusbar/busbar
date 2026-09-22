@@ -206,6 +206,80 @@ fn cloud_metadata_is_judged_separately_and_covers_every_vendor() {
     ));
 }
 
+/// NAT64 / RFC 6052 EMBEDDING MUST BE JUDGED, not left to fall through to the v6 range checks that
+/// do not cover `64:ff9b::/96` at all.
+///
+/// A DNS64 resolver on an IPv6-only network answers a AAAA query with the NAT64 synthesis of the
+/// queried name's IPv4 address rather than the address itself. A guard that unwraps only
+/// `to_ipv4()` (IPv4-MAPPED/IPv4-COMPATIBLE) does not recognise `64:ff9b::/96` at all, so
+/// `64:ff9b::a9fe:a9fe` — the IMDS target `169.254.169.254` re-encoded — matches no v6 range and
+/// reads as an ordinary public v6 address. This asserts the embedding is judged in both the
+/// well-known (RFC 6052) and RFC 8215 local-use forms, including the local-use form with a
+/// NON-ZERO middle (RFC 8215 Section 6's own `64:ff9b:1:fffe::/96` worked example), and that the
+/// resolve-then-pin guard refuses the synthesized address end to end rather than pinning it.
+#[test]
+fn nat64_embedded_ipv4_is_judged_by_the_shared_predicates() {
+    use std::net::Ipv6Addr;
+
+    for meta in [
+        "64:ff9b::a9fe:a9fe",        // RFC 6052 well-known
+        "64:ff9b:1::a9fe:a9fe",      // RFC 8215 local-use, zero-padded
+        "64:ff9b:1:fffe::a9fe:a9fe", // RFC 8215 local-use, non-zero middle (RFC 8215 Section 6 example)
+    ] {
+        let addr: IpAddr = meta.parse().expect(meta);
+        assert!(
+            ip_is_cloud_metadata(&addr),
+            "{meta} is the NAT64 synthesis of the IMDS target 169.254.169.254 and must be judged \
+             metadata"
+        );
+        assert!(
+            ip_is_internal(&addr),
+            "{meta} is also internal — every cloud-metadata address is internal"
+        );
+    }
+    for internal in [
+        "64:ff9b::7f00:1",         // 127.0.0.1 loopback
+        "64:ff9b::a01:203",        // 10.1.2.3 private
+        "64:ff9b:1::7f00:1",       // local-use loopback
+        "64:ff9b:1:fffe::a01:203", // non-zero-padded local-use private
+    ] {
+        let addr: IpAddr = internal.parse().expect(internal);
+        assert!(
+            ip_is_internal(&addr),
+            "{internal} is a NAT64 embedding of an internal IPv4 target and must be internal"
+        );
+        assert!(
+            !ip_is_cloud_metadata(&addr),
+            "{internal} is internal but not metadata"
+        );
+    }
+
+    // `embedded_ipv4` decodes the low 32 bits regardless of the operator-chosen local-use middle.
+    assert_eq!(
+        embedded_ipv4(&"64:ff9b:1:fffe::a9fe:a9fe".parse::<Ipv6Addr>().unwrap()),
+        Some(Ipv4Addr::new(169, 254, 169, 254)),
+    );
+    // RFC 6052 fixes the ENTIRE well-known /96 to zero: a non-zero middle there is an ordinary
+    // address, not an embedding, and must NOT be unwrapped.
+    assert_eq!(
+        embedded_ipv4(&"64:ff9b::1:0:a9fe:a9fe".parse::<Ipv6Addr>().unwrap()),
+        None,
+    );
+
+    // End-to-end through the resolve-then-pin guard, the way a DNS64-answered destination actually
+    // runs: the synthesized address must be refused as cloud metadata — even under `allow_private`,
+    // and not merely pinned as an ordinary public address.
+    let r = ScriptedResolver::new(vec![Ok(vec![ip("64:ff9b:1:fffe::a9fe:a9fe")])]);
+    let err = resolve_and_pin("dns64.example", 443, true, &r, private_ok()).expect_err(
+        "the RFC 8215 local-use NAT64 synthesis of the IMDS target must be refused even under \
+         allow_private",
+    );
+    assert!(
+        matches!(err, AddressRefusal::CloudMetadataAddress { .. }),
+        "must be refused AS METADATA, not merely pinned as an ordinary public address: {err:?}"
+    );
+}
+
 const PUBLIC: &str = "93.184.216.34";
 const PUBLIC_2: &str = "93.184.216.35";
 

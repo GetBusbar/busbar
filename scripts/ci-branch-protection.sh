@@ -41,20 +41,37 @@
 # that file.
 #
 # "gate-mutants" (the mutation-strength gate, from .github/workflows/gate-mutants.yml)
-# was a fifth required check. Per owner ruling it is now MANUAL-ONLY and
-# OPTIONAL — it tests the tests, it does not gate a release — so it is NO
-# LONGER a required status check and has been removed from the list below.
-# The workflow may still be run manually, but qa/main no longer require it.
+# was a fifth required check. Per owner ruling (DECISIONS #78) it is now
+# MANUAL-ONLY and OPTIONAL — it tests the tests, it does not gate a release —
+# so it is NO LONGER a required status check and is absent from
+# REQUIRED_CONTEXTS_JSON below. The workflow may still be run manually, but
+# qa/main no longer require it.
 #
-# "ship-ready" was NOT found anywhere in .github/workflows/*.yml at the time
-# this script was written —
-# it does not exist yet as a job name in this repo. It is included here
-# because it was specified as a requirement, but until a job named exactly
-# "ship-ready" exists and reports a check with that name, GitHub will never
-# see that context satisfied and PRs targeting qa/main will be permanently
-# blocked. Whoever adds that gate must use this exact job name, or this
-# script's REQUIRED_CONTEXTS list must be updated to match whatever name is
-# actually used.
+# ABSENT FROM THE REQUIRED LIST IS NOT THE SAME AS REMOVED FROM PROTECTION.
+# `build_body` unions `required` with whatever contexts the branch ALREADY
+# has (see that function's own comment for why the union must never become a
+# blind replacement) — and a union can only ever ADD, never drop, a context.
+# Simply leaving "gate-mutants" out of REQUIRED_CONTEXTS_JSON would therefore
+# never actually strip it from a branch that already requires it, which is
+# exactly the state qa/main were found in: "gate-mutants" was still present
+# in both branches' live protection long after this comment started claiming
+# it had been removed. So RETIRED_CONTEXTS_JSON exists as a second, narrow
+# list: contexts named here are filtered OUT of the final contexts sent in
+# the PUT body, even if they came from the branch's own pre-existing state.
+# It is deliberately not "whatever required doesn't mention" (that would
+# silently delete every hand-added context, the exact hazard the union
+# exists to avoid) — it is an explicit, reviewed list of contexts this
+# script actively retires.
+#
+# "ship-ready" (and, as of this writing, "construction gate (...)" too) EXIST as job names in
+# `ci.yml` — but only on `predev` and `integration/1.6.0-dev-green`. `dev`, `qa` and `main` have not
+# been promoted since those jobs were added, so their copies of `ci.yml` do not carry either job and
+# neither context can report on those branches today (compare `git show origin/dev:.github/
+# workflows/ci.yml` against the working tree's — the jobs are simply absent). Until a `dev`→`qa`→
+# `main` promotion lands the current `ci.yml`, PRs targeting qa/main are blocked on a context that
+# cannot report, exactly as this note originally warned about for a job that did not exist at all.
+# Whoever runs that promotion is what fixes this; this script's REQUIRED_CONTEXTS list already names
+# the right job names and does not need to change when it happens.
 #
 # WHY strict=false
 # -----------------
@@ -102,6 +119,21 @@ REQUIRED_CONTEXTS_JSON='[
   "ship-ready"
 ]'
 
+# Contexts this script ACTIVELY STRIPS from a branch's required-status-checks,
+# even though `build_body`'s contexts merge is otherwise a union (existing +
+# required) that never removes anything on its own. See the "ABSENT FROM THE
+# REQUIRED LIST IS NOT THE SAME AS REMOVED" comment above for why this list
+# has to exist separately from simply not naming a context in
+# REQUIRED_CONTEXTS_JSON. Every entry here must cite the ruling that retired
+# it — this is a deliberate removal path, not a place to quietly prune
+# something.
+#
+# "gate-mutants" — DECISIONS #78: mutation testing is TEST-ENHANCING, not
+# release-breaking; workflow_dispatch-only and disabled_manually on GitHub.
+RETIRED_CONTEXTS_JSON='[
+  "gate-mutants"
+]'
+
 # Fetch the CURRENT protection object for a branch. On a branch that has no
 # protection configured yet, GitHub's API returns 404; we treat that as "the
 # current state is the empty object" rather than erroring, so this script
@@ -123,22 +155,31 @@ fetch_current_protection() {
 # the output is either an explicit policy decision documented above, or is
 # carried through from `current` untouched.
 #
-# CONTEXTS ARE A UNION, NEVER A REPLACEMENT: this script's job is to
-# guarantee a FLOOR of four required checks on qa/main, not to be the sole
-# authority over the complete list of required contexts. main, for example,
-# already requires "qa-gate umbrella" and "record the staged digest (the
-# promote's only input)" in addition to the shared ones — those were added
-# by hand for reasons specific to how release promotion works, and this
-# script has no opinion about them and no business deleting them. If this
-# script set `contexts` to exactly its four required strings, every
-# hand-added context on every branch would become a casualty of the next
-# run — the exact silent-loss-of-protection hazard the rest of this script
-# is built around avoiding for every other field. So the contexts we send
-# are (current contexts) UNION (required contexts): anything already
+# CONTEXTS ARE A UNION, NEVER A REPLACEMENT — WITH ONE NAMED EXCEPTION: this
+# script's job is to guarantee a FLOOR of four required checks on qa/main,
+# not to be the sole authority over the complete list of required contexts.
+# main, for example, already requires "qa-gate umbrella" and "record the
+# staged digest (the promote's only input)" in addition to the shared ones —
+# those were added by hand for reasons specific to how release promotion
+# works, and this script has no opinion about them and no business deleting
+# them. If this script set `contexts` to exactly its four required strings,
+# every hand-added context on every branch would become a casualty of the
+# next run — the exact silent-loss-of-protection hazard the rest of this
+# script is built around avoiding for every other field. So the contexts we
+# send are (current contexts) UNION (required contexts): anything already
 # required keeps being required, and the four required contexts are added
-# if they're missing. Removing a context from protection, if that's ever
-# genuinely wanted, is a deliberate action for a human via `gh api` or the
-# UI — not something this script will ever do on its own.
+# if they're missing.
+#
+# Removing a context from protection is, in general, a deliberate action for
+# a human via `gh api` or the UI — not something this script does on its
+# own. RETIRED_CONTEXTS_JSON is the one exception, and it is exactly that
+# deliberate human action, just captured here instead of run by hand once: a
+# short, reviewed, cited list (see its own comment) of contexts this script
+# actively subtracts from the union's result, even when the branch's own
+# current state still carries them. A union alone can never do this — it can
+# only add — which is why "gate-mutants" being absent from
+# REQUIRED_CONTEXTS_JSON was not enough to ever get it off a branch that
+# already required it; see case (g) in `cmd_selftest` for the proof.
 #
 # Usage: build_body <<<"$current_json"
 build_body() {
@@ -147,12 +188,20 @@ import json, sys
 
 current = json.load(sys.stdin)
 required = json.loads('''${REQUIRED_CONTEXTS_JSON}''')
+retired = set(json.loads('''${RETIRED_CONTEXTS_JSON}'''))
 existing_rsc = current.get('required_status_checks') or {}
 existing_contexts = existing_rsc.get('contexts') or []
 # Union, preserving order: required contexts first (so the floor is always
 # legible at the top of the list), then any pre-existing context not
 # already in the required set, in its original order.
 contexts = list(required) + [c for c in existing_contexts if c not in required]
+# Then subtract the retired set explicitly — the one place this script
+# removes a context rather than merely declining to add it. Applied AFTER
+# the union, and against both halves of it, so a retired context can never
+# survive by riding in on 'existing_contexts' (the whole reason the union
+# alone could not do this) nor by someone accidentally leaving it in
+# REQUIRED_CONTEXTS_JSON too.
+contexts = [c for c in contexts if c not in retired]
 
 def flag(key, default=False):
     v = current.get(key)
@@ -198,6 +247,7 @@ import json, sys
 branch = sys.argv[1]
 current = json.load(sys.stdin)
 required = json.loads('''${REQUIRED_CONTEXTS_JSON}''')
+retired = json.loads('''${RETIRED_CONTEXTS_JSON}''')
 
 if not current:
     print(f'{branch}: UNPROTECTED (no branch protection configured)')
@@ -211,9 +261,12 @@ force_push = bool((current.get('allow_force_pushes') or {}).get('enabled')) if i
 deletions = bool((current.get('allow_deletions') or {}).get('enabled')) if isinstance(current.get('allow_deletions'), dict) else bool(current.get('allow_deletions'))
 
 missing = [c for c in required if c not in contexts]
+stale = [c for c in retired if c in contexts]
 problems = []
 if missing:
     problems.append(f'missing contexts: {missing}')
+if stale:
+    problems.append(f'retired contexts still required (run this script, or gh api, to drop them): {stale}')
 if strict:
     problems.append('strict is true (should be false for cherry-pick workflow)')
 if not enforce_admins:
@@ -279,11 +332,15 @@ cmd_selftest() {
   # instead of dropping it; (4) carries a pre-existing, hand-added context
   # ("qa-gate umbrella", modelled on main's real protection) that is not one
   # of the four required contexts and must survive the merge too, proving
-  # contexts are unioned rather than replaced.
+  # contexts are unioned rather than replaced; (5) carries "gate-mutants" —
+  # modelled on qa/main's REAL protection at the time this fixture was last
+  # updated, where it was still required despite the header above already
+  # claiming it had been removed — so the retired-context removal path has a
+  # non-synthetic case to prove itself against.
   local fixture_current='{
     "required_status_checks": {
       "strict": true,
-      "contexts": ["ci umbrella", "structure lint", "qa-gate umbrella"]
+      "contexts": ["ci umbrella", "structure lint", "qa-gate umbrella", "gate-mutants"]
     },
     "enforce_admins": {"enabled": false},
     "allow_force_pushes": {"enabled": true},
@@ -379,6 +436,37 @@ print('ok' if 'qa-gate umbrella' in contexts else 'FAIL')
 " "$body")
   echo "selftest (f) pre-existing unrelated context survives union merge: ${f_result}"
   [ "$f_result" = "ok" ] || failures=$((failures + 1))
+
+  # (g) THE REMOVAL PATH ITSELF: "gate-mutants" is in the fixture's current
+  # contexts (see the fixture comment above — this models qa/main's real,
+  # observed state) and MUST NOT survive into the built body, even though the
+  # union step alone would have carried it through exactly like "qa-gate
+  # umbrella" did in case (f). This is the case that fails if someone reverts
+  # the union to a plain union with no retired-context subtraction — the
+  # exact bug this defect was filed against: REQUIRED_CONTEXTS_JSON not
+  # naming a context was assumed to be enough to drop it, and it never was.
+  local g_result
+  g_result=$(python3 -c "
+import json, sys
+body = json.loads(sys.argv[1])
+contexts = body['required_status_checks']['contexts']
+print('ok' if 'gate-mutants' not in contexts else 'FAIL')
+" "$body")
+  echo "selftest (g) retired context (gate-mutants) does NOT survive the merge: ${g_result}"
+  [ "$g_result" = "ok" ] || failures=$((failures + 1))
+
+  # (h) the summariser SURFACES a stale retired context as NOT COMPLIANT too
+  # (not just missing-required contexts), so `--show` on a branch nobody has
+  # re-applied this script to still tells a human the drift is there.
+  local h_summary h_result
+  h_summary=$(printf '%s' "$fixture_current" | summarize_protection "fixture-branch")
+  if echo "$h_summary" | grep -q "NOT COMPLIANT" && echo "$h_summary" | grep -q "retired contexts still required" && echo "$h_summary" | grep -q "gate-mutants"; then
+    h_result="ok"
+  else
+    h_result="FAIL"
+  fi
+  echo "selftest (h) a branch still requiring a retired context is reported NOT COMPLIANT, by name: ${h_result}"
+  [ "$h_result" = "ok" ] || failures=$((failures + 1))
 
   if [ "$failures" -eq 0 ]; then
     echo "selftest: ALL OK"

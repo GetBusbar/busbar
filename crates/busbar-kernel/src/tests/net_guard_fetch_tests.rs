@@ -249,6 +249,28 @@ fn unlisted_link_local_metadata_is_refused_as_metadata_under_allow_private() {
     }
 }
 
+/// NAT64 / RFC 6052 END TO END: a DNS64-answered destination must be refused as metadata, not
+/// pinned as an ordinary public v6 address, running through the SAME resolve-then-pin guard every
+/// other rebinding case in this file is driven through.
+///
+/// A DNS64 resolver on an IPv6-only network answers a AAAA query with the NAT64 synthesis of the
+/// queried name's IPv4 address. `64:ff9b:1:fffe::a9fe:a9fe` is the RFC 8215 local-use synthesis
+/// (with a non-zero middle, the shape RFC 8215 Section 6's own worked example uses) of the IMDS
+/// target `169.254.169.254`; it matches no v6 range and no `to_ipv4()` form, so a guard unwrapping
+/// only `to_ipv4()` would pin it as an ordinary public address.
+#[test]
+fn nat64_dns64_synthesis_of_imds_is_refused_even_under_allow_private() {
+    let r = ScriptedResolver::new(vec![Ok(vec![ip("64:ff9b:1:fffe::a9fe:a9fe")])]);
+    let err = resolve_and_pin("dns64.example", 443, true, &r, private_ok()).expect_err(
+        "the RFC 8215 local-use NAT64 synthesis of the IMDS target must be refused even under \
+         allow_private",
+    );
+    assert!(
+        matches!(err, GuardRefusal::CloudMetadataAddress { .. }),
+        "must be refused AS METADATA, not merely pinned as an ordinary public address: {err:?}"
+    );
+}
+
 // ══ THE STRUCTURAL REFUSALS ══════════════════════════════════════════════════════════════════════
 
 /// The metadata NAMES are refused before any resolver is consulted, and `allow_private` does not

@@ -1055,6 +1055,51 @@ async fn a_token_is_not_spent_by_being_used_while_the_task_is_live() {
     }
 }
 
+/// **A LIVE TOKEN IS NOT AN UNLIMITED ONE.**
+///
+/// [`a_token_is_not_spent_by_being_used_while_the_task_is_live`] is the twin this needs: a live
+/// token legitimately draws several pushes over a task's life, so "refuse the second push" is not
+/// the fix and would break the feature. What must be bounded instead is VOLUME within a window: the
+/// recovered design is 60 requests / 60 seconds, per TASK — the token already scopes to exactly one
+/// task, so that is the natural key, and it cannot be evaded by changing source address the way a
+/// per-IP bound could be.
+///
+/// Every ADMITTED push here costs a durable hash-chain write plus (once a callback is armed, as it
+/// is here) an outbound delivery to the caller's own webhook. Without this bound, a holder of one
+/// live token for one non-terminal task could grow busbar's own audit chain without limit and use
+/// busbar as an amplifier pointed at a third party's receiver — at whatever rate it can open
+/// sockets.
+///
+/// The SAME non-terminal state is pushed every time, so busbar takes every push after the first as
+/// a RETRY (`reported == task.state`) rather than a transition: the task never ends, so nothing but
+/// the volume bound itself can be the reason push 61 is refused.
+#[tokio::test]
+async fn a_live_token_is_bounded_to_sixty_pushes_per_task_per_window() {
+    let h = harness_on(
+        in_turn(200, vec![jsonrpc_working(), jsonrpc_config()]),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &submission()).await;
+    let before = h.sent().len();
+    let registration = issued_last(&h, before, &create_call(&task)).await;
+    let token = token_on_the_wire(&registration);
+
+    for i in 0..60 {
+        assert_eq!(
+            push_to_busbar(&h, &token, &pushed("working")).await,
+            202,
+            "push {i} of 60 must still be within the window's budget"
+        );
+    }
+    assert_eq!(
+        push_to_busbar(&h, &token, &pushed("working")).await,
+        429,
+        "the 61st push inside one window must be refused: a live token authorises the task it \
+         names, not unlimited volume spent against it"
+    );
+}
+
 // ══ THE TOKEN AND THE ADDRESS, AS VALUES ═════════════════════════════════════════════════════════
 
 /// A MINTED TOKEN VERIFIES FOR ITS OWN TASK AND FOR NO OTHER.

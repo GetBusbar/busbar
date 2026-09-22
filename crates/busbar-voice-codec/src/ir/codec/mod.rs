@@ -253,11 +253,21 @@ impl DecodeState {
     /// an upstream is under no obligation to close one. Past the ceiling the oldest accumulation is
     /// given up, exactly as the oldest call id is.
     ///
-    /// A fragment that is ITSELF a whole JSON OBJECT is not a fragment of anything: it is the dialect
-    /// handing the arguments over complete (an atomic call's `args`, or the complete `arguments` a
-    /// streamed call states when it closes), so it REPLACES what was held rather than being appended
-    /// to it. Appending would splice the same arguments onto their own prefix and leave nothing
-    /// readable — the call would be lost precisely when the dialect had just said it plainly.
+    /// A fragment that is ITSELF a whole JSON OBJECT is not necessarily a fragment of anything: it can
+    /// be the dialect handing the arguments over complete (an atomic call's `args`, or the complete
+    /// `arguments` a streamed call states when it closes) — in which case it REPLACES what was held
+    /// rather than being appended to it, because appending would splice the same arguments onto their
+    /// own prefix and leave nothing readable.
+    ///
+    /// But a complete JSON object is ALSO what a model can emit as one ordinary delta chunk when a
+    /// nested sub-object happens to land on its own token boundary (`{"outer": ` → `{"inner": 1}` →
+    /// `, "other": 2}` for `{"outer": {"inner": 1}, "other": 2}`). That middle fragment parses as a
+    /// complete object too, and is not a restatement of anything — replacing on it erased the
+    /// already-held `{"outer": ` prefix and left the tail with nothing valid to append to. A genuine
+    /// restatement's text always CARRIES what is already held as a literal prefix (both are exact
+    /// prefixes of the same upstream string); a coincidental nested object does not. So a
+    /// complete-object fragment only replaces when nothing is held yet, or when its own text restates
+    /// (starts with) what is already held — otherwise it is appended like any other fragment.
     pub fn push_call_args(&mut self, call: CallRef, fragment: &[u8]) {
         let whole = serde_json::from_slice::<Value>(fragment)
             .ok()
@@ -274,9 +284,17 @@ impl DecodeState {
             .call_args
             .entry(call)
             .or_insert_with(|| Some(String::new()));
-        if let Some(v) = whole {
-            *held = Some(v.to_string());
-            return;
+        if let Some(v) = &whole {
+            let is_restatement = match held {
+                Some(buf) => {
+                    buf.is_empty() || String::from_utf8_lossy(fragment).starts_with(buf.as_str())
+                }
+                None => false, // already abandoned — handled below.
+            };
+            if is_restatement {
+                *held = Some(v.to_string());
+                return;
+            }
         }
         let Some(buf) = held else {
             return; // already abandoned — a later fragment cannot make the whole readable.
@@ -773,19 +791,56 @@ impl DuplexReader for OpenAiRealtimeCodec {
 
 /// Extract the split token classes from a `response.done.usage` object (`plane4-duplex-session.md` — audio vs text are
 /// SEPARATE classes; extraction-only, never client-translated).
+///
+/// The per-modality breakdown (`input_token_details`/`output_token_details`) is a REFINEMENT of the
+/// stated `input_tokens`/`output_tokens` totals, never their sole source — OpenAI Realtime can state
+/// the totals while omitting the breakdown. Reading a missing breakdown as zero tokens metered a
+/// real turn at ZERO (silent under-billing, the one outcome #42 forbids outside billing being off);
+/// when the breakdown yields nothing, the stated total is billed instead, attributed to `text` (the
+/// conservative default when the split is unknown — this only changes the audio/text LABEL, never
+/// the input/output lane the billing fold sums onto, and it is an integer passthrough of the wire
+/// figure, no rate lookup or multiply, so #71's hot-path rule is untouched).
+///
+/// This is the exact twin of the Gemini Live dialect's `usage_from_metadata` fallback (D26, in
+/// `gemini/mod.rs`): the same defect was fixed there and left standing here, so one session metered
+/// at zero on this dialect and correctly on the other.
 fn extract_usage(u: &Value) -> IrDuplexUsage {
     let ind = u.get("input_token_details");
     let outd = u.get("output_token_details");
+    // BILLED COUNTS, so both closures read through the crate's one count seam
+    // (`crate::ir::usage::read_count_u64`) rather than a bare `as_u64`, which returns `None` for a
+    // float-spelled count and then defaults it to zero.
     let field = |o: Option<&Value>, k: &str| {
         o.and_then(|x| x.get(k))
-            .and_then(Value::as_u64)
+            .and_then(crate::ir::usage::read_count_u64)
             .unwrap_or_default()
     };
+    let stated = |k: &str| {
+        u.get(k)
+            .and_then(crate::ir::usage::read_count_u64)
+            .unwrap_or_default()
+    };
+    let (audio_in, text_in) = {
+        let (a, t) = (field(ind, "audio_tokens"), field(ind, "text_tokens"));
+        if a.saturating_add(t) == 0 {
+            (0, stated("input_tokens"))
+        } else {
+            (a, t)
+        }
+    };
+    let (audio_out, text_out) = {
+        let (a, t) = (field(outd, "audio_tokens"), field(outd, "text_tokens"));
+        if a.saturating_add(t) == 0 {
+            (0, stated("output_tokens"))
+        } else {
+            (a, t)
+        }
+    };
     IrDuplexUsage {
-        audio_in: field(ind, "audio_tokens"),
-        audio_out: field(outd, "audio_tokens"),
-        text_in: field(ind, "text_tokens"),
-        text_out: field(outd, "text_tokens"),
+        audio_in,
+        audio_out,
+        text_in,
+        text_out,
         cached: field(ind, "cached_tokens"),
     }
 }

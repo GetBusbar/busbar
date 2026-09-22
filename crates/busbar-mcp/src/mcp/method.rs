@@ -347,12 +347,25 @@ fn tasks_update(
         .and_then(|v| v.as_object())
         .cloned()
         .unwrap_or_default();
-    super::tasks::TASKS.update(
+    // `Some(false)` is `MAX_TASK_ANSWERS` refusing this batch WHOLE — see
+    // `tasks::McpTask::deliver`. `None` cannot happen here: `resolve_task` above already proved the
+    // id resolves for this caller, and nothing between there and here can make it stop resolving.
+    if let Some(false) = super::tasks::TASKS.update(
         &task.id,
         task_principal(ctx),
         &responses,
         ctx.host.clock_now_ms(),
-    );
+    ) {
+        return invalid_params(
+            id,
+            &format!(
+                "this task already holds {} answer keys, the most one task retains. \
+                 `inputResponses` may still update any of its existing keys, but adding a new one \
+                 past that ceiling is refused.",
+                super::tasks::MAX_TASK_ANSWERS
+            ),
+        );
+    }
     result(id, serde_json::json!({}))
 }
 
@@ -1253,6 +1266,23 @@ async fn tools_call_via_gauntlet(
         .await
 }
 
+/// THE CEILING ON `params.name`, IN BYTES, CHECKED BEFORE THE DURABLE PER-CALL LOG EVER OPENS.
+///
+/// [`CallLog::open`] seeds the record's `tool` field with the caller's OWN, unvalidated name —
+/// right, for an ordinary bad name: a refusal that matched no registration still has to say what
+/// was asked for. Wrong for an UNBOUNDED one, because that field is written verbatim into
+/// `McpCallRecord` (`busbar_mcp_codec::record::McpCallRecord::tool`), a DURABLE, HASH-CHAINED row
+/// the instant any terminal fires — refusal included — and the row then participates in chain
+/// verification forever. Bounding the field on some later terminal is not enough: whatever `open`
+/// was called with is already the value every terminal after it writes. So the ordering IS the fix
+/// — this check sits BEFORE [`CallLog::open`] runs at all, never after, so an oversized name never
+/// has a `CallLog` to be written through in the first place.
+///
+/// 256, matching the ceilings this crate already enforces at comparable doors:
+/// `stdio_serve::MAX_RESOURCE_SUBS` (a session's retained resource-subscription set) and
+/// `stdio_serve::MAX_RESOURCE_SUB_URI_BYTES` (one retained subscription uri).
+const MAX_TOOL_NAME_BYTES: usize = 256;
+
 /// `tools/call` — DISPATCH. See the module header for the ordering and why it is that ordering.
 async fn tools_call(
     ctx: &Ctx<'_>,
@@ -1270,6 +1300,22 @@ async fn tools_call(
             invalid_params(id, "`params.name` is required and must be a string."),
         );
     };
+    // THE LENGTH GATE. Refused outright, never truncated — a truncated name is a DIFFERENT tool
+    // name, and silently renaming a caller's request is worse than refusing it (#42: an unknown is
+    // refused, never silently defaulted). And refused with NO `CallLog` in scope: see the constant's
+    // doc for why opening the log first would still land the oversized bytes in the durable chain
+    // even though this same function goes on to refuse the call.
+    if name.len() > MAX_TOOL_NAME_BYTES {
+        return invalid_params(
+            id,
+            &format!(
+                "`params.name` is {} bytes, longer than the {MAX_TOOL_NAME_BYTES} this deployment \
+                 retains for a tool name. Refused before it reached the per-call log: a name this \
+                 long would be written verbatim into a durable, hash-chained record.",
+                name.len()
+            ),
+        );
+    }
     let mut log = CallLog::open(ctx, name, selected_gen);
     let mut arguments = params
         .and_then(|p| p.get("arguments"))
@@ -1706,9 +1752,54 @@ async fn tools_call(
             busbar_kernel::plane_host::TransformVerdict::Proceed { applied, args_json } => {
                 // A committed rewrite REPLACES the arguments the rest of this path uses (ask-merge is
                 // already done above; the egress gate, task row and dispatch all read `arguments`).
+                //
+                // AN OUTPUT THAT WILL NOT PARSE REFUSES THE CALL. This was `if let Ok(v) = … { … }`,
+                // so a hook that COMMITTED a rewrite and then produced bytes busbar could not read
+                // left `arguments` holding the ORIGINAL, un-rewritten values and the call went on to
+                // dispatch them. For the hook class this seam exists for that is fail-OPEN in the
+                // precise sense: a redaction hook says "I have removed the secret from these
+                // arguments", its output is unreadable, and busbar sends the arguments WITH the
+                // secret still in them to the upstream. The operator wrote a hook that ran, said it
+                // applied, and was silently undone.
+                //
+                // There is no safe fallback available here. Proceeding with the original IS the
+                // defect; the unreadable bytes are not arguments. So the call is refused — the same
+                // answer the hook's own `Reject` gets, because a rewrite that cannot be read is a
+                // rewrite that did not happen, and this seam's whole contract is that a committed
+                // rewrite is the arguments that go out (#42: an unknown is REFUSED, never silently
+                // defaulted).
                 if applied {
-                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&args_json) {
-                        arguments = v;
+                    match committed_arguments(&args_json) {
+                        Ok(v) => arguments = v,
+                        Err(e) => {
+                            ctx.host.audit_emit(
+                                "mcp_tool.call",
+                                &format!("mcp_tool:{}", selected.namespaced),
+                                busbar_contract::vocab::OUTCOME_REJECTED,
+                                ctx.actor,
+                            );
+                            tracing::error!(
+                                tool = %selected.namespaced,
+                                error = %e,
+                                "a rewrite (prompt: rw) hook committed a rewrite whose output \
+                                 busbar could not read back; the call is refused rather than \
+                                 dispatched with the arguments the hook said it had replaced"
+                            );
+                            return log.refused(
+                                busbar_contract::vocab::REASON_HOOK_REJECTED,
+                                error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    id,
+                                    CODE_REFUSED,
+                                    "a rewrite hook attached to this tool committed a rewrite that \
+                                     busbar could not read back. The call is refused rather than \
+                                     dispatched with the arguments the hook said it had replaced.",
+                                    Some(serde_json::json!({
+                                        "reason": busbar_contract::vocab::REASON_HOOK_REJECTED,
+                                    })),
+                                ),
+                            );
+                        }
                     }
                 }
             }
@@ -2203,6 +2294,7 @@ async fn create_task(
             // roots lookups must read the deployment the task actually runs against.
             server_id: member_id,
             max_rounds: server.max_input_required_rounds,
+            input_schema: selected.input_schema.clone(),
             task_asks: super::tasks::task_ask_rounds(selected, ctx.capabilities),
         },
     );
@@ -2334,6 +2426,33 @@ fn upstream_ask_field(value: &serde_json::Value) -> Option<&'static str> {
         .find(|field| obj.contains_key(*field))
 }
 
+/// THE ARGUMENTS A COMMITTED REWRITE PRODUCED, or the reason they cannot be used.
+///
+/// Its own function so the fail-open it replaces can be driven by a test without arranging a host
+/// that emits unreadable bytes — the plane cannot make the seam misbehave, and the rule the plane
+/// owns is what happens when it does.
+///
+/// A rewrite verdict reporting `applied` is a hook saying "these bytes are the arguments now". The
+/// plane read them with `if let Ok(v) = …`, so bytes it could not read left `arguments` holding the
+/// ORIGINAL values and the call dispatched them. For the hook class this seam exists for that is
+/// fail-OPEN in the precise sense: a redaction hook says it removed the secret, its output is
+/// unreadable, and the arguments WITH the secret go upstream. There is no safe fallback — proceeding
+/// with the original is the defect and the unreadable bytes are not arguments — so the answer is
+/// `Err`, and the call is refused.
+///
+/// An `arguments` member is an OBJECT by the protocol's own shape, so a well-formed JSON scalar is
+/// refused here too: a rewrite that turned the arguments into `7` is as unusable as one that turned
+/// them into nothing, and admitting it would only move the failure to the upstream after telling the
+/// hook its rewrite landed.
+pub(super) fn committed_arguments(args_json: &[u8]) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(args_json).map_err(|e| format!("the output is not JSON: {e}"))?;
+    if !value.is_object() {
+        return Err("the output is JSON but not an arguments object".to_string());
+    }
+    Ok(value)
+}
+
 /// CHARGE one round on the caller's own budget plane, then meter it.
 ///
 /// The two halves are the LLM path's two halves, called the same way for the same reason: `try_admit`
@@ -2425,17 +2544,22 @@ fn refuse_setup(
         busbar_contract::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
+    // OPERATOR-FACING: the full, UNREDACTED detail — `diag_debug!` is a `tracing::debug!` that
+    // lands in the server's own log, never on the wire. For a `Credential` refusal this `detail`
+    // is the only place the secret's source (which env var / file) still appears; see
+    // `SetupRefusal::client_message`'s doc for why the wire rendering below must redact it.
     busbar_substrate_values::diag_debug!(
         crate::diagnostics::MCP_TOOLCALL_REFUSED_PRE_UPSTREAM,
         tool = %namespaced,
         reason = denied.audit_reason(),
+        detail = %denied,
         "mcp tools/call refused before the upstream"
     );
     error(
         StatusCode::FORBIDDEN,
         id,
         CODE_REFUSED,
-        &denied.to_string(),
+        &denied.client_message(),
         Some(serde_json::json!({ "reason": denied.audit_reason() })),
     )
 }

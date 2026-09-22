@@ -324,7 +324,7 @@ pub struct PluginSchemaView {
     /// manifest). Declared so codegen'd clients keep it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    /// The kind-derived restart-scoping default (`busbar_plugin_sign::kind_restart_default`), so
+    /// The kind-derived restart-scoping default (`busbar_plugin_loader::sign::kind_restart_default`), so
     /// busbar-ui need not hardcode the kind→default table. Emitted by both schema endpoints (`null`
     /// only when the plugin has no resolvable manifest/kind). Declared so codegen'd clients keep it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

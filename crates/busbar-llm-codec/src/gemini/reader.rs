@@ -6,7 +6,7 @@ impl ProtocolReader for GeminiReader {
         tail: &[u8],
     ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usageMetadata\"")?;
-        let cached = v.get("cachedContentTokenCount").and_then(|x| x.as_u64());
+        let cached = v.get("cachedContentTokenCount").and_then(read_count_u64);
         // THINKING TOKENS ARE OUTPUT TOKENS — mirror `gemini_usage` exactly. `candidatesTokenCount`
         // counts only the visible answer; the 2.5-series reasoning tokens arrive in the separate,
         // ADDITIVE `thoughtsTokenCount` (Google's `totalTokenCount = prompt + candidates + thoughts`).
@@ -17,7 +17,7 @@ impl ProtocolReader for GeminiReader {
         // `output_tokens` so a truncated response bills the same as a complete one, and record the
         // thinking count as the reasoning sub-bucket (pure attribution; it is already folded into
         // `output_tokens`).
-        let thoughts = v.get(FIELD_THOUGHTS_TOKEN_COUNT).and_then(|x| x.as_u64());
+        let thoughts = v.get(FIELD_THOUGHTS_TOKEN_COUNT).and_then(read_count_u64);
         // THE TOOL-USE PROMPT TERM IS ADDITIVE — mirror `gemini_usage` exactly here too. It is not a
         // slice of `promptTokenCount` (`GEMINI_USAGE_ADDITIVE_TERMS` records the recording that
         // proves it: 32 tool-use tokens against an 18-token prompt) and Google charges it at the
@@ -26,18 +26,18 @@ impl ProtocolReader for GeminiReader {
         // buffered path shed in 1.6.0, surviving on exactly the responses nobody can inspect.
         let tool_use = v
             .get(FIELD_TOOL_USE_PROMPT_TOKEN_COUNT)
-            .and_then(|x| x.as_u64());
+            .and_then(read_count_u64);
         Some(
             crate::ir::IrUsage {
                 input_tokens: v
                     .get("promptTokenCount")
-                    .and_then(|x| x.as_u64())
+                    .and_then(read_count_u64)
                     .unwrap_or(0)
                     .saturating_sub(cached.unwrap_or(0))
                     .saturating_add(tool_use.unwrap_or(0)),
                 output_tokens: v
                     .get("candidatesTokenCount")
-                    .and_then(|x| x.as_u64())
+                    .and_then(read_count_u64)
                     .unwrap_or(0)
                     .saturating_add(thoughts.unwrap_or(0)),
                 cache_creation_input_tokens: None,

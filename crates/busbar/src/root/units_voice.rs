@@ -154,7 +154,14 @@ const _: () = assert!(
 /// Nano-units in a cent, for the one place this file turns the rate card's flat fee into the unit a
 /// reservation is taken in. Spelled here rather than reached for so the root's arithmetic is the
 /// root's; the plane never sees a fee at all.
+///
+/// It stays `u64` deliberately: the fee math below saturates at `u64::MAX`, and borrowing the
+/// ledger's `u128` would silently move that ceiling on a money path. The value is still not allowed
+/// to drift from the ledger's — two copies of one money constant is how a request gets judged at one
+/// rate and billed at another — so the agreement is asserted at COMPILE TIME instead. Edit either
+/// copy and the build stops; neither the arithmetic nor a single emitted byte changes.
 const NANOS_PER_CENT: u64 = 10_000_000;
+const _: () = assert!(NANOS_PER_CENT as u128 == busbar_kernel_ledger::cost::NANOS_PER_CENT);
 
 /// The operation class a turn is audited and priced under.
 const OP_DUPLEX_TURN: &str = "duplex_turn";
@@ -1619,7 +1626,7 @@ impl Units for VoiceUnit<'_> {
         decision
     }
 
-    fn route(&self, token: &Pass<Route>, ctx: &UnitCtx, meter: &AccrualMeter) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, ctx: &UnitCtx, meter: &AccrualMeter, _destinations: &[busbar_contract::caps::VerifiedDestination]) -> Decision<Route> {
         // **The exit for a call nobody answered.** The sweep took the wait out of the table and left
         // the ending behind; this is where the unit reads it. A call that ran out its declared
         // deadline ends under that deadline rather than settling as though the answer arrived, which
@@ -1664,6 +1671,7 @@ impl Units for VoiceUnit<'_> {
         usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
         let lines = self.usage.lines();
         // The turn's exact figure settles against the session's reservation. An exhausted lease is
@@ -1684,7 +1692,7 @@ impl Units for VoiceUnit<'_> {
             // class list makes the arm unreachable from the declarations — which is exactly why it
             // is an honest refusal rather than an unwrap: the day a class is added is the day the
             // assertion, not this arm, is what says so.
-            Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ArenaBudget)),
+            Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ScratchExhausted)),
         }
     }
 

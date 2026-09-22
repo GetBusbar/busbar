@@ -35,7 +35,7 @@ BUSBAR="$BUSBAR_DIR/target/release/busbar"
 # ── 0. Ephemeral keypair ─────────────────────────────────────────────────────────────────────────
 # CI may pre-generate the pair (BUSBAR_GATE_SIGN_KEY/BUSBAR_GATE_PUBKEY) so the busbar binary built
 # here — with that public key embedded — is byte-reusable by later workflow steps with no rebuild.
-(cd "$BUSBAR_DIR" && cargo build --release -q -p busbar-plugin-pack)
+(cd "$BUSBAR_DIR" && cargo build --release -q -p busbar-plugin-sdk --features pack --bin busbar-plugin-pack)
 if [ -n "${BUSBAR_GATE_SIGN_KEY:-}" ] && [ -n "${BUSBAR_GATE_PUBKEY:-}" ]; then
   PRIV=$BUSBAR_GATE_SIGN_KEY; PUB=$BUSBAR_GATE_PUBKEY
 else
@@ -49,7 +49,7 @@ echo "gate: ephemeral release pubkey $PUB"
 # ── 1. Build busbar with the ephemeral PUBLIC key embedded ───────────────────────────────────────
 # option_env!("BUSBAR_RELEASE_PUBKEY") is COMPILE-time; cargo tracks env-var deps of env!/option_env!
 # in dep-info, but touch the crate anyway so a cached no-key build can never be reused.
-touch "$BUSBAR_DIR/crates/plugin-sign/src/lib.rs"
+touch "$BUSBAR_DIR/crates/plugin-loader/src/sign.rs"
 (cd "$BUSBAR_DIR" && BUSBAR_RELEASE_PUBKEY="$PUB" cargo build --release -q --bin busbar)
 BUSBAR_VERSION=$("$BUSBAR" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 echo "gate: busbar $BUSBAR_VERSION built with embedded ephemeral key"

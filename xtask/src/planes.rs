@@ -69,8 +69,6 @@ pub fn neutral_src_roots() -> Vec<String> {
         // `busbar-substrate-values` (already listed below). Both former roots are gone from disk —
         // scanning them now would read zero files and pass every ban silently.
         "crates/busbar-kernel/src".to_string(),
-        "crates/busbar-core-config/src".to_string(),
-        "crates/busbar-core-hooks/src".to_string(),
         "crates/busbar-substrate-values/src".to_string(),
         "crates/api/src".to_string(),
     ]

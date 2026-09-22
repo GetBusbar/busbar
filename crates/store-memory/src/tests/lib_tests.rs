@@ -927,3 +927,53 @@ fn plane_token_live_is_false_for_unknown_terminal_and_expired() {
         "a terminal record refuses further callbacks even while unexpired"
     );
 }
+
+/// An APPEND-ONLY plane record (`task_event`): `parent`/`seq` identify its position in a durable
+/// chain, exactly like the `task_event`/`call` rows the journal seam appends.
+fn plane_event(parent: &str, seq: u64, body: &[u8]) -> PlaneRecord {
+    PlaneRecord {
+        kind: "task_event".to_string(),
+        id: parent.to_string(),
+        parent: Some(parent.to_string()),
+        seq,
+        ts: 0,
+        disposition: PlaneDisposition::Active,
+        body: body.to_vec(),
+    }
+}
+
+/// AUDIT-INTEGRITY FIX: `append_plane_record` must detect a SECOND WRITER forking the chain, exactly
+/// as the legacy `append_audit` already does above (`Some(stored) if stored == entry => Ok(()); Some(_)
+/// => Err(...)`) — the two append-only paths must never disagree about what a fork is. Before this
+/// fix `append_plane_record` was a blind `HashMap::insert`: two busbar processes pointed at one
+/// durable store would silently overwrite each other's `task_event`/`call`/`audit` rows with no
+/// trace.
+#[test]
+fn append_plane_record_refuses_a_second_writers_fork_at_an_occupied_seq() {
+    let s = MemoryStore::new();
+    let first = plane_event("t1", 1, b"first-writer");
+    s.append_plane_record(&first).unwrap();
+
+    // Re-appending the IDENTICAL record — the write-through retry path — must stay Ok.
+    s.append_plane_record(&first)
+        .expect("re-appending the IDENTICAL record is the retry path and must be Ok");
+
+    // A DIFFERENT record at the SAME seq is a second writer forking the chain: refused, not
+    // silently applied.
+    let forked = plane_event("t1", 1, b"second-writer");
+    assert!(
+        s.append_plane_record(&forked).is_err(),
+        "a DIFFERENT record on an already-occupied seq was accepted — the chain has forked and the \
+         store said nothing"
+    );
+
+    // The first writer's record must still be intact: neither overwritten nor corrupted.
+    let rows = s
+        .list_plane_records("task_event", &PlaneSelector::Parent("t1".to_string()))
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![b"first-writer".to_vec()],
+        "the original record must survive the refused fork attempt untouched"
+    );
+}

@@ -595,6 +595,31 @@ fn ceiling_ratchet_cases<'a>(
     }
 
     // -- ceiling-rose ----------------------------------------------------------------------------
+    //
+    // A BASE THAT CANNOT BE ESTABLISHED IS RED, NEVER GREEN, and until this case existed that claim
+    // lived only in a doc comment. It was false twice: `base_ref` once treated "the ref does not
+    // resolve" as "compare against HEAD~1", and later resolved a ref that had gone stale and
+    // diverged. Both read exactly like a working gate, for weeks, because nothing ever drove the
+    // arm. The ref is asked of `base_line` rather than written down here, so this case keeps
+    // exercising the arm on a checkout whose branch is not the one it was written on.
+    if let Ok((line, _)) = ceilings::base_line(cx) {
+        let mut ov = on(base);
+        ov.set_command(format!("git-ref:{line}"), "0");
+        r.push(prove_rows_red(
+            cx,
+            gate,
+            "a base ref that does not resolve is refused, never quietly replaced by HEAD~1",
+            &[ceilings::ROW_ROSE],
+            ov,
+            &["no base commit could be established"],
+        ));
+    } else {
+        r.note_infra_failure(
+            "this checkout has no base line to plant as unresolvable (detached HEAD), so the arm \
+             that refuses an unestablishable base is unproven here",
+        );
+    }
+
     let based = match ceilings::base_ref(cx) {
         Ok(b) => b,
         Err(e) => {

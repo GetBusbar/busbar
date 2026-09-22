@@ -763,3 +763,197 @@ async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
         "a refused setup must not be reported as a tool RESULT: {body}"
     );
 }
+
+// ── THE DURABLE HASH CHAIN NEVER SEES AN ATTACKER-SIZED TOOL NAME ──────────────────────────────
+//
+// `CallLog::open` seeds the record's `tool` field with the caller's OWN, UNVALIDATED
+// `params.name` — right, for an ordinary bad name, because a refusal that matched no registration
+// still has to say what was asked for. Wrong for an UNBOUNDED one: that field is written verbatim
+// into a durable, HASH-CHAINED row the instant any terminal fires, refusal included, and the row
+// then participates in chain verification forever. A length check that runs only AFTER the log is
+// open would still see the oversized name land in that field. So the claim under test is not "an
+// oversized name is refused" — `body["error"]` proves that cheaply and proves nothing about the
+// log — it is that the log was never OPENED for one, read off the in-process chain POSITION
+// (`call_next_seq`, which advances only on an actual write) before and after the call.
+
+/// Dispatch `tools/call` under a CALLER-CHOSEN actor id rather than the shared `call()` helper's
+/// fixed `"test-principal"`. The per-call chain this file's other tests write to is scoped to that
+/// one shared name, and `cargo test` runs this binary's tests concurrently — so a case that reads
+/// the chain's exact POSITION (rather than merely its content) needs a principal no sibling test,
+/// present or future, can ever write to.
+async fn call_as_actor(
+    app: &Arc<dyn EngineApp>,
+    gov: &busbar_api::PlaneRequestCtx,
+    actor: &str,
+    params: serde_json::Value,
+) -> (u16, serde_json::Value) {
+    crate::testkit::prefresh_mcp_sightings(app.as_ref());
+    let handle = app_handle(app.clone());
+    let ctx = crate::mcp::method::Ctx {
+        host: engine_host_from_handle(&handle),
+        gov,
+        actor,
+        capabilities: &ALL_CAPABILITIES,
+        headers: &NO_HEADERS,
+        scope: None,
+    };
+    let response = crate::mcp::method::dispatch(&ctx, "tools/call", Some(&params), Some(1.into()))
+        .await
+        .expect("tools/call is in the method table");
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap_or_default())
+}
+
+/// THE 257-byte name: refused, and the per-call chain does not move AT ALL — not a row with an
+/// empty `tool`, not one truncated to 256, none.
+#[tokio::test]
+async fn an_oversized_tool_name_is_refused_before_the_call_log_ever_opens() {
+    metrics_init();
+    engine().ensure_call_stream_registered();
+    let app = two_server_app();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+    let principal = "toolname-cap-oversized-principal";
+
+    let before = engine().call_next_seq(principal);
+    let oversized = "a".repeat(257);
+    let (status, body) = call_as_actor(
+        &app,
+        &g,
+        principal,
+        serde_json::json!({ "name": oversized, "arguments": {} }),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    assert_eq!(
+        engine().call_next_seq(principal),
+        before,
+        "a name refused for its length must not grow the durable per-call chain by even one row: \
+         got body {body}"
+    );
+}
+
+/// THE CONTROL: exactly 256 bytes is NOT stopped by the length gate. It reaches ordinary
+/// resolution, is refused there for a DIFFERENT reason (nothing this deployment registered is
+/// named that), and — being an ordinary refusal — DOES land a row, exactly like any other refused
+/// call. Without this half, a gate that refused every name of any length would also satisfy the
+/// assertion above.
+#[tokio::test]
+async fn a_256_byte_tool_name_clears_the_length_gate_and_is_logged_as_an_ordinary_refusal() {
+    metrics_init();
+    engine().ensure_call_stream_registered();
+    let app = two_server_app();
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+    let principal = "toolname-cap-boundary-principal";
+
+    let before = engine().call_next_seq(principal);
+    let boundary = "b".repeat(256);
+    let (status, body) = call_as_actor(
+        &app,
+        &g,
+        principal,
+        serde_json::json!({ "name": boundary, "arguments": {} }),
+    )
+    .await;
+    assert_eq!(
+        status, 404,
+        "a 256-byte name that matches no registration is an ORDINARY unknown-tool refusal, not \
+         the length gate: {body}"
+    );
+    assert_eq!(
+        engine().call_next_seq(principal),
+        before + 1,
+        "an ordinary refusal is still evidence and must still be recorded: {body}"
+    );
+}
+
+// ── `tasks/update` REFUSES A BATCH THAT WOULD CROSS `MAX_TASK_ANSWERS`, OVER THE REAL WIRE ─────
+//
+// `tasks::tasks_tests` pins the cap at the registry/`McpTask` level; this is the one place proving
+// the method surface actually SURFACES that refusal — `tasks_update` used to discard
+// `Registry::update`'s outcome entirely and always ack `{}`.
+
+/// Capabilities declaring the tasks extension — `tasks/update` is refused `-32021` without it,
+/// which is a different case from the one under test here.
+static TASKS_CAPABILITIES: std::sync::LazyLock<serde_json::Value> = std::sync::LazyLock::new(
+    || serde_json::json!({ "extensions": { crate::mcp::tasks::TASKS_EXTENSION_ID: {} } }),
+);
+
+#[tokio::test]
+async fn tasks_update_refuses_a_batch_that_would_cross_the_answer_ceiling_over_the_wire() {
+    metrics_init();
+    let app = test_app().mcp(&mcp_cfg()).build();
+    // `gov_with_scopes` always mints a key id of `"k-test"`, which is what `task_principal` reads.
+    let g = gov_with_scopes(&[]);
+    let principal = "k-test";
+    let task = crate::mcp::tasks::TASKS.create(principal, busbar_kernel::store::now_ms());
+    for i in 0..crate::mcp::tasks::MAX_TASK_ANSWERS {
+        let mut batch = serde_json::Map::new();
+        batch.insert(format!("k{i}"), serde_json::json!(i));
+        assert_eq!(
+            crate::mcp::tasks::TASKS.update(
+                &task.id,
+                principal,
+                &batch,
+                busbar_kernel::store::now_ms(),
+            ),
+            Some(true),
+            "seeding key {i} must be accepted while filling the task to its ceiling"
+        );
+    }
+
+    let handle = app_handle(app.clone());
+    let ctx = crate::mcp::method::Ctx {
+        host: engine_host_from_handle(&handle),
+        gov: &g,
+        actor: "test-principal",
+        capabilities: &TASKS_CAPABILITIES,
+        headers: &NO_HEADERS,
+        scope: None,
+    };
+    let params = serde_json::json!({
+        "taskId": task.id,
+        "inputResponses": { "one-key-too-many": "no" },
+    });
+    let response = crate::mcp::method::dispatch(&ctx, "tasks/update", Some(&params), Some(1.into()))
+        .await
+        .expect("tasks/update is in the method table");
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    assert!(
+        task.detailed()
+            .get("result")
+            .is_none(),
+        "a refused update must not be confused with a completed task"
+    );
+
+    // A REPEAT of an already-held key is not new and must still succeed, proving the wire-level
+    // refusal above was really about the CEILING and not about the task generally rejecting
+    // `tasks/update` once it is full.
+    let repeat_params = serde_json::json!({
+        "taskId": task.id,
+        "inputResponses": { "k0": "updated-over-the-wire" },
+    });
+    let response = crate::mcp::method::dispatch(
+        &ctx,
+        "tasks/update",
+        Some(&repeat_params),
+        Some(2.into()),
+    )
+    .await
+    .expect("tasks/update is in the method table");
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "a repeat of an existing key must succeed even while the task is at its ceiling"
+    );
+}

@@ -25,6 +25,24 @@
 # It NEVER exits and NEVER prints — the caller owns its own reporting.
 
 # The canonical order is the doctrine order: the three original protocols, then voice (Plane 4).
+#
+# THIS IS THE ON-DISK ROSTER, NOT THE DOCTRINE ROSTER, AND THE GAP BETWEEN THEM IS NAMED BELOW
+# (`PLANE_KEYS_LOCKED`), NOT PAPERED OVER HERE. DECISIONS #18 renamed Plane 4 voice -> streaming
+# ("No `voice` as a plane/kind/crate/feature name") and DECISIONS #48 added a fifth plane, decisions
+# (jev) — so the LOCKED roster is five: llm, mcp, a2a, streaming, decisions. `PLANE_KEYS` here still
+# says `voice`, and still omits `decisions`, on purpose: every existing consumer of this exact
+# variable treats each entry as a literal `crates/busbar-<key>` directory suffix
+# (`plane_src_roots`/`neutral_src_roots` below) OR — scripts/plane-grep-gate.sh — as a literal GREP
+# NEEDLE banned from the other planes' and the neutral crates' source. Spelling this `streaming`
+# before `crates/busbar-voice` is actually renamed would make every one of those consumers open a
+# directory that is not there, exactly the silent-zero-files failure mode this file exists to
+# prevent (see the header). Adding `decisions` here today is worse than a no-op: this repo's own
+# comment convention cites its own governance items as "DECISIONS #<n>" constantly, so the bare word
+# `decisions` used as scripts/plane-grep-gate.sh's needle would flood that gate — a sibling gate this
+# change does not own — with false positives on its own commit-message vocabulary. Both changes wait
+# for their crate/wiring counterpart to land; until then, PLANE_KEYS states what is TRUE ON DISK, and
+# PLANE_KEYS_LOCKED (below) states what is true IN DOCTRINE, so no caller can mistake one for the
+# other by reading only this line.
 PLANE_KEYS="llm mcp a2a voice"
 
 # The protocol subset: every plane key except `llm`. Derived from PLANE_KEYS so adding a plane in
@@ -35,6 +53,29 @@ for _pk in $PLANE_KEYS; do
   PLANE_KEYS_PROTOCOL="${PLANE_KEYS_PROTOCOL:+$PLANE_KEYS_PROTOCOL }$_pk"
 done
 unset _pk
+
+# ── THE LOCKED (DOCTRINE) ROSTER, AND THE ALIAS BETWEEN IT AND WHAT IS TESTABLE TODAY ──────────────
+# `PLANE_KEYS_LOCKED` is the five-plane roster the product is LOCKED to (llm, mcp, a2a, streaming,
+# decisions — DECISIONS #18/#48), independent of what has physically landed on disk. It is ADDITIVE:
+# nothing existing sources it today, so declaring it here changes no consumer's behavior. It exists
+# for a caller that needs to tell the truth about COVERAGE rather than about source layout — today
+# that is scripts/plane-delete-test.sh, whose `--all`/`--baseline` used to iterate `$PLANE_KEYS` (the
+# on-disk four) and print a verdict that read as "the whole roster", proving nothing about the two
+# planes that differ from it.
+PLANE_KEYS_LOCKED="llm mcp a2a streaming decisions"
+
+# plane_ondisk_key <locked-key> → the PLANE_KEYS entry that plane is REACHABLE under today, or empty
+# if none exists yet. `streaming` is reachable — under its pre-rename name `voice`, the crate DECISIONS
+# #18 has not yet renamed — so a caller asking "is streaming covered" gets a truthful "yes, as voice",
+# not a false gap. A locked key with no entry here (`decisions`) returns empty: there is no on-disk
+# stand-in, so a caller must report that plane as a NAMED GAP, never as a silent pass over zero files.
+plane_ondisk_key() {
+  case "$1" in
+    streaming) printf 'voice' ;;
+    llm | mcp | a2a) printf '%s' "$1" ;;
+    *) printf '' ;;
+  esac
+}
 
 plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src …", canonical order.
   local k out=""

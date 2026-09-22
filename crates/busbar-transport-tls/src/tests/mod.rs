@@ -238,7 +238,7 @@ async fn byte_exact_round_trip_over_a_real_handshake() {
 
     let payload = b"tls says hello, byte for byte";
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(payload))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(payload))
         .await
         .unwrap();
 
@@ -263,7 +263,7 @@ async fn half_close_and_cancel_mid_frame() {
     let server_conn = accept_fut.await.unwrap();
 
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"bye"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"bye"))
         .await
         .unwrap();
     client.close(client_conn, CloseReason::Normal);
@@ -307,7 +307,7 @@ async fn half_close_and_cancel_mid_frame() {
         let _ = futures::poll!(fut.as_mut());
     }
     client2
-        .write(&client_conn2, StreamId(0), ArenaBytes::new(b"still alive"))
+        .write(&client_conn2, StreamId(0), ScratchBytes::new(b"still alive"))
         .await
         .unwrap();
     let mut frames2 = server2.frames(server_conn2);
@@ -334,7 +334,7 @@ async fn a_close_sends_the_alert_the_peer_is_owed() {
     let server_conn = accept_fut.await.unwrap();
 
     server
-        .write(&server_conn, StreamId(0), ArenaBytes::new(b"last word"))
+        .write(&server_conn, StreamId(0), ScratchBytes::new(b"last word"))
         .await
         .unwrap();
     let mut client_frames = client.frames(client_conn);
@@ -350,6 +350,158 @@ async fn a_close_sends_the_alert_the_peer_is_owed() {
         "the peer sees a clean end of stream, not the error rustls reports for a truncated one: \
          {ended:?}"
     );
+}
+
+/// A mid-session stream drop must report differently from an orderly `close_notify` close: the one
+/// signal separating "the exchange finished" from "it was cut off, possibly hiding truncated
+/// content" cannot be erased. Both directions are asserted here — a cell that only checked one is
+/// not evidence that they differ.
+///
+/// The truncation half connects a RAW `tokio_rustls` client directly (not this crate's own
+/// `TlsTransport::dial`), so the test controls the abrupt close exactly: the handshake completes,
+/// one message crosses, and the underlying socket is then simply dropped with no `shutdown()` ever
+/// called — no `close_notify` goes out, which is precisely the truncation `send_close_notify`'s own
+/// doc describes: "the peer's own rustls reports `UnexpectedEof`". The orderly half is the sibling
+/// of `a_close_sends_the_alert_the_peer_is_owed` above, reusing this crate's own `close`.
+#[tokio::test]
+async fn a_truncated_stream_reports_differently_from_an_orderly_close() {
+    // TRUNCATION.
+    let (server_cfg, client_cfg) = self_signed();
+    let server = StdArc::new(TlsTransport::new());
+    server.register_server_config(0, server_cfg);
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = server.listen(&cfg, &fixture_key(0)).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+
+    let raw_tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let connector = TlsConnector::from(client_cfg);
+    let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+    let mut attacker = connector.connect(name, raw_tcp).await.unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut attacker, b"last word before the cut")
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::flush(&mut attacker).await.unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let mut server_frames = server.frames(server_conn);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the message sent before the cut still arrives")
+        .unwrap()
+        .unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"last word before the cut");
+
+    // The cut itself: a raw TCP-level half-close on the UNDERLYING socket, bypassing rustls's own
+    // `close_notify` entirely — that lives one layer up, on the TLS stream's own `AsyncWrite::
+    // shutdown`, which this deliberately does not call. The result is a graceful FIN with no TLS
+    // goodbye ever sent: exactly the truncation this fix targets, and distinct from an abrupt
+    // `drop` of the whole socket, which on this platform's loopback answers with an OS-level RST
+    // (`io::ErrorKind::ConnectionReset`) already mapped to `Reset` by the pre-existing arm below —
+    // a cut that would not have told this fix apart from one that never shipped.
+    let (raw, _tls_state) = attacker.get_mut();
+    tokio::io::AsyncWriteExt::shutdown(raw).await.unwrap();
+
+    let truncated = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("a truncated session must be reported rather than waited on")
+        .expect("a truncated session is an error, not a clean end of stream");
+    assert_eq!(
+        truncated.unwrap_err(),
+        TransportError::Reset,
+        "a stream that just stopped, with no close_notify, must not read as a clean close"
+    );
+
+    // ORDERLY, for contrast: this crate's own `close`, which DOES send `close_notify` first.
+    let (server2, listener2, client2) = bound_pair().await;
+    let addr2 = listener2.local_addr();
+    let accept_fut2 = tokio::spawn({
+        let server2 = server2.clone();
+        async move { server2.accept(&listener2).await.unwrap() }
+    });
+    let client_conn2 = client2
+        .dial(&upstream_dest(&addr2), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn2 = accept_fut2.await.unwrap();
+    server2
+        .write(&server_conn2, StreamId(0), ScratchBytes::new(b"goodbye"))
+        .await
+        .unwrap();
+    let mut client_frames2 = client2.frames(client_conn2);
+    let (_s, frame2) = client_frames2.next().await.unwrap().unwrap();
+    assert_eq!(frame2.bytes.as_slice(), b"goodbye");
+
+    server2.close(server_conn2, CloseReason::Normal);
+    let ended = tokio::time::timeout(Duration::from_secs(5), client_frames2.next())
+        .await
+        .expect("an orderly close must be reported promptly too");
+    assert!(
+        ended.is_none(),
+        "an orderly close_notify shutdown ends the stream cleanly, never as Reset: {ended:?}"
+    );
+}
+
+/// The `close_notify` alert self-bounds on [`CLOSE_NOTIFY_BUDGET`] rather than parking forever on
+/// the writer lock a peer that stopped reading — or a `close` racing an in-flight write — leaves
+/// held.
+///
+/// `send_close_notify` is what `close` spawns and what `unit0_refusal` awaits inline, and both take
+/// the connection's one writer lock. Holding that lock here is the same standstill a full receive
+/// window or a still-running write produces; without a budget the alert waits on it for the life of
+/// the process, and on the `unit0_refusal` path the caller waits with it.
+///
+/// Paused clock: the writer lock is genuinely never released within this test (`held` is dropped
+/// only after the assertions), so `send_close_notify` can only return by its own internal timeout
+/// firing. Under a paused clock that firing costs no real wall-clock time — nothing here sleeps for
+/// real — while the elapsed *virtual* time, checked against [`CLOSE_NOTIFY_BUDGET`], is still the
+/// witness that the budget (and not some other accident) is what ended it.
+///
+/// Time is paused only AFTER the handshake completes, not for the whole test: `bound_pair`'s
+/// accept/dial run over real loopback sockets, and racing a paused clock's auto-advance against
+/// real (if fast) socket I/O is exactly the flakiness paused time exists to avoid — the clock can
+/// jump past `HANDSHAKE_TIMEOUT` before the loopback bytes that were already on their way arrive.
+/// Once the connection is up, everything left (the writer `Mutex`, `CLOSE_NOTIFY_BUDGET`'s own
+/// timer) is a plain Tokio primitive with no reactor dependency, so pausing here is exact rather
+/// than approximate.
+#[tokio::test]
+async fn a_close_notify_self_bounds_on_a_held_writer_lock() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let _client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let inner = server
+        .inner(server_conn.id())
+        .expect("the accepted connection is registered");
+    tokio::time::pause();
+    // Hold the writer lock the alert must take — the standstill a peer that stopped reading, or a
+    // close racing an in-flight write, produces on the real socket.
+    let held = inner.write.lock().await;
+    let started = tokio::time::Instant::now();
+    let bounded = tokio::time::timeout(Duration::from_secs(3), send_close_notify(&inner)).await;
+    assert!(
+        bounded.is_ok(),
+        "send_close_notify must self-bound on CLOSE_NOTIFY_BUDGET, not park on the writer lock"
+    );
+    assert!(
+        started.elapsed() >= CLOSE_NOTIFY_BUDGET,
+        "the budget is what ended it, not some other accident"
+    );
+    drop(held);
 }
 
 #[tokio::test]
@@ -368,7 +520,7 @@ async fn close_ends_a_live_frame_stream() {
 
     let mut frames = server.frames(server_conn.clone());
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"first"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -378,7 +530,7 @@ async fn close_ends_a_live_frame_stream() {
     // stream must drop: bytes the peer writes afterwards are never yielded.
     server.close(server_conn, CloseReason::Normal);
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after close"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after close"))
         .await
         .unwrap();
     assert!(
@@ -540,7 +692,7 @@ async fn an_in_band_upgrade_adopts_the_lower_layers_stream() {
     let mut client_tls = client_task.await.unwrap().unwrap();
 
     let payload = b"upgraded mid-life";
-    tls.write(&upgraded, StreamId(0), ArenaBytes::new(payload))
+    tls.write(&upgraded, StreamId(0), ScratchBytes::new(payload))
         .await
         .unwrap();
 
@@ -706,7 +858,7 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
 
     let payload = b"served under a key the unit resolved";
     server
-        .write(&server_conn, StreamId(0), ArenaBytes::new(payload))
+        .write(&server_conn, StreamId(0), ScratchBytes::new(payload))
         .await
         .unwrap();
     let mut frames = client.frames(client_conn.clone());
@@ -1371,7 +1523,7 @@ async fn a_unit0_refusal_reaches_a_healthy_peer() {
         correlates: None,
     };
     server
-        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .unit0_refusal(server_conn, None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .unwrap();
 
@@ -1405,7 +1557,7 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
     // A pump that is live before the refusal, holding its own clone of the state.
     let mut frames = server.frames(server_conn.clone());
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"first"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -1431,7 +1583,7 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
         correlates: None,
     };
     let err = server
-        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .unit0_refusal(server_conn, None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .expect_err("a refusal that never left this host is not a delivered refusal");
     assert!(
@@ -1453,7 +1605,7 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
 
     // The pump ends, which is what the flag exists for.
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after refusal"))
         .await
         .ok();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
@@ -1542,7 +1694,7 @@ async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_fra
     let mut frames = server.frames(server_conn.clone());
     let long = vec![b'L'; 4096];
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(&long))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(&long))
         .await
         .unwrap();
     let mut got = Vec::new();
@@ -1554,7 +1706,7 @@ async fn one_read_buffer_per_connection_reused_without_leaking_bytes_between_fra
     let first_buffer = server.scratch_addr(server_conn.id()).await.unwrap();
 
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"short"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"short"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -1595,7 +1747,7 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
     // A pump that is live before the refusal: it already holds the connection state.
     let mut frames = server.frames(server_conn.clone());
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"first"))
         .await
         .unwrap();
     let (_s, frame) = frames.next().await.unwrap().unwrap();
@@ -1609,13 +1761,13 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
         correlates: None,
     };
     server
-        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .unit0_refusal(server_conn, None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .unwrap();
 
     // The peer keeps writing, as a peer that has not yet read the refusal will.
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after refusal"))
         .await
         .unwrap();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
@@ -1686,6 +1838,51 @@ async fn a_stalled_dial_handshake_times_out_without_leaking() {
     );
 
     held.abort();
+}
+
+/// One upstream that never answers the SYN at all must not be able to hold a dial task — and the
+/// half-open socket it stands on — forever either.
+///
+/// `a_stalled_dial_handshake_times_out_without_leaking` covers the leg AFTER the TCP connect
+/// completes (a peer that stalls the ServerHello); this covers the leg BEFORE it. The raw
+/// `TcpStream::connect` a dial makes carried no bound of its own: a SYN to a black-holed address —
+/// routed nowhere, answered by nothing — left the OS retransmitting for its own multi-minute window
+/// while the dial task and its half-open socket sat pinned. It runs under the same
+/// [`HANDSHAKE_TIMEOUT`]-shaped budget as the handshake leg rather than a second knob, because this
+/// crate's own doc on that budget already says the two ends of its tolerance for a peer that will
+/// not talk are one number.
+///
+/// `192.0.2.1` is TEST-NET-1 (RFC 5737): reserved for documentation and routed nowhere, so the SYN
+/// is black-holed rather than refused. Paused clock: a real black hole never answers, so there is no
+/// real completion the clock's auto-advance could race ahead of — whichever timer fires first does
+/// so at no real wall-clock cost.
+#[tokio::test(start_paused = true)]
+async fn a_dial_gives_up_on_a_peer_that_never_answers_the_connect() {
+    let (_server_cfg, client_cfg) = self_signed();
+    let client =
+        StdArc::new(TlsTransport::new().with_handshake_timeout(Duration::from_millis(150)));
+    client.register_client_config(0, client_cfg);
+
+    let started = tokio::time::Instant::now();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(3),
+        client.dial(&upstream_dest("192.0.2.1:9"), &fixture_key(0)),
+    )
+    .await
+    .expect("an unbudgeted connect parks here until the operating system gives up");
+    assert_eq!(
+        outcome.unwrap_err(),
+        TransportError::Timeout,
+        "an upstream that never answers the SYN is a dial Timeout"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(150),
+        "the budget is what ended it, not the outer bound"
+    );
+    assert!(
+        client.conns.lock().expect("poisoned").is_empty(),
+        "a dial that timed out on the connect must leave no connection in the registry"
+    );
 }
 
 /// A corrupted or tampered TLS record arriving mid-session is not a handshake failure.

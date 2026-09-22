@@ -35,6 +35,39 @@ fn windows_are_per_principal_per_class_and_refill() {
     );
 }
 
+/// A REQUEST CARRYING AN OLDER CLOCK MUST NOT REFILL A SPENT BUDGET.
+///
+/// `now` reaches this limiter as a wall-clock read pinned per request; wall clocks are not
+/// monotonic (an NTP correction steps them backwards), so an older `now` arriving after a newer one
+/// is not hypothetical. The sweep used `*w == window`, which reads as "drop every entry from a PAST
+/// window" but also drops entries from a FUTURE one relative to an older arrival: any request at
+/// all, from any principal, in any class, carrying an older `now` recomputed an older window and
+/// cleared the WHOLE map — so a principal who had just spent their ten CONFIG-class mutations got a
+/// fresh ten. That is the limiter being bypassable by anything that can nudge the clock back.
+#[test]
+fn an_out_of_order_now_cannot_refill_a_spent_budget() {
+    let l = MutationLimiter::new();
+    for i in 0..10 {
+        assert!(
+            l.check("alice", MutationClass::Config, 120).admitted(),
+            "attempt {i} inside the budget"
+        );
+    }
+    assert!(!l.check("alice", MutationClass::Config, 120).admitted());
+    // Some other principal, some other class, an EARLIER window. This is the whole exploit.
+    let _ = l.check("mallory", MutationClass::Crud, 60);
+    assert!(
+        !l.check("alice", MutationClass::Config, 120).admitted(),
+        "a request from an earlier window wiped alice's live counter and handed her a fresh budget"
+    );
+    // And again from a clock all the way back at the epoch (what an unreadable wall clock reads as).
+    let _ = l.check("mallory", MutationClass::Crud, 0);
+    assert!(
+        !l.check("alice", MutationClass::Config, 120).admitted(),
+        "an unreadable wall clock read as 0 wiped alice's live counter"
+    );
+}
+
 /// The denial path writes a durable audit record, which is a blocking store round-trip. Only the
 /// FIRST denial per (principal, class, window) may do so, or a client that ignores its 429s
 /// drives unbounded blocking work through the very limiter meant to stop work — and can park the

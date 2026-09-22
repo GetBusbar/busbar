@@ -161,7 +161,7 @@ async fn a_broken_close_does_not_hang_the_peers_read() {
     let server_conn = accept_fut.await.unwrap();
 
     client
-        .write(&client_conn, StreamId(0), ArenaBytes::new(b"bye"))
+        .write(&client_conn, StreamId(0), ScratchBytes::new(b"bye"))
         .await
         .unwrap();
     client.close(client_conn, CloseReason::Normal);

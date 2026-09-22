@@ -11,7 +11,7 @@ use futures::StreamExt;
 
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{TransportError, WireStatus, WireStatusClass};
-use busbar_contract::{ArenaBytes, StreamId, Transport};
+use busbar_contract::{ScratchBytes, StreamId, Transport};
 
 use crate::GrpcTransport;
 
@@ -43,6 +43,27 @@ impl busbar_contract::ConfigView for BindTo {
     }
 }
 impl busbar_contract::TransportConfigView for BindTo {
+    fn bind(&self) -> Option<&str> {
+        Some(&self.0)
+    }
+}
+
+/// A bind address, and the operator's gRPC message cap where one is declared — the same key
+/// `busbar-transport-ws`'s own `HttpCfg` test fixture answers, so a cap `listen` reads through
+/// `TransportConfigView::get_int` is exercised the same way on both crates.
+struct CapCfg(String, Option<i64>);
+impl busbar_contract::ConfigView for CapCfg {
+    fn get_str(&self, _k: &str) -> Option<&str> {
+        None
+    }
+    fn get_int(&self, k: &str) -> Option<i64> {
+        self.1.filter(|_| k == crate::transport::MESSAGE_MAX_BYTES_KEY)
+    }
+    fn get_bool(&self, _k: &str) -> Option<bool> {
+        None
+    }
+}
+impl busbar_contract::TransportConfigView for CapCfg {
     fn bind(&self) -> Option<&str> {
         Some(&self.0)
     }
@@ -98,7 +119,7 @@ async fn unary_shaped_round_trip() {
 
     // The client opens a fresh call by writing to a `StreamId` it has not used before.
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"ping"))
         .await
         .unwrap();
 
@@ -110,7 +131,7 @@ async fn unary_shaped_round_trip() {
 
     // The server answers on the SAME call (its own local stream id for that RPC).
     server_t
-        .write(&server_conn, server_stream, ArenaBytes::new(b"pong"))
+        .write(&server_conn, server_stream, ScratchBytes::new(b"pong"))
         .await
         .unwrap();
 
@@ -176,7 +197,7 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
     let mut client_frames = client_t.frames(client_conn.clone());
     // The write itself still reports the refusal to its caller.
     let wrote = client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"hello"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"hello"))
         .await;
     assert!(wrote.is_err(), "a refused call is not a delivered write");
 
@@ -225,13 +246,13 @@ async fn an_ok_grpc_status_trailer_terminates_the_call_as_success() {
     let server_conn = accept_task.await.unwrap().unwrap();
 
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"hello"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"hello"))
         .await
         .unwrap();
     let mut server_frames = server_t.frames(server_conn.clone());
     let (server_stream, _f) = server_frames.next().await.unwrap().unwrap();
     server_t
-        .write(&server_conn, server_stream, ArenaBytes::new(b"world"))
+        .write(&server_conn, server_stream, ScratchBytes::new(b"world"))
         .await
         .unwrap();
     server_t.close(
@@ -421,11 +442,11 @@ async fn multiplexed_streams_without_cross_talk() {
 
     // Two independent calls, opened as two distinct `StreamId`s on the SAME connection.
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"stream-one"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"stream-one"))
         .await
         .unwrap();
     client_t
-        .write(&client_conn, StreamId(2), ArenaBytes::new(b"stream-two"))
+        .write(&client_conn, StreamId(2), ScratchBytes::new(b"stream-two"))
         .await
         .unwrap();
 
@@ -468,7 +489,7 @@ async fn k_writers_on_one_call_do_not_corrupt_messages() {
     // Open the call with a first message, then fan more messages onto the SAME stream from K
     // concurrent tasks — one gRPC call carries an ordered sequence of request messages.
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"open"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"open"))
         .await
         .unwrap();
     let server_conn = accept_task.await.unwrap().unwrap();
@@ -484,7 +505,7 @@ async fn k_writers_on_one_call_do_not_corrupt_messages() {
         handles.push(tokio::spawn(async move {
             let line = format!("msg-{i:02}");
             client_t
-                .write(&client_conn, StreamId(1), ArenaBytes::new(line.as_bytes()))
+                .write(&client_conn, StreamId(1), ScratchBytes::new(line.as_bytes()))
                 .await
                 .unwrap();
         }));
@@ -518,14 +539,14 @@ async fn write_to_unseen_stream_on_an_accepted_connection_is_refused() {
     let dest = verified_upstream(host);
     let client_conn = client_t.dial(&dest, &keys).await.unwrap();
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"hi"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"hi"))
         .await
         .unwrap();
     let server_conn = accept_task.await.unwrap().unwrap();
     // The server never originates a call: a `StreamId` it has not seen from the peer is refused,
     // not silently opened.
     let err = server_t
-        .write(&server_conn, StreamId(999), ArenaBytes::new(b"nope"))
+        .write(&server_conn, StreamId(999), ScratchBytes::new(b"nope"))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::Framing);
@@ -560,7 +581,7 @@ async fn refusing_one_call_leaves_its_neighbours_completing() {
     // Three calls on one connection: the middle one is the one that gets refused.
     for (id, body) in [(1_u64, &b"one"[..]), (2, b"two"), (3, b"three")] {
         client_t
-            .write(&client_conn, StreamId(id), ArenaBytes::new(body))
+            .write(&client_conn, StreamId(id), ScratchBytes::new(body))
             .await
             .unwrap();
     }
@@ -595,7 +616,7 @@ async fn refusing_one_call_leaves_its_neighbours_completing() {
             server_conn.clone(),
             Some(server_streams["two"]),
             &refusal,
-            ArenaBytes::new(b"refused"),
+            ScratchBytes::new(b"refused"),
         )
         .await
         .unwrap();
@@ -604,7 +625,7 @@ async fn refusing_one_call_leaves_its_neighbours_completing() {
             .write(
                 &server_conn,
                 server_streams[name],
-                ArenaBytes::new(name.as_bytes()),
+                ScratchBytes::new(name.as_bytes()),
             )
             .await
             .expect("a neighbour's call is still open");
@@ -710,7 +731,7 @@ async fn the_destinations_method_is_the_path_the_call_opens_against() {
     let client_conn = client_t.dial(&dest, &keys).await.unwrap();
     let server_conn = accept_task.await.unwrap().unwrap();
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"ping"))
         .await
         .unwrap();
 
@@ -813,11 +834,11 @@ async fn two_writes_racing_on_one_fresh_stream_open_a_single_call() {
 
     let one = {
         let (t, c) = (client_t.clone(), client_conn.clone());
-        tokio::spawn(async move { t.write(&c, StreamId(7), ArenaBytes::new(b"one")).await })
+        tokio::spawn(async move { t.write(&c, StreamId(7), ScratchBytes::new(b"one")).await })
     };
     let two = {
         let (t, c) = (client_t.clone(), client_conn.clone());
-        tokio::spawn(async move { t.write(&c, StreamId(7), ArenaBytes::new(b"two")).await })
+        tokio::spawn(async move { t.write(&c, StreamId(7), ScratchBytes::new(b"two")).await })
     };
     one.await.unwrap().unwrap();
     two.await.unwrap().unwrap();
@@ -885,7 +906,7 @@ async fn a_finished_call_leaves_no_entry_behind() {
     let mut client_frames = client_t.frames(client_conn.clone());
     for n in 1..=CALLS {
         client_t
-            .write(&client_conn, StreamId(n), ArenaBytes::new(b"ping"))
+            .write(&client_conn, StreamId(n), ScratchBytes::new(b"ping"))
             .await
             .unwrap();
         let (server_stream, _f) =
@@ -901,7 +922,7 @@ async fn a_finished_call_leaves_no_entry_behind() {
                 server_conn.clone(),
                 Some(server_stream),
                 &refusal,
-                ArenaBytes::new(b"pong"),
+                ScratchBytes::new(b"pong"),
             )
             .await
             .unwrap();
@@ -970,7 +991,7 @@ async fn served_paths_stays_bounded_across_many_calls() {
     let mut client_frames = client_t.frames(client_conn.clone());
     for n in 1..=calls {
         client_t
-            .write(&client_conn, StreamId(n), ArenaBytes::new(b"ping"))
+            .write(&client_conn, StreamId(n), ScratchBytes::new(b"ping"))
             .await
             .unwrap();
         let (server_stream, _f) =
@@ -984,7 +1005,7 @@ async fn served_paths_stays_bounded_across_many_calls() {
                 server_conn.clone(),
                 Some(server_stream),
                 &refusal,
-                ArenaBytes::new(b"pong"),
+                ScratchBytes::new(b"pong"),
             )
             .await
             .unwrap();
@@ -1099,7 +1120,7 @@ async fn a_call_answered_before_the_handler_runs_leaves_no_entry_behind() {
 /// the call over, and the map entry must go with it.
 #[tokio::test]
 async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
     let (tx, rx) = crate::conn::outbound_channel();
     let serial = state.register(3, crate::conn::opened(tx));
     let out = crate::server::OutStream::new(rx, state.clone(), StreamId(3), serial);
@@ -1120,7 +1141,7 @@ async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
 /// complete.
 #[tokio::test]
 async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
     let one = || {
         Ok((
             StreamId(1),
@@ -1198,7 +1219,7 @@ async fn an_arrival_names_the_port_it_arrived_on() {
 /// per abandoned call, held for the life of the process.
 #[tokio::test]
 async fn a_forwarder_parked_on_a_full_inbound_buffer_ends_when_the_connection_does() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
     let one = || {
         Ok((
             StreamId(1),
@@ -1304,7 +1325,7 @@ async fn a_malformed_sealed_method_refuses_instead_of_panicking() {
     let client_conn = client_t.dial(&dest, &keys).await.unwrap();
     let _server_conn = accept_task.await.unwrap().unwrap();
     let err = client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"ping"))
         .await
         .unwrap_err();
     assert_eq!(err, TransportError::AddressRefused);
@@ -1338,7 +1359,7 @@ async fn an_empty_message_is_delivered_and_does_not_wedge_the_ones_behind_it() {
     let server_conn = accept_task.await.unwrap().unwrap();
 
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"open"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"open"))
         .await
         .unwrap();
     let mut server_frames = server_t.frames(server_conn.clone());
@@ -1347,12 +1368,12 @@ async fn an_empty_message_is_delivered_and_does_not_wedge_the_ones_behind_it() {
 
     // The empty message first, then the ones that must not be stuck behind it.
     server_t
-        .write(&server_conn, server_stream, ArenaBytes::new(b""))
+        .write(&server_conn, server_stream, ScratchBytes::new(b""))
         .await
         .unwrap();
     for payload in [b"one".as_slice(), b"two".as_slice(), b"three".as_slice()] {
         server_t
-            .write(&server_conn, server_stream, ArenaBytes::new(payload))
+            .write(&server_conn, server_stream, ScratchBytes::new(payload))
             .await
             .unwrap();
     }
@@ -1405,7 +1426,7 @@ async fn closing_a_connection_stops_serving_new_calls_on_it() {
 
     // The connection is really serving: one call opens and arrives.
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"ping"))
         .await
         .unwrap();
     let mut server_frames = server_t.frames(server_conn.clone());
@@ -1427,7 +1448,7 @@ async fn closing_a_connection_stops_serving_new_calls_on_it() {
     let refused = tokio::time::timeout(Duration::from_secs(10), async {
         for n in 2..u64::MAX {
             if client_t
-                .write(&client_conn, StreamId(n), ArenaBytes::new(b"ping"))
+                .write(&client_conn, StreamId(n), ScratchBytes::new(b"ping"))
                 .await
                 .is_err()
             {
@@ -1469,7 +1490,7 @@ async fn frames_end_when_the_connection_does() {
     let server_conn = accept_task.await.unwrap().unwrap();
 
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"ping"))
         .await
         .unwrap();
     let mut server_frames = server_t.frames(server_conn.clone());
@@ -1538,7 +1559,7 @@ async fn write_backpressures_a_peer_that_never_reads() {
     let flooded = tokio::time::timeout(Duration::from_secs(2), async {
         for _ in 0..crate::conn::OUTBOUND_FRAME_BUFFER * 8 {
             client_t
-                .write(&client_conn, StreamId(1), ArenaBytes::new(&message))
+                .write(&client_conn, StreamId(1), ScratchBytes::new(&message))
                 .await
                 .unwrap();
         }
@@ -1583,7 +1604,7 @@ async fn a_refusal_that_reaches_no_call_is_an_error() {
     };
 
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"ping"))
         .await
         .unwrap();
     let mut server_frames = server_t.frames(server_conn.clone());
@@ -1599,7 +1620,7 @@ async fn a_refusal_that_reaches_no_call_is_an_error() {
             server_conn.clone(),
             Some(served),
             &refusal,
-            ArenaBytes::new(b"no"),
+            ScratchBytes::new(b"no"),
         )
         .await
         .unwrap();
@@ -1611,7 +1632,7 @@ async fn a_refusal_that_reaches_no_call_is_an_error() {
             server_conn.clone(),
             Some(served),
             &refusal,
-            ArenaBytes::new(b"no"),
+            ScratchBytes::new(b"no"),
         )
         .await
         .unwrap_err();
@@ -1623,7 +1644,7 @@ async fn a_refusal_that_reaches_no_call_is_an_error() {
             server_conn,
             Some(StreamId(9999)),
             &refusal,
-            ArenaBytes::new(b"no"),
+            ScratchBytes::new(b"no"),
         )
         .await
         .unwrap_err();
@@ -1655,7 +1676,7 @@ async fn a_connection_wide_refusal_is_delivered_before_a_dialled_connection_is_c
     let server_conn = accept_task.await.unwrap().unwrap();
 
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"ping"))
         .await
         .unwrap();
     let mut server_frames = server_t.frames(server_conn.clone());
@@ -1674,7 +1695,7 @@ async fn a_connection_wide_refusal_is_delivered_before_a_dialled_connection_is_c
         correlates: None,
     };
     client_t
-        .unit0_refusal(client_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .unit0_refusal(client_conn, None, &refusal, ScratchBytes::new(b"refused"))
         .await
         .unwrap();
 
@@ -1713,7 +1734,7 @@ fn a_close_off_the_runtime_holds_the_cut_for_the_same_flush_window() {
     // Held so the far end is a live peer rather than a closed one.
     let _far = far;
     let (_cuttable, cut) = crate::conn::Cuttable::new(Box::new(near));
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
     state.arm_cut(cut.clone());
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
@@ -1741,7 +1762,7 @@ fn a_close_off_the_runtime_holds_the_cut_for_the_same_flush_window() {
 /// call's sender, ending a second unit's answer for the first one's death.
 #[test]
 fn a_finished_call_cannot_end_the_one_that_reused_its_id() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], crate::codec::MAX_MESSAGE_BYTES);
     let (first_tx, _first_rx) = crate::conn::outbound_channel();
     let first = state.register(7, crate::conn::opened(first_tx));
     assert!(
@@ -1797,7 +1818,7 @@ async fn closing_a_dialled_connection_releases_its_socket() {
 
     // The connection is really up: one call opens and arrives.
     client_t
-        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .write(&client_conn, StreamId(1), ScratchBytes::new(b"ping"))
         .await
         .unwrap();
     let mut server_frames = server_t.frames(server_conn.clone());
@@ -1981,6 +2002,85 @@ async fn an_oversized_message_is_refused_not_delivered() {
     assert!(
         frame.meta.bytes <= crate::codec::MAX_MESSAGE_BYTES as u64,
         "no delivered frame exceeds the message ceiling"
+    );
+}
+
+/// The operator's own configured message cap is what the decoder is built with, not the crate's
+/// hardcoded 4 MiB — the same seam `busbar-transport-ws` reads for its own message ceiling
+/// (`limits.request_body_max_bytes`), read here through `listen`.
+///
+/// Before this was wired, `listen` never looked at the configuration view it was handed at all: a
+/// deployment that capped its `ws` listener at a kilobyte got an unconfigurable, unbounded-in-
+/// practice 4 MiB `grpc` one right beside it, on a node the operator believed was capped
+/// everywhere. This cell proves three things at once: a message over the SMALL configured cap (but
+/// far under the crate's old hardcoded default) is refused, one under that same cap is delivered,
+/// and (in the sibling cell above, which names no cap at all) the 4 MiB default still stands — the
+/// knob is additive, not a new default.
+#[tokio::test]
+async fn an_operator_configured_cap_is_enforced_not_the_hardcoded_default() {
+    const CAP: usize = 64;
+    let server_t = std::sync::Arc::new(server_transport());
+    let cfg = CapCfg("127.0.0.1:0".to_string(), Some(CAP as i64));
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let sock = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let (mut send, driver) =
+        hyper::client::conn::http2::handshake::<_, _, http_body_util::Full<bytes::Bytes>>(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(sock),
+        )
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = driver.await;
+    });
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let request = |body: bytes::Bytes| {
+        http::Request::builder()
+            .method(http::Method::POST)
+            .uri(format!("http://{addr}{}", crate::server::RPC_PATH))
+            .header(http::header::CONTENT_TYPE, "application/grpc")
+            .header("te", "trailers")
+            .body(http_body_util::Full::new(body))
+            .unwrap()
+    };
+
+    // Over the operator's SMALL cap, but a length prefix the crate's old hardcoded 4 MiB default
+    // would have happily accepted. Only the prefix is sent — a refusal on the declaration must
+    // never wait on a body that was never going to arrive.
+    let over = ((CAP + 1) as u32).to_be_bytes();
+    let oversized = bytes::Bytes::from(vec![0, over[0], over[1], over[2], over[3]]);
+    let _over_resp = send.send_request(request(oversized)).await.unwrap();
+
+    // AT the cap, on a separate call, sent second: whichever frame reaches the server first must
+    // be this one — the oversized one above is refused outright, never delivered.
+    let mut at_cap = vec![0u8; 5 + CAP];
+    at_cap[1..5].copy_from_slice(&(CAP as u32).to_be_bytes());
+    at_cap[5..].fill(b'k');
+    let ok = bytes::Bytes::from(at_cap);
+    let _ok_resp = send.send_request(request(ok)).await.unwrap();
+
+    let mut server_frames = server_t.frames(server_conn);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the at-cap call still arrives")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        frame.bytes.len(),
+        CAP,
+        "a message AT the operator's cap is a message, not a smaller default"
+    );
+    assert!(
+        frame.meta.bytes <= CAP as u64,
+        "no delivered frame exceeds the operator's configured cap"
     );
 }
 

@@ -3,7 +3,7 @@
 //!
 //! ## What this is, and what it deliberately is not yet
 //!
-//! [`busbar_substrate::plane::registry::PlaneDecl`] is the neutral seam an extracted plane hands the
+//! [`busbar_kernel::plane::registry::PlaneDecl`] is the neutral seam an extracted plane hands the
 //! composition root so it joins the running node without core naming it (see that type's own module
 //! docs: "an EXTRACTED plane crate constructs its own `PlaneDecl` ... without a path back to core").
 //! Building one is possible standalone — every field this module cannot yet answer is `None`, which
@@ -35,8 +35,37 @@
 //!   plane has not been given anything to hand those functions yet.
 //! - `owned_config_sections: &[]`: the Stage 1 contract for every plane, in force until sections
 //!   start moving out of core's concrete `DeployCfg` (`CONFIG-MODEL-RULING.md` R1).
+//!
+//! ## STOP report: why this still names `busbar_kernel`, not `busbar_contract` (DECISIONS #40)
+//!
+//! DECISIONS #40's dep-wall requires a plugin crate's ENTIRE workspace dependency closure to be
+//! `busbar-contract` and nothing else, and `busbar-kernel` in this manifest is a real violation of
+//! that. The obvious fix — move `PlaneDecl`/`BuildCtx` into `busbar-contract`, the way `ModelCfg`
+//! moved (see `config.rs`) — was evaluated and deliberately NOT done, because `PlaneDecl` alone
+//! (`busbar_kernel::plane::registry::PlaneDecl`) types dozens of fields against kernel-internal
+//! wiring that is not contract/ABI vocabulary under DECISIONS #38 (capability traits, wire types,
+//! the neutral vocab): `admission` needs `plane::PlaneAdmission`; `routes` needs
+//! `plane_routes::PlaneRouteSpec`, which itself names `axum::body::Bytes`/`axum::http::HeaderMap`;
+//! `admin_routes` needs `admin_verbs::AdminRouteSpec`; `hydrate`/`start` (`BootHook`) need the
+//! `PlaneBootCtx` trait, which needs `plane::store::PlaneStore` and `plane_host::EngineHost`;
+//! `named_def_list`/`named_def_get`/`registry_contains`/`on_swap`/`build_runtime`/
+//! `retain_verify_gates` all need the `plane_host::PlaneSlots` trait (the same trait `BuildCtx`
+//! itself needs for its own `prior` field); `reresolve_gates` needs
+//! `plane_host::ContainerGateSink`; `parse_section`/`parse_endpoint`/`lower_endpoint`/
+//! `default_section` need `plane::config::{PlaneCfg, PlaneEndpointCfg}`; `viewer` needs
+//! `plane_host::EngineTablesView`; `named_def_list`/`named_def_get` need `api::NamedDefView`; and
+//! `resolve_provider` needs `config::providers::{ProviderDef, ProviderDeploy, ProviderCfg}` (the
+//! three sibling types `ModelCfg` left behind in the kernel on purpose — see `config.rs`). A struct
+//! literal must name every field's type whether or not the value is `None`, so `busbar-contract`
+//! would have to absorb ALL of that kernel-side routing/admin/store/provider-merge machinery (and
+//! its own transitive `axum` dependency) to host `PlaneDecl` — which is not "the neutral vocab", it
+//! is most of the kernel's plane-hosting substrate, and `busbar-contract`'s own manifest forbids
+//! naming a kernel crate to pull it back the other way. So this crate still names `busbar-kernel`
+//! for exactly these two types, reported rather than silently carried forward (see `Cargo.toml`'s
+//! own note on the same finding); closing this fully is a separate, larger extraction than this
+//! pass's scope.
 
-use busbar_substrate::plane::registry::PlaneDecl;
+use busbar_kernel::plane::registry::PlaneDecl;
 
 /// The wire formats this plane translates between — one, the `jev` dialect. A function rather than
 /// a bare slice only because [`PlaneDecl::wire_format_names`] is typed as one; jev's dialect list

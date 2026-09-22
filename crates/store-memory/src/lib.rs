@@ -755,11 +755,30 @@ impl Store for MemoryStore {
     }
 
     fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
-        // Keyed by `(parent, seq)`, so a replay of the same position replaces rather than duplicates
-        // it and the chain stays one record per seq — the ordering `list_plane_records` promises.
-        self.plane_records()
-            .insert(Self::plane_key(record), record.clone());
-        Ok(())
+        // Keyed by `(parent, seq)`. APPEND-ONLY, never a blind overwrite — mirrors `append_audit`'s
+        // own fork detection above so the two append-only paths can never disagree about what a
+        // fork is: a second record at an already-occupied position is EITHER the write-through
+        // retrying after a timeout (byte-identical → Ok, the common case) or a SECOND WRITER forking
+        // the chain (different → refused, never silently applied). A blind upsert here would let two
+        // busbar processes pointed at one durable store silently overwrite each other's
+        // `task_event`/`call`/`audit` rows — exactly the defect `append_audit`'s own check exists to
+        // catch, restored on this newer seam.
+        let mut records = self.plane_records();
+        let key = Self::plane_key(record);
+        match records.get(&key) {
+            Some(existing) if existing == record => Ok(()),
+            Some(_) => Err(StoreError(format!(
+                "append_plane_record: kind '{}' parent '{}' seq {} already holds a DIFFERENT \
+                 record — the chain has forked",
+                record.kind,
+                record.parent.as_deref().unwrap_or(&record.id),
+                record.seq
+            ))),
+            None => {
+                records.insert(key, record.clone());
+                Ok(())
+            }
+        }
     }
 
     fn list_plane_records(

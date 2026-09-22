@@ -86,6 +86,72 @@ test, and the RED-before note (`RED at <sha>: <failure line>`).
 - Reference any related issue.
 - Stage files by name; avoid sweeping `git add -A` that pulls in unrelated changes.
 
+### Committing while somebody else is working the same checkout
+
+`git add -A` is not the only way to take work that is not yours, and the
+alternatives have their own edges. If more than one person (or agent) is editing
+one working tree at once, read all three of these before you commit.
+
+**1. `git add -A` takes whatever is on disk, including a staged rename you did
+not make.** A `git mv` stages immediately, so an unrelated `git add -A` in
+another shell can carry your half-finished file move into someone else's commit.
+The file lands at its new path with its old contents and no `mod` declaration
+updated — which is how `crates/busbar-contract/src/records.rs` arrived in the
+tree as an orphan that broke `cargo check -p busbar-kernel-ledger` with `E0583`.
+Stage by explicit path, every time.
+
+**2. `git commit -o <paths>` takes WORKTREE content for those paths — including
+edits that are not yours.** `--only` disregards the index and commits what is on
+disk, so if another agent has edited one of your files since you last looked,
+their work ships inside your commit. Before committing a shared file, diff it:
+
+```sh
+git diff HEAD -- <path> | grep -E '^[-+]' | grep -vE '^[-+]\s*(//|$)'
+```
+
+A non-comment hunk you do not recognise is somebody else's. A surface-line count
+that moves when you only edited comments is the same signal from the other
+direction — a comment-only edit must measure zero.
+
+**3. The plumbing route (`commit-tree` + `update-ref`) leaves the shared index
+holding a REVERT of the commit you just made.** This is the dangerous one,
+because nothing warns you.
+
+Building a commit in a private index is the safe way to commit a surgical blob
+without touching the worktree:
+
+```sh
+export GIT_INDEX_FILE=/tmp/mywork.index
+git read-tree HEAD
+git update-index --add --cacheinfo 100644,<blob>,<path>   # repeat per path
+tree=$(git write-tree)
+commit=$(git commit-tree "$tree" -p "$old_head" -F msg.txt)
+# compare-and-swap so a concurrent commit cannot be lost:
+git update-ref -m "<why>" refs/heads/<branch> "$commit" "$old_head"
+```
+
+**The footgun:** `update-ref` moves the branch but does not touch the *shared*
+index, which is still populated against the OLD head. Your paths therefore show
+as `MM` — and the staged half is the pre-commit content, i.e. an undo of your
+own commit. The next person to run a bare `git commit` publishes that revert.
+
+Detect it immediately after `update-ref`:
+
+```sh
+git diff --cached --stat -- <your paths>     # MUST be empty
+```
+
+If it is not empty, fix the index only, naming **only your own paths**:
+
+```sh
+git reset HEAD -- <your paths>               # index only; worktree untouched
+```
+
+Never `git reset` without paths here, and never `git reset --hard`: other
+people's staged files live in that same index and a bare reset unstages all of
+them. `git stash` is worse — it sweeps every uncommitted change in the tree into
+your stash, including work you cannot see. Do not use it in a shared checkout.
+
 ## Architecture
 
 The circuit breaker — the upstream-vs-client failure taxonomy — is the core of the

@@ -24,7 +24,7 @@
 //! [`StatusClass::Fault`], never a permissive value), and writes its out-param ONLY on the `Ok` path
 //! (init-only-on-Ok, tolerating a null slot via [`busbar_plugin::write_out`]).
 
-use super::{recover, HostState};
+use super::recover;
 use crate::plane::cost::{CostAmount, CostHold};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{CostLeaseId, CostSettleOut, StatusClass};
@@ -150,7 +150,9 @@ pub(super) extern "C-unwind" fn cost_reserve(
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`). The registry is process-global, so the state is
         // recovered (validating the live `HostCtx`) and discarded, like `clock_now`.
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
 
         // A refuse-all cap (present, zero) denies the reserve outright: a lease that can never settle a
         // nonzero increment is not worth opening. `out` is left untouched (the plane reads `NONE`).
@@ -192,7 +194,9 @@ pub(super) extern "C-unwind" fn cost_settle(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
 
         // The `breakdown` bytes are an OPAQUE audit tap the host never parses; only the scalar accrues.
         // An unknown / already-closed lease (including the `NONE` sentinel) fails closed.

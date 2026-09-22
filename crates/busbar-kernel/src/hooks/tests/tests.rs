@@ -96,7 +96,7 @@ pub(super) static DLOPEN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new
 /// spans awaits.
 pub(super) static DLOPEN_BODY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn test_env_needs(alias: &str, needs: busbar_plugin_sign::HookNeeds) -> Option<HookEnv> {
+fn test_env_needs(alias: &str, needs: busbar_plugin_loader::sign::HookNeeds) -> Option<HookEnv> {
     // Poison-tolerant: a panicking test elsewhere must not cascade into every other dlopen test
     // reporting a lock error instead of its own result.
     let _staging_guard = DLOPEN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -111,7 +111,7 @@ fn test_env_needs(alias: &str, needs: busbar_plugin_sign::HookNeeds) -> Option<H
     m.needs = needs;
     let tarball = crate::tests::unsigned_tarball(m, &lib);
     std::fs::write(dir.join("hook.tar.gz"), tarball).unwrap();
-    let mut policy = busbar_plugin_sign::TrustPolicy {
+    let mut policy = busbar_plugin_loader::sign::TrustPolicy {
         binary_version: "1.5.0".into(),
         ..Default::default()
     };
@@ -129,9 +129,9 @@ fn test_env_needs(alias: &str, needs: busbar_plugin_sign::HookNeeds) -> Option<H
 fn test_env() -> Option<HookEnv> {
     test_env_needs(
         "test-hook",
-        busbar_plugin_sign::HookNeeds {
-            prompt: busbar_plugin_sign::NeedLevel::Rw,
-            user: busbar_plugin_sign::NeedLevel::Ro,
+        busbar_plugin_loader::sign::HookNeeds {
+            prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
+            user: busbar_plugin_loader::sign::NeedLevel::Ro,
         },
     )
 }
@@ -737,7 +737,7 @@ fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
 /// on `hook.prompt.can_rewrite()` alone and every row admitted.
 #[test]
 fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
-    use busbar_plugin_sign::{HookNeeds, NeedLevel};
+    use busbar_plugin_loader::sign::{HookNeeds, NeedLevel};
 
     for (need, admitted) in [
         (NeedLevel::No, false),
@@ -806,7 +806,7 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
 /// `open_relay_banner`/`inert_durable_keys_banner` unit tests pin theirs.
 #[test]
 fn hook_inert_gate_banner_fires_only_for_a_gate_with_the_chain_killing_mismatch() {
-    use busbar_plugin_sign::NeedLevel;
+    use busbar_plugin_loader::sign::NeedLevel;
 
     // The exact bug scenario: `kind: gate`, operator `prompt: rw`, manifest only `ro`. Must banner,
     // loudly, naming the hook, the plugin, and both exclusion mechanisms.
@@ -874,7 +874,7 @@ impl tracing::Subscriber for LineCapturingSubscriber {
 /// grants MORE than the plugin's manifest wants to READ, and never otherwise.
 #[test]
 fn effective_access_warns_on_inert_read_grants_only() {
-    use busbar_plugin_sign::NeedLevel;
+    use busbar_plugin_loader::sign::NeedLevel;
 
     let events: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -884,7 +884,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
     // Must warn at effective_access's prompt-inert-grant call site.
     let Some(env) = test_env_needs(
         "inert-prompt",
-        busbar_plugin_sign::HookNeeds {
+        busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::No,
             user: NeedLevel::No,
         },
@@ -911,7 +911,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let sub2 = LineCapturingSubscriber(events2.clone());
     let Some(env2) = test_env_needs(
         "matched-prompt",
-        busbar_plugin_sign::HookNeeds {
+        busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::Ro,
             user: NeedLevel::No,
         },
@@ -936,7 +936,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let sub3 = LineCapturingSubscriber(events3.clone());
     let Some(env3) = test_env_needs(
         "inert-user",
-        busbar_plugin_sign::HookNeeds {
+        busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::No,
             user: NeedLevel::No,
         },
@@ -962,7 +962,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
     let sub4 = LineCapturingSubscriber(events4.clone());
     let Some(env4) = test_env_needs(
         "matched-user",
-        busbar_plugin_sign::HookNeeds {
+        busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::No,
             user: NeedLevel::Ro,
         },
@@ -990,7 +990,7 @@ fn effective_access_warns_on_inert_read_grants_only() {
 /// real code via the set's post-call membership).
 #[test]
 fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
-    use busbar_plugin_sign::NeedLevel;
+    use busbar_plugin_loader::sign::NeedLevel;
 
     let events: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1000,7 +1000,7 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
     // (can_rewrite() true, wants_rewrite() false) — the WRITE-half mismatch.
     let Some(env) = test_env_needs(
         "inert-rewrite",
-        busbar_plugin_sign::HookNeeds {
+        busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::Ro,
             user: NeedLevel::No,
         },
@@ -1051,7 +1051,7 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
     let sub3 = LineCapturingSubscriber(events3.clone());
     let Some(env3) = test_env_needs(
         "matched-rewrite",
-        busbar_plugin_sign::HookNeeds {
+        busbar_plugin_loader::sign::HookNeeds {
             prompt: NeedLevel::Rw,
             user: NeedLevel::No,
         },
@@ -1356,7 +1356,7 @@ fn gate_grants_pass_through_as_projection_flags() {
 /// a no-op. Prompt content flows only when both are ≥ read; rewrite-power (rw) requires both rw.
 #[test]
 fn manifest_intent_and_grant_projection_matrix() {
-    use busbar_plugin_sign::NeedLevel;
+    use busbar_plugin_loader::sign::NeedLevel;
     // (manifest prompt need, operator prompt grant) -> expected send_prompt
     let prompt_cases = [
         (NeedLevel::No, PromptAccess::No, false),
@@ -1373,7 +1373,7 @@ fn manifest_intent_and_grant_projection_matrix() {
         let alias = format!("mtx-{idx}");
         let Some(env) = test_env_needs(
             &alias,
-            busbar_plugin_sign::HookNeeds {
+            busbar_plugin_loader::sign::HookNeeds {
                 prompt: need,
                 user: NeedLevel::No,
             },
@@ -1411,7 +1411,7 @@ fn manifest_intent_and_grant_projection_matrix() {
         let alias = format!("mtx-user-{idx}");
         let Some(env) = test_env_needs(
             &alias,
-            busbar_plugin_sign::HookNeeds {
+            busbar_plugin_loader::sign::HookNeeds {
                 prompt: NeedLevel::No,
                 user: need,
             },
@@ -2108,7 +2108,7 @@ async fn dlopen_decide_raw_reply_is_fail_closed() {
 #[tokio::test]
 async fn dlopen_user_identity_projection_rides_the_wire() {
     let _dlopen_body = DLOPEN_BODY_LOCK.lock().await;
-    use busbar_plugin_sign::{HookNeeds, NeedLevel};
+    use busbar_plugin_loader::sign::{HookNeeds, NeedLevel};
     let Some(env) = test_env_needs(
         "user-hook",
         HookNeeds {

@@ -359,3 +359,121 @@ async fn a_server_nobody_has_called_is_still_advertised() {
          alike would empty the catalogue of every declarative deployment on the day it shipped"
     );
 }
+
+// ── (3) AN UNREADABLE DEMOTION ROW STILL HOLDS THE QUARANTINE ──────────────────────────────────
+
+/// A DEMOTION ROW THAT WILL NOT DECODE HOLDS THE QUARANTINE RATHER THAN DROPPING IT.
+///
+/// The boot replay exists so a quarantine survives a restart and a restart does not silently re-open
+/// it. The replay decoded each durable row and, on a row that would not decode, ran `continue` — no
+/// log line, no count, nothing an operator could notice. So corrupting ONE row was a supported and
+/// untraceable way to un-quarantine a drifted upstream across the next restart, and the durable
+/// store is exactly the surface an attacker with write access reaches first.
+///
+/// The corruption here is the ordinary kind: a body that is still legible JSON naming the server,
+/// with the rest of the row no longer decodable — what a schema drift or a targeted edit produces.
+/// The demotion must survive it: the upstream stays un-advertised and un-dispatchable until an
+/// operator clears it deliberately. Nothing about the peer has been fixed — it is still serving the
+/// poisoned schema — so a 200 here is the whole finding.
+#[tokio::test]
+async fn a_demotion_row_that_will_not_decode_still_holds_the_upstream_quarantined() {
+    metrics_init();
+    let (file, cfg) = engine().durable_store_cfg("mcp-quarantine-corrupt-row");
+    let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
+    let app = quarantined(
+        &peer,
+        Arc::new(CatalogueCache::new()),
+        Some(engine().open_store_plugin(&cfg)),
+    )
+    .await;
+    drop(app);
+
+    // CORRUPT THE ROW IN PLACE, through the same seam that wrote it: still JSON, still naming the
+    // server, no longer a demotion row. `reason` and `recorded_at` are gone.
+    let store =
+        busbar_kernel::plane::store::PlaneStoreView::narrow(engine().open_store_plugin(&cfg));
+    store
+        .upsert_plane_record(&busbar_api::PlaneRecord {
+            kind: crate::record::KIND_DEMOTION.to_string(),
+            id: "fs".to_string(),
+            parent: None,
+            seq: 0,
+            ts: 0,
+            disposition: busbar_api::PlaneDisposition::Active,
+            body: br#"{"server":"fs","this_row":"is not a demotion"}"#.to_vec(),
+        })
+        .expect("the corrupted row is written");
+    drop(store);
+
+    let restarted = boot(
+        &peer,
+        Arc::new(CatalogueCache::new()),
+        Some(engine().open_store_plugin(&cfg)),
+    );
+    let names = advertised(&restarted).await;
+    assert!(
+        !names.contains(&"fs_read".to_string()),
+        "a row busbar could not decode dropped the quarantine it recorded, and a restart \
+         re-advertised a drifted upstream on the strength of a corrupt byte. The durable store at \
+         {} holds: {} — advertised: {names:?}",
+        file.display(),
+        std::fs::read_to_string(&file).unwrap_or_else(|_| "<no file at all>".into())
+    );
+}
+
+/// AND THE FAILURE IS SURFACED, not merely survived. `hydrate` returns how many demotions it put
+/// back, and the boot line an operator reads is that count: a held-but-unreadable quarantine that
+/// did not COUNT would be a quarantine in force and invisible, which is the other half of the same
+/// defect. Asserted on the replay's own return value so the claim does not depend on a log sink.
+///
+/// The control is the second half: a well-formed row replays as one too, so the count is a count of
+/// demotions held and not a constant.
+#[tokio::test]
+async fn an_undecodable_demotion_row_is_counted_as_replayed_rather_than_dropped_silently() {
+    metrics_init();
+    let (_file, cfg) = engine().durable_store_cfg("mcp-quarantine-corrupt-row-counted");
+    let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
+    let app = quarantined(
+        &peer,
+        Arc::new(CatalogueCache::new()),
+        Some(engine().open_store_plugin(&cfg)),
+    )
+    .await;
+    drop(app);
+
+    let store =
+        busbar_kernel::plane::store::PlaneStoreView::narrow(engine().open_store_plugin(&cfg));
+    store
+        .upsert_plane_record(&busbar_api::PlaneRecord {
+            kind: crate::record::KIND_DEMOTION.to_string(),
+            id: "fs".to_string(),
+            parent: None,
+            seq: 0,
+            ts: 0,
+            disposition: busbar_api::PlaneDisposition::Active,
+            body: br#"{"server":"fs","this_row":"is not a demotion"}"#.to_vec(),
+        })
+        .expect("the corrupted row is written");
+    drop(store);
+
+    // Build the deployment WITHOUT the replay, then run the replay by hand so its answer is in hand.
+    let hash = approved_hash("read", DESCRIPTION, honest_schema());
+    let mut server = server_cfg(&peer, &[("read", Some(hash))]);
+    server.verify_ttl = Some("0s".to_string());
+    let restarted = test_app()
+        .mcp(&mcp_cfg())
+        .mcp_server("fs", server)
+        .with_mcp_sightings(Arc::new(CatalogueCache::new()))
+        .durable_store(engine().open_store_plugin(&cfg))
+        .build();
+    let host = engine_host(&restarted);
+    let plane_store =
+        busbar_kernel::plane::store::PlaneStoreView::narrow(engine().open_store_plugin(&cfg));
+    let replayed = crate::mcp::demotion::hydrate(&host, Some(&plane_store));
+    assert_eq!(
+        replayed, 1,
+        "an unreadable quarantine record must be REPLAYED and COUNTED, not skipped: a boot line \
+         that reports zero demotions while one is in force tells the operator the opposite of what \
+         happened"
+    );
+}

@@ -20,11 +20,12 @@ pub mod named_map;
 /// `admin::`/`admin::v1::contract` (1.6.0 de-vocab): both are consumed by `config_validate` and
 /// `named_map`, not the admin HTTP API. See the module doc.
 ///
-/// LANDED in `busbar-core-config` (DECISIONS #5/#19 config neutral-half wave): the helpers name
-/// only the neutral spine, so they moved byte-identically to `busbar_core_config::parse` and are
-/// RE-EXPORTED here so every `crate::config::parse::…` / `busbar_kernel::config::parse::…` caller is
-/// unchanged.
-pub use busbar_core_config::parse;
+/// BACK HERE as a real module, 2026-09-22: `busbar-core-config` — the wave-0 scaffold this was
+/// parked in — is KILLED by DECISIONS #37 (`busbar-core-{hooks,config,caps,grammar,timing}`), so
+/// its one landed helper file comes home to the only crate that ever called it. The path
+/// `crate::config::parse::…` / `busbar_kernel::config::parse::…` is byte-identical to what the
+/// re-export served, so no call site moves.
+pub mod parse;
 /// The secret-reference type: `{ module, settings }` + the `{env}`/`{file}` sugar.
 pub mod patch;
 /// The 1.6.0-only key PRE-PASS: lift the additive keys off a document before the frozen
@@ -1161,7 +1162,7 @@ pub struct DeployCfg {
     /// [`crate::config::prepass`] before this struct parses, so it is never in this struct's
     /// accepted key set and never named in its unknown-key refusal. See that module for why.
     #[serde(skip)]
-    pub(crate) mcp: McpEndpointSection, // plane-purity: frozen-wire the mcp: top-level wire key + McpEndpointSection snapshot type (frozen since 1.5.3)
+    pub mcp: McpEndpointSection, // plane-purity: frozen-wire the mcp: top-level wire key + McpEndpointSection snapshot type (frozen since 1.5.3)
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
@@ -1394,7 +1395,7 @@ pub struct PluginsCfg {
     /// automatic boot/reload path ever sees) = every first-party plugin faces its own automatic
     /// floor, the per-name HIGH-WATER MARK (the highest version of that name this deployment has
     /// seen and loaded — `busbar_plugin_loader::HighWaterMarks`). An explicit, audited `POST /plugins/rollback` of a
-    /// FIRST-PARTY plugin adds a `name -> pinned target version` entry so `busbar_plugin_sign::evaluate`
+    /// FIRST-PARTY plugin adds a `name -> pinned target version` entry so `busbar_plugin_loader::sign::evaluate`
     /// admits the prior artifact for THAT NAME ONLY (an unpinned first-party plugin still faces the full
     /// floor — replacing the earlier single global floor). Derived from the persisted
     /// `plugin_versions` pins during a rebuild (`overlay::apply_plugin_versions_to_deploy`); it is
@@ -1593,12 +1594,12 @@ impl PluginsCfg {
     /// high-water mark, an observed fact rather than a config value, and it is injected by
     /// [`crate::preflight`] from `busbar_plugin_loader::HighWaterMarks`. This resolver leaves
     /// `first_party_high_water` empty; a caller that skips the injection gets NO automatic floor.
-    pub fn to_policy(&self) -> Result<busbar_plugin_sign::TrustPolicy, String> {
+    pub fn to_policy(&self) -> Result<busbar_plugin_loader::sign::TrustPolicy, String> {
         self.to_policy_with_floor(env!("CARGO_PKG_VERSION"))
     }
 
     /// Build the trust policy. `binary_version` is carried on the policy for error text/telemetry
-    /// only — it is NOT a floor: `busbar_plugin_sign::evaluate` applies PER-NAME floors alone
+    /// only — it is NOT a floor: `busbar_plugin_loader::sign::evaluate` applies PER-NAME floors alone
     /// (`first_party_floors` rollback pins + `min_versions`), because first-party plugins version
     /// on independent lines (1.0.x stores/auth/hooks, 2.x headroom, under a 1.5.0 engine) and an
     /// automatic "plugin >= binary version" floor rejected every correctly-signed current release
@@ -1612,18 +1613,18 @@ impl PluginsCfg {
     pub fn to_policy_with_floor(
         &self,
         binary_version: &str,
-    ) -> Result<busbar_plugin_sign::TrustPolicy, String> {
+    ) -> Result<busbar_plugin_loader::sign::TrustPolicy, String> {
         let mut publishers = std::collections::BTreeMap::new();
         for p in &self.trust.publishers {
-            if p.name == busbar_plugin_sign::FIRST_PARTY_PUBLISHER {
+            if p.name == busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER {
                 return Err(format!(
                     "plugins.trust.publishers['{}']: the publisher name '{}' is reserved for \
                      busbar's embedded release key and cannot be configured",
                     p.name,
-                    busbar_plugin_sign::FIRST_PARTY_PUBLISHER
+                    busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER
                 ));
             }
-            let key = busbar_plugin_sign::public_key_from_hex(&p.public_key)
+            let key = busbar_plugin_loader::sign::public_key_from_hex(&p.public_key)
                 .map_err(|e| format!("plugins.trust.publishers['{}']: {e}", p.name))?;
             publishers.insert(p.name.clone(), key);
         }
@@ -1633,7 +1634,7 @@ impl PluginsCfg {
         // unparsable floor silently disarms the anti-downgrade control, so an operator who believes
         // it is armed should not have to discover that from a missing `--list-plugins` row.
         for (name, floor) in &self.min_versions {
-            if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
+            if !floor.is_empty() && !busbar_plugin_loader::sign::valid_semver(floor) {
                 diag_warn!(
                     CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,
                     key = %format!("plugins.min_versions['{name}']"),
@@ -1645,7 +1646,7 @@ impl PluginsCfg {
             }
         }
         for (name, floor) in &self.first_party_floors {
-            if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
+            if !floor.is_empty() && !busbar_plugin_loader::sign::valid_semver(floor) {
                 diag_warn!(
                     CONFIG_FIRSTPARTY_FLOOR_INVALID,
                     key = %format!("plugins.first_party_floors['{name}']"),
@@ -1657,8 +1658,8 @@ impl PluginsCfg {
                 );
             }
         }
-        Ok(busbar_plugin_sign::TrustPolicy {
-            first_party_key: busbar_plugin_sign::embedded_release_pubkey(),
+        Ok(busbar_plugin_loader::sign::TrustPolicy {
+            first_party_key: busbar_plugin_loader::sign::embedded_release_pubkey(),
             binary_version: binary_version.to_string(),
             first_party_floors: self.first_party_floors.clone(),
             // The automatic first-party floor is injected by the caller that owns the marks
@@ -2058,7 +2059,7 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
 /// llm-plane-absent build must keep merging providers exactly as every prior release has rather than
 /// silently dropping configured providers out of `RootCfg::providers`. See
 /// `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for why this section never evicts.
-fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ProviderCfg {
+pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ProviderCfg {
     // Merge error_map: def's map with deployment override taking precedence
     let mut error_map = def.error_map.clone();
     if let Some(override_map) = &deploy_cfg.error_map {

@@ -1347,7 +1347,7 @@ impl Units for LlmUnit<'_> {
         self.walk.take_admission(admitted)
     }
 
-    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, _meter: &AccrualMeter) -> Decision<Route> {
+    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, _meter: &AccrualMeter, _destinations: &[busbar_contract::caps::VerifiedDestination]) -> Decision<Route> {
         // THIS PLANE'S ROUTE AWAITS, so it is answered by the `RouteAwait` arm below and this one is
         // not a path any unit on this plane takes: `LlmNode::answer` drives the loop's asynchronous
         // entry point and there is no other caller. Answered rather than unwrapped — an arm that
@@ -1362,6 +1362,7 @@ impl Units for LlmUnit<'_> {
         usage: &Grant<Consumption>,
         _ctx: &UnitCtx,
         _provisional: &Outcome,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
         // THE ACCRUAL IS NOT MADE HERE, and the reason is a fact about this plane rather than a
         // choice. What the unit is worth is what the response's tap reports, and the tap fills its
@@ -1487,6 +1488,7 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
         token: &'a Pass<Route>,
         _ctx: &'a UnitCtx,
         _meter: &'a AccrualMeter,
+        _destinations: &'a [busbar_contract::caps::VerifiedDestination],
     ) -> busbar_kernel::teller::RouteLeg<'a> {
         // The destination the charge actually LANDED on — post-downgrade, never the requested one.
         // Dispatching through the pool the client asked for after charging a different one is the

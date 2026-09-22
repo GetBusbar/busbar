@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use busbar_contract::bounded::SlabBytes;
-use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, Span};
+use busbar_contract::bounded::{PlaneAlloc, PlaneAllocBudget, ScratchBytes, Facts, Ir, Labels, Span};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
 use busbar_contract::plugin::KernelSeal;
@@ -27,21 +27,21 @@ use std::sync::Arc;
 /// and does need the borrow to outlive the call, so this one hands out memory it never reclaims.
 /// A test process is short.
 #[derive(Debug, Default)]
-pub struct LeakArena;
+pub struct LeakPlaneAlloc;
 
-impl Arena for LeakArena {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
-        Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+impl PlaneAlloc for LeakPlaneAlloc {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
+        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }
 
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
         Ok(Box::leak(src.to_string().into_boxed_str()))
     }
 
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget> {
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
@@ -116,7 +116,7 @@ impl KernelSeal for TestSeal {
 /// Build a context over the pieces above.
 #[must_use]
 pub fn ctx<'u>(
-    arena: &'u LeakArena,
+    arena: &'u LeakPlaneAlloc,
     config: &'u EmptyConfig,
     transport: &'u HttpStack,
     labels: &'u Labels<'u>,
@@ -130,7 +130,7 @@ pub fn ctx<'u>(
 /// over; every other test wants the one fixed reading, which is what `ctx` supplies.
 #[must_use]
 pub fn ctx_at<'u>(
-    arena: &'u LeakArena,
+    arena: &'u LeakPlaneAlloc,
     config: &'u EmptyConfig,
     transport: &'u HttpStack,
     labels: &'u Labels<'u>,

@@ -206,6 +206,24 @@ pub struct AuditRecord {
     pub prev_hash: String,
     /// This record's own digest.
     pub hash: String,
+    /// THE SIGNATURE OVER [`AuditRecord::hash`], minted at seal time by the process that sealed
+    /// this record. 128 lowercase hex characters, over [`crate::sign::signing_preimage`].
+    ///
+    /// `None` on a node that seals unsigned — a node with no signing key configured — and on every
+    /// record sealed before this node had one. That is honest rather than convenient: a signature
+    /// a receiver applied later proves the receiver got those bytes, not that this node made them,
+    /// so there is no back-fill that would mean anything.
+    ///
+    /// NOT DIGESTED, and it could not be: it is computed FROM the digest. That is also what keeps
+    /// every chain already on disk verifying — [`AuditChain::digest_of`] is byte-for-byte the
+    /// function it was before signing existed.
+    pub signature: Option<String>,
+    /// WHICH KEY minted [`AuditRecord::signature`] — the identifier, never the key.
+    ///
+    /// An identifier and not a key, so that a record names what signed it without the record
+    /// becoming the place a verifier learns what to trust. The key itself comes from the published
+    /// key set, which is a different read, deliberately.
+    pub key_id: Option<String>,
 }
 
 /// Everything a caller supplies. The position and the two hashes are not here, for the same reason
@@ -277,11 +295,20 @@ pub trait Audit: sealed::Sealed {
 /// different rates, and pouring one into the other would make a busy hour of request-rate records
 /// evict the operator-rate ones — silently, because a pruned ring looks exactly like one that was
 /// never written to.
+/// DERIVED, and the derive is load-bearing rather than incidental: it reaches
+/// [`crate::sign::AuditSigningKey`], whose own `Debug` prints the key identifier and refuses to
+/// print the secret. So `{:?}` on a whole chain — which is what an error path or a panic message
+/// actually does — cannot produce key material. The test `debug_never_shows_the_secret` formats
+/// this type, not just the key, for exactly that reason.
 #[derive(Debug)]
 pub struct AuditChain {
     tail_hash: String,
     next_seq: u64,
     sealed: u64,
+    /// The key this chain signs with, when the node was given one.
+    signer: Option<crate::sign::AuditSigningKey>,
+    /// The anchors, kept forever. See [`crate::heads`].
+    heads: crate::heads::HeadHistory,
 }
 
 /// HAND-WRITTEN for the reason the previous release's chain writes its own: a DERIVED default gives
@@ -301,6 +328,8 @@ impl AuditChain {
             tail_hash: String::new(),
             next_seq: 1,
             sealed: 0,
+            signer: None,
+            heads: crate::heads::HeadHistory::new(),
         }
     }
 
@@ -310,7 +339,92 @@ impl AuditChain {
             tail_hash,
             next_seq,
             sealed: 0,
+            signer: None,
+            heads: crate::heads::HeadHistory::new(),
         }
+    }
+
+    /// SIGN FROM HERE ON, with this key.
+    ///
+    /// A builder rather than a constructor argument, so that a node that was given no key keeps the
+    /// shape it had and a node that was given one says so in one place. Records sealed BEFORE this
+    /// was called stay unsigned, which is the truth about them.
+    ///
+    /// Signing is in-process and at seal time, because that is the only moment at which a signature
+    /// means "this node produced this record". See [`crate::sign`].
+    #[must_use]
+    pub fn signing_with(mut self, key: crate::sign::AuditSigningKey) -> Self {
+        self.signer = Some(key);
+        self
+    }
+
+    /// Sample heads at a chosen rate instead of hourly. See [`crate::heads::HeadHistory::every`].
+    #[must_use]
+    pub fn sampling_heads_every(mut self, seconds: u64) -> Self {
+        self.heads = crate::heads::HeadHistory::every(seconds);
+        self
+    }
+
+    /// Which key this chain signs with, by identifier. `None` on a node that seals unsigned.
+    ///
+    /// The identifier, never the key: there is no accessor on this type that yields key material,
+    /// and adding one would defeat [`crate::sign::AuditSigningKey`]'s whole shape.
+    pub fn signing_key_id(&self) -> Option<&str> {
+        self.signer.as_ref().map(|k| k.key_id())
+    }
+
+    /// The public half of the key this chain signs with, for the key-set read.
+    pub fn public_key_hex(&self) -> Option<String> {
+        self.signer.as_ref().map(|k| k.public_key_hex())
+    }
+
+    /// The anchors this node has published, kept forever. See [`crate::heads`].
+    pub fn heads(&self) -> &crate::heads::HeadHistory {
+        &self.heads
+    }
+
+    /// THE RETENTION PASS over sealed records, and the reason it takes `&self`.
+    ///
+    /// The predicate is the one every store in this tree already applies — a record whose own
+    /// instant is before the cutoff goes — spelled once, here, by the unit that owns the records
+    /// rather than separately by each thing that holds some.
+    ///
+    /// `&self`, NOT `&mut self`, AND THAT IS THE GUARANTEE. The head history lives on this type;
+    /// a pass that cannot borrow the chain mutably cannot prune it, whatever a later edit to this
+    /// function's body tries to do. Phrased as a comment it would be a request; phrased as the
+    /// receiver it is a compile error. A puller that was offline across this cutoff has lost the
+    /// records, which was the deal, and still has the anchor, which was never on the table.
+    ///
+    /// Returns how many records went.
+    pub fn prune_records_before(&self, records: &mut Vec<AuditRecord>, before: u64) -> usize {
+        let was = records.len();
+        records.retain(|r| r.wall >= before);
+        was - records.len()
+    }
+
+    /// Check one record's signature against one key.
+    ///
+    /// Two judgements, not one: that the record hashes to its own fields (which is what the chain
+    /// walk checks) and that the signature over that hash verifies. A signature checked against a
+    /// hash nobody recomputed is a signature over a number, not over a record — an editor who
+    /// rewrote a field and left the old hash and the old signature in place would pass.
+    ///
+    /// # Errors
+    ///
+    /// The record carries no signature, the record does not hash to its own fields, or the
+    /// signature does not verify.
+    pub fn verify_signature(
+        record: &AuditRecord,
+        key: &crate::sign::AuditVerifyingKey,
+    ) -> Result<(), crate::sign::KeyError> {
+        let signature = record
+            .signature
+            .as_deref()
+            .ok_or(crate::sign::KeyError::Unsigned)?;
+        if AuditChain::digest_of(record) != record.hash {
+            return Err(crate::sign::KeyError::BadSignature);
+        }
+        key.verify_digest(&record.hash, signature)
     }
 
     /// The position the next record will take.
@@ -329,69 +443,24 @@ impl AuditChain {
     }
 
     /// Recompute one record's digest from its own fields — the verification primitive.
+    ///
+    /// ONE RECIPE, and this walks it. The field order, the framing and the exact spelling of every
+    /// value live in [`crate::recipe::digest_fields`], which is also what the range read publishes
+    /// and what `docs/audit-chain-digest-v1.md` describes. Before, the order lived here and the
+    /// document described it from the outside — two copies of one contract, and the one thing a
+    /// published digest recipe cannot survive is two spellings of itself: a drift between them
+    /// would make every third-party verification fail while looking, to the third party, exactly
+    /// like a tampered chain.
+    ///
+    /// LENGTH-PREFIXED, not separator-joined, and that survives the move. Every field here can hold
+    /// arbitrary text — a bucket chain reference, an operation class a caller named — and a
+    /// separator-joined digest is only safe while no field can contain the separator. Length
+    /// prefixes make the boundary unforgeable whatever the fields hold.
+    ///
+    /// The frozen hex in `the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex` is what
+    /// says the move did not cost a byte.
     pub fn digest_of(record: &AuditRecord) -> String {
-        let mut d = crate::legacy::Digest::new(crate::legacy::Framing::LengthPrefixed);
-        // Length-prefixed, because this record is NEW. Every field here can hold arbitrary text —
-        // a bucket chain reference, an operation class a caller named — and a separator-joined digest
-        // is only safe while no field can contain the separator. Length prefixes make the boundary
-        // unforgeable whatever the fields hold.
-        d.text(&record.prev_hash);
-        d.num(record.seq);
-        d.text(subject_tag(&record.subject));
-        d.text(&subject_value(&record.subject));
-        d.num(record.what.unit_key.get());
-        d.text(record.what.op_class.as_str());
-        d.text(record.what.destination.as_deref().unwrap_or(""));
-        d.num(record.what.parent.map(|p| p.get()).unwrap_or(0));
-        d.text(record.what.pre_hook_head.as_deref().unwrap_or(""));
-        d.text(record.what.post_hook_head.as_deref().unwrap_or(""));
-        d.num(record.wall);
-        d.num(record.mono);
-        d.text(record.origin_kind);
-        d.text(&outcome_tag(record.outcome.unit_end));
-        d.text(
-            &record
-                .outcome
-                .step
-                .map(|s| s.as_str().to_string())
-                .unwrap_or_default(),
-        );
-        d.text(finish_tag(record.outcome.finish));
-        d.num(u64::from(record.outcome.hook_failed));
-        d.text(&record.outcome.emission_delta.to_string());
-        d.num(u64::from(record.outcome.stale_policy));
-        d.num(record.amount.lines.len() as u64);
-        for line in &record.amount.lines {
-            d.text(line.class.as_str());
-            d.num(line.quantity);
-            d.text(&quantity_source_tag(&line.source));
-            d.num(u64::from(line.estimated));
-        }
-        d.text(&record.amount.pre_tier.to_string());
-        d.text(&record.amount.priced.to_string());
-        d.num(u64::from(record.amount.tier_bp));
-        d.num(u64::from(record.amount.fee_count));
-        d.text(&record.amount.currency);
-        d.num(record.amount.rate_card_version);
-        d.text(&record.amount.bucket_chain_ref);
-        d.text(record.controls.hold_ref.as_deref().unwrap_or(""));
-        d.text(record.controls.settle_ref.as_deref().unwrap_or(""));
-        d.text(record.controls.slice_ref.as_deref().unwrap_or(""));
-        d.text(record.controls.lease_ref.as_deref().unwrap_or(""));
-        d.num(record.controls.lease_epoch);
-        d.num(record.controls.policy_epoch);
-        d.num(record.controls.hooks_applied.len() as u64);
-        for hook in &record.controls.hooks_applied {
-            d.text(&hook.hook);
-            d.text(&hook.priced_delta.to_string());
-        }
-        d.num(u64::from(record.controls.replayed));
-        d.num(record.controls.children.len() as u64);
-        for child in &record.controls.children {
-            d.num(child.get());
-        }
-        d.text(record.correlation_hash.as_deref().unwrap_or(""));
-        d.finish()
+        crate::recipe::digest_over(&crate::recipe::digest_fields(record))
     }
 
     /// VERIFY A WHOLE CHAIN: `records` is oldest-first and starts at the chain's genesis, so the
@@ -507,11 +576,30 @@ impl Audit for AuditChain {
             seq: self.next_seq,
             prev_hash: self.tail_hash.clone(),
             hash: String::new(),
+            signature: None,
+            key_id: None,
         };
         record.hash = AuditChain::digest_of(&record);
+        // THE SIGNATURE, HERE AND NOWHERE ELSE.
+        //
+        // Position: immediately after the digest and before the head advances, so the thing signed
+        // is the digest this chain is about to adopt as its head. One signature per SEALED RECORD —
+        // which is one per finished unit, at the audit step, after the response has been produced —
+        // and not one per frame, per token or per byte. The serving path does not reach this
+        // function; nothing on it signs anything.
+        //
+        // No key configured is not an error and not a panic: it is an unsigned record, and a record
+        // that says it is unsigned is honest. See `crate::sign` for why nothing back-fills it.
+        if let Some(signer) = &self.signer {
+            record.key_id = Some(signer.key_id().to_string());
+            record.signature = Some(signer.sign_digest(&record.hash));
+        }
         self.tail_hash = record.hash.clone();
         self.next_seq = self.next_seq.saturating_add(1);
         self.sealed += 1;
+        // The anchor is taken from the finished record, so a head always carries the signature the
+        // record carries rather than a second one minted over the same digest.
+        self.heads.observe(&record);
         record
     }
 }

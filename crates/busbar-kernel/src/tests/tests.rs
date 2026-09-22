@@ -787,8 +787,8 @@ pub(crate) fn plugin_manifest(
     name: &str,
     alias: &str,
     publisher: &str,
-) -> busbar_plugin_sign::Manifest {
-    busbar_plugin_sign::Manifest {
+) -> busbar_plugin_loader::sign::Manifest {
+    busbar_plugin_loader::sign::Manifest {
         name: name.into(),
         alias: alias.into(),
         kind: "store".into(),
@@ -811,8 +811,8 @@ pub(crate) fn plugin_manifest(
 }
 
 /// An UNSIGNED (but structurally valid) tarball: sha256 set, signature empty.
-pub(crate) fn unsigned_tarball(mut m: busbar_plugin_sign::Manifest, lib: &[u8]) -> Vec<u8> {
-    m.sha256 = busbar_plugin_sign::sha256_hex(lib);
+pub(crate) fn unsigned_tarball(mut m: busbar_plugin_loader::sign::Manifest, lib: &[u8]) -> Vec<u8> {
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
@@ -993,7 +993,7 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
     // A structurally-broken manifest (bad sha256 binding) equally aborts.
     std::fs::remove_file(dir.join("junk.tar.gz")).unwrap();
     let mut m = plugin_manifest("acme-store-x", "x", "acme");
-    m.sha256 = busbar_plugin_sign::sha256_hex(b"OTHER bytes");
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"OTHER bytes");
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
     std::fs::write(dir.join("sha.tar.gz"), tarball).unwrap();
     let err = crate::plugins_preflight(
@@ -1044,7 +1044,7 @@ fn alias_conflict_fails_boot_naming_both() {
 
 /// A `kind: secret` manifest with the correct secret ABI (the store default from `plugin_manifest`
 /// carries the store ABI, which the secret kind would reject).
-fn secret_manifest(name: &str, alias: &str) -> busbar_plugin_sign::Manifest {
+fn secret_manifest(name: &str, alias: &str) -> busbar_plugin_loader::sign::Manifest {
     let mut m = plugin_manifest(name, alias, "acme");
     m.kind = "secret".into();
     m.abi_version = *busbar_plugin_loader::supported_abi("secret")
@@ -1928,6 +1928,7 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
 /// fails typed parsing for some other reason.
 #[test]
 fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
+    crate::test_support::register_neutral_test_plane();
     let (dir, legacy_config_path, providers_path) =
         boot_config_dir("migrate", BOOT_LEGACY_14X_CONFIG);
 
@@ -2179,7 +2180,7 @@ fn fetch_cached_pin_boots_without_network() {
     // path, not tarball validity (that is preflight's job, covered elsewhere).
     let body = b"cached-blob-bytes";
     std::fs::write(dir.join("cached-blob.dat"), body).unwrap();
-    let pin = busbar_plugin_sign::sha256_hex(body);
+    let pin = busbar_plugin_loader::sign::sha256_hex(body);
 
     let cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
         "BUSBAR_TEST_NO_SUCH_KEY_FETCH",

@@ -77,7 +77,8 @@ fn host_open_subprocess(
     out: *mut MaybeUninit<EgressOpen>,
 ) -> StatusClass {
     // SAFETY: live HostState minted by with_dispatch_scope.
-    let state: &HostState = unsafe { recover(host) };
+    let state: &HostState =
+        unsafe { recover(host) }.expect("host generation still live inside with_dispatch_scope");
     open_subprocess(state, desc, program_allowlist, out)
 }
 
@@ -141,7 +142,8 @@ fn subprocess_pipe_echoes_bytes_through_cat() {
     let app = crate::test_support::TestApp::new().build();
     with_dispatch_scope(&app, |host, vt| {
         // SAFETY: live HostState minted by with_dispatch_scope.
-        let state: &HostState = unsafe { recover(host) };
+        let state: &HostState = unsafe { recover(host) }
+            .expect("host generation still live inside with_dispatch_scope");
         let scope = state.scope;
 
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();

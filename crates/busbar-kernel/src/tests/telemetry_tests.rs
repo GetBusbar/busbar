@@ -12,11 +12,21 @@
 use super::*;
 use crate::test_support::{metric_sum, LaneSpec, TestApp};
 
-/// The plane every emission in this module drives: the MODEL plane, whose `busbar_requests_total` /
-/// `busbar_request_duration_seconds` families carry NO `plane` label (v1.5.4-identical) and are the
-/// only ones the bank's fast path serves. Mounted planes emit the separate `busbar_plane_*`
-/// families and are exercised in `plane::metrics_tests` / `a2a::relay_tests`.
-const LLM: &str = "llm";
+/// The plane every emission in this module drives: the FALLBACK (model) plane, whose
+/// `busbar_requests_total` / `busbar_request_duration_seconds` families carry NO `plane` label
+/// (v1.5.4-identical) and are the only ones the bank's fast path serves — `request_finished`
+/// branches on `crate::plane::is_fallback(plane)`, so the key handed in must be WHATEVER key is
+/// currently registered fallback, never a hard-coded literal. Registers
+/// [`crate::test_support::register_neutral_test_plane`]'s all-stub fixture (idempotent) and reads
+/// its key back off the registry — this module asserts core's OWN bank/macro-fallback routing, not
+/// anything about the real LLM dialect, so it needs a plane to exist as fallback, never the real
+/// `busbar_llm` plane (which this crate's own `#[cfg(test)]` binary cannot reach; see that fn's doc).
+/// Mounted planes emit the separate `busbar_plane_*` families and are exercised in
+/// `plane::metrics_tests` / `a2a::relay_tests`.
+fn model_plane_key() -> &'static str {
+    crate::test_support::register_neutral_test_plane();
+    crate::plane::fallback_key()
+}
 
 fn openai() -> &'static str {
     crate::proto::PROTO_OPENAI
@@ -109,8 +119,8 @@ fn test_config_reapply_accumulates_across_generations() {
 
     let labels = [("pool", "tel-gen-pool"), ("outcome", "ok")];
     let before = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
-    request_finished(&gen1, LLM, "openai", "tel-gen-pool", "ok", 0.001);
-    request_finished(&gen2, LLM, "openai", "tel-gen-pool", "ok", 0.002);
+    request_finished(&gen1, model_plane_key(), "openai", "tel-gen-pool", "ok", 0.001);
+    request_finished(&gen2, model_plane_key(), "openai", "tel-gen-pool", "ok", 0.002);
     let after = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
     assert_eq!(
         (after - before).round() as u64,
@@ -130,7 +140,7 @@ fn test_request_finished_renders_premigration_names_and_labels() {
         .pool("tel-parity-pool", &[(0, 1)])
         .build();
 
-    request_finished(&app, LLM, "anthropic", "tel-parity-pool", "ok", 0.005);
+    request_finished(&app, model_plane_key(), "anthropic", "tel-parity-pool", "ok", 0.005);
     let out = crate::metrics::render();
 
     let counter_line = out.lines().find(|l| {
@@ -248,7 +258,7 @@ fn test_unregistered_pool_falls_back_to_macro_emission() {
 
     let labels = [("pool", "tel-fb-unregistered-pool"), ("outcome", "ok")];
     let before = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
-    request_finished(&app, LLM, "openai", "tel-fb-unregistered-pool", "ok", 0.001);
+    request_finished(&app, model_plane_key(), "openai", "tel-fb-unregistered-pool", "ok", 0.001);
     let after = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
     assert_eq!(
         (after - before).round() as u64,

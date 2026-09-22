@@ -9,10 +9,13 @@
 //!    ever finds out that it does not verify. So alteration, reordering, insertion and deletion are
 //!    each performed here, and the verifier is required to NAME which one it was.
 //!
-//! 2. **THE DIGEST DID NOT MOVE.** The admin record was already hash-chained on disk before this
-//!    crate existed. The golden vector below recomputes the formula independently, the old way, and
-//!    requires the mechanism to agree byte for byte. A digest that changed would report every
-//!    persisted chain as tampered at the next boot.
+//! 2. **A SCHEME-1 DIGEST DID NOT MOVE.** The admin record was already hash-chained on disk before
+//!    this crate existed. The golden vector below recomputes the formula independently, the old way,
+//!    and requires a record explicitly carrying [`AUDIT_SCHEME_PIPE`] to agree byte for byte. A
+//!    digest that changed for an OLD record would report every persisted chain as tampered at the
+//!    next boot. A FRESH record is a deliberate exception — see the paired test right after it — and
+//!    seals under [`AUDIT_SCHEME_LENGTH_PREFIXED`] instead, which is what closes the collision a bar
+//!    inside a caller-controlled field opens under scheme 1.
 //!
 //! And a third that is really the seam's acceptance test: a throwaway FOURTH record type is declared
 //! here and nowhere else, and it chains, verifies and reports every tamper with no new mechanism. If
@@ -22,7 +25,9 @@ use crate::legacy::chain::{
     digest, seal, sha256_hex, verify_chain, verify_window, Chain, ChainBreakKind, ChainLabels,
     ChainedRecord, Digest, Framing,
 };
-use crate::legacy::{AuditEntry, AuditInput, OUTCOME_APPLIED};
+use crate::legacy::{
+    AuditEntry, AuditInput, AUDIT_SCHEME_LENGTH_PREFIXED, AUDIT_SCHEME_PIPE, OUTCOME_APPLIED,
+};
 
 // ── THE FOURTH STREAM ────────────────────────────────────────────────────────────────────────────
 //
@@ -259,11 +264,13 @@ fn a_chain_resumed_from_a_broken_tail_reports_the_break_rather_than_laundering_i
     assert_eq!(next.seq, 4);
 }
 
+/// THE GOLDEN VECTOR for a record this crate did not seal fresh — a scheme-1 entry, built the way an
+/// entry restored off a store (or, before this change existed, every entry) is. The formula is
+/// recomputed here the old way — a single formatted string, joined by vertical bars — and the
+/// mechanism has to agree byte for byte.
 #[test]
-fn the_admin_audit_digest_is_unchanged() {
-    // THE GOLDEN VECTOR. The formula is recomputed here the old way — a single formatted string,
-    // joined by vertical bars — and the mechanism has to agree byte for byte.
-    let entry: AuditEntry = seal(
+fn a_scheme_one_admin_audit_digest_is_unchanged() {
+    let mut entry: AuditEntry = seal(
         "admin",
         4,
         "deadbeef".to_string(),
@@ -275,6 +282,12 @@ fn the_admin_audit_digest_is_unchanged() {
             principal: "admin".to_string(),
         },
     );
+    // `seal` mints scheme 2 on a fresh entry (see the paired test below); force scheme 1 and reseal,
+    // exactly reproducing what an entry read back off a store from before this change carries, and
+    // recompute its digest — the same shape `digest_framing_tests`'s `sealed()` helper uses.
+    entry.scheme = AUDIT_SCHEME_PIPE;
+    entry.hash = crate::legacy::chain::digest(&entry);
+
     let canonical = format!(
         "{}|{}|{}|{}|{}|{}|{}",
         entry.prev_hash,
@@ -288,12 +301,50 @@ fn the_admin_audit_digest_is_unchanged() {
     assert_eq!(
         entry.hash,
         sha256_hex(canonical.as_bytes()),
-        "an admin audit digest that moved would report every persisted chain as tampered"
+        "a scheme-1 admin audit digest that moved would report every persisted chain as tampered"
     );
     // Pinned as a literal too, so that a change to BOTH sides of the comparison above is still red.
     assert_eq!(
         entry.hash,
         "63a37a3e0ef21edc33172093d00e991459c8b509575288d9796fefffaba166c3"
+    );
+}
+
+/// THE OTHER HALF: the SAME fields, sealed through the REAL, unmodified `seal` path this build
+/// actually uses, now produce a DIFFERENT digest — scheme 2, length-prefixed. This is the intended,
+/// deliberate exception to "the digest did not move": nothing mints scheme 1 any longer, and a fresh
+/// record's digest changing is exactly what closes the collision scheme 1 admits.
+#[test]
+fn a_freshly_sealed_admin_audit_digest_now_uses_scheme_two() {
+    let entry: AuditEntry = seal(
+        "admin",
+        4,
+        "deadbeef".to_string(),
+        AuditInput {
+            ts: 1_700_000_000,
+            action: "hook.register".to_string(),
+            resource: "hook:compress".to_string(),
+            outcome: OUTCOME_APPLIED.to_string(),
+            principal: "admin".to_string(),
+        },
+    );
+    assert_eq!(entry.scheme, AUDIT_SCHEME_LENGTH_PREFIXED);
+    let mut d = Digest::new(Framing::LengthPrefixed);
+    d.text(&entry.prev_hash)
+        .num(entry.seq)
+        .num(entry.ts)
+        .text(&entry.action)
+        .text(&entry.resource)
+        .text(&entry.outcome)
+        .text(&entry.principal);
+    assert_eq!(
+        entry.hash,
+        sha256_hex(d.bytes()),
+        "a fresh entry's digest is not the length-prefixed formula over the same fields"
+    );
+    assert_eq!(
+        entry.hash,
+        "badff1f0c637b690487f849e6be3ed8f30924bb9a6cd20b97e77e83d4c58ff37"
     );
 }
 

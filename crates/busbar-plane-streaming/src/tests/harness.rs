@@ -5,7 +5,7 @@
 //! values (a unit, a verified destination) handed through a seal. Nothing here is shipped.
 
 use busbar_contract::bounded::{
-    Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, SlabBytes, Span,
+    PlaneAlloc, PlaneAllocBudget, ScratchBytes, Facts, Ir, Labels, SlabBytes, Span,
 };
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, SessionId, StreamId};
@@ -16,21 +16,21 @@ use std::sync::Arc;
 
 /// An arena that never reuses a byte — fine for a short test process.
 #[derive(Debug, Default)]
-pub struct LeakArena;
+pub struct LeakPlaneAlloc;
 
-impl Arena for LeakArena {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
-        Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+impl PlaneAlloc for LeakPlaneAlloc {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
+        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
     }
 
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
         Ok(Box::leak(src.to_string().into_boxed_str()))
     }
 
     fn alloc_spans<'a>(
         &'a self,
         src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget> {
         Ok(Box::leak(src.to_vec().into_boxed_slice()))
     }
 
@@ -169,7 +169,7 @@ impl KernelSeal for TestSeal {
 /// Build a context over the pieces above.
 #[must_use]
 pub fn ctx<'u>(
-    arena: &'u LeakArena,
+    arena: &'u LeakPlaneAlloc,
     config: &'u EmptyConfig,
     transport: &'u WsStack,
     labels: &'u Labels<'u>,
@@ -190,7 +190,7 @@ pub fn ctx<'u>(
 /// Build a context that carries a session — for the steps that read `Ctx::session()`.
 #[must_use]
 pub fn ctx_with_session<'u>(
-    arena: &'u LeakArena,
+    arena: &'u LeakPlaneAlloc,
     config: &'u EmptyConfig,
     transport: &'u WsStack,
     labels: &'u Labels<'u>,

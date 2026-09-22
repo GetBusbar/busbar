@@ -6,7 +6,7 @@
 //! Fallibility: every fallible method below returns its trait's own error enum; see the trait doc
 //! for what a failure means, rather than repeating it per method.
 
-use crate::bounded::{ArenaBytes, BoundedVec, Facts, IrPatch, MAX_KEYS, MAX_RECORD_BYTES};
+use crate::bounded::{BoundedVec, Facts, IrPatch, ScratchBytes, MAX_KEYS, MAX_RECORD_BYTES};
 use crate::dest::{
     AuthDecoration, CandidateSet, EgressBody, Permutation, VerifiedDestination, VetoCode,
 };
@@ -639,7 +639,7 @@ pub enum ExportItem<'u> {
         /// The last sequence in the run.
         to: u64,
         /// The sealed bytes.
-        bytes: ArenaBytes<'u>,
+        bytes: ScratchBytes<'u>,
     },
 }
 
@@ -648,7 +648,13 @@ pub enum ExportItem<'u> {
 /// A sink written against this contract acknowledges at-least-once. The previous release's own
 /// sink subsystem stays fire-and-forget with its admission gate, and it refuses a configuration
 /// that asks it for durability rather than pretending to provide it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+///
+/// Derives `Deserialize` as well as `Serialize`, and pins `snake_case` wire tokens (`durable` /
+/// `received` / `retry`) — OWNER-RULED 2026-09-21: no consumer outside this crate names `Ack` yet
+/// (verified by a repo-wide grep), so this is the cheapest moment this ever moves. See
+/// `tests/ack_wire.rs` for the pinned wire form and round-trip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Ack {
     /// Received and durable at the sink.
     Durable,

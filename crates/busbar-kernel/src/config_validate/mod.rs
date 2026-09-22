@@ -1691,7 +1691,7 @@ fn reserved_legacy_admin_name(name: &str) -> bool {
 /// (Homogeneity — all of a pool's members being one noun — and unresolvable members are enforced at
 /// resolution, in `config::resolve`, where the members are still visible before projection; this
 /// function is the name-uniqueness half that makes that inference unambiguous.)
-fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
+pub fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
     use std::collections::BTreeSet;
     let models: BTreeSet<&str> = cfg.models.keys().map(|s| s.as_str()).collect();
     // The plane registry nouns read through their always-present type-erased seam. With the owning

@@ -177,7 +177,7 @@ pub struct CandidatePoolCfg {
     /// EMPTY BY DEFAULT, which is the fail-safe posture: an operator who says nothing gets
     /// reroute-before-first-byte (which duplicates nothing) and no retries at all.
     #[serde(default)]
-    pub(crate) repeatable: Vec<String>,
+    pub repeatable: Vec<String>,
 }
 
 impl CandidatePoolCfg {

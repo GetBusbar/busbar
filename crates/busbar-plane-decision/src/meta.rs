@@ -40,7 +40,7 @@ const METER_CLASSES: &[MeterClassDecl] = &[MeterClassDecl {
 /// The schema of this plane's own configuration block.
 ///
 /// One level deep: a map from busbar-facing model name to that model's definition (`provider`
-/// required, `upstream_model` optional — the shape `busbar_substrate::config::providers::ModelCfg`
+/// required, `upstream_model` optional — the shape `busbar_contract::config::ModelCfg`
 /// already parses, see `config.rs`), plus the two reserved members every model-serving section
 /// carries. Nothing here is a credential and nothing here is a price.
 const CONFIG_SCHEMA: &str = r#"{

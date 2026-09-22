@@ -54,7 +54,7 @@ const BODY: &[u8] = br#"{"state":{"a":1},"context":{}}"#;
 /// Two: the envelope's `content-type` field (the one arena copy this call genuinely needs) and the
 /// envelope's own field list, which starts empty and takes its buffer on the first push — the same
 /// two allocations `busbar-plane-a2a`'s own pinned baseline counts for the identical reason. The
-/// request body itself is BORROWED where it already lives (`ArenaBytes::new`, not
+/// request body itself is BORROWED where it already lives (`ScratchBytes::new`, not
 /// `arena.alloc_bytes`), so relaying it costs nothing — jev has no A2A-style rewrite to spend a
 /// second copy on.
 const RELAY_ALLOCS: u64 = 2;
