@@ -1629,20 +1629,30 @@ above name the INSTANCES; this names the KIND, and the absence of a kind definit
 4. **Money-blind and pricing-blind**, exactly like planes (#43/#71). It reports what happened; it
    never computes what it cost.
 5. **Both ABIs, compiled-in or dropped-in** — the two universal rules of #3, no exception for this kind.
-6. **It declares its carrier; it does not open one — through the SAME mechanism a plane uses.**
-   Owner, 2026-09-22: *"treat exports very similar to planes in transport sense. how they request and
-   manage should be identical."* **IDENTICAL, NOT ANALOGOUS.** An exporter declares needs as
-   **(transport, auth) per direction** through the one declaration shape and the one lifecycle the
-   kernel already offers planes — not a second, export-flavoured copy of it. If a reader can tell
-   from the kernel code whether a carrier was requested by a plane or by an exporter, the seam is
-   wrong. Push or pull is the EXPORTER's choice — that is a format-and-destination decision and
-   belongs where the knowledge is — but the carrier is the kernel's to provide. An exporter that
-   opens its own socket is doing a transport's job, and the SSRF/pin/breaker chokepoint stays where
-   Part 4 Axis 3 puts it.
+6. **It declares its carrier; it does not open one.** An exporter declares needs as
+   **(transport, auth) per direction**, and it asks for them the way every other plugin kind asks —
+   not through an export-flavoured API of its own. Push or pull is the EXPORTER's choice: that is a
+   format-and-destination decision and belongs where the knowledge is. The carrier is the kernel's to
+   provide. An exporter that opens its own socket is doing a transport's job, and the SSRF/pin/breaker
+   chokepoint stays where Part 4 Axis 3 puts it.
 
-   *Consequence, stated so it is not discovered later:* a second consumer of the carrier seam means
-   that seam can no longer be shaped around one kind's needs. Whatever `kind: transport` becomes, it
-   answers to planes and exporters on the same terms.
+   **AN EXPORTER IS NOT A PLANE.** Owner, 2026-09-22: *"exports are NOT planes, they dont go over the
+   teller loop. just that they are plugins and should request transports in a similar way as planes
+   and other plugins."* Nothing about an exporter is a served unit: no admit, no meter, no settle, no
+   per-request lifecycle. The resemblance is the CARRIER REQUEST and nothing else. Writing "like a
+   plane" without that fence is how a reader concludes an exporter is metered.
+
+   **OPEN — whether one kind-agnostic seam serves every kind. Assistant to analyse; NOT owner-ruled.**
+   Owner: *"it could be it could not be. you analyze. it could be `kernel.getTransport('http', out)`
+   and thats both planes and exporters and plugin Y in the future."* The candidate is one
+   kind-agnostic acquisition seam — carrier id plus direction in, a `(transport, auth)` pair out —
+   with no kind in its signature. Three things argue for it: #3 says a plugin is a plugin, so a
+   per-kind carrier API contradicts the law; Part 4 Axis 3 puts the SSRF/pin/breaker chokepoint in the
+   host, and one seam is one place to enforce it rather than N places to get it wrong; and the
+   measured history is that 4 of 4 protocols built their own dial stack, which is what a
+   kind-shaped API produces. The honest complication: this seam does not exist yet in any form, so
+   "one seam or two" is downstream of whether `kind: transport` gets built at all — which is the
+   owner's open scope call, not a thing to settle here.
 
 **Property 6 makes `kind: transport` load-bearing for a fifth consumer, which changes how its absence
 reads.** Measured 2026-09-22: `transport` was never built as a plugin kind on EITHER ABI generation
