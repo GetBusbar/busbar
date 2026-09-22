@@ -1963,6 +1963,65 @@ Two consequences to hold on to:
   the clearest case: it is about what core NAMES, and a hex escape defeats it while changing nothing
   about what the binary contains.
 
+#### The thirteenth instrument defect, and it runs the OTHER WAY: red over nothing
+
+The twelve above report **green over nothing**. This one reports **red over nothing** — the same
+disease, mirrored. An instrument whose output cannot distinguish *"I measured, and it is fine"* from
+*"I never measured"* is broken in both directions, and the second direction is easier to miss
+because a red looks like the instrument working.
+
+**Measured 2026-09-22 in `busbar-release` at the pinned `00759df`.** A local `oracle record` run
+produced 1,883 candidate FAILs, of which **1,380 were one message** — `cell missing string field
+"ingress_dialect"`. No product defect. The recorder was routing cells into a drive never built for
+them. Each step measured, not relayed:
+
+- `harness.rs:1722` — `driver: declared_driver.clone().unwrap_or_else(|| "llm".to_string())`.
+  **A cell with no declared driver is assumed to be an LLM cell.**
+- `live.rs:2175` — the dispatch matches on `cell.driver`, the field that has *already* defaulted, so
+  it cannot tell a real llm cell from a driverless cell in any other plane.
+- `build_request.rs:411` — `request_for` is an **LLM-plane** builder by its own doc ("the (op,
+  dialect) pairs the LLM plane does not claim") and demands `ingress_dialect`.
+- The committed corpus: **2,318 cells, 142 carry `ingress_dialect`**, all 142 in the llm plane. The
+  driverless set is exactly `{mcp 912, a2a 468, llm 142}`.
+
+**The predicate that gets this right already existed.** `harness.rs:1667`, `is_plane_cell()` —
+`declared_driver.is_none() && !NATIVE_PLANES.contains(plane)`, where
+`NATIVE_PLANES = ["llm","core","streams"]`. True for exactly mcp 912 + a2a 468 = **1,380**; false
+for llm's 142 and for all 938 driver-declaring cells — **the failure count to the unit.** It is
+`pub`, `#[must_use]`, documented with the `record.sh` line it was ported from, and had **zero
+production call sites.** The routing knowledge was ported; the branch that consults it was not.
+
+**Why it stayed invisible — the reusable half:**
+
+1. **The decision was tangled with a live backend.** Routing lived inside
+   `LiveRecorderBackend::record_cell`, so exercising it required a booted busbar, a mock and a port
+   band. Nothing that expensive acquires a unit test, so a one-line routing defect had nowhere to be
+   caught. **Extract the decision from the machinery and it becomes testable** — the fix makes
+   routing a pure `drive_for(cell) -> Drive`, decided from the cell alone.
+2. **The crate keeps a deliberate inventory of what is NOT ported** — `UNPORTED_DRIVE_HELPERS`,
+   written, in its own words, so the remaining work is *"a precise, code-visible list rather than a
+   vague 'wire the backend'"*. **The plane-rig drive was not in it.** The inventory of missing things
+   was itself missing an entry — and being a `&[&str]` with no mechanical tie to the code, it cannot
+   detect its own omission. Same class as the closed verb table joined by `_ => ""`: **a list that
+   must agree with code, with nothing forcing the agreement.**
+
+**SKIP is the honest outcome, and that was checked rather than assumed** — the obvious way to "fix"
+this is to convert 1,380 reds into passes, which would be the twelve-defect disease exactly.
+`harness.rs:2115` scores `Unsupported` as **SKIP**, distinct from PASS. Corroborating: the 1.5.5
+golden holds **916 cells and zero mcp/a2a ones** (both planes are new in 1.6.0), and
+`accepted-gaps.json` names neither — which its own header says is correct: *"Coverage GROWING … needs
+no entry here."* These 1,380 are new 1.6.0 coverage with no drive composed. They owe a SKIP.
+
+**The fix's positive control is its load-bearing half.** The llm plane is *also* driverless. Had the
+guard swept it in, the 142 money cells would have become silent SKIPs — green over nothing, strictly
+worse than the red removed. The test asserts llm still routes `Native("llm")`, and reds if `llm`
+ever leaves `NATIVE_PLANES`.
+
+> **A GAP AND A FAILURE MUST NEVER BE THE SAME OUTPUT** — the twin of *silence and success must never
+> be the same output*. An instrument that cannot say "I was never built for this" says "this is
+> broken" instead, and 1,380 fabricated reds is what that looks like. Worse, it is self-concealing:
+> everyone reading the ledger spends their time on a product bug that does not exist.
+
 
 - **`git grep -E` does NOT honour `\b`.** Use `-P`. And never grep a concatenated `git archive`
   blob — that produced a false CRITICAL SSRF finding.
