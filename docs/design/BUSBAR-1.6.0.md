@@ -1614,6 +1614,39 @@ home is decided by asking which definition it fits. Nothing fits ⇒ owner conve
 | 31–34 | `busbar-export-{prometheus,webhook,file,otlp}` | One `export` instance per destination format. **It renders; it never decides.** See the six properties below. |
 | 35–40 | `plane-example` · `store-example-plugin` · `auth-static-plugin` · `secret-example-plugin` · `export-example-plugin` · `hook-test-plugin` | **One fixture per plugin kind: the in-tree proof that the kind's ABI loads and behaves identically BOTH WAYS** — linked as an `rlib` and `dlopen`'d as a `cdylib`, one source, two artifacts. `crate-type = ["rlib", "cdylib"]`. Carries no product behaviour and ships in no distribution; its kind-purity rules are read from its DIRECTORY, which is why it is a crate and not a file. |
 
+**THE KIND TEST — OWNER-LOCKED 2026-09-22. One question, mechanical, no case-by-case judgement.**
+
+> Owner: *"thats the math to ask. is something one of these 7 kinds, if so its a plugin. period."*
+
+**Is it one of the seven kinds (store, secret, auth, hook, export, plane, transport)? Then it is a
+PLUGIN.** Not "should be", not "could be extracted later" — it IS one, and code that implements a
+kind while living inside core is MISPLACED, by definition, today.
+
+The test's value is that it is not a judgement. Every prior argument about whether some piece of code
+"counts" was a judgement, and judgements drift — which is how the same kind came to be implemented
+four and five times over in different crates without anything catching it.
+
+**Applied to the tree as measured 2026-09-22, it indicts:**
+
+| code | kind | where it lives now |
+|---|---|---|
+| `export/{prometheus,webhook,file}.rs` | export | `busbar-kernel/src/export/` — not crates |
+| the otlp `tracing-subscriber` layer (`observability.rs:~421`) | export | `init_logging`, not even in `export/` |
+| `hooks/scrape.rs:192-377` (141 LOC, a 2nd Prometheus renderer) | export | inside core, inside the FROZEN hook kind (#86) |
+| `busbar-mcp/src/mcp/client/*` (8,233 LOC, **36% of that crate**) | transport | inside a plane crate |
+| `busbar-llm`'s private `Hop`/`attempt` | transport | inside a plane crate |
+| `busbar-a2a`'s `pub(crate) trait Transport` (`fetch.rs:293`) | transport | inside a plane crate |
+| `busbar-voice`'s `ProviderDial`/`Detached` | transport | inside a plane crate |
+| `serve_listener` (`main.rs:2179`) raw `TcpListener` + axum | transport | **core's own data + admin listener** |
+
+**The listener row is the test biting hardest and it is the right bite:** if core binds its own socket
+rather than acquiring a carrier through the transport kind, the kind is decorative.
+
+**This is also a large part of the answer to the size question.** Production code excluding the four
+new planes measures **2.42× v1.5.5 on code alone** (200,763 vs 69,171 true production; +131,592). A
+meaningful share of that excess is kind-work implemented inside core — the same kind, four and five
+times over — because until now there was no one-line test to apply to it.
+
 **THE `export` KIND — OWNER-LOCKED 2026-09-22 ("AGREED 100%"), six properties.** The roster rows
 above name the INSTANCES; this names the KIND, and the absence of a kind definition is precisely how
 `otlp` drifted into being a `tracing-subscriber` layer in `init_logging` rather than an export.
