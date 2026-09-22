@@ -122,7 +122,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "govern_admit_reason_reason_bytes_match_direct_try_admit", "the rendered MissingGroup reason is byte-identical through the plane host"),
     ]),
     ("PB-20", &[
-        ("test", "the_admin_audit_digest_is_unchanged_by_the_unification", "hash = SHA-256 hex over the canonical prev|seq|ts|action|resource|outcome|principal"),
+        ("test", "a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification", "hash = SHA-256 hex over the canonical prev|seq|ts|action|resource|outcome|principal"),
         ("test", "crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::hash_chain_links_and_verifies", "genesis prev_hash is empty; tamper breaks verify"),
         ("test", "crates/busbar-kernel-audit/src/tests/legacy_ring_tests.rs::export_load_roundtrip_resumes_chain", "restore resumes the sequence"),
         ("test", "admin_audit_chain_boot_verifies_from_frozen_bytes", "restore_from_store over frozen legacy bytes with zero chain breaks"),

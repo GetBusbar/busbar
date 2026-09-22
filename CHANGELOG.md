@@ -334,9 +334,9 @@ The accepted-differences register for this release has exactly eight entries of 
 presented here: two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is
 unchanged in both), one confined to Cohere backends that report `usage.billed_units`, one field
 removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
-endpoint that now refuses an overlong id like its siblings, one where a rate-card edit stops
-repricing history it should not touch, and one provider credential that no longer degrades to an
-empty key.
+endpoint that now refuses an overlong id like its siblings, one where rate cards become a dated
+history so a card's own effective date bounds what it reprices, and one provider credential that no
+longer degrades to an empty key.
 (Two more register entries are also of kind `breaking` but are presented above under Improvements
 instead, because each waives only a caller-additive or documentation-only surface rather than a
 money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
@@ -403,15 +403,18 @@ identically, and every 1.5.5 key and minted secret carries over.
   through to a misleading 404 `not_found` instead of the siblings' 400 `invalid_request` / "id must
   be <= 64 characters". **Migration:** a client that relied on the 404 for an overlong rotate id
   must expect a 400 instead, matching every other `/keys/{id}` handler; no config change is needed.
-- 1.6.0 Changed: a rate-card edit prices what happens after it, not what happened before it. 1.5.5
-  derived every row's spend at read time from the current cost model, so a `PUT
-  /config/settings` rate-card edit re-priced every past row with no restart and no boundary.
-  1.6.0 keeps deriving spend at read time but reads it against the card in force at the posting's
-  instant, from an append-only dated rate-card history. A window with no mid-window card change
-  answers byte-identically; a window that had one now answers with the money each request was
-  actually earned under. **Migration:** if you rely on `GET /admin/usage` totals recalculating
-  after a rate-card change, they no longer do; use the new `amend-rate-history` verb to post an
-  attributed correction instead. See [the 1.6.0 migration guide](docs/migration-1.6.md).
+- 1.6.0 Changed: rate cards are now a dated history, not a single mutable price. Publishing a card
+  with an effective date leaves every posting before that date priced exactly as it was; a signed
+  back-dated correction reprices exactly the window it names — `[effective_from, effective_until)`
+  — and nothing outside it, posted as an attributed, append-only entry rather than an edit to a
+  booked row. 1.5.5 derived every row's spend at read time from the current cost model, so a `PUT
+  /config/settings` rate-card edit re-priced every past row with no restart and no boundary; that
+  blanket repricing is now available only as an explicit, signed correction naming its own window,
+  never as a side effect of publishing a new card. **Migration:** `GET /admin/usage` itself still
+  derives spend from the current card at read time and does not yet resolve through the dated
+  history; to correct what a past window was charged, post a signed correction through the new
+  `POST /api/v1/admin/ledger/amend-rate-history` verb rather than editing the live card. See [the
+  1.6.0 migration guide](docs/migration-1.6.md).
 
 - 1.6.0 Breaking: a provider whose `api_key` reference does not resolve now refuses boot; keyless
   local upstreams must declare `api_key: none`. 1.5.5 logged
