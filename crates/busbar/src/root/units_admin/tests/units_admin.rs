@@ -3144,33 +3144,52 @@ fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
     assert_eq!(empty.len(), 0);
 }
 
-/// EXISTING MONEY/LEDGER READS ARE UNTOUCHED WHEN THE VERB IS NOT CALLED — and the amendment lands
-/// only on the rate-card history, never on the ledger book. A ledger view rendered before an
-/// amendment is byte-for-byte the view rendered after it: the verb moves no ledger cell.
+/// THE AMENDMENT MOVES NO LEDGER CELL — and that is a claim about the BOOK, not about the served
+/// figure.
+///
+/// This test used to make the claim by rendering the totals view before and after a correction and
+/// asserting the two documents were byte-identical. That assertion was the defect written down: it
+/// said a rate row appended afterwards must NOT change what `/api/v1/admin/ledger/totals` reports,
+/// which is only true of an endpoint echoing a stored price, and is exactly what #77(3) ("price is
+/// NEVER stored — money is a read-time conversion") and #79 (a posting prices against the card in
+/// force at its own `arrived_ms`; a back-dated correction reprices exactly the window it names)
+/// forbid. It passed for a second reason too, which is why nobody noticed: the snapshot it rendered
+/// twice was a fixture and the history it amended was a local one the view never consulted, so the
+/// comparison could not have failed whatever the endpoint did.
+///
+/// What is asserted now is the true half of the old claim, at the layer it belongs to: the
+/// amendment appends to the rate-card history and writes NO ledger cell — the book carries exactly
+/// the figures it carried, line for line. That an appended rate row DOES move the served total is
+/// the separate, opposite claim proved by
+/// `a_rate_card_added_after_a_posting_moves_what_the_totals_view_reports`.
 #[test]
-fn amend_rate_history_leaves_the_ledger_views_byte_identical() {
+fn amend_rate_history_moves_no_ledger_cell() {
     use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, RowKey};
 
-    let mut rows = LedgerSnapshot::new();
-    rows.insert(
+    let mut book = LedgerSnapshot::new();
+    book.insert(
         RowKey::new("team-a", A_DAY, "gpt", "openai"),
         LedgerRow {
             priced_nanos: 42,
             fee_count: 1,
         },
     );
-    let totals_before = render_totals(&rows);
+    let before = book.clone();
 
     // Amend the rate-card history — an operation that never touches the ledger book.
     let history = a_seeded_history();
     amend_rate_history_effect(&history, &a_correction_body(), 6, a_sealed_operator())
         .expect("the correction applies");
-
-    // The ledger view is byte-for-byte what it was.
-    let totals_after = render_totals(&rows);
     assert_eq!(
-        totals_before, totals_after,
-        "amending the rate-card history moves no ledger cell"
+        history.len(),
+        2,
+        "the correction is an APPEND, never an edit"
+    );
+
+    assert_eq!(
+        before, book,
+        "amending the rate-card history moved a ledger cell; a correction is an append to the \
+         history and a repricing at read time, never a write to a booked record"
     );
 }
 
@@ -3307,4 +3326,385 @@ fn the_production_posture_view_seals_the_operator_key_the_verify_path_admits_aga
         "with no sealed operator key the amend is refused, byte-for-byte as the release without it"
     );
     assert_eq!(fresh.len(), 1, "a refused correction appends nothing");
+}
+
+// ── THE TOTALS VIEW DERIVES ITS MONEY AT READ TIME (#77(3) / #79) ───────────────────────────────
+//
+// PRICE IS NEVER STORED. `/api/v1/admin/ledger/totals` used to echo the book's `settled` balance —
+// the figure the node computed at settlement — which is the one shape the money model cannot have:
+// an endpoint reporting a stored amount cannot reflect a rate row added afterwards, so the dated
+// history is inert for it and a mispriced lane has no read-time remedy at all. It now resolves each
+// booked line through the deployment's dated history AT THAT LINE'S OWN ARRIVAL INSTANT.
+//
+// The proofs below are the three the model owes, and each fails on the echo it replaced: a card
+// added AFTER a line moves that line's row; a FORWARD-dated card moves nothing before its
+// `effective_from`; and the figure this view derives is the figure `GET /api/v1/admin/usage`
+// derives from the same lines and the same card.
+
+/// The instant the fixture's lines arrive at, in MILLISECONDS.
+///
+/// `A_DAY` is a UTC-day opening as a unix SECOND and this is a wall clock in milliseconds, and the
+/// two scales are kept apart deliberately. A history entry's `effective_from` is milliseconds —
+/// `root/kernel.rs` appends it from `busbar_kernel::store::now_ms` — so a card resolved at a
+/// seconds-valued instant would match only the from-zero opening entry and report it forever, which
+/// is the stored price again with a lookup in front of it. Every resolution below is at this
+/// millisecond instant, and `window_start` (seconds) is used for the row's `day` and nothing else.
+const A_LINE_MS: u64 = A_DAY * 1_000;
+
+/// The lane the fixture's card prices and the fixture's lines were served on.
+const A_LANE: &str = "gpt";
+
+/// A card naming one lane and one class, at `micro_per_unit`, with a flat fee in minor units.
+fn a_card_at(micro_per_unit: f64, fee_minor: i64) -> busbar_kernel_ledger::cost::RateCard {
+    busbar_kernel_ledger::cost::RateCard::from_micro_rates_in(
+        busbar_kernel_ledger::cost::CurrencyCode::USD,
+        [(
+            busbar_kernel_ledger::cost::LaneClass::new(
+                A_LANE,
+                busbar_kernel_ledger::cost::CLASS_INPUT,
+            ),
+            micro_per_unit,
+        )],
+        fee_minor,
+    )
+}
+
+/// One booked line: the quantities, the lane the card is keyed by, and THE INSTANT IT ARRIVED.
+///
+/// The cached figure is seeded at an absurd 999,999,999 nano-units on purpose. The cache is what a
+/// node computed at settlement and is never authoritative; a read that summed caches would answer
+/// that absurdity, so a rendering that leaked one is obvious here rather than plausible.
+fn a_booked_line(
+    bucket: &str,
+    arrived_ms: u64,
+    quantity: u64,
+    fee_count: u64,
+) -> busbar_kernel_ledger::Posting {
+    busbar_kernel_ledger::Posting {
+        node: 1,
+        node_seq: arrived_ms,
+        key: busbar_kernel_ledger::totals::TotalsKey::new(
+            busbar_kernel_ledger::totals::BucketId::new(bucket),
+            busbar_kernel_ledger::totals::CapDimension::NanoUnits,
+            busbar_kernel_ledger::totals::BucketScope::All,
+        ),
+        window_start: A_DAY,
+        lane: A_LANE.to_string(),
+        lines: vec![busbar_kernel_ledger::PricedLine {
+            class: busbar_contract::caps::MeterClassId::new(
+                busbar_kernel_ledger::cost::CLASS_INPUT,
+            ),
+            quantity,
+        }],
+        fee_count,
+        tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
+        arrived_ms,
+        currency: busbar_kernel_ledger::cost::CurrencyCode::USD,
+        cached: busbar_kernel_ledger::DerivedPrice {
+            history_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
+            card_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
+            pre_tier_nanos: 999_999_999,
+            priced_nanos: 999_999_999,
+        },
+        origin: busbar_kernel_ledger::PostingOrigin::Client,
+    }
+}
+
+/// The absurd figure the fixture's BOOK carries, so a fallback to the stored balance is unmistakable.
+///
+/// Every assertion below names a derived figure, and none of them is this. A read that fell back to
+/// the book — or that went on echoing it — answers this number, which no rate row could produce.
+const A_STORED_BALANCE_NOBODY_DERIVED: u128 = 999_999_999;
+
+/// A ledger view with LINES to price and a history to price them against.
+///
+/// It is not a stub for the node's view: it is what a view that HAS the quantities looks like, which
+/// is the shape `NodeLedger` takes the day the sealed facts line lands in the book. The book it also
+/// carries is deliberately absurd, so that every figure asserted here is provably the derivation's
+/// and not the balance's.
+#[cfg(feature = "root-admin")]
+struct PricedLedger {
+    history: crate::root::kernel::RootHistory,
+    lines: Vec<busbar_kernel_ledger::Posting>,
+    book: crate::root::ledger_identity::LedgerSnapshot,
+}
+
+#[cfg(feature = "root-admin")]
+impl PricedLedger {
+    /// A view over these lines, with a book that could only ever be the wrong answer.
+    fn over(lines: Vec<busbar_kernel_ledger::Posting>) -> Self {
+        use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, RowKey};
+        let mut book = LedgerSnapshot::new();
+        for line in &lines {
+            book.insert(
+                RowKey::new(line.key.bucket.as_str(), line.window_start, "", ""),
+                LedgerRow {
+                    priced_nanos: A_STORED_BALANCE_NOBODY_DERIVED,
+                    fee_count: 0,
+                },
+            );
+        }
+        PricedLedger {
+            history: crate::root::kernel::RootHistory::default(),
+            lines,
+            book,
+        }
+    }
+}
+
+#[cfg(feature = "root-admin")]
+impl LedgerView for PricedLedger {
+    fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot {
+        self.book.clone()
+    }
+
+    fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot {
+        crate::root::ledger_identity::LegacySnapshot::new()
+    }
+
+    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
+        Vec::new()
+    }
+
+    fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
+        None
+    }
+
+    fn booked_lines(&self) -> Vec<busbar_kernel_ledger::Posting> {
+        self.lines.clone()
+    }
+
+    fn rate_history(&self) -> Option<crate::root::kernel::PinnedHistory> {
+        self.history.pin()
+    }
+}
+
+/// The totals document this view serves, as BYTES, through the whole loop.
+///
+/// Bytes rather than a parsed value, because one of the claims below is a byte-identity and a
+/// comparison of two parsed documents would absorb exactly the difference it is meant to catch.
+#[cfg(feature = "root-admin")]
+fn totals_bytes_over(view: &Arc<PricedLedger>) -> Vec<u8> {
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch))
+        .with_ledger_view(Arc::clone(view) as Arc<dyn LedgerView>);
+    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(a_ledger_request("/api/v1/admin/ledger/totals"));
+    assert_eq!(answer.status, 200, "the totals view did not answer");
+    answer.body
+}
+
+/// The rows of that document, parsed.
+#[cfg(feature = "root-admin")]
+fn totals_rows_over(view: &Arc<PricedLedger>) -> Vec<serde_json::Value> {
+    let doc: serde_json::Value =
+        serde_json::from_slice(&totals_bytes_over(view)).expect("the totals response is JSON");
+    doc["rows"].as_array().expect("a rows array").clone()
+}
+
+/// **PROOF ONE — A RATE CARD ADDED AFTER A POSTING MOVES WHAT THE TOTALS VIEW REPORTS FOR IT.**
+///
+/// The whole point of an append-only dated history, and the assertion the echo this replaced could
+/// not pass: the same line, the same quantities, nothing edited, reversed or adjusted between the
+/// two reads — and two figures, because a signed back-dated correction now out-ranks the entry the
+/// line was booked under for exactly the interval it names (#79).
+///
+/// The correction is APPENDED, never an edit. The opening entry stays exactly as written; the
+/// resolution rule's highest-covering-seq is what makes the second read answer differently.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_rate_card_added_after_a_posting_moves_what_the_totals_view_reports() {
+    let view = Arc::new(PricedLedger::over(vec![a_booked_line(
+        "team-a", A_LINE_MS, 1_000_000, 0,
+    )]));
+    // The card in force when the line arrived: 2 micro-units per unit of input, no flat fee.
+    view.history.apply(a_card_at(2.0, 0), 1_000);
+
+    let before = totals_rows_over(&view);
+    assert_eq!(before.len(), 1, "one line, one row: {before:?}");
+    assert_eq!(before[0]["bucket"], "team-a");
+    assert_eq!(before[0]["day"], A_DAY);
+    assert_eq!(
+        before[0]["priced_nanos"], "2000000000",
+        "1,000,000 units at 2 micro-units each is 2,000,000,000 nano-units"
+    );
+    assert_eq!(before[0]["priced_micros"], "2000000");
+    assert_ne!(
+        before[0]["priced_nanos"],
+        A_STORED_BALANCE_NOBODY_DERIVED.to_string(),
+        "the view served the book's balance, not a figure any rate row produced"
+    );
+
+    // THE CARD ADDED AFTERWARDS: a signed, back-dated correction covering the instant this line
+    // arrived at, appended long after the line was booked.
+    view.history
+        .amend(
+            a_card_at(4.0, 0),
+            A_LINE_MS - 1_000,
+            Some(A_LINE_MS + 1_000),
+            A_LINE_MS + 60_000,
+            "op-1".to_string(),
+            [9u8; 32],
+        )
+        .expect("the fixture has an opening entry to correct");
+
+    let after = totals_rows_over(&view);
+    assert_eq!(after.len(), 1);
+    assert_eq!(
+        after[0]["priced_nanos"], "4000000000",
+        "a rate row added AFTER the posting must move the figure this endpoint reports for it — \
+         an endpoint echoing a stored price answers the same number twice and fails here"
+    );
+    assert_eq!(after[0]["priced_micros"], "4000000");
+
+    // AND NOTHING WAS REWRITTEN. The book is exactly what it was, which is what makes the move a
+    // repricing rather than an edit: the money changed and no posted line did.
+    assert_eq!(
+        view.ledger_rows()
+            .values()
+            .map(|r| r.priced_nanos)
+            .collect::<Vec<_>>(),
+        vec![A_STORED_BALANCE_NOBODY_DERIVED],
+        "the correction moved a ledger cell"
+    );
+}
+
+/// **PROOF TWO — A FORWARD-DATED CARD LEAVES EVERY EARLIER POSTING'S TOTAL BYTE-IDENTICAL (#79).**
+///
+/// "Price against the latest rate card" means the latest card whose `effective_from` had ARRIVED at
+/// the posting's instant, never the latest card ever authored. Publishing a card prices what happens
+/// after it and leaves the window before it exactly as it was.
+///
+/// The second half is what stops the first from being vacuous: the SAME forward-dated card, over a
+/// line that arrived AFTER its `effective_from`, does move the figure. An append that changed
+/// nothing anywhere would pass the byte-identity and prove nothing.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_forward_dated_card_leaves_an_earlier_postings_total_byte_identical() {
+    let earlier = Arc::new(PricedLedger::over(vec![a_booked_line(
+        "team-a", A_LINE_MS, 1_000_000, 0,
+    )]));
+    earlier.history.apply(a_card_at(2.0, 0), 1_000);
+    let before = totals_bytes_over(&earlier);
+
+    // A card published LATER, effective from an instant after this line arrived.
+    earlier.history.apply(a_card_at(4.0, 0), A_LINE_MS + 1_000);
+    let after = totals_bytes_over(&earlier);
+    assert_eq!(
+        before,
+        after,
+        "publishing a card repriced a window before its effective_from:\n  before {}\n  after  {}",
+        String::from_utf8_lossy(&before),
+        String::from_utf8_lossy(&after)
+    );
+
+    // The same two applies, over a line that arrived AFTER the second card took effect.
+    let later = Arc::new(PricedLedger::over(vec![a_booked_line(
+        "team-b",
+        A_LINE_MS + 2_000,
+        1_000_000,
+        0,
+    )]));
+    later.history.apply(a_card_at(2.0, 0), 1_000);
+    later.history.apply(a_card_at(4.0, 0), A_LINE_MS + 1_000);
+    let rows = totals_rows_over(&later);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]["priced_nanos"], "4000000000",
+        "a line arriving after a card's effective_from must price at that card — otherwise the \
+         byte-identity above is a card nobody ever resolved to"
+    );
+}
+
+/// **PROOF THREE — THE TOTALS VIEW AND `GET /api/v1/admin/usage` AGREE ON THE SAME DATA.**
+///
+/// Two endpoints, one ruling (#79), and they must not become two implementations of it. The usage
+/// read resolves a posting's card at `card_at(arrived_ms)` and sums `LaneRates::nanos` over the
+/// lines, projects ONCE with `micros_of`, and adds the flat fee in micro-units after the divide
+/// (`busbar-core-admin/src/v1/service.rs`, `resolve_row_spend_micros`). That arithmetic is spelled
+/// out here against the same card and the same quantities, and the totals view's own figure is
+/// asserted to equal it.
+///
+/// The flat fee is the half worth proving. The two paths carry it differently — the lookup makes it
+/// a usage line summed in BEFORE the single tier divide, the usage read multiplies it into
+/// micro-units and adds it AFTER — and they agree only because a fee's unit price is an exact
+/// multiple of one minor unit. A fee expressed in anything finer would make the two disagree, and
+/// under the bank-auditor standard that is not a rounding choice: it would mean one of them is wrong.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_totals_view_and_the_usage_read_derive_the_same_figure() {
+    const QUANTITY: u64 = 1_234_567;
+    const FEE_MINOR: i64 = 3;
+    const FEES: u64 = 2;
+
+    let view = Arc::new(PricedLedger::over(vec![a_booked_line(
+        "team-a", A_LINE_MS, QUANTITY, FEES,
+    )]));
+    let card = a_card_at(2.5, FEE_MINOR);
+    view.history.apply(card.clone(), 1_000);
+
+    // THE USAGE READ'S ARITHMETIC, on the same card and the same quantities.
+    let lines = [busbar_contract::caps::UsageLine {
+        class: busbar_contract::caps::MeterClassId::new(busbar_kernel_ledger::cost::CLASS_INPUT),
+        quantity: QUANTITY,
+        source: busbar_contract::caps::QuantitySource::Count,
+        estimated: false,
+    }];
+    let rates = card
+        .lane_rates(A_LANE, busbar_kernel_ledger::cost::CurrencyCode::USD)
+        .expect("the fixture's card names the lane");
+    let usage_micros = busbar_kernel_ledger::cost::micros_of(rates.nanos(&lines)).saturating_add(
+        card.per_request_fee(busbar_kernel_ledger::cost::CurrencyCode::USD)
+            .saturating_mul(busbar_kernel_ledger::cost::MICROS_PER_CENT)
+            .saturating_mul(i64::try_from(FEES).expect("small")),
+    );
+
+    let rows = totals_rows_over(&view);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]["priced_micros"],
+        usage_micros.to_string(),
+        "the ledger totals view and the usage read derive different money from one card and one \
+         set of quantities; under the bank-auditor standard one of them is wrong"
+    );
+    // Stated as an absolute too, so a change that moved BOTH derivations identically still fails.
+    assert_eq!(rows[0]["priced_micros"], "3146417");
+    assert_eq!(
+        rows[0]["fee_count"], FEES,
+        "the fee count travels with the row the fee was charged on"
+    );
+}
+
+/// **THE DERIVED FIGURE AND THE BOOK'S BALANCE ARE ONE NUMBER WHILE THE HISTORY HAS NOT MOVED.**
+///
+/// The bank-auditor check on the swap, and the reason it moves no byte on a deployment nobody has
+/// repriced. `settled` is what the node computed AT SETTLEMENT — the same `price_line` lookup, at
+/// the same instant, against the history pinned at that unit's door — so a read that derives the
+/// figure again from the line's own quantities gets the same integer back, exactly.
+///
+/// A difference here would not be a rounding convention to choose between. It would mean one of the
+/// two paths is wrong, and under #10/#59 that is parked for the owner rather than reconciled by
+/// picking a side.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_derived_figure_equals_the_settled_balance_while_the_history_has_not_moved() {
+    let line = a_booked_line("team-a", A_LINE_MS, 1_234_567, 2);
+    let view = Arc::new(PricedLedger::over(vec![line.clone()]));
+    view.history.apply(a_card_at(2.5, 3), 1_000);
+
+    // What the node WOULD HAVE SETTLED for this line — `units_llm::priced_posting`'s own lookup,
+    // spelled here against the same history and the same arrival instant.
+    let pinned = view.history.pin().expect("the fixture has a history");
+    let settled_nanos = busbar_kernel_ledger::price_line(&line, &pinned.view(), line.tier_bp)
+        .expect("the fixture's card prices the fixture's line")
+        .priced_nanos;
+
+    let rows = totals_rows_over(&view);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]["priced_nanos"],
+        settled_nanos.to_string(),
+        "the read-time derivation and the figure the node settled disagree on an unmoved history; \
+         that is not a rounding choice — one of the two is wrong"
+    );
 }

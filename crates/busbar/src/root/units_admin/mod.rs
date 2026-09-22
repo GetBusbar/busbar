@@ -458,7 +458,19 @@ impl NodeLedger {
         self.durability.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// The ledger's side, off a lock somebody already holds.
+    /// The ledger's side, off a lock somebody already holds: **THE BOOK'S BALANCE**.
+    ///
+    /// `settled` is what the node DREW against the bucket and posted when its units ended, at the
+    /// rates in force then — the figure the budget was enforced on. It is not a price and must not
+    /// be published as one: a figure that was computed once at settlement cannot reflect a rate row
+    /// added afterwards, which is exactly the stored price #77(3) forbids and exactly what leaves
+    /// the dated history inert for a view that echoes it.
+    ///
+    /// **It is therefore the reconciliation's side and the totals view's FALLBACK, never its
+    /// model.** The reconciliation identity compares this against the PREVIOUS release's rows,
+    /// which that release derived at settlement and never reprices, so both sides of it have to be
+    /// read at the same vintage. The totals view reaches it only through [`totals_rows`], and only
+    /// where the view has no line to convert — see [`derived_totals_rows`].
     fn rows_of(durability: &crate::root::durability::Durability) -> LedgerSnapshot {
         use crate::root::ledger_identity::{LedgerRow, RowKey};
 
@@ -1177,6 +1189,16 @@ fn derived_totals_rows(
     // THE SNAPSHOT THIS READ IS ANSWERED AT: the history as the pin holds it, for every row of it.
     let snapshot = pinned.view();
     let currency = crate::root::kernel::node_currency();
+    // A STATEMENT NAMES EXACTLY ONE CURRENCY, and `totals_as_of` enforces that by SKIPPING a line
+    // denominated in another — which is right for a statement and would be wrong here, because a
+    // skipped line leaves this row reporting a smaller figure rather than an incomplete one. Two
+    // currencies never sum and nothing here converts between them, so a line the node's own
+    // currency cannot express is a refusal for the whole read, exactly as a hole in the history is.
+    // Unreachable while `node_currency` is the one answer a deployment has; the guard is what keeps
+    // it unreachable the day that changes.
+    if lines.iter().any(|line| line.currency != currency) {
+        return None;
+    }
     // The windows the lines fall in. A statement is cut per window because a window is what a row's
     // `day` names, and a set rather than a list because a busy day is many lines on one window.
     let windows: std::collections::BTreeSet<busbar_kernel_ledger::totals::WindowStart> =
