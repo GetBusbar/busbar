@@ -27,9 +27,10 @@ path = "src/lib.rs"
 [dependencies]
 busbar-api = { path = "../api" }
 # ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────
-# The closed JSON span grammar the kernel loop's `grammar`/`teller` modules name, and the
-# chunk-chaining bump allocator behind `scratch::ScratchPad` (#41).
-busbar-grammar = { path = "../busbar-grammar" }
+# The chunk-chaining bump allocator behind `scratch::ScratchPad` (#41). The closed JSON span
+# grammar the kernel loop's `grammar`/`teller` modules name used to be its own dependency here
+# (`busbar-grammar`); it folded into `busbar-contract` (DECISIONS #40) and is now named via
+# `busbar_contract::spans`, which this crate already depends on below.
 bumpalo = { workspace = true }
 # The CONFIG home carved out of busbar-core (DECISIONS #19). Core depends on IT (never the reverse
 # — that edge is the cycle Cargo refuses) and re-exports its neutral config helpers at their

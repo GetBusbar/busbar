@@ -30,6 +30,11 @@ use crate::plane::{PlaneSections, RefError};
 /// deleted, and it would go green while the derivation rotted.
 #[test]
 fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
+    // Needs a plane registered so `plane_keys()` contributes at least `pools` — the equality below
+    // is self-consistent regardless of WHICH plane (both sides derive from the same registry read),
+    // but the floor assertion needs `pools` (and the fixed `NAMED_MAP_SECTIONS` literal's
+    // `tools`/`agents`/`export`/`identity-providers`) actually present.
+    crate::test_support::register_neutral_test_plane();
     let mut expected: Vec<&'static str> = Vec::new();
     for s in crate::plane::plane_keys()
         .map(|k| crate::plane::plane_decl(k).config_section)

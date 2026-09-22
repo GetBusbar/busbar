@@ -18,10 +18,19 @@
 
 use busbar_kernel::config::{
     merge_provider_fallback, resolve, AdvancedCfg, ConfigMgmtCfg, DeployCfg, HealthDefaultsCfg,
-    LimitsCfg, PoolCfg, ProviderDef, ProviderDeploy, RoutingCfg, SecretRef, DEFAULT_ADMIN_LISTEN_ADDR,
-    DEFAULT_LISTEN_ADDR,
+    LimitsCfg, PoolCfg, ProviderDef, ProviderDeploy, RoutingCfg, SecretRef,
+    DEFAULT_ADMIN_LISTEN_ADDR, DEFAULT_LISTEN_ADDR,
 };
 use std::collections::HashMap;
+
+/// Register the real MCP/A2A planes in the process registry, idempotent (first-wins) — needed
+/// because `resolve()` refuses a non-default `tools:`/`agents:` section as "compiled without the
+/// plane that owns it" unless that plane is actually registered. `src/config/tests/tests.rs` got
+/// this for free from the removed `TEST_BUILTIN_PLANE_DECLS`; here it is explicit, per-test.
+fn register_planes() {
+    busbar_mcp::testkit::install_test_seams();
+    busbar_a2a::testkit::install_test_seams();
+}
 
 /// A minimal ProviderDef for resolve() tests — byte-identical to the fixture this test used before
 /// the move (`src/config/tests/tests.rs::provider_def`).
@@ -144,6 +153,7 @@ fn resolve_provider_hook_and_core_fallback_agree() {
 /// wiring itself is the thing under test here, not the rule.
 #[test]
 fn resolve_refuses_a_publish_as_collision_so_validate_and_boot_agree() {
+    register_planes();
     // The SUBTLE collision — an override against a namespaced default nobody typed — because it is
     // the one that survives a partial implementation of the rule.
     let tools: busbar_mcp::mcp::config::ToolsCfg = serde_yaml::from_str(
@@ -193,6 +203,7 @@ other:
 /// member (`search-eu` → a `tools:` server), so the dangling `search-us` is named against `tools:`.
 #[test]
 fn a_tool_pool_member_that_names_no_server_is_refused() {
+    register_planes();
     let mut deploy = base_deploy();
     let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
     tools.servers.insert(
@@ -218,6 +229,7 @@ fn a_tool_pool_member_that_names_no_server_is_refused() {
 /// assigned a single plane and is refused with the homogeneity error.
 #[test]
 fn a_pool_may_not_straddle_two_planes() {
+    register_planes();
     let mut deploy = base_deploy();
     let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
     agents.agents.insert(
@@ -250,6 +262,7 @@ fn a_pool_may_not_straddle_two_planes() {
 /// A one-member pool changes nothing, so writing one is a mistake and is named as one.
 #[test]
 fn a_failover_pool_needs_two_members() {
+    register_planes();
     let mut deploy = base_deploy();
     let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
     agents.agents.insert(

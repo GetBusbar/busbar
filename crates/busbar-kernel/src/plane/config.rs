@@ -342,7 +342,7 @@ impl<'de> serde::Deserialize<'de> for StreamsSection {
 /// neutral seam the owning plane's own endpoint-config type deserializes through. Absent/null ⇒
 /// `None` (endpoint not configured), byte-identical to the pre-seam typed field's `Default`.
 #[derive(Debug, Default)]
-pub(crate) struct McpEndpointSection(pub(crate) Option<Box<dyn PlaneEndpointCfg>>); // plane-purity: frozen-wire McpEndpointSection is recorded verbatim in config-schema.snapshot.json as the mcp: field type
+pub struct McpEndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>); // plane-purity: frozen-wire McpEndpointSection is recorded verbatim in config-schema.snapshot.json as the mcp: field type
 
 // plane-purity: frozen-wire the impl below is for McpEndpointSection, the snapshot-recorded mcp: field type
 impl<'de> serde::Deserialize<'de> for McpEndpointSection {
@@ -394,9 +394,7 @@ pub fn config_sections() -> Vec<&'static str> {
 /// [`super::registry::plane_decls`]; the plane sections come off each decl's
 /// [`super::registry::PlaneDecl::config_section`] rather than an enum `match`, which is what lets a
 /// registered plane's section into the hook-reference grammar.
-pub fn config_sections_from(
-    decls: &[&'static super::registry::PlaneDecl],
-) -> Vec<&'static str> {
+pub fn config_sections_from(decls: &[&'static super::registry::PlaneDecl]) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     for section in decls
         .iter()
@@ -442,6 +440,14 @@ pub fn validate_section_hooks(
 ///
 /// An extracted plane crate skips this wrapper and calls the substrate split directly with its OWN
 /// `PLANE_DECL.config_section` / `subject_noun` consts — it holds no plane registry to look up.
+///
+/// `plane_key` is normally [`super::fallback_key`]'s answer for the `pools:` section's one caller —
+/// which is the EMPTY STRING on a build with no plane registered at all (an honest "there is no
+/// fallback" answer, not a bug; see that fn's doc). Looked up through [`super::registry::plane_decl_for`]
+/// (never the panicking [`super::plane_decl`]) for exactly that reason: an unregistered/empty key
+/// must REFUSE the parse with a named diagnostic (DECISIONS #42 — an unknown is refused, never
+/// defaulted or silently dropped), not panic the process mid-deserialize. A build that DOES have its
+/// plane registered resolves and behaves byte-identically to before.
 pub fn split_section_for_plane<'de, D, T>(
     deserializer: D,
     plane_key: &'static str,
@@ -451,7 +457,15 @@ where
     D: serde::Deserializer<'de>,
     T: serde::de::DeserializeOwned,
 {
-    let d = super::plane_decl(plane_key);
+    use serde::de::Error as _;
+    let d = super::registry::plane_decl_for(plane_key).ok_or_else(|| {
+        D::Error::custom(format!(
+            "no plane is registered to own this config section (looked up by key `{plane_key}`) \
+             — this build has no plane plugin compiled in or installed, so it cannot resolve \
+             config that names a plane-owned section; install a plane plugin or remove the \
+             section from the config"
+        ))
+    })?;
     busbar_kernel::plane::config::split_section(
         deserializer,
         d.config_section,

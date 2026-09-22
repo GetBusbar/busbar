@@ -15,24 +15,13 @@
 // neutral substrate at their historical paths.
 pub use busbar_kernel::ingress::arrival::{install_path_ingress, PathIngress};
 
-// PRODUCTION / `test-support`: the catch-all resolves an arrival straight off the installed table (the
-// composition root wrote it; a `test-support` consumer seeds the hook via the dialect crate's testkit).
-#[cfg(not(test))]
+// The catch-all resolves an arrival straight off the installed table (the composition root wrote it)
+// or the test hook (`set_test_path_ingress`). Core's OWN `#[cfg(test)]` binary used to auto-seed the
+// test hook here with the extracted dialects' `PATH_INGRESS` slice — the A6/HostCtx
+// dev-dependency-cycle cleanup removed that (it named `busbar_llm` directly, which only type-checks
+// with ONE `busbar_kernel` in the graph): a test that needs a real path-model arrival now registers
+// it itself (`busbar_kernel::ingress::arrival::set_test_path_ingress(|| busbar_llm::PATH_INGRESS)`,
+// idempotent, first-wins) from an integration-test target, exactly the posture an external
+// `test-support` consumer already used — so this neutral source names no dialect crate under any
+// build surface.
 pub(crate) use busbar_kernel::ingress::arrival::path_ingress_for;
-
-/// CORE'S OWN `#[cfg(test)]` BINARY has no composition root, so — exactly as `proto::registry`'s test
-/// accessor seeds `set_test_builtins` — this seeds the neutral arrival hook with the extracted
-/// dialects' `PATH_INGRESS` slice (named in a `tests/` file the neutral-purity lint excludes) before
-/// every resolve, so a path-model dialect's URL-model request in a core test resolves its arrival.
-#[cfg(test)]
-pub(crate) fn path_ingress_for(name: &str) -> Option<PathIngress> {
-    busbar_kernel::ingress::arrival::set_test_path_ingress(test_path_ingress::test_path_ingress);
-    busbar_kernel::ingress::arrival::path_ingress_for(name)
-}
-
-/// The extracted-dialect arrival list for core's OWN test binary — the shipped dialect crate's
-/// `PATH_INGRESS`, named in a `tests/` file the neutral-purity lint excludes so the neutral source
-/// spells no dialect crate.
-#[cfg(test)]
-#[path = "tests/path_ingress_builtins.rs"]
-mod test_path_ingress;

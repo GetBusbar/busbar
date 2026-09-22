@@ -213,7 +213,7 @@ pub fn wire_format_names(key: &str) -> &'static [&'static str] {
 /// does exactly this, in `ingress::finish_inner`). Derived from the format list it is a RULE, and
 /// the day a plane speaks a second dialect the boundary stops labelling it and the rule says so
 /// rather than a stale literal quietly lying.
-pub(crate) fn sole_wire_format(key: &str) -> Option<&'static str> {
+pub fn sole_wire_format(key: &str) -> Option<&'static str> {
     sole_of(wire_format_names(key))
 }
 
@@ -227,7 +227,7 @@ pub fn wire_formats(key: &str) -> usize {
 
 /// Whether this plane has EARNED a superset intermediate representation. See the module header:
 /// the threshold is two wire formats, and nothing else.
-pub(crate) fn has_superset_ir(key: &str) -> bool {
+pub fn has_superset_ir(key: &str) -> bool {
     superset_of(wire_formats(key))
 }
 
@@ -241,7 +241,7 @@ pub(crate) fn has_superset_ir(key: &str) -> bool {
 /// dialect has nothing to label a request with — but it is now a signed decision with a test
 /// (`plane/tests/`), not a match arm's accident. Same for `has_superset_ir` above: zero wire
 /// formats have earned nothing, so `superset_of(0)` is `false` BY DECISION.
-pub(crate) fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
+pub fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
     match names {
         // ZERO dialects: nothing can be labelled, deliberately — see the doc comment.
         [] => None,
@@ -251,7 +251,7 @@ pub(crate) fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
 }
 
 /// The `has_superset_ir` derivation, split out for the same zero-dialect reason as [`sole_of`].
-pub(crate) fn superset_of(wire_formats: usize) -> bool {
+pub fn superset_of(wire_formats: usize) -> bool {
     wire_formats >= 2
 }
 
@@ -353,7 +353,7 @@ impl PlaneDispatch {
     /// busbar key carries no audience at all, and the verifier rejects any token that does
     /// (`governance::signing`, the 1.6.0 plane boundary). Handing the fallback an audience here
     /// would quietly make every unclaimed path an OAuth resource server.
-    pub(crate) fn admit(self, key: &'static str, admission: PlaneAdmission) -> Self {
+    pub fn admit(self, key: &'static str, admission: PlaneAdmission) -> Self {
         // The fallback takes none — see the doc: an audience on an unmounted plane is inert, and one
         // on the fallback plane would quietly make every unclaimed path an OAuth resource server.
         if is_fallback(key) {
@@ -395,7 +395,7 @@ impl PlaneDispatch {
     /// canonical, so the order of these calls decides which path the plane calls its own. A repeated
     /// path is not claimed twice: mounting is idempotent, so a config apply that re-runs the same
     /// sequence cannot grow the table.
-    pub(crate) fn mount(self, key: &'static str, path: &str, wire: &'static str) -> Self {
+    pub fn mount(self, key: &'static str, path: &str, wire: &'static str) -> Self {
         // Mounting the fallback is a no-op: it IS the catch-all, so a second door to it is a
         // precedence question with no good answer.
         if is_fallback(key) {
@@ -443,7 +443,7 @@ impl PlaneDispatch {
     /// dialect landed — which would have silently stopped counting every request on that plane the
     /// day a second binding armed, and a metric that stops is indistinguishable from traffic that
     /// stopped.
-    pub(crate) fn wire_format_of(&self, path: &str) -> Option<&'static str> {
+    pub fn wire_format_of(&self, path: &str) -> Option<&'static str> {
         self.claims.keys().copied().find_map(|key| {
             self.claims_of(key)
                 .iter()
@@ -467,7 +467,7 @@ impl PlaneDispatch {
     /// only admits another plane's traffic once both colliding planes have a door. Unlike
     /// [`Self::mounted_plane_of`] this names a plane by its KEY, so it reports a registered plane
     /// that has no [`Plane`] variant too.
-    pub(crate) fn mounted_keys(&self) -> Vec<&'static str> {
+    pub fn mounted_keys(&self) -> Vec<&'static str> {
         self.claims.keys().copied().collect()
     }
 
@@ -500,7 +500,7 @@ impl PlaneDispatch {
     /// The fallback is reached by falling THROUGH the mount table, never by naming it, so a
     /// deployment that never enabled a given plane has no door for it and that plane's usual path is
     /// an ordinary unclaimed path. Nothing here lets a plane claim a path by URL shape.
-    pub(crate) fn ingress_of(&self, path: &str) -> Ingress {
+    pub fn ingress_of(&self, path: &str) -> Ingress {
         match self.mounted_plane_of(path) {
             Some(key) => Ingress::Mounted(key),
             // THE FALLBACK ARM, and the only place a path SHAPE decides anything. It answers
@@ -525,7 +525,7 @@ impl PlaneDispatch {
     /// The walk covers every claimed key rather than a hand-listed set of plane names: the fallback
     /// has no mount, so it is skipped by construction rather than by being left off a list a new
     /// plane would have to remember to join.
-    pub(crate) fn mounted_plane_of(&self, path: &str) -> Option<&'static str> {
+    pub fn mounted_plane_of(&self, path: &str) -> Option<&'static str> {
         self.claims.keys().copied().find(|key| {
             self.claims_of(key)
                 .iter()
@@ -555,7 +555,7 @@ impl PlaneDispatch {
 /// "unknown": an unrecognised path is not a fourth kind of thing, it is a fallback path whose
 /// dialect is not legible, which is what `Fallback(None)` says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Ingress {
+pub enum Ingress {
     /// A path a plane CLAIMS BY MOUNT, at a segment boundary, named by its registry key.
     Mounted(&'static str),
     /// The fallback plane. `Some(dialect)` when the path shape names one of the registered fallback
@@ -572,7 +572,7 @@ impl Ingress {
     /// This is the `ingress_protocol` metric-label vocabulary (see [`wire_format_names`]),
     /// so a mounted plane labels as its own dialect rather than as whichever fallback dialect its
     /// path happens to resemble.
-    pub(crate) fn wire_format(self) -> Option<&'static str> {
+    pub fn wire_format(self) -> Option<&'static str> {
         match self {
             // A plane with several dialects cannot be labelled from the boundary — which dialect
             // spoke is a fact only its reader knows. `sole_wire_format` is that rule, computed.
@@ -602,7 +602,7 @@ impl Ingress {
     /// interface list is an ORDERED list whose first entry is the preferred binding, busbar's own
     /// card publishes these in this order, and a refusal that cannot know which binding the caller
     /// intended is owed the one the card names first.
-    pub(crate) fn shaping_wire_format(self) -> Option<&'static str> {
+    pub fn shaping_wire_format(self) -> Option<&'static str> {
         match self {
             Ingress::Mounted(key) => wire_format_names(key).first().copied(),
             Ingress::Fallback(dialect) => dialect,
@@ -778,9 +778,11 @@ impl<T> PlaneSections<T> {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/plane_tests.rs"]
-mod plane_tests;
+// `plane_tests` MOVED to `tests/plane_dispatch_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
+// cleanup): it hard-codes the real `"llm"`/`"mcp"`/`"a2a"` keys and asserts against their REAL
+// declared wire formats (the actual dialect/plane registries), which only type-checks/behaves
+// correctly with ONE `busbar_kernel` in the graph and a real roster registered — an integration-test
+// target, never this `#[cfg(test)]` unit module. See that file's header.
 
 #[cfg(test)]
 #[path = "tests/sections_tests.rs"]

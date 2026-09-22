@@ -237,7 +237,7 @@ impl PlaneBootCtx for BootCtx {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl BootCtx {
     /// A ctx carrying no phase context, for the boot-hook FOLD tests (R2-boot): a hook that only
     /// returns `Err` — or a `None`-hook plane — reads nothing off it.
@@ -262,37 +262,32 @@ impl BootCtx {
 /// through [`install_planes`]. Naming a plane crate's `PLANE_DECL` here would be a plane-crate symbol
 /// reference in neutral source — a side channel around the ABI — so this stays empty.
 ///
-/// Core's OWN test binary still needs the shipped process list of the plane crates it ships against
-/// (dev-dependencies there), but that list names each plane crate's `PLANE_DECL`, which belongs OFF
-/// the neutral source. It is therefore defined in the test module (`registry_tests`, a `tests/` file
-/// the neutral-purity lint excludes) and reached ONLY through [`builtin_plane_decls`]. An EXTERNAL
-/// `test-support` consumer (the plane suites, core's integration target) has `cfg(test)` false and
-/// registers through [`register_test_plane`] from each plane's `testkit`.
-#[cfg(not(test))]
+/// Core's OWN `#[cfg(test)]` unit-test binary carries NO built-in plane rows either — same as
+/// production and `test-support` (the A6/HostCtx dev-dependency-cycle cleanup dropped the
+/// `registry_tests`-backed `#[cfg(test)]` special case, which named the three plane crates' real
+/// `PLANE_DECL`s directly and only type-checked by accepting a SECOND, distinct `busbar_kernel`
+/// instance in the dependency graph). A test that needs the shipped `[llm, mcp, a2a]` roster
+/// registers it explicitly (`register_test_plane` from each plane's `testkit`) — exactly the posture
+/// an EXTERNAL `test-support` consumer (the plane suites, `tests/*.rs` here) already used, and now
+/// the ONLY posture, so this neutral source names no plane crate under any build surface.
 static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[];
 
-/// The built-in declarations. Read by [`plane_decls`] to build the process list, and by the
-/// registry's own tests to build a list with ONE MORE declaration in it — which is the whole of what
-/// a loader will do differently. Empty in production and under `test-support`; under core's own
-/// `#[cfg(test)]` binary it is the test-module list, so no plane crate is named in neutral source.
-#[cfg(not(test))]
+/// The built-in declarations. Read by [`plane_decls`]. Always empty — see [`BUILTIN_PLANE_DECLS`].
 pub fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
     BUILTIN_PLANE_DECLS
 }
 
-#[cfg(test)]
-pub fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
-    registry_tests::TEST_BUILTIN_PLANE_DECLS
-}
-
-/// ONE PLANE'S DEFAULT per-generation runtime, type-erased — the object core's `cfg(test)` fixture
-/// seeds under that plane's runtime-slot companion for every `TestApp` (the plane is a built-in of
-/// core's own test process). Delegates to the `tests/registry_tests.rs` helper, the one `tests/`-file
-/// the neutral-purity lint excludes, so the plane crate's name that builds it stays OFF this neutral
-/// source.
+/// ONE PLANE'S DEFAULT per-generation runtime, type-erased — historically the object core's OWN
+/// `#[cfg(test)]` fixture seeded under the MCP plane's runtime-slot companion for every `TestApp`,
+/// back when the MCP plane was an automatic built-in there (see [`BUILTIN_PLANE_DECLS`]). With no
+/// plane auto-registered under `cfg(test)` any more, [`plane_decl_for_config_section`] finds no
+/// `tools:`-owning plane and this is never actually reached — kept only so the (now dead-at-runtime)
+/// call chain in `test_support::TestApp::build` still compiles; a test that wants the real MCP
+/// runtime seeded registers the plane itself (`busbar_mcp::testkit::install_test_seams()`) and drives
+/// its own fixture, exactly as an external `test-support` consumer already did.
 #[cfg(test)]
 pub fn default_mcp_test_runtime() -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
-    registry_tests::default_mcp_test_runtime()
+    std::sync::Arc::new(())
 }
 
 /// The process plane list, folded on first read from the built-ins plus anything installed. Under the
@@ -651,9 +646,14 @@ pub fn build_dispatch(
     Ok(dispatch)
 }
 
-#[cfg(test)]
-#[path = "tests/registry_tests.rs"]
-mod registry_tests;
+// `registry_tests` MOVED to `tests/registry_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
+// cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp`/`busbar_a2a` `PLANE_DECL`s and their
+// real runtime objects, which only type-checks with ONE `busbar_kernel` in the graph — an
+// integration-test target, never this `#[cfg(test)]` unit module. See that file's header. The two
+// `#[cfg(test)]` seams it used to reach through (`builtin_plane_decls`, `default_mcp_test_runtime`
+// below) now behave identically under `cfg(test)` and under the external `test-support` surface: an
+// EMPTY built-in set unless a test explicitly registers (`register_test_plane`) — the posture the
+// module doc below already described for external consumers.
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 /// EVERYTHING A PLANE'S [`PlaneDecl::build`] NEEDS to construct its runtime object for one config

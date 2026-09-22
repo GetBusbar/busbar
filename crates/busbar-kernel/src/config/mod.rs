@@ -1161,7 +1161,7 @@ pub struct DeployCfg {
     /// [`crate::config::prepass`] before this struct parses, so it is never in this struct's
     /// accepted key set and never named in its unknown-key refusal. See that module for why.
     #[serde(skip)]
-    pub(crate) mcp: McpEndpointSection, // plane-purity: frozen-wire the mcp: top-level wire key + McpEndpointSection snapshot type (frozen since 1.5.3)
+    pub mcp: McpEndpointSection, // plane-purity: frozen-wire the mcp: top-level wire key + McpEndpointSection snapshot type (frozen since 1.5.3)
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.

@@ -544,6 +544,7 @@ fn admin_plane_boot_guard() {
 /// `admin_require_mtls` did not exist (so the omitted-default assertion did not compile).
 #[test]
 fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg =
         serde_yaml::from_str("providers: {}\nmodels: {}\npools: {}\n").expect("parses");
     assert!(
@@ -564,6 +565,37 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
     );
 }
 
+/// A BUILD WITH NO PLANE REGISTERED AT ALL — the honest, structurally-guaranteed-reachable case
+/// under this architecture (Part 2 #1: core names zero planes; #3/#11: planes are plugins that may
+/// be compiled in, dropped out, or not yet installed when config resolves) — must REFUSE parsing a
+/// config that names a plane-owned section (`pools:`), with a named, actionable diagnostic. It must
+/// NEVER panic the process, and it must never silently default/skip the section (DECISIONS #42: an
+/// unknown is refused, never defaulted).
+///
+/// RED before the fix: `PoolsCfg::deserialize` → `plane::config::split_section_for_plane` called
+/// `super::plane_decl(fallback_key())` — the PANICKING lookup — with `fallback_key()`'s own
+/// documented, honest empty-string answer for "no fallback plane registered", so this exact
+/// scenario (a build with a registered plane count of zero) crashed the process instead of
+/// refusing the parse. `TestRegistryIsolation::empty()` forces that scenario deterministically,
+/// even though this test binary registers planes elsewhere (unlike a shipped zero-plane build, it
+/// cannot rely on ambient absence) — the guard clears the registered set and holds the process
+/// registry's serial lock for its lifetime, so no sibling test's registration can leak in.
+#[test]
+fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registered() {
+    let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::empty();
+    let result = serde_yaml::from_str::<DeployCfg>("providers: {}\nmodels: {}\npools: {}\n");
+    let err = result.expect_err(
+        "a config with a pools: section must be REFUSED, not silently accepted, when no plane \
+         is registered to own that section",
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("no plane is registered"),
+        "the refusal must name the actual problem (no plane registered), not merely fail some \
+         other way; got: {message}"
+    );
+}
+
 /// The shipped example config.yaml must parse and resolve cleanly against providers.yaml
 /// (every referenced provider/model exists; the example stays a working starting point).
 ///
@@ -573,6 +605,7 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
 /// once config.yaml is migrated.
 #[test]
 fn test_shipped_example_config_resolves() {
+    crate::test_support::register_neutral_test_plane();
     // Hold the shared-env lock across the whole set/interpolate/remove sequence (recover on
     // poison: a panic in another holder must not block this test).
     let _env_guard = CLIENT_TOKEN_ENV_LOCK
@@ -2104,6 +2137,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
 /// inline single-key map, so neither the parse nor the shared-definition assertion compiled.
 #[test]
 fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  \
            corp-ad: { module: ad, max_admin_scope: full, settings: { server: \"ldaps://corp\" } }\n  \
@@ -2155,6 +2189,7 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
 /// narrow an existing deployment's admin ceiling.
 #[test]
 fn test_max_admin_scope_default_is_most_restrictive_except_admin_tokens() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad }\n  admin-tokens: { module: admin-tokens }\n\
          auth:\n  chain: [corp-ad]\n  admin_auth: [admin-tokens, corp-ad]\n\
@@ -2183,6 +2218,7 @@ fn test_max_admin_scope_default_is_most_restrictive_except_admin_tokens() {
 /// error, never a silently-skipped auth module (which would quietly weaken the front door).
 #[test]
 fn test_dangling_identity_provider_reference_is_an_error() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "auth: { chain: [keys, ghost] }\nproviders: {}\nmodels: {}\npools: {}\n",
     )
@@ -2231,6 +2267,7 @@ fn test_identity_provider_typo_rejected_at_parse() {
 /// must fail boot, not be silently ignored.
 #[test]
 fn test_token_on_a_non_admin_tokens_provider_is_an_error() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "identity-providers:\n  corp-ad: { module: ad, token: { env: X } }\n\
          auth: { chain: [corp-ad] }\nproviders: {}\nmodels: {}\npools: {}\n",
@@ -2755,6 +2792,7 @@ fn test_caller_in_hook_groups_scope() {
 /// the reserved `pools.hooks:` list is lifted out as the all-pools attach.
 #[test]
 fn test_pools_reserved_hooks_key() {
+    crate::test_support::register_neutral_test_plane();
     // The reserved key is the all-pools attach; the rest are pools.
     let pools: crate::config::PoolsCfg =
         serde_yaml::from_str("hooks: [pii]\nfast:\n  members: []\n  hooks: [cheapest, pii]\n")
@@ -2787,6 +2825,7 @@ fn test_pools_reserved_hooks_key() {
 /// nothing checks.
 #[test]
 fn test_pools_reserved_name_refusal_is_byte_identical_to_1_5_5() {
+    crate::test_support::register_neutral_test_plane();
     let e = serde_yaml::from_str::<crate::config::PoolsCfg>("hooks:\n  members: []\n")
         .expect_err("a pool named `hooks` must be rejected");
     assert_eq!(
@@ -2800,6 +2839,7 @@ fn test_pools_reserved_name_refusal_is_byte_identical_to_1_5_5() {
 /// BOOT-P07 above: 1.5.5's sentence, written from the shared three-plane template.
 #[test]
 fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
+    crate::test_support::register_neutral_test_plane();
     let e = serde_yaml::from_str::<crate::config::PoolsCfg>("upstream_credentials: borrowed\n")
         .expect_err("an unknown all-pools credential mode must be rejected");
     assert_eq!(
@@ -3387,13 +3427,13 @@ fn omitted_phase_is_exactly_the_four_core_stages() {
 /// The pre-fix file contains the contradicting sentence this test rejects.
 #[test]
 fn the_phase_field_doc_agrees_with_the_frozen_omitted_phase_answer() {
-    // `HookCfg` (and its `phase:` field doc this test pins) moved to
-    // `busbar_kernel::config::hooks` — busbar-core re-exports it at the historical
-    // `config::HookCfg` path, but the doc comment this test greps for now lives in the substrate
-    // source file, not here.
+    // `HookCfg` (and its `phase:` field doc this test pins) used to live in the now-deleted
+    // `busbar-substrate` crate (W4.b: the substrate engine was absorbed into busbar-kernel), so the
+    // doc comment this test greps for lives in THIS crate's own `config/hooks.rs` now, not a
+    // sibling crate's source file.
     let src = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../busbar-substrate/src/config/hooks.rs"
+        "/src/config/hooks.rs"
     ))
     .expect("busbar-substrate's config/hooks.rs is readable");
     assert!(
@@ -3427,6 +3467,7 @@ fn the_phase_field_doc_agrees_with_the_frozen_omitted_phase_answer() {
 /// name landed in BOTH `global_hooks` and the pool's `gates` and fired twice.
 #[test]
 fn additive_hook_lists_dedupe_at_first_position() {
+    crate::test_support::register_neutral_test_plane();
     // The rule itself, at the single combine point.
     let section = vec!["audit".to_string(), "pii".to_string()];
     let entity = vec![
@@ -3485,6 +3526,7 @@ fn additive_hook_lists_dedupe_at_first_position() {
 /// `upstream_credentials` parsed fine) and there was no frozen set to assert against.
 #[test]
 fn pools_reserved_section_keys_are_frozen() {
+    crate::test_support::register_neutral_test_plane();
     assert_eq!(
         busbar_kernel::plane::config::RESERVED_SECTION_KEYS,
         ["hooks", "upstream_credentials"],
@@ -3513,6 +3555,7 @@ fn pools_reserved_section_keys_are_frozen() {
 /// setting will be read against.
 #[test]
 fn pools_upstream_credentials_is_a_scalar_override() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "pools:\n  upstream_credentials: own\n\
          \x20 fast:\n    members: []\n    upstream_credentials: passthrough\n\
@@ -3547,6 +3590,7 @@ fn pools_upstream_credentials_is_a_scalar_override() {
 /// every `SecretRef` in every config to be rewritten for no behavioral gain.
 #[test]
 fn secrets_block_stays_module_keyed_by_design() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = serde_yaml::from_str(
         "secrets:\n  vault:\n    settings: { address: \"https://vault.internal\" }\n\
          providers: {}\nmodels: {}\npools: {}\n",
@@ -3763,6 +3807,7 @@ fn nothing_is_repeatable_unless_the_operator_names_it() {
 /// exercised elsewhere.)
 #[test]
 fn test_auth_policy_block_parses_and_resolves() {
+    crate::test_support::register_neutral_test_plane();
     use crate::config::BindingMode;
     // `auth.policy:` is a 1.6.0-additive key, so it is LIFTED off the document before the frozen
     // structs parse: the document entry point is the only one that sees it (a bare
@@ -3827,6 +3872,7 @@ fn test_auth_policy_block_parses_and_resolves() {
 /// predates the block behaves exactly as before (byte-identical: nothing consults it).
 #[test]
 fn test_auth_policy_absent_is_default() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg =
         serde_yaml::from_str("auth:\n  chain: [keys]\nproviders: {}\nmodels: {}\npools: {}\n")
             .expect("an auth block with no policy parses");
@@ -3850,6 +3896,7 @@ fn test_auth_policy_absent_is_default() {
 /// pools), explicit `[]` = Some(empty) (no pools), `[list]` = exactly those. Never conflated.
 #[test]
 fn test_auth_policy_ceiling_allowed_pools_three_state() {
+    crate::test_support::register_neutral_test_plane();
     let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
         "auth:\n  \
            policy:\n    \

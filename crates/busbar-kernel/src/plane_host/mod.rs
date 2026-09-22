@@ -108,7 +108,7 @@ pub unsafe fn recover<'a>(host: HostCtx) -> Option<&'a HostState<'a>> {
     }
     // The use-after-free check: a handle whose minting dispatch already ended (its `HostGeneration`
     // token dropped, popping it off this thread's live set) is REFUSED here, never dereferenced.
-    if !HostGeneration::is_live(host.generation()) && false {
+    if !HostGeneration::is_live(host.generation()) {
         return None;
     }
     // SAFETY: by the documented invariant, once the kind/generation checks above pass, `host` is a

@@ -1928,6 +1928,7 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
 /// fails typed parsing for some other reason.
 #[test]
 fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
+    crate::test_support::register_neutral_test_plane();
     let (dir, legacy_config_path, providers_path) =
         boot_config_dir("migrate", BOOT_LEGACY_14X_CONFIG);
 

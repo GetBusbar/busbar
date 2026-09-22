@@ -43,6 +43,15 @@ fn builtin_plane_decls() -> &'static [&'static PlaneDecl] {
     DECLS
 }
 
+/// Register the real `[llm, mcp, a2a]` roster in the PROCESS registry (idempotent, first-wins) — for
+/// the handful of tests below that resolve through `plane_decl_for`/`scope_kind_index` (the process
+/// `plane_decls()` fold), not just the local `builtin_plane_decls()` array above.
+fn register_planes() {
+    busbar_llm::testkit::install_test_seams();
+    busbar_mcp::testkit::install_test_seams();
+    busbar_a2a::testkit::install_test_seams();
+}
+
 /// A PLANE BUSBAR DOES NOT HAVE. Nothing in core names it, nothing in core has an enum variant for
 /// it, and no `match` anywhere has an arm for it — which is precisely the property under test.
 /// Stands in for the `busbar-plane-a2a` crate's own `PLANE_DECL`.
@@ -244,14 +253,27 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
 /// dissolved: the by-key indirection reads its declaration rather than restating any fact.
 ///
 /// Unlike the original in-crate version, this drives `plane_decl_for` directly over the
-/// EXPLICITLY-INSTALLED set (`install_planes`, called once below) rather than the process registry's
+/// EXPLICITLY-REGISTERED process set (`register_planes()`) rather than the process registry's
 /// `#[cfg(test)]` built-ins (which no longer exist) — same assertion, explicit registration instead
 /// of ambient seeding.
+///
+/// NOT `std::ptr::eq`, unlike the original: `busbar_llm::PLANE_DECL` (and its siblings) is a `const`,
+/// not a `static` — every syntactic `&busbar_llm::PLANE_DECL` is its OWN rvalue-promoted temporary,
+/// so `busbar_llm::testkit::install_test_seams()`'s own `&crate::PLANE_DECL` and this file's
+/// `builtin_plane_decls()` array are two byte-identical but NEVER pointer-equal copies — a fact about
+/// `const` promotion, not about whether the by-key indirection reads the SAME declared facts (which
+/// is the actual property under test, checked below field-by-field exactly as the original did for
+/// the rest of the function).
 #[test]
 fn every_plane_key_answers_from_its_declaration() {
+    register_planes();
     for decl in builtin_plane_decls() {
         let resolved = plane_decl_for(decl.key).expect("every built-in key resolves to a decl");
-        assert!(std::ptr::eq(resolved, *decl));
+        assert_eq!(resolved.key, decl.key);
+        assert_eq!(resolved.config_section, decl.config_section);
+        assert_eq!(resolved.scope_kinds, decl.scope_kinds);
+        assert_eq!(resolved.audit_kind, decl.audit_kind);
+        assert_eq!(resolved.subject_noun, decl.subject_noun);
         assert_eq!(
             busbar_kernel::plane::wire_format_names(decl.key),
             (decl.wire_format_names)()
@@ -344,6 +366,7 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
 /// that routes through `scope_kind_index` is proven to invert the decoder here.
 #[test]
 fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
+    register_planes();
     use busbar_kernel::plane::registry::{scope_kind_at, scope_kind_index};
     // The neutral base kind plus every kind any registered plane declares — the full vocabulary the
     // two functions share. Iterating this (rather than a literal list) means a plane adding a kind
@@ -374,11 +397,142 @@ fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
     );
 }
 
-// NOTE: `install_planes_after_first_read_panics` (the ONE test that calls `install_planes`) did not
-// move — it drove the PROCESS registry's `config_sections()` (the `#[cfg(test)]` built-ins) directly,
-// a shape specific to core's own unit-test binary. It is covered by
-// `busbar_kernel::plane::tests::registry_tests` staying in `src/` for the pure-data `install_planes`
-// invariant (no plane crate named there).
+/// INSTALL BEFORE FIRST READ, enforced. The module header states the invariant: a declaration
+/// installed after another layer resolved against the smaller (built-ins-only) set would mean two
+/// layers of one process disagree about which planes exist, so [`install_planes`] must refuse to
+/// run once the process plane list has been read even once.
+///
+/// This is the ONLY test in this file that calls [`install_planes`], deliberately: it is a write to
+/// process-global `OnceLock`s, and a second call anywhere else in this BINARY (this file — each
+/// `tests/*.rs` file is its own process) would make this test's outcome depend on test execution
+/// order. `config_sections()` is called here specifically to force the read `install_planes` must
+/// then refuse to follow — it is exercised incidentally by many other tests in this file already
+/// (any test that touches `busbar_kernel::plane::config::config_sections()` /
+/// `busbar_kernel::plane::registry::plane_decls()`), so this call is not what makes the read happen;
+/// it is what makes the read happen NO LATER than this test needs it to, regardless of what ran
+/// before it.
+#[test]
+#[should_panic(expected = "install_planes called after the plane list was first read")]
+fn install_planes_after_first_read_panics() {
+    let _ = busbar_kernel::plane::config::config_sections();
+    install_planes(&[]);
+}
+
+// ── PLANE-OWNED-CONFIG DUP-CLAIM GUARD (1.6.0 config-seam, stage 1) ─────────────────────────────────
+//
+// The guard is the whole point of stage 1: it must refuse a boot where two planes claim the same
+// top-level config section, or where a plane claims a section core still owns concretely. These prove
+// both refusals fire and that the SHIPPED set (every plane claiming `&[]`) passes cleanly.
+
+/// A plane busbar does not have that CLAIMS one owned config section — built by functional update off
+/// [`WIDGET_PLANE`] (every field of which is `Copy`), so only the two fields under test are named.
+static ALPHA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
+    key: "alpha",
+    owned_config_sections: &["foo"],
+    resolve_provider: None,
+    ..WIDGET_PLANE
+};
+
+/// A DIFFERENT plane that claims the SAME section — the dup-claim collision.
+static BETA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
+    key: "beta",
+    owned_config_sections: &["foo"],
+    resolve_provider: None,
+    ..WIDGET_PLANE
+};
+
+/// A plane that claims a section core STILL owns concretely (`rate_card` is in
+/// `CORE_OWNED_CONCRETE_SECTIONS` in stage 1 — nothing has moved yet).
+static GAMMA_CLAIMS_RATE_CARD: PlaneDecl = PlaneDecl {
+    key: "gamma",
+    owned_config_sections: &["rate_card"],
+    resolve_provider: None,
+    ..WIDGET_PLANE
+};
+
+#[test]
+fn dup_claim_guard_fires_when_two_planes_claim_the_same_section() {
+    let decls: Vec<&'static PlaneDecl> = vec![&ALPHA_CLAIMS_FOO, &BETA_CLAIMS_FOO];
+    let err = busbar_kernel::plane::registry::check_owned_config_claims(
+        &decls,
+        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect_err("two planes claiming section `foo` MUST be refused — one plane's grammar would answer for the other's");
+    assert!(
+        err.contains("foo") && err.contains("alpha") && err.contains("beta"),
+        "the refusal must name the contested section and both claimants, got: {err}"
+    );
+}
+
+#[test]
+fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
+    let decls: Vec<&'static PlaneDecl> = vec![&GAMMA_CLAIMS_RATE_CARD];
+    let err = busbar_kernel::plane::registry::check_owned_config_claims(
+        &decls,
+        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect_err("claiming `rate_card` while core still owns it concretely MUST be refused — the grammar would be declared twice");
+    assert!(
+        err.contains("rate_card") && err.contains("gamma"),
+        "the refusal must name the core-owned section and the claimant, got: {err}"
+    );
+}
+
+/// An example future plane's real claim, mirrored on the [`WIDGET_PLANE`] template — `streams` ∉
+/// `CORE_OWNED_CONCRETE_SECTIONS`, so a lone claimant is admitted (this is the shape a plugin
+/// declaring `streams` as its owned section will take once one exists).
+static ONE_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
+    key: "one",
+    owned_config_sections: &["streams"],
+    resolve_provider: None,
+    ..WIDGET_PLANE
+};
+
+/// A DIFFERENT plane also claiming `streams` — the collision the guard must refuse by construction.
+static TWO_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
+    key: "two",
+    owned_config_sections: &["streams"],
+    resolve_provider: None,
+    ..WIDGET_PLANE
+};
+
+#[test]
+fn dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision() {
+    // `streams` is NOT in `CORE_OWNED_CONCRETE_SECTIONS`, so the lone claim is ADMITTED.
+    busbar_kernel::plane::registry::check_owned_config_claims(
+        &[&ONE_CLAIMS_STREAMS],
+        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect("`streams` is not core-owned and has one claimant — the voice claim must be admitted");
+    // A SECOND claimant of `streams` is refused by construction, naming both planes and the section.
+    let err = busbar_kernel::plane::registry::check_owned_config_claims(
+        &[&ONE_CLAIMS_STREAMS, &TWO_CLAIMS_STREAMS],
+        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect_err("two planes claiming `streams` MUST be refused — one plane's grammar would answer for the other's");
+    assert!(
+        err.contains("streams") && err.contains("one") && err.contains("two"),
+        "the refusal must name the contested section and both claimants, got: {err}"
+    );
+}
+
+#[test]
+fn dup_claim_guard_passes_for_the_shipped_empty_registry() {
+    // STAGE 1 INVARIANT: every shipped plane claims `&[]`, so the guard is a no-op over the real set.
+    let decls = merged_boot_plane_decls(&[], builtin_plane_decls());
+    busbar_kernel::plane::registry::check_owned_config_claims(
+        &decls,
+        busbar_kernel::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+    )
+    .expect("stage 1 ships an EMPTY owned-config registry — no plane claims any section, so the guard must pass");
+    for decl in &decls {
+        assert!(
+            decl.owned_config_sections.is_empty(),
+            "stage 1 is infra-only: plane `{}` must claim NO owned config sections (registry starts empty)",
+            decl.key
+        );
+    }
+}
 
 // ---------------------------------------------------------------------------------------------
 // THE THREE ADMISSION RATCHETS (Step 2.2). These drive `build_dispatch` — the registry-driven

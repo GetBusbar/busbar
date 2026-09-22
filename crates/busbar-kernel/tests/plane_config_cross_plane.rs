@@ -11,7 +11,7 @@
 //! `PlaneDecl`) with ONE `busbar_kernel` in the graph. See `plane_integration.rs`'s header for the
 //! full rationale. The other four tests in `config_tests.rs` name no plane crate and stay there.
 
-use busbar_kernel::plane::config::{config_sections, refuse_cross_plane_reference};
+use busbar_kernel::plane::config::config_sections;
 
 /// EVERY section the grammar declares is refused BY BOTH PLANES' production validators, and the two
 /// refusals differ in nothing but the caller's own label for the site.

@@ -4597,6 +4597,7 @@ fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
 /// advanced) resolves and validates clean end to end.
 #[test]
 fn test_validate_runs_on_resolved_root_cfg_clean_config() {
+    crate::test_support::register_neutral_test_plane();
     let yaml = r#"
 listen: "0.0.0.0:8080"
 auth:
@@ -4663,6 +4664,7 @@ advanced:
 /// text (which `plane-purity-strict` counts, rightly) for a member the test never looks up.
 #[test]
 fn test_undefined_pool_member_is_refused_by_validate_in_1_5_5_words() {
+    crate::test_support::register_neutral_test_plane();
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers: {}
@@ -4693,6 +4695,7 @@ store:
 /// regression where `validate` hard-rejected every plugin-backed secret module.
 #[test]
 fn test_validate_accepts_plugin_backed_secret_module_config() {
+    crate::test_support::register_neutral_test_plane();
     let yaml = r#"
 listen: "0.0.0.0:8080"
 providers:
@@ -4725,6 +4728,7 @@ store:
 /// SAME validate() call boot uses (collect-all, no first-error short-circuit).
 #[test]
 fn test_validate_runs_on_resolved_root_cfg_collects_new_surface_faults() {
+    crate::test_support::register_neutral_test_plane();
     let yaml = r#"
 listen: "0.0.0.0:8080"
 auth:
