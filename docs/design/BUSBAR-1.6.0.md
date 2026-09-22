@@ -1520,6 +1520,66 @@ side; a careless "keep the correctly-named one" deletes the working plane. It al
 Do the folds **after** the current fix wave lands, not during: these are whole-crate moves and they
 will conflict with every in-flight edit.
 
+## PARKED — CRITICAL: the budget cap is bypassed on every restart
+
+**Found by the survivor-branch review of `origin/r5-money-m3`. This is the single most serious
+defect in the session and it is a live budget-cap bypass, not a latent one.**
+
+`ProductionUnits.door` is the admission gate on the real request path for the llm, mcp, a2a and
+streaming planes. Its doc comment at `crates/busbar/src/root/kernel.rs:520-521` states:
+
+> *"Its ledger cells are hydrated once, at boot, and are never re-read on the request path."*
+
+**The first half of that sentence is false.** Verified directly:
+
+- `crates/busbar/src/root/kernel.rs:650` — `door: Door::new(InMemoryCells::new())`, constructed EMPTY
+- `crates/busbar/src/root/units_voice.rs:797` — a second site, also `InMemoryCells::new()`
+- `git grep -P "fn (hydrate|restore|seed|replay)" crates/busbar-kernel-budget/src/` → **no matches.**
+  There is no hydration method on `InMemoryCells`, on `CellStore`, or on `Door`. The capability does
+  not exist to be called.
+- The door is reached on the live path from `units_llm.rs:520`, `units_mcp.rs:914`,
+  `units_a2a.rs:1228,1322` and `units_voice.rs:1349,1604`.
+
+`busbar-kernel-budget/Cargo.toml`'s own header repeats the same false claim: *"The cells themselves
+are node-local, hydrated once at boot and never re-read on the request path."*
+
+### What it means in money terms
+
+Every process restart zeroes every bucket's admission spend. **A key or group that had fully
+exhausted its configured `budget_cap` is fully re-admissible the instant the node restarts**, with no
+floor until fresh post-boot traffic re-accrues enough to re-trip the cap. Restarts are routine —
+deploys, rolling updates, OOM kills, host maintenance — so a customer can exceed a dollar cap by an
+unbounded multiple without doing anything unusual.
+
+Under the locked model this is not the ledger being wrong; the ledger is journaled correctly and
+synchronously on every settle. It is the **enforcement gate never reading it back**. The book knows;
+the door does not ask.
+
+### Why it was invisible
+
+The documentation asserts the guarantee in two places, so anyone auditing by reading was told the
+opposite of the truth. The branch that implemented it — `r5-money-m3`, via `hydrate.rs` — was never
+merged, and the symbol-harvest flagged it as a survivor precisely because `hydrate`/`Carried`/
+`CarriedSpend` appear nowhere in trunk.
+
+### The owner decision
+
+This is a billed-byte-adjacent change (it makes refusals happen that do not happen today), so it is
+not mine to self-approve under #10/#59. But note the asymmetry: **leaving it costs money on every
+restart, and fixing it only ever refuses spend that the configured cap already said to refuse.**
+
+Two further findings from the same branch, both real and both lower severity:
+
+- **The audit `Book` is never replayed at boot.** `Ledger::dual_writing` starts with an empty book
+  each time (`durability.rs:748-772`), and `journal.replay()` exists but is used only to read the
+  migration marker. Every posting IS durably journaled, so the data for exact replay is on-chain and
+  simply never read back. This breaks the "ledger sums equal legacy spend" reconciliation identity
+  that `durability.rs`'s own module doc states as a release requirement.
+- **The book has no retention driver.** `Book::retain_from` and the whole `Checkpoint`/
+  `CheckpointAnchor` scaffolding exist with **zero non-test callers**, so the book grows unbounded
+  for the life of a node. (In practice the growth resets on restart — which is only true *because*
+  of the bug above, so the two defects have been masking each other.)
+
 ## PARKED FOR THE OWNER — a billed-byte change I may not self-approve (#10/#59)
 
 **One item. It is the most serious finding of the session and it needs a human call, not because it
