@@ -1109,6 +1109,22 @@ fn ended(
     }
 }
 
+/// The key a fixture that is not about the record's identity files under.
+///
+/// Named and not zero: zero is the exact literal the record used to be hardcoded to, so a fixture
+/// passing zero would agree with the fault by accident and a canary over it would never move.
+const SOME_UNIT: busbar_contract::ids::UnitKey = busbar_contract::ids::UnitKey::new(41);
+
+/// The provenance of a unit on a deployment with NO rate card — billing off (#42), which is the
+/// posture every fixture here had before a dated history was needed. The stamp is the opening
+/// entry because there is no other entry it could honestly name, not because a zero was written.
+fn no_card() -> Provenance<'static> {
+    Provenance {
+        history: None,
+        arrived_ms: 0,
+    }
+}
+
 /// The shape's upstream fact is read off the plan the plane returned, not off a list of classes
 /// kept here — which is what stops it from drifting the day a plan changes.
 #[test]
@@ -1193,7 +1209,14 @@ fn the_settlement_and_the_record_read_one_fee_decision() {
         (CameFrom::Provider, true),
     ] {
         let unit = ended(called, who, answered);
-        let record = audit_inputs(&unit, busbar_contract::caps::Outcome::Completed, origin, at);
+        let record = audit_inputs(
+            &unit,
+            SOME_UNIT,
+            busbar_contract::caps::Outcome::Completed,
+            origin,
+            at,
+            no_card(),
+        );
         assert_eq!(
             record.amount.fee_count,
             fee_count(&evidence(&unit).fee).0,
@@ -1223,7 +1246,14 @@ fn the_record_names_the_caller_the_class_and_the_resource() {
     );
     unit.principal = Some(&who);
 
-    let record = audit_inputs(&unit, busbar_contract::caps::Outcome::Completed, origin, at);
+    let record = audit_inputs(
+        &unit,
+        SOME_UNIT,
+        busbar_contract::caps::Outcome::Completed,
+        origin,
+        at,
+        no_card(),
+    );
     assert_eq!(
         record.subject,
         busbar_kernel_audit::Subject::PrincipalId("vk_mcp".to_string())
@@ -1456,6 +1486,7 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
             wall: 1_700_000_000,
             mono: mono.tick(),
         },
+        no_card(),
         &Grant::<DurableWrite>::mint(&seal),
         posted,
     )
@@ -1524,6 +1555,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_c
             &mut durability,
             &who,
             at,
+            no_card(),
             &Grant::<DurableWrite>::mint(&seal),
             posted,
         )
@@ -1590,6 +1622,7 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
             wall: 1_700_000_000,
             mono: Mono::new().tick(),
         },
+        no_card(),
         &Grant::<DurableWrite>::mint(&seal),
         posted,
     )
@@ -1613,4 +1646,284 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
         .expect("reads back")
         .expect("verifies");
     assert_eq!(replayed.len(), 2, "the posting, then the carry");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// The record's identity, and the card it says priced it
+// ─────────────────────────────────────────────────────────────────────────
+
+/// **Two units of this plane are filed under two different keys.**
+///
+/// The audit record's `unit_key` is what says WHICH call a row is about. Hardcoded to zero, every
+/// MCP unit this node ever served collided on one key — a record that identifies nothing, and an
+/// audit trail in which no two calls can be told apart. The loop hands this step the unit's own
+/// key; the fault was a literal written where an argument belongs.
+///
+/// Asserted both ways: the two keys DIFFER (the collision is gone) and each is the key its own
+/// unit carried (they differ because they are right, not merely because they are two numbers).
+#[test]
+fn two_mcp_units_are_filed_under_two_different_keys() {
+    let who = PrincipalId::new("vk_mcp");
+    let origin =
+        busbar_kernel::teller::Kernel::new().origin(busbar_contract::caps::OriginKind::Client);
+    let at = Clocks {
+        wall: 1_700_000_000,
+        mono: 7,
+    };
+    let mut unit = ended(
+        Shape {
+            op: ops::OP_TOOL_CALL,
+            hops_upstream: true,
+        },
+        busbar_contract::caps::OriginKind::Client,
+        true,
+    );
+    unit.principal = Some(&who);
+
+    let filed_under = |key: u64| {
+        audit_inputs(
+            &unit,
+            busbar_contract::ids::UnitKey::new(key),
+            busbar_contract::caps::Outcome::Completed,
+            origin,
+            at,
+            no_card(),
+        )
+        .what
+        .unit_key
+    };
+
+    let first = filed_under(7);
+    let second = filed_under(9);
+
+    assert_ne!(
+        first, second,
+        "two units filed under one key is an audit trail that cannot tell two calls apart"
+    );
+    assert_eq!(
+        first,
+        busbar_contract::ids::UnitKey::new(7),
+        "and the key a record is filed under is the one its own unit carried"
+    );
+    assert_eq!(
+        second,
+        busbar_contract::ids::UnitKey::new(9),
+        "for both of them — a record keyed off anything but the unit is keyed off a guess"
+    );
+}
+
+/// A history of three dated entries, the second and third published at the instants named.
+///
+/// The first is effective from instant ZERO however it is dated — one entry has to cover every
+/// instant, or an early arrival falls in a hole.
+const SECOND_CARD_MS: u64 = 1_700_000_500_000;
+const THIRD_CARD_MS: u64 = 1_700_000_900_000;
+
+fn three_dated_cards() -> crate::root::kernel::PinnedHistory {
+    let holder = crate::root::kernel::RootHistory::default();
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(3), 1_000);
+    holder.apply(
+        busbar_kernel_ledger::cost::RateCard::absent(11),
+        SECOND_CARD_MS,
+    );
+    holder.apply(
+        busbar_kernel_ledger::cost::RateCard::absent(29),
+        THIRD_CARD_MS,
+    );
+    holder.pin().expect("three applies put entries in place")
+}
+
+/// **The provenance stamp names the card that was in force when the unit ARRIVED.**
+///
+/// #79: "price against the latest rate card" means the latest card whose `effective_from` had
+/// arrived at the posting's instant — never the latest card ever authored. Publishing a new card
+/// does not reprice the window before it.
+///
+/// This stamp used to be a hardcoded `0`, and `0` is not a neutral placeholder: it is
+/// `HistorySeq::OPENING`, a real entry number. So every row this plane wrote claimed the opening
+/// card had priced it — on a deployment that had changed a price twice, a statement that was false
+/// for every unit served after the first change.
+///
+/// Three units over ONE history of three dated entries, arriving in three different windows. Each
+/// names its own window's entry. The two that arrived before the newest card was published do NOT
+/// name it — that is the #79 property, and it is the one a "read the head of the history"
+/// implementation fails while still looking like a real lookup.
+#[test]
+fn the_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
+    let pinned = three_dated_cards();
+    assert_eq!(
+        pinned.seq().get(),
+        2,
+        "the snapshot's head is the third entry, which is the figure a stamp must NOT be for a \
+         unit that arrived before it"
+    );
+
+    let who = PrincipalId::new("vk_mcp");
+    let origin =
+        busbar_kernel::teller::Kernel::new().origin(busbar_contract::caps::OriginKind::Client);
+    let at = Clocks {
+        wall: 1_700_000_000,
+        mono: 7,
+    };
+    let mut unit = ended(
+        Shape {
+            op: ops::OP_TOOL_CALL,
+            hops_upstream: true,
+        },
+        busbar_contract::caps::OriginKind::Client,
+        true,
+    );
+    unit.principal = Some(&who);
+
+    let stamped = |arrived_ms: u64| {
+        audit_inputs(
+            &unit,
+            SOME_UNIT,
+            busbar_contract::caps::Outcome::Completed,
+            origin,
+            at,
+            Provenance {
+                history: Some(&pinned),
+                arrived_ms,
+            },
+        )
+        .amount
+        .rate_card_version
+    };
+
+    assert_eq!(
+        stamped(1_700_000_100_000),
+        0,
+        "a unit that arrived before the second card was published is priced by the opening entry"
+    );
+    assert_eq!(
+        stamped(1_700_000_600_000),
+        1,
+        "a unit that arrived in the second card's window names the second entry — not the third, \
+         which did not exist for it"
+    );
+    assert_eq!(
+        stamped(1_700_000_950_000),
+        2,
+        "and a unit that arrived after the third card names the third"
+    );
+}
+
+/// **The instant the history is resolved at is on the history's own scale.**
+///
+/// The dated history writes `effective_from` in MILLISECONDS; this plane's [`Clocks::wall`] is
+/// whole SECONDS. Resolve at the seconds figure and every unit this node ever served lands before
+/// every entry but the from-zero opening one, so the stamp reports the opening card forever — the
+/// same lie the hardcoded zero told, with a lookup in front of it and no way to tell the two
+/// apart by reading the output.
+///
+/// So the two readings of ONE arrival are asserted against each other: the second-scale one
+/// resolves to the opening entry and the millisecond one resolves to the entry that was actually
+/// in force. A `Provenance` built off `wall` would make these two equal, and this is what says so.
+#[test]
+fn the_history_is_resolved_on_the_millisecond_scale_its_entries_are_dated_on() {
+    let pinned = three_dated_cards();
+    // One arrival, read two ways: the second-scale stamp this plane's clocks carry, and the
+    // millisecond binding the history is resolved at.
+    const ARRIVED_SECS: u64 = 1_700_000_950;
+    const ARRIVED_MS: u64 = ARRIVED_SECS * 1_000;
+
+    let on_seconds = Provenance {
+        history: Some(&pinned),
+        arrived_ms: ARRIVED_SECS,
+    }
+    .rate_card_version();
+    let on_millis = Provenance {
+        history: Some(&pinned),
+        arrived_ms: ARRIVED_MS,
+    }
+    .rate_card_version();
+
+    assert_eq!(
+        on_seconds, 0,
+        "a seconds-valued instant falls before every entry but the from-zero opening one — which \
+         is why resolving at `wall` reports the opening card for every unit forever"
+    );
+    assert_eq!(
+        on_millis, 2,
+        "and the millisecond binding resolves the entry that was actually in force"
+    );
+    assert_ne!(
+        on_seconds, on_millis,
+        "the scale is load-bearing: the same arrival resolves to two different entries, and only \
+         one of them is a true statement about which card priced this unit"
+    );
+}
+
+/// **One decision, two readers.** The posting's provenance stamp and the record's are the same
+/// number, because both resolve it through the same method off the same pinned pair. A posting
+/// stamped with one entry beside a row stamped with another is a provenance no reader downstream
+/// can reconcile.
+///
+/// The arrival is deliberately in the SECOND card's window, so a stamp that read the head of the
+/// history (2) and a stamp that read a hardcoded zero (0) are both different from the right
+/// answer (1) and from each other.
+#[test]
+fn the_posting_and_the_record_name_one_rate_card_entry() {
+    use busbar_contract::caps::{
+        Admittance, Consumption, DurableWrite, Grant, Hold, KernelSeal, Usage, WriteMoney,
+    };
+    let pinned = three_dated_cards();
+    let card = Provenance {
+        history: Some(&pinned),
+        arrived_ms: 1_700_000_600_000,
+    };
+    let who = PrincipalId::new("vk_mcp");
+    let origin =
+        busbar_kernel::teller::Kernel::new().origin(busbar_contract::caps::OriginKind::Client);
+    let at = Clocks {
+        wall: 1_700_000_600,
+        mono: Mono::new().tick(),
+    };
+
+    let seal = KernelSeal::acquire_for_kernel();
+    let mut durability = memory_durability();
+    let hold = Hold::open(&Grant::<Admittance>::mint(&seal), who.clone(), 0);
+    let posted = busbar_contract::caps::Posted::settle(
+        hold,
+        0,
+        &Usage::report(&Grant::<Consumption>::mint(&seal), Vec::new()).expect("empty"),
+        &Grant::<WriteMoney>::mint(&seal),
+    );
+    let settled = settle(
+        &mut durability,
+        &who,
+        at,
+        card,
+        &Grant::<DurableWrite>::mint(&seal),
+        posted,
+    )
+    .expect("the memory-buffered journal takes it");
+
+    let mut unit = ended(
+        Shape {
+            op: ops::OP_TOOL_CALL,
+            hops_upstream: true,
+        },
+        busbar_contract::caps::OriginKind::Client,
+        true,
+    );
+    unit.principal = Some(&who);
+    let record = audit_inputs(
+        &unit,
+        SOME_UNIT,
+        busbar_contract::caps::Outcome::Completed,
+        origin,
+        at,
+        card,
+    );
+
+    assert_eq!(
+        settled.posting.rate_card_version, 1,
+        "the posting names the entry in force when the unit arrived, not the head of the history"
+    );
+    assert_eq!(
+        record.amount.rate_card_version, settled.posting.rate_card_version,
+        "and the row names the same one — two readers, one resolution"
+    );
 }
