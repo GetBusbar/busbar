@@ -185,7 +185,7 @@ cmd_fast() {
 # the exact invocations, and every one of them is a no-op downstream.
 #
 # The consumers, and why each is here:
-#   -p busbar -p busbar-plugin-pack                 release-check.sh's Phase 0, verbatim. It
+#   -p busbar -p busbar-plugin-sdk --features busbar-plugin-sdk/pack                 release-check.sh's Phase 0, verbatim. It
 #                                                   hard-asserts both binaries exist.
 #   -p busbar-hook-test-plugin                      in-tree dev-fixture cdylibs plugin-loader's
 #   -p busbar-secret-example-plugin                 tests dlopen. Neither is a Cargo dependency of
@@ -209,7 +209,7 @@ cmd_build() {
   local out="${1:-$TARBALL_DEFAULT}"
 
   log "build once (1/3): busbar + busbar-plugin-pack (release-check.sh Phase 0's exact line)"
-  cargo build --release -p busbar -p busbar-plugin-pack
+  cargo build --release -p busbar -p busbar-plugin-sdk --features busbar-plugin-sdk/pack
 
   # See cdylib_pkg_args: the set is derived from cargo metadata, so adding a cdylib fixture crate to
   # the workspace needs no edit here or in cmd_loader.
@@ -325,7 +325,7 @@ cmd_hydrate() {
   # the only assertion worth making.
   log "freshness assertion: this build MUST be a no-op"
   local out
-  out="$(cargo build --release -p busbar -p busbar-plugin-pack 2>&1)" || die "post-hydrate build failed"
+  out="$(cargo build --release -p busbar -p busbar-plugin-sdk --features busbar-plugin-sdk/pack 2>&1)" || die "post-hydrate build failed"
   printf '%s\n' "$out" | tail -20
   if printf '%s\n' "$out" | grep -q '^ *Compiling'; then
     local n

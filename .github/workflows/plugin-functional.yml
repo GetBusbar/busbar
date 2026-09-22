@@ -203,7 +203,7 @@ jobs:
           echo "runner target triple: ${triple}"
           mkdir -p "${GITHUB_WORKSPACE}/busbar-bin"
           if [ "$BUSBAR_VERSION" = "this-tree" ]; then
-            cargo build --release -p busbar -p busbar-plugin-pack
+            cargo build --release -p busbar -p busbar-plugin-sdk --features busbar-plugin-sdk/pack
             cp target/release/busbar "${GITHUB_WORKSPACE}/busbar-bin/busbar"
             echo "pack=${GITHUB_WORKSPACE}/target/release/busbar-plugin-pack" >> "$GITHUB_OUTPUT"
           else
@@ -257,7 +257,7 @@ jobs:
             # source (it is a workspace member here).
             pack="${PACK:-}"
             if [ -z "$pack" ]; then
-              cargo build --release -p busbar-plugin-pack
+              cargo build --release -p busbar-plugin-sdk --features pack --bin busbar-plugin-pack
               pack="${GITHUB_WORKSPACE}/target/release/busbar-plugin-pack"
             fi
             [ -n "$PLUGIN_CRATE" ] || { echo "::error::plugin_crate is required for the this-tree build path"; exit 1; }

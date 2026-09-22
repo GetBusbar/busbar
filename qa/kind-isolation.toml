@@ -1725,21 +1725,6 @@ kind = "unit"
 count = "14"
 
 [[cell]]
-crate = "busbar-plugin-pack"
-kind = "plugin-tooling"
-count = "31"
-
-[[cell]]
-crate = "busbar-plugin-pack"
-kind = "secret"
-count = "13"
-
-[[cell]]
-crate = "busbar-plugin-pack"
-kind = "transport"
-count = "14"
-
-[[cell]]
 crate = "busbar-plugin-sdk"
 kind = "api"
 count = "61"
@@ -2903,26 +2888,6 @@ count   = "1"
 verdict = "tcb"
 cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
 why     = "busbar-plugin-loader names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-plugin-pack"
-to      = "busbar-plugin-loader"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
-why     = "busbar-plugin-pack names busbar-plugin-loader: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-plugin-pack"
-to      = "busbar-secret-ref"
-half    = "shipped"
-count   = "1"
-verdict = "tcb"
-cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
-why     = "busbar-plugin-pack names busbar-secret-ref: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
 
 [[dep]]

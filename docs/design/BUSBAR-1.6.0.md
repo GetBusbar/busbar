@@ -1570,7 +1570,7 @@ home is decided by asking which definition it fits. Nothing fits ⇒ owner conve
 | 11 | `busbar-core-admin` | The operator-facing verbs and their HTTP/OpenAPI surface. Serves operators, never traffic. |
 | 12 | `busbar-core-oauth2` | The OAuth 2.1 authorization-server protocol as busbar speaks it. |
 | 13 | `busbar-contract` | The SHAPE of everything crossing the plugin seam — the data, its wire encoding, the traits a plugin implements. No rule an honest implementation could set differently; no dependency heavier than the seam. |
-| 14 | `busbar-plugin-sdk` | The author-facing machinery for WRITING a plugin: the macros and entry glue an author links. Never anything the host calls. |
+| 14 | `busbar-plugin-sdk` | The author-facing machinery for WRITING and PACKAGING a plugin: the macros and entry glue an author links, and the tool they run to ship one. Never anything the host calls. |
 | 15 | `busbar-plugin-loader` | The host-facing machinery for FETCHING, VERIFYING, LOADING and SUPERVISING a plugin. |
 | 16–20 | `busbar-plane-{llm,mcp,a2a,streaming,decision}` | Everything ONE protocol needs and no other protocol may name — its wire dialects, its decode/encode face, its session and turn rules. Nothing that prices, admits or dials. |
 | 21–27 | `busbar-transport-{grpc,http,sse,stdio,tcp,tls,ws}` | One carrier's framing and connection lifecycle, driven blind. Moves bytes; names no plane, protocol or policy. |

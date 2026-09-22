@@ -35,7 +35,7 @@ BUSBAR="$BUSBAR_DIR/target/release/busbar"
 # ── 0. Ephemeral keypair ─────────────────────────────────────────────────────────────────────────
 # CI may pre-generate the pair (BUSBAR_GATE_SIGN_KEY/BUSBAR_GATE_PUBKEY) so the busbar binary built
 # here — with that public key embedded — is byte-reusable by later workflow steps with no rebuild.
-(cd "$BUSBAR_DIR" && cargo build --release -q -p busbar-plugin-pack)
+(cd "$BUSBAR_DIR" && cargo build --release -q -p busbar-plugin-sdk --features pack --bin busbar-plugin-pack)
 if [ -n "${BUSBAR_GATE_SIGN_KEY:-}" ] && [ -n "${BUSBAR_GATE_PUBKEY:-}" ]; then
   PRIV=$BUSBAR_GATE_SIGN_KEY; PUB=$BUSBAR_GATE_PUBKEY
 else

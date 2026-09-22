@@ -451,7 +451,7 @@ name = "busbar-api"
 version = "1.6.0"
 dependencies = [
  "async-trait",
- "busbar-kernel-ledger",
+ "busbar-contract",
  "busbar-secret-ref",
  "hex",
  "serde",
@@ -694,8 +694,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-budget",
- "serde",
- "serde_json",
  "sha2 0.11.0",
 ]
 
@@ -934,6 +932,7 @@ dependencies = [
  "async-trait",
  "busbar-api",
  "busbar-contract",
+ "busbar-export-example-plugin",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "busbar-plugin",
@@ -953,24 +952,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-plugin-pack"
-version = "1.5.0"
-dependencies = [
- "busbar-plugin-loader",
- "busbar-secret-ref",
- "getrandom 0.3.4",
- "hex",
- "jsonschema",
- "serde_json",
-]
-
-[[package]]
 name = "busbar-plugin-sdk"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-plugin",
+ "busbar-plugin-loader",
+ "busbar-secret-ref",
  "busbar-store-memory",
+ "getrandom 0.3.4",
+ "hex",
+ "jsonschema",
  "serde_json",
  "tracing",
  "tracing-core",

@@ -599,5 +599,5 @@ fn pack(args: &[String]) -> ExitCode {
 }
 
 #[cfg(test)]
-#[path = "tests/main_tests.rs"]
+#[path = "tests/pack_tests.rs"]
 mod tests;

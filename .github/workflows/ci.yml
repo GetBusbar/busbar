@@ -1822,6 +1822,15 @@ jobs:
           - name: oauth2 test-support
             features: busbar-oauth2/test-support
             tests: -p busbar-oauth2
+          # The author-side packaging CLI (roster def 14) is a `[[bin]]` behind `required-features`
+          # ON PURPOSE: DECISIONS #84 makes the SDK's own busbar closure the thing every plugin
+          # links, so `busbar-plugin-pack`'s edge to the host-facing loader -- which carries the
+          # ledger -- must not be a plain dependency. `required-features` means the DEFAULT build
+          # never type-checks pack.rs, which is precisely the rot this job exists to catch, so the
+          # feature earns its own row rather than a declaration line.
+          - name: sdk pack
+            features: busbar-plugin-sdk/pack
+            tests: -p busbar-plugin-sdk
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0

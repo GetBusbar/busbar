@@ -730,7 +730,7 @@ print_timing_summary() {
   echo "=== TIMING SUMMARY${SEGMENT:+ (segment: ${SEGMENT})} ==="
   echo "════════════════════════════════════════════════════════════════════════════"
   echo "FIXED SETUP (per invocation, paid once per parallel job):"
-  echo "  phase-0-build (cargo build --release -p busbar -p busbar-plugin-pack): ${SETUP_SECS}s"
+  echo "  phase-0-build (cargo build --release -p busbar -p busbar-plugin-sdk --features busbar-plugin-sdk/pack): ${SETUP_SECS}s"
   echo
   # Total is summed in THIS shell first: the print loop below feeds a pipeline (subshell), so any
   # accumulation done inside it would be discarded.
@@ -884,7 +884,7 @@ PACK_BIN="${REPO_ROOT}/target/release/busbar-plugin-pack"
 if any_selected_needs_binary; then
   phase "Phase 0: build busbar binary + busbar-plugin-pack (FIXED SETUP)"
   _setup_t0=$SECONDS
-  cargo build --release -p busbar -p busbar-plugin-pack
+  cargo build --release -p busbar -p busbar-plugin-sdk --features busbar-plugin-sdk/pack
   [ -x "$BUSBAR_BIN" ] || setup_fail "busbar binary not found at $BUSBAR_BIN: nothing was built to test."
   [ -x "$PACK_BIN" ] || setup_fail "busbar-plugin-pack not found at $PACK_BIN: nothing was built to test."
   SETUP_SECS=$((SECONDS - _setup_t0))
