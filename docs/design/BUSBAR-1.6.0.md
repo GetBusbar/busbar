@@ -1276,6 +1276,81 @@ the `units_*_leg.rs`/`plane_mount.rs` shape (#28 chose the gauntlet-kernel-rider
 `Arena` fixed-cap model (#41). These appear as survivors because their symbols are absent from
 trunk. Absent because they were **decided against**.
 
+## PARKED FOR THE OWNER — a billed-byte change I may not self-approve (#10/#59)
+
+**One item. It is the most serious finding of the session and it needs a human call, not because it
+is ambiguous but because approving a change to billed bytes is not mine to make.**
+
+### What is wrong
+
+`serde_json::Value::as_u64()` returns `None` for any float-backed JSON number — `27.0` included,
+even though it is exactly an integer. The house idiom for reading usage across the LLM dialects is
+`.as_u64().unwrap_or(0)`. So when a provider spells a token count as a float, a real count of 27 was
+recorded as **zero**. Cohere's real wire responses do exactly this.
+
+Under the locked model this is a **ledger** defect, not a money defect, and that is the worse of the
+two. Money is a view over `ledger × ratecard`; it cannot be wrong on its own. If the ledger says the
+provider returned nothing, then every view over it faithfully reports nothing, every invoice derived
+from it is internally consistent, and the error is invisible at every downstream layer. The read is
+the only place it is detectable.
+
+### It is not a 1.6.0 regression — v1.5.5 shipped it
+
+`git grep as_u64 v1.5.5 -- crates/busbar/src/proto/cohere/reader.rs` returns **five sites**
+(`416`, `721`, `725`, `970`, `975`), all using the same `.and_then(|v| v.as_u64())`. The defect is in
+the released product. The implication is a revenue fact, not an engineering one: **for every
+provider that float-encodes usage, shipped busbar has been under-recording work that was actually
+performed.** How far back it goes, and whether anything is owed in either direction, is a question
+only the owner can answer.
+
+### Why it cannot just be fixed and forgotten
+
+The fix changes what gets billed. The oracle diffs 1.6.0 against the recorded 1.5.5 golden, and the
+golden was recorded by code carrying this bug — so for any corpus cell containing a float-encoded
+count, the golden holds `0` and the corrected build holds the true count. **The oracle will go red,
+and it will be right to.** That red is not a regression to fix; it is the bug becoming visible.
+
+Resolving it means re-recording those golden cells, which is precisely the "accept a difference in
+billed bytes" act that #10/#59 reserves to the owner. I have not touched
+`accepted-differences.json`.
+
+### What I did do
+
+Fixed the parse, everywhere, at one seam — `crates/busbar-llm-codec/src/usage_count.rs`,
+`read_count_u64`. It tries the integer representation, then accepts a float only when it provably
+denotes an exact integer; a fractional value is refused rather than rounded, because rounding
+invents a quantity no provider ever reported. It also refuses anything at or above 2^53, where an
+`f64` can no longer represent consecutive integers and `fract() == 0.0` stops proving anything.
+
+Applied to Cohere (buffered chat, streaming `message-end`, truncated-tail recovery, embeddings
+`billed_units`, rerank `search_units`) and being applied across `anthropic`, `bedrock`, `gemini`,
+`openai_chat` and `openai_responses`, which all carry the identical idiom.
+
+I did **not** change the `.unwrap_or(0)` fallback itself. With the parse corrected it now fires only
+when a count is genuinely absent or genuinely malformed, not on an encoding difference. That
+residual case still silently records zero for possibly-real work, and closing it properly means
+threading an "unknown" signal from the codec's `IrUsage` through `TokenUsage` into the ledger's
+existing `estimated` convention — a cross-crate change, listed below as an open item rather than
+smuggled in here.
+
+### The three questions for the owner
+
+1. **Re-record the affected golden cells?** Without it the oracle stays red and nothing can promote.
+   My recommendation: yes — the golden currently encodes a bug as expected behaviour.
+2. **Does the under-recording in shipped 1.5.5 need any action toward customers?** Purely yours.
+3. **Close the residual silent-zero** by threading `estimated` end-to-end, or accept
+   `.unwrap_or(0)` as the standing policy for a genuinely malformed count?
+
+### One process failure to note
+
+The Cohere fix bytes are committed in `1772c74706`, whose subject reads only
+`refactor(#41): Encode::ArenaExhausted -> ScratchExhausted`. They were uncommitted in a shared
+working tree when that commit ran `git add` and were swept up. The bytes are correct; the audit
+trail is not. `1b6c9d4ba` states this on the record. History was not rewritten because other work
+was live in the tree — but a billing change sitting inside a rename commit is exactly what an
+auditor fails, and the habit that caused it (blanket `git add` with concurrent agents editing) is
+the thing to fix, not just this one commit.
+
 ## Open items — the next session's worklist
 
 **Verified defects, not yet fixed:**
