@@ -16,7 +16,12 @@ use std::collections::BTreeMap;
 
 /// Nano-units per cent: the divisor that lands a derived nano-unit total in whole cents, and the
 /// multiplier that takes a configured cent cap back into the nano-units a hold is sized in.
-pub const NANOS_PER_CENT: u128 = 10_000_000;
+///
+/// RE-EXPORTED, not re-declared. This crate sizes the hold that GATES ADMISSION; the ledger bills
+/// against the same divisor. Two independently written copies of it is exactly the drift that lets
+/// a request be judged at one rate and billed at another, so there is one declaration and everyone
+/// else points at it.
+pub use busbar_kernel_ledger::cost::NANOS_PER_CENT;
 
 /// The uncached input token key.
 pub const UNIT_INPUT: &str = "input";

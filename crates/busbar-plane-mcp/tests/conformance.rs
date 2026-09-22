@@ -411,6 +411,41 @@ fn a_composed_answer_is_stamped_and_wrapped() {
     );
 }
 
+/// AN UPSTREAM CANNOT SEND A CALLER'S METHOD — the mirror of
+/// [`a_caller_cannot_send_an_upstreams_method`], and the direction that is actually dangerous.
+///
+/// `ops::row_for` searches the WHOLE vocabulary with no sender filter. Without the guard in
+/// `decode_response`, a compromised upstream naming `tools/call` on the response leg had it minted
+/// as a genuine unit and run through all seven governance steps under the ORIGINAL CALLER's
+/// identity, budget and approval grant — a confused deputy spending its victim's authority for work
+/// the victim never requested. Ingress had this check; egress did not.
+#[test]
+fn an_upstream_cannot_send_a_callers_method() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let rows = rows_of(ops::Sender::Client);
+    assert_eq!(rows.len(), CLIENT_ROWS);
+    for row in rows {
+        let asked = format!(
+            r#"{{"jsonrpc":"2.0","id":7,"method":"{}","params":{{}}}}"#,
+            row.method
+        );
+        let frames = vec![response_frame(asked.as_bytes())];
+        let mut cursor = FrameCursor::new(&frames);
+        match plane
+            .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
+            .expect("a refused method still decodes to a verdict")
+        {
+            Progress::Discard { .. } => {}
+            other => panic!(
+                "an upstream was allowed to open a unit with the caller-only method {}: {other:?}",
+                row.method
+            ),
+        }
+    }
+}
+
 /// A document a server sends back mid-call opens a unit of the server's own.
 #[test]
 fn a_servers_own_request_opens_a_provider_unit() {
