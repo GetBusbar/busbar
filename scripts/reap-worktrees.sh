@@ -153,6 +153,65 @@ ORPHAN_PATTERNS='release/busbar|busbar-oracle'
 # COMMAND STRING against an integer. Caught on this script's first dry run.
 ORPHAN_MIN_AGE_SECS=120
 
+# ---------------------------------------------------------------------------
+# RULE 3: the ABANDONED HOT PROCESS -- keyed on behaviour, not on a name.
+#
+# Found 2026-09-22: a python3 at 97% CPU, ppid==1, elapsed 2 days 22 hours,
+# 3820 MINUTES of accrued CPU time (~63 core-hours), cwd inside an agent
+# worktree, writing to the task-output dir of a session that ended Sep 17.
+#
+# RULE 1 could not see it and never could: ORPHAN_PATTERNS greps for
+# `release/busbar|busbar-oracle`, and this was neither. RULE 2 could not see it
+# either: it is not a cargo test binary under target/*/deps/. Both rules were
+# written from the last incident and matched its SPELLING. This one matches the
+# SHAPE of abandonment instead, so it does not need to know what ran:
+#
+#   parent is dead (ppid==1)  AND  burning real CPU  AND  old  AND  its cwd is
+#   inside this repo tree.
+#
+# All four are required. ppid==1 alone means abandoned, not harmful; CPU alone
+# means busy, not abandoned. An editor, an agent, a shell or the product fails
+# at least one leg. Thresholds are env-overridable ONLY so the canary can
+# exercise the rule honestly -- a rule that cannot be shown firing is not a rule.
+# ---------------------------------------------------------------------------
+
+ORPHAN_CPU_FLOOR=${ORPHAN_CPU_FLOOR:-20}            # percent; below this it is idle, not runaway
+ORPHAN_HOT_MIN_AGE_SECS=${ORPHAN_HOT_MIN_AGE_SECS:-600}
+ORPHAN_CWD_ROOT=${ORPHAN_CWD_ROOT:-/Users/matthew/Developer/GetBusbar}
+
+reap_abandoned_hot() {
+  local found=0
+  while read -r pid cpu secs comm; do
+    [ -n "$pid" ] || continue
+    # integer-compare the CPU percent without bc
+    case "$cpu" in ''|*[!0-9.]*) continue ;; esac
+    [ "${cpu%%.*}" -ge "$ORPHAN_CPU_FLOOR" ] || continue
+    [ "$secs" -gt "$ORPHAN_HOT_MIN_AGE_SECS" ] || continue
+    # the fourth leg: cwd inside the repo tree. lsof only for the tiny candidate set.
+    local cwd
+    cwd=$(/usr/sbin/lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    case "$cwd" in "$ORPHAN_CWD_ROOT"*) ;; *) continue ;; esac
+    found=$((found + 1))
+    if [ "$REAP" = "1" ]; then
+      kill -9 "$pid" 2>/dev/null
+      printf 'abandoned hot process: KILLED pid %s (%s%% cpu, %dm, cwd %s) -- %s\n' \
+        "$pid" "$cpu" "$((secs / 60))" "$cwd" "$comm"
+    else
+      printf 'abandoned hot process: WOULD KILL pid %s (%s%% cpu, %dm, cwd %s) -- %s\n' \
+        "$pid" "$cpu" "$((secs / 60))" "$cwd" "$comm"
+    fi
+  done < <(ps -eo pid,ppid,pcpu,etime,comm 2>/dev/null \
+             | awk '$2==1 {
+                      n=split($4, t, /[-:]/);
+                      if (n==2)      secs = t[1]*60 + t[2];
+                      else if (n==3) secs = t[1]*3600 + t[2]*60 + t[3];
+                      else if (n==4) secs = t[1]*86400 + t[2]*3600 + t[3]*60 + t[4];
+                      else           secs = 0;
+                      print $1, $3, secs, $5 }')
+  [ "$found" -eq 0 ] && echo "abandoned hot processes: none (>=${ORPHAN_CPU_FLOOR}% cpu, >${ORPHAN_HOT_MIN_AGE_SECS}s, ppid 1, cwd under ${ORPHAN_CWD_ROOT})"
+  return 0
+}
+
 reap_orphans() {
   local killed=0 spared=0 young=0
 
@@ -192,6 +251,7 @@ reap_orphans() {
 
 echo
 reap_orphans
+reap_abandoned_hot
 
 # A parentless `sleep` is an abandoned poll loop from a wait chain whose owner
 # died. Live agent loops sleep 20-60s and their parent is alive, so they are
