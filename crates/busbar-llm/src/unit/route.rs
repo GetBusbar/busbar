@@ -354,8 +354,8 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
             // profiler reported zero `WrapSetup` samples for every real request, and only the
             // legacy shell's samples ever appeared. The stage covers exactly what it covers there:
             // the correlation stamp and the pre-walk shape capture, dropped before the walk itself.
-            let _wrap = busbar_substrate_values::profile::start(
-                busbar_substrate_values::profile::Stage::WrapSetup,
+            let _wrap = busbar_kernel::profile::start(
+                busbar_kernel::profile::Stage::WrapSetup,
             );
             // THE CORRELATION STAMP, taken exactly once and only here. Every routing message the
             // walk emits and the completion tap fired below carry this same value; that identity is

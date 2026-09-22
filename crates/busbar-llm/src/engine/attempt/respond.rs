@@ -26,8 +26,8 @@ pub(super) fn deliver<'a>(
     upstream_started: std::time::Instant,
 ) -> impl std::future::Future<Output = Response> + 'a {
     let (host, rt, i, pool) = (hop.host, hop.rt, hop.lane, hop.pool_cell);
-    let _rec = busbar_substrate_values::profile::start(
-        busbar_substrate_values::profile::Stage::RecordSuccess,
+    let _rec = busbar_kernel::profile::start(
+        busbar_kernel::profile::Stage::RecordSuccess,
     );
     // The success feeds the per-lane `ok` counter and the breaker's success window on the ROUTING
     // POOL cell (a HalfOpen lane served here recovers that cell to Closed and clears its probe).
@@ -56,8 +56,8 @@ pub(super) fn deliver<'a>(
     };
     drop(_rec);
     async move {
-        let _resp = busbar_substrate_values::profile::start(
-            busbar_substrate_values::profile::Stage::RespBuild,
+        let _resp = busbar_kernel::profile::start(
+            busbar_kernel::profile::Stage::RespBuild,
         );
         // THE REPORT-BACK CELL for this delivery. Handed to whichever tap ends this response — the
         // buffered translate below, or the streaming body wrapper further down — and RIDDEN BACK on
@@ -65,7 +65,7 @@ pub(super) fn deliver<'a>(
         // without the plane growing a second carry between them.
         let tap = TapCell::new();
         let _rb_pre =
-            busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::RbPre);
+            busbar_kernel::profile::start(busbar_kernel::profile::Stage::RbPre);
 
         let ct = r.headers().get(CONTENT_TYPE).cloned();
         // The upstream's primary relayed id (bedrock `x-amzn-RequestId`, anthropic `request-id`),
@@ -226,7 +226,7 @@ async fn deliver_streaming(
     cross_protocol: bool,
     upstream_relay_id: Option<String>,
     tap: TapCell,
-    rb_pre: Option<busbar_substrate_values::profile::Timer>,
+    rb_pre: Option<busbar_kernel::profile::Timer>,
 ) -> Response {
     // Streaming (or same-protocol non-stream): the first-byte-tracking wrapper. ONE
     // registry-resolved translator factory: same-protocol SSE builds the verbatim re-emit with the
@@ -260,9 +260,9 @@ async fn deliver_streaming(
     budget_guard.disarm();
     drop(rb_pre);
     let _rb_body =
-        busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::RbBody);
+        busbar_kernel::profile::start(busbar_kernel::profile::Stage::RbBody);
     let _rb_new =
-        busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::RbNew);
+        busbar_kernel::profile::start(busbar_kernel::profile::Stage::RbNew);
     let upstream_stream = {
         use http_body_util::BodyExt;
         r.into_body().into_data_stream()
@@ -288,9 +288,9 @@ async fn deliver_streaming(
     let axum_body = guarded_body.into_body();
     drop(_rb_new);
     let _rb_finish =
-        busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::RbFinish);
+        busbar_kernel::profile::start(busbar_kernel::profile::Stage::RbFinish);
     let _rbf_build =
-        busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::RbfBuild);
+        busbar_kernel::profile::start(busbar_kernel::profile::Stage::RbfBuild);
     let mut rb = Response::builder().status(status);
     // Cross-protocol streaming reframes the body to the client's format, so the CT must be the
     // ingress client's; same-protocol keeps the upstream CT verbatim.
@@ -313,13 +313,13 @@ async fn deliver_streaming(
     }
     drop(_rbf_build);
     let _rbf_attach =
-        busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::RbfAttach);
+        busbar_kernel::profile::start(busbar_kernel::profile::Stage::RbfAttach);
     rb = maybe_attach_response_request_id(rb, hop.ingress_protocol, upstream_relay_id.as_deref());
     // Which routing policy chose this target (a no-op on the default path / when none did).
     rb = maybe_attach_route_policy(rb, hop.chosen_policy_name, &hop.lane_row().model);
     drop(_rbf_attach);
     let _rbf_body =
-        busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::RbfBody);
+        busbar_kernel::profile::start(busbar_kernel::profile::Stage::RbfBody);
     let mut resp = rb
         .body(axum_body)
         .unwrap_or_else(|_| status.into_response());

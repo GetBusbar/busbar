@@ -36,13 +36,6 @@ pub mod lossless;
 pub mod media;
 pub mod sigv4;
 
-// The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`): pure std
-// (atomics/Mutex/Instant), no `App`/`Store` reach, its accumulator buckets SINGLE-COMPILED here so a
-// dual-compiled plane test binary shares one profiler. Relocated DOWN from `busbar-substrate` (1.6.0
-// W4.b P1 pure-foundation drain); `busbar-substrate` re-exports it so `busbar_substrate_values::profile::…`
-// resolves unchanged.
-pub mod profile;
-
 /// The three WIRE-FORMAT NAMES the transport axis and the plane declaration share. RELOCATED to
 /// `busbar-contract-transport` (1.6.0 non-core transport hand-over) alongside [`transport::Transport`]
 /// — [`transport::Transport::name`] reads these three constants (that is the whole point of them:

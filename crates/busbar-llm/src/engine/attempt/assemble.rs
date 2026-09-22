@@ -29,15 +29,15 @@ pub(super) async fn build(
     hop_v: Option<Value>,
 ) -> Result<http::Request<http_body_util::Full<Bytes>>, Response> {
     let rt = hop.rt;
-    let _xlate = busbar_substrate_values::profile::start(
-        busbar_substrate_values::profile::Stage::TranslateReq,
+    let _xlate = busbar_kernel::profile::start(
+        busbar_kernel::profile::Stage::TranslateReq,
     );
     let payload = translate(hop, hop_v).await?;
     let payload = inject_stream_usage(hop, payload);
     drop(_xlate);
 
-    let _cbuild = busbar_substrate_values::profile::start(
-        busbar_substrate_values::profile::Stage::ClientBuild,
+    let _cbuild = busbar_kernel::profile::start(
+        busbar_kernel::profile::Stage::ClientBuild,
     );
     let _t = busbar_timing::timeit!("egress_client_build");
     // MEASUREMENT ONLY (busbar-timing, additive): `egress_assemble` sub-scopes everything below
@@ -65,7 +65,7 @@ pub(super) async fn build(
         return Err(internal_error(hop.ingress_protocol));
     };
     let _cb_auth =
-        busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::CbAuth);
+        busbar_kernel::profile::start(busbar_kernel::profile::Stage::CbAuth);
     // The SigV4 timestamp is taken here, inside the attempt, per attempt (the five-minute-skew rule).
     let signing_ctx = busbar_kernel::proto::SigningContext {
         host: &hop.lane_row().signing_host,
@@ -99,7 +99,7 @@ pub(super) async fn build(
             .unwrap_or(APPLICATION_JSON)
     };
     let _cb_reqwest =
-        busbar_substrate_values::profile::start(busbar_substrate_values::profile::Stage::CbReqwest);
+        busbar_kernel::profile::start(busbar_kernel::profile::Stage::CbReqwest);
     // The auth map IS the base of the header map, extended in place with the three per-request
     // constants in the same order as always (auth, then CT/UA/Accept).
     let mut egress_headers = egress_auth;
