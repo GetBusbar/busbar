@@ -41,11 +41,41 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 ROOTS="crates"
 
 # ── CHECK 1 NEEDLES ──────────────────────────────────────────────────────────────────────────────
-# STRONG: an unambiguously-secret field name — flagged whatever struct it sits on.
+# MATCHED ON THE FIELD-NAME TAIL, NOT BY STRING EQUALITY, and that difference is the whole of this
+# block's history. A needle set compared with `==` can only ever see the exact spelling somebody
+# thought to write down, and Rust field names are QUALIFIED: the vendor goes on the front
+# (`aws_secret_access_key`) and the role goes on the front of the generic noun (`caller_token`).
+# Under equality `aws_secret_access_key != secret_access_key`, so the gate ran GREEN over the one
+# field in this tree that is literally named "secret access key" — and it had an allowlist row
+# pointed at that very field, which could never fire, saying so to nobody. Measured: equality saw
+# 11 Check-1 fields; tail matching sees 20, and every one of the 9 it added is a real bare secret
+# except one provably-constant mode label (allowlisted below, named, load-bearing).
+#
+# THE RULE: a field matches needle N iff `fname == N` or `fname` ends with `_N`. That is deliberately
+# a TAIL match and not a SUBSTRING match, because the two were measured against this tree and the
+# substring form is strictly worse:
+#   substring(STRONG)          → +1 true  (aws_secret_access_key), +3 FALSE (`subject_token_type` x3,
+#                                an OAuth token-TYPE URN — a constant, not a credential)
+#   substring(STRONG+CONTEXT)  → +2 true, +6 FALSE (adds `token_url` x2, `upstream_credentials`)
+#   tail (THIS)                → +7 true, +0 FALSE
+# The qualifier in Rust field names is a PREFIX, so the secret-ness lives in the SUFFIX: `*_token` is
+# a token, `token_*` is something ABOUT a token (a url, a uri, a hash, a type). Matching the tail
+# encodes exactly that and nothing more.
+#
+# STRONG: an unambiguously-secret field name — flagged whatever struct it sits on, at any qualifier.
 STRONG_NEEDLES="api_key api_key_plaintext client_secret private_key signing_key access_token subject_token api_secret secret_access_key password bearer credential_secret"
-# CONTEXT: a generically-named field (secret / token / credential) — flagged ONLY when its enclosing
-# struct name matches the secret-bearing shape below (so an unrelated `token: usize` counter is ignored).
-CONTEXT_NEEDLES="secret token credential"
+# CONTEXT: a generically-named field (secret / token / credential / credentials) — flagged ONLY when
+# its enclosing struct name matches the secret-bearing shape below (so an unrelated `token: usize`
+# counter is ignored). `credentials` is here because RFC 9110 spells ONE credential value plural
+# (`Authorization: <scheme> <credentials>`) and that is how this tree spells it too.
+#
+# A QUALIFIED context needle is PROMOTED TO STRONG (struct gate skipped). The struct-name gate exists
+# because a BARE `token`/`secret` is ambiguous — it could be an LLM output token or a counter. A
+# QUALIFIED one is not: `caller_token` says whose token it is in the name. The gate was standing in
+# for a disambiguator the field name already carries, and it was costing real coverage — all six
+# `caller_token` fields sit on structs (`Walk`, `Hop`, `RouteInput`, …) that match no struct-name
+# pattern and never would.
+CONTEXT_NEEDLES="secret token credential credentials"
 CONTEXT_STRUCT_RE="Key|Cred|Token|Secret|Auth|Lease|Issued|Mint"
 
 # ── CHECK 2 SINKS ────────────────────────────────────────────────────────────────────────────────
@@ -77,21 +107,55 @@ SINKS="tracing:: log:: println! eprintln! print! dbg! panic! info! warn! error! 
 # AUDITED ROW BY ROW WHEN THE PATHS WERE REPOINTED, so the vacuous ones are named rather than left to
 # look live. A row suppresses a hit iff `needle == NEEDLE` where `needle` IS the field name (the
 # scanner calls `allowlisted(fname, fname)`), so the match is EXACT on the field name:
-#   * `secret_access_key|...schema.rs|` and `access_token|...schema.rs|` suppress NOTHING and never
-#     have, at either path: that struct's field is `aws_secret_access_key`, which is not equal to
-#     `secret_access_key` and is in neither needle set, so the scanner never raises a hit for there
-#     to be excused. They are kept, repointed, as the design's written intent for that field rather
-#     than struck — but they are NOT load-bearing today, and a scanner change that starts matching
-#     `aws_`-prefixed names would need the needle corrected, not just the path.
+#   * `secret_access_key|...schema.rs|` USED TO suppress nothing and never had, at either path: that
+#     struct's field is `aws_secret_access_key`, which is not EQUAL to `secret_access_key` and was in
+#     neither needle set, so the scanner never raised a hit for there to be excused. The row was kept
+#     as the design's written intent with the note that "a scanner change that starts matching
+#     `aws_`-prefixed names would need the needle corrected, not just the path". Tail matching IS
+#     that change, so the needle IS corrected: the row now reads `aws_secret_access_key|…|
+#     aws_secret_access_key` and is LOAD-BEARING — it suppresses a hit the scanner really raises.
+#
+#     WHY THAT FIELD IS AN EXCEPTION AND NOT DEBT, which is the only thing that makes the row
+#     legitimate rather than a way of making the gate quiet. `CreatedKeyView` is the design's already
+#     documented "once-shown mint response" exception and its sibling `token` field is allowlisted on
+#     the row directly above; excusing one and counting the other on the SAME struct for the SAME
+#     reason would be incoherent. And the conversion the gate asks for is IMPOSSIBLE here, not merely
+#     unperformed: `schema.rs` is compiled ONLY under `#[cfg(feature = "openapi-schema")]`, its types
+#     are never instantiated (the sole reference to `CreatedKeyView` in the tree is a `typed!(…)`
+#     schema registration in `busbar-core-admin/src/v1/json/handlers.rs`), and the struct derives
+#     `Serialize + JsonSchema` — while `Redacted<T>` deliberately implements NEITHER (pinned by the
+#     compile-time fence in `crates/api/src/tests/redacted_no_serde.rs`). `Redacted<String>` there
+#     would not compile. The field holds no value at runtime; it is a shape, not a carrier.
+#
+#     THE CARRIER IS SOMEWHERE THIS CHECK CANNOT LOOK, and that is the more useful thing to know.
+#     The AWS secret actually travels as the 4th element of a bare tuple
+#     (`GovState::mint_signed_with_aws -> StoreResult<(VirtualKey, String, String, String)>`,
+#     `busbar-kernel/src/governance/state.rs`) and is written into a `json!({…})` body at
+#     `busbar-core-admin/src/keys.rs:1046`. Check 1 scans STRUCT FIELDS. A tuple element has no name
+#     to spell, so no needle set of any width will ever reach it. Widening the needles fixed the
+#     SPELLING blind spot; it did not — and cannot — fix the SHAPE blind spot.
+#   * `access_token|...schema.rs|` still suppresses nothing: `CreatedKeyView` has no access-token
+#     field under any qualifier, so tail matching raises no hit there either. It is kept, unchanged,
+#     as written intent — but it is dead weight, not a live exception, and the STRONG-half liveness
+#     detector described below is what should eventually strike it.
+#   * `upstream_credentials|crates/busbar-kernel/src/admin/v1/contract/mod.rs|upstream_credentials`
+#     is the one FALSE POSITIVE tail matching introduces, and it is excused on MEASURED grounds, not
+#     on the doc comment that claims it. `AuthView.upstream_credentials` is `&'static str` and is
+#     assigned exactly two string literals — `"own"` / `"passthrough"` — at its single construction
+#     site (`busbar-core-admin/src/v1/service.rs`, `get_auth()`), matching the published enum in
+#     `busbar-plane-decision/src/meta.rs`. It names a MODE, never a credential. It cannot be renamed
+#     (it is a serde field name in the frozen admin OpenAPI surface), so an allowlist row is the only
+#     available disposition. It suppresses a real hit, so it is load-bearing, not dead weight.
 #   * `token|crates/busbar-plugin/src/cold/auth.rs|` and `secret|...same...|` are likewise vacuous
 #     today: that file's fields are `token_response` and `secret_form_field`, neither of which is an
 #     exact needle. The PATH is live, so they are left exactly as written.
 ALLOWLIST_C1="secret|crates/api/src/store.rs|secret
 credential_secret|crates/api/src/store.rs|
 token|crates/busbar-kernel/src/admin/v1/contract/schema.rs|token
-secret_access_key|crates/busbar-kernel/src/admin/v1/contract/schema.rs|
+aws_secret_access_key|crates/busbar-kernel/src/admin/v1/contract/schema.rs|aws_secret_access_key
 access_token|crates/busbar-kernel/src/admin/v1/contract/schema.rs|
 secret|crates/busbar-kernel/src/admin/v1/contract/schema.rs|secret
+upstream_credentials|crates/busbar-kernel/src/admin/v1/contract/mod.rs|upstream_credentials
 token|crates/busbar-plugin/src/cold/auth.rs|
 secret|crates/busbar-plugin/src/cold/auth.rs|
 token|crates/busbar-llm-codec/src/ir/types.rs|token"
@@ -126,6 +190,11 @@ scan_fields() {
       return res
     }
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    # `fname` IS the needle, or carries it as an `_`-delimited TAIL (`aws_` + `secret_access_key`).
+    function tailmatch(f, n) { return (f == n) || qualified(f, n) }
+    # The TAIL only: `fname` ends with `_N` behind at least one character of qualifier. This is what
+    # promotes a qualified CONTEXT needle to STRONG, and what keeps `token_url` from matching `token`.
+    function qualified(f, n) { return (length(f) > length(n) + 1 && substr(f, length(f) - length(n)) == "_" n) }
     function allowlisted(needle, field,   i) {
       for (i = 1; i <= naA; i++)
         if (needle == aN[i] && index(FILENAME, aP[i]) == 1 && (aF[i] == "" || aF[i] == field)) return 1
@@ -166,8 +235,12 @@ scan_fields() {
           fname = line; sub(/[ \t]*:.*/, "", fname)
           ftype = line; sub(/^[A-Za-z_][A-Za-z0-9_]*[ \t]*:[ \t]*/, "", ftype)
           is_needle = 0
-          if (fname in strongset) is_needle = 1
-          else if ((fname in ctxset) && sname[depth] ~ structre) is_needle = 1
+          # STRONG at any qualifier: `secret_access_key` AND `aws_secret_access_key`.
+          for (ki = 1; ki <= ns; ki++) if (tailmatch(fname, S[ki])) is_needle = 1
+          # A QUALIFIED context needle is strong on its own (`caller_token`) — no struct gate.
+          if (!is_needle) for (ki = 1; ki <= nc; ki++) if (qualified(fname, C[ki])) is_needle = 1
+          # A BARE context needle still needs the struct-name gate, exactly as before.
+          if (!is_needle && (fname in ctxset) && sname[depth] ~ structre) is_needle = 1
           if (is_needle) {
             bare = (ftype ~ /String/ || ftype ~ /&[ \t]*(\x27[a-z_]+[ \t]+)?str/ || ftype ~ /Vec[ \t]*<[ \t]*u8/)
             wrapped = (ftype ~ /Redacted/ || ftype ~ /Zeroizing/ || ftype ~ /SecretRef/)
@@ -346,6 +419,70 @@ GREEN
     note "GREEN c1: Redacted-wrapped field + comment + fn-param + non-secret token:usize flagged NONE"
   else
     fail=1; note "GREEN c1 FAILED: expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # ── RED (Check 1, QUALIFIED): the prefix/suffix class the equality matcher was blind to. ──
+  # THE FIELD THAT PROVED THE INSTRUMENT WAS BROKEN goes in here as a permanent fixture, so the
+  # regression cannot come back quietly. `aws_secret_access_key` carries the STRONG needle
+  # `secret_access_key` behind a vendor prefix; `caller_token` carries the CONTEXT needle `token`
+  # behind a role prefix and sits on a struct whose NAME matches no secret-bearing pattern (which is
+  # exactly how all six real ones in this tree are written). Under `==` both scored zero.
+  cat >"$tmp/c1_red_qualified.rs" <<'RED1Q'
+pub struct CreatedKeyView {
+    pub aws_access_key_id: Option<String>,
+    pub aws_secret_access_key: Option<String>,
+}
+pub struct Walk {
+    pub caller_token: Option<String>,
+    pub proto: String,
+}
+pub struct LaneWire {
+    pub admin_password: String,
+    pub shared_secret: String,
+}
+RED1Q
+  out="$(scan_fields "$STRONG_NEEDLES" "$CONTEXT_NEEDLES" "$CONTEXT_STRUCT_RE" "$tmp/c1_red_qualified.rs")"
+  local q
+  for q in aws_secret_access_key caller_token admin_password shared_secret; do
+    if printf '%s\n' "$out" | awk -F'\t' -v f="$q" '$1==f{n++} END{exit !(n+0)}'; then
+      note "RED c1: caught the QUALIFIED needle \`$q\` (prefix/suffix variant)"
+    else
+      fail=1; note "RED c1 FAILED: qualified \`$q\` not flagged — the tail matcher regressed to =="
+    fi
+  done
+  if printf '%s\n' "$out" | awk -F'\t' '$1=="aws_access_key_id"{n++} END{exit (n+0)}'; then
+    note "RED c1: did NOT flag the sibling non-secret \`aws_access_key_id\` (an AccessKeyId is public)"
+  else
+    fail=1; note "RED c1 FAILED: aws_access_key_id false-positive"
+  fi
+
+  # ── GREEN (Check 1, NEAR-MISS): the head-qualified names tail matching must NOT flag. ──
+  # A gate that flags everything is exactly as useless as one that flags nothing, and substring
+  # matching — the obvious alternative to this tail rule — flags every one of these. `token_url` is
+  # an endpoint, `token_hash` is a digest, `subject_token_type` is an OAuth URN constant,
+  # `secret_form_field` names the form KEY the core fills (never the value), `plane_tokens` is a
+  # counter map. They are put on a struct whose name DOES match CONTEXT_STRUCT_RE so the test proves
+  # the NAME rule holds them green, not the struct gate.
+  cat >"$tmp/c1_green_nearmiss.rs" <<'GREEN1N'
+pub struct TokenExchangeCfg {
+    pub token_url: String,
+    pub token_uri: String,
+    pub token_path: String,
+    pub token_hash: String,
+    pub admin_token_hash: String,
+    pub subject_token_type: String,
+    pub requested_token_type: String,
+    pub secret_form_field: Option<String>,
+    pub access_key_id: String,
+    pub tokens_in_pointer: String,
+    pub plane_tokens: String,
+}
+GREEN1N
+  out="$(scan_fields "$STRONG_NEEDLES" "$CONTEXT_NEEDLES" "$CONTEXT_STRUCT_RE" "$tmp/c1_green_nearmiss.rs")"
+  if [ -z "$out" ]; then
+    note "GREEN c1: 11 head-qualified NEAR-MISS names (token_url/token_hash/subject_token_type/secret_form_field/…) flagged NONE"
+  else
+    fail=1; note "GREEN c1 FAILED: the tail matcher over-fires — expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
   fi
 
   # ── RED (Check 2): `.expose_secret()` straight into a tracing sink. ──
