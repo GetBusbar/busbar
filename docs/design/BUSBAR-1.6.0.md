@@ -1276,6 +1276,37 @@ the `units_*_leg.rs`/`plane_mount.rs` shape (#28 chose the gauntlet-kernel-rider
 `Arena` fixed-cap model (#41). These appear as survivors because their symbols are absent from
 trunk. Absent because they were **decided against**.
 
+## Conformance is the LAST gate, not a task — measured 2026-09-21
+
+`cargo xtask conformance check --musts` is RED with **17 rows**, and the split matters more than the
+count, because it changes when the work can be done at all.
+
+**10 suites are STALE, not failing.** `llm-{anthropic,bedrock,cohere,gemini,openai,responses}`,
+`mcp`, `voice-gemini-live`, `voice-openai-realtime` and one more all hold a real **pass** recorded at
+commit `67ee79103050`. They are refused for one reason: the verdict commit does not equal the
+candidate sha, and a pass is honoured only if its commit IS the release sha.
+
+**Therefore re-running them now is pure waste**, and would be the exact "spend that buys nothing"
+the cost brief warns about. The next commit invalidates every fresh verdict immediately, and the six
+LLM suites exercise real provider surfaces. A verdict with a shelf life of one commit is not worth
+paying for. **These run once, on the frozen candidate, immediately before turnstile — and nowhere
+else.** Any plan that lists "make conformance green" as a mid-flight task is wrong by construction.
+
+**7 suites have genuinely never run**, and these ARE buildable now because they are about missing
+capability rather than staleness:
+
+| Suite | State |
+|---|---|
+| `ws` | Autobahn leg not wired — **currently zero coverage** |
+| `tls` | testssl leg not green |
+| `h2spec` | HTTP/2 leg not green |
+| `slsa-verifier` | not wired as an arm-or-red verdict |
+| `oidf-oauth2` | self-hosted OIDF leg not green. The claim is "passes the suite", **never** "certified" (owner ruling 2026-09-19) |
+| `jev` | decisions-plane wiring in flight (#48) |
+
+These seven are the real conformance work for 1.6.0. `ws` is the most glaring — a release whose
+fourth plane is streaming, carrying a WebSocket transport, with zero Autobahn coverage.
+
 ## Unattended wave, 2026-09-21 night — what landed
 
 Twenty commits. Every fix below was red-before-green with the failing output captured, and every one
