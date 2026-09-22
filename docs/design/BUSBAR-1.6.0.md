@@ -2187,6 +2187,49 @@ unaudited is not a coincidence — both follow from never having been enrolled a
 The fix is that a pure plane names `busbar-contract`, not `busbar-api` — which is what its four
 siblings already do and where #84 sends it regardless.
 
+**AND THE FIX LANDED THAT WAY. Measured 2026-09-22, `cargo xtask gate denylist`:**
+
+```
+before:  FAIL  denylist:hits  busbar-plane-decision: libc via
+                              busbar-plane-decision -> busbar_api -> sha2 -> cpufeatures -> libc
+after:   PASS  denylist:hits  no banned transitive source in any pure plugin kind
+```
+
+The census of what the plane actually took from `busbar-api` came back at **one symbol**:
+`UpstreamCreds`, the `own`/`passthrough` value of the reserved `upstream_credentials:` key — two
+unit variants and two serde derives, named in exactly three source lines. Nothing else. So the fix
+needed no design: the type is config grammar, the same species as `ModelCfg`, which had already
+made this identical journey out of the kernel into `busbar_contract::config` (#40/#38) for the
+identical reason. It moved there verbatim — all 17 lines byte-identical, only the destination
+crate's own `#![deny(missing_docs)]` compelling two variant doc lines — `busbar-api` re-exports it
+at its historical path so every kernel-side caller compiles unchanged, and the plane's manifest now
+names ONE busbar crate, like its four siblings. **`busbar-contract` took no new dependency and in
+particular did not take `sha2`**: Part 7's heavy-dependency table refuses it, and `sha2 ->
+cpufeatures -> libc` is the very edge being deleted.
+
+**THE EXEMPTION WAS THE DEFECT, SO THE EXEMPTION IS WHAT WAS DELETED.** The plane's two witness
+tests each carried a written-down exception for `busbar-api` — `purity.rs` skipped it in the source
+scan, `invariance.rs` allowed it in the manifest scan — and an exemption is how the edge got in.
+Both now FORBID it, proven red-before-green: re-adding the dependency reds
+`the_manifest_names_only_what_this_plane_may_name`, and a `busbar_api` source line reds
+`the_plane_names_no_kernel_side_crate`. The positive control was re-run on the fixed tree —
+`use std::net::TcpStream` planted in `src/records.rs` scores `RED denylist:hits ... std::net via own
+src at crates/busbar-plane-decision/src/records.rs:15` — because a gate that passes because the
+crate went invisible again is the exact failure this closes.
+
+> **AN EXPLANATION OF A DELETED EDGE IS COUNTED AS THE EDGE.** `kind-isolation`'s vocabulary census
+> matches comments and doc comments, and says so in its own `why` line. The paragraphs written to
+> explain why the dependency was removed drove `busbar-plane-decision × api` from **9 to 22** —
+> thirteen new mentions of a crate the plane no longer depends on, every one of them in a comment
+> saying it no longer depends on it. The census was right and the prose was careless. Rewritten to
+> name the crate only where it must be SPELLED — the two forbidden-list literals, which are
+> executable — the cell reads **2**, below where it started. A source-scanning gate cannot tell a
+> coupling from a sentence about one, so the sentence has to be written knowing that.
+
+`denylist:stale-waivers` remains RED and is a SEPARATE, older finding: the `busbar-plane-a2a` and
+`busbar-plane-mcp` `libc` waivers now match no hit. Unchanged by this work, and named here so it is
+not read as fallout from it.
+
 > **A CRATE THAT IS IN NO LIST IS IN NO GATE.** Every kind-scoped instrument here takes its
 > population from a roster, and a roster is maintained by hand. The census rows (`[gate.census]`)
 > exist precisely to stop a roster silently narrowing — but they count the roster, and cannot see a
