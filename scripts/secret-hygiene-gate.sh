@@ -149,8 +149,28 @@ SINKS="tracing:: log:: println! eprintln! print! dbg! panic! info! warn! error! 
 #   * `token|crates/busbar-plugin/src/cold/auth.rs|` and `secret|...same...|` are likewise vacuous
 #     today: that file's fields are `token_response` and `secret_form_field`, neither of which is an
 #     exact needle. The PATH is live, so they are left exactly as written.
-ALLOWLIST_C1="secret|crates/api/src/store.rs|secret
-credential_secret|crates/api/src/store.rs|
+#   * THE TWO `crates/api/src/store.rs` ROWS WERE BOTH DEAD, FOR TWO DIFFERENT REASONS, and only
+#     one of them was worth repointing. `check_allowlist_paths` passed them because the file still
+#     EXISTED — a 39-line re-export shim holding ZERO occurrences of `secret` — which is the weak
+#     half of staleness: it asks "does the path exist", never "did this row suppress anything".
+#     - `secret|crates/api/src/store.rs|secret` is REPOINTED at `crates/busbar-contract/src/
+#       records.rs`, where `CredentialSecret` actually lives (DECISIONS #83/#84). Its subject moved;
+#       the finding it excused is LIVE at the new path and was being counted as fresh debt. The
+#       exception is legitimate on the same MEASURED ground the `aws_secret_access_key` row above
+#       stands on, and the ground is checked rather than asserted: `CredentialSecret` derives
+#       `Serialize`/`Deserialize` because a plugin `RecordStore` returns it across the ABI as JSON,
+#       and `Redacted<T>` deliberately implements NEITHER. Planting `pub secret: Redacted<String>`
+#       there yields `the trait bound `Redacted<String>: serde::Serialize` is not satisfied` (and the
+#       `Deserialize` twin). The conversion Check 1 asks for is IMPOSSIBLE here, not merely
+#       unperformed. The leak surface the check protects — debug-logging — is closed at this type by
+#       its own hand-written `Debug`, which prints `<redacted; present>`/`<absent>` and never the
+#       value.
+#     - `credential_secret|crates/api/src/store.rs|` is STRUCK. It is not a row whose subject moved:
+#       `grep -rn "^\s*\(pub \)\?credential_secret\s*:" --include=*.rs crates` returns NOTHING,
+#       so no struct field anywhere in the tree is spelled `credential_secret`, at the old path or
+#       any other. The scanner matches EXACTLY on the field name, so this needle could never raise a
+#       hit for the row to excuse. There is no path to repoint it to; it excused nothing, ever.
+ALLOWLIST_C1="secret|crates/busbar-contract/src/records.rs|secret
 token|crates/busbar-kernel/src/admin/v1/contract/schema.rs|token
 aws_secret_access_key|crates/busbar-kernel/src/admin/v1/contract/schema.rs|aws_secret_access_key
 access_token|crates/busbar-kernel/src/admin/v1/contract/schema.rs|
