@@ -261,9 +261,9 @@ why = """The same reach from test code. Tests that name core internals pin the p
 private shape just as surely as production code does; they are reported separately so both \
 counts can trend to zero at their own pace."""
 [rules.ports-only-tests.max_per_crate]
-busbar-llm = 14
-busbar-mcp = 1
-busbar-a2a = 3
+busbar-llm = 0
+busbar-mcp = 0
+busbar-a2a = 0
 busbar-voice = 0
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
@@ -465,7 +465,7 @@ what a PLUGIN AUTHOR reads, the other the kernel-budget arithmetic that feeds `u
 they can no longer report two numbers for one crate, which they did for months (7,012 against \
 5,652) because they were two COUNTERS wearing the words \"two methods\"."""
 kernel_crate = "busbar-kernel"
-# ── RE-BASELINED 2026-09-22, `cargo xtask loc`, HEAD fe689c616, 20:47Z: 54623 -> 52988 ──────────
+# ── RE-BASELINED 2026-09-22, `cargo xtask loc`, HEAD 1d3d299fd, 20:58Z: 54623 -> 52950 ──────────
 # LOWERED to what the crate measures, per `ceiling-slack`. Two things moved it. The kernel's own
 # code shrank as #83 and the plane folds moved bodies out; and the COUNTER changed — this rule used
 # to count lines itself, off the construction gate's tree scanner, which entered a test scope only
@@ -473,7 +473,7 @@ kernel_crate = "busbar-kernel"
 # `#[cfg(test)] impl` body in the crate. It now reads `cargo xtask loc`, which takes the item span
 # from the parse, and which is also the counter `[gate.surface_ceilings]` reads — one instrument,
 # so the two rows of this file's pair cannot disagree about a measurement again.
-kernel_ceiling = 52988
+kernel_ceiling = 52950
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 # RAISED 3480 -> 3545 for the upstream status table's contract face, pinned at what it MEASURES
@@ -523,18 +523,18 @@ verbs_crate = "busbar-unit-verbs"
 # than met. At 0 it is a live ratchet: the day a `busbar-unit-verbs` reappears, its first line of
 # code reds this row and the owner decides the figure then, in a diff.
 verbs_ceiling = 0
-# ── RE-BASELINED 2026-09-22: 60545 -> 58908, AND RED, and red for exactly one reason. ──────────
+# ── RE-BASELINED 2026-09-22: 60545 -> 58870, AND RED, and red for exactly one reason. ──────────
 # This row adds no growth of its own; it is the arithmetic of its three members, and it is set to
 # the SUM OF THEIR CEILINGS rather than to what the union measures today:
 #
-#     52988 (kernel_ceiling) + 5652 (caps_contract_ceiling) + 268 (unit_total_ceiling) = 58908
+#     52950 (kernel_ceiling) + 5652 (caps_contract_ceiling) + 268 (unit_total_ceiling) = 58870
 #
-# The union MEASURES 59,915 (52,988 + 6,659 + 268), so this row is red by 1,007 — which is the
+# The union MEASURES 59,877 (52,950 + 6,659 + 268), so this row is red by 1,007 — which is the
 # caps/contract breach above, and nothing else. That is deliberate. Setting this to 59,895 would
 # have made the union green while one of its members was in breach, and the whole reason this row
 # exists is that a union can be over while every part of it looks reasonable. A union ceiling moves
 # WITH its members, per this file's own rule; it does not absorb their overage.
-union_ceiling = 58908
+union_ceiling = 58870
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -543,15 +543,15 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-# ── HELD 2026-09-22 at 667, AND RED: `teller.rs` measures 681. ────────────────────────────────
-# NOT re-baselined, in either direction, and that is deliberate on a shared checkout. The file moved
-# under measurement three times in one afternoon — 681, then 661, then 681 again — so pinning the
-# drained reading (661) would have manufactured a tighter ceiling out of a transient state and
-# charged somebody else's in-flight change for the difference. Held at the figure the base carries.
-# It is RED by 14 at that figure too, and was before this re-baseline touched anything: the breach
-# belongs to the change that is currently growing the Teller loop, which is what a no-headroom pin
-# is FOR. Re-measure with `cargo xtask loc --per-file busbar-kernel` before reading 681 as current.
-ceiling = 667
+# ── RE-BASELINED 2026-09-22 by `--write`, HEAD 1d3d299fd, 20:58Z: 667 -> 661, the measurement. ──
+# READ THE DATE. This file moved under measurement three times in one afternoon on a shared
+# checkout — 681, then 661, then 681, then 661 — because a change to the Teller loop is in flight
+# while this is being written. 661 is the drained reading and it is what the row is pinned at, which
+# means the in-flight growth will red this row when it lands. That is the ratchet working, not a
+# mis-pin: a no-headroom ceiling exists precisely so the next line that grows the loop is the line
+# that has to justify itself. Re-measure (`cargo xtask loc --per-file busbar-kernel`) before reading
+# either number as current, and use `--write` to re-pin rather than editing by hand.
+ceiling = 661
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
@@ -1304,7 +1304,7 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 87
+ceiling = 17
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1316,7 +1316,7 @@ ceiling = 87
 prefix = "busbar_core::"
 exclude = []
 because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 22
+figure = 0
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
@@ -1337,7 +1337,7 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
 # today, and it ratchets down from here like every other figure in this file. It may only go down;
 # `ceiling-slack` holds it from below and this row holds it from above.
-figure = 48
+figure = 0
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]

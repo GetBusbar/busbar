@@ -456,9 +456,18 @@ fn ceiling_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<
         let patterns = spec.list_of("patterns");
         for p in &patterns {
             let rel = format!("crates/busbar-kernel/src/{p}");
-            if let Ok(basetext) = cx.read(&rel) {
-                ov.set(&rel, format!("{basetext}\n{}", bulk(2000)));
-            }
+            // A PATTERN WHOSE FILE IS NOT THERE STILL HAS TO BE PLANTABLE. This used to plant only
+            // when the file already existed, so the rows whose subject had LEFT the kernel --
+            // `slice.rs`, which moved to busbar-contract, and `arena.rs`/`masking.rs`, which no
+            // longer exist anywhere -- measured the empty set, passed under every plant, and made
+            // this case unable to tell "the ceiling held" from "the ceiling was never spent". That
+            // is the one thing the case is for. Planting the file INTO EXISTENCE reds the row the
+            // way the file coming back would.
+            let planted = match cx.read(&rel) {
+                Ok(basetext) => format!("{basetext}\n{}", bulk(2000)),
+                Err(_) => bulk(2000),
+            };
+            ov.set(&rel, planted);
         }
         naming.push(format!("({})", patterns.join(", ")));
         cover.push(format!("loc-ceilings:kernel:{key}"));
@@ -483,6 +492,13 @@ fn ceiling_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<
         let name = crate_name_of_dir(&d);
         let n = if name == verbs { 16_000 } else { 2_600 };
         ov.set(format!("crates/{name}/src/zz_planted_loc.rs"), bulk(n));
+    }
+    // AND THE VERBS CRATE WHETHER OR NOT IT IS ON DISK, for the same reason as the kernel files
+    // above: `busbar-unit-verbs` went with the W2.c unit fold, so the glob above stopped matching
+    // it, its row measured 0 and passed every plant. `Overlay::set` overwrites, so this is a no-op
+    // on a tree where the crate is present and the glob already planted it.
+    if !verbs.is_empty() {
+        ov.set(format!("crates/{verbs}/src/zz_planted_loc.rs"), bulk(16_000));
     }
     naming.push(format!("{verbs} stays within its LOC ceiling"));
     r.push(prove_red(
