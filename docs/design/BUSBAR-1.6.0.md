@@ -1489,6 +1489,34 @@ a dated audit note and the code is untouched.
 
 Note this is a multi-crate wiring gap (tracked in-repo as milestone "M6"), not a bounded fix.
 
+### The two parked money items are ONE root cause, and the write side is worse than the read side
+
+D-3 is usually described as "`GET /admin/usage` was never wired to the dated rate-card history".
+That is only half of it, and the smaller half.
+
+`PostingStamp` carries a `rate_card_version` field, and it is **hardcoded to `0` at all seven
+production posting sites** — `units_a2a.rs:825,1020`, `units_llm.rs:1578`, `units_mcp.rs:1399,1508`,
+`units_voice.rs:1840,1944`. The field is real and load-bearing: it is part of the hash-chained audit
+amount (`busbar-kernel-audit/src/record.rs:375` digests it), and the migration path honours it
+properly (opening balances carry a real version, asserted in tests). Only the LIVE posting path
+writes a constant zero.
+
+A real version is available. `busbar-kernel-ledger/src/cost/rate.rs:167` says it outright: *"A card
+has no version field. Which card this is, is the number of the history entry that holds it."* The
+history engine is `cost/history.rs` and it exists.
+
+**The consequence matters for the owner's decision, and it is not symmetric.** If the ruling is
+"history reprices off the current card", the code already does that and only the changelog and
+register need retracting. But if the ruling is "each row is priced by the card in force when it was
+written", then it cannot be applied to anything already recorded: **every posting ever written says
+card version 0**, so the ledger physically cannot say which card priced it. That option is
+implementable going forward and **not recoverable backwards**.
+
+So the real question is not only which behaviour is right, but whether the ledger should start
+recording the card version now regardless of which way the pricing rule goes — because until it
+does, the immutable-history option keeps getting more expensive every day, and the audit chain keeps
+attesting a version number that is a placeholder.
+
 **It is worse than an internal register error: the claim is CUSTOMER-FACING.** `CHANGELOG.md`
 presents it among the release's breaking changes as "one where a rate-card edit stops repricing
 history it should not touch". So 1.6.0 currently ships a written promise about billing behaviour
