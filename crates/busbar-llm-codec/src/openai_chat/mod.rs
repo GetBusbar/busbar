@@ -4,6 +4,7 @@
 //! OpenAI protocol reader/writer implementation.
 
 use crate::ir::{IrStreamEvent, IrUsage};
+use crate::usage_count::read_count_u64;
 use http::{header::HeaderValue, HeaderName, StatusCode};
 // The openai-family error helpers (`bearer_error_code`/`context_length_prose_scan`) now live
 // in the neutral substrate; name them there so this plugin reaches no `busbar-core` path for them.
@@ -1460,3 +1461,7 @@ mod audio_format_regression_tests;
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/float_usage_tests.rs"]
+mod float_usage_tests;

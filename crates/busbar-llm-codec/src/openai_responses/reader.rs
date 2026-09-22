@@ -6,11 +6,11 @@ impl ProtocolReader for ResponsesReader {
         tail: &[u8],
     ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
+        let u64_field = |k: &str| v.get(k).and_then(read_count_u64);
         let cached = v
             .get("input_tokens_details")
             .and_then(|d| d.get("cached_tokens"))
-            .and_then(|x| x.as_u64());
+            .and_then(read_count_u64);
         Some(
             crate::ir::IrUsage {
                 input_tokens: u64_field("input_tokens")
@@ -1204,12 +1204,12 @@ impl ProtocolReader for ResponsesReader {
                                 // `saturating_sub` guards an odd upstream where cached > input.
                                 input_tokens: u
                                     .get("input_tokens")
-                                    .and_then(|v| v.as_u64())
+                                    .and_then(read_count_u64)
                                     .unwrap_or(0)
                                     .saturating_sub(cached.unwrap_or(0)),
                                 output_tokens: u
                                     .get("output_tokens")
-                                    .and_then(|v| v.as_u64())
+                                    .and_then(read_count_u64)
                                     .unwrap_or(0),
                                 cache_creation_input_tokens: None,
                                 // Carry the streamed prompt-cache hit count
@@ -1226,7 +1226,7 @@ impl ProtocolReader for ResponsesReader {
                                     reasoning_tokens: u
                                         .get("output_tokens_details")
                                         .and_then(|d| d.get("reasoning_tokens"))
-                                        .and_then(|v| v.as_u64()),
+                                        .and_then(read_count_u64),
                                     ..Default::default()
                                 },
                             }
@@ -1560,12 +1560,12 @@ impl ProtocolReader for ResponsesReader {
             // only the uncached input. `saturating_sub` guards an odd upstream where cached > input.
             input_tokens: usage_val
                 .and_then(|u| u.get("input_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(read_count_u64)
                 .unwrap_or(0)
                 .saturating_sub(cached.unwrap_or(0)),
             output_tokens: usage_val
                 .and_then(|u| u.get("output_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(read_count_u64)
                 .unwrap_or(0),
             cache_creation_input_tokens: None,
             // The Responses API reports prompt-cache hits under
@@ -1581,7 +1581,7 @@ impl ProtocolReader for ResponsesReader {
                 reasoning_tokens: usage_val
                     .and_then(|u| u.get("output_tokens_details"))
                     .and_then(|d| d.get("reasoning_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(read_count_u64),
                 ..Default::default()
             },
         };

@@ -4,6 +4,7 @@
 //! OpenAI Responses API protocol reader/writer implementation.
 
 use crate::ir::IrStreamEvent;
+use crate::usage_count::read_count_u64;
 use http::StatusCode;
 // `bearer_error_code` and `CODE_INVALID_API_KEY` now live in the neutral substrate; read them there
 // so this plugin names no `busbar-core` implementation path for them.
@@ -1148,7 +1149,7 @@ fn read_cached_tokens(usage_val: &serde_json::Value) -> Option<u64> {
     usage_val
         .get("input_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64())
+        .and_then(read_count_u64)
 }
 
 /// OpenAI Responses streaming writer.
@@ -1960,3 +1961,7 @@ mod input_hardening_tests;
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/float_usage_tests.rs"]
+mod float_usage_tests;
