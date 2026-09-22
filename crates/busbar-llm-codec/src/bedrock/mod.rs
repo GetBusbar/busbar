@@ -1158,10 +1158,10 @@ fn read_cache_usage(
 ) -> (Option<u64>, Option<u64>) {
     let cache_creation_input_tokens = usage_obj
         .and_then(|u| u.get("cacheWriteInputTokens"))
-        .and_then(|v| v.as_u64());
+        .and_then(crate::usage_count::read_count_u64);
     let cache_read_input_tokens = usage_obj
         .and_then(|u| u.get("cacheReadInputTokens"))
-        .and_then(|v| v.as_u64());
+        .and_then(crate::usage_count::read_count_u64);
     (cache_creation_input_tokens, cache_read_input_tokens)
 }
 
@@ -1852,3 +1852,7 @@ mod input_hardening_tests;
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_float_tests.rs"]
+mod usage_float_tests;

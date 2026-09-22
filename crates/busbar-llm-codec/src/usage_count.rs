@@ -43,7 +43,9 @@ pub fn read_count_u64(v: &serde_json::Value) -> Option<u64> {
     // 2^53 — the largest magnitude at which an f64 still represents every integer distinctly, and
     // therefore the largest at which `fract() == 0.0` still proves anything.
     const EXACT_INTEGER_LIMIT: f64 = 9_007_199_254_740_992.0;
-    if f.is_finite() && f >= 0.0 && f < EXACT_INTEGER_LIMIT && f.fract() == 0.0 {
+    // `contains` also rejects NaN and both infinities, since neither compares inside any range —
+    // so the bound check and the finiteness check are the same check.
+    if (0.0..EXACT_INTEGER_LIMIT).contains(&f) && f.fract() == 0.0 {
         Some(f as u64)
     } else {
         None

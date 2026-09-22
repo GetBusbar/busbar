@@ -6,7 +6,7 @@ impl ProtocolReader for BedrockReader {
         tail: &[u8],
     ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
+        let u64_field = |k: &str| v.get(k).and_then(crate::usage_count::read_count_u64);
         Some(
             crate::ir::IrUsage {
                 input_tokens: u64_field("inputTokens").unwrap_or(0),
@@ -1136,11 +1136,11 @@ impl ProtocolReader for BedrockReader {
                 let usage = crate::ir::IrUsage {
                     input_tokens: usage_obj
                         .and_then(|u| u.get("inputTokens"))
-                        .and_then(|v| v.as_u64())
+                        .and_then(crate::usage_count::read_count_u64)
                         .unwrap_or(0),
                     output_tokens: usage_obj
                         .and_then(|u| u.get("outputTokens"))
-                        .and_then(|v| v.as_u64())
+                        .and_then(crate::usage_count::read_count_u64)
                         .unwrap_or(0),
                     cache_creation_input_tokens,
                     cache_read_input_tokens,
@@ -1353,11 +1353,11 @@ impl ProtocolReader for BedrockReader {
         let usage = crate::ir::IrUsage {
             input_tokens: usage_obj
                 .and_then(|u| u.get("inputTokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(crate::usage_count::read_count_u64)
                 .unwrap_or(0),
             output_tokens: usage_obj
                 .and_then(|u| u.get("outputTokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(crate::usage_count::read_count_u64)
                 .unwrap_or(0),
             cache_creation_input_tokens,
             cache_read_input_tokens,

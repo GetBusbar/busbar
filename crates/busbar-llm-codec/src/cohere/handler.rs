@@ -476,7 +476,7 @@ pub fn read_embeddings_response(
         .get("meta")
         .and_then(|m| m.get("billed_units"))
         .and_then(|b| b.get("input_tokens"))
-        .and_then(super::read_count_u64)
+        .and_then(crate::usage_count::read_count_u64)
         .map(|n| busbar_substrate_values::billing::TokenUsage {
             input: n,
             ..Default::default()
@@ -543,7 +543,7 @@ pub fn read_rerank_response(wire: &[u8]) -> Result<crate::ir::rerank::RerankResp
             .get("meta")
             .and_then(|m| m.get("billed_units"))
             .and_then(|b| b.get("search_units"))
-            .and_then(super::read_count_u64),
+            .and_then(crate::usage_count::read_count_u64),
         ..Default::default()
     })
 }
