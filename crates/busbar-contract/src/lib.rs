@@ -14,6 +14,7 @@ pub mod authz;
 pub mod bounded;
 pub mod caps;
 pub mod civil;
+pub mod config;
 pub mod dest;
 pub mod duration;
 pub mod grammar;

@@ -10,6 +10,13 @@
 #   binary must still boot serving no P protocol. A protocol plane is a self-contained plugin merely
 #   compiled in for convenience; take its crate away and core is unmoved.
 #
+#   busbar-core and busbar-substrate NO LONGER EXIST BY THOSE NAMES: commit 673ecdaaa (2026-09-20)
+#   absorbed busbar-core's whole ~130k LOC into busbar-kernel, and commit 5fa320208 absorbed
+#   busbar-substrate's engine half into busbar-kernel too (its pure-value half had already split out
+#   to busbar-substrate-values, commit 06132b0b1). "The NEUTRAL crates" this test proves survive a
+#   plane's removal are therefore busbar-kernel, busbar-substrate-values and busbar-api today — see
+#   NEUTRAL_PKGS below, the one place that triple is named.
+#
 #   ci.yml already runs the WEAK form of this (the `deletion-test-matrix` job): build the neutral
 #   crates with a plane's cargo FEATURE off. That proves the neutral crates do not *reference* the
 #   plane behind its feature, but it does NOT prove the crate can be *removed* — a `#[path]` witness
@@ -36,9 +43,9 @@
 #   (b) drop    "crates/busbar-<P>"   from the workspace `members` in the root Cargo.toml
 #   (c) in the bin (crates/busbar/Cargo.toml): delete the `busbar-<P> = { path = … , optional = true }`
 #       dependency, strip the `dep:busbar-<P>` token from the feature that names it (leaving any neutral
-#       forward such as `busbar-core/plane-<P>` intact), and drop that feature from `default` so a
+#       forward such as `busbar-kernel/plane-<P>` intact), and drop that feature from `default` so a
 #       default build of the bin is coherent without the plane.
-#   Then `cargo check` the three neutral crates (with the removed plane's feature off, the others kept)
+#   Then `cargo check` the NEUTRAL_PKGS crates (with the removed plane's feature off, the others kept)
 #   and the bin (default features, now minus the plane). Both compiling = the strong form PASSES for P.
 #
 #   BOOT+SERVE, EVERY PLANE, AGAINST A MEASURED CONTROL (tracker C13): compiling is not booting, so
@@ -56,15 +63,23 @@
 #                     that the check-runner reports FAIL on a genuinely-coupled scratch (RED control) and
 #                     PASS on a properly-neutralised one (GREEN control). Detects, never hard-codes, which
 #                     planes the current tree couples. Green self-test is the acceptance bar.
-#   --baseline        INFORMATIONAL. Runs the strong form for all three planes and prints per-plane
-#                     PASS/FAIL with evidence. ALWAYS exits 0 — surfaced on every push WITHOUT reddening
-#                     CI until the extraction lands, exactly like plane-purity-lint.sh --baseline.
-#   <plane>           BLOCKING (fail-closed). Run the strong form for one plane; exit 0 = PASS (neutral
-#                     crates + bin compile without the crate), exit 1 = FAIL (still coupled). This is the
-#                     permanent per-plane gate the ci.yml matrix leg calls once the extraction is done.
-#   --all             BLOCKING for all three planes at once (exit 1 if ANY plane still couples).
+#   --baseline        INFORMATIONAL. Runs the strong form for every plane in $PLANES (scripts/
+#                     plane-keys.sh's on-disk PLANE_KEYS — llm, mcp, a2a, voice today) and prints
+#                     per-plane PASS/FAIL with evidence, PLUS a roster-coverage line against the
+#                     five-plane LOCKED roster (PLANE_KEYS_LOCKED: llm, mcp, a2a, streaming,
+#                     decisions) so a plane this harness cannot yet reach (`decisions`, today) is
+#                     named rather than silently absent. ALWAYS exits 0 — surfaced on every push
+#                     WITHOUT reddening CI until the extraction lands, exactly like
+#                     plane-purity-lint.sh --baseline.
+#   <plane>           BLOCKING (fail-closed). Run the strong form for one plane in $PLANES; exit 0 =
+#                     PASS (neutral crates + bin compile without the crate), exit 1 = FAIL (still
+#                     coupled). This is the permanent per-plane gate the ci.yml matrix leg calls once
+#                     the extraction is done.
+#   --all             BLOCKING for every plane in $PLANES at once (exit 1 if ANY plane still couples),
+#                     plus the same roster-coverage line --baseline prints — a PASS here is a pass for
+#                     $PLANES, never silently read as a pass for the five-plane locked roster.
 #
-# WITNESS PROBE (--with-witness, informational): additionally `cargo check` busbar-core with the
+# WITNESS PROBE (--with-witness, informational): additionally `cargo check` busbar-kernel with the
 #   `test-support` feature on. That turns on the `#[path]` dual-compile of the plane sources, so with the
 #   crate gone it FAILS wherever the witness build still reaches around the ABI — the exact PATH-INCLUDE
 #   coupling scripts/plane-purity-lint.sh already ledgers. It is reported separately from the shipped-build
@@ -88,6 +103,89 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # shellcheck source=scripts/plane-keys.sh
 . "$(dirname "$0")/plane-keys.sh"
 PLANES="$PLANE_KEYS"
+
+# ── ROSTER TRUTH vs COVERAGE TRUTH — be careful and honest here ────────────────────────────────────
+# `PLANES` ($PLANE_KEYS) is what this harness can MECHANICALLY operate on today: each entry is a
+# literal `crates/busbar-<P>` directory `remove_crate_dir`/`neutralise_bin`/`boot_and_probe` below
+# knows how to strip and probe, and every per-plane table further down (`bin_feature`, `neutral_keep`,
+# `plane_probe_*`, `plane_config_sections`) has a real entry for. scripts/plane-keys.sh's
+# `PLANE_KEYS_LOCKED` is the five-plane DOCTRINE roster this repo is locked to (DECISIONS #18/#48:
+# llm, mcp, a2a, streaming, decisions). The two differ on the CURRENT tree, and `--all`/`--baseline`
+# used to iterate `$PLANE_KEYS` alone and print a verdict that read as "the whole roster, four planes,
+# all clean" — proving nothing about the two planes where the locked name and the on-disk name part
+# ways. `plane_ondisk_key` (scripts/plane-keys.sh) says which locked plane is reachable under which
+# tested name today:
+#   * `streaming` IS covered — tested here under its still-current on-disk name `voice`, because
+#     DECISIONS #18's crate rename has not landed yet. Reporting it as a gap would be dishonest in
+#     the OTHER direction: the plane genuinely is strong-form removable today, just not under its
+#     locked spelling.
+#   * `decisions` is NOT covered — `crates/busbar-plane-decision` exists but is deliberately unwired
+#     (its own module doc: no root Cargo.toml/main.rs change, no `BUILTIN_PLANE_DECLS` entry, no
+#     `BuildCtx` field) and no `crates/busbar-decision(s)` I/O crate exists for `remove_crate_dir` to
+#     even find. There is nothing to `git rm -r` yet, so there is nothing this leg can prove — and it
+#     must say exactly that, out loud, rather than let the plane's absence from `$PLANES` read as a
+#     silent, uncommented pass.
+# Computed from PLANE_KEYS_LOCKED against PLANES via the alias, never hard-coded, so a plane that
+# gains an on-disk stand-in (a rename landing, or `decisions` getting wired into the bin) drops out of
+# the gap with no edit here, and a locked plane added with no stand-in yet lands in it automatically.
+LOCKED_GAPS=""
+for _lp in $PLANE_KEYS_LOCKED; do
+  _od="$(plane_ondisk_key "$_lp")"
+  case " $PLANES " in
+    *" ${_od:-__no_ondisk_key__} "*) : ;;
+    *) LOCKED_GAPS="${LOCKED_GAPS:+$LOCKED_GAPS }$_lp" ;;
+  esac
+done
+unset _lp _od
+
+# report_coverage — the one place the roster-vs-coverage truth is printed, called by every mode that
+# claims a verdict (`--all`, `--baseline`) and by `--help`, so a reader of any of them sees the gap
+# without cross-referencing scripts/plane-keys.sh by hand.
+report_coverage() {
+  hdr "roster coverage (locked: $PLANE_KEYS_LOCKED)"
+  local lp od
+  for lp in $PLANE_KEYS_LOCKED; do
+    od="$(plane_ondisk_key "$lp")"
+    case " $LOCKED_GAPS " in
+      *" $lp "*)
+        red "  $lp: NOT COVERED — no on-disk plane crate this harness can strong-form test yet"
+        ;;
+      *)
+        if [ "$od" = "$lp" ]; then
+          grn "  $lp: covered (tested as \`$od\`)"
+        else
+          grn "  $lp: covered (tested under its pre-rename on-disk name \`$od\`)"
+        fi
+        ;;
+    esac
+  done
+  if [ -n "$LOCKED_GAPS" ]; then
+    ylw "  $(printf '%s' "$LOCKED_GAPS" | wc -w | tr -d ' ') of $(printf '%s' "$PLANE_KEYS_LOCKED" | wc -w | tr -d ' ') locked plane(s) NOT deletion-tested by this run: $LOCKED_GAPS"
+  fi
+}
+
+# NEUTRAL_PKGS — the neutral crates a plane's removal must leave compiling, i.e. the cargo package
+# NAMES this file's own `strong_form`/self-test legs pass to `cargo check -p`. This is NOT the same
+# list as scripts/plane-keys.sh's `neutral_src_roots` (a `crates/<x>/src` SOURCE-ROOT list consumed by
+# plane-noun-gate.sh/plane-grep-gate.sh) — this one is PACKAGE names for cargo's package selector, a
+# distinct namespace this script alone owns, so it is declared here rather than borrowed. Was
+# `busbar-core busbar-substrate busbar-api`; both busbar-core and busbar-substrate were deleted (see
+# the header above) — busbar-kernel is their direct successor for this purpose (it carries the
+# `plane-mcp`/`plane-a2a`/`plane-voice` features `neutral_keep` below names, the `openapi-schema`
+# forward to each plane crate, and the dev-dependency back-edge on busbar-mcp/busbar-a2a
+# `strip_workspace_edges` exists to sever), and busbar-substrate-values (the pure-value half that
+# split off busbar-substrate BEFORE the deletion) is still its own crate today. A name here that stops
+# existing hits the same cargo refusal `run_check` already surfaces as a FAIL (cargo errors fast on an
+# unknown `-p` package spec) — loud, not a silent narrowing of what got checked.
+NEUTRAL_PKGS="busbar-kernel busbar-substrate-values busbar-api"
+neutral_pkg_args() {   # echo "-p busbar-kernel -p busbar-substrate-values -p busbar-api"
+  local n out=""
+  for n in $NEUTRAL_PKGS; do out="${out:+$out }-p $n"; done
+  printf '%s' "$out"
+}
+# The one NEUTRAL_PKGS member whose Cargo.toml carries the plane back-edges the FEATURE-REF plant
+# self-test exercises (the successor of what used to be busbar-core's manifest).
+NEUTRAL_EDGE_PKG_DIR="busbar-kernel"
 
 command -v tar   >/dev/null 2>&1 || { echo "plane-delete-test: tar not found"   >&2; exit 2; }
 command -v cargo >/dev/null 2>&1 || { echo "plane-delete-test: cargo not found" >&2; exit 2; }
@@ -247,7 +345,7 @@ neutralise_bin() {
 
 # strip_workspace_edges — remove any dangling `busbar-<P> = { path = … }` dependency line from EVERY
 # OTHER crate's manifest (normal / dev / build). This is the load-bearing subtlety of the STRONG form:
-# `busbar-core` carries a DEV-dependency back-edge on busbar-mcp / busbar-a2a (for its own cross-plane
+# `busbar-kernel` carries a DEV-dependency back-edge on busbar-mcp / busbar-a2a (for its own cross-plane
 # integration tests). A plain `cargo check` never COMPILES a dev-dep, but cargo still LOADS every member
 # manifest to resolve the virtual workspace, and a path dep whose directory is gone makes it REFUSE
 # before compiling a single line — so without this we would measure manifest hygiene, not source
@@ -274,8 +372,8 @@ strip_workspace_edges() {
 # `"busbar-<P>/<feature>"`, the optional forward `"busbar-<P>?/<feature>"`, and the bare optional-dep
 # token `"dep:busbar-<P>"`. This is the dangle strip_workspace_edges (path deps only) cannot see: a
 # NEUTRAL crate can name the plane in its OWN feature table without the plane ever being a normal
-# dependency of that crate — busbar-core's `openapi-schema` forwards to
-# `busbar-llm/openapi-schema`, `busbar-mcp/openapi-schema`, `busbar-a2a/openapi-schema` while busbar-core
+# dependency of that crate — busbar-kernel's `openapi-schema` forwards to
+# `busbar-llm/openapi-schema`, `busbar-mcp/openapi-schema`, `busbar-a2a/openapi-schema` while busbar-kernel
 # depends on those crates only as DEV-dependencies (which strip_workspace_edges already severs). Once the
 # crate is gone and its back-edge dep line is stripped, that feature string names a package that is no
 # longer ANY dependency of the manifest declaring it, and cargo refuses to load the manifest before a
@@ -917,7 +1015,8 @@ strong_form() {
 
   # Leg 1 — the NEUTRAL crates (the owner's literal requirement).
   log="$CACHE_TARGET/.plane-delete-$p-neutral.log"; mkdir -p "$CACHE_TARGET"
-  run_check "$s" "$log" -- -p busbar-core -p busbar-substrate -p busbar-api \
+  # shellcheck disable=SC2086  # neutral_pkg_args expands to multiple -p flags, splitting is the point
+  run_check "$s" "$log" -- $(neutral_pkg_args) \
     --no-default-features --features "$keep"; rc=$?
   if [ "$rc" -eq 0 ]; then
     grn "  neutral crates compile without busbar-$p (features: ${keep:-none})"
@@ -970,7 +1069,7 @@ strong_form() {
   # Optional witness probe (informational): the test-support #[path] dual-compile.
   if [ "${WITH_WITNESS:-0}" = "1" ]; then
     log="$CACHE_TARGET/.plane-delete-$p-witness.log"
-    run_check "$s" "$log" -- -p busbar-core --no-default-features --features "$keep,test-support"; rc=$?
+    run_check "$s" "$log" -- -p busbar-kernel --no-default-features --features "$keep,test-support"; rc=$?
     if [ "$rc" -eq 0 ]; then
       note "witness probe: test-support build ALSO compiles without busbar-$p (no #[path] dual-compile reaches it)"
     else
@@ -985,7 +1084,7 @@ strong_form() {
 # plant_feature_ref — SELF-TEST ONLY: insert a synthetic `plant-feature-ref = [...]` entry naming plane
 # $2 (both the hard and optional forward forms) into the `[features]` table of manifest $1 — NOT
 # appended at end-of-file, which would land it in whatever table happens to be LAST in the manifest
-# (busbar-core's last table is `[dev-dependencies]`, where an array value is a TOML type error of its
+# (busbar-kernel's last table is `[dev-dependencies]`, where an array value is a TOML type error of its
 # own and would mask the thing being tested).
 plant_feature_ref() {
   local f="$1" rp="$2" t
@@ -1094,7 +1193,8 @@ run_selftest() {
   s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
   apply_removal "$s" "$rp"
   log="$CACHE_TARGET/.plane-delete-selftest-green.log"
-  run_check "$s" "$log" -- -p busbar-core -p busbar-substrate -p busbar-api \
+  # shellcheck disable=SC2086  # neutral_pkg_args expands to multiple -p flags, splitting is the point
+  run_check "$s" "$log" -- $(neutral_pkg_args) \
     --no-default-features --features "$(neutral_keep "$rp")"; rc=$?
   if [ "$rc" -eq 0 ]; then
     note "PASS  GREEN control: full removal of busbar-$rp → neutral crates compile (verdict machinery clean-passes)"
@@ -1106,20 +1206,21 @@ run_selftest() {
 
   # (4) FEATURE-REF PLANT — the manifest-level bug strip_feature_edges exists to close: a NEUTRAL crate's
   #     OWN [features] table can name the removed plane without the plane ever being a normal dependency
-  #     of that crate (busbar-core's `openapi-schema` does exactly this for llm/mcp/a2a via a
-  #     dev-dependency back-edge). Plant a synthetic feature entry onto busbar-core naming $rp in BOTH
-  #     forms — hard `busbar-<rp>/plant` and optional `busbar-<rp>?/plant` — and prove: (RED) the removal
-  #     WITHOUT strip_feature_edges leaves it dangling and cargo refuses to load the manifest; (GREEN) the
-  #     real apply_removal (which calls strip_feature_edges) strips it and the neutral crate compiles.
+  #     of that crate (busbar-kernel's `openapi-schema` does exactly this for llm/mcp/a2a via a
+  #     dev-dependency back-edge). Plant a synthetic feature entry onto NEUTRAL_EDGE_PKG_DIR naming $rp
+  #     in BOTH forms — hard `busbar-<rp>/plant` and optional `busbar-<rp>?/plant` — and prove: (RED)
+  #     the removal WITHOUT strip_feature_edges leaves it dangling and cargo refuses to load the
+  #     manifest; (GREEN) the real apply_removal (which calls strip_feature_edges) strips it and the
+  #     neutral crate compiles.
   s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
-  core_toml="$s/crates/busbar-core/Cargo.toml"
+  core_toml="$s/crates/$NEUTRAL_EDGE_PKG_DIR/Cargo.toml"
   plant_feature_ref     "$core_toml" "$rp"
   remove_crate_dir      "$s" "$rp"
   drop_member           "$s" "$rp"
   neutralise_bin        "$s" "$rp"
   strip_workspace_edges "$s" "$rp"     # strip_feature_edges DELIBERATELY OMITTED
   log="$CACHE_TARGET/.plane-delete-selftest-featref-red.log"
-  run_check "$s" "$log" -- -p busbar-core --no-default-features --features "$(neutral_keep "$rp")"; rc=$?
+  run_check "$s" "$log" -- -p "$NEUTRAL_EDGE_PKG_DIR" --no-default-features --features "$(neutral_keep "$rp")"; rc=$?
   if [ "$rc" -ne 0 ]; then
     note "PASS  FEATURE-REF RED control: a planted busbar-$rp feature ref, left unstripped, → harness check returns non-zero"
   else
@@ -1128,14 +1229,14 @@ run_selftest() {
   rm -rf "$s"
 
   s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
-  core_toml="$s/crates/busbar-core/Cargo.toml"
+  core_toml="$s/crates/$NEUTRAL_EDGE_PKG_DIR/Cargo.toml"
   plant_feature_ref "$core_toml" "$rp"
   apply_removal "$s" "$rp"
   if grep -qE "\"busbar-$rp/plant\"|\"busbar-$rp\\?/plant\"" "$core_toml"; then
     fail=1; note "FAIL  FEATURE-REF GREEN control: apply_removal left the planted busbar-$rp feature ref in place"
   else
     log="$CACHE_TARGET/.plane-delete-selftest-featref-green.log"
-    run_check "$s" "$log" -- -p busbar-core --no-default-features --features "$(neutral_keep "$rp")"; rc=$?
+    run_check "$s" "$log" -- -p "$NEUTRAL_EDGE_PKG_DIR" --no-default-features --features "$(neutral_keep "$rp")"; rc=$?
     if [ "$rc" -eq 0 ]; then
       note "PASS  FEATURE-REF GREEN control: apply_removal strips the planted busbar-$rp feature ref, neutral crate compiles"
     else
@@ -1341,6 +1442,49 @@ run_selftest() {
     fi
   done
 
+  # (7) THE ROSTER-COVERAGE GAP IS COMPUTED, NAMED, AND NEVER SILENT. `--all`/`--baseline` iterate
+  #     $PLANES (today: llm, mcp, a2a, voice) and used to let that stand in for "the whole roster" —
+  #     proving nothing about the two planes (streaming, decisions) where the locked name and the
+  #     on-disk name diverge. This proves the computation itself against the REAL plane-keys.sh
+  #     state, not a fixture, because the fixture would only prove the arithmetic and this defect was
+  #     never about the arithmetic — it was about a real gap reading as a clean pass.
+  if [ -z "$PLANE_KEYS_LOCKED" ]; then
+    fail=1; note "FAIL  roster coverage: PLANE_KEYS_LOCKED is empty — there is no locked roster to check coverage against"
+  else
+    note "PASS  roster coverage: locked roster is non-empty ($PLANE_KEYS_LOCKED)"
+  fi
+  # `streaming` must resolve to a covered plane (aliased to `voice`, which IS in $PLANES) — a locked
+  # plane whose on-disk stand-in is untested must never be misreported as a gap, or the opposite
+  # failure (a false RED where the plane genuinely is deletion-tested today) is introduced.
+  case " $LOCKED_GAPS " in
+    *" streaming "*)
+      fail=1; note "FAIL  roster coverage: 'streaming' reported as a GAP, but it is tested today under its pre-rename name 'voice'"
+      ;;
+    *)
+      note "PASS  roster coverage: 'streaming' is NOT reported as a gap (covered via its on-disk name 'voice')"
+      ;;
+  esac
+  # `decisions` has no on-disk plane crate at all (busbar-plane-decision is deliberately unwired) and
+  # MUST be named as a gap — the exact "absent plane reads as silent pass" failure this defect is
+  # about, made unable to recur silently.
+  case " $LOCKED_GAPS " in
+    *" decisions "*)
+      note "PASS  roster coverage: 'decisions' IS reported as a gap (no on-disk plane crate exists yet)"
+      ;;
+    *)
+      fail=1; note "FAIL  roster coverage: 'decisions' is NOT reported as a gap — an untestable plane would read as covered"
+      ;;
+  esac
+  # And the RED control for the mechanism itself: a locked key with no `plane_ondisk_key` mapping AND
+  # no matching entry in a plane's own $PLANES must land in the gap set — proven directly against
+  # `plane_ondisk_key`, not re-derived, so a mapping bug in scripts/plane-keys.sh is caught here rather
+  # than only downstream in whichever plane it happens to silently misreport.
+  if [ "$(plane_ondisk_key nonexistent-locked-plane)" != "" ]; then
+    fail=1; note "FAIL  roster coverage: plane_ondisk_key invented an on-disk name for a key it does not know"
+  else
+    note "PASS  roster coverage: plane_ondisk_key returns empty for an unknown locked key (forces a named gap, never a guess)"
+  fi
+
   if [ "$fail" -eq 0 ]; then
     grn "plane-delete-test self-test: ALL GREEN (removal real; FAIL reported on coupling, PASS on a clean removal)"
     return 0
@@ -1353,18 +1497,23 @@ run_selftest() {
 run_baseline() {
   hdr "STRONG-FORM deletion test — per-plane (INFORMATIONAL: always exits 0)"
   note "each plane: crates/busbar-<P> PHYSICALLY REMOVED, then neutral crates + bin cargo-checked"
-  local p any_fail=0
+  local p any_fail=0 nplanes
+  nplanes="$(printf '%s' "$PLANES" | wc -w | tr -d ' ')"
   for p in $PLANES; do
     hdr "plane: $p"
     if strong_form "$p"; then grn "  → $p: STRONG-FORM PASS"; else ylw "  → $p: STRONG-FORM FAIL (still coupled)"; any_fail=1; fi
   done
+  report_coverage
   hdr "verdict"
   if [ "$any_fail" -eq 0 ]; then
-    grn "plane-delete: all three planes are strong-form removable today. Arm the ci.yml matrix leg."
+    grn "plane-delete: all $nplanes tested plane(s) are strong-form removable today. Arm the ci.yml matrix leg."
   else
     ylw "plane-delete: at least one plane still couples — a regression (this baseline mode is informational)."
     note "The baseline is informational and never reddens CI; a coupled plane here is a regression to fix."
     note "The blocking gate is \`plane-delete-test.sh <plane>\`, wired per-plane into the ci.yml deletion matrix."
+  fi
+  if [ -n "$LOCKED_GAPS" ]; then
+    ylw "plane-delete: the baseline above covers $nplanes of the locked $(printf '%s' "$PLANE_KEYS_LOCKED" | wc -w | tr -d ' ')-plane roster — it is NOT a verdict on: $LOCKED_GAPS"
   fi
   return 0
 }
@@ -1395,12 +1544,20 @@ case "${1:-}" in
   --baseline) run_baseline; exit 0 ;;
   --all)
     fail=0
+    nplanes="$(printf '%s' "$PLANES" | wc -w | tr -d ' ')"
     for p in $PLANES; do
       hdr "plane: $p"
       strong_form "$p" || fail=1
     done
+    report_coverage
     hdr "verdict"
-    if [ "$fail" -eq 0 ]; then grn "plane-delete gate: PASS — all three planes strong-form removable"; exit 0; fi
+    if [ "$fail" -eq 0 ]; then
+      grn "plane-delete gate: PASS — all $nplanes tested plane(s) strong-form removable"
+      if [ -n "$LOCKED_GAPS" ]; then
+        ylw "plane-delete gate: PASS covers $nplanes of the locked $(printf '%s' "$PLANE_KEYS_LOCKED" | wc -w | tr -d ' ')-plane roster only — NOT a pass for: $LOCKED_GAPS"
+      fi
+      exit 0
+    fi
     red "plane-delete gate: FAIL — a plane's neutral crates still need its crate to compile"; exit 1
     ;;
   --with-witness) export WITH_WITNESS=1; shift; exec "$0" "${1:---baseline}" ;;
@@ -1408,8 +1565,10 @@ case "${1:-}" in
   # boots each). It is ON by default — it is the only leg that can tell a mounted route from a
   # deleted one — and this flag turns it off for a compile-only pass on a machine that cannot boot.
   --skip-boot-leg) export SKIP_BOOT_LEG=1; shift; exec "$0" "${1:---baseline}" ;;
-  -h | --help) sed -n '2,60p' "$0" ;;
-  "" ) echo "usage: $0 [--selftest | --baseline | --all | <llm|mcp|a2a|voice>] [--with-witness] [--skip-boot-leg]" >&2; exit 2 ;;
+  -h | --help) sed -n '2,74p' "$0" ;;
+  "" ) echo "usage: $0 [--selftest | --baseline | --all | <$(printf '%s' "$PLANES" | tr ' ' '|')>] [--with-witness] [--skip-boot-leg]" >&2
+       [ -n "$LOCKED_GAPS" ] && echo "  (locked five-plane roster: $PLANE_KEYS_LOCKED — NOT YET testable here: $LOCKED_GAPS)" >&2
+       exit 2 ;;
   *)
     if valid_plane "$1"; then
       hdr "STRONG-FORM deletion test — plane: $1"
@@ -1420,6 +1579,19 @@ case "${1:-}" in
       red "plane-delete gate ($1): FAIL — a neutral crate or the bin still needs busbar-$1 to compile"
       exit 1
     fi
-    echo "usage: $0 [--selftest | --baseline | --all | <llm|mcp|a2a|voice>] [--with-witness]" >&2; exit 2
+    # A LOCKED plane name that is not directly runnable — say WHY, rather than a bare usage error
+    # that reads the same for a typo as for "this plane is real but not wired yet".
+    case " $PLANE_KEYS_LOCKED " in
+      *" $1 "*)
+        od="$(plane_ondisk_key "$1")"
+        if [ -n "$od" ] && [ "$od" != "$1" ]; then
+          echo "plane-delete-test: '$1' is not a runnable plane key here — it is tested under its pre-rename on-disk name: run \`$0 $od\`" >&2
+        else
+          echo "plane-delete-test: '$1' is in the locked five-plane roster but has no on-disk plane crate yet — nothing exists to strong-form remove." >&2
+        fi
+        exit 2
+        ;;
+    esac
+    echo "usage: $0 [--selftest | --baseline | --all | <$(printf '%s' "$PLANES" | tr ' ' '|')>] [--with-witness]" >&2; exit 2
     ;;
 esac

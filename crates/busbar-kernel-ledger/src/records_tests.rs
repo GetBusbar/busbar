@@ -713,6 +713,52 @@ fn default_list_keys_since_excludes_the_watermark_itself() {
     assert_eq!(s.list_keys_since(6).unwrap().len(), 0);
 }
 
+/// A row a backend never stamped with a real revision (`revision == 0`, per [`VirtualKey::revision`]'s
+/// own doc) must read as "always changed" — including at `since == 0`, the boot/full-load case,
+/// which `revision > since` alone would silently exclude it from (0 is not `> 0`). Without this arm
+/// a key hydrator running against a no-revision backend would never see such a row at boot, and an
+/// incremental poller would never observe it changing (e.g. being tombstoned) and would never evict
+/// that key's cached credentials — see [`RecordStore::list_credentials_since`]'s doc for why that
+/// eviction path depends on exactly this delta.
+#[test]
+fn default_list_keys_since_always_includes_a_never_revisioned_row() {
+    let mut never_revisioned = sample_key();
+    never_revisioned.id = "vk_never_revisioned".to_string();
+    never_revisioned.revision = 0;
+    let s = AuditDouble(Vec::new(), vec![never_revisioned]);
+    assert_eq!(
+        s.list_keys_since(0).unwrap().len(),
+        1,
+        "a revision-0 row must appear in the since=0 boot/full-load delta"
+    );
+    assert_eq!(
+        s.list_keys_since(100).unwrap().len(),
+        1,
+        "a revision-0 row must appear in every incremental delta too, no matter the watermark"
+    );
+}
+
+/// **`redeem_plane_token`'s default is FAIL-CLOSED.** A backend that keeps no real ledger must
+/// REFUSE every redemption, never grant one — the opposite of every other defaulted neutral verb
+/// here, which safely tolerates "this store remembers nothing" by answering empty. For a single-use
+/// TEST-AND-SET, "remembers nothing" and "there is nothing to remember" are NOT the same answer: a
+/// default of `Ok(true)` would let a captured single-use token be replayed without limit against any
+/// backend that has not implemented this verb.
+#[test]
+fn default_redeem_plane_token_refuses_every_redemption_including_the_first() {
+    let s = AuditDouble(Vec::new(), Vec::new());
+    assert!(
+        !s.redeem_plane_token("ask", "tok-1", 100, 50).unwrap(),
+        "an unimplemented ledger backend answered TRUE for a token redemption it cannot actually \
+         track; a single-use token would replay indefinitely against it"
+    );
+    // Replaying the SAME token must refuse again too, not just once.
+    assert!(
+        !s.redeem_plane_token("ask", "tok-1", 100, 50).unwrap(),
+        "replaying the same token against the same unimplemented backend must refuse again"
+    );
+}
+
 /// The DEFAULTED `list_audit_tail` fallback: keep only the last `limit` records (drain the
 /// HEAD, `all.len() - limit` of them), never off-by-one on the boundary.
 #[test]

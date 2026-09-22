@@ -257,10 +257,41 @@ fn redirect(login_url: &str, request: &ApprovalRequest<'_>) -> ApprovalDecision 
         .body(oauth_as::http::Body::empty());
     match response {
         Ok(r) => ApprovalDecision::Respond(Box::new(r)),
-        // Unreachable: every header value above is built from an already-validated URI. A refusal
-        // rather than an unwrap, because this is a request path.
-        Err(_) => ApprovalDecision::Deny,
+        // NOT unreachable. `login_url` is `AsIdentity::consent_url()` — `origin() + consent_path`,
+        // built from the OPERATOR's own `issuer`. `AsIdentity::from_cfg` checks the issuer's SHAPE
+        // (absolute, no `?`/`#`, no trailing slash) but never character-checks it, so a control
+        // byte the operator's config let through survives into `target` and `HeaderValue` refuses
+        // it right here.
+        //
+        // `Deny` used to be the answer, and `Deny` is RFC 6749 §4.1.2.1's `access_denied` redirect
+        // to the CLIENT's `redirect_uri` — this plane completing the flow as though the resource
+        // owner had refused, having never actually put anyone in front of a login screen. That is
+        // PROCEEDING, not refusing. Fail the request closed instead: a 502, and nothing sent to the
+        // client at all.
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "oauth_as: the login redirect URL could not be encoded into a Location header; \
+                 failing closed with a 502 rather than answering access_denied on the operator's \
+                 behalf"
+            );
+            ApprovalDecision::Respond(Box::new(unencodable_login_redirect()))
+        }
     }
+}
+
+/// The 502 [`redirect`] answers with when the operator's own login URL cannot be carried in a
+/// `Location` header. Built entirely from `'static` bytes, so — unlike the redirect it replaces —
+/// nothing here can fail to encode.
+fn unencodable_login_redirect() -> oauth_as::http::Response {
+    http::Response::builder()
+        .status(http::StatusCode::BAD_GATEWAY)
+        .header(http::header::CACHE_CONTROL, "no-store")
+        .body(oauth_as::http::Body::from(
+            "This deployment's login redirect is misconfigured and could not be sent. Tell your \
+             operator.",
+        ))
+        .expect("a response built entirely from `'static` bytes must be representable")
 }
 
 /// Percent-encode everything outside the RFC 3986 unreserved set.

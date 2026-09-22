@@ -114,6 +114,20 @@ fn lookup_by_code_works() {
     assert!(by_code(9999).is_none());
 }
 
+/// D54: the overlay-rejected-at-read diagnostic exists so the one place the parser's message (the
+/// offending key + accepted sections) is logged has a stable code. Inert until busbar-core's
+/// overlay read path emits it, but it must be registered and resolvable by code.
+#[test]
+fn config_overlay_rejected_is_registered() {
+    assert_eq!(CONFIG_OVERLAY_REJECTED.code, 3023);
+    assert_eq!(CONFIG_OVERLAY_REJECTED.severity, Severity::Actionable);
+    assert_eq!(
+        by_code(3023).map(|d| d.slug),
+        Some("config-overlay-rejected"),
+        "CONFIG_OVERLAY_REJECTED must be in REGISTRY and resolvable by code"
+    );
+}
+
 // ── DOCS-IN-SYNC ────────────────────────────────────────────────────────────────────────────
 //
 // The committed docs/diagnostics.{md,json} MUST equal a fresh render of REGISTRY. Regenerate

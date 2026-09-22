@@ -9,6 +9,10 @@
 //! no byte-identity floor to hold — the section either parses or the whole document is refused, the
 //! same fail-closed posture `deny_unknown_fields` gives every other section.
 //!
+//! `ModelCfg` is [`busbar_contract::config::ModelCfg`] (DECISIONS #40/#38 — moved out of
+//! `busbar-kernel` so a plugin crate reusing it need not also depend on the kernel; see that
+//! module's own doc). Same type, same field names, same wire bytes — only the module path moved.
+//!
 //! ## Canonical shape (from the ruling)
 //!
 //! ```yaml
@@ -38,7 +42,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use busbar_api::UpstreamCreds;
-use busbar_substrate::config::providers::ModelCfg;
+use busbar_contract::config::ModelCfg;
 
 /// The `decisions:` section, typed.
 ///

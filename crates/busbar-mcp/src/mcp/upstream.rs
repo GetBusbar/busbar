@@ -752,6 +752,13 @@ mod upstream_support;
 #[path = "tests/upstream_join_tests.rs"]
 mod upstream_join_tests;
 
+// S6: the caller-facing refusal for an unresolvable upstream credential must name no secret
+// source. Beside the join tests because it drives the same front door and shares the same peer
+// fixture.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/credential_secret_leak_tests.rs"]
+mod credential_secret_leak_tests;
+
 // A GRANTED, OPERATOR-DECLARED `roots/list` ask, satisfied on the wire — the coverage instrument
 // for `mcp|streamable-http|client|server|roots/list`. Beside the join tests because its witness is
 // the same recording peer.

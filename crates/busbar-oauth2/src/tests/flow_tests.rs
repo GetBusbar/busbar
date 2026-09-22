@@ -970,3 +970,80 @@ async fn an_unauthenticated_visitor_is_never_shown_the_consent_screen() {
          surface: {page}"
     );
 }
+
+/// AN UNENCODABLE LOGIN REDIRECT FAILS CLOSED, RATHER THAN QUIETLY DENYING ON THE OPERATOR'S BEHALF.
+///
+/// `consent::redirect` builds the `Location` an unauthenticated `/authorize` visitor is sent to —
+/// `{login_url}?return=...` where `login_url` is `AsIdentity::consent_url()` (`origin() +
+/// consent_path`). `AsIdentity::from_cfg` never character-checks the issuer (only its shape: no
+/// `?`/`#`, absolute, no trailing slash — see `busbar_kernel::oauth_as::config`), so an operator
+/// typo can leave a byte in the issuer's AUTHORITY that `HeaderValue` refuses (here, a raw `\r`).
+/// The PATH after it stays plain ASCII, so the mounted `/authorize` route is perfectly ordinary and
+/// reachable — only the Location this plane builds for ITS OWN login redirect is broken.
+///
+/// Before the fix, `redirect`'s `Err` arm answered `ApprovalDecision::Deny`, which `oauth-as` turns
+/// into an ordinary `access_denied` redirect to the CLIENT's `redirect_uri` (RFC 6749 §4.1.2.1) —
+/// the broken server silently completing the flow as though the resource owner had refused, having
+/// never actually sent anyone to log in. That is "proceeding" rather than refusing. The fix answers
+/// with a fail-closed 502 instead.
+#[tokio::test]
+async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let real_origin = format!("http://{addr}");
+
+    // The AUTHORITY carries a raw CR — a byte `HeaderValue` refuses — while everything from the
+    // next `/` on (`issuer_path`, and so `authorize_path`/`consent_path`) is ordinary ASCII.
+    let bad_issuer = "http://bad\rhost/defect2".to_string();
+    let cfg = OauthAsCfg {
+        issuer: bad_issuer,
+        signing_key: None,
+        key_id: None,
+        default_grant: vec![SCOPE.to_string()],
+        access_token_ttl_secs: None,
+    };
+    let app = TestApp::new().oauth_as(&cfg).build();
+
+    let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
+    oauth_as_plane(&app)
+        .expect("configured")
+        .server()
+        .register_client(Client {
+            client_id: ClientId::new(CLIENT_ID),
+            auth: ClientAuth::Public,
+            grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+            redirect_uris: vec![REDIRECT_URI.to_string()],
+            allowed_scopes: scopes.clone(),
+            default_scopes: scopes,
+            name: Some("Defect 2".to_string()),
+            registration: None,
+        })
+        .await
+        .expect("register client");
+
+    let router = busbar_kernel::build_router(Arc::clone(&app));
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.expect("serve");
+    });
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let authorize = format!(
+        "{real_origin}/defect2/authorize?response_type=code&client_id={CLIENT_ID}\
+         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256"
+    );
+    let resp = client.get(&authorize).send().await.expect("request");
+    let status = resp.status();
+    let body = resp.text().await.expect("body");
+
+    assert_eq!(
+        status, 502,
+        "an unencodable login redirect must fail closed with a 502, not proceed as though the \
+         resource owner had answered: got {status} {body}"
+    );
+}

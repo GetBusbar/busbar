@@ -1,0 +1,79 @@
+name: cost-watch
+
+# DECISIONS #78 (OWNER-LOCKED 2026-09-20): "Hard cap $100/period total infra; $50 soft-alarm,
+# $80 review -> on breach find the top workflow and cut its trigger/right-size." Its acceptance
+# criterion is "cost-watch checks the LK Cost-Analysis each period" -- this workflow and
+# `scripts/cost-watch.py` are that check. See the script's header for the full rate sourcing and
+# the exit-code contract this job reads below.
+#
+# WHY WEEKLY, ON latchkey-small, WITH A TIGHT TIMEOUT: this is a cost CONTROL, so it must not
+# itself become a cost worth watching. `--period 7` matches the weekly cadence, `latchkey-small`
+# is the cheapest Latchkey size (2 vCPU, $0.15/hr list), and the job is a couple hundred read-only
+# `gh api` calls plus arithmetic -- no build, no checkout of anything but this repo's own scripts.
+# Measured selftest + a real 7-day read at authoring time both finished in well under a minute.
+on:
+  schedule:
+    - cron: "0 12 * * 1" # weekly, Monday noon UTC -- off every other sched-* workflow's slot
+  workflow_dispatch:
+    inputs:
+      period_days:
+        description: "How many trailing days to price (matches --period)"
+        required: false
+        default: "7"
+        type: string
+
+# Minimum needed: read the Actions run/job history the script prices, and check out the script
+# itself. Nothing here writes anything -- a cost gate that could mutate the repo it is watching
+# would be a stranger kind of risk than the one it exists to catch.
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  cost-watch:
+    name: cost-watch (DECISIONS #78 -- $50 soft-alarm / $80 review / $100 hard cap)
+    runs-on: latchkey-small
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # THE SELF-TEST RUNS FIRST. Never trust the pricer before proving it still catches all four
+      # DECISIONS #78 bands on planted fixtures -- the same doctrine `sched-ci-images-mirror.yml`
+      # states for its own deriver: a gate that cannot prove itself red is not trusted here.
+      - name: cost-watch self-test (prove all four bands still trigger, offline)
+        run: python3 scripts/cost-watch.py --selftest
+
+      # THE REAL READ. Exit code IS the band (see the script header for the full contract): 0 ok,
+      # 2 soft-alarm ($50), 3 review ($80), 1 hard-cap breach ($100), 4 the tool itself failed.
+      # Only the hard-cap breach (1) and a tool failure (4) turn this job red -- a soft-alarm or
+      # review is real signal but not yet the "stop and act" DECISIONS #78 reserves for $100, so
+      # those are surfaced as loud warnings instead of failing the schedule. That is "CI can treat
+      # them differently", the reason the script carries four distinct exit codes rather than one.
+      - name: run cost-watch over the trailing period
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PERIOD_DAYS: ${{ inputs.period_days || '7' }}
+        run: |
+          set -uo pipefail
+          python3 scripts/cost-watch.py --repo "${GITHUB_REPOSITORY}" --period "${PERIOD_DAYS}" \
+            | tee "${GITHUB_STEP_SUMMARY}"
+          code="${PIPESTATUS[0]}"
+          case "$code" in
+            0)
+              echo "cost-watch: GREEN -- under \$50 would-be for the period." ;;
+            2)
+              echo "::warning title=cost-watch::SOFT-ALARM -- period would-be spend crossed \$50 (DECISIONS #78). Not yet action-required, but worth a look at the top workflows above." ;;
+            3)
+              echo "::warning title=cost-watch::REVIEW -- period would-be spend crossed \$80 (DECISIONS #78). DECISIONS #78's remedy: find the top workflow above and cut its trigger/right-size before it reaches the \$100 hard cap." ;;
+            1)
+              echo "::error title=cost-watch::HARD CAP BREACH -- period would-be spend crossed \$100 (DECISIONS #78). Find the top workflow above and cut its trigger/right-size now."
+              exit 1 ;;
+            4)
+              echo "::error title=cost-watch::the tool itself could not complete (see the output above). Treat this as unknown spend, NOT as a clean bill -- fix the tool, don't ignore the red."
+              exit 1 ;;
+            *)
+              echo "::error title=cost-watch::unrecognised exit code $code from scripts/cost-watch.py -- the exit-code contract in its header and this step have drifted apart."
+              exit 1 ;;
+          esac

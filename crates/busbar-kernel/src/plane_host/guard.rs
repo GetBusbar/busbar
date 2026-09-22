@@ -74,7 +74,9 @@ pub(crate) fn guard_url(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if url_ptr.is_null() {
             return StatusClass::Refused;
         }

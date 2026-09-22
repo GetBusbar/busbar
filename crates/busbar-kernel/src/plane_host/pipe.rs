@@ -403,7 +403,9 @@ pub(crate) extern "C-unwind" fn pipe_read(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if out_written.is_null() {
             return StatusClass::Refused;
         }
@@ -432,7 +434,9 @@ pub(crate) extern "C-unwind" fn pipe_write(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         let Some(backend) = registry().get(&pipe.0).map(Arc::clone) else {
             return StatusClass::Gone;
         };

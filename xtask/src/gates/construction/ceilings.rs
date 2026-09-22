@@ -41,7 +41,37 @@ use crate::gates::construction::{CEILINGS, SURFACE};
 pub const KIND_CEILINGS: &str = "qa/kind-isolation.toml";
 
 /// The line the branch is measured against. The merge-base with it is the BASE.
-pub const INTEGRATION_REF: &str = "origin/integration/oracle-phase0";
+///
+/// `predev`, NOT `dev` AND NOT WHATEVER BRANCH THIS FILE HAPPENS TO BE CHECKED OUT ON. The former
+/// value here, `origin/integration/oracle-phase0`, was the phase-0 integration line; it was renamed
+/// to `delete/integration/oracle-phase0` and stopped resolving, and because [`base_ref`] used to
+/// treat "does not resolve" as "fall back to HEAD~1" (see its history), every row that reads this
+/// constant silently started measuring one commit instead of the whole branch, on every push, with
+/// nothing red to say so — exactly the failure `ceiling_rose`'s own doc comment already disclaimed.
+///
+/// The replacement has to be the ref every in-flight branch forks from and lands back on, because
+/// that is the only thing that makes `merge-base(HEAD, ref)` mean "where did THIS branch's work
+/// start" rather than "where did the whole team's work start":
+/// * `predev` is exactly that ref — DECISIONS.md #67 (owner-locked): "`predev` is the permanent WIP
+///   branch; `dev` is release-train-write-only... All work-in-progress lands on `predev` in every
+///   repo." Measured on this very branch the day this was written: merge-base with `predev` is 77
+///   commits back; merge-base with `dev` is 2 421 commits back, three weeks earlier.
+/// * `origin/dev` is disqualified for that reason: the release train, not individual branches,
+///   writes it (#32, #67), so it is promoted rarely and a branch's merge-base with it is commonly
+///   thousands of commits and weeks stale — comparing against it would report the WHOLE team's
+///   accumulated ceiling movement as "this branch's work", which is not what `ceiling-rose` claims
+///   to measure.
+/// * The branch this constant's own file happens to live on (`consolidated/1.6.0` at the time of
+///   writing) is disqualified for a sharper reason: it is not a fixed line at all, it is itself one
+///   more branch that other work merges INTO. A gate running there would compute
+///   `merge-base(HEAD, HEAD)`, fall straight into the `mb == head` arm of [`base_ref`], and silently
+///   measure only `HEAD~1` — the exact shim [`base_ref`]'s doc comment names as correct ONLY for the
+///   integration line itself, not for every branch that happens to be checked out when the gate
+///   runs.
+///
+/// `predev` is the one ref that is (a) permanent, (b) upstream of every WIP branch, and (c) never
+/// itself the branch under test.
+pub const INTEGRATION_REF: &str = "origin/predev";
 
 pub const ROW_ROSE: &str = "ceiling-rose";
 pub const ROW_SLACK: &str = "ceiling-slack";
@@ -324,18 +354,47 @@ pub fn set_int(text: &str, table: &str, key: &str, value: i64) -> Option<String>
 /// The merge-base with the integration line, because that is the commit the branch's own edits are
 /// diffed from; and `HEAD~1` when the merge-base IS `HEAD`, which is the case on the integration
 /// line itself, where "what this branch changed" is what the last commit changed.
+///
+/// AN UNRESOLVABLE REF IS RED, NEVER A SILENT FALL-BACK. This function used to guard the merge-base
+/// lookup with `if cx.git_ref_resolves(INTEGRATION_REF)` and fall through to the `HEAD~1` case on
+/// `false` — the same shim reserved for "HEAD is the integration line" — which meant a ref that
+/// stopped resolving (a rename, a fetch nobody wired up, a shallow clone) read exactly like "this
+/// commit's parent is the whole branch's base" and every caller measured one commit instead of the
+/// branch. That is precisely what [`ceiling_rose`]'s own doc comment disclaims: "a base that cannot
+/// be established is RED, never green." So the two cases are no longer conflated: a ref that does
+/// not resolve, or that resolves but yields no merge-base, is `Err` and stops here; only a merge-base
+/// that resolves AND equals `HEAD` — the one legitimate "we are standing on the integration line"
+/// case — falls back to `HEAD~1`.
 pub fn base_ref(cx: &Ctx) -> Result<String, String> {
     let head = cx.git(&["rev-parse", "HEAD"])?.trim().to_string();
-    if cx.git_ref_resolves(INTEGRATION_REF) {
-        if let Ok(mb) = cx.git(&["merge-base", "HEAD", INTEGRATION_REF]) {
-            let mb = mb.trim().to_string();
-            if !mb.is_empty() && mb != head {
-                return Ok(mb);
-            }
-        }
+    if !cx.git_ref_resolves(INTEGRATION_REF) {
+        return Err(format!(
+            "the base ref '{INTEGRATION_REF}' does not resolve in this checkout -- fetch it (see \
+             the workflow steps that fetch it before this gate runs), because a base that cannot \
+             be established is RED, never a silent fall-back to the last commit"
+        ));
     }
-    cx.git(&["rev-parse", "HEAD~1"])
-        .map(|s| s.trim().to_string())
+    let mb = cx
+        .git(&["merge-base", "HEAD", INTEGRATION_REF])
+        .map_err(|e| {
+            format!("'{INTEGRATION_REF}' resolves but HEAD has no merge-base with it: {e}")
+        })?
+        .trim()
+        .to_string();
+    if mb.is_empty() {
+        return Err(format!(
+            "'{INTEGRATION_REF}' resolves but `git merge-base` printed nothing -- unrelated \
+             histories, most likely"
+        ));
+    }
+    if mb == head {
+        // HEAD IS the integration line itself: "what this branch changed" is what the last
+        // commit changed.
+        return cx
+            .git(&["rev-parse", "HEAD~1"])
+            .map(|s| s.trim().to_string());
+    }
+    Ok(mb)
 }
 
 /// No ceiling in either qa ceilings file is higher than it was at the base.

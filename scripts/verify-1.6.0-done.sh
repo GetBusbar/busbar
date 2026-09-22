@@ -140,7 +140,7 @@ step() {   # $1 = label ; rest = command
 # So: the number of groups this file DEFINES is counted from the file, the declared constant must
 # agree with it (a group added or removed is a two-place edit a reviewer sees), and the environment
 # may only ever RAISE the floor. A count that cannot be taken is RED, never a floor of zero.
-DONE_GROUPS_DECLARED=21
+DONE_GROUPS_DECLARED=22
 # awk, not `grep -c ... || echo 0`: `grep -c` on a file with no matches PRINTS 0 and EXITS 1, so the
 # obvious fallback fires on top of grep's own output and the variable becomes the two-line string
 # "0\n0" — which then fails every numeric comparison below and takes the honest-floor check with it.
@@ -322,6 +322,23 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 #     It exists so a missing baseline announces itself rather than passing silently — which makes it
 #     exactly the kind of thing a DONE run must refuse.
 #
+# FOUR MORE, all PARITY-specific (BYTE-IDENTITY never shells to bin/oracle, so these four are inert
+# there; they stay in this ONE shared list anyway, the same way SHADOW_ORACLE_GOLDEN/DIR above are —
+# a variable that cannot fire in a group it also guards is a no-op there, not a hole):
+#   * BUSBAR_ORACLE_DATA repoints bin/oracle's whole data dir — cells.json, the golden registers,
+#     accepted-differences.json, accepted-gaps.json, owed-baseline.txt, the cell drivers. Point it at
+#     a directory with a thinner cells.json or a pre-accepted diff and PARITY judges a corpus nobody
+#     reviewed, however green the report reads.
+#   * BUSBAR_ORACLE_PRODUCT_ROOT repoints the product bin/oracle records FROM. Set it off this
+#     checkout and PARITY records and diffs some OTHER tree's candidate while this script's own
+#     banner still says this tree is what was proven.
+#   * BUSBAR_ORACLE_TOOL_DIR repoints where bin/oracle's generated record.sh/replay.sh shims (and any
+#     caller that locates the harness through this var, e.g. the turnstile) are read from — an
+#     operator-chosen tool dir is an operator-chosen judge.
+#   * BUSBAR_ORACLE_CACHE repoints the cached golden `fetch-golden --check` verifies against
+#     (default `$HOME/.cache/busbar-oracle`). Point it at a cache seeded with a hand-edited "1.5.5"
+#     and `fetch-golden --check` calls it pinned.
+#
 # A DONE run means "this tree was measured against something outside itself". Any of these set means
 # it was measured against something the operator chose, which is a different claim.
 #
@@ -334,10 +351,28 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 assert_bless_env_empty() {
   local v bad=0
   for v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
-           SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP; do
+           SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP \
+           BUSBAR_ORACLE_DATA BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_TOOL_DIR BUSBAR_ORACLE_CACHE; do
     if [ -n "${!v:-}" ]; then echo "regen/repoint env var $v is SET ('${!v}') — the comparison would be against something the operator chose, not the pinned reference"; bad=1; fi
   done
   return "$bad"
+}
+
+# Assert SKIP_BOOT_LEG is EMPTY — a DIFFERENT kind of hole than the bless/repoint vars above (it does
+# not make a byte comparison compare nothing; it makes PLANE-DELETE not run the comparison at all).
+# scripts/plane-delete-test.sh reads it (its own `--skip-boot-leg` flag sets it) and, when set, skips
+# Leg 3 — the boot+serve leg that proves the plane's route is actually GONE at runtime, on every plane
+# — leaving only Leg 1/Leg 2 (the plane compiles out), which a DONE run must not silently accept as
+# "the plane is deletable". This is checked in the PLANE-DELETE group itself, not folded into
+# assert_bless_env_empty: that function's two callers are BYTE-IDENTITY and PARITY, neither of which
+# runs plane-delete-test.sh, so a var only PLANE-DELETE reads has to be asserted where PLANE-DELETE
+# actually runs or the refusal never fires.
+assert_skip_boot_leg_empty() {
+  if [ -n "${SKIP_BOOT_LEG:-}" ]; then
+    echo "SKIP_BOOT_LEG is SET ('$SKIP_BOOT_LEG') — plane-delete-test.sh would skip the boot+serve leg, downgrading PLANE-DELETE to a compile-only check"
+    return 1
+  fi
+  return 0
 }
 
 # ── --selftest: the DONE gate's own refusals, proven RED before any group runs ────────────────────
@@ -358,7 +393,8 @@ if [ "$SELFTEST" -eq 1 ]; then
     st_fail=1
   fi
   for st_v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
-              SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP; do
+              SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP \
+              BUSBAR_ORACLE_DATA BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_TOOL_DIR BUSBAR_ORACLE_CACHE; do
     # A subshell so the plant cannot leak, driving the REAL assert_bless_env_empty — not a copy of
     # its rule, which would prove only that the copy agrees with itself.
     if ( export "$st_v=planted"; assert_bless_env_empty ) >/dev/null 2>&1; then
@@ -368,6 +404,14 @@ if [ "$SELFTEST" -eq 1 ]; then
       printf '  [ok]     %s set -> the DONE run is REFUSED\n' "$st_v"
     fi
   done
+  # SKIP_BOOT_LEG is its own function (see above) with its own proof, for the same reason it is
+  # checked in PLANE-DELETE rather than folded into assert_bless_env_empty.
+  if ( export SKIP_BOOT_LEG=1; assert_skip_boot_leg_empty ) >/dev/null 2>&1; then
+    printf '  [FAILED] SKIP_BOOT_LEG was SET and the DONE gate accepted it\n'
+    st_fail=1
+  else
+    printf '  [ok]     SKIP_BOOT_LEG set -> the DONE run is REFUSED\n'
+  fi
   _st_fails=$((_st_fails + st_fail))
   if [ "$_st_fails" -eq 0 ]; then
     printf '\nverify-1.6.0-done selftest: GREEN (verdict proofs + every bless/repoint variable refused)\n'
@@ -422,9 +466,23 @@ step "instance-noun gate"       cargo xtask gate instance-noun-neutrality
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+# KNOWN GAP (named here, not faked): the locked roster is 5 planes — llm, mcp, a2a, streaming,
+# decisions (DECISIONS #18 renamed voice->streaming; #48 added decisions/jev). scripts/plane-keys.sh
+# — the one list plane-delete-test.sh sources for PLANE_KEYS — still declares only {llm, mcp, a2a,
+# voice}, so this group proves deletability for those four under their pre-rename names ONLY; the
+# streaming rename and the new decisions plane are not exercised by this gate yet. Widening
+# PLANE_KEYS is scripts/plane-keys.sh's call; this label tracks what the script actually iterates.
 begin_group "PLANE-DELETE — each plane (llm/mcp/a2a/voice) is deletable"
-step "plane-delete-test --selftest" bash scripts/plane-delete-test.sh --selftest
-step "plane-delete-test --all"      bash scripts/plane-delete-test.sh --all
+if ! assert_skip_boot_leg_empty >/tmp/done-planedelete-env.$$ 2>&1; then
+  printf '  \033[31m[RED]\033[0m  SKIP_BOOT_LEG is NOT empty — refusing PLANE-DELETE (would silently skip the boot+serve leg)\n'
+  sed 's/^/          /' /tmp/done-planedelete-env.$$
+  rm -f /tmp/done-planedelete-env.$$
+  CUR_RED=1; CUR_FIRST_NOTE="SKIP_BOOT_LEG set (plane-delete)"
+else
+  rm -f /tmp/done-planedelete-env.$$
+  step "plane-delete-test --selftest" bash scripts/plane-delete-test.sh --selftest
+  step "plane-delete-test --all"      bash scripts/plane-delete-test.sh --all
+fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -507,9 +565,19 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # be the verdict on its own; it is captured and reported so a crash is distinguishable from the
 # expected refusal, and a run that printed no countable verdict line is RED whatever it exited.
 #
-# THE FLOOR, as measured on this tree: pools 8 · tools 5 · streams 6 = 19 distinct core parse-target
-# lines. Lower this number the moment a section is evicted; a fall is reported as a fall and tells you
-# what to lower it to.
+# THE FLOOR, as measured on this tree: 16 distinct core parse-target lines. It was 19 (pools 8 ·
+# tools 5 · streams 6) until commit 9f8cf20faf renamed local variables that only ACCIDENTALLY shared
+# a plane noun's spelling (`pools`->`pool_names` etc., in busbar-core's governance/admin/auth/export
+# modules) off the grep gate's pattern -- a real fall, not a raised floor, so CONFIG_NOUN_FLOOR moved
+# down with it, per the rule below. Lower this number the moment a section is evicted; a fall is
+# reported as a fall and tells you what to lower it to.
+#
+# NOTE: this floor could not be re-measured against HEAD while writing this note -- the armed gate
+# below scans CORE_ROOT="crates/busbar-core/src" (scripts/plane-config-noun-gate.sh), and that
+# directory no longer exists: commit 673ecdaaa absorbed busbar-core into busbar-kernel (#19/#37) and
+# deleted it. Until CORE_ROOT is repointed at wherever the four-noun DeployCfg parsing landed, the
+# armed gate prints no residual line at all, and config_noun_residual() below correctly refuses
+# (RED, "no residual line") rather than comparing a stale or fabricated count to this floor.
 CONFIG_NOUN_FLOOR=16
 config_noun_residual() {
   local out rc line count
@@ -691,7 +759,7 @@ begin_group "KERNEL — the Teller loop battery, the capability fixtures and att
 if [ -d crates/busbar-kernel ]; then
   step "busbar-kernel battery"           cargo test -p busbar-kernel --quiet
   step "busbar-caps fixtures"            cargo test -p busbar-caps --quiet
-  step "attempt identity (busbar-llm)"   filtered_cargo_test 1 cargo test -p busbar-llm --quiet attempt_identity
+  step "attempt identity (busbar-llm)"   filtered_cargo_test 2 cargo test -p busbar-llm --quiet attempt_identity
 else
   absent_step "kernel battery" "crates/busbar-kernel"
 fi
@@ -725,14 +793,17 @@ if [ -f qa/teller-steps.json ]; then
   # verdict moves when the subject does — so the invocation lives with its caller. Its two refusals
   # come with it: a missing rig ledger and a missing release binary are REFUSALS, not skips. Nothing
   # ran, so nothing is proven.
-  if [ ! -f testing/shadow-oracle/rigs-ledger.sh ]; then
-    absent_step "the rig suites the matrix cites" "testing/shadow-oracle/rigs-ledger.sh"
+  #
+  # rigs-ledger.sh was externalized into the pinned Rust oracle tool (testing/shadow-oracle/oracle-rust.pin)
+  # and is reached through the ./bin/oracle shim now, not as a file in this tree.
+  if [ ! -x bin/oracle ]; then
+    absent_step "the rig suites the matrix cites" "bin/oracle"
   elif [ ! -x target/release/busbar ]; then
     absent_step "the rig suites the matrix cites" \
       "target/release/busbar — the MCP and A2A legs are armed from it (MCP_SUBJECT_BUSBAR_BIN / A2A_SUBJECT_BUSBAR_BIN), so without it the rigs cannot run at all. Build it first: cargo build --release -p busbar"
   else
     step "the rig suites the matrix cites RUN and pass" \
-      bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check
+      bin/oracle rigs-ledger --bin target/release/busbar --check
   fi
   printf '  \033[36m[info]\033[0m '
   cargo xtask teller-steps 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"
@@ -768,11 +839,11 @@ begin_group "STORE-QA — the durable-store QA cycle's service pins hold, and it
 # This group is in the DONE readout because the cycle is a loop, not a task: a pin that drifts, or a
 # fixture whose port band creeps into the shadow oracle's, breaks a store proof quietly and much
 # later. Both self-tests run FIRST — a lint whose own rules have stopped firing is worse than none.
-if [ -f scripts/service-images-check.sh ]; then
-  step "service-images-check --selftest"      bash scripts/service-images-check.sh --selftest
-  step "service-images-check (every workflow image is the pinned digest)" bash scripts/service-images-check.sh
+if cargo xtask gate --list 2>/dev/null | grep -q '\bservice-images\b'; then
+  step "service-images-check --selftest"      cargo xtask gate service-images --selftest
+  step "service-images-check (every workflow image is the pinned digest)" cargo xtask gate service-images
 else
-  absent_step "service image pin gate" "scripts/service-images-check.sh"
+  absent_step "service image pin gate" "cargo xtask gate service-images"
 fi
 if [ -f testing/fleet-fixtures/store-services.sh ]; then
   # No docker needed: the fixture self-test asserts properties of the pinned table and of the

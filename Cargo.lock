@@ -906,7 +906,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-api",
  "busbar-contract",
- "busbar-substrate",
+ "busbar-kernel",
  "serde",
  "serde_json",
 ]

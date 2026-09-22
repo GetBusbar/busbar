@@ -70,7 +70,9 @@ pub(crate) extern "C-unwind" fn nested_dispatch(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: the host passes a live `HostState` ptr for the dispatch duration (see `recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if desc.is_null() {
             return StatusClass::Refused;
         }
@@ -150,7 +152,9 @@ pub(crate) extern "C-unwind" fn workhandle_open(
 ) -> WorkHandleId {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return WorkHandleId::NONE;
+        };
         if desc.is_null() {
             return WorkHandleId::NONE;
         }
@@ -187,7 +191,10 @@ pub(crate) extern "C-unwind" fn workhandle_resume(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            // A stale host handle IS the ABI's stale-handle class here too.
+            return StatusClass::Gone;
+        };
         if handle.is_none() {
             return StatusClass::Gone;
         }
@@ -243,7 +250,9 @@ pub(crate) extern "C-unwind" fn entitlement_check(
 ) -> bool {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return false;
+        };
         if caller.is_null() || target.is_null() {
             return false;
         }
@@ -308,7 +317,9 @@ fn gate_scan_inner(
 ) -> GateDecision {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return GateDecision::Block; // fail-closed: a stale handle refuses the stream too.
+        };
         if chunk.is_null() {
             return GateDecision::Block; // fail-closed: no chunk to clear → refuse the stream.
         }
@@ -436,7 +447,9 @@ pub(crate) extern "C-unwind" fn gate_decide(
         // SAFETY: ABI out-param discipline (writable/aligned or null; see `write_gate_verdict`).
         unsafe { write_gate_verdict(out, 0, 403, 0, 0) };
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused; // stale handle → `out` stays the fail-closed reject.
+        };
         if subject.is_null() {
             return StatusClass::Refused; // no subject to judge → `out` stays the fail-closed reject.
         }

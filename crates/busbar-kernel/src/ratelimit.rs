@@ -160,27 +160,71 @@ impl RateCheck {
     }
 }
 
+/// The counters and the newest window they belong to, under ONE lock — the high-water mark has to
+/// be read and written in the same critical section as the sweep, or two concurrent checks could
+/// each decide they are the newest and one could still rewind the map.
+struct LimiterState {
+    /// The newest window start this limiter has ever judged against — never decreases. See
+    /// [`MutationLimiter::check`] for why a limiter fed a wall clock needs one.
+    latest_window: u64,
+    /// Fixed-window counters keyed by (principal, class).
+    windows: HashMap<(String, MutationClass), Window>,
+}
+
 pub(crate) struct MutationLimiter {
-    windows: std::sync::Mutex<Option<HashMap<(String, MutationClass), Window>>>,
+    state: std::sync::Mutex<LimiterState>,
 }
 
 impl MutationLimiter {
     pub fn new() -> Self {
         Self {
-            windows: std::sync::Mutex::new(None),
+            state: std::sync::Mutex::new(LimiterState {
+                latest_window: 0,
+                windows: HashMap::new(),
+            }),
         }
     }
 
     /// Spend one attempt from `principal`'s budget for `class` at time `now` (unix seconds).
     /// Returns `false` when the budget for the current window is exhausted (the caller responds
     /// 429 and audits). Never panics (poisoned lock recovered).
+    ///
+    /// # A clock that goes backwards
+    ///
+    /// `now` is a WALL clock the caller pins per request; wall clocks are not monotonic (an NTP
+    /// correction steps them backwards, and so does a container starting before its host's time
+    /// syncs), so an older `now` arriving after a newer one is not hypothetical.
+    ///
+    /// This used to sweep with `*w == window`, which reads as "drop every entry from a PAST
+    /// window" but also drops entries from a FUTURE one relative to an older arrival. So a single
+    /// request — any principal, any class — carrying an older `now` recomputed an older window and
+    /// cleared EVERY live counter in the map: a principal who had just spent their budget got a
+    /// fresh one, and the limit became bypassable by anything that could nudge the clock back.
+    ///
+    /// The posture now is CLAMP, not refuse and not wipe:
+    ///
+    /// * **Clamp.** A regressed `now` is judged against `latest_window` — the newest window this
+    ///   limiter has seen — so the attempt spends from the LIVE budget instead of opening a second,
+    ///   older one. A caller cannot buy budget by arriving with an older timestamp; the worst a
+    ///   backwards step can do is make the current window last longer, which errs toward refusing.
+    /// * **Not refuse.** Turning a slipped clock into a hard refusal would take this surface down
+    ///   until the clock caught up. A rate limiter is not the right place to fail closed over an
+    ///   infrastructure fault it merely observed.
+    /// * **Never wipe.** The sweep drops entries STRICTLY OLDER than the window being judged and
+    ///   nothing else, so no arrival can clear a counter that is still live.
     pub fn check(&self, principal: &str, class: MutationClass, now: u64) -> RateCheck {
-        let window = now - (now % MUTATION_RATE_WINDOW_SECS);
-        let mut guard = self.windows.lock().unwrap_or_else(|e| e.into_inner());
-        let map = guard.get_or_insert_with(HashMap::new);
-        // Opportunistic sweep: drop every entry from a PAST window (each principal-class re-inserts
-        // on its next attempt), keeping the map proportional to currently-active principals.
-        map.retain(|_, (w, _, _)| *w == window);
+        let arrived_in = now - (now % MUTATION_RATE_WINDOW_SECS);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // The clamp. `max` (rather than an assignment) is what makes `latest_window` monotone: time
+        // moving forward advances it, time moving backwards leaves it exactly where it was.
+        let window = arrived_in.max(state.latest_window);
+        state.latest_window = window;
+        let map = &mut state.windows;
+        // Opportunistic sweep: drop every entry from a window STRICTLY OLDER than this one, and
+        // only those. Written as `>=` rather than `==` so the sweep is safe on its own terms — it
+        // could not wipe a live counter even if a future edit reached it with a window the clamp
+        // above had not raised.
+        map.retain(|_, (w, _, _)| *w >= window);
         let entry = map
             .entry((principal.to_string(), class))
             .or_insert((window, 0, 0));

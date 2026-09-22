@@ -501,7 +501,9 @@ pub(crate) fn egress_open(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if desc.is_null() || out.is_null() {
             return StatusClass::Refused;
         }
@@ -1140,7 +1142,9 @@ pub(crate) fn egress_fault(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         // SAFETY: caller's out/buffers are writable ranges for the call (ABI) — forwarded verbatim.
         unsafe { egress_fault_body(state.scope, out, cause_buf, cause_cap, url_buf, url_cap) }
     }))
@@ -1202,7 +1206,9 @@ pub(crate) fn egress_poll(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         // SAFETY: caller's `buf`/`out_written` describe live ranges for the call (ABI) — forwarded.
         unsafe { egress_poll_body(state.scope, egress, buf, buf_cap, out_written) }
     }))
@@ -1266,7 +1272,9 @@ pub(crate) fn egress_write(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         let _ = (buf, len);
         if registry().contains_key(&egress.0) {
             StatusClass::Unsupported
@@ -1282,7 +1290,9 @@ pub(crate) fn egress_write(
 pub(crate) fn egress_close(host: HostCtx, egress: EgressId) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if close_and_remove(egress.0) {
             StatusClass::Ok
         } else {

@@ -1042,6 +1042,51 @@ fn usage_metadata_extracts_split_token_classes() {
     assert_eq!(back, src);
 }
 
+/// RED-BEFORE-GREEN: a MISSING modality breakdown must not meter the turn at zero.
+///
+/// Gemini can omit `promptTokensDetails`/`responseTokensDetails` while still stating the turn's
+/// TOTAL token counts (`promptTokenCount`/`responseTokenCount`). The breakdown is a REFINEMENT of the
+/// stated total, never its sole source, so reading a missing breakdown as zero tokens silently bills
+/// a real turn at zero — the one outcome #42 forbids outside billing being off. Billing must fall
+/// back to the stated total when the per-modality breakdown yields nothing.
+#[test]
+fn usage_falls_back_to_stated_totals_when_the_modality_breakdown_is_absent() {
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "usageMetadata": {
+            "promptTokenCount": 95,
+            "responseTokenCount": 50,
+            "totalTokenCount": 145
+        }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage");
+    };
+    assert_eq!(
+        u.audio_in + u.text_in,
+        95,
+        "the turn's stated prompt total must not be dropped to zero"
+    );
+    assert_eq!(
+        u.audio_out + u.text_out,
+        50,
+        "the turn's stated response total must not be dropped to zero"
+    );
+    let billed = u.to_billing_usage();
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        Some(95),
+        "a turn with no modality breakdown still bills its stated input tokens"
+    );
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
+        Some(50),
+        "a turn with no modality breakdown still bills its stated output tokens"
+    );
+}
+
 #[test]
 fn cached_content_tokens_are_not_billed_twice() {
     // Gemini reports `cachedContentTokenCount` as a SUBSET of `promptTokenCount` (cached content IS
@@ -1120,6 +1165,39 @@ fn audio_format_from_mime_probe() {
         assert_eq!(audio_format_from_mime("text/plain", dir), None);
         assert_eq!(audio_format_from_mime("video/mp4", dir), None);
     }
+}
+
+/// RED-BEFORE-GREEN: the rate parameter must be matched EXACTLY, never by substring.
+///
+/// `"rate=160000"` (10x the true 16 kHz rate) CONTAINS `"rate=16000"` as a literal substring, so a
+/// `.contains("rate=16000")` probe mismeasures it as the 16 kHz rate it is not — a silent 10x error
+/// that, on the downlink, corrupts the barge-in truncate math AND mismeters billed audio duration by
+/// the same factor. A rate that IS stated but recognized as neither 16 kHz nor 24 kHz must be REFUSED
+/// (`None`), never guessed at as the nearest-looking known value.
+#[test]
+fn a_stated_but_unrecognized_rate_is_refused_not_substring_matched() {
+    // "rate=160000" is NOT 16 kHz — it must not probe as Pcm16 via a substring match on "rate=16000".
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=160000", UpDown::Up),
+        None,
+        "160000 is a stated rate this dialect does not recognize, not 16 kHz"
+    );
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=160000", UpDown::Down),
+        None,
+        "160000 is not the 24 kHz rate the downlink truncate math measures in"
+    );
+    // "rate=240000" is NOT 24 kHz either — the same substring hazard on the OTHER known rate.
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=240000", UpDown::Up),
+        None,
+        "240000 is a stated rate this dialect does not recognize, not an untagged blob"
+    );
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=240000", UpDown::Down),
+        None,
+        "240000 is not the 24 kHz rate — a substring match wrongly measured it as one"
+    );
 }
 
 // ── degrade, don't error (drop+warn asymmetries) ─────────────────────────────────────────────────
@@ -1234,6 +1312,45 @@ fn a_json_tool_output_still_rides_as_the_object_it_is() {
     );
     let fr = &as_value(&w)["toolResponse"]["functionResponses"][0];
     assert_eq!(fr["response"], json!({ "temp": 72 }));
+}
+
+/// RED-BEFORE-GREEN: Gemini's `functionResponse.response` MUST be a JSON OBJECT (a `Struct`). A tool
+/// result that parses as valid JSON but is NOT itself an object — bare `null`, a bare number, a bare
+/// array — was sent verbatim: a malformed frame the API rejects, and for `null` specifically the same
+/// "tool returned nothing" confusion the free-form-string wrap above already refuses. Each non-object
+/// JSON result is now object-wrapped the same way a non-JSON text result already is.
+#[test]
+fn a_bare_null_scalar_or_array_tool_result_is_object_wrapped() {
+    let codec = GeminiLiveCodec;
+    let case = |output: &'static [u8]| {
+        let w = up(
+            &codec,
+            IrClientEvent::Tool(IrDuplexTool::CallResult {
+                call_ref: CallRef(0),
+                call_id: "fc_bare".into(),
+                name: "lookup".into(),
+                output: Bytes::from_static(output),
+            }),
+        );
+        as_value(&w)["toolResponse"]["functionResponses"][0]["response"].clone()
+    };
+    let null_resp = case(b"null");
+    assert!(
+        null_resp.is_object(),
+        "a bare `null` result must be object-wrapped, not sent as the malformed frame Gemini rejects; got {null_resp}"
+    );
+    let scalar_resp = case(b"42");
+    assert_eq!(
+        scalar_resp,
+        json!({ "result": 42 }),
+        "a bare scalar result must be object-wrapped"
+    );
+    let array_resp = case(br#"["a","b"]"#);
+    assert_eq!(
+        array_resp,
+        json!({ "result": ["a", "b"] }),
+        "a bare array result must be object-wrapped"
+    );
 }
 
 #[test]

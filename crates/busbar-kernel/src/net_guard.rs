@@ -70,13 +70,18 @@ pub fn ipv4_is_internal(v4: &Ipv4Addr) -> bool {
 /// which is not a v4 loopback, so an embedded-v4 arm placed first would let it through. Then the
 /// embedded-v4 arm runs BEFORE the v6 range masks, because `[::ffff:127.0.0.1]` and
 /// `[::169.254.169.254]` match no v6 mask at all yet a connecting stack still routes them to the
-/// embedded v4 target. `to_ipv4()` rather than `to_ipv4_mapped()`: it is the superset that also
-/// covers the IPv4-COMPATIBLE form.
+/// embedded v4 target. The embedded-v4 arm calls [`embedded_ipv4`], not the narrower `to_ipv4()`,
+/// directly: `to_ipv4()` is already the superset over `to_ipv4_mapped()` that also covers the
+/// IPv4-COMPATIBLE form, and `embedded_ipv4` extends it once more to the NAT64/RFC 6052
+/// `64:ff9b::/96` embedding that `to_ipv4()` does not recognise at all — see [`embedded_ipv4`].
 pub fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
     if v6.is_loopback() {
         return true;
     }
-    if let Some(v4) = v6.to_ipv4() {
+    // `embedded_ipv4` (not the narrower `to_ipv4()`) so a NAT64/RFC 6052 `64:ff9b::/96` synthesized
+    // address is judged by the IPv4 target it actually reaches, not left to fall through to the
+    // v6 range checks below, none of which cover that prefix.
+    if let Some(v4) = embedded_ipv4(v6) {
         return ipv4_is_internal(&v4);
     }
     v6.is_unspecified() || v6.is_multicast() || is_unique_local_v6(v6) || is_link_local_v6(v6)
@@ -98,10 +103,13 @@ pub fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
 /// upstream is on the internal network" would then pin and dial an unlisted IMDS. This is the same
 /// predicate the config-side metadata check applies, deliberately.
 ///
-/// The v6 arm unwraps with `to_ipv4()`, not `to_ipv4_mapped()`, for the reason [`ipv6_is_internal`]
-/// gives: `to_ipv4()` is the superset that also covers the IPv4-COMPATIBLE form, so
-/// `[::169.254.169.254]` is caught. A guard that only unwrapped the MAPPED form let exactly that
-/// literal through — it matched no v6 range, unwrapped to nothing, and was connected to.
+/// The v6 arm unwraps with [`embedded_ipv4`], not `to_ipv4()`/`to_ipv4_mapped()` directly, for the
+/// reason [`ipv6_is_internal`] gives: `to_ipv4()` is already the superset that also covers the
+/// IPv4-COMPATIBLE form, so `[::169.254.169.254]` is caught — a guard that only unwrapped the
+/// MAPPED form let exactly that literal through, matching no v6 range and unwrapping to nothing.
+/// `embedded_ipv4` goes one step further and also recognises the NAT64/RFC 6052 `64:ff9b::/96`
+/// embedding that `to_ipv4()` itself does not: a DNS64 resolver answering `64:ff9b::a9fe:a9fe` is
+/// the IMDS target `169.254.169.254` re-encoded, and matches none of `to_ipv4()`'s forms either.
 pub fn ip_is_cloud_metadata(addr: &IpAddr) -> bool {
     /// The metadata endpoints OUTSIDE link-local: Alibaba Cloud ECS (inside the otherwise-allowed
     /// CGNAT /10), Azure WireServer, and Oracle Cloud's globally-routable-shaped IMDS.
@@ -116,7 +124,11 @@ pub fn ip_is_cloud_metadata(addr: &IpAddr) -> bool {
     match addr {
         IpAddr::V4(v4) => is_metadata_v4(v4),
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4() {
+            // `embedded_ipv4`, not `to_ipv4()`: a DNS64 resolver answering with the NAT64/RFC 6052
+            // `64:ff9b::/96` synthesis of an IMDS literal (e.g. `64:ff9b::a9fe:a9fe` for
+            // `169.254.169.254`) reaches the metadata endpoint exactly as surely as the mapped or
+            // compatible forms do, and matches neither.
+            if let Some(v4) = embedded_ipv4(v6) {
                 return is_metadata_v4(&v4);
             }
             // IMDSv6.
@@ -173,6 +185,66 @@ pub fn is_link_local_v6(addr: &Ipv6Addr) -> bool {
 pub fn is_cgnat_shared_v4(v4: &Ipv4Addr) -> bool {
     let o = v4.octets();
     o[0] == 100 && (o[1] & 0xC0) == 64
+}
+
+/// Unwrap an embedded IPv4 target from an IPv6 literal or resolved answer, covering EVERY form a
+/// connecting stack still routes to an IPv4 destination.
+///
+/// `Ipv6Addr::to_ipv4()` only recognises the IPv4-MAPPED (`::ffff:a.b.c.d`) and IPv4-COMPATIBLE
+/// (`::a.b.c.d`) forms. It does NOT recognise NAT64 / RFC 6052 `64:ff9b::/96` — the well-known
+/// prefix a DNS64 resolver uses to synthesize an AAAA answer for an IPv4-only name on a
+/// NAT64/DNS64 network (common on IPv6-only cellular and enterprise egress). A hostile or
+/// rebinding resolver behind DNS64 answers a AAAA query for its name with `64:ff9b::a9fe:a9fe` —
+/// the IMDS target `169.254.169.254` re-encoded — and that address matches NONE of `to_ipv4()`,
+/// NONE of the unique-local/link-local/multicast v6 range checks, and so a guard that unwraps only
+/// `to_ipv4()` judges it as an ordinary public v6 address and connects. This is the SAME class of
+/// bug the mapped-vs-compatible unwrap already guards against in [`ipv6_is_internal`] and
+/// [`ip_is_cloud_metadata`]; NAT64 is a third embedding, not a different problem.
+///
+/// Called BEFORE any IMDS / link-local / private judgement is made, exactly like `to_ipv4()` is,
+/// so the embedded address is what gets judged rather than the (harmless-looking) v6 wrapper.
+pub fn embedded_ipv4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
+    if let Some(v4) = v6.to_ipv4() {
+        return Some(v4);
+    }
+    // `64:ff9b::/96` (well-known, RFC 6052 Section 2.1) AND any `/96`-length instantiation of
+    // `64:ff9b:1::/48` (local-use, RFC 8215 Section 2) embed IPv4 identically: PL=96 has no
+    // reserved `u` byte (RFC 6052 Section 2.2), so the low 32 bits (the last two u16 segments) are
+    // the embedded IPv4 address, byte for byte, in both forms.
+    //
+    // The two forms differ in how much of the leading 96 bits is FIXED, not just in `seg[2]`:
+    //   - well-known (`seg[2] == NAT64_WELL_KNOWN`): RFC 6052 pins the ENTIRE 96-bit prefix to
+    //     `64:ff9b::`, so `seg[3]`/`seg[4]`/`seg[5]` must also be zero.
+    //   - local-use (`seg[2] == NAT64_LOCAL_USE`): RFC 8215 pins only the top 48 bits
+    //     (`64:ff9b:1::/48`) and leaves an operator free to choose ANY value for the rest of a
+    //     /96-length Network-Specific Prefix under it — RFC 8215 Section 6's own checksum-neutral
+    //     worked example, `64:ff9b:1:fffe::/96`, has a non-zero `seg[3]`. Requiring
+    //     `seg[3..6] == 0` here too would recognise only the single degenerate all-zero /96 and
+    //     miss every other /96 an operator (including the RFC's own example) might actually run —
+    //     the same hostile-DNS64-on-a-local-use-network bypass this prefix was added to guard
+    //     against, reopened for any non-zero-padded instantiation. `64:ff9b:1::/48` is reserved
+    //     entirely for this translation and is never legitimately globally routable (RFC 8215
+    //     Section 3), so accepting the whole block here cannot mis-flag real public v6 traffic.
+    //
+    // A local-use prefix of another length (/32, /40, /48, /56, /64) scatters the octets around a
+    // `u` byte at a different bit position and is deliberately NOT unwrapped here: this function
+    // only recognises /96-length translation, well-known or local-use.
+    const NAT64_WELL_KNOWN: u16 = 0; // RFC 6052 `64:ff9b::/96`
+    const NAT64_LOCAL_USE: u16 = 1; // RFC 8215 `64:ff9b:1::/48`, /96 instantiation
+    let seg = v6.segments();
+    if seg[0] == 0x0064 && seg[1] == 0xff9b {
+        let embeds_v4 = match seg[2] {
+            NAT64_WELL_KNOWN => seg[3] == 0 && seg[4] == 0 && seg[5] == 0,
+            NAT64_LOCAL_USE => true,
+            _ => false,
+        };
+        if embeds_v4 {
+            let [a, b] = seg[6].to_be_bytes();
+            let [c, d] = seg[7].to_be_bytes();
+            return Some(Ipv4Addr::new(a, b, c, d));
+        }
+    }
+    None
 }
 
 /// True when `host` is an alternate (non-dotted-quad) IPv4 encoding that `IpAddr::from_str` rejects

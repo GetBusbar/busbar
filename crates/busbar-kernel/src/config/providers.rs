@@ -4,10 +4,14 @@
 //! A plane's config-section SHAPES, housed in the neutral substrate for now (slated to move to the
 //! owning plane crate) and carried as opaque serde data the substrate never interprets: the catalog
 //! definition (`ProviderDef`, from providers.yaml), the operator deployment (`ProviderDeploy`, from
-//! config.yaml), the resolved section the runtime reads (`ProviderCfg`), the active-health block and
-//! the per-entry config (`ModelCfg`). The catalog/deployment MERGE that produces a `ProviderCfg`
-//! stays in busbar-core's `resolve`, which re-exports every item here at its historical `config::`
-//! path.
+//! config.yaml), the resolved section the runtime reads (`ProviderCfg`) and the active-health block.
+//! The catalog/deployment MERGE that produces a `ProviderCfg` stays in busbar-core's `resolve`,
+//! which re-exports every item here at its historical `config::` path.
+//!
+//! `ModelCfg` (the per-entry config) is NOT defined here any more — it moved to `busbar-contract`
+//! (DECISIONS #40/#38) because a plugin crate (`busbar-plane-decision`) reuses it verbatim for its
+//! own `decisions.models.<name>` and a plugin's whole dependency closure must be `busbar-contract`
+//! alone. It is re-exported below at its historical path.
 
 use std::collections::HashMap;
 
@@ -110,64 +114,15 @@ pub struct HealthCfg {
     pub timeout_secs: Option<u64>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct ModelCfg {
-    #[serde(default = "neg1")]
-    pub max_requests: i64,
-    pub provider: String,
-    /// Per-lane concurrency limiter: the max number of in-flight requests admitted to this lane at
-    /// once (excess requests park on the lane's semaphore until a slot frees or the request budget
-    /// expires). OPTIONAL — omitted means UNBOUNDED (no concurrency cap), the same opt-in-limiter
-    /// posture as `max_requests` (default -1 = unlimited). Set a positive integer to opt into a cap;
-    /// `0` is rejected at boot (`config_validate`) as a lane that admits nothing. Unbounded is
-    /// realized as a `Semaphore` seeded with `tokio::sync::Semaphore::MAX_PERMITS` (see main.rs) —
-    /// "effectively unbounded"; a literal `usize::MAX` would panic (tokio caps permits at
-    /// `MAX_PERMITS`).
-    #[serde(default)]
-    pub max_concurrent: Option<usize>,
-    /// Default max output tokens injected when a cross-protocol translation targets a backend that
-    /// REQUIRES `max_tokens` (Anthropic Messages) and the source request omitted it (legal for
-    /// OpenAI). Unset falls back to `proto::DEFAULT_MAX_TOKENS`. Must be > 0 when set.
-    #[serde(default)]
-    pub default_max_tokens: Option<u32>,
-    /// Optional upstream model name override. When set, this value is sent to the provider as the
-    /// model identifier in the request body and URL path, instead of the config key. Useful when
-    /// the provider expects a different model string (e.g. Bedrock model IDs).
-    #[serde(default)]
-    pub upstream_model: Option<String>,
-    /// Per-ATTEMPT time-to-response-headers cap (ms). If this lane has not returned response headers
-    /// within the budget, the attempt is abandoned (transient → breaker) and the request FAILS OVER
-    /// to the next member — the hang detector. Model-level default; a pool member's
-    /// `attempt_timeout_ms` overrides it per workload. Absent = bounded only by the request budget.
-    #[serde(default)]
-    pub attempt_timeout_ms: Option<u64>,
-    /// Operator declaration that THIS model accepts reasoning/thinking request parameters
-    /// (Anthropic `thinking`, Gemini `thinkingConfig`, OpenAI `reasoning_effort`). Capability is
-    /// per-MODEL, not per-provider (Sonnet takes `thinking`, Haiku 400s on it), and busbar keeps no
-    /// model database — this flag is the operator asserting what they deployed, in the same family
-    /// as `context_max`/`cost_per_mtok`. When absent/false, a cross-protocol reasoning ask is
-    /// DROPPED at the seam with a warn (never sent, so a non-reasoning model can never 400 from
-    /// translation). A pool member's `reasoning` overrides this per pool. Same-protocol passthrough
-    /// is byte-exact and ignores the flag.
-    #[serde(default)]
-    pub reasoning: Option<bool>,
-    /// Operator declaration that THIS model accepts prompt-cache markers on dialects where the
-    /// marker is model-gated (Bedrock Converse `cachePoint`: Claude accepts it, Amazon Nova
-    /// hard-rejects it with 400 "extraneous key"). Same family as `reasoning` — busbar keeps no
-    /// model database, the operator asserts what they deployed. When absent/false, cross-protocol
-    /// `cache_control` breakpoints headed to such a dialect are DROPPED at the seam with a warn
-    /// (the request proceeds uncached — fail-safe, never a translation-induced 400). Dialects
-    /// whose cache form is universally accepted (Anthropic `cache_control`) ignore this flag, as
-    /// does same-protocol passthrough (byte-exact).
-    #[serde(default)]
-    pub prompt_caching: Option<bool>,
-}
-
-/// The serde default for `ModelCfg::max_requests` (`-1` = unlimited).
-pub fn neg1() -> i64 {
-    -1
-}
+// `ModelCfg` (and its `neg1` default fn) moved to `busbar-contract` (DECISIONS #40/#38): it is the
+// per-entry shape BOTH `pools.models.<name>` (this crate) and `decisions.models.<name>`
+// (`busbar-plane-decision`, a plugin crate whose entire dependency closure must be `busbar-contract`
+// alone) deserialize into, so a plugin naming it must not also be naming the kernel. Moved VERBATIM
+// — same field names, order, types and serde attributes, so no config key and no wire byte changed
+// — and re-exported here at its historical `config::providers::ModelCfg` path (and, transitively,
+// `config::ModelCfg` via this module's own re-export in `config/mod.rs`) so every existing
+// kernel-side caller keeps compiling unchanged. See `busbar_contract::config`'s own module doc.
+pub use busbar_contract::config::{neg1, ModelCfg};
 
 /// Provider definition - vetted knowledge shipped in providers.yaml (no keys).
 #[derive(Debug, Deserialize, Clone)]

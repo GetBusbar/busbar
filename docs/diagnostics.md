@@ -439,6 +439,17 @@ A provider's `error_map` maps an upstream error code or structured type to a str
 
 **What to do:** Correct the named `error_map` value to one of the nine status classes, or remove the entry if the built-in HTTP-status classification is what you want.
 
+<a id="config-overlay-rejected"></a>
+### BUSBAR-3023 — Config overlay rejected at read (the reason, naming the key and the file)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-overlay-rejected`
+
+The persisted config overlay was present but could not be read into a document, so every caller of the overlay classifies it unreadable (BUSBAR-3005 at boot, BUSBAR-3017 on the settings read) and proceeds without it. Those report the CONSEQUENCE; this line reports the CAUSE, because the parser's message — the offending key and the sections that are accepted — exists nowhere else. The common causes are a hand-edit that mis-spelled a section name and a truncated write.
+
+**What to do:** Read this line's message for the exact key and path, then fix or remove the overlay file and restart so the API-applied hooks, gates and groups are restored.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>

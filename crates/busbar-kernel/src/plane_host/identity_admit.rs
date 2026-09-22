@@ -100,7 +100,9 @@ pub(crate) extern "C-unwind" fn identity_admit(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if query.is_null() {
             return StatusClass::Refused;
         }

@@ -159,7 +159,9 @@ pub(crate) extern "C-unwind" fn verify_lookup(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if key.is_null() {
             return StatusClass::Refused;
         }
@@ -232,7 +234,9 @@ pub(crate) extern "C-unwind" fn verify_store(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let Some(_state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if key.is_null() {
             return StatusClass::Refused;
         }
@@ -342,7 +346,9 @@ pub extern "C-unwind" fn approval_redeem_q(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if query.is_null() {
             return StatusClass::Refused;
         }
@@ -373,7 +379,9 @@ pub extern "C-unwind" fn approval_redeem_q(
 pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if key.is_null() {
             return StatusClass::Refused;
         }
@@ -472,7 +480,9 @@ pub(crate) fn redeem_approval(
 pub(crate) extern "C-unwind" fn approval_redeem(host: HostCtx, key: *const Key) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
         if key.is_null() {
             return StatusClass::Refused;
         }
@@ -617,7 +627,9 @@ pub(crate) extern "C-unwind" fn trust_evaluate(
 ) -> TrustVerdict {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let state: &HostState = unsafe { recover(host) };
+        let Some(state) = (unsafe { recover(host) }) else {
+            return TrustVerdict::Denied;
+        };
         if counterparty.is_null() {
             return TrustVerdict::Denied;
         }

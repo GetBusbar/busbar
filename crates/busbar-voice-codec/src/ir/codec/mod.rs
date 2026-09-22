@@ -253,11 +253,21 @@ impl DecodeState {
     /// an upstream is under no obligation to close one. Past the ceiling the oldest accumulation is
     /// given up, exactly as the oldest call id is.
     ///
-    /// A fragment that is ITSELF a whole JSON OBJECT is not a fragment of anything: it is the dialect
-    /// handing the arguments over complete (an atomic call's `args`, or the complete `arguments` a
-    /// streamed call states when it closes), so it REPLACES what was held rather than being appended
-    /// to it. Appending would splice the same arguments onto their own prefix and leave nothing
-    /// readable — the call would be lost precisely when the dialect had just said it plainly.
+    /// A fragment that is ITSELF a whole JSON OBJECT is not necessarily a fragment of anything: it can
+    /// be the dialect handing the arguments over complete (an atomic call's `args`, or the complete
+    /// `arguments` a streamed call states when it closes) — in which case it REPLACES what was held
+    /// rather than being appended to it, because appending would splice the same arguments onto their
+    /// own prefix and leave nothing readable.
+    ///
+    /// But a complete JSON object is ALSO what a model can emit as one ordinary delta chunk when a
+    /// nested sub-object happens to land on its own token boundary (`{"outer": ` → `{"inner": 1}` →
+    /// `, "other": 2}` for `{"outer": {"inner": 1}, "other": 2}`). That middle fragment parses as a
+    /// complete object too, and is not a restatement of anything — replacing on it erased the
+    /// already-held `{"outer": ` prefix and left the tail with nothing valid to append to. A genuine
+    /// restatement's text always CARRIES what is already held as a literal prefix (both are exact
+    /// prefixes of the same upstream string); a coincidental nested object does not. So a
+    /// complete-object fragment only replaces when nothing is held yet, or when its own text restates
+    /// (starts with) what is already held — otherwise it is appended like any other fragment.
     pub fn push_call_args(&mut self, call: CallRef, fragment: &[u8]) {
         let whole = serde_json::from_slice::<Value>(fragment)
             .ok()
@@ -274,9 +284,17 @@ impl DecodeState {
             .call_args
             .entry(call)
             .or_insert_with(|| Some(String::new()));
-        if let Some(v) = whole {
-            *held = Some(v.to_string());
-            return;
+        if let Some(v) = &whole {
+            let is_restatement = match held {
+                Some(buf) => {
+                    buf.is_empty() || String::from_utf8_lossy(fragment).starts_with(buf.as_str())
+                }
+                None => false, // already abandoned — handled below.
+            };
+            if is_restatement {
+                *held = Some(v.to_string());
+                return;
+            }
         }
         let Some(buf) = held else {
             return; // already abandoned — a later fragment cannot make the whole readable.

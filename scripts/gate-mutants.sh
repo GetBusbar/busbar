@@ -48,8 +48,14 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # THE BASE. Spelled to match `xtask/src/gates/construction/ceilings.rs::INTEGRATION_REF`: a branch
 # that is measured against one ref by the ceilings and another by the mutants can be green on both
-# while being unheld on the difference between them.
-GM_DEFAULT_BASE="origin/integration/oracle-phase0"
+# while being unheld on the difference between them. `predev` is the permanent WIP branch every
+# repo's in-flight work lands on and forks from (DECISIONS.md #67) -- the successor to the
+# now-renamed `integration/oracle-phase0` phase line. See INTEGRATION_REF's own doc comment for why
+# `dev` (release-train-write-only, promoted rarely) and the trunk this script happens to run on are
+# both the wrong ref. KEEP THIS IN SYNC WITH `INTEGRATION_REF` BY HAND -- there is no single source
+# both files read, so a rename of one without the other is a branch measured against two different
+# lines by its two gates, silently.
+GM_DEFAULT_BASE="origin/predev"
 
 # THE SCOPE. The gate sources, their data, and the machinery that runs them. This list is the
 # single source of truth: the workflow does not repeat it, it calls `--scope`.

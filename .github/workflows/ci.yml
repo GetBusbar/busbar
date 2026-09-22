@@ -3306,7 +3306,21 @@ jobs:
           # shallow clone has neither, and the row is RED when it cannot establish a base — a
           # ratchet that switches itself off on the runner where it is cheapest to switch off is not
           # a ratchet. So the history is fetched.
+          #
+          # `fetch-depth: 0` ONLY DEEPENS THIS RUN'S OWN REF. It does not fetch the integration
+          # line's branch itself into `refs/remotes/origin/*` — that needs the explicit fetch step
+          # below, the same one `ship-ready` and `gate-mutants.yml` already carry. Without it,
+          # `INTEGRATION_REF` never resolves in this job specifically, and — before this file's
+          # DEFECT 1 fix — the gate silently measured one commit instead of the whole branch on
+          # every run of exactly the check named `construction gate (…)` in branch protection.
           fetch-depth: 0
+      - name: Fetch the line the branch is measured against
+        # See the identical step in the `ship-ready` job below for the full rationale (predev,
+        # DECISIONS.md #67, and why the fetch is resilient but the gate itself is not).
+        run: |
+          git fetch --no-tags --quiet origin +refs/heads/predev:refs/remotes/origin/predev || \
+            echo "::warning::could not fetch origin/predev -- INTEGRATION_REF will not resolve, \
+          and ceiling-rose now goes RED rather than silently falling back to HEAD~1"
       - name: Construction gate self-test (every rule proves it sees its planted violation)
         # THE HANG CEILING IS A CEILING, NOT A BUDGET, AND THIS SELF-TEST IS LEGITIMATELY LONG.
         # `gates::DEFAULT_GATE_CEILING` is 300s, which is the right number for a gate RUN and the
@@ -3400,10 +3414,19 @@ jobs:
         with:
           fetch-depth: 0
       - name: Fetch the line the branch is measured against
-        # `ceiling-rose` and the mutation verdict are both measured against the merge-base with it.
+        # `ceiling-rose` (xtask/src/gates/construction/ceilings.rs::INTEGRATION_REF) and the
+        # mutation verdict (scripts/gate-mutants.sh::GM_DEFAULT_BASE) are both measured against the
+        # merge-base with `predev`, the permanent WIP branch every repo's in-flight work lands on
+        # and forks from (DECISIONS.md #67). RESILIENT ON PURPOSE: a `git fetch` that cannot find
+        # the ref (network blip, the ref moved again, a checkout with a stale remote) must not crash
+        # this job outright -- the gate can still render an honest verdict once it runs. But it must
+        # not go quiet either: `base_ref()` treats an unresolved ref as RED, never as "nothing
+        # changed" (see ceilings.rs), so a failed fetch here surfaces downstream as a real red row
+        # instead of a raw `git` exit 128 that says nothing about the tree.
         run: |
-          git fetch --no-tags --quiet origin \
-            +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+          git fetch --no-tags --quiet origin +refs/heads/predev:refs/remotes/origin/predev || \
+            echo "::warning::could not fetch origin/predev -- INTEGRATION_REF will not resolve, \
+          and ceiling-rose / the mutation base now go RED rather than silently falling back to HEAD~1"
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
         uses: ./.github/actions/cargo-home

@@ -78,12 +78,19 @@ jobs:
         with:
           fetch-depth: 0
       - name: Fetch the line the branch is measured against
-        # `ceiling-rose`'s ref, spelled once in scripts/gate-mutants.sh. Without it the merge-base
-        # cannot be computed and the script REFUSES (exit 2) rather than reporting an empty scope —
-        # a shallow clone must never read as "nothing changed".
+        # `ceiling-rose`'s ref (xtask/src/gates/construction/ceilings.rs::INTEGRATION_REF), spelled
+        # once here as `scripts/gate-mutants.sh::GM_DEFAULT_BASE` = `predev`, the permanent WIP
+        # branch every repo's in-flight work lands on and forks from (DECISIONS.md #67). RESILIENT,
+        # NOT UNCONDITIONAL: a fetch that cannot find the ref must not crash this job before the
+        # gate gets a chance to render an honest verdict -- but it must not go quiet either. Without
+        # it the merge-base cannot be computed and `gm_base` REFUSES (exit 2) rather than reporting
+        # an empty scope, which is what turns a failed fetch into a real red downstream instead of a
+        # raw `git` exit 128 -- a shallow clone (or a fetch that failed) must never read as "nothing
+        # changed".
         run: |
-          git fetch --no-tags --quiet origin \
-            +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+          git fetch --no-tags --quiet origin +refs/heads/predev:refs/remotes/origin/predev || \
+            echo "::warning::could not fetch origin/predev -- GM_DEFAULT_BASE will not resolve, \
+          and gm_base refuses (exit 2) rather than reporting an empty scope"
       - name: The scope script proves itself
         run: scripts/gate-mutants.sh --selftest
       - name: What is in scope
@@ -133,9 +140,12 @@ jobs:
         with:
           fetch-depth: 0
       - name: Fetch the line the branch is measured against
+        # See the `scope` job's identical step above for the full rationale (predev, DECISIONS.md
+        # #67, and resilient-fetch-but-not-resilient-gate).
         run: |
-          git fetch --no-tags --quiet origin \
-            +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+          git fetch --no-tags --quiet origin +refs/heads/predev:refs/remotes/origin/predev || \
+            echo "::warning::could not fetch origin/predev -- GM_DEFAULT_BASE will not resolve, \
+          and this job's test command now reports the base as unresolved rather than passing quietly"
       - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
         # WITHOUT THIS STEP EVERY SHARD REPORTS BASELINE RED, AND THAT IS NOT A FIGURE OF SPEECH:
         # it is what the first two runs of this workflow did. `audit-ledger`'s
@@ -222,9 +232,12 @@ jobs:
         with:
           fetch-depth: 0
       - name: Fetch the line the branch is measured against
+        # See the `scope` job's identical step above for the full rationale (predev, DECISIONS.md
+        # #67, and resilient-fetch-but-not-resilient-gate).
         run: |
-          git fetch --no-tags --quiet origin \
-            +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+          git fetch --no-tags --quiet origin +refs/heads/predev:refs/remotes/origin/predev || \
+            echo "::warning::could not fetch origin/predev -- GM_DEFAULT_BASE will not resolve, \
+          and this shard's test command now reports the base as unresolved rather than passing quietly"
       - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
         # WITHOUT THIS STEP EVERY SHARD REPORTS BASELINE RED, AND THAT IS NOT A FIGURE OF SPEECH:
         # it is what the first two runs of this workflow did. `audit-ledger`'s
