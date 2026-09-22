@@ -99,9 +99,10 @@ use super::named_def_views::{export_def_view, identity_provider_view, unparseabl
 ///
 /// **THE FALLBACK, NOT THE MODEL.** Under DECISION #79 a posting prices against the card in force
 /// at ITS OWN arrival instant, resolved through the dated history by
-/// [`resolve_row_spend_micros`]. This derivation is what the read answers when the node has no
-/// dated history to resolve against and no per-posting record to resolve — a build whose
-/// composition root installed no [`UsageRateHistory`], or a window the node kept no postings for.
+/// [`derive_spend_micros_row_at_card`] against the entry `card_at(row.priced_from_ms)` resolves to.
+/// This derivation is what the read answers when there is no dated history to resolve against — a
+/// build whose composition root installed no [`UsageRateHistory`], or a row whose instant falls in
+/// a hole no entry of the snapshot covers.
 /// It is the previous release's arithmetic, kept byte-for-byte so that such a build answers
 /// exactly what it always did; it is NOT the statement that a rate-card correction is supposed to
 /// reprice history, which is precisely what #79 ruled out.
@@ -140,50 +141,14 @@ fn derive_spend_micros_row(
 // figure and billed at another.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// ONE POSTING, as the usage read has to see it: the quantities it carried, the metering row it
-/// belongs to, and **the instant it arrived**.
-///
-/// `arrived_ms` is the whole of the type, and it is a TIMESTAMP rather than a version on purpose.
-/// DECISION #79 fixes the resolution key as the posting's own arrival instant precisely because a
-/// timestamp resolves against entries that did not exist when the posting was written — which is
-/// what lets a signed back-dated correction reprice work that predates it. A version stamped into
-/// the posting can only ever resolve FORWARD. `PostingStamp::rate_card_version` stays reporting
-/// provenance (#44: VISIBLE on usage/audit reports) and is deliberately not a field here, so no
-/// pricing path can read it even by accident.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UsagePosting {
-    /// The virtual key the posting is attributed to — the metering row's first key.
-    pub key_id: String,
-    /// The CONFIGURED model name the row attributes to. It reaches the card's lane through the
-    /// same `upstream_model` alias resolution the row's own derivation goes through, so no name is
-    /// translated on one path and not the other.
-    pub model: String,
-    /// The serving lane's provider — the metering row's third key.
-    pub provider: String,
-    /// Uncached input tokens.
-    pub tokens_input: u64,
-    /// Output tokens.
-    pub tokens_output: u64,
-    /// Cache-read tokens.
-    pub tokens_cache_read: u64,
-    /// Cache-write tokens (`tokens_cache_creation` on the admin wire).
-    pub tokens_cache_write: u64,
-    /// How many flat per-request fees this posting carries.
-    pub billable_requests: u64,
-    /// **THE RESOLUTION KEY.** The instant the posting arrived, as a wall clock reads it, in
-    /// MILLISECONDS — the same scale a history entry's `effective_from` is written on, so a
-    /// comparison between the two means what it says.
-    pub arrived_ms: u64,
-}
-
 /// **THE DATED-HISTORY READ SEAM** — the one question `GET /api/v1/admin/usage` asks of the
 /// process's rate-card history, answered by whoever holds it.
 ///
 /// Shaped after [`busbar_kernel::rate_apply`] and for the same reason: the composition root is the
 /// only place entitled to hold a deployment's history, so the root installs an implementor once at
 /// boot ([`install_usage_rate_history`]) and this crate reaches it by name. A build that installed
-/// none answers `None`/empty and the read derives exactly as the previous release did — a no-op
-/// rather than a swap quietly dropped.
+/// none answers `None` and the read derives exactly as the previous release did — a no-op rather
+/// than a swap quietly dropped.
 pub trait UsageRateHistory: Send + Sync {
     /// The process's dated history, PINNED for the length of one read.
     ///
@@ -191,17 +156,8 @@ pub trait UsageRateHistory: Send + Sync {
     /// half of one response's rows against one history and half against another.
     ///
     /// `None` for a node that has resolved no configuration yet — which is a node with no entry a
-    /// posting could resolve to, not a node whose postings are free.
+    /// row could resolve to, not a node whose rows are free.
     fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>>;
-
-    /// Every posting the node recorded in `[from_secs, to_secs)`, each carrying its own arrival
-    /// instant.
-    ///
-    /// EMPTY IS NOT ZERO. A node that kept no per-posting record for the window answers with an
-    /// empty vector and the read falls back to the previous release's flat derivation rather than
-    /// reporting the window as free: a silent zero on a money path is only ever correct when no
-    /// rate card is configured at all (#42), and this is not that.
-    fn postings(&self, from_secs: u64, to_secs: u64) -> Vec<UsagePosting>;
 }
 
 /// THE PROCESS-WIDE dated-history source, installed once by the composition root.
@@ -221,109 +177,75 @@ fn installed_usage_rate_history() -> Option<&'static dyn UsageRateHistory> {
     USAGE_RATE_HISTORY.get().copied()
 }
 
-/// The metering row a posting belongs to: `(key_id, model, provider)`, the store's own key minus
-/// the bucket the read already fixed.
-type UsageRowKey = (String, String, String);
-
-/// The four reserved tier quantities of one posting, as the usage lines the card prices.
+/// **THE INSTANT A METERING ROW RESOLVES AT**: its own FIRST instant — the later of the bucket's
+/// start and the price era the row was accrued in.
 ///
-/// The class spellings are the reserved ones a card entry is written against, unchanged, so no
-/// name is translated between a quantity and the entry that prices it. A zero quantity is left off
-/// rather than priced at zero: a line the posting did not carry is not a line.
-fn posting_usage_lines(p: &UsagePosting) -> Vec<busbar_contract::caps::UsageLine> {
-    [
-        (busbar_api::UNIT_INPUT, p.tokens_input),
-        (busbar_api::UNIT_OUTPUT, p.tokens_output),
-        (busbar_api::UNIT_CACHE_READ, p.tokens_cache_read),
-        (busbar_api::UNIT_CACHE_WRITE, p.tokens_cache_write),
+/// Both halves are load-bearing and each alone is wrong.
+///
+/// The ERA (`priced_from_ms`, the `effective_from` of the entry in force at accrual) is what picks
+/// the right CARD: it is why a card published at noon splits the day, and why the afternoon's
+/// counts do not price at the morning's rate.
+///
+/// The CLIP to the bucket is what keeps the instant INSIDE the row's own wall-clock span, and
+/// without it a back-dated correction cannot reach the row at all. An entry effective from instant
+/// zero dates every row it covers at zero, however many days later those rows were earned; a signed
+/// correction over `[effective_from, effective_until)` is a WINDOW IN WALL-CLOCK TIME, and zero
+/// falls outside every window an operator would ever name. Resolving at the era start alone
+/// therefore made the sanctioned repair path a no-op for exactly the rows it was meant to repair —
+/// which a red test caught, and which is the reason this function exists rather than a bare field
+/// read at the call site.
+///
+/// A row whose era is zero because the field predates it lands on its own bucket's start, which is
+/// the honest reading for a row nothing dated: the card in force at the beginning of the day it was
+/// earned in, never the newest card ever authored.
+fn row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
+    bucket_start_secs.saturating_mul(1_000).max(priced_from_ms)
+}
+
+/// **THE LOOKUP** — one metering row's tier split priced against ONE card, in micro-units.
+///
+/// The twin of [`derive_spend_micros_row`] with the card already chosen, and the arithmetic is not
+/// re-derived here: it is the cost unit's own
+/// [`busbar_kernel_ledger::cost::derive_spend_micros`], which sums the lines in nano-units, divides
+/// to micro-units ONCE, and adds the flat fee as a straight multiply after the divide because a fee
+/// is one pricing dimension and is never rounded (#44). A second copy of that order is how a
+/// request comes to be judged at one figure and billed at another.
+///
+/// The lane is the row's CONFIGURED model name through the same `upstream_model` alias resolution
+/// the flat derivation uses, so a card entry is found by the same name on both paths.
+fn derive_spend_micros_row_at_card(
+    card: &busbar_kernel_ledger::cost::RateCard,
+    cost: &busbar_kernel::cost::CostModel,
+    model: &str,
+    b: &UsageBreakdown,
+) -> i64 {
+    // The row's flat tier fields under the reserved class spellings a card entry is written
+    // against, so no name is translated between a quantity and the entry that prices it. A zero
+    // quantity is left off rather than priced at zero: a line the row does not carry is not a line.
+    let lines: Vec<busbar_contract::caps::UsageLine> = [
+        (busbar_api::UNIT_INPUT, b.tokens_input),
+        (busbar_api::UNIT_OUTPUT, b.tokens_output),
+        (busbar_api::UNIT_CACHE_READ, b.tokens_cache_read),
+        (busbar_api::UNIT_CACHE_WRITE, b.tokens_cache_creation),
     ]
     .into_iter()
     .filter(|(_, quantity)| *quantity != 0)
     .map(|(class, quantity)| busbar_contract::caps::UsageLine {
         class: busbar_contract::caps::MeterClassId::new(class),
         quantity,
-        // The metering row is a COUNT the node derived from what the destination reported; the
-        // source travels with the line because the card prices by class and the differ reads the
-        // mark, and neither is served by inventing a locator this read never saw.
+        // A metering row is a COUNT the node derived from what the destination reported; the mark
+        // travels with the line because the card prices by class and a reader reads the mark, and
+        // neither is served by inventing a locator this read never saw.
         source: busbar_contract::caps::QuantitySource::Count,
         estimated: false,
     })
-    .collect()
-}
-
-/// **THE RESOLUTION** — every posting of the window priced against the card in force AT ITS OWN
-/// ARRIVAL, summed per metering row.
-///
-/// `None` is "this read has nothing better to say than the flat derivation", and there are four
-/// ways to get one, each of which is a statement rather than a fallback of convenience:
-///
-/// - no source installed — a build with no root ledger in it;
-/// - a source holding no history — a node that has resolved no configuration yet;
-/// - no per-posting record for the window — a node that keeps day-aggregated metering rows and
-///   nothing finer, which is every node until the accrual carries an instant;
-/// - **a hole**: an instant no entry of the history covers. That is a refusal and never a zero,
-///   because pricing a gap in the record as a free request is exactly the silent zero #42 forbids,
-///   so the whole read falls back rather than one row quietly costing nothing.
-///
-/// THE PROJECTION HAPPENS ONCE PER ROW, over the summed nano-units, never per posting. Eight
-/// postings each half a micro-unit short of a boundary are eight floors of zero where the single
-/// divide over their sum is four, and that difference is money. The flat fee is accumulated in
-/// micro-units beside the nano sum and added AFTER the divide, because a flat fee is one pricing
-/// dimension and is NEVER rounded (#44) — it is a straight multiply on this path as it is on every
-/// other.
-///
-/// The currency is the one a 1.5.5 deployment's uncurrencied figures are read as, which is the
-/// currency this endpoint reports (`USAGE_CURRENCY`). Nothing here converts between currencies and
-/// there is no arm that could.
-fn resolve_row_spend_micros(
-    source: &dyn UsageRateHistory,
-    cost: &busbar_kernel::cost::CostModel,
-    from_secs: u64,
-    to_secs: u64,
-) -> Option<HashMap<UsageRowKey, i64>> {
-    use busbar_kernel_ledger::cost::CurrencyCode;
-
-    let history = source.history()?;
-    // The snapshot this read is answered at: the history as it stands when the read begins, held
-    // for every row of it.
-    let view = history.current();
-    if view.is_empty() {
-        return None;
-    }
-    let postings = source.postings(from_secs, to_secs);
-    if postings.is_empty() {
-        return None;
-    }
-    // Per row: the nano-units the token lines came to, and the micro-units the flat fees came to.
-    // Two accumulators because only one of them is ever divided.
-    let mut rows: HashMap<UsageRowKey, (u128, i64)> = HashMap::new();
-    for p in postings {
-        // THE RESOLUTION KEY, and the only one: the posting's own arrival instant. Not a stored
-        // version, not the head of the history, not the instant of the read.
-        let (_card_seq, card) = view.card_at(p.arrived_ms)?;
-        let lane = cost.resolve_model_alias(&p.model).to_string();
-        let lines = posting_usage_lines(&p);
-        let entry = rows
-            .entry((p.key_id, p.model, p.provider))
-            .or_insert((0u128, 0i64));
-        if let Some(rates) = card.lane_rates(&lane, CurrencyCode::USD) {
-            entry.0 = entry.0.saturating_add(rates.nanos(&lines));
-        }
-        entry.1 = entry.1.saturating_add(
-            card.per_request_fee(CurrencyCode::USD)
-                .saturating_mul(busbar_kernel_ledger::cost::MICROS_PER_CENT)
-                .saturating_mul(i64::try_from(p.billable_requests).unwrap_or(i64::MAX)),
-        );
-    }
-    Some(
-        rows.into_iter()
-            .map(|(key, (nanos, fee_micros))| {
-                (
-                    key,
-                    busbar_kernel_ledger::cost::micros_of(nanos).saturating_add(fee_micros),
-                )
-            })
-            .collect(),
+    .collect();
+    let lane = cost.resolve_model_alias(model);
+    busbar_kernel_ledger::cost::derive_spend_micros(
+        card,
+        [(lane, &lines[..])].into_iter(),
+        b.requests,
+        true,
     )
 }
 
@@ -2408,13 +2330,13 @@ impl AdminService {
                 return Err(AdminError::Internal);
             }
         };
-        // DECISION #79 — the dated rate-card history, resolved at each posting's OWN arrival
-        // instant. Taken ONCE for the whole read, so every row of one response is answered at one
-        // snapshot; `None` leaves each row on the flat derivation it has always used, which is
-        // what a build with no root ledger in it answers.
-        let by_row = self
-            .rate_history
-            .and_then(|source| resolve_row_spend_micros(source, &cost, window.start, window.end));
+        // DECISION #79 — THE DATED RATE-CARD HISTORY, taken ONCE for the whole read so every row
+        // of one response is answered at one snapshot. A card appended while this read is in flight
+        // must not price half its rows against one history and half against another.
+        let history = self.rate_history.and_then(UsageRateHistory::history);
+        let view = history
+            .as_deref()
+            .map(busbar_kernel_ledger::cost::History::current);
         // Aggregate in memory — a bucket is bounded by (keys × models) accumulation rows.
         let mut total = UsageBreakdown::default();
         let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =
@@ -2435,14 +2357,24 @@ impl AdminService {
                 requests: r.requests,
                 spend_micros: 0,
             };
-            // The dated history's answer for this row when it has one — every posting of the row
-            // priced at the card in force when IT arrived — and the flat derivation otherwise.
-            let row_spend = by_row
+            // **THE RESOLUTION**, and the key is the ROW'S OWN FIRST INSTANT (see
+            // `row_priced_at_ms`): the row prices against the card it was earned under rather than
+            // the newest card ever authored, and a card edit inside the day opened a second row at
+            // the edit so the two halves resolve to the two cards. Never
+            // `PostingStamp::rate_card_version` — that is reporting provenance (#44), and a
+            // version resolves only forward, which is what would put a back-dated correction out
+            // of reach.
+            //
+            // TWO WAYS TO FALL BACK, and each is a statement rather than a convenience: no source
+            // installed or no history resolved (a build with no root ledger in it), and a HOLE —
+            // an instant no entry of the snapshot covers. A hole falls back to the derivation this
+            // read has always used rather than costing the row nothing, because a silent zero on a
+            // money path is only ever right when no rate card is configured at all (#42).
+            let row_spend = view
                 .as_ref()
-                .and_then(|resolved| {
-                    resolved
-                        .get(&(r.key_id.clone(), r.model.clone(), r.provider.clone()))
-                        .copied()
+                .and_then(|v| v.card_at(row_priced_at_ms(window.start, r.priced_from_ms)))
+                .map(|(_card_seq, card)| {
+                    derive_spend_micros_row_at_card(card, &cost, &r.model, &row_view)
                 })
                 .unwrap_or_else(|| derive_spend_micros_row(&cost, &r.model, &row_view));
             for b in [

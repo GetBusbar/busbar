@@ -298,6 +298,7 @@ fn metering_accumulates_per_bucket() {
         billable_requests: 1,
         key_group_at_use: String::new(),
         pricing_version: String::new(),
+        priced_from_ms: 0,
     };
     s.add_metering(&d).unwrap();
     s.add_metering(&d).unwrap();
@@ -422,6 +423,7 @@ fn add_metering_sweeps_stale_buckets() {
         billable_requests: 1,
         key_group_at_use: String::new(),
         pricing_version: String::new(),
+        priced_from_ms: 0,
     };
     for _ in 0..SWEEP_INTERVAL {
         s.add_metering(&d).unwrap();
@@ -456,6 +458,7 @@ fn add_metering_sweep_preserves_fresh_buckets() {
         billable_requests: 1,
         key_group_at_use: String::new(),
         pricing_version: String::new(),
+        priced_from_ms: 0,
     };
     let old = MeteringDelta {
         bucket: old_bucket,
@@ -494,6 +497,7 @@ fn add_metering_sweep_boundary_is_exact() {
         billable_requests: 1,
         key_group_at_use: String::new(),
         pricing_version: String::new(),
+        priced_from_ms: 0,
     };
     let inside = MeteringDelta {
         bucket: one_inside,

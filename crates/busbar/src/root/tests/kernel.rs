@@ -531,20 +531,17 @@ fn the_usage_seam_answers_with_the_process_history() {
         ROOT_CARD.history().and_then(|h| h.head()),
         "the seam and the holder disagree about which entry is the head"
     );
-    assert!(
-        RootUsageHistory.postings(0, u64::MAX).is_empty(),
-        "the root keeps no posting index; a non-empty answer here is a second ledger"
-    );
 }
 
 /// **THE WIRING WITNESS.** The boot install raises BOTH halves of the rate seam, and the binary
 /// calls it.
 ///
 /// The apply half without the read half is precisely the defect #79 names: a node that dates its
-/// prices and then reports them off the newest card anyway. The read half without a caller is
-/// dead code that looks live. So the body of `install_card_repricer` is read for both names, and
-/// `main.rs` is read for the call — three facts that have to hold together for the seam to be
-/// reachable in the shipped binary, and no one of which implies the other two.
+/// prices and then reports them off the newest card anyway. The date half without the other two
+/// stamps an instant nothing reads. And any of them without a caller is dead code that looks live.
+/// So the body of `install_card_repricer` is read for all three names, and `main.rs` is read for
+/// the call — four facts that have to hold together for the seam to be reachable in the shipped
+/// binary, and no one of which implies the others.
 #[test]
 fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
     let kernel = include_str!("../kernel.rs");
@@ -558,6 +555,11 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
     assert!(
         body.contains("install_rate_apply"),
         "the boot install stopped raising the APPLY half: {body}"
+    );
+    assert!(
+        body.contains("install_rate_epoch"),
+        "the boot install stopped raising the DATE half — a metering cell would carry no instant \
+         finer than its UTC day and a mid-day card edit would reprice the whole day (#79): {body}"
     );
     assert!(
         body.contains("install_usage_rate_history"),

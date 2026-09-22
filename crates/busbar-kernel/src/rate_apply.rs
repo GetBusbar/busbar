@@ -63,6 +63,47 @@ pub fn install_rate_apply(holder: &'static dyn RateApply) {
     let _ = APPLY.set(holder);
 }
 
+/// **THE READ-SIDE TWIN**: a holder that can DATE a price — for an instant, the `effective_from`
+/// of the dated rate-card entry in force at it.
+///
+/// [`RateApply`] carries figures TO the holder; this asks the holder WHEN the figures it is
+/// currently serving started. It is the same holder, the same composition root and the same one
+/// line between the engine and the card, read in the other direction.
+///
+/// It carries a DATE and never a price, which is why it may be called from the metering accrual at
+/// all. A metering cell is an aggregate over a UTC DAY, so without an instant of its own the read
+/// had nothing between midnight and midnight to resolve at and a card published at noon repriced
+/// the whole day (DECISION #79). Stamping the entry's `effective_from` onto the cell — a timestamp,
+/// never a version, so a back-dated correction can still reach it — is what splits the day at the
+/// edit. The accrual learns no rate and no fee: it learns when the current one began.
+pub trait RateEpoch: Send + Sync {
+    /// The `effective_from` of the entry in force at `at_ms`, in wall-clock milliseconds.
+    ///
+    /// `0` when no entry covers the instant, which is the OPENING entry's own `effective_from` and
+    /// therefore the reading that covers everything — never a refusal, because an accrual that
+    /// could not be dated must still be recorded.
+    fn effective_from_at(&self, at_ms: u64) -> u64;
+}
+
+/// THE PROCESS-WIDE rate DATER, installed once by the composition root ([`install_rate_epoch`]).
+static EPOCH: std::sync::OnceLock<&'static dyn RateEpoch> = std::sync::OnceLock::new();
+
+/// Install the process rate dater — the composition root's one write, at boot, beside
+/// [`install_rate_apply`]. Idempotent by `OnceLock`: a second install is a no-op.
+pub fn install_rate_epoch(holder: &'static dyn RateEpoch) {
+    let _ = EPOCH.set(holder);
+}
+
+/// The `effective_from` of the entry in force at `at_ms`.
+///
+/// `0` in a build that installed no holder — the honest answer for a binary with no root ledger in
+/// it, and the same value the opening entry carries, so a cell dated by it resolves to the card the
+/// deployment opened with rather than to whatever is newest.
+#[must_use]
+pub fn effective_from_at(at_ms: u64) -> u64 {
+    EPOCH.get().map_or(0, |holder| holder.effective_from_at(at_ms))
+}
+
 /// Raise the seam: the configured rates are now `rates`.
 ///
 /// A no-op in a build that installed no holder, which is the honest answer for a binary with no root

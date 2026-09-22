@@ -323,6 +323,7 @@ fn metering_row(key_id: &str, model: &str, provider: &str) -> MeteringRow {
         billable_requests: 290,
         key_group_at_use: String::new(),
         pricing_version: "v1".to_string(),
+        priced_from_ms: 0,
     }
 }
 
@@ -836,6 +837,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
             billable_requests: 20,
             key_group_at_use: String::new(),
             pricing_version: "v1".to_string(),
+            priced_from_ms: 0,
         })
         .expect("the published wire takes a metering delta");
 

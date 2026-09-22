@@ -55,13 +55,13 @@ fn now() -> u64 {
 /// the per-key listing/cascade are SCANS over that one map, not secondary indexes — the RAM backend
 /// holds a fixture-sized table and a second map to keep in step with every sweep, tombstone cascade
 /// and rotation is more failure surface than the scan costs), token ledgers keyed by (bucket_id,
-/// window_start), metering rows keyed by (key_id, bucket, model, provider).
+/// window_start), metering rows keyed by (key_id, bucket, model, provider, priced_from_ms).
 #[derive(Default)]
 pub struct MemoryStore {
     keys: RwLock<HashMap<String, VirtualKey>>,
     creds: RwLock<HashMap<String, CredentialSecret>>,
     usage: RwLock<HashMap<(String, u64), UsageLedger>>,
-    metering: RwLock<HashMap<(String, u64, String, String), MeteringRow>>,
+    metering: RwLock<HashMap<(String, u64, String, String, u64), MeteringRow>>,
     /// The revocation DENYLIST: denied subject ids (1.5.0 signed-token keys). A set (the reason is
     /// audit-only and not needed for the enforcement read).
     denylist: RwLock<std::collections::HashSet<String>>,
@@ -241,7 +241,8 @@ impl MemoryStore {
     }
     fn metering(
         &self,
-    ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, u64, String, String), MeteringRow>> {
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, u64, String, String, u64), MeteringRow>>
+    {
         self.metering.write().unwrap_or_else(|e| e.into_inner())
     }
     // The SHARED (read) side of the same four locks, for the methods that only ever read. A pure
@@ -261,7 +262,7 @@ impl MemoryStore {
     }
     fn metering_read(
         &self,
-    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, u64, String, String), MeteringRow>> {
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, u64, String, String, u64), MeteringRow>> {
         self.metering.read().unwrap_or_else(|e| e.into_inner())
     }
     fn next_revision(&self) -> u64 {
@@ -501,11 +502,17 @@ impl Store for MemoryStore {
     fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
         let mut m = self.metering();
         let e = m
+            // `priced_from_ms` is part of the key, not just the row: it is the `effective_from`
+            // of the rate-card entry in force when these counts were accrued, so a card edit inside
+            // a UTC day opens a SECOND row for that day and each half keeps the card it was earned
+            // under (DECISION #79). Folding it into one row would leave a sum earned under two
+            // cards with only one card to be read against.
             .entry((
                 d.key_id.clone(),
                 d.bucket,
                 d.model.clone(),
                 d.provider.clone(),
+                d.priced_from_ms,
             ))
             .or_insert_with(|| MeteringRow {
                 key_id: d.key_id.clone(),
@@ -519,6 +526,7 @@ impl Store for MemoryStore {
                 billable_requests: 0,
                 key_group_at_use: d.key_group_at_use.clone(),
                 pricing_version: d.pricing_version.clone(),
+                priced_from_ms: d.priced_from_ms,
             });
         e.tokens_input = e.tokens_input.saturating_add(d.tokens_input);
         e.tokens_output = e.tokens_output.saturating_add(d.tokens_output);
@@ -535,7 +543,7 @@ impl Store for MemoryStore {
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
             let n = self.now();
-            m.retain(|(_, bucket, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
+            m.retain(|(_, bucket, _, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
         }
         Ok(())
     }
@@ -544,7 +552,7 @@ impl Store for MemoryStore {
         Ok(self
             .metering_read()
             .iter()
-            .filter(|((_, b, _, _), _)| *b == bucket)
+            .filter(|((_, b, _, _, _), _)| *b == bucket)
             .map(|(_, row)| row.clone())
             .collect())
     }

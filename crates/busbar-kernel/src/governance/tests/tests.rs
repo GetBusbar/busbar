@@ -437,6 +437,7 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
         billable_requests: 1,
         key_group_at_use: String::new(),
         pricing_version: String::new(),
+        priced_from_ms: 0,
     };
     // Two responses on the same (key, model) accumulate; a different model is its own row.
     s.add_metering(&d("gpt-x", 100, 20)).unwrap();
@@ -3631,6 +3632,7 @@ mod metering_fanout {
             metering_bucket(now),
             "m".to_string(),
             "p".to_string(),
+            0u64,
         );
         // `accrue` with an all-zero delta inserts a genuinely all-zero cell (key absent, under cap).
         gov.pending_metering.accrue(key, MeterCounts::default());

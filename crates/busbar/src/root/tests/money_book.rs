@@ -245,6 +245,9 @@ fn metering_row_from_facts_matches_the_plane_row_shape() {
         billable_requests: 1,
         key_group_at_use: String::new(),
         pricing_version: String::new(),
+        // The neutral facts carry no instant yet, so the builder leaves it at its default; the
+        // durable row the governance accrual writes carries the real one (DECISION #79).
+        priced_from_ms: 0,
     };
     assert_eq!(row, expected);
     // And byte-identical on the wire the store persists it over.

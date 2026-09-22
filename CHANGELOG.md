@@ -410,9 +410,15 @@ identically, and every 1.5.5 key and minted secret carries over.
   booked row. 1.5.5 derived every row's spend at read time from the current cost model, so a `PUT
   /config/settings` rate-card edit re-priced every past row with no restart and no boundary; that
   blanket repricing is now available only as an explicit, signed correction naming its own window,
-  never as a side effect of publishing a new card. **Migration:** `GET /admin/usage` itself still
-  derives spend from the current card at read time and does not yet resolve through the dated
-  history; to correct what a past window was charged, post a signed correction through the new
+  never as a side effect of publishing a new card. `GET /admin/usage` resolves each metering row
+  through that history at the row's own instant, so publishing a card no longer moves what an
+  earlier window reports, and a card edit inside a UTC day splits that day's row at the edit with
+  each half keeping the card it was earned under. **Migration:** two figures you may have compared
+  can now differ. The key and group budget reads (`GET /admin/keys/{id}/usage`,
+  `GET /admin/groups/{group}/usage`) still derive spend from the CURRENT card, because the
+  enforcement ledger they read carries no price instant yet — so after a rate-card edit they and
+  `/admin/usage` can report different money for the same consumption until that lands. To correct
+  what a past window was charged, post a signed correction through the new
   `POST /api/v1/admin/ledger/amend-rate-history` verb rather than editing the live card. See [the
   1.6.0 migration guide](docs/migration-1.6.md).
 

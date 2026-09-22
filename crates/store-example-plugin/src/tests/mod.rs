@@ -725,6 +725,7 @@ fn ram_add_metering_accumulates_into_one_row_per_bucket() {
         billable_requests: requests,
         key_group_at_use: String::new(),
         pricing_version: String::new(),
+        priced_from_ms: 0,
     };
     s.add_metering(&delta(1, 10)).expect("first charge");
     s.add_metering(&delta(2, 5)).expect("second charge");

@@ -2366,16 +2366,16 @@ plugins:
         "the caller's plugins.dir (holding a garbage tarball) must NOT be scanned — the scan is \
          pinned to the running install dir; got errors: {:?}",
         view.errors
-    );
-}
+    );}
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // DECISION #79 — RATE CARDS ARE A DATED HISTORY
 //
-// A posting prices against the card in force AT ITS OWN ARRIVAL INSTANT, never the newest card
-// ever authored. The owner's worked example is the shape of the first proof below: a customer
-// signs PAYG at 10, later month-to-month at 5, later a yearly prepaid at 1, and the early windows
-// keep pricing at 10 forever.
+// A metering row prices against the card in force AT THE ROW'S OWN INSTANT, never the newest card
+// ever authored. The owner's worked example is the shape of the first proof: a customer signs PAYG
+// at 10, later month-to-month at 5, later a yearly prepaid at 1, and the early windows keep pricing
+// at 10 forever. The instant is `MeteringRow::priced_from_ms` — the `effective_from` of the entry
+// in force when the counts were accrued — which is also what splits a UTC day at a mid-day edit.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2388,8 +2388,8 @@ mod dated_rate_card_history {
     const LANE: &str = "m-openai-chat";
     const PROVIDER: &str = "openai-chat";
     const KEY: &str = "vk_payg";
-    /// One thousand input tokens per window, so a rate of N micro-units per token reads back as
-    /// exactly `N * 1_000` micro-units and the three cards separate arithmetically.
+    /// One thousand input tokens per row, so a rate of N micro-units per token reads back as
+    /// exactly `N * 1_000` micro-units and the cards separate arithmetically.
     const TOKENS: u64 = 1_000;
     const DAY: u64 = busbar_kernel::governance::METERING_BUCKET_SECS;
 
@@ -2408,8 +2408,8 @@ mod dated_rate_card_history {
     }
 
     /// The CURRENT cost model — deliberately the NEWEST, cheapest card in every test below, so a
-    /// read that fell back to it would answer `1 * 1_000` for every window and the assertions
-    /// separate the lookup from the reprice arithmetically rather than by inspection.
+    /// read that fell back to it would answer `1 * 1_000` for every row and the assertions separate
+    /// the lookup from the reprice arithmetically rather than by inspection.
     fn newest_cost() -> busbar_kernel::cost::CostModel {
         let rates = std::collections::BTreeMap::from([(
             LANE.to_string(),
@@ -2427,62 +2427,32 @@ mod dated_rate_card_history {
         )
     }
 
-    /// The test's dated-history source: one history and the postings the node recorded.
+    /// The test's dated-history source: one history, handed back whole.
     struct Recorded {
         history: Arc<History>,
-        postings: Vec<UsagePosting>,
     }
 
     impl UsageRateHistory for Recorded {
         fn history(&self) -> Option<Arc<History>> {
             Some(Arc::clone(&self.history))
         }
-
-        /// The asked-for window is HONOURED. A source that handed back every posting it holds
-        /// whatever was asked would let these tests pass on a resolution the read never performed.
-        fn postings(&self, from_secs: u64, to_secs: u64) -> Vec<UsagePosting> {
-            let (from_ms, to_ms) = (
-                from_secs.saturating_mul(1_000),
-                to_secs.saturating_mul(1_000),
-            );
-            self.postings
-                .iter()
-                .filter(|p| p.arrived_ms >= from_ms && p.arrived_ms < to_ms)
-                .cloned()
-                .collect()
-        }
     }
 
     /// A source the service can hold for `'static`. Leaked on purpose: the production holder is a
     /// process-wide `OnceLock` and a test that raced it could only ever run once.
-    fn source(history: History, postings: Vec<UsagePosting>) -> &'static dyn UsageRateHistory {
+    fn source(history: History) -> &'static dyn UsageRateHistory {
         Box::leak(Box::new(Recorded {
             history: Arc::new(history),
-            postings,
         }))
     }
 
-    /// One posting of [`TOKENS`] input tokens, arriving at `arrived_ms`.
-    fn posting(arrived_ms: u64) -> UsagePosting {
-        UsagePosting {
-            key_id: KEY.to_string(),
-            model: LANE.to_string(),
-            provider: PROVIDER.to_string(),
-            tokens_input: TOKENS,
-            tokens_output: 0,
-            tokens_cache_read: 0,
-            tokens_cache_write: 0,
-            billable_requests: 1,
-            arrived_ms,
-        }
-    }
-
-    /// Governance holding ONE metering row — the quantities, which are the stored truth — in each
-    /// named bucket. Written through the store seam because `record_metering` can only ever bucket
-    /// at the wall clock, and these windows are in the past.
-    fn gov_with_rows(buckets: &[u64]) -> Arc<GovState> {
+    /// Governance holding one metering row per `(bucket, priced_from_ms)` — the store's own key,
+    /// which is why a card edit inside a day is TWO rows rather than one. Written through the store
+    /// seam because `record_metering` can only ever bucket at the wall clock, and these windows are
+    /// in the past.
+    fn gov_with_rows(rows: &[(u64, u64)]) -> Arc<GovState> {
         let store = Arc::new(MemoryStore::new());
-        for bucket in buckets {
+        for (bucket, priced_from_ms) in rows {
             busbar_api::Store::add_metering(
                 store.as_ref(),
                 &busbar_api::MeteringDelta {
@@ -2498,6 +2468,7 @@ mod dated_rate_card_history {
                     billable_requests: 1,
                     key_group_at_use: String::new(),
                     pricing_version: String::new(),
+                    priced_from_ms: *priced_from_ms,
                 },
             )
             .expect("the memory store accepts a metering delta");
@@ -2506,7 +2477,11 @@ mod dated_rate_card_history {
     }
 
     /// Read one bucket through the endpoint's own service method, resolving against `src`.
-    async fn read(gov: Arc<GovState>, src: &'static dyn UsageRateHistory, bucket: u64) -> UsageView {
+    async fn read(
+        gov: Arc<GovState>,
+        src: &'static dyn UsageRateHistory,
+        bucket: u64,
+    ) -> UsageView {
         let app = crate::new_test_app()
             .governance(gov)
             .cost(newest_cost())
@@ -2526,14 +2501,9 @@ mod dated_rate_card_history {
         (today - 3 * DAY, today - 2 * DAY, today - DAY)
     }
 
-    // ── PROOF 1: a posting in each window prices at THAT window's rate ───────────────────────
-
-    /// PAYG at 10, then month-to-month at 5, then a yearly prepaid at 1 — the owner's worked
-    /// example, end to end through `GET /api/v1/admin/usage`. The first window keeps pricing at 10
-    /// forever, and it does so while the CURRENT card is 1.
-    #[tokio::test]
-    async fn each_window_prices_at_the_card_in_force_when_it_arrived() {
-        let (payg, monthly, prepaid) = windows();
+    /// The 10 / 5 / 1 history: PAYG from instant zero, month-to-month from `monthly`, prepaid from
+    /// `prepaid`.
+    fn payg_then_monthly_then_prepaid(monthly: u64, prepaid: u64) -> History {
         let mut history = History::opening(card(10.0), 0);
         history.append(CardEntryDraft {
             effective_from: monthly * 1_000,
@@ -2549,15 +2519,24 @@ mod dated_rate_card_history {
             appended_at: prepaid * 1_000,
             author: Author::Config { policy_epoch: 2 },
         });
-        let src = source(
-            history,
-            vec![
-                posting(payg * 1_000 + 1),
-                posting(monthly * 1_000 + 1),
-                posting(prepaid * 1_000 + 1),
-            ],
-        );
-        let gov = gov_with_rows(&[payg, monthly, prepaid]);
+        history
+    }
+
+    // ── PROOF 1: a row in each window prices at THAT window's rate ───────────────────────────
+
+    /// PAYG at 10, then month-to-month at 5, then a yearly prepaid at 1 — the owner's worked
+    /// example, end to end through `GET /api/v1/admin/usage`. The first window keeps pricing at 10
+    /// forever, and it does so while the CURRENT card is 1.
+    #[tokio::test]
+    async fn each_window_prices_at_the_card_in_force_when_it_was_earned() {
+        let (payg, monthly, prepaid) = windows();
+        let src = source(payg_then_monthly_then_prepaid(monthly, prepaid));
+        // Each day's row carries the instant its own era started — 0 for the opening entry.
+        let gov = gov_with_rows(&[
+            (payg, 0),
+            (monthly, monthly * 1_000),
+            (prepaid, prepaid * 1_000),
+        ]);
 
         assert_eq!(
             read(gov.clone(), src, payg).await.total.spend_micros,
@@ -2587,12 +2566,11 @@ mod dated_rate_card_history {
     #[tokio::test]
     async fn publishing_a_card_leaves_the_window_before_it_byte_identical() {
         let (payg, _, _) = windows();
-        let gov = gov_with_rows(&[payg]);
-        let postings = vec![posting(payg * 1_000 + 1)];
+        let gov = gov_with_rows(&[(payg, 0)]);
 
-        let before = source(History::opening(card(10.0), 0), postings.clone());
+        let before = source(History::opening(card(10.0), 0));
 
-        // The publish: a card effective from NOW, long after the window that is being read.
+        // The publish: a card effective from NOW, long after the window being read.
         let mut published = History::opening(card(10.0), 0);
         let now_ms = busbar_kernel::store::now().saturating_mul(1_000);
         published.append(CardEntryDraft {
@@ -2602,17 +2580,15 @@ mod dated_rate_card_history {
             appended_at: now_ms,
             author: Author::Config { policy_epoch: 1 },
         });
-        let after = source(published, postings);
+        let after = source(published);
 
         let bytes = |mut v: serde_json::Value| {
             v["as_of"] = serde_json::json!(0);
             serde_json::to_string(&v).expect("a usage view serializes")
         };
-        let a = bytes(
-            serde_json::to_value(read(gov.clone(), before, payg).await).expect("serializes"),
-        );
-        let b =
-            bytes(serde_json::to_value(read(gov, after, payg).await).expect("serializes"));
+        let a =
+            bytes(serde_json::to_value(read(gov.clone(), before, payg).await).expect("serializes"));
+        let b = bytes(serde_json::to_value(read(gov, after, payg).await).expect("serializes"));
         assert_eq!(
             a, b,
             "a forward-dated publish must not touch the window before its effective_from"
@@ -2631,15 +2607,12 @@ mod dated_rate_card_history {
     #[tokio::test]
     async fn a_back_dated_correction_reprices_its_window_and_nothing_outside_it() {
         let (payg, monthly, prepaid) = windows();
-        let postings = vec![
-            posting(payg * 1_000 + 1),
-            posting(monthly * 1_000 + 1),
-            posting(prepaid * 1_000 + 1),
-        ];
-        let gov = gov_with_rows(&[payg, monthly, prepaid]);
+        // One opening entry, so every row is accrued under it and carries instant zero. The
+        // correction lands LATER and still reaches them, which is the whole point of resolving by
+        // instant rather than by a stamped version.
+        let gov = gov_with_rows(&[(payg, 0), (monthly, 0), (prepaid, 0)]);
 
-        // Before: one opening entry, so every window prices at 10.
-        let before = source(History::opening(card(10.0), 0), postings.clone());
+        let before = source(History::opening(card(10.0), 0));
         for w in [payg, monthly, prepaid] {
             assert_eq!(
                 read(gov.clone(), before, w).await.total.spend_micros,
@@ -2660,7 +2633,7 @@ mod dated_rate_card_history {
                 reason_hash: [7u8; 32],
             },
         });
-        let after = source(corrected, postings);
+        let after = source(corrected);
 
         assert_eq!(
             read(gov.clone(), after, payg).await.total.spend_micros,
@@ -2679,13 +2652,57 @@ mod dated_rate_card_history {
         );
     }
 
-    // ── PROOF 4: no pricing path reads `PostingStamp.rate_card_version` ──────────────────────
+    // ── PROOF 4: a card edit INSIDE one UTC day splits that day ──────────────────────────────
 
-    /// The resolution key is the arrival instant, and the version field is reporting provenance
-    /// (#44) that must never become a pricing input. [`UsagePosting`] carries no such field, so the
-    /// service could not read one; this scans the service's own CODE — comments excluded, since
-    /// the rule is what the file *does*, not what it says about the rule — so that adding a read
-    /// back is a red test and not a review note.
+    /// **THE DEFECT `priced_from_ms` CLOSES.** One bucket, one key, one model — and a card edit at
+    /// noon. Before the row carried an instant, the read had nothing between midnight and midnight
+    /// to resolve at, so the whole day priced at one card whichever card that was. Now the accrual
+    /// key carries the era, the day is TWO rows, and the bucket's total is the sum of two cards.
+    ///
+    /// The arithmetic separates all three hypotheses: 20,000 would be the whole day at the morning
+    /// card, 2,000 the whole day at the afternoon card, and 11,000 — asserted — each half at the
+    /// card it was actually earned under.
+    #[tokio::test]
+    async fn a_card_edit_inside_a_day_splits_the_day_and_each_half_keeps_its_own_card() {
+        let (_, _, today) = windows();
+        let noon = (today + DAY / 2) * 1_000;
+        let mut history = History::opening(card(10.0), 0);
+        history.append(CardEntryDraft {
+            effective_from: noon,
+            effective_until: None,
+            card: card(1.0),
+            appended_at: noon,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        let src = source(history);
+        // Two rows in ONE bucket: the morning's counts under the opening entry, the afternoon's
+        // under the noon entry.
+        let gov = gov_with_rows(&[(today, 0), (today, noon)]);
+
+        let view = read(gov, src, today).await;
+        assert_eq!(
+            view.total.spend_micros, 11_000,
+            "the day is 10 x 1_000 earned before noon plus 1 x 1_000 earned after it — not \
+             20_000 (all morning) and not 2_000 (all afternoon)"
+        );
+        assert_eq!(
+            view.total.tokens_input, 2_000,
+            "and the quantities still roll up whole: splitting the price never splits the counts"
+        );
+        assert_eq!(
+            view.by_model.len(),
+            1,
+            "the split is a PRICING fact, not an attribution one: one model, one provider, one row \
+             in the report"
+        );
+    }
+
+    // ── PROOF 5: no pricing path reads `PostingStamp.rate_card_version` ──────────────────────
+
+    /// The resolution key is an instant, and the version field is reporting provenance (#44) that
+    /// must never become a pricing input. This scans the service's own CODE — comments excluded,
+    /// since the rule is what the file *does*, not what it says about the rule — so that reading
+    /// one back is a red test and not a review note.
     #[test]
     fn the_usage_service_names_no_rate_card_version_in_code() {
         let src = include_str!("../service.rs");
@@ -2708,14 +2725,12 @@ mod dated_rate_card_history {
     // ── THE BYTE-SAFETY PIN: no source installed ⇒ the previous release's arithmetic ─────────
 
     /// The oracle cell `billing|rate-card|history-mid-window`'s exact shape (three responses of
-    /// 11 in / 7 out, the card swapped twice inside ONE bucket), read by a service with NO dated
-    /// history source — a build whose composition root installed none.
+    /// 11 in / 7 out inside ONE bucket) read by a service with NO dated history source — a build
+    /// whose composition root installed none.
     ///
-    /// It reads back 750,090,000: every posting at the newest card. That is the published 1.5.5
-    /// figure to the byte, which is the point of pinning it — the resolution above is ADDITIVE and
-    /// a build that has not wired a history answers exactly what it always did. The figure #79
-    /// names for this sequence is 277,530,000, and reaching it needs the accrual to carry an
-    /// instant, which a UTC-day metering row does not.
+    /// It reads back 750,090,000: every row at the newest card. That is the published 1.5.5 figure
+    /// to the byte, which is the point of pinning it — the resolution is ADDITIVE and a build that
+    /// has wired no history answers exactly what it always did.
     #[tokio::test]
     async fn with_no_history_source_the_read_is_the_previous_release_to_the_byte() {
         let gov = Arc::new(
@@ -2758,4 +2773,123 @@ mod dated_rate_card_history {
             "with no history installed the read is the published 1.5.5 figure"
         );
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE MONEY-READ REGISTER
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// **EVERY PRODUCTION SITE IN THIS CRATE THAT TURNS A LEDGER FIGURE INTO MONEY**, named, with the
+/// book it reads and whether it resolves through the dated rate-card history (#79).
+///
+/// One endpoint wired and the rest left flat is how two admin reads come to answer different money
+/// for the same consumption, and a reviewer cannot see that by reading one file. So the set is
+/// asserted instead: a conversion this crate performs anywhere outside this list is a RED test,
+/// which is what makes "every money read follows one rule" a property of the crate rather than of
+/// whoever reviewed the last diff.
+///
+/// `resolves` records the state of the world, not an aspiration. The two `false` rows read the
+/// ENFORCEMENT ledger (`UsageLedger`/`ModelTokens`), whose rows carry no price instant at all, so
+/// under the one rule they take the documented fallback and still derive from the current card.
+/// That residual is a real, parked divergence from the metering read beside them — it is not this
+/// test's job to hide it, it is this test's job to make it impossible to forget.
+const MONEY_READS: &[(&str, &str, &str, bool)] = &[
+    (
+        "v1/service.rs",
+        "get_usage",
+        "metering rows (MeteringRow, one UTC-day bucket)",
+        true,
+    ),
+    (
+        "v1/service.rs",
+        "get_group_usage",
+        "enforcement ledger (UsageLedger, per limit window)",
+        false,
+    ),
+    (
+        "keys.rs",
+        "GET /keys/{id}/usage",
+        "enforcement ledger (UsageLedger, WINDOW_TOTAL)",
+        false,
+    ),
+];
+
+/// The call shapes that CONVERT a ledger figure into money. `derived_bucket_usage` is on the list
+/// because it is a conversion by delegation: it takes the `CostModel` and answers `spend_cents`, so
+/// a caller of it is a money read whether or not the multiply is written at the call site.
+const MONEY_CONVERSIONS: &[&str] = &[
+    "derive_spend_cents",
+    "derive_spend_micros",
+    "derived_bucket_usage",
+];
+
+#[test]
+fn every_money_read_in_this_crate_is_registered() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found: Vec<String> = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the crate's src tree is readable") {
+            let path = entry.expect("a readable dir entry").path();
+            if path.is_dir() {
+                // Test trees are excluded: a fixture may price anything it likes, and this register
+                // is about what the SHIPPED read paths do.
+                if path.file_name().is_some_and(|n| n == "tests") {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(&root)
+                .expect("every walked path is under src")
+                .to_string_lossy()
+                .to_string();
+            let text = std::fs::read_to_string(&path).expect("a readable source file");
+            for (n, line) in text.lines().enumerate() {
+                let t = line.trim_start();
+                // Prose is not a call. A doc comment naming a conversion is documentation of the
+                // rule, which is the opposite of a violation of it.
+                if t.starts_with("//") || t.starts_with('*') {
+                    continue;
+                }
+                if MONEY_CONVERSIONS.iter().any(|c| line.contains(c)) {
+                    found.push(format!("{rel}:{}", n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        !found.is_empty(),
+        "the walk found no money conversion at all — the scan is broken, not the crate"
+    );
+
+    // The registered files, and the count of conversion sites each is allowed to carry. A read that
+    // grew a second conversion, or a new file that converts at all, lands here as a diff.
+    let registered: std::collections::BTreeSet<&str> =
+        MONEY_READS.iter().map(|(file, ..)| *file).collect();
+    // `v1/service.rs` carries the definition of its two row pricers as well as the call sites, so
+    // it is matched by file rather than by an exact count; an unregistered FILE is the signal.
+    let strays: Vec<&String> = found
+        .iter()
+        .filter(|site| {
+            let file = site.split(':').next().unwrap_or_default();
+            !registered.contains(file)
+        })
+        .collect();
+    assert!(
+        strays.is_empty(),
+        "an unregistered site in this crate turns a ledger figure into money. Either route it \
+         through the dated rate-card history like `get_usage`, or add it to MONEY_READS with the \
+         book it reads and whether it resolves. Strays: {strays:?}"
+    );
+
+    // And the register itself must stay honest about which of them resolve.
+    assert!(
+        MONEY_READS.iter().any(|(.., resolves)| *resolves),
+        "no registered money read resolves through the dated history — #79 is unwired"
+    );
 }

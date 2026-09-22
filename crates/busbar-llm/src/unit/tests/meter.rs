@@ -205,6 +205,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
                 billable_requests: 1,
                 key_group_at_use: String::new(),
                 pricing_version: String::new(),
+                priced_from_ms: 0,
             },
             ledger_tokens: INPUT + OUTPUT,
             ledger_spend_cents: 0,
@@ -251,6 +252,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
             billable_requests: 1,
             key_group_at_use: String::new(),
             pricing_version: String::new(),
+            priced_from_ms: 0,
         },
         "the step reports the row it accrued"
     );

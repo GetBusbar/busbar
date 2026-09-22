@@ -854,6 +854,29 @@ pub struct MeteringDelta {
     /// tracked (a pre-field persisted delta, or an operator not using versioned pricing).
     #[serde(default)]
     pub pricing_version: String,
+    /// **WHEN THIS CELL'S PRICE STARTED**, in wall-clock milliseconds: the `effective_from` of the
+    /// dated rate-card entry in force when these counts were accrued (DECISION #79).
+    ///
+    /// A TIMESTAMP, NEVER A VERSION, and the difference is the whole of why this field is not
+    /// [`Self::pricing_version`]. A version names an entry, so it can only ever resolve FORWARD: a
+    /// signed back-dated correction appended later could never reach a row that already named the
+    /// entry it corrects. An INSTANT resolves against entries that did not exist when the row was
+    /// written, which is what keeps the history recoverable backward and what makes "the ratecard
+    /// was wrong" a repairable statement rather than a lost one.
+    ///
+    /// It is also the only thing that gives a UTC-DAY bucket an instant finer than the day. A
+    /// metering cell is an aggregate over `(key, bucket, model, provider)`; with nothing between
+    /// midnight and midnight to resolve at, a card published at noon either repriced the whole day
+    /// or none of it, and both are wrong. This joins the accrual key, so a card edit SPLITS the
+    /// day's cell at the edit and each half prices at the card it was earned under. Cardinality
+    /// grows by the number of card edits in a day and by nothing else.
+    ///
+    /// `#[serde(default)]`, so a delta persisted before this field existed reads back `0` — which
+    /// is the OPENING entry's own `effective_from` and covers every instant by construction. An
+    /// undated row therefore resolves to the card the deployment opened with, never to the newest
+    /// card ever authored, which is the same reading the 1.5.5 migration gives a pre-history row.
+    #[serde(default)]
+    pub priced_from_ms: u64,
 }
 
 /// One accumulated metering row read back for a bucket (the raw material of `GET usage` by_model /
@@ -875,6 +898,11 @@ pub struct MeteringRow {
     pub key_group_at_use: String,
     #[serde(default)]
     pub pricing_version: String,
+    /// The instant this row's price started — see [`MeteringDelta::priced_from_ms`]. The read
+    /// resolves the dated rate-card history AT THIS INSTANT, so the row prices against the card it
+    /// was earned under rather than against the newest card ever authored.
+    #[serde(default)]
+    pub priced_from_ms: u64,
 }
 
 /// One admin AUDIT record, as it crosses the store seam for DURABLE persistence. Mirrors the engine's
