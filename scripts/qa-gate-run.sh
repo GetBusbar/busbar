@@ -447,6 +447,7 @@ cmd_segment() {
 cmd_loader() {
   log "build the sibling store-sqlite-plugin cdylib (the loader tests dlopen the REAL one)"
   if [ -d ../store-sqlite ]; then
+    # package-selector: busbar-store-sqlite-plugin -- scripts/qa-gate-run.sh -- store-sqlite left this tree and lives in a sibling checkout; this `cd ../store-sqlite` resolves the selector against THAT workspace, not this one
     (cd ../store-sqlite && cargo build --release -p busbar-store-sqlite-plugin) || \
       echo "::warning::store-sqlite sibling cdylib build failed"
   else

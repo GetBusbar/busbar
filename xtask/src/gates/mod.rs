@@ -43,6 +43,7 @@ pub mod no_deferral;
 pub mod no_float_money;
 pub mod no_self_filed_issues;
 pub mod no_tracked_ignored;
+pub mod package_selectors;
 pub mod plane_abi_neutrality;
 pub mod plane_pricing_blindness;
 pub mod plane_purity;
@@ -2235,6 +2236,13 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(no_tracked_ignored::NoTrackedIgnoredGate),
         summary: "no tracked path matches a .gitignore rule of this tree (git ls-files -ci \
                   --exclude-standard)",
+    },
+    Registration {
+        name: "package-selectors",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(package_selectors::PackageSelectorsGate),
+        summary: "every `-p`/`--package`, matrix cell and xtask cargo string names a live package",
     },
 ];
 
