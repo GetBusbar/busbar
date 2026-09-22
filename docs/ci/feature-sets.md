@@ -144,7 +144,7 @@ gating scenarios `qa/teller-steps.json` cites as the proof of a Teller step — 
 to be NAMED by a step of `ci.yml`. `cargo xtask gate teller-steps` already asserts that a cell names
 a real script; naming a file is not running it, and no job in any workflow ran one.
 
-`ci.yml`'s `plane-rigs` job runs all EIGHTEEN, one named step each, fast tier, after the matrix
+`ci.yml`'s `plane-rigs` job runs all TWENTY, one named step each, fast tier, after the matrix
 self-test and the release build the rigs boot. It is one step per scenario rather than a
 `for f in scripts/*-subject/h2-*.sh` loop on purpose: a loop names none of them, and a glob expands
 on the runner where nobody reads the expansion, so a rig added tomorrow would be covered by a loop

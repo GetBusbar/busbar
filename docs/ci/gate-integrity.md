@@ -54,12 +54,13 @@ SCRIPT. It does not run one. Measured on this line: the twelve `scripts/mcp-subj
 `scripts/a2a-subject/h2-*.sh` scenarios — the admission path end to end, authenticate through exit —
 were executed by no job of any workflow, while being cited by the matrix as proof.
 
-`ci.yml`'s `plane-rigs` job runs all EIGHTEEN on every push to `integration/**`, `dev`, `qa` and
+`ci.yml`'s `plane-rigs` job runs all TWENTY on every push to `integration/**`, `dev`, `qa` and
 `main`, one named step each, and it is in `ci-umbrella`'s `needs` and RESULTS. `feature-sets`'s
 eighth row holds the membership: a `h2-*.sh` in the tree that no step of `ci.yml` names is red.
-Six of the eighteen are the PRICING legs (`h2-class-price.sh`, `h2-card-epoch.sh`,
-`h2-unpriced-refuses.sh`, one pair per plane), added when the rigs' subject became a billing-ON
-deployment (#42); they gate with no `continue-on-error` and are expected RED today, each on a named
+Eight of the twenty are the MONEY legs, one set per plane: `h2-class-price.sh`, `h2-card-epoch.sh`,
+`h2-unpriced-refuses.sh` (added when the rigs' subject became a billing-ON deployment, #42) and
+`h2-ledger-unconditional.sh` (the 2026-09-22 ruling that the metering write does not depend on the
+rate card at all). They gate with no `continue-on-error` and are expected RED today, each on a named
 decision the tree does not yet keep. See `docs/design/BUSBAR-1.6.0.md` Part 7 §12/§13.
 
 ### Which registered gate runs on the integration/dev push
