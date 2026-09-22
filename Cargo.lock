@@ -785,7 +785,7 @@ dependencies = [
  "busbar-core-admin",
  "busbar-kernel",
  "busbar-llm",
- "busbar-mcp-codec",
+ "busbar-plane-mcp",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-secret-ref",
@@ -812,19 +812,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "busbar-mcp-codec"
-version = "1.6.0"
-dependencies = [
- "busbar-api",
- "busbar-contract",
- "busbar-substrate-values",
- "bytes",
- "http",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -862,7 +849,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-api",
  "busbar-contract",
- "busbar-kernel",
  "serde",
  "serde_json",
 ]
@@ -882,7 +868,8 @@ name = "busbar-plane-mcp"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-mcp-codec",
+ "bytes",
+ "serde",
  "serde_json",
 ]
 
@@ -5159,7 +5146,9 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
  "serde_json",
+ "syn 2.0.117",
 ]
 
 [[package]]

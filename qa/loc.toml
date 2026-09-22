@@ -1,0 +1,49 @@
+# qa/loc.toml — WHAT `cargo xtask loc` COUNTS, AND HOW IT GROUPS WHAT IT FINDS.
+#
+# The counting RULE is not here. It is `xtask::loc::classify`, in code, with fixtures — a rule in a
+# config file is a rule somebody can loosen in the same commit that breaches it. What IS here is the
+# two things that are genuinely owner decisions and were, until this file, sentences in a chat
+# message: where to look, and which crates make up a named set.
+#
+# WHY A GROUP IS DATA. "Production code EXCLUDING the four new planes is 267,587 against v1.5.5's
+# 102,995" is the claim the 1.6.0 release is being judged on. Every time that set was re-typed it
+# could be a different set, and nobody reading the number could tell. Declared here, `cargo xtask
+# loc` prints the same two figures — inside and excluding — from the same list, every run, on any
+# ref.
+
+[scan]
+# Directories whose IMMEDIATE subdirectories are each one crate. The crate's name, for every row
+# and every ceiling, is the DIRECTORY name: that is what `qa/construction.toml` is keyed on and what
+# the script this replaces used. Two directories in this tree disagree with their `package.name`
+# (`crates/secret-ref`, `crates/hooks-ranking`); re-keying the ceilings onto package names is a
+# separate decision from fixing the counter, and doing both at once would make neither reviewable.
+crate_roots = ["crates"]
+
+# Single-crate directories outside those roots. `xtask` is deliberately NOT here: it is the tooling
+# that measures the product, and folding the instrument into the thing it measures is how a gate
+# ends up reporting its own growth as the tree's. Adding it is a one-line edit when somebody wants
+# the tooling's own figure.
+extra_crates = []
+
+# ── NAMED CRATE SETS ─────────────────────────────────────────────────────────────────────────────
+# Each group prints BOTH ways round: `inside` and `excluding`. A reader never has to do the
+# subtraction, and therefore never has to do it differently from the last reader.
+
+[groups.new-planes]
+# The four new protocol planes and the engine/codec halves that came with them. This is the set the
+# release's "excluding the new planes" growth figure excludes, stated once so it means one thing.
+# A name here that the tree does not have is REPORTED (see the `missing` field), never silently
+# treated as zero: a group whose members have all been renamed measures nothing and reads clean.
+label = "the plane work 1.6.0 adds that v1.5.5 had no counterpart for"
+crates = [
+  "busbar-a2a",
+  "busbar-a2a-codec",
+  "busbar-mcp",
+  "busbar-mcp-codec",
+  "busbar-plane-a2a",
+  "busbar-plane-decision",
+  "busbar-plane-mcp",
+  "busbar-plane-streaming",
+  "busbar-voice",
+  "busbar-voice-codec",
+]

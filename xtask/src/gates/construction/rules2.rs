@@ -66,18 +66,35 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
     let union_ceiling = need_int(c, "union_ceiling", "loc-ceilings")?;
     let teller_file_names = c.list_of("teller_files");
 
-    // SURFACE lines only, per the owner's counting decision: non-blank, non-comment lines under
-    // src/, excluding `#[cfg(test)]` module bodies and `src/tests/**`.
-    let loc = |rel: &str| -> i64 {
-        tree.files
-            .get(rel)
-            .map(|ls| {
-                ls.iter()
-                    .filter(|l| !l.intest && !l.code.trim().is_empty())
-                    .count() as i64
-            })
-            .unwrap_or(0)
-    };
+    // ── THE ONE COUNTER ───────────────────────────────────────────────────────────────────────
+    // This used to count the lines itself, off `tree`'s own test classification, and that made it
+    // the SECOND instrument in the tree answering "how many lines is this crate" — the first being
+    // `scripts/loc-surface.py`, which answered differently. Both were wrong, differently: the
+    // script billed nested `src/<module>/tests/**` as production surface, and `tree`'s scanner only
+    // enters a test scope for `#[cfg(test)] mod`, so a `#[cfg(test)] fn` or `#[cfg(test)] impl`
+    // body spent kernel budget. `cargo xtask loc` parses the file and takes the item span from the
+    // AST; this reads its per-file `code` figure and decides nothing about counting itself.
+    let measured = crate::loc::measure_worktree_cached(cx)
+        .map_err(|e| format!("loc-ceilings: cargo xtask loc could not measure the tree: {e}"))?;
+    let per_file = measured.file_code_map();
+    let loc = |rel: &str| -> i64 { per_file.get(rel).copied().unwrap_or(0) };
+    // A FILE THAT WOULD NOT PARSE COUNTS AS ZERO, AND ZERO IS THE DIRECTION A CEILING FORGIVES.
+    // Scoped to the crates THIS rule measures, so an unrelated crate's half-written file is not
+    // this rule's refusal; within them it is, because a ceiling honoured by a file nobody could
+    // read is not honoured.
+    let unreadable: Vec<String> = [kernel_crate, caps_crate, contract_crate]
+        .iter()
+        .flat_map(|c| measured.errors_for(c))
+        .map(|e| format!("{} ({})", e.path, e.error))
+        .collect();
+    if !unreadable.is_empty() {
+        return Err(format!(
+            "loc-ceilings: {} file(s) in the crates this rule measures could not be parsed, so \
+             their lines counted as ZERO — the direction a ceiling forgives: {}",
+            unreadable.len(),
+            unreadable.join("; ")
+        ));
+    }
     let crate_total = |name: &str| -> i64 { tree.crate_files(name).iter().map(|r| loc(r)).sum() };
 
     let unit_dirs = dirs_for_globs(cx, &[format!("crates/{unit_glob}")]);

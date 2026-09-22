@@ -9,7 +9,6 @@ members = [
     "crates/busbar-llm",
     "crates/busbar-llm-codec",
     "crates/busbar-mcp",
-    "crates/busbar-mcp-codec",
     "crates/busbar-a2a",
     "crates/busbar-a2a-codec",
     "crates/busbar-voice",
@@ -240,6 +239,17 @@ rcgen = "0.14"
 # Cost, measured with `cargo tree -e normal`: +18 crate names in the lock, **+3 in the binary**
 # (`rmcp`, `chrono`, `pastey`).
 rmcp = { version = "3.1.2", default-features = false }
+# THE LINE COUNTER'S PARSER, and the only reason either of these is a direct dependency of anything
+# in this workspace. `cargo xtask loc` is the ONE instrument that answers "how many lines of
+# production Rust is this tree", and the three wrong answers it replaces were each a regex or a
+# hand-rolled scanner: a nested `/* /* */ */` terminates one early, a `r#"…#[cfg(test)]…{"#` raw
+# string arms another, a `'{'` char literal shifts a third's brace depth. A PARSE makes every one of
+# those unrepresentable rather than handled. `span-locations` is what turns a parsed item back into
+# the line range it occupied, which is the whole measurement. Both are already in the lock as
+# build-time dependencies of the derive macros; resolver = "2" keeps that feature set separate from
+# this normal-dependency one, so enabling `span-locations` here does not re-build anybody's proc
+# macros.
+proc-macro2 = { version = "1", features = ["span-locations"] }
 # The floor shared by the dependency and dev-dependency uses; busbar adds `http2` to one and `json`
 # to the other. Both decline default features — rustls only, so no second crypto backend enters.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
@@ -265,6 +275,11 @@ smallvec = "1"
 # already present transitively in the lock. `all` exposes the `set_reuse_port` accessor on all targets.
 socket2 = { version = "0.6", features = ["all"] }
 sonic-rs = "0.5"
+# The other half of `cargo xtask loc`'s parser (see `proc-macro2` above). `full` because the counter
+# has to see items nested inside function bodies — `#[cfg(test)]` on a `fn` inside a `fn` is the
+# shape that hid from every line-oriented rule — and `visit` because the walk must reach EVERY node
+# that can carry an attribute rather than the handful somebody remembered to enumerate.
+syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 tar = "0.4"
 tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = "0.6"

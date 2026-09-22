@@ -494,8 +494,10 @@ fn ceiling_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<
         &refs(&naming),
     ));
 
-    // The surface ceilings are `loc-surface.py`'s answer, planted for the same reason the purity
-    // lint's is: the measuring subprocess cannot see this process's overlay.
+    // The surface ceilings are `cargo xtask loc`'s answer. It is asked IN PROCESS now and is
+    // overlay-aware, so a plant could drive it directly; the planted-command seam is kept because
+    // it is the only way to plant a figure the tree cannot actually hold (999999), which is what
+    // proves the ROW rather than the counter.
     let mut ov = on(base);
     let mut cover = Vec::new();
     for (id, _key, crates, _what, _default) in super::SURFACE {

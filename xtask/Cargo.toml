@@ -30,7 +30,16 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
-# The only external dependency: cargo metadata's own JSON, parsed as a generic Value. No
-# `cargo_metadata` crate — one more dependency for a tool whose entire point is auditing
-# dependencies is one worth not adding, and the format-version=1 shape this tool reads is small.
+# Cargo metadata's own JSON, parsed as a generic Value. No `cargo_metadata` crate — one more
+# dependency for a tool whose entire point is auditing dependencies is one worth not adding, and the
+# format-version=1 shape this tool reads is small.
 serde_json = { workspace = true }
+# THE LINE COUNTER PARSES RUST; EVERY OTHER READER HERE TREATS IT AS TEXT, and that difference is
+# the point of `cargo xtask loc`. The rule this crate otherwise lives by — "xtask reads the tree as
+# TEXT" — is about not `use`ing the TYPES it audits, so that a verdict cannot move when a product
+# type moves; `syn` is a grammar, not a busbar type, and nothing about the tree's own code can
+# change what it parses. What text-reading bought instead was three different wrong answers to one
+# question, each from a scanner that mis-handled a nested block comment, a raw string or a char
+# literal. See the note beside these two in the workspace table.
+proc-macro2 = { workspace = true }
+syn = { workspace = true }

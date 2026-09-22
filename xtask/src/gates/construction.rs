@@ -69,11 +69,21 @@ const SURFACE: [(&str, &str, &str, &str, i64); 2] = [
         "the contract crate's plugin-visible surface (caps folded in, #37/#38)",
         3500,
     ),
+    // REPOINTED AT THE MODULE THE CRATE BECAME. `busbar-grammar` was folded INTO `busbar-contract`
+    // (DECISIONS #40) and this row went on naming the retired CRATE, so it summed nothing, measured
+    // nothing, and was a ceiling in name only — the exact "zero is not clean" shape the counter's
+    // own refusal exists for, sitting in the gate's own table. `crates/busbar-contract/src/
+    // json_grammar.rs` IS that crate's body, moved by identity: it measures 388, which is the
+    // figure the crate was pinned at. `grammar.rs` beside it is deliberately NOT here — that is the
+    // CLAIMS/SELECTOR grammar, a different closed grammar and ordinary contract surface already
+    // spent against `contract_caps`; `spans.rs` is the re-export shim, likewise. A path subject is
+    // read by `external::loc_surface`, and a path that stops existing is REFUSED like a crate that
+    // stops existing.
     (
         "grammar",
         "grammar",
-        "busbar-grammar",
-        "the closed span grammar's surface",
+        "crates/busbar-contract/src/json_grammar.rs",
+        "the closed JSON span grammar's surface",
         500,
     ),
 ];
@@ -483,9 +493,11 @@ impl ConstructionGate {
     }
 }
 
-/// The three surface ceilings, as ledger rows. The shell turned `loc-surface.py`'s exit code into
+/// The section 1.1 surface ceilings, as ledger rows. The shell turned a subprocess's exit code into
 /// a row and nothing more; so does this, including the trailing space its `tr '\n' ' '` left on a
-/// failing detail — a byte the parity comparison would otherwise flag.
+/// failing detail — a byte the parity comparison would otherwise flag. The subprocess is gone:
+/// `external::loc_surface` asks `cargo xtask loc` in process, and it is the only line counter left
+/// in this tree.
 fn surface_rows(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
     let table = cfg.doc.table_or_empty("gate.surface_ceilings");
     let mut out = Vec::new();

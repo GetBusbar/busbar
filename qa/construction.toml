@@ -109,9 +109,15 @@ abi = ["crates/busbar-contract"]
 # (anthropic, openai, gemini, bedrock, responses, cohere) is operator-visible and every metric-family
 # index is a position in it, so pin it with an oracle boot cell BEFORE the split, then name the
 # shared residue's destination, then split.
+#
+# MCP HAS NO ROW HERE ANY MORE. `busbar-mcp-codec` dissolved (#39: no `busbar-*-codec` crate): its
+# wire dialect went to `busbar-plane-mcp`, which definition 16-20 makes the home of everything one
+# protocol needs, and its `ProtocolDecl` registry row and two operation cells stayed with the engine
+# in `crates/busbar-mcp/src/codec/` because they name the kernel's handler matrix. Both halves are
+# already scanned — the engine half by `busbar-mcp`'s own rows, the dialect half by
+# `gate.plugin_kinds.plane` — so there is no second source root to fold in.
 [gate.plane_codec_crates]
 busbar-llm = ["busbar-llm-codec"]
-busbar-mcp = ["busbar-mcp-codec"]
 busbar-a2a = ["busbar-a2a-codec"]
 busbar-voice = ["busbar-voice-codec"]
 
@@ -128,81 +134,25 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# THE ENTRIES THAT STAND ON THIS BRANCH:
-
-# W4.a (673ecdaaa, "absorb busbar-core INTO busbar-kernel; delete busbar-core (#19/#37)") and W4.b P2
-# (5fa320208, "absorb busbar-substrate ENGINE into busbar-kernel; delete busbar-substrate") are the
-# owner-approved #19/#37 absorption: busbar-core (412 files, net +2137/-2260 lines moved in) and the
-# busbar-substrate engine (576 files, net +15278/-17391 lines moved in) both dissolve INTO
-# busbar-kernel, which is why the crate's own-files measurement jumped from the pre-absorption
-# ceiling to today's size. This is the mechanical consequence of a landed, oracle-proven move, not
-# new kernel growth; pinned at today's measurement per `ceiling-slack`, same as every other row in
-# this section.
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-from = 5379
-to = 54211
-because = """W4.a (673ecdaaa) deleted busbar-core and W4.b P2 (5fa320208) deleted busbar-substrate, \
-absorbing both engines' bodies into busbar-kernel (DECISIONS #19/#37): appbuild.rs, config/, \
-config_validate/, plane_host/, ingress/, egress/, auth/, admin/, governance/, hooks/, trust/, \
-export/, failover/, oauth_as/, store/, session/ and the rest of the 350-file tree under \
-crates/busbar-kernel/src did not exist in the pre-absorption kernel; they are the two deleted \
-crates' surface, moved by identity. Pinned to today's own-files measurement (54211), no headroom, \
-so the next line that actually grows the kernel is the line that has to justify itself."""
-
-[gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
-from = 606
-to = 648
-because = """The Teller loop file grew from the same W4.a/W4.b absorption: helpers the loop calls \
-that used to live in busbar-core/busbar-substrate now resolve inside busbar-kernel, and the loop \
-file itself picked up the small amount of plumbing (imports, wiring) that follows a crate merge \
-even when the loop's own nine-step body is unchanged — see the teller-step-order repoint in this \
-same commit for proof the step order and single-loop invariant are byte-identical to before the \
-move. Pinned to today's measurement (648), no headroom."""
-
-[gate.ceiling_raises."rules.loc-ceilings.kernel_files.registry.ceiling"]
-from = 313
-to = 883
-because = """The `registry.rs` pattern matches three files under busbar-kernel/src by basename \
-(registry.rs 313, proto/registry.rs 54, plane/registry.rs 516 = 883 surface lines); the latter two \
-are absorbed from busbar-substrate's plane registry and proto registry in W4.b P2 (5fa320208), \
-which did not exist as busbar-kernel files before that landing. Pinned to today's measurement \
-(883), no headroom."""
-
-[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
-from = 23347
-to = 59711
-because = """The union row is kernel + caps/contract + unit-*, and it rises here purely because its \
-first two terms rise: kernel 5379 -> 54211 (W4.a/W4.b core+substrate absorption, declared above) \
-and caps/contract 3545 -> 5230 (W2.c caps fold + #38 contract-transport fold, declared below); the \
-unit-* term is unchanged. 54211 + 5230 + 270 (today's unit-* actual) = 59711. Pinned to today's \
-measurement, no headroom, per the same `ceiling-slack` convention every other row in this file \
-follows."""
-
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-from = 3545
-to = 5238
-because = """2c9eddecf (W2.c "fold busbar-caps into busbar-contract; 12 units -> 8 \
-busbar-kernel-<name>") and b65fbfb83 (DECISIONS #38 "fold busbar-contract-transport INTO \
-busbar-contract") both dissolve into busbar-contract's own src tree, on top of the upstream-status \
-raise this ceiling already carried (3478 -> 3543). busbar-caps is now empty (0, see the \
-loc-ceilings:caps-contract row) and its former content, plus the transport module, live inside \
-busbar-contract's surface lines. RAISED AGAIN 5230 -> 5238: busbar-core-transport (DECISIONS #40) \
-added the opaque `ConnectionSecurity` transport face — the wrap a transport applies blind — to \
-busbar-contract's src tree, ~8 lines. Pinned to today's measurement, no headroom."""
-
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-from = 3543
-to = 7012
-because = """The same W2.c caps fold and #38 contract-transport fold (see \
-rules.loc-ceilings.caps_contract_ceiling above) also move the plugin-visible surface \
-`scripts/loc-surface.py` counts: caps's own plugin-visible types and the transport module's \
-plugin-visible types both now live inside busbar-contract, which is why this row's measured surface \
-(a different counting method than loc-ceilings, hence a different absolute number for the same \
-crate) rose from 3543 to 7004. RAISED AGAIN 7004 -> 7012: busbar-core-transport (DECISIONS #40) \
-added the opaque `busbar_contract::transport::wire::ConnectionSecurity` face to busbar-contract, \
-which the plugin-visible surface counts. Pinned to today's measurement, no headroom, in the same \
-commit as the loc-ceilings caps_contract_ceiling raise, per this file's own stated rule that the \
-two rows are ONE owner decision measured two ways."""
+# THE ENTRIES THAT STAND ON THIS BRANCH: **NONE.**
+#
+# All twelve were struck on 2026-09-22 in the re-baseline below, for two reasons, both of which are
+# this section's own rules:
+#
+# 1. EVERY ONE OF THEM HAD EXPIRED. `ceiling-rose` reported seven declared raises that are "not a
+#    raise at the base" — the commits they described had landed, the base carried the new numbers,
+#    and the rule above says in terms that such an entry "EXPIRES BY ITSELF ... and an entry that
+#    describes no rise is refused as stale. It cannot be left behind." They had been left behind.
+#
+# 2. THERE WERE **TWO** `[gate.ceiling_raises]` SECTIONS, and the second silently overwrote the
+#    first. Both declared `rules.loc-ceilings.{kernel_ceiling,union_ceiling,caps_contract_ceiling}`
+#    and `rules.loc-ceilings.kernel_files.{teller,registry}.ceiling`; the parser merges tables, so
+#    five of the twelve entries were dead text — the first block's `kernel_ceiling` said
+#    5379 -> 54211 and the reader that mattered saw only the second block's 54211 -> 54623. A
+#    declaration whose whole purpose is to make one edit reviewable cannot be defined twice, because
+#    then the reviewed text and the read text are different text. A future raise goes HERE, once.
+#
+# The re-baseline that struck them changed no ceiling upward, so nothing below needs a declaration.
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -210,25 +160,46 @@ two rows are ONE owner decision measured two ways."""
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-# 3478 -> 3543 with `[rules.loc-ceilings].caps_contract_ceiling`, and in the same commit, because
-# the two rows are ONE owner decision measured two ways. Raising one and not the other would leave
-# the pair's ceiling at whichever number is smaller while the larger one reads as the ruling — a
-# ceiling that has been raised in name only. 3543 is what `scripts/loc-surface.py` measures with the
-# upstream status table in the tree, and the audit of what that face is lives beside the other
-# number; see `[rules.loc-ceilings]`. `grammar` is NOT part of the ruling and keeps the figure the
-# integration line measured it at: the status table is contract surface, and nothing it adds is
-# grammar surface, so raising that one would be spending a ruling on a row it was not written for.
-# `contract_transport` is gone with the crate: `busbar-contract-transport` was folded into
-# `busbar-contract` (kind-isolation `contract-transport` kind struck), so there is no third surface
-# left to ceiling — its former LOC now lives inside `contract_caps` itself, which is why this row
-# rises all the way to 7004 (caps fold + transport fold, see `[rules.loc-ceilings]` above) rather
-# than stopping at the caps-only figure.
-# RAISED AGAIN 7004 -> 7012: busbar-core-transport (DECISIONS #40) added the opaque
-# `busbar_contract::transport::wire::ConnectionSecurity` face — the wrap a transport applies blind —
-# to busbar-contract, which the plugin-visible surface counts. Pinned to today's measurement, no
-# headroom, in the same commit as the loc-ceilings caps_contract_ceiling raise. See the declared
-# raise above.
-contract_caps = 7012
+# ── RE-BASELINED 2026-09-22 against `cargo xtask loc`, at HEAD 13a6c434f, 20:14Z ────────────────
+#
+# THE COUNTER UNDER BOTH ROWS CHANGED, AND THAT IS WHY THESE NUMBERS MOVED. Until this date the
+# figure here was whatever `scripts/loc-surface.py` said, and that script excluded only the
+# TOP-LEVEL `src/tests/`. Every `src/<module>/tests/**` tree — which is where this repository
+# actually keeps its proofs — was billed as production surface: 192,813 lines of it across the
+# workspace, more than the tree's entire real production code, so five crates read 48-77% test and
+# NO per-crate ceiling had ever constrained production code. `busbar-contract` alone was counted at
+# 8,443 against 6,659 lines of real code, the 1,784-line difference being `src/tests/records_tests.rs`
+# and `src/caps/tests/**`. The script is deleted; `cargo xtask loc` is the only counter in the tree
+# and `[rules.loc-ceilings]` below reads the same one, so the two rows of the pair can no longer
+# disagree about what they measured.
+#
+# THE PAIR IS ONE NUMBER NOW, BECAUSE IT IS ONE MEASUREMENT. This file's own rule — "the two rows
+# are ONE owner decision measured two ways" — was already being broken: the `busbar-grammar` fold
+# (#40) raised `[rules.loc-ceilings].caps_contract_ceiling` by 414 and left this row alone, so the
+# pair sat at 5,652 and 7,012 and a reader could not say which was the ruling. They were two
+# COUNTERS, not two methods, and both counters are gone. `contract_caps` is therefore set to the
+# standing owner decision, 5,652 — NOT to today's measurement, which is higher.
+#
+# ** THIS ROW IS RED, ON PURPOSE. busbar-contract measures 6,659 against 5,652: A 1,007-LINE **
+# ** BREACH, REPORTED RATHER THAN RUBBER-STAMPED.** Pinning 6,659 here would ratify a thousand
+# lines of #83 in-flight movement as though somebody had decided on it. The attributable pieces:
+# `records.rs` (631) arrived in `crates/busbar-contract/src/` via 1059d3c36 when a bare `git add -A`
+# swept a staged `git mv`; the rest is other 1.6.0 landings. More is owed to arrive under #83 —
+# `api`'s plugin contracts (~727), `substrate-values`' `ir/*` (~508), `secret-ref` (~274),
+# `media`/`billing`/`wire`/`lossless` (~198) — so this figure is a MEASUREMENT AT A DATE and not a
+# settled state. Re-measure with `cargo xtask loc busbar-contract` before reading it as current.
+contract_caps = 5652
+# REPOINTED, and the repoint is what makes this row a gate again. It named the CRATE
+# `busbar-grammar`, which #40 folded into `busbar-contract` and deleted — so it summed nothing,
+# measured nothing and passed, which is this file's own "zero is not clean" failure sitting inside
+# the gate's own table. The subject is now the file the crate became,
+# `crates/busbar-contract/src/json_grammar.rs` (see the `SURFACE` table in
+# `xtask/src/gates/construction.rs`), and the number CONFIRMS the identity: it measures 388, which
+# is exactly the figure the crate carried. Unchanged, therefore, and gating for the first time since
+# the fold. `grammar.rs` next to it is deliberately NOT the subject — that is the CLAIMS/SELECTOR
+# grammar (390 lines), a different closed grammar and ordinary contract surface already spent
+# against `contract_caps`. `docs/design/ARCHITECTURE.md` names all three files for this row; that
+# list is wrong on `grammar.rs` and is the owner's to amend.
 grammar = 388
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
@@ -480,20 +451,29 @@ every identifier called directly from `teller_files` and counts any busbar-unit-
 a same-named function, whether or not that call is actually reaching it (a same-named unrelated \
 helper is over-counted, never under-counted) and without knowing whether the call crosses a sealed \
 trait object (which the real rule says should NOT count). This is stated honestly so the number is \
-read as "at most this many files could be in scope", not as a precise call graph. Counts SURFACE \
-lines only (owner decision): non-blank, non-comment lines under src/, excluding #[cfg(test)] module \
-bodies and src/tests/** -- a proof table, fixture or data table moved into a test-classified path is \
-a proof, not surface, and does not spend the ceiling. A separate, purpose-built \
-`surface-ceiling:contract+caps` row (scripts/loc-surface.py, another in-flight change) applies the \
-identical counting rule to busbar-contract (with the folded caps module) once its proof tables move out of src/; \
-this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
-are expected to converge once the move lands, not to be reconciled here."""
+read as "at most this many files could be in scope", not as a precise call graph. Counts the `code` bucket of \
+`cargo xtask loc` and nothing else (owner decision): the five buckets are code/doc/comment/blank/ \
+test, every line lands in exactly one, and `test` is a path with a `tests` or `benches` segment AT \
+ANY DEPTH, a `tests.rs`/`*_tests.rs`, or the AST span of a `#[cfg(test)]` item. A proof table, \
+fixture or data table in a test-classified path is a proof, not surface, and does not spend the \
+ceiling -- which is what the rule always said and what the counter under it only started doing on \
+2026-09-22, when `src/<module>/tests/**` stopped being billed as production. The `surface-ceiling:contract` row and this rule's own \
+`loc-ceilings:caps-contract` row HAVE now converged, which is what the sentence they replace said \
+was expected: both read `cargo xtask loc`, the single counter, so they measure the same crate the \
+same way and carry the same figure. They stayed two rows on purpose -- one is the owner's ruling on \
+what a PLUGIN AUTHOR reads, the other the kernel-budget arithmetic that feeds `union_ceiling` -- but \
+they can no longer report two numbers for one crate, which they did for months (7,012 against \
+5,652) because they were two COUNTERS wearing the words \"two methods\"."""
 kernel_crate = "busbar-kernel"
-# RAISED 5379 -> 54211: W4.a (673ecdaaa) + W4.b P2 (5fa320208) absorbed busbar-core and the
-# busbar-substrate engine INTO busbar-kernel (DECISIONS #19/#37) and deleted both source crates.
-# This is the mechanical consequence of that owner-approved, oracle-proven move, not new kernel
-# growth; pinned at today's own-files measurement, per `ceiling-slack`. See the declared raise above.
-kernel_ceiling = 54623
+# ── RE-BASELINED 2026-09-22, `cargo xtask loc`, HEAD fe689c616, 20:47Z: 54623 -> 52988 ──────────
+# LOWERED to what the crate measures, per `ceiling-slack`. Two things moved it. The kernel's own
+# code shrank as #83 and the plane folds moved bodies out; and the COUNTER changed — this rule used
+# to count lines itself, off the construction gate's tree scanner, which entered a test scope only
+# for `#[cfg(test)] mod` and therefore spent kernel budget on every `#[cfg(test)] fn` and
+# `#[cfg(test)] impl` body in the crate. It now reads `cargo xtask loc`, which takes the item span
+# from the parse, and which is also the counter `[gate.surface_ceilings]` reads — one instrument,
+# so the two rows of this file's pair cannot disagree about a measurement again.
+kernel_ceiling = 52988
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 # RAISED 3480 -> 3545 for the upstream status table's contract face, pinned at what it MEASURES
@@ -508,6 +488,13 @@ contract_crate = "busbar-contract"
 # RAISED AGAIN 5230 -> 5238: busbar-core-transport (DECISIONS #40) added the opaque
 # `ConnectionSecurity` transport face to busbar-contract's src tree (~8 lines). busbar-caps stays
 # empty (0). Pinned at today's measurement. See the declared raise above.
+# ── HELD 2026-09-22 at 5652, AND RED: busbar-caps 0 + busbar-contract 6659 = 6659. ─────────────
+# NOT raised to the measurement. The full reasoning, the attribution of the 1,007-line overage and
+# the #83 moves still owed into this crate are written once, over `[gate.surface_ceilings]
+# .contract_caps` above, which is now the SAME number read by the SAME counter — which is what this
+# file's own rule ("the two rows are ONE owner decision measured two ways") has always asked for and
+# what the `busbar-grammar` fold broke by raising this row 414 and not its pair. The 414 stands and
+# is now the PAIR's, not this row's alone.
 caps_contract_ceiling = 5652
 unit_crate_glob = "busbar-unit-*"
 # RE-KEYED on cherry-pick onto 143db6db6: this commit's own delta is -53 (two units stopped
@@ -515,7 +502,13 @@ unit_crate_glob = "busbar-unit-*"
 # cut (14606, via the prior commit's context). By the time this pick lands here the running base
 # (after the prior commit in this same pick sequence) is 14476, not 14606, because LK-ALL's landed
 # commits independently moved it; re-applying the same -53 delta gives 14476 - 53 = 14423.
-unit_total_ceiling = 14423
+# ── RE-BASELINED 2026-09-22: 14423 -> 268. ─────────────────────────────────────────────────────
+# This is not a tightening anybody has to pay for; it is the ratchet catching up with a landing
+# nobody re-pinned. Twelve `busbar-unit-*` crates became eight `busbar-kernel-<name>` crates (W2.c,
+# 2c9eddecf), and the glob `busbar-unit-*` now matches exactly ONE crate,
+# `busbar-unit-transport-key`, at 268 lines. The ceiling had 14,155 lines of slack — room for the
+# whole unit family to come back without a single row going red. Pinned at the measurement.
+unit_total_ceiling = 268
 verbs_crate = "busbar-unit-verbs"
 # RAISED 1428 -> 1431 for D38 `amend_rate_history`: a new closed-table admin verb costs exactly
 # three surface lines in this crate — the `KernelVerb::AmendRateHistory` variant, its `NEW_VERBS`
@@ -523,16 +516,25 @@ verbs_crate = "busbar-unit-verbs"
 # (which gives it the operator-key ceremony gate). None is removable, so the closed table cannot gain
 # a verb without this ratchet. Pinned to today's measurement, per `ceiling-slack`; declared here in
 # its own line so `ceiling-rose` reports the raise for review rather than absorbing it.
-verbs_ceiling = 1431
-# 23400 -> 23347: the caps/contract term above is unchanged (raised in the prior commit of this
-# pick) and the unit term fell by 53, because two units stopped declaring their own copies of the
-# class and the disposition. Declared under `[gate.ceiling_raises]` with the pair. RE-KEYED for the
-# same reason as `unit_total_ceiling` above: running base 23400, not the 23477 this line was cut
-# against, because LK-ALL's landed commits moved the unit term underneath this pick sequence.
-# RAISED AGAIN 23347 -> 59711: kernel 5379 -> 54211 and caps/contract 3545 -> 5230 both rise (see
-# the two declared raises above); the unit-* term is unchanged. 54211 + 5230 + 270 = 59711, pinned
-# at today's measurement. See the declared raise above.
-union_ceiling = 60545
+# ── RE-BASELINED 2026-09-22: 1431 -> 0, and the ZERO is the point. ─────────────────────────────
+# `crates/busbar-unit-verbs` does not exist — the verb table went with the W2.c unit fold — so this
+# row measures the empty set and its own detail line says "vacuous 0". At 1431 it was a ceiling
+# nothing could ever spend, which this file elsewhere calls a ceiling that has been abolished rather
+# than met. At 0 it is a live ratchet: the day a `busbar-unit-verbs` reappears, its first line of
+# code reds this row and the owner decides the figure then, in a diff.
+verbs_ceiling = 0
+# ── RE-BASELINED 2026-09-22: 60545 -> 58908, AND RED, and red for exactly one reason. ──────────
+# This row adds no growth of its own; it is the arithmetic of its three members, and it is set to
+# the SUM OF THEIR CEILINGS rather than to what the union measures today:
+#
+#     52988 (kernel_ceiling) + 5652 (caps_contract_ceiling) + 268 (unit_total_ceiling) = 58908
+#
+# The union MEASURES 59,915 (52,988 + 6,659 + 268), so this row is red by 1,007 — which is the
+# caps/contract breach above, and nothing else. That is deliberate. Setting this to 59,895 would
+# have made the union green while one of its members was in breach, and the whole reason this row
+# exists is that a union can be over while every part of it looks reasonable. A union ceiling moves
+# WITH its members, per this file's own rule; it does not absorb their overage.
+union_ceiling = 58908
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -541,10 +543,14 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-# RAISED 606 -> 648: the W4.a/W4.b core+substrate absorption (see kernel_ceiling above) pulled a
-# small amount of plumbing into the loop file even though its nine-step body and single-loop
-# invariant are unchanged (see the teller-step-order repoint in this same commit for proof). Pinned
-# to today's measurement.
+# ── HELD 2026-09-22 at 667, AND RED: `teller.rs` measures 681. ────────────────────────────────
+# NOT re-baselined, in either direction, and that is deliberate on a shared checkout. The file moved
+# under measurement three times in one afternoon — 681, then 661, then 681 again — so pinning the
+# drained reading (661) would have manufactured a tighter ceiling out of a transient state and
+# charged somebody else's in-flight change for the difference. Held at the figure the base carries.
+# It is RED by 14 at that figure too, and was before this re-baseline touched anything: the breach
+# belongs to the change that is currently growing the Teller loop, which is what a no-headroom pin
+# is FOR. Re-measure with `cargo xtask loc --per-file busbar-kernel` before reading 681 as current.
 ceiling = 667
 
 [rules.loc-ceilings.kernel_files.pump]
@@ -555,7 +561,8 @@ ceiling = 453
 [rules.loc-ceilings.kernel_files.inflight]
 label = "in-flight/sessions"
 patterns = ["inflight.rs"]
-ceiling = 575
+# RE-BASELINED 2026-09-22: 575 -> 572, the measurement.
+ceiling = 572
 
 [rules.loc-ceilings.kernel_files.recovery]
 label = "recovery"
@@ -565,16 +572,24 @@ ceiling = 177
 [rules.loc-ceilings.kernel_files.slice]
 label = "slice/lease"
 patterns = ["slice.rs"]
-ceiling = 397
+# ── RE-BASELINED 2026-09-22: 397 -> 0, and the zero is a FINDING, not a tightening. ────────────
+# There is no `slice.rs` under `crates/busbar-kernel/src` any more. The only one in the tree is
+# `crates/busbar-contract/src/slice.rs`, in another crate, which this row (kernel files, by
+# basename) cannot and should not reach. So the row has been measuring the empty set and printing
+# "vacuous 0" against a 397-line allowance — a named piece of the kernel's own 8k budget that
+# nothing spends and nothing could fail. 0 keeps it a live ratchet against a slice file coming
+# BACK into the kernel. **Owner decision owed:** either the slice/lease budget moves with its
+# subject to `busbar-contract` and is counted there, or this row is struck; it should not stay a
+# kernel-file row for a file that is not in the kernel.
+ceiling = 0
 
 [rules.loc-ceilings.kernel_files.registry]
 label = "registry + generations"
 patterns = ["registry.rs"]
-# RAISED 313 -> 883: the pattern matches three files by basename (registry.rs 313, proto/registry.rs
-# 54, plane/registry.rs 516); the latter two are absorbed from busbar-substrate's plane and proto
-# registries in W4.b P2 (5fa320208) and did not exist as busbar-kernel files before that landing.
-# Pinned to today's measurement.
-ceiling = 887
+# RE-BASELINED 2026-09-22: 887 -> 724, the measurement. The pattern still matches three files by
+# basename — `registry.rs` 314, `plane/registry.rs` 389, `proto/registry.rs` 21 — and all three
+# have drained since the ceiling was last pinned.
+ceiling = 724
 
 [rules.loc-ceilings.kernel_files.grammars]
 label = "grammars incl. JSON span scanner"
@@ -593,10 +608,21 @@ label = "tick: session tick, node tick and the drain sweep"
 patterns = ["tick.rs"]
 ceiling = 193
 
+# ── REPOINTED 2026-09-22, the same repair `ticks` above already had. ───────────────────────────
+# Neither `arena.rs` nor `masking.rs` exists anywhere in the tree, so this row measured the empty
+# set and reported 0/178: a named piece of the kernel's 8k budget that had been abolished rather
+# than met, which is the failure `[gate.census]` and the `ticks` note were both written about. The
+# arena did not go away — it was REPLACED. DECISIONS #41's per-call scratch pad is
+# `crates/busbar-kernel/src/scratch.rs`, the one file in the workspace that names `bumpalo` (see
+# the `bumpalo` entry in the root `Cargo.toml`, which says so in those words), and it is what an
+# "arena" row is a budget for. Repointed there and pinned at its measurement, 109.
+# MASKING HAS NO SINGLE FILE to repoint at — it is spread across `auth/`, `admin/` and `api.rs` —
+# so the label drops it rather than claiming a subject this row does not measure. If the owner
+# wants masking budgeted, it needs its own row and its own subject.
 [rules.loc-ceilings.kernel_files.arena]
-label = "arena/masking"
-patterns = ["arena.rs", "masking.rs"]
-ceiling = 178
+label = "arena: the per-call bump scratch pad (DECISIONS #41)"
+patterns = ["scratch.rs"]
+ceiling = 109
 
 # ── 15. manifest-allowlist (ARCHITECTURE.md section 1.2) ────────────────────────────────────────────────────
 [rules.manifest-allowlist]
@@ -622,7 +648,7 @@ consulted when present to widen the same check to transitive path/workspace deps
 # closed JSON span grammar the contract itself is written on and re-exports as `spans`, so naming it
 # directly is naming a piece of the contract rather than reaching past it; the rest are ordinary
 # third-party crates.
-reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-mcp-codec", "busbar-a2a-codec", "busbar-voice-codec", "busbar-grammar"]
+reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", "tracing", "async-trait", "bytes", "sonic-rs", "busbar-llm-codec", "busbar-a2a-codec", "busbar-voice-codec", "busbar-grammar"]
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
@@ -650,7 +676,11 @@ store-example-plugin = ["libc"]
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
 busbar-plane-a2a = ["busbar-a2a"]
-busbar-plane-mcp = ["busbar-mcp"]
+# busbar-plane-mcp HAS NO ROW: the codec fold left its manifest at `busbar-contract` + `busbar-api`
+# + three third-party crates, and it names no engine crate in either spelling. The edge that exists
+# now runs the other way — `busbar-mcp` reads the plane's wire dialect — which is the direction a
+# plane's definition asks for and not a coupling this rule is about.
+busbar-plane-streaming = ["busbar-voice"]
 
 # ── 16. source-denylist (ARCHITECTURE.md section 1.2) ───────────────────────────────────────────────────────
 [rules.source-denylist]
@@ -1491,62 +1521,3 @@ transport = 7
 loader = 1
 abi = 1
 
-# ── ceiling raises, 2026-09-22 unattended wave ──────────────────────────────────────────────────
-# Each of these is a line that had to justify itself, which is what the "no headroom" pins above
-# were for. Every raise below is pinned to today's measurement with no headroom, so the NEXT line
-# that grows any of them is the next line that has to argue.
-
-[gate.ceiling_raises."rules.loc-ceilings.kernel_files.teller.ceiling"]
-from = 648
-to = 667
-because = """Verify sealed a destination set and then dropped it, so Route re-derived its own and \
-the thing that was checked was not provably the thing that was used. The sealed set is now threaded \
-from open_to_door through under_hold into route_leg and meter, which is the whole point of a sealed \
-capability: a later step CONSUMES what an earlier step proved rather than recomputing and hoping the \
-two agree. +19 lines, all of it signature and hand-off; no quantity and no arithmetic changed."""
-
-[gate.ceiling_raises."rules.loc-ceilings.kernel_files.inflight.ceiling"]
-from = 564
-to = 575
-because = """InFlight::insert silently overwrote a duplicate unit key, orphaning the displaced \
-entry's HoldCell -- a hold nothing would ever release, so budget stayed reserved forever -- and \
-permanently inflating the in-flight count. It now refuses under the same shard lock that would do \
-the write, before claim_slot runs, so there is nothing to roll back and no TOCTOU window, and it \
-hands the caller's hold back rather than dropping it. +11 lines."""
-
-[gate.ceiling_raises."rules.loc-ceilings.kernel_files.registry.ceiling"]
-from = 883
-to = 887
-because = """transport_overlaps compared SNI byte-wise. DNS names are case-insensitive, so two \
-genuinely overlapping transport claims were judged disjoint and the boot's disjointness proof \
-cleared a configuration with two listeners fighting for one name. SNI and ALPN now fold case the way \
-header names already did in the same function; client-cert subject, stream name and port keep exact \
-comparison, so this is not a blanket lowercase. +4 lines."""
-
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-from = 5238
-to = 5652
-because = """busbar-grammar folded INTO busbar-contract (#40). This is deliberately the inverse of \
-D29, which carved grammar OUT of contract to get under this same ceiling -- and that carve-out is \
-exactly what #40 forbids, because contract's public API re-exported grammar's types through \
-bounded.rs and spans.rs, so every plugin compiling against the contract dragged a second busbar \
-crate into its dependency closure. The choice is between a smaller contract that violates the \
-plugin closure rule and a larger one that satisfies it; #40 is owner-locked and the ceiling is not. \
-+414 lines, which is the 568-line grammar module net of the re-export shims it replaced."""
-
-[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
-from = 54211
-to = 54623
-because = """The sum of the three named kernel-file raises above plus core's no-plane refusal. That \
-last one is a Law fix, not a feature: #1 requires core to name zero planes and #3/#11 make planes \
-plugins that may be absent, so a build with no plane registered is legal -- and it PANICKED, in \
-config resolution, because fallback_key() documents an intentional empty answer and plane_decl() \
-panics on an unknown key. It now refuses with a named diagnostic instead, per #42: an unknown is \
-refused, never silently defaulted."""
-
-[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
-from = 59711
-to = 60545
-because = """The arithmetic consequence of the kernel and caps/contract raises above; this row adds \
-no growth of its own. Raised in the same commit as both, per this file's own rule that a union \
-ceiling moves with its members rather than drifting behind them."""
