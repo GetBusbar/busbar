@@ -68,31 +68,37 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ **3,545** **of plugin-visible SURFACE**
-  (3,543 as `scripts/loc-surface.py` counts it, 3,545 as `loc-ceilings:caps-contract` does; the two
-  differ by two lines of counting rule and are pinned as one decision) — raised from 3.5k on
+  arena/masking 0.3k; `busbar-contract` ≤ **7,012** **of plugin-visible SURFACE** — ONE crate now,
+  not a pair: `busbar-caps` was folded into it (W2.c, `2c9eddecf`) and `busbar-contract-transport`
+  with it (DECISIONS #38, `b65fbfb83`), and NEITHER CRATE EXISTS in the tree any more. The figure is
+  `[gate.surface_ceilings].contract_caps` in `qa/construction.toml`, which is what
+  `scripts/loc-surface.py` measures; the companion `[rules.loc-ceilings].caps_contract_ceiling`
+  counts the same crate by its own rule and is pinned at **5,652**. Both keep their `caps` spelling
+  as a KEY NAME only — the ceiling is busbar-contract's. It was raised from 3.5k on
   2026-09-10 for ONE face, pinned at its measured size, zero slack: THE UPSTREAM STATUS TABLE, 65
   lines: `busbar_contract::upstream::{StatusClass, Disposition}`, the nine-way reading of an
   upstream's answer a dialect reads off vendor bytes and renders back in its own words, and the
   four-way disposition the egress walk and the breaker act on — one owner as a table (rows are data;
   token, label and disposition are columns; one match site each), where three crates had each
   declared it, because a unit may name only the contract and the capabilities and a plane or dialect
-  only the contract, so this is the one crate both sides can point at. A future face raises this
+  only the contract, so this is the one crate both sides can point at; the two folds above and the
+  opaque `ConnectionSecurity` transport face (DECISIONS #40) are the raises stacked on top of it. A
+  future face raises this
   figure by its own declared, measured amount (`[gate.ceiling_raises]` in `qa/construction.toml`) and
   amends this sentence; nothing else moves
   it. Surface is non-blank, non-comment code lines under each crate's `src/`, excluding
   `#[cfg(test)]` modules and `src/tests/`; the proofs (overlap totality over the selector-form
   pairs, the lint symbol lists, the compile-fail fixtures and their positive companions, the honesty
-  tables) are not surface and live in each crate's `tests/` or `fixtures/`. Measured and gated by
-  `scripts/loc-surface.py` (`--ceiling busbar-contract,busbar-caps=3543`), which the construction
-  gate runs as `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
-  each is contract surface that a plugin author does not read and a ceiling nothing measures is a
-  ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
-  std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
-  `surface-ceiling:grammar`; `busbar-contract-transport` — the transport-facing contract: the
-  connection and listener handles, the detached stream, the closed transport failure and close
-  codes, the arrival record, the upstream address, the reserved transport fact keys, the kind's ABI
-  generation and the composition check — ≤ **1k**, gated as `surface-ceiling:contract-transport`.
+  tables) are not surface and live in each crate's `tests/` or `fixtures/`. Measured by
+  `scripts/loc-surface.py`, which the construction
+  gate runs as `surface-ceiling:contract`. ONE further surface ceiling sits beside it, because
+  it is contract surface that a plugin author does not read and a ceiling nothing measures is a
+  ceiling that has been abolished rather than met: the closed JSON span grammar —
+  std-only, named by the kernel, and now a MODULE of the contract rather than a crate of its own
+  (`busbar_contract::spans`; `crates/busbar-contract/src/{grammar,json_grammar,spans}.rs`) — ≤
+  **388**, gated as `surface-ceiling:grammar`. That row still names a retired `busbar-grammar`
+  CRATE (`xtask/src/gates/construction.rs`, the `SURFACE` table), so it sums nothing today and is a
+  ceiling in name only until it is repointed at the module.
   All `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
@@ -104,15 +110,17 @@ them). Each axis is blind to the other two; only the kernel composes them.
 |---|---|---|---|
 | `busbar-core-config` | core | the config document root, loader, env interpolation, migrator, overlay, named-map validator, the byte-identity prepass, the validator and the secret resolver — the product's config grammar, which had **no** replacement anywhere and could not be cut leaf-first (the layer reaches up into ten modules at 65 sites) | its own row, against a measured **20,050** surface lines |
 | `busbar-core-hooks` | core | the hook POLICY engine — resolution, gates, rewrites, singleflight, scrape — which the plain-data hook carriers in the substrate are not and never were. The kernel seats hook PLUGINS; this seats their policies | its own row (1,662 surface today) |
-| `busbar-core-admin` | cleanliness crate (not a plugin kind) | the admin surface. `busbar-plane-admin` until **R7** renames it; compiled in, one-way dep on core, off the hot path, unmetered | none (a cleanliness crate carries no §1.1 union row) |
+| `busbar-core-admin` | cleanliness crate (not a plugin kind) | the admin surface. It was `busbar-plane-admin` before **R7**; that rename has SHIPPED and the crate is `crates/busbar-core-admin` today. Compiled in, one-way dep on core, off the hot path, unmetered | none (a cleanliness crate carries no §1.1 union row) |
 | `busbar-core-oauth2` | cleanliness crate (not a plugin kind) | the OAuth 2.1 authorization server — metadata document, `/authorize`, `/token`, login, consent, its own signer. Verification is a step and stays in `busbar-unit-auth`; an authorization SERVER is a served surface, compiled in and off the hot path | none |
 
 ### 1.2 Core → plugin. Never plugin → core.
 
 Every plugin is passive: the kernel registers it, calls it, consumes what it returns.
-- **Manifest allow-list**: `busbar-contract`, the closed grammar it is written on and re-exports
-  (`busbar-grammar`), plus reviewed third-party crates; any dependency on `busbar-kernel`,
-  `busbar-caps`, `busbar-contract-transport`, a `busbar-unit-*`, another plane or a transport is a
+- **Manifest allow-list**: `busbar-contract` — which now carries the closed span grammar, the
+  capability types and the transport-facing contract as its OWN MODULES, `busbar-grammar`,
+  `busbar-caps` and `busbar-contract-transport` having each been folded into it — plus reviewed
+  third-party crates; any dependency on `busbar-kernel`, a `busbar-kernel-*` unit crate, another
+  plane or a transport is a
   CI failure. **The one exception, and the only cross-crate edge in the whole plugin tree:** a
   DIALECT crate `busbar-plane-<p>-<d>` names its own plane `busbar-plane-<p>`, for the plane's IR
   type and nothing else; naming any other plane, any dialect, or a transport is a CI failure.
@@ -517,10 +525,10 @@ both through `Ctx.session`. Exceeding a cap is `Failed(Decode, SessionFactsExhau
 
 ```
 busbar-contract      traits, facts, locators, Frame, Ingress/Progress, UnitDraft, Ctx, bounded types   (plugin-visible)
-busbar-caps          capability types + tokens                                                    (kernel + units only)
-                     trusted base: `std` and `busbar-contract` — a capability is keyed on the contract's own objects, so it names them rather than restating them
+                     and, as its OWN MODULES, what were once three separate crates: `caps` (capability types + tokens, kernel + units only), `spans` (the closed JSON span grammar) and `transport` (the transport-facing contract)
+                     a capability is keyed on the contract's own objects, so it names them rather than restating them — which is what made the caps crate a fold rather than a merge
 busbar-kernel        registry + generations, Teller, pump, in-flight table, sessions, Ticks, recovery, slices/leases, drain, grammars
-busbar-unit-*        auth · trust · scope · admission · cost · egress (pool) · breaker · egress-auth · transport-key · usage · ledger · audit · wal · verbs
+busbar-kernel-*      identity · scope · budget · ledger · egress · breaker · wal · audit — EIGHT, folded down from twelve `busbar-unit-*` by W2.c; `busbar-unit-transport-key` is the one crate still carrying the old prefix
 busbar-plane-*       (one per plane; owns its semantic IR and holds its dialect logic — dialects are inside the plane, not crates of their own)
 busbar-transport-*   (one per WIRE, in-tree, incl. peer; never named for a plane)
 busbar-*-plugin      auth / store / secret / hook / export (static or dynamic); auth-lease and secret-local in-tree, mandatory
@@ -555,7 +563,7 @@ issuer, expiry, session_bindable }` · `Challenge { bytes, state, rounds_left }`
 `Permutation<CandidateIdx>` · `TransportEnvelope` · `Listener`, `Conn`, `StreamId`, `CloseReason` ·
 `Decode`, `Encode` · `CorrelationRef { fact_key, value }` · `Labels` · `HoldCell` · `FrameCursor`,
 `Estimate { per_class }`, `BucketChain`, `RoutePlan { legs }`, `UsageLocators`, `AuditFacts`,
-`Decision<S>` (in `busbar-caps`) · **`LaneId`** — the
+`Decision<S>` (in `busbar_contract::caps`, `caps/decision.rs`) · **`LaneId`** — the
 priced axis: a config-declared name per `(plane, upstream)` (1.5.5's configured lane key), the rate
 card's first key, carried on `VerifiedDestination`, located in the request by `AdmitFacts.lane_locator`
 and in the response by the plane's facts, all through the lane-alias map · `CapDimension
@@ -751,7 +759,7 @@ destination is permitted only under `may_change_destination`; the pre/post head 
 |---|---|---|
 | A plugin cannot name the kernel, a capability, a unit, another plane or a transport | manifest allow-list | CI |
 | A pure-kind plugin cannot perform I/O (own crate: scan; dependencies: `cargo metadata` + review); I/O kinds are bounded by signature, deadline, `Access` entries and review | source denylist; blocking pool | CI + runtime |
-| A plugin cannot build a decision / destination / usage / hold / accrual / decoration / key handle / posted | token-sealed constructors. The token is `busbar-caps`', and the manifest allow-list refuses a plugin crate that names that crate at all. The contract's sealing trait is public in `plugin` — it must be, since `busbar-caps` implements it and sits above the contract, and Rust cannot say "implementable by exactly one other crate" — so it is kept off the contract's ROOT surface and the `kernel-seal-impls` scan forbids implementing it in-tree outside `busbar-caps` (ten files are a named ratchet; two of them are plane crates that may not name `busbar-caps` and stay forgeable until the contract offers a seal a plane may name). An out-of-tree plugin CAN implement it; a loaded plugin is trusted code, so that is not a line drawn here | compile-time for caps-token holders + CI scan (in-tree) |
+| A plugin cannot build a decision / destination / usage / hold / accrual / decoration / key handle / posted | token-sealed constructors. The token lives in busbar-contract's `caps` MODULE (`crates/busbar-contract/src/caps`, formerly the `busbar-caps` crate, folded in by W2.c), which section 1.2 forbids a plugin crate from naming. The contract's sealing trait is public in `plugin` — it must be, since the caps module implements it on every token and sits above the contract, and Rust cannot say "implementable by exactly one other crate" — so it is kept off the contract's ROOT surface and the `kernel-seal-impls` scan forbids implementing it in-tree outside `crates/busbar-contract/src/caps` (`[rules.kernel-seal-impls].known_sites` in `qa/construction.toml` is a named ratchet of eleven files; three of them are plane crates that may not name the caps module and stay forgeable until the contract offers a seal a plane may name). An out-of-tree plugin CAN implement it; a loaded plugin is trusted code, so that is not a line drawn here | compile-time for caps-token holders + CI scan (in-tree) |
 | Every trait method implemented; no default bodies; one base trait; sealed unit traits; feature-invariant | trait shape + AST scan | compile-time + CI |
 | Object safety | fixture per kind | compile-time |
 | Every path takes its `Hold` exactly once | `HoldCell` state machine + CAS; no `?`/early exit; no capture in `catch_unwind`; no `abort` | runtime CAS + lint |
@@ -1804,3 +1812,4 @@ published 1.5.5 binary.
 | PB-100 | admin wire details | `with_config_etag` stamps `ETag: "<config_version>"`; `if_match_version` parses `*` / bare / quoted / weak else 400 `MalformedIfMatch`, stale ⇒ 409 `version_conflict` on the ~20 config-plane mutations; every audit action is written at BOTH `applied` and `rejected` with the resource literals (`KEY_RESOURCE_NONE = "key:-"`, `config:settings`, `"process"`); `durable_write_through` / `rebase_nondurable_suffix` gap backfill and `restore_from_store`'s re-verify, `fetch_max` seq floor and seal-on-digest-failure; `VersionLog` `MAX_VERSIONS = 100`, RAM-only, re-seeded at boot (`GET /config/versions` lists only version 0 after a restart — the journal never feeds it); `POST /auth/token` returns `200 {api_key, key_id, group, exp, base_url}` (`base_url` = `public_url` verbatim) and its five refusals in the flat `{"error":"<msg>"}` envelope, with `resolve_exchange` (pools = union across granting bindings, one-key-per-sub upsert, `first_free_self_epoch`); the `GET /auth/token` flow verbatim (constant-time `state`, `id_token` nonce, `MAX_HOPS = 6`, host allowlist and `ssrf_blocked_host`, `FORBIDDEN_HOP_HEADERS`, the `busbar_login` cookie, the exact 400/401/403/502 pages); the data-plane 405 protocol-native envelope, NO CORS layer ever, `OPTIONS` ⇒ `None`, `HEAD` ⇒ `RouteMethod::Get` on plugin routes, `CONNECT`/`TRACE` ⇒ `None`, the six reserved exact paths with their mount-refusal literals, `authorization` never forwarded to a plugin; `/v1/models` picks its envelope by its OWN fingerprint (`anthropic-version`, else gemini path or `x-goog-api-key`, else openai — no `x-api-key` rung); the gemini path-404 family and path-derived `api_version` | routes-admin :124-141, :167, :198-201, :315-320, :590-595, :606, :627-628, :655-683, :714-726; auth-secrets :874-1144 |
 | PB-101 | inbound auth details | inbound Bedrock SigV4 verbatim (three-way gate, `chain: []` stays open, pre-buffer structural gate, `UNSIGNED-PAYLOAD` refused, constant-time compare, `DUMMY_SECRET`, the six-row admission matrix); mTLS is required-or-none with no `.allow_unauthenticated()`, the client cert is NEVER mapped to a principal, CN, SAN or fingerprint and has no HTTP status for a rejection — `ClientCertSubject` selectors and the `ClientCert` location are 1.6.0-native only; body-read: `MIN_BODY_THROUGHPUT_BYTES_PER_SEC = 1024`, `BODY_THROUGHPUT_GRACE = 10 s`, the total body deadline `translate_body_max_bytes() / 1024`, the read timeout inter-frame and reset on progress, no ingress whole-request deadline | auth-secrets :167-210, :2205-2214, :2261-2270; routes-admin :510-515 |
 | PB-102 | alarms and the disputes report | an alarm and a disputes-report entry are LEDGER-ENDPOINT rows only: no log event, no metric series, no stderr line on a 1.5.5 deployment (the ops inventory's event-field sweep and the closed 25-metric set are byte-identical); the `max_unit_duration` stall alarm on a long stream, the lane-mismatch alarm, the accrual-bound alarm and the `single`-posture mutation alarms all obey this | ops §5.3, O3 |
+| PB-103 | the dated rate-card history, and the `/usage` read path that does not consult it | cards are an APPEND-ONLY DATED HISTORY (owner ruling `docs/design/BUSBAR-1.6.0.md` #79): a config `PUT /config/settings` card APPENDS an entry rather than replacing the price (`crates/busbar/src/root/kernel.rs:262`, `effective_from` — `0` on the first entry and `now_ms` after, so publishing a card never touches the window before its own date; the window recompute is `:291`), and 1.5.5's rate-card completeness refusal is byte-identical (a partial card is still the same 400 `invalid_request` naming every unpriced model with its paste-ready zero-rate stub). The signed back-dated correction is ADDITIVE, never a rewrite of a 1.5.5 surface: `POST /api/v1/admin/ledger/amend-rate-history` (`crates/busbar/src/root/units_admin/mod.rs:679`) is a route 1.5.5 does not carry, so 1.5.5 answers it with the ROUTER's generic 404 `not_found` / "resource not found" — BYTE-IDENTICAL signed and unsigned, because 1.5.5 is refusing the route and never reads `X-Busbar-Signature`. **THE LEGACY `GET /api/v1/admin/usage` READ PATH IS UNCHANGED FROM 1.5.5, AND STAYS SO UNTIL #79's OWED ITEM LANDS:** `busbar_core_admin::v1::service::get_usage` takes a `window` and nothing else, parses NO `as_of` request parameter (the `as_of` in its response is an OUTPUT, always `store::now()`, so a URL naming one is silently ignored exactly as 1.5.5 ignored it), and derives every row's spend flat off the CURRENT card through `derive_spend_micros_row` — reprice-on-read, tokens the stored truth — carrying `spend_micros` at full micro-unit precision with NO minor-unit projection (a sub-cent card reads back 18 per row and 54 as an exact sum). Resolving that read through the history by the posting's own `arrived_ms` is #79's OWED work and the registered D-3 breaking divergence, NOT shipped behaviour; `PostingStamp.rate_card_version` is reporting provenance and is never the pricing input | governance 5.4, 5.6.6, 5.6.10, 6.3.2; routes-admin ADM-066; design `docs/design/rate-card-history.md` §1.1, §2.3, §9; owner ruling `BUSBAR-1.6.0.md` #79 |

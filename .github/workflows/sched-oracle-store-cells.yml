@@ -1,4 +1,4 @@
-# .github/workflows/oracle-record-store-cells.yml
+# .github/workflows/sched-oracle-store-cells.yml
 #
 # RECORD THE THREE STORE-BACKED ORACLE CELLS FROM THE PUBLISHED 1.5.5, AND HAND THEM TO A HUMAN.
 #
@@ -24,10 +24,19 @@
 # the differ would report a divergence that is really a difference in how the two were run — the
 # hardest kind of red to read, because everything about it looks like a busbar regression. The three
 # `image:` lines below are therefore the same rows of testing/fleet-fixtures/service-images.tsv that
-# ci.yml's shadow-oracle job reads, and scripts/service-images-check.sh — run as the FIRST step
+# ci.yml's shadow-oracle job reads, and `cargo xtask gate service-images` — run as the FIRST step
 # here, before anything expensive — proves it rather than trusting the copy. GitHub cannot read a
 # file into a `services:` block, so the literals must be duplicated; the lint is what makes the
 # duplication safe.
+#
+# EVERY ORACLE CALL GOES THROUGH ./bin/oracle. The shadow oracle left this tree on 2026-09-06
+# (c73ae4f66): record.sh, fetch-golden.sh, fetch-plugin.sh and merge-recordings.py were deleted and
+# the tool ships as the pinned Rust `busbar-oracle` engine, obtained and exec'd by `bin/oracle`.
+# That commit repointed ci.yml, land.sh, verify-1.6.0-done.sh, teller-steps-check.py and
+# full-gate.sh; this workflow was MISSED and went on invoking four files that are not in the tree,
+# so every run would have died at the first of them. The argv contract is unchanged, so each call
+# below is the same call it always was with `./bin/oracle <sub>` in front of it, exactly as
+# ci.yml's shadow-oracle job spells them.
 name: oracle record store cells
 
 on:
@@ -101,33 +110,51 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      # bin/oracle builds the money oracle from the PRIVATE sibling GetBusbar/busbar-release pinned
+      # in testing/shadow-oracle/oracle-rust.pin. The default GITHUB_TOKEN is scoped to THIS repo,
+      # so bin/oracle's clone of that private repo needs the cross-repo PAT — the same one ci.yml's
+      # shadow-oracle job passes. Without it every ./bin/oracle call below dies before recording.
+      BUSBAR_RELEASE_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
       # The three ids this run is allowed to produce, and the ONLY three. Written once, read by the
       # --filter, by the PASS check and by the artifact guard, so a fourth id cannot enter through
       # one of them while the other two go on describing three.
       STORE_CELL_IDS: 'plugins.store-persist|store-postgres plugins.store-persist|store-mysql plugins.store-persist|store-valkey'
       # The fixtures the three cells gate on. Identical to ci.yml's shadow-oracle job, host-side:
-      # the services above publish their container ports onto the runner, and record.sh runs on the
-      # runner, not in a container.
+      # the services above publish their container ports onto the runner, and the recorder runs on
+      # the runner, not in a container.
       BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
       BUSBAR_TEST_MYSQL_URL: mysql://busbar:busbar@127.0.0.1:3306/busbar_test
       VALKEY_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # A TOOLCHAIN, DECLARED. Both the service-image gate (a Rust xtask gate) and `bin/oracle`
+      # (which builds the pinned busbar-oracle engine from the busbar-release checkout) need cargo.
+      # Running on whatever the runner image happens to ship is a property of the image, not of
+      # anything this repository controls — ci.yml's `service image pins` job says this at length
+      # after it failed exactly that way with `cargo: command not found`.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+
       # FIRST, AND BEFORE ANYTHING EXPENSIVE. If the `image:` lines above have drifted from the
       # pinned table, everything after this step records against a backend that is not the one the
       # candidate side will use, and the resulting golden is worse than no golden at all.
+      # `scripts/service-images-check.sh` became this xtask gate (ci.yml runs the same two lines).
       - name: The service pins are the ones the table pins
-        timeout-minutes: 5
-        run: bash scripts/service-images-check.sh
+        timeout-minutes: 10
+        run: cargo xtask gate service-images --selftest
+      - name: Service-image pin gate
+        timeout-minutes: 10
+        run: cargo xtask gate service-images
 
-      # THE FIXTURE GATE DECIDES BOTH WAYS. It is the single function that turns "this env var is
-      # set" into RECORD and its absence into GAP, and this whole workflow exists to take its
-      # recording arm. A gate that had quietly stopped reading the variable would name three gaps
-      # here and the run would go green having recorded nothing. Needs no binary and no backend.
-      - name: The fixture gate decides both ways (fixture-gate selftest)
-        timeout-minutes: 5
-        run: bash testing/shadow-oracle/fixture-gate-selftest.sh
+      # THE FIXTURE-GATE SELFTEST IS GONE, AND ITS ABSENCE IS DELIBERATE, NOT AN OVERSIGHT. It used
+      # to run here as `testing/shadow-oracle/fixture-gate-selftest.sh`, proving the gate that turns
+      # "this env var is set" into RECORD and its absence into GAP decides BOTH ways. c73ae4f66 took
+      # that script out of this tree with the rest of the oracle tool and dropped the step from
+      # ci.yml rather than repointing it — the pinned engine has no equivalent subcommand to call.
+      # The three-row PASS check further down is what now refuses a run that recorded gaps.
 
       # THE RECORDER'S PORTS ARE NOT THE KERNEL'S TO HAND OUT. Same reservation ci.yml's
       # shadow-oracle job makes, for the same reason: the oracle binds a fixed 487xx/488xx band that
@@ -159,22 +186,23 @@ jobs:
           path: ~/.cache/busbar-oracle
           key: ${{ steps.rev.outputs.key }}
 
-      # THE GOLDEN'S TRUTH IS THE PUBLISHED ARTIFACT, NEVER A BUILD OF THE TAG. fetch-golden.sh
+      # THE GOLDEN'S TRUTH IS THE PUBLISHED ARTIFACT, NEVER A BUILD OF THE TAG. `fetch-golden`
       # re-hashes what is on disk against golden-digests.tsv on EVERY invocation — a cache hit is
       # verified, not trusted — and deletes a mismatched download rather than recording from it.
+      # `--check` is the re-verify arm, the same one scripts/verify-1.6.0-done.sh calls.
       - name: Fetch the published 1.5.5 binary and plugins by digest
         timeout-minutes: 15
         run: |
           set -euo pipefail
-          bash testing/shadow-oracle/fetch-golden.sh
-          bash testing/shadow-oracle/fetch-golden.sh --check
+          ./bin/oracle fetch-golden
+          ./bin/oracle fetch-golden --check
           # The plugin set is DERIVED from the same digest file the cells read: a hand-kept copy of
           # it goes stale the day a plugin is added, and the symptom is a store cell recording
           # against a plugin that was never fetched.
           plugins="$(cut -f1 testing/shadow-oracle/plugin-digests.tsv | grep -v '^#' | sort -u)"
           [ -n "$plugins" ] || { echo "::error::no plugins derived from plugin-digests.tsv"; exit 1; }
           for pl in $plugins; do
-            bash testing/shadow-oracle/fetch-plugin.sh "$pl" >/dev/null
+            ./bin/oracle fetch-plugin "$pl" >/dev/null
           done
       - name: Cache the pinned 1.5.5 artifacts (save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
@@ -236,25 +264,32 @@ jobs:
       # store, the metrics buckets) must come out of a FULL run: a filtered re-record of
       # `ops.scrape|metrics|key` carried a bucket no full run has at that point. These three do not
       # have that property — each `plugins.store-persist|*` cell is a script cell that boots its own
-      # busbar against its own fresh backend schema, spends, restarts and reads back, and record.sh
-      # gives every cell its own working tree. Their bytes are a function of the binary and the
-      # backend, not of what ran before them.
+      # busbar against its own fresh backend schema, spends, restarts and reads back, and the
+      # recorder gives every cell its own working tree. Their bytes are a function of the binary and
+      # the backend, not of what ran before them.
+      #
+      # THE `--out` BASENAME MUST BE `candidate`, AND THAT IS NOT COSMETIC. bin/oracle forwards this
+      # to the native Rust recorder as `record --native --work-dir <dirname(--out)>`, and the native
+      # recorder always writes `<work-dir>/candidate`. An `--out …/part` would therefore leave the
+      # recording at `…/store-cells/candidate` while every step below read `…/store-cells/part` and
+      # found nothing. ci.yml's shadow-oracle job spells it `…/recordings/candidate` for the same
+      # reason.
       - name: Record the three store cells (and nothing else)
         timeout-minutes: 20
         run: |
           set -euo pipefail
           rm -rf target/oracle/store-cells
-          mkdir -p target/oracle/store-cells/part
+          mkdir -p target/oracle/store-cells/candidate
           # The ids carry `|` and `.`, both regex metacharacters, and one of them IS the field
           # separator of every cell id in the tree. Escaped by re.escape and anchored per id, so the
           # filter selects these three exactly and cannot widen into a prefix match.
           re="$(python3 -c 'import os,re;print("|".join("(^%s$)" % re.escape(i) for i in os.environ["STORE_CELL_IDS"].split()))')"
           echo "filter: $re"
-          bash testing/shadow-oracle/record.sh \
+          ./bin/oracle record \
             --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" \
             --plane all \
             --filter "$re" \
-            --out target/oracle/store-cells/part
+            --out target/oracle/store-cells/candidate
 
       # THREE ROWS, ALL PASS, AND NOTHING ELSE. Each arm is checked on its own terms:
       #   * a row that is not PASS is the failure this workflow exists to catch — a SKIP here means
@@ -268,7 +303,7 @@ jobs:
         timeout-minutes: 5
         run: |
           set -euo pipefail
-          led=target/oracle/store-cells/part/ledger.tsv
+          led=target/oracle/store-cells/candidate/ledger.tsv
           [ -s "$led" ] || { echo "::error::the recorder produced no ledger; nothing was recorded"; exit 1; }
           rows=$(awk -F'\t' 'NF' "$led" | wc -l | tr -d ' ')
           [ "$rows" = 3 ] || { echo "::error::expected exactly 3 ledger rows, got ${rows}"; awk -F'\t' 'NF{print "  "$1"\t"$2}' "$led"; exit 1; }
@@ -285,17 +320,21 @@ jobs:
 
       # MERGED HERE, INTO SCRATCH, SO THE HUMAN'S MERGE IS NOT THE FIRST ONE EVER ATTEMPTED. This
       # normalises the part into the exact layout import-store-cells.sh will feed to the golden and
-      # re-runs merge-recordings.py's provenance rules (version and binary_sha256 identity, the
-      # ledger written in cells.json order). A part that cannot merge with itself cannot merge with
-      # the golden either, and finding that out here costs one step instead of one round trip.
+      # re-runs the engine's provenance rules (version and binary_sha256 identity, the ledger
+      # written in cells.json order). A part that cannot merge with itself cannot merge with the
+      # golden either, and finding that out here costs one step instead of one round trip.
+      # `--cells` for the same reason land.sh and import-store-cells.sh pass it: the merged ledger
+      # is written in cells.json order rather than in part order, so a merged part stays
+      # byte-comparable to a single-shot recording.
       - name: Merge the part into a scratch recording
         timeout-minutes: 5
         run: |
           set -euo pipefail
           rm -rf target/oracle/store-cells/merged
-          python3 testing/shadow-oracle/merge-recordings.py \
+          ./bin/oracle merge \
             --out target/oracle/store-cells/merged \
-            target/oracle/store-cells/part
+            --cells testing/shadow-oracle/cells.json \
+            target/oracle/store-cells/candidate
           python3 - <<'PY'
           import json, sys
           m = json.load(open("target/oracle/store-cells/merged/meta.json"))
@@ -343,7 +382,7 @@ jobs:
               "The images are the rows `testing/fleet-fixtures/service-images.tsv` pins, which is the",
               "same pin `ci.yml`'s shadow-oracle job records the CANDIDATE side against — that",
               "agreement is what makes the two sides comparable, and it is proven by",
-              "`scripts/service-images-check.sh`, not asserted here.",
+              "`cargo xtask gate service-images`, not asserted here.",
               "",
               f"- postgres  `{images.get('postgres','?')}`",
               f"    - {pg}",

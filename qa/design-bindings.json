@@ -14,15 +14,15 @@
   "cells": "testing/shadow-oracle/cells.json"
  },
  "counts": {
-  "bindings": 103,
-  "mapped": 103,
+  "bindings": 104,
+  "mapped": 104,
   "unproven": 0,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
    "gate": 13,
    "lint": 5,
-   "oracle-cell": 58,
+   "oracle-cell": 65,
    "oracle-family": 5,
    "test": 452
   }
@@ -4917,6 +4917,66 @@
    ],
    "verdict": "PASS",
    "verdict_detail": "test:a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric"
+  },
+  {
+   "id": "PB-103",
+   "surface": "the dated rate-card history, and the `/usage` read path that does not consult it",
+   "binding": "cards are an APPEND-ONLY DATED HISTORY (owner ruling `docs/design/BUSBAR-1.6.0.md` #79): a config `PUT /config/settings` card APPENDS an entry rather than replacing the price (`crates/busbar/src/root/kernel.rs:262`, `effective_from` — `0` on the first entry and `now_ms` after, so publishing a card never touches the window before its own date; the window recompute is `:291`), and 1.5.5's rate-card completeness refusal is byte-identical (a partial card is still the same 400 `invalid_request` naming every unpriced model with its paste-ready zero-rate stub). The signed back-dated correction is ADDITIVE, never a rewrite of a 1.5.5 surface: `POST /api/v1/admin/ledger/amend-rate-history` (`crates/busbar/src/root/units_admin/mod.rs:679`) is a route 1.5.5 does not carry, so 1.5.5 answers it with the ROUTER's generic 404 `not_found` / \"resource not found\" — BYTE-IDENTICAL signed and unsigned, because 1.5.5 is refusing the route and never reads `X-Busbar-Signature`. **THE LEGACY `GET /api/v1/admin/usage` READ PATH IS UNCHANGED FROM 1.5.5, AND STAYS SO UNTIL #79's OWED ITEM LANDS:** `busbar_core_admin::v1::service::get_usage` takes a `window` and nothing else, parses NO `as_of` request parameter (the `as_of` in its response is an OUTPUT, always `store::now()`, so a URL naming one is silently ignored exactly as 1.5.5 ignored it), and derives every row's spend flat off the CURRENT card through `derive_spend_micros_row` — reprice-on-read, tokens the stored truth — carrying `spend_micros` at full micro-unit precision with NO minor-unit projection (a sub-cent card reads back 18 per row and 54 as an exact sum). Resolving that read through the history by the posting's own `arrived_ms` is #79's OWED work and the registered D-3 breaking divergence, NOT shipped behaviour; `PostingStamp.rate_card_version` is reporting provenance and is never the pricing input",
+   "inventory": "governance; routes-admin; design `docs/design/rate-card-history.md`; owner ruling `.6.0.md` #79",
+   "status": "mapped",
+   "checks": [
+    {
+     "kind": "oracle-cell",
+     "ref": "billing|rate-card|history-mid-window",
+     "status": "mapped",
+     "why": "TWO complete rate cards written into ONE window (10x, then 100x + a 3-cent per_request_fee), with a chat before the first, between the two and after the second, and GET /api/v1/admin/usage read after EACH write. RECORDED TRUTH (published 1.5.5, binary 48e2800c): both PUTs are 200, all three chats are 200, and the three reads total 25,000,000 / 500,060,000 / 750,090,000 micro-units — every read prices the ENTIRE window at the card in force at READ time. The arithmetic says so unambiguously: chat1 ALONE reads back at 25,000,000 (one request at CARD A) when it was earned at 2,500,000 under the boot card, and by the final read all three requests sit at 250,030,000 each. Priced-at-charge would have given 2,500,000 / 27,500,000 / 277,530,000 — no leading digit in common — so the reading is measured, not inferred. THE CONSEQUENCE, which is the finding: the first request is reported at THREE different prices over the life of ONE window, so an invoice read off this endpoint stops being reproducible from it the moment a rate is corrected, and the number depends only on when you looked. This is the cell the 1.6.0 divergence is judged on (the money-as-a-lookup binding): under the dated rate-card history the two pre-edit requests keep the boot and 10x cards, the final answer becomes 277,530,000, and ONLY the final read moves — the two earlier reads were already the honest figure at their own instant and stay byte-identical. The script driver, not `pre`, because a `pre` request's response is never recorded (record.sh run_pre_request checks only that busbar ANSWERED) and this cell's finding is the relation between the three reads, not any one of them.",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "config|rate-card|append-not-replace",
+     "status": "mapped",
+     "why": "a PARTIAL rate card (one model of the nine) through PUT /config/settings. RECORDED (published 1.5.5): 400 `invalid_request` — \"config validation failed: rate_card is present but 8 configured models have no rate entry (rate_card is AUTHORITATIVE and COMPLETE: you either price nothing or price everything)\", followed by all eight missing models named one per line with a paste-ready zero-rate stub. The sentence used to be quoted from the source; it is now bytes, INCLUDING the remediation block, so a later binary that keeps the refusal but drops the list of what is missing is a diff. This is the refusal an earlier pass at the epoch cell tripped over WITHOUT seeing it (a `pre` need only be ANSWERED, not 2xx, so a refused write was recorded as a pricing epoch), and it is the precondition for the append-not-replace rule: a config PUT can APPEND a dated entry to the history precisely because the thing it carries is always a WHOLE card, never a patch. Under 1.6.0 this stays a 400 and the accepted sibling appends instead of overwriting — which is what /ledger/rate-history shows, and what makes 'append, not replace' a property of a well-defined object rather than a slogan.",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "ledger|amend|adjusting-entries",
+     "status": "mapped",
+     "why": "POST /api/v1/admin/ledger/amend-rate-history, SIGNED, against the binary that has no ledger route table. RECORDED (published 1.5.5): 404 with code `not_found` and message \"resource not found\" — the ROUTER's generic miss, NOT a 405 from a path that exists for another method, and the `X-Busbar-Signature` header is never read (it cannot be: nothing routes). That distinction is the point of recording it rather than assuming it: a 405 would have meant the path already exists in some form. The refusal is the proof the 1.6.0 verb is ADDITIVE — no 1.5.5 operator can be relying on an answer here, because there is no answer here — and it is recorded before the verb is built, so the claim is a diff rather than an assertion.",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "ledger|amend|refused-unsigned",
+     "status": "mapped",
+     "why": "the same amend call with NO operator signature. RECORDED (published 1.5.5): 404 `not_found` / \"resource not found\", BYTE-IDENTICAL to the signed sibling — which is the whole value of the pair. 1.5.5 is refusing the ROUTE and knows nothing about signatures, so the two calls cannot be told apart; had they differed, the premise that this verb is new would be false and the additive registration would be wrong. Under 1.6.0 the two separate — signed proceeds and journals a repricing record, unsigned is refused AND journalled — and this cell is the recorded baseline that separation is measured against.",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "ledger|currency|minor-unit-rounding",
+     "status": "mapped",
+     "why": "a complete card priced at ONE micro-unit per token — a whole request costs 11+7 = 18 micro-units against a USD minor unit of 10,000 — then GET /admin/usage. RECORDED (published 1.5.5): every per-key row is spend_micros 18, and the per-model row and the total are 54, an EXACT sum of three exact rows. So on this endpoint 1.5.5 does NOT project to a minor unit at all: `spend_micros` is carried at full micro-unit precision and nothing is truncated to cents anywhere in the view — the cents truncation lives on the paths that REPORT cents, not here. That is the baseline the minor-unit rule must be compatible with, and it makes the compatible reading precise: 'divide by 10^(9-exp) ONCE per row, truncating' has to leave THIS endpoint's figures alone, or the identity test's statement 2 — exact against the published 1.5.5 binary for a single-entry history — fails on any window worth less than a cent, which is every window on a quiet day. Recorded on the currency 1.5.5 already has, so the zero-exponent (JPY) and three-exponent (BHD) arms 1.6.0 adds have a USD baseline that is a measurement rather than a belief.",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "ledger|currency|native",
+     "status": "mapped",
+     "why": "a complete card that prices ONE lane in a second currency natively (m-openai-chat in JPY, the rest USD) — the shape the native-currency rule requires and the shape 1.5.5 has no field for. RECORDED (published 1.5.5): 400 `invalid_request`, \"malformed config settings body: unknown field `currency`, expected one of `input_utok`, `output_utok`, `cache_read_utok`, `cache_write_utok`\" — 1.5.5 REFUSES the key rather than accepting and dropping it, and names the four it does know. That is the good answer and it is worth pinning as bytes, because the alternative was a card that says JPY while /usage keeps labelling the money USD: a mislabelled invoice no cell would have caught. Since the field is refused today, 1.6.0 accepting it is purely ADDITIVE — the known-key list IS the contract, and this cell is what proves `currency` was outside it before the history landed. Fixing the wording also holds a 1.6.0 build that accepts `currency` to refusing every OTHER misspelling the same way.",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "ledger|rate-history|as-of",
+     "status": "mapped",
+     "why": "a mid-window 100x card, then GET /admin/usage?as_of=1 — the snapshot selector 1.6.0 gives every ledger read, sent to the binary that has no history to select from. RECORDED (published 1.5.5): 200, and the parameter is SILENTLY IGNORED. The body is the current-card reprice `billing|rate-card|epoch-mid-window` records — total 1,000,120,000, all four rows at the newest card — and the response's OWN `as_of` field comes back 0, not the 1 that was asked for. So 1.5.5 neither honours the snapshot nor refuses the request: it answers a DIFFERENT question under a name that promises a snapshot, and reports an `as_of` that contradicts the one in the URL. A caller who guesses this parameter today gets a confident wrong answer. Under 1.6.0 the same URL returns the snapshot it names — a changed number under unchanged request bytes, which is exactly why the additive registration has to name this cell instead of resting on the ledger endpoints being new.",
+     "source": "cells.json why"
+    }
+   ],
+   "verdict": "PASS",
+   "verdict_detail": "oracle-cell:billing|rate-card|history-mid-window, oracle-cell:config|rate-card|append-not-replace, oracle-cell:ledger|amend|adjusting-entries, oracle-cell:ledger|amend|refused-unsigned, oracle-cell:ledger|currency|minor-unit-rounding, oracle-cell:ledger|currency|native, oracle-cell:ledger|rate-history|as-of"
   }
  ]
 }
