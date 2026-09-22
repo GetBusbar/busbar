@@ -1,0 +1,8 @@
+{
+  "busbar-ws-subject": {
+    "1.1.1": { "behavior": "OK", "behaviorClose": "OK", "duration": 3, "reportfile": "busbar_ws_subject_case_1_1_1.json" },
+    "1.1.2": { "behavior": "OK", "behaviorClose": "OK", "duration": 2, "reportfile": "busbar_ws_subject_case_1_1_2.json" },
+    "2.1":   { "behavior": "OK", "behaviorClose": "OK", "duration": 4, "reportfile": "busbar_ws_subject_case_2_1.json" },
+    "9.1.1": { "behavior": "INFORMATIONAL", "behaviorClose": "INFORMATIONAL", "duration": 120, "reportfile": "busbar_ws_subject_case_9_1_1.json" }
+  }
+}

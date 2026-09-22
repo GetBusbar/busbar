@@ -26,6 +26,21 @@
 <a href="https://discord.com/invite/nnK5evXERp"><img src="https://img.shields.io/badge/Discord-join%20chat-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
+<p align="center">
+<!-- BEGIN conformance-badges (generated from conformance/manifest.json — do not edit; regenerate with `cargo xtask gate conformance-sync --write`) -->
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1201"><img src="https://img.shields.io/badge/A2A-conformant-2ea44f" alt="A2A conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1202"><img src="https://img.shields.io/badge/LLM_Anthropic-spec--conformant-2ea44f" alt="LLM Anthropic spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1203"><img src="https://img.shields.io/badge/LLM_Bedrock-spec--conformant-2ea44f" alt="LLM Bedrock spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1204"><img src="https://img.shields.io/badge/LLM_Cohere-spec--conformant-2ea44f" alt="LLM Cohere spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1205"><img src="https://img.shields.io/badge/LLM_Gemini-spec--conformant-2ea44f" alt="LLM Gemini spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1206"><img src="https://img.shields.io/badge/LLM_OpenAI-spec--conformant-2ea44f" alt="LLM OpenAI spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1207"><img src="https://img.shields.io/badge/LLM_Responses-spec--conformant-2ea44f" alt="LLM Responses spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1208"><img src="https://img.shields.io/badge/MCP-conformant-2ea44f" alt="MCP conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1209"><img src="https://img.shields.io/badge/Voice_Gemini_Live-spec--conformant-2ea44f" alt="Voice Gemini Live spec-conformant"></a>
+<a href="https://github.com/GetBusbar/busbar/actions/runs/1210"><img src="https://img.shields.io/badge/Voice_OpenAI_Realtime-spec--conformant-2ea44f" alt="Voice OpenAI Realtime spec-conformant"></a>
+<!-- END conformance-badges -->
+</p>
+
 Busbar sits between AI applications and the destinations they can reach:
 
 ```text

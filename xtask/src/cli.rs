@@ -7,6 +7,7 @@
 //! and a runner that collapses them is a runner that can report green over a gate that never
 //! executed.
 
+use crate::conformance_check;
 use crate::ctx::Ctx;
 use crate::denylist;
 use crate::gates;
@@ -22,7 +23,9 @@ usage:
   cargo xtask denylist [--selftest] [--format=tsv]
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed} | --check
-  cargo xtask full-gate [--list] [--selftest] [--dump-gates|--dump-cargo [FILE]]";
+  cargo xtask full-gate [--list] [--selftest] [--dump-gates|--dump-cargo [FILE]]
+  cargo xtask conformance check --suite <id>|all|--musts [--sha <sha>] [--manifest <path>] [--format=tsv]
+  cargo xtask conformance check --selftest";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
@@ -35,7 +38,7 @@ const LEGACY_LEDGER_ENV: &str = "LEDGER";
 /// after `cargo xtask` as a gate name. These two are the exceptions: the runner that DRIVES the
 /// gates and the register that RECORDS the audit, neither of which has an owed row set. Listed
 /// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
-pub const NON_GATE_SUBCOMMANDS: &[&str] = &["full-gate", "ledger"];
+pub const NON_GATE_SUBCOMMANDS: &[&str] = &["full-gate", "ledger", "conformance"];
 
 pub fn main(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
@@ -64,6 +67,15 @@ pub fn main(args: &[String]) -> i32 {
         },
         Some("teller-steps") => match open_ctx() {
             Ok(cx) => gates::teller_steps::run_arm(&cx, &args[1..]),
+            Err(code) => code,
+        },
+        // THE TURNSTILE-FACING PER-SUITE CONFORMANCE ADMISSION COMMAND. Not a gate: it answers a
+        // CLI question (`--suite <id>` / `--musts`) against the manifest `gate conformance-sync`
+        // already reconciled, read-only, so the release pipeline can shell to it directly
+        // (`CONFORMANCE-GATES-PLAN.md` §1.3 — turnstile drives local subprocesses, never GitHub
+        // check-runs).
+        Some("conformance") => match open_ctx() {
+            Ok(cx) => conformance_check::main(&cx, &args[1..]),
             Err(code) => code,
         },
         Some(other) => {
@@ -253,7 +265,13 @@ fn gate(args: &[String]) -> i32 {
         // and REFUSES — as rows, not as stderr — when a family has dropped below its recorded floor
         // or when the regeneration would ADD an id to the gaps file that is not accepted by name.
         // A refusal a reader can diff is the whole point of routing it through the ledger.
-        if matches!(reg.name, "kind-isolation" | "inventory-coverage") {
+        // `conformance-sync --write` REGENERATES conformance/manifest.json and the README badge
+        // block from the registry + verdicts, and answers through the ledger — a refusal a reader
+        // can diff — exactly like kind-isolation and inventory-coverage.
+        if matches!(
+            reg.name,
+            "kind-isolation" | "inventory-coverage" | "conformance-sync"
+        ) {
             let verdict = gates::execute(gate.as_ref(), &cx);
             gates::print_verdict(reg.name, &verdict);
             return i32::from(verdict.red);

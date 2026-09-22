@@ -1,0 +1,13 @@
+{
+  "schema": "busbar.conformance.verdict/1",
+  "suite": "voice-gemini-live",
+  "standard": "Google Gemini Live API",
+  "plan": "spec battery + replay",
+  "spec_version": "v1beta",
+  "status": "pass",
+  "armed": true,
+  "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
+  "run_id": "https://github.com/GetBusbar/busbar/actions/runs/1209",
+  "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1209",
+  "generated_at": "2026-09-19T14:05:00Z"
+}

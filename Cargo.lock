@@ -901,6 +901,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plane-decision"
+version = "1.6.0"
+dependencies = [
+ "busbar-api",
+ "busbar-contract",
+ "busbar-substrate",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
 dependencies = [

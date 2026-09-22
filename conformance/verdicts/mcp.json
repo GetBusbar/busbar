@@ -1,0 +1,13 @@
+{
+  "schema": "busbar.conformance.verdict/1",
+  "suite": "mcp",
+  "standard": "Model Context Protocol",
+  "plan": "official modelcontextprotocol TCK + in-house battery",
+  "spec_version": "2025-06-18",
+  "status": "pass",
+  "armed": true,
+  "commit": "67ee7910305068c2c86ccd1811d4bd189973b45b",
+  "run_id": "https://github.com/GetBusbar/busbar/actions/runs/1208",
+  "evidence": "https://github.com/GetBusbar/busbar/actions/runs/1208",
+  "generated_at": "2026-09-19T14:05:00Z"
+}

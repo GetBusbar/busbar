@@ -142,6 +142,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate ci-umbrella",
     "cargo xtask gate config-schema --selftest",
     "cargo xtask gate config-schema",
+    "cargo xtask gate conformance-sync --selftest",
+    "cargo xtask gate conformance-sync",
     "cargo xtask gate construction --selftest",
     "cargo xtask gate construction --report",
     // The POSTURE form, which is what ci.yml and keep-proof.yml now run as a blocking step. It

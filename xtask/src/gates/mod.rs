@@ -24,6 +24,7 @@ pub mod changelog;
 pub mod changelog_register;
 pub mod ci_umbrella;
 pub mod config_schema;
+pub mod conformance_sync;
 pub mod construction;
 pub mod denylist_gate;
 pub mod design_bindings;
@@ -2157,6 +2158,14 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(config_schema::ConfigSchemaGate),
         summary:
             "the config grammar is frozen at 1.5.3: snapshot drift plus additive-only vs a git ref",
+    },
+    Registration {
+        name: "conformance-sync",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(conformance_sync::ConformanceSyncGate),
+        summary:
+            "the conformance manifest, README badges and claims never drift from the real verdicts",
     },
     Registration {
         name: "inventory-coverage",
