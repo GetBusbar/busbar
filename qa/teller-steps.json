@@ -289,7 +289,7 @@
       "meter": {
         "cell": "mcp.rig|h2-meter-row",
         "status": "new",
-        "note": "scripts/mcp-subject/h2-meter-row.sh; one served tools/call settles to a usage delta of exactly one request, priced (per_request_fee) rather than zero",
+        "note": "scripts/mcp-subject/h2-meter-row.sh; one served tools/call settles to a usage delta of exactly one request, priced (per_request_fee) rather than zero, and posts exactly one metering row named (probe_ping, mcp) -- a row that exists only because the rig's subject is now a billing-ON deployment (#42). THREE MORE LEGS DRIVE THIS STEP and gate beside it, each currently RED on a decision the tree does not yet keep: h2-class-price.sh (the declared classes tool_calls/bytes are neither reportable nor priceable, #71), h2-card-epoch.sh (usage reprices off the current card, not the card in force at arrived_ms, #79), h2-unpriced-refuses.sh (billing ON with the hit class unpriced bills a silent zero instead of refusing, #42). This cell names the one scenario the matrix's schema holds; the other three are named here because a step proven by four legs must not read as proven by one",
         "root": {
           "state": "proven",
           "leg": "root-mcp",
@@ -401,7 +401,7 @@
       "meter": {
         "cell": "a2a.battery|h2-meter-row",
         "status": "new",
-        "note": "scripts/a2a-subject/h2-meter-row.sh; one served message/send settles to a usage delta of exactly one request, priced (per_request_fee) rather than zero",
+        "note": "scripts/a2a-subject/h2-meter-row.sh; one served message/send settles to a usage delta of exactly one request, priced (per_request_fee) rather than zero, and posts exactly one metering row named (agent:probe, a2a) -- a row that exists only because the rig's subject is now a billing-ON deployment (#42). THREE MORE LEGS DRIVE THIS STEP and gate beside it, each currently RED on a decision the tree does not yet keep: h2-class-price.sh (the declared class bytes is neither reportable nor priceable, #71), h2-card-epoch.sh (usage reprices off the current card, not the card in force at arrived_ms, #79), h2-unpriced-refuses.sh (billing ON with the hit class unpriced bills a silent zero instead of refusing, #42). This cell names the one scenario the matrix's schema holds; the other three are named here because a step proven by four legs must not read as proven by one",
         "root": {
           "state": "proven",
           "leg": "root-a2a",

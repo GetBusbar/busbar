@@ -1346,6 +1346,19 @@ nanos/spend budget biting at the right quantity (the existing `h2-admit-refusal`
 `h2-lib.sh` files. One edit converts two already-gating rigs from billing-off to billing-on and makes
 every subsequent pricing leg possible.
 
+**LANDED 2026-09-22, and it bought more than expected on one side and less on the other.** Both
+`h2-lib.sh` files now write `rate_card: {}` (an EMPTY but PRESENT card — the most a billing-on
+deployment of these planes can say, for the reason §13(2) measures). MORE than expected: the switch
+is not cosmetic, because `plane_host/govern.rs:226` gates the whole metering write on it, so the
+old subject wrote NO metering row for a served call and both `h2-meter-row.sh` legs now carry a
+third, genuinely new gating assertion — the meter proving it RAN, rather than the admission counter
+standing in for it. LESS than expected: the two flat-fee deltas those legs already assert did NOT
+move, and the reason is measured rather than assumed — `GET /keys/<id>/usage` reads the BUDGET CELL
+that `try_admit` bumps one step before the meter, on a path with no card gate at all. Six new
+gating legs sit beside the twelve (`h2-class-price.sh`, `h2-card-epoch.sh`, `h2-unpriced-refuses.sh`
+per plane, wired in `ci.yml` with no `continue-on-error`); they are RED today on the three
+disagreements parked in §13, which is the outcome that makes them witnesses rather than decoration.
+
 **AND THE ORACLE CANNOT BE MADE TO HELP — measured in the engine, three independent locks.** (1) The
 diff loop iterates only cells the GOLDEN LEDGER marks PASS (`run.rs:1464-1482`); a cell with no golden
 row never reaches `compare()` — it is not even `missing.golden`. (2) Gaps do not touch the verdict:
@@ -1395,6 +1408,42 @@ A clock hazard worth keeping: `bindings.now` is whole SECONDS while `effective_f
 (`root/kernel.rs:435`). Resolving a rate card at a seconds-valued instant matches only the from-zero
 opening entry and reports it forever — the same lie with a lookup in front of it. Any #79 resolution
 needs a millisecond binding.
+
+**THREE FIGURES MEASURED 2026-09-22 when §12's rate-card edit landed, parked here with both sides
+of each disagreement rather than tuned away.** The edit put `rate_card: {}` into both rigs'
+`h2-lib.sh`, which converts their subject from a billing-OFF node to a billing-ON one (#42). What
+that bought, and what it exposed, was measured end-to-end against the release binary — one served
+`message/send`, one key, one before/after read on every money surface the admin API has.
+
+1. **The ledger implies 0 and the node bills 1, and the defect is in the LEDGER, not the card.**
+   `Σ count × rate` over a2a's one declared class comes to **0**, because the serving path posts
+   `UsageComponent::Queries` with amount `0` (`busbar-a2a/src/a2a/receive.rs:729`; mcp's twin at
+   `busbar-mcp/src/mcp/method.rs:2510`) — a quantity of zero for an exchange that moved a document.
+   Observed spend is **1 cent**, the flat fee (#44), and nothing else. The two agree numerically
+   only because the class term is zero, which is agreement by absence. This is the same sign-off
+   this section already parks: until the plane reports the byte it billed, "approve the billed-byte
+   semantics" is approving an arithmetic nobody can observe. `scripts/{a2a,mcp}-subject/h2-class-price.sh`
+   is now the gating witness and is RED on exactly this.
+2. **No card can name a plane's declared class, so the product has an unsettable factor.** `rate_card:`
+   is keyed by CONFIG MODEL NAME and every key is validated against `models:`
+   (`busbar-kernel/src/config_validate/mod.rs:1465-1472`), and an entry's only members are the four
+   LLM token tiers (`RateEntryCfg`, `config/sections.rs:324`, `deny_unknown_fields`). Measured:
+   `rate_card: { bytes: { input_utok: 2 } }` fails `--validate` with *"rate_card names model 'bytes',
+   which is not defined under models:"*. So `rate(bytes)` and `rate(tool_calls)` are not numbers an
+   operator can set — #47's per-plane `rate_card`/`fees` reserved keys are the design answer and are
+   not implemented. Until they are, #71's `Σ count × rate` is unreachable on every post-1.5.5 plane
+   for every operator, not merely unexercised by the rigs.
+3. **A THIRD DISAGREEMENT, and it is between two rulings rather than between a rig and a ledger.**
+   `plane_host/govern.rs:226` gates the whole `record_metering` write on `cost.pricing_enabled()`
+   (`rate_card.is_some()`, `cost.rs:649`). Measured, same traffic, same plane, one config key apart:
+   billing OFF ⇒ `GET /api/v1/admin/usage` answers `by_model: []`, `total.requests: 0`; billing ON ⇒
+   one row, `{model: "agent:probe", provider: "a2a", requests: 1, spend_micros: 10000}`, every token
+   tier 0. #42 sanctions this in terms (*"rate_card ABSENT ⇒ … no metering, no ledger charge"*). The
+   owner's later ruling does not: *planes always ledger* — a plane emits raw counts per declared
+   class unconditionally, and pricing is a READ-TIME view (#71/#43), which a write-time card lookup
+   contradicts. **OWNER CALL OWED:** is the card allowed to decide whether counts are RECORDED, or
+   only whether they are PRICED? The rigs are written for the second reading and say nothing about
+   the first, because picking a side here is not a witness's job.
 
 ### ON THE CRITICAL PATH — each costs the owner ~60 seconds and unblocks ~2 agent-days
 
