@@ -57,7 +57,6 @@ busbar-store-memory = { path = "../store-memory" }
 # capability fan-out fills in. Additive: nothing in the engine calls the plane seam yet.
 busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-loader = { path = "../plugin-loader" }
-busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-secret-ref = { path = "../secret-ref" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }

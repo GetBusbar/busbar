@@ -605,7 +605,7 @@ fn hook_inert_gate_banner(
     name: &str,
     plugin: &str,
     kind: crate::config::HookKind,
-    needs_prompt: busbar_plugin_sign::NeedLevel,
+    needs_prompt: busbar_plugin_loader::sign::NeedLevel,
 ) -> Option<String> {
     if kind != crate::config::HookKind::Gate {
         return None;
@@ -636,7 +636,7 @@ fn effective_access(
     env: &HookEnv,
 ) -> (crate::config::PromptAccess, crate::config::UserAccess) {
     use crate::config::{PromptAccess, UserAccess};
-    use busbar_plugin_sign::NeedLevel;
+    use busbar_plugin_loader::sign::NeedLevel;
 
     let grant_prompt = hook.prompt;
     let grant_user = hook.user;

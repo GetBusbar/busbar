@@ -152,7 +152,6 @@ rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 busbar-store-memory = { path = "../store-memory" }
 busbar-secret-ref = { path = "../secret-ref" }
-busbar-plugin-sign = { path = "../plugin-sign" }
 # THE ADMIN JSON-REST SERVICE, dev-only — a dev-dep BACK-EDGE, not linked into any shipped target
 # (the same shape as busbar-mcp's `busbar-llm` back-edge). `/api/v1/admin/*` is served by
 # busbar-admin, which busbar-core nests through the runtime fn-pointer seam `busbar_core::admin::seam`;

@@ -41,6 +41,10 @@ mod hostlog;
 mod legacy_usage;
 pub mod plane;
 pub mod registry;
+// The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
+// trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
+// policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
+pub mod sign;
 mod stage;
 pub mod store_adapter;
 pub mod tarball;

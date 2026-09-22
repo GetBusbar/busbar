@@ -12,7 +12,6 @@ name = "busbar-plugin-pack"
 path = "src/main.rs"
 
 [dependencies]
-busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 # The extracted SecretRef reference type — reachable from this tooling crate now (it used to be
 # pub(crate) inside the busbar binary crate). Used to derive the x-busbar-secret `oneOf` shape

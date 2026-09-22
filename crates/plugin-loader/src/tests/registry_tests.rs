@@ -4,7 +4,7 @@
 //! Tests for `crates/plugin-loader/src/registry.rs`.
 
 use super::*;
-use busbar_plugin_sign::{sign, SigningKey};
+use crate::sign::{sign, SigningKey};
 
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
@@ -789,7 +789,7 @@ fn crafted_publisher_cannot_forge_signature_label() {
     assert!(reg.resolve("acme").is_none());
     assert_eq!(
         reg.skipped()[0].kind,
-        busbar_plugin_sign::RejectKind::UnknownPublisher
+        crate::sign::RejectKind::UnknownPublisher
     );
 
     let rows = inventory(&dir, &policy(&release));
@@ -818,7 +818,7 @@ fn crafted_publisher_cannot_forge_signature_label() {
     assert!(reg.resolve("acme").is_none());
     assert_eq!(
         reg.skipped()[0].kind,
-        busbar_plugin_sign::RejectKind::UntrustedFloored,
+        crate::sign::RejectKind::UntrustedFloored,
         "a floored untrusted artifact must resolve to UntrustedFloored, not AntiDowngrade"
     );
     let rows = inventory(&dir, &floored);

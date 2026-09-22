@@ -49,7 +49,7 @@ echo "gate: ephemeral release pubkey $PUB"
 # ── 1. Build busbar with the ephemeral PUBLIC key embedded ───────────────────────────────────────
 # option_env!("BUSBAR_RELEASE_PUBKEY") is COMPILE-time; cargo tracks env-var deps of env!/option_env!
 # in dep-info, but touch the crate anyway so a cached no-key build can never be reused.
-touch "$BUSBAR_DIR/crates/plugin-sign/src/lib.rs"
+touch "$BUSBAR_DIR/crates/plugin-loader/src/sign.rs"
 (cd "$BUSBAR_DIR" && BUSBAR_RELEASE_PUBKEY="$PUB" cargo build --release -q --bin busbar)
 BUSBAR_VERSION=$("$BUSBAR" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 echo "gate: busbar $BUSBAR_VERSION built with embedded ephemeral key"

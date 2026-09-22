@@ -23,7 +23,7 @@
 //! half goes in `plugins.trust.publishers` (third-party) or is embedded into the busbar binary at
 //! build time via `BUSBAR_RELEASE_PUBKEY` (first-party); the PRIVATE half is the signing secret.
 
-use busbar_plugin_sign::{sign, HookNeeds, Manifest, NeedLevel, SigningKey};
+use busbar_plugin_loader::sign::{sign, HookNeeds, Manifest, NeedLevel, SigningKey};
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 
@@ -544,7 +544,7 @@ fn pack(args: &[String]) -> ExitCode {
             }
             Err(_) if allow_unsigned => {
                 let mut m = manifest;
-                m.sha256 = busbar_plugin_sign::sha256_hex(&lib_bytes);
+                m.sha256 = busbar_plugin_loader::sign::sha256_hex(&lib_bytes);
                 m
             }
             Err(_) => {
@@ -557,11 +557,11 @@ fn pack(args: &[String]) -> ExitCode {
         };
 
         // Structural self-check: refuse to package a manifest busbar would refuse to load.
-        busbar_plugin_sign::validate_structure(
+        busbar_plugin_loader::sign::validate_structure(
             &manifest,
             &lib_bytes,
             &busbar_plugin_loader::supported_abi,
-            busbar_plugin_sign::HOST_IDENTITY,
+            busbar_plugin_loader::sign::HOST_IDENTITY,
         )
         .map_err(|e| format!("manifest would fail busbar's structural validation: {e}"))?;
 

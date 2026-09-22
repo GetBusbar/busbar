@@ -3361,7 +3361,7 @@ pub(crate) async fn plugin_schema(
         let kind = loadable.map(|p| p.manifest.kind.clone());
         let restart_required_default = kind
             .as_deref()
-            .map(busbar_plugin_sign::kind_restart_default);
+            .map(busbar_plugin_loader::sign::kind_restart_default);
         if described.is_some() {
             return ok_json(
                 StatusCode::OK,
@@ -3391,7 +3391,7 @@ pub(crate) async fn plugin_schema(
             "trust": trust,
             "source": "manifest",
             "kind": loadable.manifest.kind,
-            "restart_required_default": busbar_plugin_sign::kind_restart_default(&loadable.manifest.kind),
+            "restart_required_default": busbar_plugin_loader::sign::kind_restart_default(&loadable.manifest.kind),
         }),
     )
 }
@@ -3420,14 +3420,14 @@ fn manifest_schema(
 
 /// The catalog's own trust vocabulary (`"trusted" | "unverified" | "rejected"` — see
 /// `docs/admin-api.md`'s plugin catalog and `service.rs`'s `evaluate()` mapping), applied to a
-/// [`busbar_plugin_sign::Verdict`]. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
+/// [`busbar_plugin_loader::sign::Verdict`]. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
 /// is never `"rejected"` — a rejected artifact is a `SkippedPlugin`, not a load candidate — but
 /// the mapping stays total (not a partial match on `Trusted`/`Allowed` alone) so a future verdict
 /// variant is a compile error here, not a silently-missing label.
-fn verdict_trust(v: &busbar_plugin_sign::Verdict) -> &'static str {
+fn verdict_trust(v: &busbar_plugin_loader::sign::Verdict) -> &'static str {
     match v {
-        busbar_plugin_sign::Verdict::Trusted { .. } => "trusted",
-        busbar_plugin_sign::Verdict::Allowed { .. } => "unverified",
+        busbar_plugin_loader::sign::Verdict::Trusted { .. } => "trusted",
+        busbar_plugin_loader::sign::Verdict::Allowed { .. } => "unverified",
     }
 }
 

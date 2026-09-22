@@ -158,7 +158,7 @@ fn install_static_auth_plugin(dir: &Path) -> bool {
         return false;
     };
     let lib = std::fs::read(&path).expect("read the static-auth cdylib");
-    let m = busbar_plugin_sign::Manifest {
+    let m = busbar_plugin_loader::sign::Manifest {
         name: "e2e-auth-static".into(),
         alias: "e2e-idp".into(),
         kind: "auth".into(),
@@ -168,7 +168,7 @@ fn install_static_auth_plugin(dir: &Path) -> bool {
             .iter()
             .max()
             .expect("auth abi"),
-        sha256: busbar_plugin_sign::sha256_hex(&lib),
+        sha256: busbar_plugin_loader::sign::sha256_hex(&lib),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),

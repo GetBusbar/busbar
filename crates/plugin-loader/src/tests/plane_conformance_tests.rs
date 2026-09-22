@@ -14,7 +14,7 @@
 use busbar_plugin::hot::pod::StatusClass;
 use busbar_plugin::hot::{EmitHandle, InboundHandle, IngressCarrier, PlaneHostVtable, WorkItem};
 use busbar_plugin_example_plane::PLANE_DECL as COMPILED_IN;
-use busbar_plugin_sign::{sha256_hex, sign, Manifest, SigningKey, TrustPolicy};
+use crate::sign::{sha256_hex, sign, Manifest, SigningKey, TrustPolicy};
 
 /// Locate the REAL `busbar-plane-example` cdylib built into this workspace's target dir (uplifted or
 /// under `deps`, newest wins). Mirrors `store_example_plugin_path()` in `lib_tests.rs`.

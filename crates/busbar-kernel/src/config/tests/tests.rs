@@ -2895,7 +2895,7 @@ fn test_resolve_projects_admin_auth_names() {
 /// at the pin loads, below the pin refuses.
 #[test]
 fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
-    use busbar_plugin_sign::{evaluate, sign, Manifest, SigningKey, Verdict};
+    use busbar_plugin_loader::sign::{evaluate, sign, Manifest, SigningKey, Verdict};
 
     // A first-party release key + an OLD (below the current binary) signed first-party artifact.
     let release = SigningKey::from_bytes(&[7u8; 32]);
@@ -2907,7 +2907,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             alias: "valkey".into(),
             kind: "store".into(),
             version: "0.9.0".into(), // below any real CARGO_PKG_VERSION (1.x)
-            publisher: busbar_plugin_sign::FIRST_PARTY_PUBLISHER.into(),
+            publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
             abi_version: 2,
             sha256: String::new(),
             signature: String::new(),
@@ -2971,7 +2971,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             alias: "valkey".into(),
             kind: "store".into(),
             version: "0.8.0".into(),
-            publisher: busbar_plugin_sign::FIRST_PARTY_PUBLISHER.into(),
+            publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
             abi_version: 2,
             sha256: String::new(),
             signature: String::new(),

@@ -3562,6 +3562,56 @@
    ],
    "rounds": [
     {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "b39cbda5887ca455a23ff38104dfb538ea110cdb0c259a6d4f585b0c9669b14c",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+     "hashed_as": {
+      "id": "crates/plugin-sign/src",
+      "paths": [
+       "crates/plugin-sign/src"
+      ],
+      "exclude": [
+       "crates/plugin-sign/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/plugin-sign/src"
+     ]
+    },
+    {
+     "round": 2,
+     "result": "zero",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "5f4c91cdb52915b2a182e4a96c08743758a2ecd32cf2048e059029a22f7b5364",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0
+     },
+     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
+     "hashed_as": {
+      "id": "crates/plugin-sign/src",
+      "paths": [
+       "crates/plugin-sign/src"
+      ],
+      "exclude": [
+       "crates/plugin-sign/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/plugin-sign/src"
+     ]
+    },
+    {
      "round": 5,
      "result": "findings",
      "auditor": "opus",
@@ -3711,56 +3761,6 @@
       "HIGH": 0,
       "MEDIUM": 0,
       "LOW": 1
-     },
-     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
-    }
-   ]
-  },
-  {
-   "id": "crates/plugin-sign/src",
-   "kind": "production",
-   "paths": [
-    "crates/plugin-sign/src"
-   ],
-   "tree_hash": "5f4c91cdb52915b2a182e4a96c08743758a2ecd32cf2048e059029a22f7b5364",
-   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-   "round": 2,
-   "result": "zero",
-   "counts": {
-    "HIGH": 0,
-    "MEDIUM": 0,
-    "LOW": 0
-   },
-   "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
-   "auditor": "opus-plugins-auditor-a",
-   "fixed_at": null,
-   "exclude": [
-    "crates/plugin-sign/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-prod-auditor-plugins",
-     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
-     "tree_hash": "b39cbda5887ca455a23ff38104dfb538ea110cdb0c259a6d4f585b0c9669b14c",
-     "counts": {
-      "HIGH": 4,
-      "MEDIUM": 15,
-      "LOW": 24
-     },
-     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
-    },
-    {
-     "round": 2,
-     "result": "zero",
-     "auditor": "opus-plugins-auditor-a",
-     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-     "tree_hash": "5f4c91cdb52915b2a182e4a96c08743758a2ecd32cf2048e059029a22f7b5364",
-     "counts": {
-      "HIGH": 0,
-      "MEDIUM": 0,
-      "LOW": 0
      },
      "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
@@ -5921,15 +5921,47 @@
    "paths": [
     "crates/plugin-loader/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
+   "tree_hash": "9fdcc40f0e54d1562a8a2d65203f3a5ee3d4ebee2de2d411474f17012917f88d",
+   "audited_at": "5cfe127d93effa9cd16213c9f5d1f4021f46c5ec",
+   "round": 2,
    "result": "unaudited",
    "counts": {},
-   "report": null,
+   "report": "NOT A READING. crates/plugin-loader/src/tests has never been audited; this round exists only so the round(s) carried in from crates/plugin-sign/src/tests cannot be mistaken for a verdict about this scope. The carried rounds are anchored by `hashed_as` to the paths they were actually read under.",
    "auditor": null,
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "e8c354c126a2d9f42397fed1b66182f2b3da220b5117f8a01969765f2a44ac17",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0
+     },
+     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
+     "hashed_as": {
+      "id": "crates/plugin-sign/src/tests",
+      "paths": [
+       "crates/plugin-sign/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/plugin-sign/src/tests"
+     ]
+    },
+    {
+     "round": 2,
+     "result": "unaudited",
+     "auditor": null,
+     "audited_at": "5cfe127d93effa9cd16213c9f5d1f4021f46c5ec",
+     "tree_hash": "9fdcc40f0e54d1562a8a2d65203f3a5ee3d4ebee2de2d411474f17012917f88d",
+     "counts": {},
+     "report": "NOT A READING. crates/plugin-loader/src/tests has never been audited; this round exists only so the round(s) carried in from crates/plugin-sign/src/tests cannot be mistaken for a verdict about this scope. The carried rounds are anchored by `hashed_as` to the paths they were actually read under."
+    }
+   ]
   },
   {
    "id": "crates/plugin-loader/tests",
@@ -6030,40 +6062,6 @@
    "auditor": null,
    "fixed_at": null,
    "rounds": []
-  },
-  {
-   "id": "crates/plugin-sign/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/plugin-sign/src/tests"
-   ],
-   "tree_hash": "e8c354c126a2d9f42397fed1b66182f2b3da220b5117f8a01969765f2a44ac17",
-   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-   "round": 1,
-   "result": "zero",
-   "counts": {
-    "HIGH": 0,
-    "MEDIUM": 0,
-    "LOW": 0
-   },
-   "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
-   "auditor": "opus-plugins-auditor-a",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "zero",
-     "auditor": "opus-plugins-auditor-a",
-     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-     "tree_hash": "e8c354c126a2d9f42397fed1b66182f2b3da220b5117f8a01969765f2a44ac17",
-     "counts": {
-      "HIGH": 0,
-      "MEDIUM": 0,
-      "LOW": 0
-     },
-     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
-    }
-   ]
   },
   {
    "id": "crates/secret-ref/src/tests",

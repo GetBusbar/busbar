@@ -34,20 +34,20 @@ fn packed_tarball_verifies_end_to_end() {
         host: None,
     };
     let signed = sign(&key, m, lib);
-    busbar_plugin_sign::validate_structure(
+    busbar_plugin_loader::sign::validate_structure(
         &signed,
         lib,
         &busbar_plugin_loader::supported_abi,
-        busbar_plugin_sign::HOST_IDENTITY,
+        busbar_plugin_loader::sign::HOST_IDENTITY,
     )
     .expect("structural");
     let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
     let up = busbar_plugin_loader::tarball::unpack(&tarball).unwrap();
-    let mut policy = busbar_plugin_sign::TrustPolicy::default();
+    let mut policy = busbar_plugin_loader::sign::TrustPolicy::default();
     policy.publishers.insert("acme".into(), key.verifying_key());
     assert!(matches!(
-        busbar_plugin_sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
-        busbar_plugin_sign::Verdict::Trusted { .. }
+        busbar_plugin_loader::sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
+        busbar_plugin_loader::sign::Verdict::Trusted { .. }
     ));
 }
 
@@ -162,24 +162,24 @@ fn packed_hook_needs_prompt_rw_is_signed() {
     };
     let signed = sign(&key, m, lib);
     assert_eq!(signed.needs.prompt, NeedLevel::Rw);
-    busbar_plugin_sign::validate_structure(
+    busbar_plugin_loader::sign::validate_structure(
         &signed,
         lib,
         &busbar_plugin_loader::supported_abi,
-        busbar_plugin_sign::HOST_IDENTITY,
+        busbar_plugin_loader::sign::HOST_IDENTITY,
     )
     .expect("structural");
     // Tampering the declared intent after signing breaks verification (needs is signed).
     let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
     let up = busbar_plugin_loader::tarball::unpack(&tarball).unwrap();
-    let policy = busbar_plugin_sign::TrustPolicy {
+    let policy = busbar_plugin_loader::sign::TrustPolicy {
         first_party_key: Some(key.verifying_key()),
         binary_version: "1.5.0".into(),
         ..Default::default()
     };
     assert!(matches!(
-        busbar_plugin_sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
-        busbar_plugin_sign::Verdict::Trusted { .. }
+        busbar_plugin_loader::sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
+        busbar_plugin_loader::sign::Verdict::Trusted { .. }
     ));
 }
 

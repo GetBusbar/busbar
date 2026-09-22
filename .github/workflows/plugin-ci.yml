@@ -415,7 +415,7 @@ jobs:
         # option_env!("BUSBAR_RELEASE_PUBKEY") is compile-time (crates/plugin-sign); with the key
         # set, this binary VERIFIES first-party signatures — no allow_unsigned anywhere below.
         run: |
-          touch crates/plugin-sign/src/lib.rs
+          touch crates/plugin-loader/src/sign.rs
           BUSBAR_RELEASE_PUBKEY="$CI_EPHEMERAL_PUBKEY" cargo build --release --bin busbar
 
       - name: EXECUTABLE-CONFIG GATE — every busbar config THIS repo runs, through the real --validate

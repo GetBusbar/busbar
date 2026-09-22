@@ -23,7 +23,7 @@
 //! atomic write / boot-vs-reload) pure and unit-testable with a fake downloader, and keeps SSRF
 //! enforcement in the one crate that has the denylist.
 
-use busbar_plugin_sign::sha256_hex;
+use crate::sign::sha256_hex;
 use std::path::{Component, Path};
 
 /// Reject any `filename` that is not EXACTLY ONE normal path component before it is joined onto

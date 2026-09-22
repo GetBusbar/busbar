@@ -237,7 +237,7 @@ pub fn plugins_preflight(
     }
     for p in registry.loadable() {
         match &p.verdict {
-            busbar_plugin_sign::Verdict::Trusted {
+            busbar_plugin_loader::sign::Verdict::Trusted {
                 publisher,
                 first_party,
             } => tracing::info!(
@@ -249,7 +249,7 @@ pub fn plugins_preflight(
                 first_party,
                 "plugin validated"
             ),
-            busbar_plugin_sign::Verdict::Allowed { reason, .. } => diag_warn!(
+            busbar_plugin_loader::sign::Verdict::Allowed { reason, .. } => diag_warn!(
                 PLUGIN_LOADED_UNVERIFIED,
                 plugin = %p.manifest.name,
                 alias = %p.manifest.alias,

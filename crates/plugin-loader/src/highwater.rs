@@ -11,7 +11,7 @@
 //!
 //! The thing to compare it against is what this module keeps: for each plugin NAME, the highest
 //! `version` of that name this deployment has actually seen and loaded. That is the floor
-//! [`busbar_plugin_sign::evaluate`] applies to a verified first-party manifest.
+//! [`crate::sign::evaluate`] applies to a verified first-party manifest.
 //!
 //! ## Why a high-water mark and not the binary's version
 //!
@@ -39,7 +39,7 @@
 //! roll a first-party plugin back on purpose.
 
 use crate::registry::PluginRegistry;
-use busbar_plugin_sign::{valid_name, valid_semver, version_at_least};
+use crate::sign::{valid_name, valid_semver, version_at_least};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -154,7 +154,7 @@ impl HighWaterMarks {
         )
     }
 
-    /// The marks, in the shape `busbar_plugin_sign::TrustPolicy::first_party_high_water` takes.
+    /// The marks, in the shape `crate::sign::TrustPolicy::first_party_high_water` takes.
     #[must_use]
     pub fn marks(&self) -> BTreeMap<String, String> {
         self.marks.clone()
@@ -193,7 +193,7 @@ impl HighWaterMarks {
         for p in registry.loadable() {
             if matches!(
                 p.verdict,
-                busbar_plugin_sign::Verdict::Trusted {
+                crate::sign::Verdict::Trusted {
                     first_party: true,
                     ..
                 }

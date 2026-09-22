@@ -274,7 +274,7 @@ fn build_with_hook_enforces_grant_immutability() {
 
 // ── plugin admin surface (tarball world) ────────────────────────────────────────────────────
 
-use busbar_plugin_sign::{sign, Manifest, SigningKey};
+use busbar_plugin_loader::sign::{sign, Manifest, SigningKey};
 
 /// A unique temp plugins directory for one test (isolated so parallel tests never collide).
 fn tmp_plugins_dir(tag: &str) -> std::path::PathBuf {
@@ -385,7 +385,7 @@ fn inspect_previews_a_trusted_candidate_without_installing() {
         })
         .to_string(),
     );
-    m.sha256 = busbar_plugin_sign::sha256_hex(b"lib bytes");
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"lib bytes");
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
 
@@ -418,7 +418,7 @@ fn inspect_previews_a_trusted_candidate_without_installing() {
 fn inspect_reports_rejected_trust_rather_than_erroring() {
     let dir = tmp_plugins_dir("inspect-rejected");
     let mut m = test_manifest("acme-store-untrusted", "untrusted", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_sign::sha256_hex(b"lib bytes");
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"lib bytes");
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
     // STRICT posture: no publishers allowlisted, no allow_unsigned opt-in.
     let svc = svc_with(dir, strict_posture());
@@ -467,7 +467,7 @@ fn inspect_bounds_pathological_schema_nesting_depth() {
     // A tiny document that nests far past the depth cap: `[[[[...]]]]`.
     let bomb = format!("{}{}", "[".repeat(500), "]".repeat(500));
     m.settings_schema = Some(bomb);
-    m.sha256 = busbar_plugin_sign::sha256_hex(b"lib bytes");
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"lib bytes");
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
     let svc = svc_with(dir, unsigned_ok_posture());
 
@@ -545,7 +545,7 @@ fn install_strict_posture_rejects_unsigned() {
     let dir = tmp_plugins_dir("strict");
     let lib = b"\x7fELF junk that would crash if ever dlopened";
     let mut m = test_manifest("acme-store-x", "x", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_sign::sha256_hex(lib);
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
     let svc = svc_with(dir.clone(), strict_posture());
     let err = svc.install_store_plugin("x.tar.gz", &tarball).unwrap_err();
@@ -566,7 +566,7 @@ fn install_catalog_remove_roundtrip() {
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
     let lib = b"junk lib bytes";
     let mut m = test_manifest("acme-store-junk", "junkstore", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_sign::sha256_hex(lib);
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
 
     let view = svc
@@ -615,7 +615,7 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
     let lib = b"junk lib bytes";
     let mut m = test_manifest("acme-store-cache", "cachestore", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_sign::sha256_hex(lib);
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
     svc.install_store_plugin("cache.tar.gz", &tarball)
         .expect("install");
@@ -635,7 +635,7 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
     // invalidation call required.
     let lib2 = b"junk lib bytes two";
     let mut m2 = test_manifest("acme-store-cache-2", "cachestore2", "acme", "1.0.0");
-    m2.sha256 = busbar_plugin_sign::sha256_hex(lib2);
+    m2.sha256 = busbar_plugin_loader::sign::sha256_hex(lib2);
     let tarball2 = busbar_plugin_loader::tarball::package(&m2, "lib.so", lib2).unwrap();
     svc.install_store_plugin("cache2.tar.gz", &tarball2)
         .expect("install");
@@ -787,7 +787,7 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
     let dir = tmp_plugins_dir("single-flight");
     let lib = b"junk lib bytes";
     let mut m = test_manifest("acme-store-sf", "sfstore", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_sign::sha256_hex(lib);
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("sf.tar.gz"), &tarball).unwrap();
 
@@ -1048,7 +1048,7 @@ fn rollback_is_fail_closed_on_absent_or_untrusted_target() {
     // a rollback (the floor was lowered, but the signature/opt-in gate still fails).
     let lib = b"unsigned prior artifact";
     let mut m = test_manifest("acme-store-x", "x", "acme", "1.4.0");
-    m.sha256 = busbar_plugin_sign::sha256_hex(lib);
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("unsigned.tar.gz"), &tarball).unwrap();
     let err = svc
@@ -1069,7 +1069,7 @@ fn catalog_does_not_dlopen_an_untrusted_plugin() {
     let svc = svc_with(dir.clone(), strict_posture());
     let lib = b"\x7fELF definitely not a loadable library";
     let mut m = test_manifest("acme-store-evil", "evil", "acme", "1.0.0");
-    m.sha256 = busbar_plugin_sign::sha256_hex(lib);
+    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("evil.tar.gz"), &tarball).unwrap();
 

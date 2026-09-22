@@ -6723,7 +6723,7 @@ fn admin_test_tarball(name: &str, alias: &str) -> Vec<u8> {
 fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u8> {
     let lib = format!("junk library bytes for {name} {version} (never dlopened)").into_bytes();
     let lib = lib.as_slice();
-    let m = busbar_plugin_sign::Manifest {
+    let m = busbar_plugin_loader::sign::Manifest {
         name: name.into(),
         alias: alias.into(),
         kind: "store".into(),
@@ -6733,7 +6733,7 @@ fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u
             .iter()
             .max()
             .expect("store abi"),
-        sha256: busbar_plugin_sign::sha256_hex(lib),
+        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),
@@ -6880,7 +6880,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
 fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
     let lib = format!("junk library bytes for {name} (never dlopened)").into_bytes();
     let lib = lib.as_slice();
-    let m = busbar_plugin_sign::Manifest {
+    let m = busbar_plugin_loader::sign::Manifest {
         name: name.into(),
         alias: alias.into(),
         kind: kind.into(),
@@ -6890,7 +6890,7 @@ fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
             .iter()
             .max()
             .unwrap_or(&1),
-        sha256: busbar_plugin_sign::sha256_hex(lib),
+        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),
@@ -7021,7 +7021,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         "properties": {"url": {"type": "string"}},
     });
     let lib = b"junk lib bytes for acme-store-schemaurl".to_vec();
-    let m = busbar_plugin_sign::Manifest {
+    let m = busbar_plugin_loader::sign::Manifest {
         name: "acme-store-schemaurl".into(),
         alias: "schemaurl".into(),
         kind: "store".into(),
@@ -7031,7 +7031,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
             .iter()
             .max()
             .unwrap(),
-        sha256: busbar_plugin_sign::sha256_hex(&lib),
+        sha256: busbar_plugin_loader::sign::sha256_hex(&lib),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),
@@ -7049,7 +7049,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     // plain `TestApp`/`serve_with_plugins_dir` builder otherwise defaults `hook_env` to an empty
     // registry regardless of `plugins_dir`).
     std::fs::write(dir.join("acme-store-schemaurl.tar.gz"), &tarball).unwrap();
-    let policy = busbar_plugin_sign::TrustPolicy {
+    let policy = busbar_plugin_loader::sign::TrustPolicy {
         allow_unsigned: true,
         ..Default::default()
     };
@@ -7130,7 +7130,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
         "properties": {"url": {"type": "string"}},
     });
     let lib_with = b"junk lib bytes for acme-store-filecheck-with".to_vec();
-    let m_with = busbar_plugin_sign::Manifest {
+    let m_with = busbar_plugin_loader::sign::Manifest {
         name: "acme-store-filecheck-with".into(),
         alias: "filecheckwith".into(),
         kind: "store".into(),
@@ -7140,7 +7140,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
             .iter()
             .max()
             .unwrap(),
-        sha256: busbar_plugin_sign::sha256_hex(&lib_with),
+        sha256: busbar_plugin_loader::sign::sha256_hex(&lib_with),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),
@@ -7161,7 +7161,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     .unwrap();
 
     let lib_without = b"junk lib bytes for acme-store-filecheck-without".to_vec();
-    let m_without = busbar_plugin_sign::Manifest {
+    let m_without = busbar_plugin_loader::sign::Manifest {
         name: "acme-store-filecheck-without".into(),
         alias: "filecheckwithout".into(),
         kind: "store".into(),
@@ -7171,7 +7171,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
             .iter()
             .max()
             .unwrap(),
-        sha256: busbar_plugin_sign::sha256_hex(&lib_without),
+        sha256: busbar_plugin_loader::sign::sha256_hex(&lib_without),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),
@@ -7189,7 +7189,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     )
     .unwrap();
 
-    let policy = busbar_plugin_sign::TrustPolicy {
+    let policy = busbar_plugin_loader::sign::TrustPolicy {
         allow_unsigned: true,
         ..Default::default()
     };
@@ -7402,7 +7402,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         "required": ["url"],
     });
     let lib = b"junk library bytes for acme-store-withschema (never dlopened)".to_vec();
-    let m = busbar_plugin_sign::Manifest {
+    let m = busbar_plugin_loader::sign::Manifest {
         name: "acme-store-withschema".into(),
         alias: "withschema".into(),
         kind: "store".into(),
@@ -7412,7 +7412,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
             .iter()
             .max()
             .expect("store abi"),
-        sha256: busbar_plugin_sign::sha256_hex(&lib),
+        sha256: busbar_plugin_loader::sign::sha256_hex(&lib),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),
@@ -7435,7 +7435,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     // `scan_and_validate` production boot uses) so `hook_env.registry` — what `GET .../schema`
     // reads — is populated exactly as it would be at a real boot.
     std::fs::write(dir.join(file), &tarball).unwrap();
-    let policy = busbar_plugin_sign::TrustPolicy {
+    let policy = busbar_plugin_loader::sign::TrustPolicy {
         allow_unsigned: true,
         ..Default::default()
     };
@@ -7513,7 +7513,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     // distinct from a manifest that never set the field at all (both used to
     // collapse to `schema: null` via `.ok()`, silently hiding a real authoring bug).
     let bad_lib = b"junk library bytes for acme-store-badschema (never dlopened)".to_vec();
-    let bad_m = busbar_plugin_sign::Manifest {
+    let bad_m = busbar_plugin_loader::sign::Manifest {
         name: "acme-store-badschema".into(),
         alias: "badschema".into(),
         kind: "store".into(),
@@ -7523,7 +7523,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
             .iter()
             .max()
             .expect("store abi"),
-        sha256: busbar_plugin_sign::sha256_hex(&bad_lib),
+        sha256: busbar_plugin_loader::sign::sha256_hex(&bad_lib),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),

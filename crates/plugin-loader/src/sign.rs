@@ -35,8 +35,8 @@
 //!   rejected. The operator opts in per category via [`TrustPolicy::allow_unsigned`] and
 //!   [`TrustPolicy::allow_third_party`].
 //!
-//! This crate is pure data + policy: no I/O, no engine state. Discovery, unpacking, and loading
-//! live in `busbar-plugin-loader`; the engine sees neither. [`sign`] exists for the release
+//! This MODULE is pure data + policy: no I/O, no engine state. Discovery, unpacking, and loading
+//! live in this crate's other modules; the engine sees neither. [`sign`] exists for the release
 //! pipeline / packaging tooling - OSS ships verification, not a signing service.
 //!
 //! ## Why NOT Sigstore keyless yet (1.5.0 spike outcome - deferred)
@@ -66,7 +66,7 @@ pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 /// `plane` is the SIXTH kind (1.6.0 S4): a protocol plane delivered as a `cdylib`, sharing this exact
 /// discovery/trust/validation pipeline but driven over the HOT-tier `#[repr(C)]` `PlaneDecl` vtable
 /// (`busbar_plugin::hot`) rather than the five cold kinds' six-symbol JSON `call` wire. Its
-/// `abi_version` axis is the airlock minor; `busbar-plugin-loader`'s `supported_abi("plane")` gates it.
+/// `abi_version` axis is the airlock minor; this crate's own `supported_abi("plane")` gates it.
 pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane"];
 
 /// This binary's own host identity — the value [`Manifest::host`] must match (or omit) to load.
@@ -889,5 +889,5 @@ pub fn evaluate(
 }
 
 #[cfg(test)]
-#[path = "tests/lib_tests.rs"]
+#[path = "tests/sign_tests.rs"]
 mod tests;

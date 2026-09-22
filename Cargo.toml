@@ -40,7 +40,6 @@ members = [
     "crates/busbar-plugin",
     "crates/plugin-sdk",
     "crates/plugin-loader",
-    "crates/plugin-sign",
     "crates/plugin-pack",
     "crates/secret-ref",
     "crates/auth-admin-tokens",

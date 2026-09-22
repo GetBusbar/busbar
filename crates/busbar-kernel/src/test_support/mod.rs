@@ -2038,7 +2038,7 @@ impl TestApp {
 /// scan/trust/load pipeline. Shared by the admin + resolution tests that need a hook to actually load.
 pub fn test_hook_env(
     aliases: &[&str],
-    needs: busbar_plugin_sign::HookNeeds,
+    needs: busbar_plugin_loader::sign::HookNeeds,
 ) -> Option<crate::hooks::HookEnv> {
     test_hook_env_with_schema(aliases, needs, None)
 }
@@ -2049,7 +2049,7 @@ pub fn test_hook_env(
 /// manifest baseline to fall back to).
 pub fn test_hook_env_with_schema(
     aliases: &[&str],
-    needs: busbar_plugin_sign::HookNeeds,
+    needs: busbar_plugin_loader::sign::HookNeeds,
     settings_schema: Option<&str>,
 ) -> Option<crate::hooks::HookEnv> {
     let cdylib = {
@@ -2102,7 +2102,7 @@ pub fn test_hook_env_with_schema(
     ));
     std::fs::create_dir_all(&dir).unwrap();
     for (i, alias) in aliases.iter().enumerate() {
-        let mut m = busbar_plugin_sign::Manifest {
+        let mut m = busbar_plugin_loader::sign::Manifest {
             name: format!("busbar-hook-test-plugin-{i}"),
             alias: alias.to_string(),
             kind: "hook".into(),
@@ -2122,11 +2122,11 @@ pub fn test_hook_env_with_schema(
             schema_derived: false,
             host: None,
         };
-        m.sha256 = busbar_plugin_sign::sha256_hex(&lib);
+        m.sha256 = busbar_plugin_loader::sign::sha256_hex(&lib);
         let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
         std::fs::write(dir.join(format!("hook{i}.tar.gz")), tarball).unwrap();
     }
-    let policy = busbar_plugin_sign::TrustPolicy {
+    let policy = busbar_plugin_loader::sign::TrustPolicy {
         binary_version: "1.5.0".into(),
         allow_unsigned: true,
         ..Default::default()
@@ -2183,7 +2183,7 @@ pub fn test_hook_env_with_wrong_kind_plugin(
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let manifest_for = |name: &str, alias: &str, kind: &str| busbar_plugin_sign::Manifest {
+    let manifest_for = |name: &str, alias: &str, kind: &str| busbar_plugin_loader::sign::Manifest {
         name: name.to_string(),
         alias: alias.to_string(),
         kind: kind.to_string(),
@@ -2193,7 +2193,7 @@ pub fn test_hook_env_with_wrong_kind_plugin(
             .iter()
             .max()
             .unwrap(),
-        sha256: busbar_plugin_sign::sha256_hex(&lib),
+        sha256: busbar_plugin_loader::sign::sha256_hex(&lib),
         signature: String::new(),
         description: String::new(),
         homepage: String::new(),
@@ -2224,7 +2224,7 @@ pub fn test_hook_env_with_wrong_kind_plugin(
     )
     .unwrap();
     std::fs::write(dir.join("wrong-kind.tar.gz"), wrong_kind_tarball).unwrap();
-    let policy = busbar_plugin_sign::TrustPolicy {
+    let policy = busbar_plugin_loader::sign::TrustPolicy {
         binary_version: "1.5.0".into(),
         allow_unsigned: true,
         ..Default::default()

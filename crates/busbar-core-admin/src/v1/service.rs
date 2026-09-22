@@ -1748,7 +1748,7 @@ impl AdminService {
     /// [`Self::store_plugin_catalog_async`] share exactly one implementation of "what a scan is."
     fn scan_store_plugin_rows(
         dir: &Path,
-        policy: &busbar_plugin_sign::TrustPolicy,
+        policy: &busbar_plugin_loader::sign::TrustPolicy,
     ) -> Vec<PluginView> {
         // TEST-ONLY injection point: expands to nothing outside
         // `#[cfg(test)]`, so the release path carries zero indirection. See
@@ -1906,7 +1906,7 @@ impl AdminService {
         file: &str,
         tarball: &[u8],
     ) -> Result<busbar_kernel::admin::v1::contract::PluginInstallView, AdminError> {
-        use busbar_plugin_sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
+        use busbar_plugin_loader::sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
 
         // ── 1. filename sanity: a bare tarball filename ──
         let file = validate_plugin_filename(file)?;
@@ -2056,7 +2056,7 @@ impl AdminService {
     ///      `ratelimit::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
     ///      `/config/validate`'s existing carve-out.
     pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
-        use busbar_plugin_sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
+        use busbar_plugin_loader::sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
 
         if tarball.len() as u64 > busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES {
             return Err(AdminError::Validation(format!(
@@ -2113,7 +2113,7 @@ impl AdminService {
             "schema_error": schema_error,
             "trust": trust,
             "source": "manifest",
-            "restart_required_default": busbar_plugin_sign::kind_restart_default(&manifest.kind),
+            "restart_required_default": busbar_plugin_loader::sign::kind_restart_default(&manifest.kind),
         }))
     }
 
@@ -2185,12 +2185,12 @@ impl AdminService {
         prior_pins: &std::collections::BTreeMap<String, String>,
     ) -> Result<
         (
-            busbar_plugin_sign::Manifest,
+            busbar_plugin_loader::sign::Manifest,
             std::collections::BTreeMap<String, String>,
         ),
         AdminError,
     > {
-        use busbar_plugin_sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
+        use busbar_plugin_loader::sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
         let file = validate_plugin_filename(file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {

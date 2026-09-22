@@ -65,7 +65,7 @@ fn static_auth_cdylib() -> Option<PathBuf> {
 
 /// A `kind: auth` manifest for the given name/alias (the store helper stamps kind=store; we retarget
 /// it to auth + the auth ABI so the scan admits it).
-fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_sign::Manifest {
+fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_loader::sign::Manifest {
     let mut m = plugin_manifest(name, alias, publisher);
     m.kind = "auth".into();
     m.abi_version = *busbar_plugin_loader::supported_abi("auth")
@@ -182,7 +182,7 @@ fn auth_manifest_with_root_secret_schema(
     alias: &str,
     publisher: &str,
     field: &str,
-) -> busbar_plugin_sign::Manifest {
+) -> busbar_plugin_loader::sign::Manifest {
     let mut m = auth_manifest(name, alias, publisher);
     let schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",

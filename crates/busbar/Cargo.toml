@@ -321,7 +321,6 @@ serde_json = { workspace = true }
 # tests/method_coverage.rs et al. keep their rationale from the pre-split manifest (git history).
 busbar-store-example-plugin = { path = "../store-example-plugin" }
 # tests/cli_validate.rs builds signed plugin tarball fixtures.
-busbar-plugin-sign = { path = "../plugin-sign" }
 hex = { workspace = true }
 # `root/transports.rs` provisions a listener against a real self-signed pair rather than a fixture
 # shaped to fit: the point of that test is that the material actually parses.

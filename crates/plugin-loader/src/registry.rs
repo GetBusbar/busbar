@@ -24,7 +24,7 @@
 //! filename is irrelevant.
 
 use crate::tarball;
-use busbar_plugin_sign::{
+use crate::sign::{
     evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
 };
 use std::collections::HashMap;
@@ -111,7 +111,7 @@ pub struct SkippedPlugin {
     pub reason: String,
     /// STRUCTURED rejection category from the trust evaluator — the authority for any label/column.
     /// Never derive a trust label by substring-matching `reason` (it embeds plugin-controlled bytes).
-    pub kind: busbar_plugin_sign::RejectKind,
+    pub kind: crate::sign::RejectKind,
 }
 
 /// The registry of validated, loadable plugins, addressable by canonical name OR alias. Built only
@@ -741,7 +741,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     } => "first-party".to_string(),
                     Verdict::Trusted { publisher, .. } => format!("publisher:{publisher}"),
                     Verdict::Allowed {
-                        allow: busbar_plugin_sign::AllowReason::Unsigned,
+                        allow: crate::sign::AllowReason::Unsigned,
                         ..
                     } => "unsigned (allowed)".to_string(),
                     Verdict::Allowed { .. } => "third-party (allowed)".to_string(),
@@ -759,7 +759,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                 // substring-matching `s.reason` — the reason embeds plugin-author-controlled bytes
                 // (`manifest.publisher`), so a crafted publisher like "anti-downgrade-bypass" could
                 // otherwise mislabel an unknown-publisher reject as "trusted (below floor)".
-                use busbar_plugin_sign::RejectKind;
+                use crate::sign::RejectKind;
                 let signature = match s.kind {
                     RejectKind::AntiDowngrade => "trusted (below floor)",
                     // A floored artifact that could NOT prove trust: labeled as the UNTRUSTED artifact

@@ -356,7 +356,6 @@ dependencies = [
  "busbar-plane-mcp",
  "busbar-plane-voice",
  "busbar-plugin-loader",
- "busbar-plugin-sign",
  "busbar-store-example-plugin",
  "busbar-substrate-values",
  "busbar-transport-grpc",
@@ -407,7 +406,6 @@ dependencies = [
  "busbar-kernel",
  "busbar-plugin",
  "busbar-plugin-loader",
- "busbar-plugin-sign",
  "busbar-secret-ref",
  "busbar-store-memory",
  "busbar-substrate-values",
@@ -503,7 +501,6 @@ dependencies = [
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin-loader",
- "busbar-plugin-sign",
  "busbar-store-memory",
  "bytes",
  "flate2",
@@ -584,7 +581,6 @@ dependencies = [
  "busbar-mcp",
  "busbar-plugin",
  "busbar-plugin-loader",
- "busbar-plugin-sign",
  "busbar-secret-ref",
  "busbar-store-example-plugin",
  "busbar-store-memory",
@@ -794,7 +790,6 @@ dependencies = [
  "busbar-mcp-codec",
  "busbar-plugin",
  "busbar-plugin-loader",
- "busbar-plugin-sign",
  "busbar-secret-ref",
  "busbar-store-memory",
  "busbar-substrate-values",
@@ -943,13 +938,15 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-plugin",
  "busbar-plugin-example-plane",
- "busbar-plugin-sign",
+ "ed25519-dalek",
  "flate2",
  "getrandom 0.3.4",
+ "hex",
  "libc",
  "libloading",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tar",
  "tokio",
  "tracing",
@@ -960,7 +957,6 @@ name = "busbar-plugin-pack"
 version = "1.5.0"
 dependencies = [
  "busbar-plugin-loader",
- "busbar-plugin-sign",
  "busbar-secret-ref",
  "getrandom 0.3.4",
  "hex",
@@ -978,17 +974,6 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-core",
-]
-
-[[package]]
-name = "busbar-plugin-sign"
-version = "1.5.0"
-dependencies = [
- "ed25519-dalek",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.11.0",
 ]
 
 [[package]]
@@ -1028,6 +1013,8 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-contract",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
