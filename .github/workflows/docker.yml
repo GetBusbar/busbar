@@ -741,16 +741,6 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: ${{ matrix.headroom }}
         with:
-          name: busbar-headroom-libs-${{ matrix.arch }}
-          path: |
-            headroom-libs/libstdc++.so.6
-            headroom-libs/libgcc_s.so.1
-            headroom-libs/libc.musl-*.so.1
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: ${{ matrix.headroom }}
-        with:
           name: busbar-headroom-${{ matrix.arch }}
           path: plugin-dist/busbar-headroom-${{ matrix.arch }}.tar.gz
           if-no-files-found: error

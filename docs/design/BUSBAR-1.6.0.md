@@ -1542,7 +1542,33 @@ the thing to fix, not just this one commit.
 
 **Verified defects, not yet fixed:**
 
-1. **The plain container image cannot dlopen a user-supplied plugin.** `Dockerfile:43-45` copies only
+1. **The plain container image could not dlopen a user-supplied plugin — FIXED, but the drop-in
+   story is still not whole.** The runtime libs now ship in the plain image, extracted once from the
+   already-pinned `rust:alpine` digest and copied in unconditionally, so the fix is a property of
+   the image rather than of any plugin. Verified by pulling the pinned image's real bytes from the
+   registry and confirming the three extracted files form a CLOSED dependency graph on both arches.
+   Docker is not available on this machine, so that is **static proof, not a demonstrated load** —
+   a real `docker run` still owes us the runtime confirmation.
+
+   **Two further gaps found while proving it, both still open:**
+
+   - **`/etc/busbar/plugins` does not exist in the image, and is not where the default points.**
+     The Dockerfile header and `docker/docker-compose.yml` both tell users to drop a plugin tarball
+     there. But `default_plugins_dir()` returns the **relative** `"plugins"`, and with no `WORKDIR`
+     set that resolves to **`/plugins`** — a different path. It only becomes real if the user mounts
+     a `config.yaml` setting `plugins.dir` explicitly. The documented action and the compiled
+     default disagree.
+   - **Probable ownership mismatch on the fetch flow.** The image runs as `USER 65532:65532`.
+     Nothing in the Dockerfile creates that directory, so Docker auto-creates the named volume at
+     start — **root-owned by default**. `appbuild.rs` only `create_dir_all`s it when `plugins.fetch`
+     is non-empty, so a plain read-only tarball drop is likely fine, but the documented
+     fetch-into-volume recipe probably cannot write. Not proven — it needs a real container run.
+
+   Deliberately not guessed at: `FROM scratch` has no shell, so creating that directory means
+   staging one through a `COPY`, and choosing between "make the default absolute" and "fix it in the
+   image only" is a behaviour decision I would not want to make blind and unverifiable.
+
+1. ~~**The plain container image cannot dlopen a user-supplied plugin.**~~ `Dockerfile:43-45` copies only
    the binary and two YAMLs into `FROM scratch`, while every plugin cdylib must be built
    `-C target-feature=-crt-static` (aarch64-musl silently drops the cdylib otherwise —
    `docker.yml:554`) and therefore dynamically links musl libc/libgcc_s/libstdc++. Those libs are
