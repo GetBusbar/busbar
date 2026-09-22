@@ -103,9 +103,40 @@ against the real binary. The new planes are purely additive and off by default. 
 is **PARKED for the owner** with cell + diff + root-cause + recommendation. It is never self-approved
 (#10/#59).
 
-**Money bytes are sacred.** The plane emits raw **counts** per class; the ledger appends ONE sealed
-facts line at unit end; **price is a read-time view and is never stored** (#42/#43/#44/#66/#71/#77).
-Integer-only, unitless, no floats. Never self-approve a billed-byte change.
+**Money bytes are sacred — and the model is LOCKED.** Say it exactly this way, because saying it any
+other way leads people to debug the wrong thing:
+
+> **Two independent systems: the LEDGER and the RATECARD. Money is a VIEW.**
+> **money = f(ledger, ratecard)**, derived at read time.
+> **Money is never wrong. If a number looks wrong, the LEDGER is wrong or the RATECARD is wrong.**
+
+A request produces `output_tokens: 27`. The ratecard says what an output token costs. The view does
+the multiplication when someone asks. Nothing anywhere ever stores `$2` — a price is the answer to a
+question, never a fact in a row (#42/#43/#44/#66/#71/#77). Integer-only, unitless, no floats.
+
+So a money investigation has exactly TWO questions, and every finding must name one:
+
+- **Is the LEDGER right?** Did the plane write the true counts — nothing dropped, doubled, silently
+  zeroed, or filed under the wrong class. *(G-1 was this: Gemini's fourth token term was dropped, so
+  the ledger said 190 where 222 happened. Cohere reading a float count as `unwrap_or(0)` is this: 27
+  recorded as 0.)*
+- **Is the RATECARD right?** Right rates, the right dated card resolved for that instant, right
+  currency, and an unpriced class REFUSES rather than silently answering zero (#42).
+
+Anything that is neither — an overflow, a rounding that is not integer-exact, two copies of a divisor
+that can disagree — is not a money dispute at all. It is a **broken derivation**: the view failing to
+compute `f` correctly from correct inputs. Name it as that.
+
+"Under-billed" and "over-billed" are symptoms, never findings. The finding is *the ledger recorded X
+where Y happened*, or *the ratecard resolved card A where card B was in force*.
+
+**The standard is a bank auditor.** Would it pass? If not it is wrong, and the ledger or the ratecard
+gets FIXED. A wrong money decision is never signed off — and an agent never self-approves one
+(#10/#59); it is PARKED for the owner with cell, diff, root cause and recommendation.
+
+Enforced by `cargo run -p xtask -- gate money-invariants`: no money-path record carries a
+plugin/plane identity (#77(1)), no durable record stores a price (#77(3)), and the facts line is
+sealed only in core/kernel crates (#77(2)).
 
 **Banned words:** defer, 1.6.x, later, "out of scope for 1.6.0". It is 1.6.0-or-bust.
 
