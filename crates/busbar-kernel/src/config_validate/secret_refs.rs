@@ -443,6 +443,18 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
              `ProviderCfg`, which IS walked.",
         ),
     ),
+    (
+        "ConfiguredSecrets",
+        SecretBearing::NotInResolvedConfig(
+            "NOT A CONFIG SHAPE — the boot-time adapter in the `busbar` binary's root that sits \
+             between the transport-key unit's opaque LOCATION and a typed `SecretRef`. Its map is \
+             built DOWNSTREAM of this walk, not alongside it: the root fills it with exactly the \
+             `tls`/`admin_tls` `cert`/`key`/`client_ca` references `push_tls_refs` above \
+             enumerates, keyed by the SAME config paths that function spells, so every reference \
+             it can ever resolve is one `--validate` has already reported on. Nothing reaches it \
+             that `TlsCfg` (Walked) did not hand it, and `RootCfg` contains no such type.",
+        ),
+    ),
 ];
 
 /// How [`secret_refs`] accounts for one secret-bearing type. See [`SECRET_BEARING_TYPES`].
@@ -452,8 +464,14 @@ pub(crate) enum SecretBearing {
     /// Exhaustively destructured by [`secret_refs`], so every one of its `SecretRef` fields reaches
     /// the returned list and a new field is a compile error.
     Walked,
-    /// Not reachable from `RootCfg` at all, with the reason it is not. A type here is a config shape
-    /// that is LOWERED into a walked type before any validation runs.
+    /// Not reachable from `RootCfg` at all, with the reason it is not.
+    ///
+    /// Two shapes land here, on either side of the walk. A DESERIALIZE-side config shape that is
+    /// LOWERED into a walked type before any validation runs (`OauthAsCfg` -> `AsIdentity`), and a
+    /// runtime CARRIER built FROM walked references after the walk has already reported them
+    /// (`ConfiguredSecrets`). Both are unreachable from `RootCfg`, which is the claim the variant
+    /// makes and the one the test checks; each entry's reason says which shape it is and why the
+    /// references it touches are covered elsewhere.
     NotInResolvedConfig(&'static str),
 }
 
