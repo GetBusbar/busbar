@@ -1735,6 +1735,48 @@ precisely because *"plugins can never touch secrets"* and secret handling is ker
 journal is the other half of that ruling — the half that makes the kernel actually audit what it took
 custody of.
 
+## PARKED (money) — a second, ungated shutdown flush may double-count
+
+**Found by the survivor review of `origin/integration/reland` (B13). Not self-approved — it is
+billed bytes.**
+
+`spawn_budget_flusher` (`busbar-kernel/src/governance/mod.rs:1211-1268`) now shares one internal
+`flush_gate` mutex between its periodic tick and its own shutdown arm, via `tokio::select!` on the
+shutdown broadcast. That is a cleaner design than the branch's external `FlushGate` and closes the
+race **within that task**.
+
+But `crates/busbar/src/main.rs` still calls `gov.flush_budgets()` / `gov.flush_metering()` a
+**second, independent, ungated time** in two places:
+
+- the `--mcp-stdio` exit path (`main.rs:1622-1627`), which never sends on `shutdown_tx` at all — so
+  the periodic flusher is **still ticking** while this inline flush runs;
+- the listener shutdown tail (`main.rs:1717-1723`), whose own comment explains the intent: *"The
+  background flusher's shutdown arm also flushes, but it is a fire-and-forget task that could lose
+  the race with process exit; flushing inline here… guarantees durability."*
+
+`flush_budgets` does clear each cell's `dirty` flag under a per-shard write lock **before** the
+durable write, which defeats the crude case of two overlapping calls re-snapshotting identical state.
+It does not defeat a narrower interleaving: call A snapshots and clears dirty → a new charge lands and
+re-marks the cell dirty → call B snapshots that cell against **A's still-un-advanced `flushed_*`
+baseline** → B's delta double-counts A's in-flight portion.
+
+Narrower than the original bug, but real, and it is money. The obvious resolution is to route the two
+inline shutdown flushes through the same gate `spawn_budget_flusher` already holds — but that changes
+shutdown durability semantics on a money path, which is the owner's call, not mine.
+
+## Confirmed and being fixed — three MCP resource-exhaustion bounds
+
+All three were fixed on `integration/reland` and never merged; all three re-confirmed present today.
+
+| Gap | Where | What it allows |
+|---|---|---|
+| no `MAX_TASK_ANSWERS` | `mcp/tasks.rs:307-311` | `deliver` does an unconditional insert per key. `MAX_RETAINED_TASKS` bounds the number of TASKS, nothing bounds answer keys **within one task** — a caller parked in `input_required` invents fresh keys forever |
+| no `MAX_SUBSCRIBED_URIS` | `mcp/subscribe.rs` | no cap and **no dedup** on the URI list a `subscriptions/listen` may name; a repeated URI is both a memory multiplier and a duplicate-delivery multiplier |
+| no `MAX_TOOL_NAME_BYTES` | `mcp/method.rs:1257-1273` | **the worst.** `tools_call` opens `CallLog::open(ctx, name, …)` with the caller's raw `params.name` **before any length check**, and that name is written verbatim into `McpCallRecord` — a durable per-call **hash-chain** row. Every refused call grows the durable store by an attacker-chosen amount, permanently, in a structure that participates in chain verification |
+
+The ordering is the fix for the third: bound the name, then open the log — never the reverse. All
+three refuse rather than truncate, because a truncated tool name is a different tool name.
+
 ## CORRECTION — the A2A grant gap is REAL but NOT REACHABLE. I overstated it.
 
 **I recorded this as a live horizontal privilege escalation. That was wrong, and the error was mine:
