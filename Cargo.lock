@@ -499,6 +499,7 @@ dependencies = [
  "busbar-api",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-ledger",
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin-loader",

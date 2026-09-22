@@ -29,6 +29,19 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # The kernel-verb store face + idempotency window the absorbed verb-execution unit binds against
 # (DECISIONS #38/#40): `busbar_contract::verb_store::{Store, StoreError, IDEMPOTENCY_TTL_SECS}`.
 busbar-contract = { path = "../busbar-contract" }
+# The MONEY LOOKUP the usage read performs (DECISION #79): the dated rate-card history
+# (`cost::History`/`HistoryView::card_at`), the card it resolves to, and the one micro-unit
+# projection. Named directly rather than re-derived here, because the resolution rule and the
+# multiply-and-sum live in exactly one crate — a second copy in this one is how a request comes to
+# be judged at one figure and billed at another. The edge is one-way (the ledger names nothing
+# here) and adds no cycle — the ledger's own closure is `busbar-contract` + `sha2` + `serde`.
+#
+# IT DOES NOT REOPEN #84. That decision took the ledger edge OFF `busbar-api` so a third-party
+# plugin stops transitively linking the money one-book (`plugin -> busbar-plugin-sdk ->
+# busbar-api`). This crate is not on that path: it is a mandatory, compiled-in core sibling and no
+# plugin names it. The prohibition is on the PLUGIN closure carrying settlement semantics, and core
+# is where the money view is supposed to live (#43: pricing is CORE functionality).
+busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-api = { path = "../api" }

@@ -2368,3 +2368,394 @@ plugins:
         view.errors
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// DECISION #79 — RATE CARDS ARE A DATED HISTORY
+//
+// A posting prices against the card in force AT ITS OWN ARRIVAL INSTANT, never the newest card
+// ever authored. The owner's worked example is the shape of the first proof below: a customer
+// signs PAYG at 10, later month-to-month at 5, later a yearly prepaid at 1, and the early windows
+// keep pricing at 10 forever.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod dated_rate_card_history {
+    use super::*;
+    use busbar_kernel::governance::{GovState, MemoryStore};
+    use busbar_kernel_ledger::cost::{Author, CardEntryDraft, History, RateCard, TierRates};
+
+    /// The one priced lane. It is a metering row's `model` and a card entry's lane, spelled once.
+    const LANE: &str = "m-openai-chat";
+    const PROVIDER: &str = "openai-chat";
+    const KEY: &str = "vk_payg";
+    /// One thousand input tokens per window, so a rate of N micro-units per token reads back as
+    /// exactly `N * 1_000` micro-units and the three cards separate arithmetically.
+    const TOKENS: u64 = 1_000;
+    const DAY: u64 = busbar_kernel::governance::METERING_BUCKET_SECS;
+
+    /// A COMPLETE one-lane card at `micro_per_token` micro-units per input token, no flat fee.
+    fn card(micro_per_token: f64) -> RateCard {
+        RateCard::from_config(
+            Some([(
+                LANE,
+                TierRates {
+                    input: micro_per_token,
+                    ..Default::default()
+                },
+            )]),
+            0,
+        )
+    }
+
+    /// The CURRENT cost model — deliberately the NEWEST, cheapest card in every test below, so a
+    /// read that fell back to it would answer `1 * 1_000` for every window and the assertions
+    /// separate the lookup from the reprice arithmetically rather than by inspection.
+    fn newest_cost() -> busbar_kernel::cost::CostModel {
+        let rates = std::collections::BTreeMap::from([(
+            LANE.to_string(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 1.0,
+                output_utok: 0.0,
+                cache_read_utok: 0.0,
+                cache_write_utok: 0.0,
+            },
+        )]);
+        busbar_kernel::cost::CostModel::resolve_parts(
+            Some(&rates),
+            0,
+            &std::collections::BTreeMap::new(),
+        )
+    }
+
+    /// The test's dated-history source: one history and the postings the node recorded.
+    struct Recorded {
+        history: Arc<History>,
+        postings: Vec<UsagePosting>,
+    }
+
+    impl UsageRateHistory for Recorded {
+        fn history(&self) -> Option<Arc<History>> {
+            Some(Arc::clone(&self.history))
+        }
+
+        /// The asked-for window is HONOURED. A source that handed back every posting it holds
+        /// whatever was asked would let these tests pass on a resolution the read never performed.
+        fn postings(&self, from_secs: u64, to_secs: u64) -> Vec<UsagePosting> {
+            let (from_ms, to_ms) = (
+                from_secs.saturating_mul(1_000),
+                to_secs.saturating_mul(1_000),
+            );
+            self.postings
+                .iter()
+                .filter(|p| p.arrived_ms >= from_ms && p.arrived_ms < to_ms)
+                .cloned()
+                .collect()
+        }
+    }
+
+    /// A source the service can hold for `'static`. Leaked on purpose: the production holder is a
+    /// process-wide `OnceLock` and a test that raced it could only ever run once.
+    fn source(history: History, postings: Vec<UsagePosting>) -> &'static dyn UsageRateHistory {
+        Box::leak(Box::new(Recorded {
+            history: Arc::new(history),
+            postings,
+        }))
+    }
+
+    /// One posting of [`TOKENS`] input tokens, arriving at `arrived_ms`.
+    fn posting(arrived_ms: u64) -> UsagePosting {
+        UsagePosting {
+            key_id: KEY.to_string(),
+            model: LANE.to_string(),
+            provider: PROVIDER.to_string(),
+            tokens_input: TOKENS,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            billable_requests: 1,
+            arrived_ms,
+        }
+    }
+
+    /// Governance holding ONE metering row — the quantities, which are the stored truth — in each
+    /// named bucket. Written through the store seam because `record_metering` can only ever bucket
+    /// at the wall clock, and these windows are in the past.
+    fn gov_with_rows(buckets: &[u64]) -> Arc<GovState> {
+        let store = Arc::new(MemoryStore::new());
+        for bucket in buckets {
+            busbar_api::Store::add_metering(
+                store.as_ref(),
+                &busbar_api::MeteringDelta {
+                    key_id: KEY.to_string(),
+                    bucket: *bucket,
+                    model: LANE.to_string(),
+                    provider: PROVIDER.to_string(),
+                    tokens_input: TOKENS,
+                    tokens_output: 0,
+                    tokens_cache_read: 0,
+                    tokens_cache_write: 0,
+                    requests: 1,
+                    billable_requests: 1,
+                    key_group_at_use: String::new(),
+                    pricing_version: String::new(),
+                },
+            )
+            .expect("the memory store accepts a metering delta");
+        }
+        Arc::new(GovState::new(store, None).expect("governance builds"))
+    }
+
+    /// Read one bucket through the endpoint's own service method, resolving against `src`.
+    async fn read(gov: Arc<GovState>, src: &'static dyn UsageRateHistory, bucket: u64) -> UsageView {
+        let app = crate::new_test_app()
+            .governance(gov)
+            .cost(newest_cost())
+            .build();
+        AdminService::new(app)
+            .with_rate_history(src)
+            .get_usage(Some(bucket))
+            .await
+            .expect("usage read")
+    }
+
+    /// The three dated windows, day-aligned because a metering bucket is a UTC day. The owner's
+    /// example spans months; the arithmetic of "an earlier window keeps its own card" is the same
+    /// at any spacing, and a day apart keeps the fixture inside the memory store's retention.
+    fn windows() -> (u64, u64, u64) {
+        let today = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now());
+        (today - 3 * DAY, today - 2 * DAY, today - DAY)
+    }
+
+    // ── PROOF 1: a posting in each window prices at THAT window's rate ───────────────────────
+
+    /// PAYG at 10, then month-to-month at 5, then a yearly prepaid at 1 — the owner's worked
+    /// example, end to end through `GET /api/v1/admin/usage`. The first window keeps pricing at 10
+    /// forever, and it does so while the CURRENT card is 1.
+    #[tokio::test]
+    async fn each_window_prices_at_the_card_in_force_when_it_arrived() {
+        let (payg, monthly, prepaid) = windows();
+        let mut history = History::opening(card(10.0), 0);
+        history.append(CardEntryDraft {
+            effective_from: monthly * 1_000,
+            effective_until: None,
+            card: card(5.0),
+            appended_at: monthly * 1_000,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        history.append(CardEntryDraft {
+            effective_from: prepaid * 1_000,
+            effective_until: None,
+            card: card(1.0),
+            appended_at: prepaid * 1_000,
+            author: Author::Config { policy_epoch: 2 },
+        });
+        let src = source(
+            history,
+            vec![
+                posting(payg * 1_000 + 1),
+                posting(monthly * 1_000 + 1),
+                posting(prepaid * 1_000 + 1),
+            ],
+        );
+        let gov = gov_with_rows(&[payg, monthly, prepaid]);
+
+        assert_eq!(
+            read(gov.clone(), src, payg).await.total.spend_micros,
+            10_000,
+            "the PAYG window keeps the card it was earned under (10 x 1_000 tokens)"
+        );
+        assert_eq!(
+            read(gov.clone(), src, monthly).await.total.spend_micros,
+            5_000,
+            "the month-to-month window prices at 5"
+        );
+        assert_eq!(
+            read(gov, src, prepaid).await.total.spend_micros,
+            1_000,
+            "the prepaid window prices at 1"
+        );
+    }
+
+    // ── PROOF 2: publishing a forward-dated card leaves the earlier window BYTE-IDENTICAL ────
+
+    /// The same window read before and after a card is published, compared as BYTES.
+    ///
+    /// `as_of` is the read instant and is the one field that legitimately moves between two reads,
+    /// so it is normalised away; every other byte of the response — the window, the currency, the
+    /// totals, every `by_model` and `by_key` row, the truncation flag and the `others` remainder —
+    /// is compared verbatim.
+    #[tokio::test]
+    async fn publishing_a_card_leaves_the_window_before_it_byte_identical() {
+        let (payg, _, _) = windows();
+        let gov = gov_with_rows(&[payg]);
+        let postings = vec![posting(payg * 1_000 + 1)];
+
+        let before = source(History::opening(card(10.0), 0), postings.clone());
+
+        // The publish: a card effective from NOW, long after the window that is being read.
+        let mut published = History::opening(card(10.0), 0);
+        let now_ms = busbar_kernel::store::now().saturating_mul(1_000);
+        published.append(CardEntryDraft {
+            effective_from: now_ms,
+            effective_until: None,
+            card: card(1.0),
+            appended_at: now_ms,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        let after = source(published, postings);
+
+        let bytes = |mut v: serde_json::Value| {
+            v["as_of"] = serde_json::json!(0);
+            serde_json::to_string(&v).expect("a usage view serializes")
+        };
+        let a = bytes(
+            serde_json::to_value(read(gov.clone(), before, payg).await).expect("serializes"),
+        );
+        let b =
+            bytes(serde_json::to_value(read(gov, after, payg).await).expect("serializes"));
+        assert_eq!(
+            a, b,
+            "a forward-dated publish must not touch the window before its effective_from"
+        );
+        assert!(
+            a.contains("\"spend_micros\":10000"),
+            "and the window is still priced at the card it was earned under: {a}"
+        );
+    }
+
+    // ── PROOF 3: a signed back-dated correction reprices EXACTLY its window ──────────────────
+
+    /// An `Author::Amend` entry over `[monthly, prepaid)`. The window it names moves; the window
+    /// before it and the window after it do not — both halves asserted, because "reprices its
+    /// window" and "reprices nothing else" are two claims and only one of them is the easy one.
+    #[tokio::test]
+    async fn a_back_dated_correction_reprices_its_window_and_nothing_outside_it() {
+        let (payg, monthly, prepaid) = windows();
+        let postings = vec![
+            posting(payg * 1_000 + 1),
+            posting(monthly * 1_000 + 1),
+            posting(prepaid * 1_000 + 1),
+        ];
+        let gov = gov_with_rows(&[payg, monthly, prepaid]);
+
+        // Before: one opening entry, so every window prices at 10.
+        let before = source(History::opening(card(10.0), 0), postings.clone());
+        for w in [payg, monthly, prepaid] {
+            assert_eq!(
+                read(gov.clone(), before, w).await.total.spend_micros,
+                10_000,
+                "a single-entry history prices every window at the opening card"
+            );
+        }
+
+        // The correction: the ratecard was wrong for the middle window only.
+        let mut corrected = History::opening(card(10.0), 0);
+        corrected.append(CardEntryDraft {
+            effective_from: monthly * 1_000,
+            effective_until: Some(prepaid * 1_000),
+            card: card(5.0),
+            appended_at: busbar_kernel::store::now().saturating_mul(1_000),
+            author: Author::Amend {
+                operator_fingerprint: "sha256:operator".to_string(),
+                reason_hash: [7u8; 32],
+            },
+        });
+        let after = source(corrected, postings);
+
+        assert_eq!(
+            read(gov.clone(), after, payg).await.total.spend_micros,
+            10_000,
+            "OUTSIDE, before effective_from: unmoved"
+        );
+        assert_eq!(
+            read(gov.clone(), after, monthly).await.total.spend_micros,
+            5_000,
+            "INSIDE [effective_from, effective_until): repriced"
+        );
+        assert_eq!(
+            read(gov, after, prepaid).await.total.spend_micros,
+            10_000,
+            "OUTSIDE, at and after effective_until: unmoved"
+        );
+    }
+
+    // ── PROOF 4: no pricing path reads `PostingStamp.rate_card_version` ──────────────────────
+
+    /// The resolution key is the arrival instant, and the version field is reporting provenance
+    /// (#44) that must never become a pricing input. [`UsagePosting`] carries no such field, so the
+    /// service could not read one; this scans the service's own CODE — comments excluded, since
+    /// the rule is what the file *does*, not what it says about the rule — so that adding a read
+    /// back is a red test and not a review note.
+    #[test]
+    fn the_usage_service_names_no_rate_card_version_in_code() {
+        let src = include_str!("../service.rs");
+        let offenders: Vec<(usize, &str)> = src
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| {
+                let t = l.trim_start();
+                !(t.starts_with("//") || t.starts_with("*") || t.is_empty())
+            })
+            .filter(|(_, l)| l.contains("rate_card_version"))
+            .map(|(i, l)| (i + 1, l.trim()))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "a pricing path reads the posting's stamped rate-card version: {offenders:?}"
+        );
+    }
+
+    // ── THE BYTE-SAFETY PIN: no source installed ⇒ the previous release's arithmetic ─────────
+
+    /// The oracle cell `billing|rate-card|history-mid-window`'s exact shape (three responses of
+    /// 11 in / 7 out, the card swapped twice inside ONE bucket), read by a service with NO dated
+    /// history source — a build whose composition root installed none.
+    ///
+    /// It reads back 750,090,000: every posting at the newest card. That is the published 1.5.5
+    /// figure to the byte, which is the point of pinning it — the resolution above is ADDITIVE and
+    /// a build that has not wired a history answers exactly what it always did. The figure #79
+    /// names for this sequence is 277,530,000, and reaching it needs the accrual to carry an
+    /// instant, which a UTC-day metering row does not.
+    #[tokio::test]
+    async fn with_no_history_source_the_read_is_the_previous_release_to_the_byte() {
+        let gov = Arc::new(
+            GovState::new(Arc::new(MemoryStore::new()), None).expect("governance builds"),
+        );
+        let now = busbar_kernel::store::now();
+        let usage = busbar_kernel::billing::TokenUsage {
+            input: 11,
+            output: 7,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            gov.record_metering(KEY, LANE, PROVIDER, Some(&usage), now);
+        }
+        gov.flush_metering();
+
+        let rates = std::collections::BTreeMap::from([(
+            LANE.to_string(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 10_000_000.0,
+                output_utok: 20_000_000.0,
+                cache_read_utok: 0.0,
+                cache_write_utok: 0.0,
+            },
+        )]);
+        let app = crate::new_test_app()
+            .governance(gov)
+            .cost(busbar_kernel::cost::CostModel::resolve_parts(
+                Some(&rates),
+                3,
+                &std::collections::BTreeMap::new(),
+            ))
+            .build();
+        let view = AdminService::new(app)
+            .get_usage(None)
+            .await
+            .expect("usage read");
+        assert_eq!(
+            view.total.spend_micros, 750_090_000,
+            "with no history installed the read is the published 1.5.5 figure"
+        );
+    }
+}
