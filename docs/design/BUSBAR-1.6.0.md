@@ -2380,6 +2380,45 @@ nobody overclaims it later: this cannot prove 1.5.5 parity** — these planes ar
 1.5.5 behaviour to compare against. It locks today's behaviour so tomorrow's change is visible, and
 that is all it does.
 
+#### THE KERNEL COMMITS HOOK BYTES IT NEVER VALIDATES — and that decides which planes fail open
+
+`plane_host/mod.rs::apply_rewrite_to_invoke_args` (~:1678) admits **ANY JSON object** as a hook's
+replacement payload. It never consults the RECEIVING PLANE'S TYPE; `transform_over_over` then
+re-serialises with `to_vec` and hands it on. So the kernel's guarantee is only *"this is a JSON
+object"*, while each plane's apply site must decode it into something much narrower.
+
+**THAT ONE FACT EXPLAINS WHY THE SAME DEFECT WAS DORMANT IN TWO PLANES AND LIVE IN A THIRD.** The
+apply site in mcp and a2a targets `serde_json::Value`, which accepts whatever the kernel committed —
+so their `Err` arm is unreachable through core's host, and the fail-open is latent. Voice targets
+`SessionConfig`, whose deserializer rejects a type mismatch (`{"voice": 7}`) or an unknown audio
+format (`{"input_audio_format":"flac"}`) — **so core can, and does, commit bytes that plane cannot
+read**, and the fail-open is LIVE on served traffic. Pinned by a test driving core's own function
+(`plane_host/tests/mod_tests.rs::a_committed_invoke_rewrite_installs_any_json_object_verbatim`).
+
+> **A PLANE WHOSE REWRITE TARGET IS STRICTER THAN `serde_json::Value` HAS A LIVE FAIL-OPEN UNLESS IT
+> REFUSES EXPLICITLY.** That is the predictive form — it says where the next instance is before
+> anyone trips over it. Check the target type, not the plane.
+
+**The second defect at the same seam, same root cause:** the kernel's commit is a WHOLESALE
+REPLACEMENT, so a hook patching one field silently blanks every other. The same test pins it —
+`instructions` is simply gone from the committed bytes. The fix merges the committed object over the
+locked params BEFORE decoding, which honours `SessionConfig`'s own documented partial-patch wire
+contract and means a patch naming one bad field REFUSES rather than being dropped.
+
+**And the silent arm is closed.** The `spawn_blocking` join `.unwrap_or(Proceed{applied:false})` was
+the only hook-failure mode on this seam with **no log line at all** — `transform_over_over` logs its
+own `Failed`/timeout arms. It now logs at `error` and proceeds identically. The disposition is
+unchanged deliberately: in voice the "originals" are the plane's own LOCKED params, so proceeding is
+genuinely fail-safe. **The a2a twin (`receive.rs:1307`) is NOT the same question** — there the
+originals are the caller's untrusted `params`, so "proceed" is not obviously safe, and it is owed its
+own decision.
+
+**Oracle coverage, stated so nobody mistakes silence for safety:** the corpus has **no voice plane at
+all** (mcp 912, core 789, a2a 468, llm 149), and `neutrality|routes|voice-shaped-404` records that
+the recorded binary configures no `streams:` block — so the realtime path is unmounted and this seam
+executes in ZERO cells. Nothing to park. **That the oracle cannot see this seam is a coverage gap,
+not a safety proof.**
+
 #### WHAT A GREEN ORACLE PROVES — measured 2026-09-22, and it is narrower than assumed
 
 The oracle is the release's central safety claim (#10: *"prove no user-visible byte changed"*).
