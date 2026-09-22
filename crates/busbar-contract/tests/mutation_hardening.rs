@@ -23,7 +23,7 @@
 //! finding notes for the full argument; these are reported as equivalent/defense-in-depth rather
 //! than given forced tests.
 
-use busbar_grammar::{resolve_pointer, Resolved, Span};
+use busbar_contract::spans::{resolve_pointer, Resolved, Span};
 
 fn found<'b>(body: &'b [u8], pointer: &str) -> &'b [u8] {
     match resolve_pointer(body, pointer) {

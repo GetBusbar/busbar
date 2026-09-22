@@ -9,7 +9,7 @@
 //! A pointer resolves to a [`Span`] of the CALLER's bytes: nothing is parsed into a document,
 //! nothing is copied, and nothing is allocated by the scan itself.
 
-pub use busbar_grammar::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
+pub use crate::json_grammar::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
 
 use crate::bounded::{PlaneAlloc, PlaneAllocBudget, MAX_KEYS};
 

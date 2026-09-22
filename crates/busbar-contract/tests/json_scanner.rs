@@ -6,7 +6,7 @@
 //! The case that matters is the big body whose one interesting key was serialised LAST: the whole
 //! body has to be walked before the answer exists, so that is where the cost is measured.
 
-use busbar_grammar::{resolve_pointer, Resolved};
+use busbar_contract::spans::{resolve_pointer, Resolved};
 
 fn found<'b>(body: &'b [u8], pointer: &str) -> &'b [u8] {
     match resolve_pointer(body, pointer) {

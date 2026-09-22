@@ -11,7 +11,7 @@
 //! Two invariants hold for every row, whatever the answer is: the scan does not panic, and a
 //! [`Resolved::Found`] never names bytes outside the input it was handed.
 
-use busbar_grammar::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
+use busbar_contract::spans::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
 
 /// Every pointer worth pointing at a hostile body, run against one input.
 const POINTERS: &[&str] = &[

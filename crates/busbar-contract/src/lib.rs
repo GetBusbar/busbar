@@ -19,6 +19,7 @@ pub mod dest;
 pub mod duration;
 pub mod grammar;
 pub mod ids;
+pub(crate) mod json_grammar;
 pub mod kinds;
 pub mod plane;
 pub mod plugin;

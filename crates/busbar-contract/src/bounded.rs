@@ -503,7 +503,7 @@ impl<'u> Labels<'u> {
 /// The span grammar's own type, named here rather than declared a second time: a span the plane
 /// resolved and a span the kernel resolved have to be the same value, and two structurally
 /// identical types with one field order between them is exactly how that stops being true.
-pub use busbar_grammar::Span;
+pub use crate::json_grammar::Span;
 
 /// The kernel's view of a unit's body: the bytes plus the resolved pointer spans.
 ///

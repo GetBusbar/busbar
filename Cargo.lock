@@ -518,7 +518,6 @@ dependencies = [
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
- "busbar-grammar",
  "futures",
  "serde",
  "serde_json",
@@ -559,13 +558,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-grammar"
-version = "1.6.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "busbar-hook-test-plugin"
 version = "1.5.0"
 dependencies = [
@@ -599,7 +591,6 @@ dependencies = [
  "busbar-auth-admin-tokens",
  "busbar-contract",
  "busbar-core-config",
- "busbar-grammar",
  "busbar-hooks-ranking",
  "busbar-llm",
  "busbar-mcp",
@@ -845,7 +836,7 @@ name = "busbar-mcp-codec"
 version = "1.6.0"
 dependencies = [
  "busbar-api",
- "busbar-grammar",
+ "busbar-contract",
  "busbar-substrate-values",
  "bytes",
  "http",

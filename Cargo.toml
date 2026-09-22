@@ -18,7 +18,6 @@ members = [
     "crates/busbar-voice-codec",
     "crates/busbar-substrate-values",
     "crates/busbar-contract",
-    "crates/busbar-grammar",
     "crates/busbar-transport-tcp",
     "crates/busbar-transport-tls",
     "crates/busbar-transport-http",
