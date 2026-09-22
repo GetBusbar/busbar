@@ -873,7 +873,9 @@ mod tests {
     /// `busbar-mcp`/`transport` = 1104, reported as "12 -> 1104".
     #[test]
     fn striking_an_array_row_does_not_renumber_the_rows_beneath_it() {
-        let row = |c: &str, n: i64| format!("[[cell]]\ncrate = \"{c}\"\nkind = \"api\"\ncount = \"{n}\"\n");
+        let row = |c: &str, n: i64| {
+            format!("[[cell]]\ncrate = \"{c}\"\nkind = \"api\"\ncount = \"{n}\"\n")
+        };
         let was = ints_of(&format!("{}{}{}", row("a", 1), row("b", 2), row("c", 3)))
             .expect("the fixture parses");
         // `b` is struck; `c` slides from index 2 to index 1 and NOTHING about `c` changed.

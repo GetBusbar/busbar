@@ -425,7 +425,14 @@ impl LlmNode {
         // its whole exit the way a `&mut Durability` did. The pass-through settles the identical
         // posting onto the identical shared book — the bytes on the chain are unchanged.
         let book = crate::root::durability::SharedBook::over(Arc::clone(book));
-        let _settled = settle(&book, principal, arrived, card, &self.durability_token, posted);
+        let _settled = settle(
+            &book,
+            principal,
+            arrived,
+            card,
+            &self.durability_token,
+            posted,
+        );
     }
 
     /// Walk one request through the loop and answer with what the terminal posted.
@@ -1360,7 +1367,13 @@ impl Units for LlmUnit<'_> {
         self.walk.take_admission(admitted)
     }
 
-    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, _meter: &AccrualMeter, _destinations: &[busbar_contract::caps::VerifiedDestination]) -> Decision<Route> {
+    fn route(
+        &self,
+        token: &Pass<Route>,
+        _ctx: &UnitCtx,
+        _meter: &AccrualMeter,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
+    ) -> Decision<Route> {
         // THIS PLANE'S ROUTE AWAITS, so it is answered by the `RouteAwait` arm below and this one is
         // not a path any unit on this plane takes: `LlmNode::answer` drives the loop's asynchronous
         // entry point and there is no other caller. Answered rather than unwrapped — an arm that

@@ -166,7 +166,13 @@ impl Units for GauntletKernelUnit<'_> {
         Decision::proceed(token, Admission::ZeroHold)
     }
 
-    fn route(&self, token: &Pass<Route>, _ctx: &UnitCtx, _meter: &AccrualMeter, _destinations: &[busbar_contract::caps::VerifiedDestination]) -> Decision<Route> {
+    fn route(
+        &self,
+        token: &Pass<Route>,
+        _ctx: &UnitCtx,
+        _meter: &AccrualMeter,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
+    ) -> Decision<Route> {
         // This rider's Route AWAITS (the plane's `drive`), so the loop reaches it through the
         // `RouteAwait` arm below and this synchronous one is never taken. Answered rather than
         // unwrapped: there is no task here to run the leg on.

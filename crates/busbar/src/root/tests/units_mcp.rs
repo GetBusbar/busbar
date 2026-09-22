@@ -196,8 +196,10 @@ impl busbar_contract::bounded::PlaneAlloc for CellPlaneAlloc {
     fn alloc_bytes<'a>(
         &'a self,
         src: &[u8],
-    ) -> Result<busbar_contract::bounded::ScratchBytes<'a>, busbar_contract::bounded::PlaneAllocBudget>
-    {
+    ) -> Result<
+        busbar_contract::bounded::ScratchBytes<'a>,
+        busbar_contract::bounded::PlaneAllocBudget,
+    > {
         let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
         Ok(busbar_contract::bounded::ScratchBytes::new(leaked))
     }

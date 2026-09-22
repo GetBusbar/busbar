@@ -139,7 +139,7 @@ use busbar_kernel_egress::trust::net::GuardPolicy;
 use busbar_kernel_identity::{Auth, AuthRequest};
 use busbar_kernel_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
 use busbar_plane_streaming::claims::Dialect;
-use busbar_plane_streaming::{meta, Upstream, StreamingPlane};
+use busbar_plane_streaming::{meta, StreamingPlane, Upstream};
 
 /// Every meter class this plane declares fits in one usage report, with room to spare.
 ///
@@ -1626,7 +1626,13 @@ impl Units for VoiceUnit<'_> {
         decision
     }
 
-    fn route(&self, token: &Pass<Route>, ctx: &UnitCtx, meter: &AccrualMeter, _destinations: &[busbar_contract::caps::VerifiedDestination]) -> Decision<Route> {
+    fn route(
+        &self,
+        token: &Pass<Route>,
+        ctx: &UnitCtx,
+        meter: &AccrualMeter,
+        _destinations: &[busbar_contract::caps::VerifiedDestination],
+    ) -> Decision<Route> {
         // **The exit for a call nobody answered.** The sweep took the wait out of the table and left
         // the ending behind; this is where the unit reads it. A call that ran out its declared
         // deadline ends under that deadline rather than settling as though the answer arrived, which

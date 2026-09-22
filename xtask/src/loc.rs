@@ -294,7 +294,11 @@ fn crate_of(path: &str, cfg: &Config) -> Option<String> {
 /// For a ref this is ONE `git cat-file --batch` coprocess for the whole set, through
 /// [`gitp::ask`] — the shape that cannot deadlock — rather than one `git show` per file, which for
 /// this tree is 1,441 processes.
-fn read_all(cx: &Ctx, source: &Source, paths: &[String]) -> Result<Vec<Result<String, String>>, String> {
+fn read_all(
+    cx: &Ctx,
+    source: &Source,
+    paths: &[String],
+) -> Result<Vec<Result<String, String>>, String> {
     match source {
         Source::Worktree => Ok(paths
             .iter()
@@ -304,7 +308,11 @@ fn read_all(cx: &Ctx, source: &Source, paths: &[String]) -> Result<Vec<Result<St
     }
 }
 
-fn read_blobs(cx: &Ctx, rev: &str, paths: &[String]) -> Result<Vec<Result<String, String>>, String> {
+fn read_blobs(
+    cx: &Ctx,
+    rev: &str,
+    paths: &[String],
+) -> Result<Vec<Result<String, String>>, String> {
     // No `use std::io::{BufRead, Read}` here on purpose: the reader is a `&mut dyn BufRead`, and a
     // trait object's own trait (and its supertraits) resolve without being imported.
     let mut requests = Vec::new();
@@ -391,10 +399,8 @@ pub fn measure(cx: &Ctx, source: &Source, cfg: &Config, only: &[String]) -> Resu
         .unwrap_or(1)
         .clamp(1, 16);
     let chunk = discovered.len().div_ceil(jobs).max(1);
-    let work: Vec<(&[(String, String)], &[Result<String, String>])> = discovered
-        .chunks(chunk)
-        .zip(texts.chunks(chunk))
-        .collect();
+    let work: Vec<(&[(String, String)], &[Result<String, String>])> =
+        discovered.chunks(chunk).zip(texts.chunks(chunk)).collect();
 
     let mut files: Vec<FileCount> = Vec::with_capacity(discovered.len());
     let mut errors: Vec<FileError> = Vec::new();
@@ -412,19 +418,20 @@ pub fn measure(cx: &Ctx, source: &Source, cfg: &Config, only: &[String]) -> Resu
                                 krate: krate.clone(),
                                 error: e.clone(),
                             }),
-                            Ok(text) => match classify::classify(text, classify::is_test_path(path))
-                            {
-                                Ok(v) => ok.push(FileCount {
-                                    path: path.clone(),
-                                    krate: krate.clone(),
-                                    counts: v.counts,
-                                }),
-                                Err(e) => bad.push(FileError {
-                                    path: path.clone(),
-                                    krate: krate.clone(),
-                                    error: e,
-                                }),
-                            },
+                            Ok(text) => {
+                                match classify::classify(text, classify::is_test_path(path)) {
+                                    Ok(v) => ok.push(FileCount {
+                                        path: path.clone(),
+                                        krate: krate.clone(),
+                                        counts: v.counts,
+                                    }),
+                                    Err(e) => bad.push(FileError {
+                                        path: path.clone(),
+                                        krate: krate.clone(),
+                                        error: e,
+                                    }),
+                                }
+                            }
                         }
                     }
                     (ok, bad)

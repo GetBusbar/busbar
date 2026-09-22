@@ -85,9 +85,9 @@ use busbar_contract::transport::TransportMeta;
 use busbar_contract::{
     check_composition, CompositionError, Plugin, Registered, Transport, UpstreamAddress,
 };
+use busbar_core_admin::admin_codec::AdminPlane;
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 use busbar_plane_a2a::A2aPlane;
-use busbar_core_admin::admin_codec::AdminPlane;
 use busbar_plane_llm::LlmPlane;
 use busbar_plane_mcp::McpPlane;
 #[cfg(feature = "plane-voice")]

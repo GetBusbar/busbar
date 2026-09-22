@@ -68,7 +68,10 @@ pub fn json(report: &Report, per_file: bool) -> String {
         "definition".into(),
         Value::Object({
             let mut m = Map::new();
-            m.insert("order".into(), json!(["blank", "doc", "comment", "test", "code"]));
+            m.insert(
+                "order".into(),
+                json!(["blank", "doc", "comment", "test", "code"]),
+            );
             m.insert("buckets".into(), Value::Object(definition));
             m
         }),
@@ -95,7 +98,8 @@ pub fn json(report: &Report, per_file: bool) -> String {
             ),
         );
     }
-    serde_json::to_string_pretty(&Value::Object(doc)).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    serde_json::to_string_pretty(&Value::Object(doc))
+        .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
 }
 
 fn merge(into: &mut Map<String, Value>, from: Value) {
@@ -109,7 +113,10 @@ fn merge(into: &mut Map<String, Value>, from: Value) {
 /// The human render. Same numbers, same order, no extra opinion.
 pub fn table(report: &Report, per_file: bool) -> String {
     let mut out = String::new();
-    out.push_str(&format!("== cargo xtask loc — source {} ==\n", report.source));
+    out.push_str(&format!(
+        "== cargo xtask loc — source {} ==\n",
+        report.source
+    ));
     out.push_str("buckets, in precedence order (every line lands in exactly one):\n");
     for (bucket, meaning) in super::classify::DEFINITION {
         out.push_str(&format!("  {bucket:<8} {meaning}\n"));

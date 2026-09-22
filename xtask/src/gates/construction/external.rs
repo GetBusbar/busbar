@@ -114,10 +114,19 @@ pub fn loc_surface(cx: &Ctx, crates: &str, limit: i64) -> Surface {
 /// a crate the run did not measure at all, and a crate that measured ZERO — which satisfies every
 /// ceiling and is therefore never a pass.
 fn measure_surface(cx: &Ctx, crates: &str, limit: i64) -> (bool, String) {
-    let names: Vec<&str> = crates.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let names: Vec<&str> = crates
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
     let report = match crate::loc::measure_worktree_cached(cx) {
         Ok(r) => r,
-        Err(e) => return (false, format!("cargo xtask loc could not measure the tree: {e}\n")),
+        Err(e) => {
+            return (
+                false,
+                format!("cargo xtask loc could not measure the tree: {e}\n"),
+            )
+        }
     };
     let mut text = String::from("crate       surface\n----------  -------\n");
     let mut total: i64 = 0;

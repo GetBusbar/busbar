@@ -164,25 +164,58 @@ pub struct PlaneCrate {
 /// protocol plane. It is a fixture, not a plane, and the roster's HOMELESS table says so.
 pub const PLANE_CRATES: &[PlaneCrate] = &[
     // defs 16–20, CLEAN row: the extracted contract planes. Money-blind today; this locks it in.
-    PlaneCrate { dir: "busbar-plane-llm", placement: "#83 def 16-20 (CLEAN)" },
-    PlaneCrate { dir: "busbar-plane-mcp", placement: "#83 def 16-20 (CLEAN)" },
-    PlaneCrate { dir: "busbar-plane-a2a", placement: "#83 def 16-20 (CLEAN)" },
+    PlaneCrate {
+        dir: "busbar-plane-llm",
+        placement: "#83 def 16-20 (CLEAN)",
+    },
+    PlaneCrate {
+        dir: "busbar-plane-mcp",
+        placement: "#83 def 16-20 (CLEAN)",
+    },
+    PlaneCrate {
+        dir: "busbar-plane-a2a",
+        placement: "#83 def 16-20 (CLEAN)",
+    },
     // `-streaming` is the #18 name and the MERGE row's ruled BASE for the voice/streaming pair.
-    PlaneCrate { dir: "busbar-plane-streaming", placement: "#83 def 16-20 (MERGE base, #18)" },
+    PlaneCrate {
+        dir: "busbar-plane-streaming",
+        placement: "#83 def 16-20 (MERGE base, #18)",
+    },
     // #48's fifth plane. Not wired into the binary yet — and gated anyway, because it is the
     // cleanest #71 exemplar in the tree and a rule that only watches wired code watches it late.
-    PlaneCrate { dir: "busbar-plane-decision", placement: "#83 def 16-20 (#48)" },
+    PlaneCrate {
+        dir: "busbar-plane-decision",
+        placement: "#83 def 16-20 (#48)",
+    },
     // FOLD row: "each is a WIRE DIALECT, which def 16–20 absorbs. They are not homeless; they are
     // pre-fold." Scanned now so the fold cannot carry money across with it.
-    PlaneCrate { dir: "busbar-llm-codec", placement: "#83 FOLD -> def 16-20" },
-    PlaneCrate { dir: "busbar-voice-codec", placement: "#83 FOLD -> def 16-20" },
+    PlaneCrate {
+        dir: "busbar-llm-codec",
+        placement: "#83 FOLD -> def 16-20",
+    },
+    PlaneCrate {
+        dir: "busbar-voice-codec",
+        placement: "#83 FOLD -> def 16-20",
+    },
     // SPLIT row: "Session, turn and dialect rules -> 16-20. But unit/{admit,approve,meter,route}
     // and runtime/metering.rs decide admission and price - that is defs 5/6, not a plane." THIS
     // GATE IS THAT SENTENCE. These four are where the money actually is.
-    PlaneCrate { dir: "busbar-llm", placement: "#83 SPLIT -> def 16-20" },
-    PlaneCrate { dir: "busbar-mcp", placement: "#83 SPLIT -> def 16-20" },
-    PlaneCrate { dir: "busbar-a2a", placement: "#83 SPLIT -> def 16-20" },
-    PlaneCrate { dir: "busbar-voice", placement: "#83 SPLIT -> def 16-20" },
+    PlaneCrate {
+        dir: "busbar-llm",
+        placement: "#83 SPLIT -> def 16-20",
+    },
+    PlaneCrate {
+        dir: "busbar-mcp",
+        placement: "#83 SPLIT -> def 16-20",
+    },
+    PlaneCrate {
+        dir: "busbar-a2a",
+        placement: "#83 SPLIT -> def 16-20",
+    },
+    PlaneCrate {
+        dir: "busbar-voice",
+        placement: "#83 SPLIT -> def 16-20",
+    },
 ];
 
 /// The five CONTRACT planes that must each still declare at least one meter class ([`ROW_DECLARATION`]).
@@ -228,13 +261,22 @@ struct Needle {
 }
 
 const fn id(text: &'static str) -> Needle {
-    Needle { text, shape: Shape::Ident }
+    Needle {
+        text,
+        shape: Shape::Ident,
+    }
 }
 const fn ty(text: &'static str) -> Needle {
-    Needle { text, shape: Shape::Type }
+    Needle {
+        text,
+        shape: Shape::Type,
+    }
 }
 const fn ex(text: &'static str) -> Needle {
-    Needle { text, shape: Shape::Exact }
+    Needle {
+        text,
+        shape: Shape::Exact,
+    }
 }
 
 /// RESOLVES A CARD. #43: "A plane plugin NEVER sees its rate card or fees."
@@ -410,10 +452,7 @@ fn money_nanos(code: &str) -> (bool, bool) {
             continue;
         }
         // `_nanos` must END the identifier, or `_nanoseconds` would read as a money quantity.
-        if chars
-            .get(i + pat.len())
-            .is_some_and(|c| is_ident_char(*c))
-        {
+        if chars.get(i + pat.len()).is_some_and(|c| is_ident_char(*c)) {
             continue;
         }
         // Walk back to the start of the identifier this segment belongs to and name it whole.
@@ -553,8 +592,7 @@ fn finding_key(f: &Finding) -> (String, String) {
 /// finding. The production-line SET comes from [`scan::production_lines`]; the TEXT that is matched
 /// comes from the carried blanker. Two passes, one answer.
 pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
-    let by_dir: BTreeMap<&str, &PlaneCrate> =
-        PLANE_CRATES.iter().map(|p| (p.dir, p)).collect();
+    let by_dir: BTreeMap<&str, &PlaneCrate> = PLANE_CRATES.iter().map(|p| (p.dir, p)).collect();
 
     let files = cx
         .walk(&WalkSpec::new(["crates"]).ext("rs").min_files(1))
@@ -568,7 +606,9 @@ pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
 
     for f in &files {
         let rel = f.rel_str();
-        let Some(krate) = crate_of(&rel) else { continue };
+        let Some(krate) = crate_of(&rel) else {
+            continue;
+        };
         let Some(plane) = by_dir.get(krate.as_str()) else {
             continue;
         };
@@ -846,7 +886,11 @@ impl Gate for PlanePricingBlindnessGate {
                 return Verdict::of(rows);
             }
         };
-        rows.push(Row::pass(ROW_SCAN_FLOOR, "the crates tree was scanned", CLEAN));
+        rows.push(Row::pass(
+            ROW_SCAN_FLOOR,
+            "the crates tree was scanned",
+            CLEAN,
+        ));
 
         if std::env::var("XTASK_PPB_EMIT_BASELINE").as_deref() == Ok("1") {
             eprint!("{}", emit_baseline(&findings));
@@ -1348,7 +1392,12 @@ fn switch_is_narrower(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: &str)
         "the billing-switch row names a card needle inside a conditional and NOT a plain one"
             .to_string();
     let Ok(fcx) = Ctx::at(cx.abs(fixture), cx.scratch().to_path_buf()) else {
-        return Case { name, covers, expected: Expect::Green, got: Expect::Skipped };
+        return Case {
+            name,
+            covers,
+            expected: Expect::Green,
+            got: Expect::Skipped,
+        };
     };
     let mut ov = Overlay::new();
     ov.set(
@@ -1392,15 +1441,16 @@ fn switch_is_narrower(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: &str)
 
 /// THE POSITIVE FLOOR BITES. Strip the fixture plane's `MeterClassDecl` and the declaration row
 /// must go RED — otherwise the gate can pass by the planes forgetting to meter.
-fn declaration_floor_bites(
-    gate: &PlanePricingBlindnessGate,
-    cx: &Ctx,
-    fixture: &str,
-) -> Case {
+fn declaration_floor_bites(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: &str) -> Case {
     let covers = vec![ROW_DECLARATION.to_string()];
     let name = "a plane that declares no meter class reds the declaration floor".to_string();
     let Ok(fcx) = Ctx::at(cx.abs(fixture), cx.scratch().to_path_buf()) else {
-        return Case { name, covers, expected: Expect::Red { naming: Vec::new() }, got: Expect::Skipped };
+        return Case {
+            name,
+            covers,
+            expected: Expect::Red { naming: Vec::new() },
+            got: Expect::Skipped,
+        };
     };
     let mut ov = Overlay::new();
     ov.set(
@@ -1416,9 +1466,13 @@ fn declaration_floor_bites(
     Case {
         name,
         covers,
-        expected: Expect::Red { naming: vec!["busbar-plane-llm".to_string()] },
+        expected: Expect::Red {
+            naming: vec!["busbar-plane-llm".to_string()],
+        },
         got: if red {
-            Expect::Red { naming: vec!["busbar-plane-llm".to_string()] }
+            Expect::Red {
+                naming: vec!["busbar-plane-llm".to_string()],
+            }
         } else {
             Expect::Green
         },
@@ -1437,7 +1491,12 @@ fn test_declared_is_not_production(
         "a money double declared under #[cfg(test)] is test scope; its production sibling is not"
             .to_string();
     let Ok(fcx) = Ctx::at(cx.abs(fixture), cx.scratch().to_path_buf()) else {
-        return Case { name, covers, expected: Expect::Green, got: Expect::Skipped };
+        return Case {
+            name,
+            covers,
+            expected: Expect::Green,
+            got: Expect::Skipped,
+        };
     };
     let verdict = execute(gate, &fcx);
     let detail = verdict
@@ -1471,7 +1530,12 @@ fn scope_is_the_roster(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: &str
     let covers = vec![ROW_HOLD.to_string()];
     let name = "the same money act in a NON-plane crate is not a finding".to_string();
     let Ok(fcx) = Ctx::at(cx.abs(fixture), cx.scratch().to_path_buf()) else {
-        return Case { name, covers, expected: Expect::Green, got: Expect::Skipped };
+        return Case {
+            name,
+            covers,
+            expected: Expect::Green,
+            got: Expect::Skipped,
+        };
     };
     let verdict = execute(gate, &fcx);
     let detail = verdict

@@ -498,7 +498,10 @@ fn ceiling_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<
     // it, its row measured 0 and passed every plant. `Overlay::set` overwrites, so this is a no-op
     // on a tree where the crate is present and the glob already planted it.
     if !verbs.is_empty() {
-        ov.set(format!("crates/{verbs}/src/zz_planted_loc.rs"), bulk(16_000));
+        ov.set(
+            format!("crates/{verbs}/src/zz_planted_loc.rs"),
+            bulk(16_000),
+        );
     }
     naming.push(format!("{verbs} stays within its LOC ceiling"));
     r.push(prove_red(

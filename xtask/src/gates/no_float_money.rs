@@ -367,7 +367,8 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
         file: "crates/busbar-kernel/src/config/migrate.rs",
         needle: "price_per_1k_tokens_cents",
         class: AllowClass::NotACount,
-        why: "the #44 config boundary: a configured decimal read once at parse, not a runtime count",
+        why:
+            "the #44 config boundary: a configured decimal read once at parse, not a runtime count",
     },
     // ── A real count, owed to the #81 conversion wave ─────────────────────────────────────────
     Allow {
@@ -617,9 +618,7 @@ fn zero_default_after(flat: &Flat, i: usize) -> Option<usize> {
     match name.as_str() {
         "unwrap_or_default" | "unwrap_or" | "unwrap_or_else" => {
             let (arg, end) = read_args(bytes, &flat.text, after)?;
-            ZERO_DEFAULT_ARGS
-                .contains(&arg.as_str())
-                .then_some(end)
+            ZERO_DEFAULT_ARGS.contains(&arg.as_str()).then_some(end)
         }
         _ => None,
     }
@@ -758,9 +757,11 @@ fn row_count_scale(offenders: &[String]) -> Row {
 fn walk_area(cx: &Ctx, area: &CountRoot) -> Result<Vec<crate::ctx::SourceFile>, String> {
     let mut files = Vec::new();
     for home in area.homes {
-        let spec = WalkSpec::new([*home])
-            .ext("rs")
-            .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE, EXCLUDE_TESTS_MOD]);
+        let spec = WalkSpec::new([*home]).ext("rs").exclude([
+            EXCLUDE_TESTS_DIR,
+            EXCLUDE_TESTS_FILE,
+            EXCLUDE_TESTS_MOD,
+        ]);
         // A home that is not there is a home the fold has already emptied; the floor over the union
         // is what says whether the AREA is still being scanned.
         if let Ok(found) = cx.walk(&spec) {
@@ -859,7 +860,11 @@ impl Gate for NoFloatMoneyGate {
                     ));
                 }
             }
-            named_files.extend(found.into_iter().filter(|f| wanted.contains(&f.rel_str().as_str())));
+            named_files.extend(
+                found
+                    .into_iter()
+                    .filter(|f| wanted.contains(&f.rel_str().as_str())),
+            );
         }
 
         let mut offenders = Vec::new();
@@ -895,9 +900,10 @@ impl Gate for NoFloatMoneyGate {
                     continue;
                 }
                 for hit in scan_count_reads(&f.text) {
-                    let allowed = ALLOWED_COUNT_READS.iter().enumerate().find(|(_, a)| {
-                        a.file == rel && hit.window.contains(a.needle)
-                    });
+                    let allowed = ALLOWED_COUNT_READS
+                        .iter()
+                        .enumerate()
+                        .find(|(_, a)| a.file == rel && hit.window.contains(a.needle));
                     match allowed {
                         Some((i, a)) => {
                             count_scan.used.insert(i);
@@ -984,7 +990,12 @@ impl Gate for NoFloatMoneyGate {
             cx,
             self,
             "the money path names no float, defaults no count and persists no scaleless mantissa",
-            &[ROW_SCAN_FLOOR, ROW_NO_FLOAT, ROW_COUNT_READ, ROW_COUNT_SCALE],
+            &[
+                ROW_SCAN_FLOOR,
+                ROW_NO_FLOAT,
+                ROW_COUNT_READ,
+                ROW_COUNT_SCALE,
+            ],
         ));
 
         // The token is BUILT, not written, so this gate's own source does not carry the needle it

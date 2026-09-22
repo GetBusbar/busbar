@@ -147,7 +147,8 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "nested-block-comment",
-        why: "`/* /* */ */` is legal Rust; a scanner that closes at the first `*/` resumes on prose",
+        why:
+            "`/* /* */ */` is legal Rust; a scanner that closes at the first `*/` resumes on prose",
         src: "/* outer /* inner */ still a comment */\n\
               pub fn one() -> u32 { 1 }\n",
         want: counts(1, 0, 1, 0, 0),
@@ -311,7 +312,10 @@ pub fn run() -> i32 {
     let nested = "crates/x/src/engine/tests/router_tests.rs";
     say(
         classify::is_test_path(nested) && !top_level_tests_only(nested),
-        format!("path `{nested}`: the {} rule is RED on it", Flaw::TopLevelTestsOnly.label()),
+        format!(
+            "path `{nested}`: the {} rule is RED on it",
+            Flaw::TopLevelTestsOnly.label()
+        ),
     );
 
     // A file that is not Rust is an ERROR, never a count.
@@ -357,7 +361,10 @@ fn tree_case() -> Result<Vec<(bool, String)>, String> {
         std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))
     };
     write("crates/alpha/src/lib.rs", "pub fn a() -> u32 { 1 }\n")?;
-    write("crates/alpha/src/engine/mod.rs", "pub fn b() -> u32 { 2 }\n")?;
+    write(
+        "crates/alpha/src/engine/mod.rs",
+        "pub fn b() -> u32 { 2 }\n",
+    )?;
     // NESTED tests: the bug, as a tree rather than a path string.
     write(
         "crates/alpha/src/engine/tests/deep.rs",
@@ -387,13 +394,12 @@ fn tree_case() -> Result<Vec<(bool, String)>, String> {
     ));
     out.push((
         report.total.code == 3,
-        format!("fixture tree: total code is 3 (measured {})", report.total.code),
+        format!(
+            "fixture tree: total code is 3 (measured {})",
+            report.total.code
+        ),
     ));
-    let group = report
-        .groups
-        .iter()
-        .find(|g| g.name == "excluded")
-        .cloned();
+    let group = report.groups.iter().find(|g| g.name == "excluded").cloned();
     out.push(match group {
         Some(g) => (
             g.inside.code == 1 && g.outside.code == 2 && g.missing.is_empty(),

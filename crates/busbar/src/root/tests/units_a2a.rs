@@ -1985,8 +1985,11 @@ fn a_key_reaches_the_agent_it_was_granted_and_no_other() {
     let who = PrincipalId::new("vk_agent");
     let chain = deployment.resolve(&who, Some("a2a-team"));
 
-    let wrong_agent =
-        deployment.calling_draft_at(chain.as_ref(), 1_700_000_000, draft_for(ops::OP_MESSAGE_SEND, "b"));
+    let wrong_agent = deployment.calling_draft_at(
+        chain.as_ref(),
+        1_700_000_000,
+        draft_for(ops::OP_MESSAGE_SEND, "b"),
+    );
     assert_eq!(
         ask_for_scope(&wrong_agent, &who)
             .expect_err("granted \"a\" only, addressing \"b\"")
@@ -1995,8 +1998,11 @@ fn a_key_reaches_the_agent_it_was_granted_and_no_other() {
         "a key granted one agent must not reach a different one"
     );
 
-    let granted_agent =
-        deployment.calling_draft_at(chain.as_ref(), 1_700_000_000, draft_for(ops::OP_MESSAGE_SEND, "a"));
+    let granted_agent = deployment.calling_draft_at(
+        chain.as_ref(),
+        1_700_000_000,
+        draft_for(ops::OP_MESSAGE_SEND, "a"),
+    );
     let facts = ask_for_scope(&granted_agent, &who).expect("granted \"a\", addressing \"a\"");
     assert_eq!(
         facts.resources.as_slice(),
@@ -2065,7 +2071,10 @@ fn a_grant_under_another_kind_does_not_reach_this_plane() {
 #[test]
 fn an_unkeyed_caller_is_refused_on_a_credentialed_address() {
     let deployment = deployment(one_call_at_a_time("a2a-team"));
-    assert!(deployment.key.is_none(), "the fixture default: no key resolved");
+    assert!(
+        deployment.key.is_none(),
+        "the fixture default: no key resolved"
+    );
     let who = PrincipalId::new("vk_agent");
     let chain = deployment.resolve(&who, Some("a2a-team"));
     let unit = deployment.calling(chain.as_ref());

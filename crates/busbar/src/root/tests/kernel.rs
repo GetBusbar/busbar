@@ -505,7 +505,11 @@ fn the_holder_hands_a_reader_the_whole_history_and_an_unresolved_node_none() {
     holder.apply(busbar_kernel_ledger::cost::RateCard::absent(3), 1_000);
     holder.apply(busbar_kernel_ledger::cost::RateCard::absent(11), 2_000);
     let history = holder.history().expect("two applies are a history");
-    assert_eq!(history.len(), 2, "the reader sees every entry, not just the head");
+    assert_eq!(
+        history.len(),
+        2,
+        "the reader sees every entry, not just the head"
+    );
     assert_eq!(
         history.head(),
         Some(busbar_kernel_ledger::cost::HistorySeq(1)),
