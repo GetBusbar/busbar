@@ -2285,6 +2285,36 @@ the rig must keep reporting both figures side by side.
 A future read that prices flat is a failing test, not a review note — which is the direct answer to
 *enrolment is the gap no count detects*: this roster detects its own omissions.
 
+#### OWNER RULING 2026-09-22 — EVERY MAJOR RELEASE CAPTURES AN ORACLE BASELINE
+
+**At every release cut, record the golden for THAT version. The next release diffs against the
+previous release's golden.** `golden/1.5.5` exists; `golden/1.6.0` is recorded at the 1.6.0 cut;
+1.6.1 is judged against 1.6.0.
+
+This makes the baseline a **dated history**, the same shape #79 already gives rate cards — and it
+generalises the new-plane ruling into a standing rule of the release engine (Part 6), because it
+fixes the underlying defect rather than this instance of it.
+
+**WHAT IT FIXES PERMANENTLY.** Today 1,402 cells cannot fail because they have no 1.5.5 golden — new
+capability is unprovable by construction, and stays unprovable release after release. Under this
+rule a cell is unbaselined **exactly once, in the release that introduces it**, and is real coverage
+from the next one onward. The gap bites once per feature instead of forever.
+
+**RULES THAT MAKE IT HONEST — all three are load-bearing:**
+1. **The golden is recorded from the RELEASE build at the release SHA**, never from a dev tree. A
+   baseline recorded from an unreleased binary is a baseline for something nobody ran.
+2. **A cell with no prior golden is reported as UNBASELINED, never as PASS.** It is a named gap — a
+   gap and a failure must never be the same output, and neither may a gap and a success.
+3. **`accepted-differences` entries stay CUMULATIVE and signed.** They are the record of what
+   deliberately moved between any two baselines.
+
+**THE ONE WEAKNESS, stated rather than discovered later.** Comparing only N against N-1 means a slow
+drift over many releases is invisible: each step passes, and the sum of ten signed-off steps can land
+somewhere nobody would have approved in one move. The cumulative signed register in (3) is the
+defence — it is the only artifact that spans baselines — so it must be read as a whole at each cut,
+not just appended to. **A money value that has moved in four consecutive releases is a finding even
+if every individual move was signed.**
+
 #### OWNER RULINGS 2026-09-22 (money, wire, proof, coverage)
 
 **1. THE BUDGET GATE PRICES AT ADMISSION, BEHIND A MEMO KEYED ON ITS INPUTS.**
