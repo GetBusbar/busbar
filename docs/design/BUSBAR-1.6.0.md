@@ -1427,11 +1427,39 @@ the thing to fix, not just this one commit.
    `/etc/busbar/plugins`. The bundled variant works; the core image does not. **For a release named
    "Protocols as Plugins" this is a blocker.** Fix must be plugin-agnostic: make the runtime libs a
    property of the image, extracted once from the already-pinned `rust:alpine` digest.
-2. **`NANOS_PER_CENT` is declared three times** — canonically in `busbar-kernel-ledger/src/cost/`,
-   and again locally at `busbar/src/root/units_voice.rs:157` and `units_a2a.rs:1045`. All three hold
-   `10_000_000` today, so this is latent drift, not a live miscount — which is exactly why it should
-   be collapsed now, before someone edits one copy and a request is judged at one rate and billed at
-   another.
+2. **`NANOS_PER_CENT` — mostly fixed; ONE unpinned copy remains.** Measured state, five sites:
+   `busbar-kernel-ledger/src/cost/mod.rs:86` is canonical (`pub const … u128`);
+   `busbar-kernel-budget/src/price.rs:24` is now a `pub use` of it; `units_voice.rs:163` and
+   `units_a2a.rs:1050` keep a deliberate `u64` copy (the fee math must saturate at `u64::MAX`, and
+   borrowing the ledger's `u128` would silently move that ceiling on a money path) but are pinned by
+   `const _: () = assert!(… == busbar_kernel_ledger::cost::NANOS_PER_CENT)`, so editing either copy
+   stops the build.
+
+   The remaining one is **`busbar-kernel/src/cost.rs:58`** — same `u128` type as the canonical, but
+   neither imported nor asserted, so it can drift silently. It is used once, at line 745, inside
+   `derive_spend_cents`.
+
+   It cannot simply be imported: `busbar-kernel` depends on neither `busbar-kernel-ledger` nor
+   `busbar-kernel-budget`. Two ways to close it, both dep-graph changes and therefore not made
+   blind — (a) add `busbar-kernel-ledger` to `busbar-kernel` and `pub use`, or (b) move the constant
+   to `busbar-contract`, which **both** crates already depend on. (b) is tidier but widens the plugin
+   dependency closure (#40), so it is a ruling, not a refactor: `NANOS_PER_CENT` is a unit
+   *definition* rather than a price, which is an argument for contract, but #40 is deliberately
+   narrow.
+
+   Worth stating plainly, because it reads alarming and is not: `derive_spend_cents` is **the locked
+   money model working exactly as specified.** It takes ledger units and a rate card and derives
+   cents at read time; it stores nothing. Its own doc notes that a row written under an older card
+   derives at the new rate and calls that the designed behaviour — which is precisely "money is a
+   view over ledger × ratecard". Its saturation is also correct and deliberately fail-closed: it
+   pins at `i64::MAX` rather than `as`-casting, because a wrapping cast would land negative, get
+   floored to 0 by `.max(0)`, and let an adversarially large ledger derive as **free** and bypass
+   every budget cap.
+
+   Note also that `busbar-kernel/src/cost.rs` performs cents arithmetic but is **not** in
+   `no-float-money`'s scan set (that gate scans `busbar-kernel-ledger/src` plus four named binary
+   files). The gate is correctly scoped — it guards the money *arithmetic* crate — but it does mean
+   this file's integer discipline is unenforced.
 3. **`rate_card_version: 0` is hardcoded** at six sites across `units_mcp.rs`, `units_voice.rs` and
    `units_a2a.rs`.
 
