@@ -2082,6 +2082,49 @@ ever leaves `NATIVE_PLANES`.
 > everyone reading the ledger spends their time on a product bug that does not exist.
 
 
+#### THE FIFTH PLANE WAS IN NO KIND LIST — and a positive control is what proved it
+
+`busbar-plane-decision` (the jev plane, #48) appeared in NO `[gate.plugin_kinds]` list. Absence from
+a list is NOT by itself evidence of blindness — that inference is exactly what made the struck
+blind-plane-gate claim wrong — so it was proven instead:
+
+```
+same `use std::net::TcpStream` planted in busbar-plane-decision (unlisted)
+  -> PASS denylist:hits   "no banned transitive source in any pure plugin kind"
+identical plant in busbar-plane-streaming (listed)
+  -> RED  denylist:hits   FAIL
+```
+
+One caught, one invisible; the ONLY difference is membership in the list. The fifth plane could open
+a socket, read the filesystem, spawn a process or read env, and the purity gate reported green.
+
+**Scope it precisely, because the over-broad version of this claim was already wrong once.**
+`plane-purity` and `kind-isolation` DO cover this crate — both resolve the plane population through a
+kind-family census of the whole tree, and `kind-isolation` emits 9 findings naming it. Only the
+DENYLIST FAMILY reads the explicit list (`xtask/src/denylist.rs:193`), and only it was blind.
+
+**Listing it turned the gate RED on a real violation, which is the whole return on the fix:**
+
+```
+busbar-plane-decision: libc via busbar-plane-decision -> busbar_api -> sha2 -> cpufeatures -> libc
+```
+
+`busbar-plane-decision` is the **only** pure plane that names `busbar-api` — 1 against 0 for a2a,
+llm, mcp and streaming. The siblings were actively policed on this exact ban: a2a and mcp carry
+reviewed, owner-signed `libc` waivers in `qa/denylist-allow.toml`. **The fifth plane took an edge
+every other plane was held away from, and the instrument that would have said so could not see the
+crate.** It is also the crate the audit register now honestly records as `unaudited`. Unscanned and
+unaudited is not a coincidence — both follow from never having been enrolled anywhere.
+
+**NO WAIVER WAS ADDED.** A waiver at first sighting suppresses the finding instead of the violation.
+The fix is that a pure plane names `busbar-contract`, not `busbar-api` — which is what its four
+siblings already do and where #84 sends it regardless.
+
+> **A CRATE THAT IS IN NO LIST IS IN NO GATE.** Every kind-scoped instrument here takes its
+> population from a roster, and a roster is maintained by hand. The census rows (`[gate.census]`)
+> exist precisely to stop a roster silently narrowing — but they count the roster, and cannot see a
+> crate that was never enrolled in the first place. **Enrolment is the gap no count detects.**
+
 #### A NEEDLE GATE CANNOT SEE AN UNNAMED THING — shape blindness, not spelling blindness
 
 `scripts/secret-hygiene-gate.sh` Check 1 scans STRUCT FIELDS for secret-ish NAMES. Widening the
