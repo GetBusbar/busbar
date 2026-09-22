@@ -1,15 +1,18 @@
 //! This plane is the same plane everywhere it is compiled.
 //!
-//! Mirrors `busbar-plane-a2a`/`busbar-plane-mcp`'s own `invariance.rs`, with ONE deliberate
-//! difference: this crate's manifest names `busbar-api` (for `UpstreamCreds`, reused verbatim per
-//! the config-model ruling — see `Cargo.toml`'s header and `src/config.rs`'s module doc), which its
-//! pure siblings do not. `ModelCfg` used to be a second such exception (`busbar-substrate`, then
-//! `busbar-kernel`) but needs none any more — it moved to `busbar_contract::config::ModelCfg`
-//! (DECISIONS #40/#38), the crate's ordinary contract dependency. So the "names only what a plane
-//! may name" check here allows `busbar-api` alone and still forbids every genuinely kernel-side
-//! crate: `busbar-core`, `busbar-caps`, `busbar-kernel`, `busbar-unit-*`, and the sibling PLANE
-//! crates (naming another plane would be a plane reading another plane's private surface, never
-//! legitimate for any plane).
+//! Mirrors `busbar-plane-a2a`/`busbar-plane-mcp`'s own `invariance.rs`, and mirrors it exactly now:
+//! the ONE deliberate difference it used to carry — this manifest named `busbar-api` for
+//! `UpstreamCreds`, which its pure siblings never did — is gone, and `busbar-api` has joined the
+//! forbidden list rather than the allowed one. The exception was not free. `busbar-api` depends on
+//! `sha2`, so the manifest edge put `busbar-plane-decision -> busbar_api -> sha2 -> cpufeatures ->
+//! libc` in a pure plane's closure, which the transitive source denylist bans outright, and this
+//! was the only plane of the five with such an edge (1 occurrence against 0 for a2a, llm, mcp and
+//! streaming). `UpstreamCreds` moved to `busbar_contract::config::UpstreamCreds` verbatim, the same
+//! route `ModelCfg` took out of `busbar-substrate`/`busbar-kernel` (DECISIONS #40/#38), so both
+//! reserved model-serving shapes now arrive from the crate a plugin may name and the manifest names
+//! exactly one busbar crate. The check forbids `busbar-api`, `busbar-core`, `busbar-caps`,
+//! `busbar-kernel`, `busbar-unit-*`, and the sibling PLANE crates (naming another plane would be a
+//! plane reading another plane's private surface, never legitimate for any plane).
 //!
 //! `the_manifest_names_only_what_this_plane_may_name` was RED for as long as this manifest named
 //! `busbar-kernel`, and it is GREEN now because the manifest does not. The edge existed for ONE
@@ -109,8 +112,9 @@ fn the_source_contains_no_unsafe_block() {
     );
 }
 
-/// The manifest names only the contract, the explicitly-ruled model-serving config types, and the
-/// serializer — never a genuinely kernel-side crate or a sibling plane.
+/// The manifest names only the contract (which holds both explicitly-ruled model-serving config
+/// types, `ModelCfg` and `UpstreamCreds`) and the serializer — never a genuinely kernel-side crate,
+/// never `busbar-api`, never a sibling plane.
 #[test]
 fn the_manifest_names_only_what_this_plane_may_name() {
     let manifest = manifest();
@@ -125,6 +129,9 @@ fn the_manifest_names_only_what_this_plane_may_name() {
         }
         let name = line.split_whitespace().next().unwrap_or_default();
         for forbidden in [
+            // The edge this plane alone had, and the one that reached banned source. It is a ban,
+            // not an exception, since `UpstreamCreds` moved to `busbar-contract`.
+            "busbar-api",
             "busbar-core",
             "busbar-caps",
             "busbar-kernel",

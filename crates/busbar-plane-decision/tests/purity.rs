@@ -1,13 +1,17 @@
 //! The plane is pure, and this is what says so.
 //!
-//! Mirrors `busbar-plane-a2a`'s own `purity.rs`. One deliberate difference from that file's "names
-//! no kernel-side crate" scan: this crate legitimately names `busbar_api` (for `UpstreamCreds`,
-//! reused verbatim — see `Cargo.toml`'s header), so it is removed from the forbidden list here.
-//! `ModelCfg` needs no such exception any more — it is `busbar_contract::config::ModelCfg` now
-//! (DECISIONS #40/#38), the crate's ordinary contract dependency. `busbar_kernel` stays ON the
-//! forbidden list and this crate no longer names it anywhere: `src/registry.rs` and its sibling
-//! `src/tests/registry.rs` were the only two lines of source that did, and both files are gone —
-//! an unreachable generation-1 `PlaneDecl` constant that nothing outside this crate ever read.
+//! Mirrors `busbar-plane-a2a`'s own `purity.rs`, and no longer carries the ONE difference it used
+//! to: `busbar_api` was exempted here, because this crate named it for `UpstreamCreds`. It is on
+//! the forbidden list now, like every other non-contract busbar crate, because the exemption had a
+//! price nobody was paying attention to — `busbar_api` depends on `sha2`, and
+//! `busbar-plane-decision -> busbar_api -> sha2 -> cpufeatures -> libc` is banned source in a pure
+//! plugin kind. `UpstreamCreds` moved to `busbar_contract::config` verbatim and the edge is gone,
+//! so the exemption has nothing left to excuse. `ModelCfg` needed no exception either — it is
+//! `busbar_contract::config::ModelCfg` (DECISIONS #40/#38), the crate's ordinary contract
+//! dependency. `busbar_kernel` stays ON the forbidden list and this crate no longer names it
+//! anywhere: `src/registry.rs` and its sibling `src/tests/registry.rs` were the only two lines of
+//! source that did, and both files are gone — an unreachable generation-1 `PlaneDecl` constant that
+//! nothing outside this crate ever read.
 
 use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
 use busbar_contract::wire::FrameCursor;
@@ -121,14 +125,19 @@ fn the_plane_performs_no_input_or_output() {
 
 /// The plane names no GENUINELY kernel-side crate.
 ///
-/// `busbar_api` is named deliberately (see the module doc) and is NOT on this list. `busbar_kernel`
-/// IS on it, and this test was RED on exactly two source lines — `src/registry.rs`'s `use` of
-/// `PlaneDecl` and `src/tests/registry.rs`'s `BuildCtx` literal — until both files were deleted as
-/// unreachable code. It is GREEN now and is the source-side half of this crate's #40 witness (the
-/// manifest-side half is `invariance.rs`'s `the_manifest_names_only_what_this_plane_may_name`).
+/// `busbar_api` IS on this list now. It was the deliberate exception for as long as this crate
+/// named it for `UpstreamCreds`, and that exception was the single edge by which a pure plane
+/// reached banned source (`busbar_api -> sha2 -> cpufeatures -> libc`). The type moved to
+/// `busbar_contract::config` and this line is what stops the edge coming back by the same door.
+/// `busbar_kernel` has been on it throughout, and this test was RED on exactly two source lines —
+/// `src/registry.rs`'s `use` of `PlaneDecl` and `src/tests/registry.rs`'s `BuildCtx` literal —
+/// until both files were deleted as unreachable code. It is GREEN now and is the source-side half
+/// of this crate's #40 witness (the manifest-side half is `invariance.rs`'s
+/// `the_manifest_names_only_what_this_plane_may_name`).
 #[test]
 fn the_plane_names_no_kernel_side_crate() {
     let forbidden = [
+        "busbar_api",
         "busbar_caps",
         "busbar_kernel",
         "busbar_unit",

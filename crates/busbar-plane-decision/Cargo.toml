@@ -8,6 +8,14 @@
 # section, the admin wiring and the registry declaration, jev is deliberately a SINGLE crate that
 # holds the pure plane AND its own typed config section.
 #
+# THE `busbar-api` EDGE IS GONE TOO, AND WITH IT THE ONE BANNED-SOURCE PATH ANY PURE PLANE HAD. This
+# manifest was the only pure plane's manifest naming `busbar-api`: 1 occurrence against 0 for
+# busbar-plane-{a2a,llm,mcp,streaming}. The single symbol it was named for, `UpstreamCreds`, moved
+# to `busbar_contract::config` verbatim, so the dependency had nothing left to carry and was
+# deleted. What the edge HAD been carrying was a purity breach the denylist family could not see
+# until this crate was enrolled in a kind list at all — `busbar-api` depends on `sha2`, `sha2` on
+# `cpufeatures`, `cpufeatures` on `libc`, and a pure plane may reach none of them.
+#
 # THE `busbar-kernel` EDGE IS GONE, AND SO IS THE ONLY FILE THAT NEEDED IT. Two things used to make
 # this manifest name the kernel and neither does any more. `ModelCfg`, reused VERBATIM for
 # `decisions.models.<name>`, moved to `busbar_contract::config::ModelCfg` (DECISIONS #40/#38).
@@ -45,15 +53,17 @@ path = "src/lib.rs"
 # to tell which one it registered. The contract crate holds itself to the same rule and asserts it.
 
 [dependencies]
-# THE CONTRACT. The one busbar crate a plugin manifest may name without argument. Also where
-# `ModelCfg` (the model-serving config shape `decisions.models.<name>` reuses verbatim, uniform with
-# `pools.models.<name>`) now lives — `busbar_contract::config::ModelCfg` — since DECISIONS #40/#38
-# moved it out of the kernel.
+# THE CONTRACT, AND NOW THE ONLY BUSBAR CRATE THIS MANIFEST NAMES — which is what its four sibling
+# planes have always looked like. Both reserved model-serving config shapes live here:
+# `ModelCfg` (the `decisions.models.<name>` value, uniform with `pools.models.<name>`) at
+# `busbar_contract::config::ModelCfg` since DECISIONS #40/#38, and `UpstreamCreds` (the reserved
+# `upstream_credentials` value, the same enum `PoolCfg` names for its own per-section override) at
+# `busbar_contract::config::UpstreamCreds`. `UpstreamCreds` was the LAST reason this manifest named
+# `busbar-api`, and naming `busbar-api` was the reason this plane — alone among the five — reached
+# banned source: `busbar-plane-decision -> busbar_api -> sha2 -> cpufeatures -> libc`. The type
+# moved to the contract rather than the edge being waived, because a waiver at first sighting
+# suppresses the finding instead of the violation.
 busbar-contract = { path = "../busbar-contract" }
-# THE RESERVED `upstream_credentials` SHAPE. `PoolCfg` (busbar-kernel) names the same enum for
-# its own per-section override; naming it here keeps `decisions:` on the identical reserved-key
-# grammar rather than a look-alike type.
-busbar-api = { path = "../api" }
 # The object notation the jev dialect speaks. Byte-identity passthrough of the body is the norm;
 # this crate parses ONLY the handful of declared pointers (never `state`/`answers`) to build facts.
 serde_json = { workspace = true }

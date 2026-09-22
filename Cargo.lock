@@ -847,7 +847,6 @@ dependencies = [
 name = "busbar-plane-decision"
 version = "1.6.0"
 dependencies = [
- "busbar-api",
  "busbar-contract",
  "serde",
  "serde_json",
