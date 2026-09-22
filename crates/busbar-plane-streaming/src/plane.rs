@@ -942,6 +942,14 @@ fn decode_twilio_frame<'u>(
                 reason: DiscardCode::Unsupported,
             })
         }
+        // `start` negotiated a `mediaFormat` other than the one this crate's Twilio path assumes
+        // (`twilio::decode`'s own doc). Every later `media` frame on this stream would be decoded,
+        // and TIMED, under a wrong assumption — and duration is a LEDGER quantity, so a wrong count
+        // is a wrong ledger. Refused rather than served on a guess (#42's own spirit: an unknown is
+        // refused, never silently defaulted).
+        Err(twilio::TwilioError::UnsupportedMediaFormat) => {
+            return Err(Decode::UnsupportedOperation)
+        }
         Err(_) => return Err(Decode::Malformed),
     };
     match event {
@@ -951,6 +959,14 @@ fn decode_twilio_frame<'u>(
             reason: DiscardCode::Unsupported,
         }),
         twilio::TwilioEvent::Start { stream_sid, .. } => {
+            // `twilio::decode` never hands back an empty `stream_sid` for `Start` (it refuses the
+            // frame itself, `TwilioError::Malformed`, above) — so by construction, everything bound
+            // here is a real, non-empty identity that CAN bind. See `twilio::decode`'s own note for
+            // why an empty id must never reach this assignment.
+            debug_assert!(
+                !stream_sid.is_empty(),
+                "twilio::decode must refuse an empty streamSid before Start reaches this arm"
+            );
             state.twilio_stream_sid = Some(stream_sid);
             state.dialect = Some(Dialect::TwilioMediaStreams);
             Ok(Ingress::Discard {

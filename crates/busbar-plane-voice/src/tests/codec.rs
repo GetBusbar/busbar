@@ -1330,3 +1330,88 @@ fn a_barge_in_on_an_open_turn_opens_the_turn_that_supersedes_it() {
         "a late frame of the superseded turn must not relay onto the one that replaced it"
     );
 }
+
+// ─── The `start` frame's two refusals ────────────────────────────────────────────────────────────
+//
+// Both of these guard the LIVE plane. `busbar-plane-streaming` carries a byte-identical pair, and
+// the two crates are scheduled to fold into one (#18) — keep them in step until they do.
+
+/// An empty `streamSid` must be REFUSED, not handed back as a binding.
+///
+/// `stream_sid` from `start` is what every later `media` frame is compared against. An empty one
+/// compares EQUAL to the empty default a `media` frame gets when it omits `streamSid` entirely, so
+/// the anti-forgery check that exists to refuse an unbound source would pass vacuously and admit
+/// frames from anyone. A binding that cannot bind is refused at the reader.
+#[test]
+fn a_start_binding_an_empty_stream_sid_is_refused() {
+    let frame = serde_json::to_vec(&serde_json::json!({
+        "event": "start",
+        "start": {
+            "streamSid": "",
+            "callSid": "CA1",
+            "mediaFormat": { "encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1 },
+        },
+    }))
+    .unwrap();
+    assert!(
+        matches!(
+            crate::twilio::decode(&frame),
+            Err(crate::twilio::TwilioError::Malformed)
+        ),
+        "an empty streamSid cannot bind anything and must be refused, not returned as a binding"
+    );
+}
+
+/// A negotiated media format other than the assumed G.711 µ-law / 8 kHz / mono must be REFUSED.
+///
+/// Every later frame on the stream is decoded AND TIMED under the assumed format, and a call's
+/// billed duration rolls up from that byte count — so serving a mismatched format writes a wrong
+/// LEDGER, silently, because nothing about a mis-decoded byte count looks broken on its own.
+#[test]
+fn a_start_negotiating_another_media_format_is_refused_rather_than_mistimed() {
+    for bad in [
+        serde_json::json!({ "encoding": "audio/l16", "sampleRate": 8000, "channels": 1 }),
+        serde_json::json!({ "encoding": "audio/x-mulaw", "sampleRate": 16000, "channels": 1 }),
+        serde_json::json!({ "encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 2 }),
+    ] {
+        let frame = serde_json::to_vec(&serde_json::json!({
+            "event": "start",
+            "start": { "streamSid": "MZ1", "callSid": "CA1", "mediaFormat": bad },
+        }))
+        .unwrap();
+        assert!(
+            matches!(
+                crate::twilio::decode(&frame),
+                Err(crate::twilio::TwilioError::UnsupportedMediaFormat)
+            ),
+            "a format this path cannot honestly decode or time must be refused, not assumed: {bad}"
+        );
+    }
+}
+
+/// The two refusals above must not have made the reader reject what it is supposed to accept.
+#[test]
+fn the_assumed_media_format_with_a_real_sid_still_decodes() {
+    let frame = serde_json::to_vec(&serde_json::json!({
+        "event": "start",
+        "start": {
+            "streamSid": "MZ123",
+            "callSid": "CA123",
+            "mediaFormat": { "encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1 },
+        },
+    }))
+    .unwrap();
+    match crate::twilio::decode(&frame) {
+        Ok(crate::twilio::TwilioEvent::Start {
+            stream_sid,
+            sample_rate,
+            channels,
+            ..
+        }) => {
+            assert_eq!(stream_sid, "MZ123");
+            assert_eq!(sample_rate, 8000);
+            assert_eq!(channels, 1);
+        }
+        other => panic!("the negotiated format this path assumes must still decode, got {other:?}"),
+    }
+}
