@@ -227,6 +227,22 @@ impl RootHistory {
         Some(PinnedHistory { history, at })
     }
 
+    /// The history AS A WHOLE, for a reader that snapshots it itself.
+    ///
+    /// [`Self::pin`] answers the request path, which wants the head fixed for one unit's whole
+    /// life. A ledger READ wants the entries and its own choice of snapshot — an invoice cut at
+    /// seq 3 is re-derived by asking for seq 3 again — so it takes the `Arc` and names the
+    /// snapshot, rather than being handed one somebody else chose. Both are the same read-copy:
+    /// an append after this call is seen by the next caller and leaves this one on the history it
+    /// asked under.
+    ///
+    /// `None` until the boot resolution raises the rate-apply seam, which is a node with no entry
+    /// a posting could resolve to — never a node whose postings are free.
+    #[must_use]
+    pub fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
+        self.history.load_full()
+    }
+
     /// **THE ONLY MUTATOR: APPEND.** Put `card` on the history effective from `now_ms`, and return
     /// the entry's number.
     ///
@@ -437,9 +453,48 @@ impl busbar_kernel::rate_apply::RateApply for CardRepricer {
     }
 }
 
+/// **THE ROOT, ANSWERING THE USAGE READ'S DATED-HISTORY SEAM** (DECISION #79).
+///
+/// `GET /api/v1/admin/usage` prices each metering row against the card in force at that row's own
+/// instant rather than against the newest card ever authored, and the history it resolves through
+/// is THIS process's — the same one every posting is priced by. The direction is this way round
+/// because it has to be: the admin crate cannot name the binary, so it declares the seam and the
+/// root installs itself as the answer.
+///
+/// It hands over the history and NOTHING ELSE. Which entry answers for an instant is the cost
+/// unit's [`busbar_kernel_ledger::cost::HistoryView::card_at`], and what a metering row's instant
+/// IS belongs to the read; a root that resolved here would be a second opinion about money in a
+/// file nobody reads for one.
+#[derive(Debug, Clone, Copy)]
+pub struct RootUsageHistory;
+
+impl busbar_core_admin::v1::service::UsageRateHistory for RootUsageHistory {
+    fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
+        ROOT_CARD.history()
+    }
+
+    /// The root keeps no per-`(key, model, provider)` posting index, and inventing one here would
+    /// be a second ledger. A metering row carries its own instant instead — see the read's own
+    /// resolution — so this answers empty and the read resolves per row.
+    fn postings(
+        &self,
+        _from_secs: u64,
+        _to_secs: u64,
+    ) -> Vec<busbar_core_admin::v1::service::UsagePosting> {
+        Vec::new()
+    }
+}
+
 /// Install the root as the process's rate holder. Boot only, once.
+///
+/// TWO HALVES OF ONE FACT, installed together because they are one fact: the deployment's rates
+/// live here. The APPLY half hears the engine resolve a configuration and appends a dated entry;
+/// the READ half hands the resulting history to the ledger read that prices against it. Installing
+/// one without the other is a node that dates its prices and then reports them off the newest card
+/// anyway, which is the defect #79 names.
 pub fn install_card_repricer() {
     busbar_kernel::rate_apply::install_rate_apply(&CardRepricer);
+    busbar_core_admin::v1::service::install_usage_rate_history(&RootUsageHistory);
 }
 
 /// The admission unit, standing at the in-flight table's arrival door.

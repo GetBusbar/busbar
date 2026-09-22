@@ -481,3 +481,92 @@ fn the_interner_leaks_a_repeated_key_once() {
     assert!(std::ptr::eq(first, second));
     assert_eq!(registration.len(), 1);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE USAGE READ'S DATED-HISTORY SEAM (DECISION #79)
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The holder hands a reader the WHOLE history, and hands a node that has resolved nothing
+/// NOTHING.
+///
+/// [`RootHistory::pin`] fixes the head for a request's whole life; a ledger READ wants the
+/// entries and its own choice of snapshot, so it takes the `Arc` instead. The absent arm is the
+/// half worth asserting: a node that has read no configuration must answer "no history" rather
+/// than an empty one, because an empty history prices every instant at nothing and nothing is a
+/// price.
+#[test]
+fn the_holder_hands_a_reader_the_whole_history_and_an_unresolved_node_none() {
+    let holder = RootHistory::default();
+    assert!(
+        holder.history().is_none(),
+        "a node that has resolved no configuration has no history to hand over"
+    );
+
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(3), 1_000);
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(11), 2_000);
+    let history = holder.history().expect("two applies are a history");
+    assert_eq!(history.len(), 2, "the reader sees every entry, not just the head");
+    assert_eq!(
+        history.head(),
+        Some(busbar_kernel_ledger::cost::HistorySeq(1)),
+        "and the numbers are the holder's own, so a snapshot names the same entry twice"
+    );
+}
+
+/// The seam the usage read asks through answers with the PROCESS history and nothing of its own.
+///
+/// A delegation is the whole implementation, so the assertion is that the two readings agree —
+/// an implementor that built its own history would answer a different length the moment the
+/// process's moved, and an invoice would be priced against a history no apply ever reached.
+#[test]
+fn the_usage_seam_answers_with_the_process_history() {
+    use busbar_core_admin::v1::service::UsageRateHistory as _;
+    assert_eq!(
+        RootUsageHistory.history().map(|h| h.len()),
+        ROOT_CARD.history().map(|h| h.len()),
+        "the seam answers from a history the process never resolved"
+    );
+    assert_eq!(
+        RootUsageHistory.history().and_then(|h| h.head()),
+        ROOT_CARD.history().and_then(|h| h.head()),
+        "the seam and the holder disagree about which entry is the head"
+    );
+    assert!(
+        RootUsageHistory.postings(0, u64::MAX).is_empty(),
+        "the root keeps no posting index; a non-empty answer here is a second ledger"
+    );
+}
+
+/// **THE WIRING WITNESS.** The boot install raises BOTH halves of the rate seam, and the binary
+/// calls it.
+///
+/// The apply half without the read half is precisely the defect #79 names: a node that dates its
+/// prices and then reports them off the newest card anyway. The read half without a caller is
+/// dead code that looks live. So the body of `install_card_repricer` is read for both names, and
+/// `main.rs` is read for the call — three facts that have to hold together for the seam to be
+/// reachable in the shipped binary, and no one of which implies the other two.
+#[test]
+fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
+    let kernel = include_str!("../kernel.rs");
+    let body = kernel
+        .split("pub fn install_card_repricer() {")
+        .nth(1)
+        .expect("install_card_repricer is declared")
+        .split("\n}")
+        .next()
+        .expect("its body closes");
+    assert!(
+        body.contains("install_rate_apply"),
+        "the boot install stopped raising the APPLY half: {body}"
+    );
+    assert!(
+        body.contains("install_usage_rate_history"),
+        "the boot install stopped raising the READ half — the usage read would price off the \
+         newest card again (#79): {body}"
+    );
+    let main = include_str!("../../main.rs");
+    assert!(
+        main.contains("install_card_repricer()"),
+        "nothing in the binary calls the boot install, so neither half is ever raised"
+    );
+}
