@@ -2366,7 +2366,8 @@ plugins:
         "the caller's plugins.dir (holding a garbage tarball) must NOT be scanned — the scan is \
          pinned to the running install dir; got errors: {:?}",
         view.errors
-    );}
+    );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // DECISION #79 — RATE CARDS ARE A DATED HISTORY
@@ -2764,9 +2765,8 @@ mod dated_rate_card_history {
     /// has wired no history answers exactly what it always did.
     #[tokio::test]
     async fn with_no_history_source_the_read_is_the_previous_release_to_the_byte() {
-        let gov = Arc::new(
-            GovState::new(Arc::new(MemoryStore::new()), None).expect("governance builds"),
-        );
+        let gov =
+            Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("governance builds"));
         let now = busbar_kernel::store::now();
         let usage = busbar_kernel::billing::TokenUsage {
             input: 11,

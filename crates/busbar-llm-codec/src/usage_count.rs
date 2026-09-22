@@ -113,7 +113,10 @@ const SPELLING_BUDGET: usize = 64;
 ///
 /// # Errors
 /// The field is present, is not `null`, and is not a count.
-pub fn billed_count(usage: &serde_json::Value, field: &'static str) -> Result<u64, UnreadableCount> {
+pub fn billed_count(
+    usage: &serde_json::Value,
+    field: &'static str,
+) -> Result<u64, UnreadableCount> {
     match usage.get(field) {
         None => Ok(0),
         Some(v) if v.is_null() => Ok(0),
@@ -141,7 +144,11 @@ mod tests {
         // The exact defect: Cohere sends 27.0, `as_u64()` alone says None, and `unwrap_or(0)`
         // then bills zero for 27 tokens of real work.
         assert_eq!(read_count_u64(&json!(27.0)), Some(27));
-        assert_eq!(json!(27.0).as_u64(), None, "the bare read this module replaces");
+        assert_eq!(
+            json!(27.0).as_u64(),
+            None,
+            "the bare read this module replaces"
+        );
     }
 
     #[test]
@@ -184,7 +191,10 @@ mod tests {
     fn infinities_and_nan_are_refused() {
         // serde_json cannot hold these natively, so build them through f64 conversion.
         let inf = serde_json::Number::from_f64(f64::INFINITY);
-        assert!(inf.is_none(), "serde_json refuses non-finite numbers at construction");
+        assert!(
+            inf.is_none(),
+            "serde_json refuses non-finite numbers at construction"
+        );
         assert_eq!(read_count_u64(&json!(f64::MAX)), None);
     }
 
@@ -204,14 +214,20 @@ mod tests {
             .get("output_tokens")
             .and_then(read_count_u64)
             .unwrap_or(0);
-        assert_eq!(old, 0, "the defect: a count that would not read billed ZERO");
+        assert_eq!(
+            old, 0,
+            "the defect: a count that would not read billed ZERO"
+        );
 
         // THE NEW SEAM: a refusal that names the field and quotes what arrived.
         let new = billed_count(&usage, "output_tokens");
         let err = new.expect_err("a count that will not read must refuse, never default");
         assert_eq!(err.field, "output_tokens");
         assert!(err.to_string().contains("output_tokens"), "{err}");
-        assert!(err.to_string().contains("27"), "the refusal quotes what arrived: {err}");
+        assert!(
+            err.to_string().contains("27"),
+            "the refusal quotes what arrived: {err}"
+        );
     }
 
     #[test]
@@ -309,7 +325,10 @@ mod tests {
         }
 
         let mut files = Vec::new();
-        walk(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), &mut files);
+        walk(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(),
+            &mut files,
+        );
         assert!(
             files.len() > 20,
             "the scan found only {} source files, so it is not actually looking at the dialects",
@@ -326,7 +345,11 @@ mod tests {
                 .lines()
                 .map(|l| {
                     let t = l.trim_start();
-                    if t.starts_with("//") { "" } else { l }
+                    if t.starts_with("//") {
+                        ""
+                    } else {
+                        l
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
@@ -437,7 +460,10 @@ mod tests {
         }
 
         let mut files = Vec::new();
-        walk(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(), &mut files);
+        walk(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src").as_path(),
+            &mut files,
+        );
         assert!(
             files.len() > 20,
             "the scan found only {} source files, so it is not actually looking at the dialects",
@@ -455,7 +481,11 @@ mod tests {
                 .lines()
                 .map(|l| {
                     let t = l.trim_start();
-                    if t.starts_with("//") { "" } else { l }
+                    if t.starts_with("//") {
+                        ""
+                    } else {
+                        l
+                    }
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
@@ -488,5 +518,4 @@ mod tests {
             offenders.join("\n  ")
         );
     }
-
 }

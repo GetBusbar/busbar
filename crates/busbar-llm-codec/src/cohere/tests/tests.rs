@@ -1580,7 +1580,10 @@ fn test_stream_message_end_usage_float_token_counts_survive_as_integers() {
         &mut state,
     );
     let crate::ir::IrStreamEvent::MessageDelta { ref usage, .. } = &evs[0] else {
-        panic!("message-end must emit a MessageDelta first, got {:?}", evs[0]);
+        panic!(
+            "message-end must emit a MessageDelta first, got {:?}",
+            evs[0]
+        );
     };
     assert_eq!(
         usage.input_tokens, 27,

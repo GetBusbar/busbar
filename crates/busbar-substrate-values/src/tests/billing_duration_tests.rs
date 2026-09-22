@@ -39,7 +39,9 @@ fn the_wire_rendering_is_the_same_double_the_text_used_to_parse_to() {
     let check = |micros: i128| {
         let text = decimal_text(micros);
         let rendered = duration_seconds_to_wire(Count::from_micros(micros));
-        let parsed: f64 = text.parse().expect("a decimal this crate wrote is parseable");
+        let parsed: f64 = text
+            .parse()
+            .expect("a decimal this crate wrote is parseable");
         assert_eq!(
             rendered.to_bits(),
             parsed.to_bits(),
@@ -128,7 +130,10 @@ fn a_double_cannot_hold_a_billable_duration_and_an_exact_decimal_can() {
     // ...and `checked_mul_wide` is the form a pricing fold accumulates in: the EXACT scale-12
     // product, so whatever rounding a later division owes (#44) is applied ONCE to the total rather
     // than silently, per row, here.
-    assert_eq!(duration.checked_mul_wide(rate), Ok(9_123_558_865_156_288_i128));
+    assert_eq!(
+        duration.checked_mul_wide(rate),
+        Ok(9_123_558_865_156_288_i128)
+    );
 
     // The same product in a double is NOT the same number — it only looks like it until you ask
     // for enough digits. Rounded to twelve places it agrees; expanded fully it does not, and it is

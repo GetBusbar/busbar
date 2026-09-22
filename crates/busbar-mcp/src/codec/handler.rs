@@ -136,7 +136,8 @@ impl RequestHandler for McpRequestHandler {
 /// bytes that are not JSON, a document that is not an object and a `method` that is not a string
 /// all answer `None` — the same no-operation `404` the full parse gave.
 fn top_level_method(body: &[u8]) -> Option<std::borrow::Cow<'_, str>> {
-    let busbar_contract::spans::Resolved::Found(span) = busbar_contract::spans::resolve_pointer(body, "/method")
+    let busbar_contract::spans::Resolved::Found(span) =
+        busbar_contract::spans::resolve_pointer(body, "/method")
     else {
         return None;
     };

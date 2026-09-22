@@ -642,41 +642,43 @@ pub fn read_transcription_response(
         .unwrap_or_default();
     let usage = v
         .get("usageMetadata")
-        .map(|u| -> Result<busbar_substrate_values::billing::Billing, CodecError> {
-            // The transcription writer emits `audioDurationSeconds` (not a token count) when the
-            // source billing was whisper-1's `Billing::Duration` (an openai->gemini hop). Reading it
-            // back as Duration preserves the billable seconds; forcing Tokens{0,0} — as the old
-            // reader did — silently discarded the duration. Real Gemini upstreams emit only the
-            // token fields, which take the Tokens branch as before.
-            // THE DURATION IS A MEASUREMENT, so it is read from the wire's DECIMAL TEXT and never
-            // through an `f64` (#81): a quantity that transits a double has already lost the
-            // exactness no later conversion can give back. `u.get(..)` would hand back a `Value`
-            // whose number is already a double, so the read goes to the ORIGINAL BYTES by pointer.
-            if u.get("audioDurationSeconds").is_some() {
-                let seconds = busbar_substrate_values::billing::Count::read_at(
-                    wire,
-                    "/usageMetadata/audioDurationSeconds",
-                )
-                .map_err(|e| CodecError::Malformed(format!("audioDurationSeconds: {e}")))?
-                .ok_or_else(|| {
-                    CodecError::Malformed("audioDurationSeconds: located then lost".to_string())
-                })?;
-                return Ok(busbar_substrate_values::billing::Billing::Duration { seconds });
-            }
-            // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42). The old
-            // `.unwrap_or(0)` wrote "no work happened" for a count the provider really sent and
-            // this build could not read, and every money view over that row was then faithfully
-            // wrong with nothing to show for it.
-            Ok(busbar_substrate_values::billing::Billing::Tokens(
-                busbar_substrate_values::billing::TokenUsage {
-                    input: crate::usage_count::billed_count(u, "promptTokenCount")
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    output: crate::usage_count::billed_count(u, "candidatesTokenCount")
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    ..Default::default()
-                },
-            ))
-        })
+        .map(
+            |u| -> Result<busbar_substrate_values::billing::Billing, CodecError> {
+                // The transcription writer emits `audioDurationSeconds` (not a token count) when the
+                // source billing was whisper-1's `Billing::Duration` (an openai->gemini hop). Reading it
+                // back as Duration preserves the billable seconds; forcing Tokens{0,0} — as the old
+                // reader did — silently discarded the duration. Real Gemini upstreams emit only the
+                // token fields, which take the Tokens branch as before.
+                // THE DURATION IS A MEASUREMENT, so it is read from the wire's DECIMAL TEXT and never
+                // through an `f64` (#81): a quantity that transits a double has already lost the
+                // exactness no later conversion can give back. `u.get(..)` would hand back a `Value`
+                // whose number is already a double, so the read goes to the ORIGINAL BYTES by pointer.
+                if u.get("audioDurationSeconds").is_some() {
+                    let seconds = busbar_substrate_values::billing::Count::read_at(
+                        wire,
+                        "/usageMetadata/audioDurationSeconds",
+                    )
+                    .map_err(|e| CodecError::Malformed(format!("audioDurationSeconds: {e}")))?
+                    .ok_or_else(|| {
+                        CodecError::Malformed("audioDurationSeconds: located then lost".to_string())
+                    })?;
+                    return Ok(busbar_substrate_values::billing::Billing::Duration { seconds });
+                }
+                // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42). The old
+                // `.unwrap_or(0)` wrote "no work happened" for a count the provider really sent and
+                // this build could not read, and every money view over that row was then faithfully
+                // wrong with nothing to show for it.
+                Ok(busbar_substrate_values::billing::Billing::Tokens(
+                    busbar_substrate_values::billing::TokenUsage {
+                        input: crate::usage_count::billed_count(u, "promptTokenCount")
+                            .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                        output: crate::usage_count::billed_count(u, "candidatesTokenCount")
+                            .map_err(|e| CodecError::Malformed(e.to_string()))?,
+                        ..Default::default()
+                    },
+                ))
+            },
+        )
         .transpose()?;
     Ok(TranscriptionResp {
         text,

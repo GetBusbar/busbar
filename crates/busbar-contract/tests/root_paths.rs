@@ -14,9 +14,9 @@
 //! Nothing below names a module path. That is the whole assertion.
 
 use busbar_contract::{
-    AbiVersion, AuthDecoration, BoundedVec, ConfigView, EgressAuthScheme, EgressBody, ScratchBytes,
+    AbiVersion, AuthDecoration, BoundedVec, ConfigView, EgressAuthScheme, EgressBody,
     EnvelopeFields, FactValue, Facts, FactsExhausted, FrameStream, IrEdit, IrPatch, Kind, Overflow,
-    Plugin, SignFailed, Signer, MAX_KEYS,
+    Plugin, ScratchBytes, SignFailed, Signer, MAX_KEYS,
 };
 
 /// An egress-auth scheme written entirely against the crate root.

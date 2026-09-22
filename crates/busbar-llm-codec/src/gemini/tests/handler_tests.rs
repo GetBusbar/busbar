@@ -595,7 +595,8 @@ fn openai_whisper_duration_carries_through_gemini_transcription_write() {
     let ir = TranscriptionResp {
         text: "hi".into(),
         usage: Some(busbar_substrate_values::billing::Billing::Duration {
-            seconds: busbar_substrate_values::billing::Count::parse("12.5").expect("12.5 is an exact decimal"),
+            seconds: busbar_substrate_values::billing::Count::parse("12.5")
+                .expect("12.5 is an exact decimal"),
         }),
         ..Default::default()
     };
@@ -797,7 +798,8 @@ fn transcription_response_round_trips_audio_duration() {
     let resp = crate::ir::audio::TranscriptionResp {
         text: "hello".into(),
         usage: Some(busbar_substrate_values::billing::Billing::Duration {
-            seconds: busbar_substrate_values::billing::Count::parse("12.5").expect("12.5 is an exact decimal"),
+            seconds: busbar_substrate_values::billing::Count::parse("12.5")
+                .expect("12.5 is an exact decimal"),
         }),
         ..Default::default()
     };
@@ -812,7 +814,8 @@ fn transcription_response_round_trips_audio_duration() {
     assert_eq!(
         back.usage,
         Some(busbar_substrate_values::billing::Billing::Duration {
-            seconds: busbar_substrate_values::billing::Count::parse("12.5").expect("12.5 is an exact decimal"),
+            seconds: busbar_substrate_values::billing::Count::parse("12.5")
+                .expect("12.5 is an exact decimal"),
         }),
         "duration must round-trip as Duration, not collapse to Tokens{{0,0}}"
     );

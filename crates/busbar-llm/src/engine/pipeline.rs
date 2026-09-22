@@ -199,9 +199,7 @@ pub(crate) fn forward_with_pool_parsed<'a>(
         // for the whole failover walk) AND kept as this plain local so the COMPLETION tap fired below —
         // after `inner` has returned and `RequestCtx` has gone out of scope — stamps the SAME value. That
         // identity (pre-forward routing message vs. post-response tap) is the whole join-key contract.
-        let _wrap = busbar_kernel::profile::start(
-            busbar_kernel::profile::Stage::WrapSetup,
-        );
+        let _wrap = busbar_kernel::profile::start(busbar_kernel::profile::Stage::WrapSetup);
         let request_id = host.next_request_id();
         // Tag every event this span covers with the correlation id — a native `u64` `record`, not a
         // `format!`, so this costs nothing beyond what the (already debug-gated) span pays. A no-op at
@@ -337,8 +335,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
     // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.
-    let _prep =
-        busbar_kernel::profile::start(busbar_kernel::profile::Stage::Prepare);
+    let _prep = busbar_kernel::profile::start(busbar_kernel::profile::Stage::Prepare);
     // App-retype WEDGE 3: the failover loop's telemetry emits (upstream-attempt/failure, failover) and
     // every other host reach drive through the `host: &Arc<dyn EngineHost>` threaded in — no per-call
     // `engine_host_value` mint. The borrow is the stable payload Arc, so its borrowed returns outlive
@@ -756,9 +753,7 @@ async fn run_failover_loop(
             Err(resp) => return resp,
         };
         // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and the attempt.
-        let _asetup = busbar_kernel::profile::start(
-            busbar_kernel::profile::Stage::AttemptSetup,
-        );
+        let _asetup = busbar_kernel::profile::start(busbar_kernel::profile::Stage::AttemptSetup);
         let (metric_pool, egress_name) = prepare_attempt(
             host,
             rt,
@@ -846,8 +841,7 @@ async fn pick_lane_or_exhaust(
     req_content_type: &str,
     usage_sink: &Option<UsageSink>,
 ) -> Result<(usize, Permit, Option<u64>), Response> {
-    let _pick =
-        busbar_kernel::profile::start(busbar_kernel::profile::Stage::LanePick);
+    let _pick = busbar_kernel::profile::start(busbar_kernel::profile::Stage::LanePick);
     // `probe_epoch`: `Some(epoch)` when this pick WON a single-flight recovery probe (captured
     // synchronously by `pick_among` before any await), `None` otherwise. The RAII release covers
     // the WHOLE dispatch window (built inside `attempt`), including a dropped future.

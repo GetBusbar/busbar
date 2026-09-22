@@ -8,8 +8,8 @@
 //! out in full below, precisely so that the proof of exactness is not itself resting on a double.
 
 use super::{
-    read_count, stored_scale_default, Count, CountError, COUNT_SCALE,
-    MAX_ACROSS_A_64_BIT_COLUMN, MAX, MIN, MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS,
+    read_count, stored_scale_default, Count, CountError, COUNT_SCALE, MAX,
+    MAX_ACROSS_A_64_BIT_COLUMN, MIN, MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS,
     SCALE_WHOLE_UNITS,
 };
 
@@ -76,7 +76,10 @@ fn the_in_memory_range_is_the_one_the_ruling_claims() {
     // back is a wrong ledger. The wide sweep below caught it; this names it.
     assert_eq!(ok(&MAX.to_decimal_string()), MAX);
     assert_eq!(ok(&MIN.to_decimal_string()), MIN);
-    assert_eq!(ok("-170141183460469231731687303715884.105728").micros(), i128::MIN);
+    assert_eq!(
+        ok("-170141183460469231731687303715884.105728").micros(),
+        i128::MIN
+    );
     // Its positive twin is genuinely out of range, and still is.
     assert_eq!(
         Count::parse("170141183460469231731687303715884.105728"),
@@ -181,9 +184,32 @@ fn an_exponent_is_honoured_exactly_and_a_huge_one_is_refused() {
 #[test]
 fn text_that_is_not_a_number_is_refused() {
     for bad in [
-        "NaN", "nan", "-NaN", "Infinity", "-Infinity", "inf", "-inf", "1e", "1e+", "e5", ".5",
-        "1.", "-", "+1", "007", "-007", "00.1", "0x1f", "1_000", "27.5.5", "27,5", " 27", "27 ",
-        "27abc", "null", "\"27\"",
+        "NaN",
+        "nan",
+        "-NaN",
+        "Infinity",
+        "-Infinity",
+        "inf",
+        "-inf",
+        "1e",
+        "1e+",
+        "e5",
+        ".5",
+        "1.",
+        "-",
+        "+1",
+        "007",
+        "-007",
+        "00.1",
+        "0x1f",
+        "1_000",
+        "27.5.5",
+        "27,5",
+        " 27",
+        "27 ",
+        "27abc",
+        "null",
+        "\"27\"",
     ] {
         assert_eq!(
             Count::parse(bad),
@@ -302,7 +328,10 @@ fn no_quantity_in_a_wide_deterministic_sweep_loses_a_digit_going_out_and_coming_
             Ok(b) => b,
             Err(e) => panic!("mantissa {m} rendered `{text}`, which will not parse: {e}"),
         };
-        assert_eq!(back, c, "mantissa {m} rendered `{text}` and read back as something else");
+        assert_eq!(
+            back, c,
+            "mantissa {m} rendered `{text}` and read back as something else"
+        );
         assert_eq!(
             back.micros(),
             m,
@@ -347,7 +376,12 @@ fn no_quantity_in_a_wide_deterministic_sweep_loses_a_digit_going_out_and_coming_
     }
 
     // The four exact endpoints.
-    for c in [MAX, MIN, MAX_ACROSS_A_64_BIT_COLUMN, MIN_ACROSS_A_64_BIT_COLUMN] {
+    for c in [
+        MAX,
+        MIN,
+        MAX_ACROSS_A_64_BIT_COLUMN,
+        MIN_ACROSS_A_64_BIT_COLUMN,
+    ] {
         check(c.micros());
         checked += 1;
     }
@@ -377,7 +411,10 @@ fn the_debug_spelling_is_the_decimal_not_the_mantissa() {
 fn addition_is_exact_and_checked_never_wrapping() {
     assert_eq!(ok("27.5").checked_add(ok("0.1")), Ok(ok("27.6")));
     assert_eq!(ok("27.1").checked_add(ok("27.1")), Ok(ok("54.2")));
-    assert_eq!(ok("0.000001").checked_add(ok("0.000001")), Ok(ok("0.000002")));
+    assert_eq!(
+        ok("0.000001").checked_add(ok("0.000001")),
+        Ok(ok("0.000002"))
+    );
     assert_eq!(ok("27.5").checked_sub(ok("27.5")), Ok(Count::ZERO));
     assert_eq!(ok("0").checked_sub(ok("0.5")), Ok(ok("-0.5")));
     // The ceiling refuses; it does not saturate, and it certainly does not wrap.
@@ -410,7 +447,10 @@ fn multiplying_a_count_by_a_rate_is_exact_or_a_refusal() {
         ok("0.000001").checked_mul(ok("0.000001")),
         Err(CountError::Inexact)
     );
-    assert_eq!(ok("1.5").checked_mul(ok("0.000001")), Err(CountError::Inexact));
+    assert_eq!(
+        ok("1.5").checked_mul(ok("0.000001")),
+        Err(CountError::Inexact)
+    );
     // The wide form keeps the places instead, for a caller that sums before it rounds.
     assert_eq!(ok("0.000001").checked_mul_wide(ok("0.000001")), Ok(1));
     assert_eq!(
@@ -466,10 +506,7 @@ fn an_old_row_reads_as_whole_units_and_a_new_row_as_a_mantissa() {
     assert_ne!(SCALE_WHOLE_UNITS, SCALE_MICRO_UNITS);
 
     // The v1.5.5 shape: a bare `27` with no discriminator beside it is twenty-seven tokens.
-    assert_eq!(
-        Count::from_stored(27, stored_scale_default()),
-        Ok(ok("27"))
-    );
+    assert_eq!(Count::from_stored(27, stored_scale_default()), Ok(ok("27")));
     // The shape written from here on: the mantissa, with the row saying so.
     assert_eq!(
         Count::from_stored(27_500_000, SCALE_MICRO_UNITS),
