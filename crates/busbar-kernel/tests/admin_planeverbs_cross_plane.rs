@@ -27,7 +27,8 @@ fn the_not_found_names_the_plane_s_own_subject() {
     // still get their own subject noun — and get it for free from the one map — is what this asserts.
     let refused = busbar_kernel::admin_verbs::registered(|| None::<()>)
         .expect_err("a lookup that resolved nothing must refuse");
-    let rendered = busbar_kernel::admin::planeverbs::to_admin_error("mcp", "billing", refused).message();
+    let rendered =
+        busbar_kernel::admin::planeverbs::to_admin_error("mcp", "billing", refused).message();
     assert!(
         rendered.contains("MCP server `billing`"),
         "the refusal must name the plane's own subject noun: {rendered}"
@@ -35,7 +36,8 @@ fn the_not_found_names_the_plane_s_own_subject() {
 
     let refused = busbar_kernel::admin_verbs::registered(|| None::<()>)
         .expect_err("a lookup that resolved nothing must refuse");
-    let rendered = busbar_kernel::admin::planeverbs::to_admin_error("a2a", "planner", refused).message();
+    let rendered =
+        busbar_kernel::admin::planeverbs::to_admin_error("a2a", "planner", refused).message();
     assert!(
         rendered.contains("fronted agent `planner`"),
         "the refusal must name the plane's own subject noun: {rendered}"

@@ -7,10 +7,10 @@
 //! Masking is decided by the location grammar rather than per plane, so every form is asked here
 //! what it does — including the one that does nothing, because it was never in the bytes.
 
-use busbar_kernel::mask::{CredentialSlab, CURSOR_CAP_BYTES, FILL_BYTE, FIXED_SCRATCH_BYTES};
-use busbar_kernel::mask::FixedScratch;
 use busbar_kernel::grammar::{ArrivalLocation, MaskKind, SignedOver, Span};
 use busbar_kernel::inflight::MAX_SESSION_UPSTREAMS;
+use busbar_kernel::mask::FixedScratch;
+use busbar_kernel::mask::{CredentialSlab, CURSOR_CAP_BYTES, FILL_BYTE, FIXED_SCRATCH_BYTES};
 
 /// The ceilings the kernel enforces are the ceilings the contract told the plugin about.
 ///
@@ -259,7 +259,9 @@ fn a_short_write_after_a_reset_shows_nothing_of_the_last_frame() {
 
     // The frame ends and the next one begins.
     fixed.reset();
-    let span = fixed.take(secret.len()).expect("the fixed scratch has room");
+    let span = fixed
+        .take(secret.len())
+        .expect("the fixed scratch has room");
     assert!(
         fixed.read(span).iter().all(|byte| *byte == 0),
         "the span still held the last frame"

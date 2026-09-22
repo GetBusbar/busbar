@@ -3431,11 +3431,8 @@ fn the_phase_field_doc_agrees_with_the_frozen_omitted_phase_answer() {
     // `busbar-substrate` crate (W4.b: the substrate engine was absorbed into busbar-kernel), so the
     // doc comment this test greps for lives in THIS crate's own `config/hooks.rs` now, not a
     // sibling crate's source file.
-    let src = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/config/hooks.rs"
-    ))
-    .expect("busbar-substrate's config/hooks.rs is readable");
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/hooks.rs"))
+        .expect("busbar-substrate's config/hooks.rs is readable");
     assert!(
         !src.contains("falls back to `at` (or `request` when that is also"),
         "the `phase:` field doc still claims an omitted phase+at fires at `request` ONLY; \

@@ -729,7 +729,8 @@ fn a_safe_suffix_record_restores_with_exact_fields_despite_embedded_pipes() {
 #[test]
 fn parse_audit_suffix_does_not_panic_on_a_truncated_safe_body() {
     // Marker only, nothing after it.
-    let (ts, action, resource, outcome, principal, _scheme) = parse_audit_suffix(&[SAFE_SUFFIX_MARKER]);
+    let (ts, action, resource, outcome, principal, _scheme) =
+        parse_audit_suffix(&[SAFE_SUFFIX_MARKER]);
     assert_eq!(
         (
             ts,
@@ -875,7 +876,11 @@ fn pending_audit_queue_stops_at_the_first_failure_and_preserves_the_rest() {
         |_scope, _suffix| Ok((2, String::new(), String::new())),
         |p, _seq, _prev, _hash| seen.push(p.suffix[0]),
     );
-    assert_eq!(seen, vec![1, 2], "the remaining row recovers once the backend is healthy");
+    assert_eq!(
+        seen,
+        vec![1, 2],
+        "the remaining row recovers once the backend is healthy"
+    );
 }
 
 /// THE WATERMARK: once the recovery queue itself is full, the OLDEST entry is evicted to admit the

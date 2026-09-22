@@ -657,7 +657,8 @@ fn a_chain_mixing_scheme_one_and_scheme_two_records_verifies_end_to_end() {
 
     // Continue the chain the REAL way -- through `Chain`/`seal` -- so record 2 is exactly what this
     // build actually mints today: scheme 2, linked onto the scheme-1 tail.
-    let mut chain: Chain<AuditEntry> = Chain::from_persisted_unverified(std::slice::from_ref(&legacy));
+    let mut chain: Chain<AuditEntry> =
+        Chain::from_persisted_unverified(std::slice::from_ref(&legacy));
     let fresh = chain.append(
         ADMIN_LOG,
         AuditInput {

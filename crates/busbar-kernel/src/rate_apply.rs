@@ -101,7 +101,9 @@ pub fn install_rate_epoch(holder: &'static dyn RateEpoch) {
 /// deployment opened with rather than to whatever is newest.
 #[must_use]
 pub fn effective_from_at(at_ms: u64) -> u64 {
-    EPOCH.get().map_or(0, |holder| holder.effective_from_at(at_ms))
+    EPOCH
+        .get()
+        .map_or(0, |holder| holder.effective_from_at(at_ms))
 }
 
 /// Raise the seam: the configured rates are now `rates`.

@@ -951,7 +951,13 @@ fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None, busbar_kernel::store::now(), None);
+    let verdict = auth.run_chain_cached(
+        Some("junk-token"),
+        Some(&cache),
+        None,
+        busbar_kernel::store::now(),
+        None,
+    );
 
     assert_eq!(verdict, ChainVerdict::Denied);
     assert_eq!(
@@ -982,7 +988,13 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None, busbar_kernel::store::now(), None);
+    let verdict = auth.run_chain_cached(
+        Some("junk-token"),
+        Some(&cache),
+        None,
+        busbar_kernel::store::now(),
+        None,
+    );
 
     assert_eq!(verdict, ChainVerdict::Denied);
     assert_eq!(
@@ -1059,7 +1071,13 @@ fn an_identified_chain_still_caches_the_leading_pass() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("good"), Some(&cache), None, busbar_kernel::store::now(), None);
+    let verdict = auth.run_chain_cached(
+        Some("good"),
+        Some(&cache),
+        None,
+        busbar_kernel::store::now(),
+        None,
+    );
 
     assert!(matches!(verdict, ChainVerdict::Identified { .. }));
     assert_eq!(
@@ -1081,8 +1099,7 @@ impl busbar_api::AuthModule for CountingIdentify {
         "counting-identify-module"
     }
     fn authenticate(&self, candidate: Option<&str>) -> busbar_api::AuthOutcome {
-        self.calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         match candidate {
             Some("revocable") => busbar_api::AuthOutcome::Identify(crate::auth::Principal {
                 id: "test:revocable".to_string(),
@@ -1157,7 +1174,13 @@ fn a_credential_hit_within_ttl_does_not_extend_the_cache_entrys_lifetime() {
     // expires_at = t0 + 6 + TTL == t0 + 16). The chain MUST be re-run here: a revoked credential
     // presented on this steady cadence must be re-checked against the module, not served stale.
     let past_original_ttl = t0 + TTL + 1;
-    let v_after = auth.run_chain_cached(Some("revocable"), Some(&cache), None, past_original_ttl, None);
+    let v_after = auth.run_chain_cached(
+        Some("revocable"),
+        Some(&cache),
+        None,
+        past_original_ttl,
+        None,
+    );
     assert!(matches!(v_after, ChainVerdict::Identified { .. }));
     assert_eq!(
         calls.load(std::sync::atomic::Ordering::SeqCst),

@@ -504,8 +504,16 @@ fn the_overflow_break_is_dated_so_a_retention_pass_does_not_delete_the_evidence(
     // This batch reaches the bound and seals the break. Its clocks are the moment the displacement
     // happened, and the break must take them.
     let batch = entries(RecordClass::Transaction, 3, 2);
-    let batch_wall = batch.iter().map(|e| e.wall).max().expect("a non-empty batch");
-    let batch_mono = batch.iter().map(|e| e.mono).max().expect("a non-empty batch");
+    let batch_wall = batch
+        .iter()
+        .map(|e| e.wall)
+        .max()
+        .expect("a non-empty batch");
+    let batch_mono = batch
+        .iter()
+        .map(|e| e.mono)
+        .max()
+        .expect("a non-empty batch");
     journal
         .append(&token, StepName::Meter, &batch)
         .expect_err("the store is still refusing");
@@ -520,7 +528,10 @@ fn the_overflow_break_is_dated_so_a_retention_pass_does_not_delete_the_evidence(
     // THE RETENTION PASS. The cutoff is safely BEFORE the batch, so nothing this test wrote is old
     // enough to go — the same `record instant < cutoff` test every purge in this tree applies.
     let cutoff = batch_wall - 1_000_000;
-    assert!(cutoff > 0, "the cutoff has to be a real window, not epoch 0");
+    assert!(
+        cutoff > 0,
+        "the cutoff has to be a real window, not epoch 0"
+    );
     let survivors: Vec<&JournalRecord> =
         on_the_medium.iter().filter(|r| r.wall >= cutoff).collect();
 

@@ -5295,9 +5295,6 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
     );
 }
 
-
-
-
 /// **THE ACCRUAL DATES ITSELF ON THE MILLISECOND SCALE THE HISTORY IS DATED ON** (DECISION #79).
 ///
 /// `record_metering` takes `now` in SECONDS, for the bucket. A card apply records

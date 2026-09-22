@@ -119,8 +119,22 @@ fn test_config_reapply_accumulates_across_generations() {
 
     let labels = [("pool", "tel-gen-pool"), ("outcome", "ok")];
     let before = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
-    request_finished(&gen1, model_plane_key(), "openai", "tel-gen-pool", "ok", 0.001);
-    request_finished(&gen2, model_plane_key(), "openai", "tel-gen-pool", "ok", 0.002);
+    request_finished(
+        &gen1,
+        model_plane_key(),
+        "openai",
+        "tel-gen-pool",
+        "ok",
+        0.001,
+    );
+    request_finished(
+        &gen2,
+        model_plane_key(),
+        "openai",
+        "tel-gen-pool",
+        "ok",
+        0.002,
+    );
     let after = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
     assert_eq!(
         (after - before).round() as u64,
@@ -140,7 +154,14 @@ fn test_request_finished_renders_premigration_names_and_labels() {
         .pool("tel-parity-pool", &[(0, 1)])
         .build();
 
-    request_finished(&app, model_plane_key(), "anthropic", "tel-parity-pool", "ok", 0.005);
+    request_finished(
+        &app,
+        model_plane_key(),
+        "anthropic",
+        "tel-parity-pool",
+        "ok",
+        0.005,
+    );
     let out = crate::metrics::render();
 
     let counter_line = out.lines().find(|l| {
@@ -258,7 +279,14 @@ fn test_unregistered_pool_falls_back_to_macro_emission() {
 
     let labels = [("pool", "tel-fb-unregistered-pool"), ("outcome", "ok")];
     let before = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
-    request_finished(&app, model_plane_key(), "openai", "tel-fb-unregistered-pool", "ok", 0.001);
+    request_finished(
+        &app,
+        model_plane_key(),
+        "openai",
+        "tel-fb-unregistered-pool",
+        "ok",
+        0.001,
+    );
     let after = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
     assert_eq!(
         (after - before).round() as u64,

@@ -114,11 +114,14 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
     );
 
     let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "m",
-            busbar_kernel::proto::PROTO_ANTHROPIC,
-            &server.base_url(),
-        ).api_key("up"))
+        .lane(
+            LaneSpec::new(
+                "m",
+                busbar_kernel::proto::PROTO_ANTHROPIC,
+                &server.base_url(),
+            )
+            .api_key("up"),
+        )
         .pool("pa", &[(0, 1)])
         .keys_chain()
         .governance(gov)

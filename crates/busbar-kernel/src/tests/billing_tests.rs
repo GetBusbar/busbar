@@ -9,8 +9,12 @@ use super::*;
 fn billing_variants_are_distinct() {
     assert_ne!(Billing::Flat, Billing::Characters { count: 0 });
     assert_ne!(
-        Billing::Duration { seconds: busbar_substrate_values::billing::Count::parse("1").expect("exact") },
-        Billing::Duration { seconds: busbar_substrate_values::billing::Count::parse("2").expect("exact") }
+        Billing::Duration {
+            seconds: busbar_substrate_values::billing::Count::parse("1").expect("exact")
+        },
+        Billing::Duration {
+            seconds: busbar_substrate_values::billing::Count::parse("2").expect("exact")
+        }
     );
 }
 

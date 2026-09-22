@@ -653,7 +653,12 @@ impl<U: Units> RouteAwait for Blocking<'_, U> {
         meter: &'a AccrualMeter,
         destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a> {
-        Box::pin(std::future::ready(self.0.route(token, ctx, meter, destinations)))
+        Box::pin(std::future::ready(self.0.route(
+            token,
+            ctx,
+            meter,
+            destinations,
+        )))
     }
 }
 
@@ -810,8 +815,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                     // THE ONE AWAIT is inside this scope, and so is the only place a caller that
                     // goes away can drop the loop. The guard owns the terminal for the length of it.
                     let mut abandoned = Abandoned::arm(kernel, units, ctx, run, settling);
-                    let outcome =
-                        under_hold(kernel, units, route, ctx, meter, &destinations).await;
+                    let outcome = under_hold(kernel, units, route, ctx, meter, &destinations).await;
                     abandoned.reached(outcome)
                 }
             }
