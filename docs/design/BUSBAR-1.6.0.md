@@ -2285,6 +2285,55 @@ the rig must keep reporting both figures side by side.
 A future read that prices flat is a failing test, not a review note — which is the direct answer to
 *enrolment is the gap no count detects*: this roster detects its own omissions.
 
+#### OWNER RULINGS 2026-09-22 (money, wire, proof, coverage)
+
+**1. THE BUDGET GATE PRICES AT ADMISSION, BEHIND A MEMO KEYED ON ITS INPUTS.**
+
+`price(ledger_slice, card_history) -> Money` is a PURE FUNCTION, so memoizing it is safe BY
+CONSTRUCTION provided the key covers every input. Key: **`(ledger slice identity, card-history
+epoch)`**. A card apply bumps the epoch, the key changes, the entry misses, the figure recomputes.
+**Invalidation is arithmetic, not a discipline anyone must remember.**
+
+THE LINE THAT MAKES THIS NOT A STORED PRICE: the memo lives **in memory, keyed on inputs**. A price
+cached as a FIELD ON A PERSISTED ROW is `spend_cents` again under a new name — the key is absent, so
+nothing forces it stale, and a stale figure on a budget cap admits a request that should have been
+refused. **Never persist the memo.**
+
+MEASURE BEFORE BUILDING IT. Σ count × rate in fixed-point over a small slice may be sub-microsecond,
+in which case the memo is complexity bought for nothing. Land the pricing, benchmark admission, add
+the memo only if the number says so.
+
+**2. `UsageLedger.spend_cents` IS REMOVED OUTRIGHT.** Owner-ruled. Out-of-tree ABI-2 stores that
+depend on the field will break on upgrade. Noted once, since `migration.rs:57-62` names breaking a
+working deployment on upgrade as the one outcome a migration may not produce: **old rows must still
+LOAD** (absent field reads as absent, never as zero) so an upgrade does not crash on existing data.
+Removing the field is the ruling; corrupting or refusing existing rows is not.
+
+**3. THE PROOF FOR MONEY — the function's own test, AND the clock fields stop being normalised.**
+
+Owner delegated the pick. Both, because either alone leaves a hole:
+
+- **The function's test is the primary evidence.** One function, one test: known ledger × known card
+  → known figure, and it MUST cover the mid-window case with pinned VALUES. This is strictly stronger
+  than un-waiving the three register cells, because a waiver is class-wise and cannot pin a value at
+  all — the test pins exactly what the register structurally cannot.
+- **`as_of`, `start` and `end` stop normalising to zero.** Today `normalize.rs`'s `TS_KEYS` includes
+  `as_of` and `USAGE_WINDOW_KEYS` is `["start","end"]`, so a wrong billing window or rate-card epoch
+  is invisible to the oracle. **Today's two-clocks defect was exactly a clock-field defect and was
+  caught only because it ALSO moved a spend value.** Leaving this shut means the next clock defect
+  that moves only the window passes green. That is not acceptable on a money path. Recording stays
+  deterministic by PINNING those fields per cell rather than flattening them.
+
+The three `kind: breaking` mid-window waivers STAY — those cells are legitimately expected to move
+under #79. The test is what proves they moved to the RIGHT number.
+
+**4. RECORD A 1.6.0 GOLDEN FOR THE NEW PLANES.** 1,402 cells (1,380 mcp/a2a) have no golden and
+therefore cannot fail; streaming and decision are absent from the corpus entirely. Recording a 1.6.0
+golden turns them into real regression coverage from here forward. **Its honest ceiling, stated so
+nobody overclaims it later: this cannot prove 1.5.5 parity** — these planes are new, there is no
+1.5.5 behaviour to compare against. It locks today's behaviour so tomorrow's change is visible, and
+that is all it does.
+
 #### WHAT A GREEN ORACLE PROVES — measured 2026-09-22, and it is narrower than assumed
 
 The oracle is the release's central safety claim (#10: *"prove no user-visible byte changed"*).
