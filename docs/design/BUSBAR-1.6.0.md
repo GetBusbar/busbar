@@ -3622,13 +3622,27 @@ closure from seven to six — necessary, nowhere near sufficient.
 
 The plane folds are the bulk of it and they are independent of each other, so llm / mcp / a2a /
 streaming can run in parallel. **The streaming fold is the dangerous one** and should not be run
-concurrently with anything else: `busbar-plane-streaming` (4,750 lines) and `busbar-plane-voice`
-(4,396) are near-duplicates — 7 of 14 files byte-identical, 3 substantially diverged — and the
-**dead** one is `busbar-plane-streaming` (registered in `registry.rs` zero times) while the **live**
-one is `busbar-plane-voice`. So the correctly-named crate is the empty shell and the working code is
-in the crate whose name #18 forbids. A careless "keep the one that builds" collapses to the wrong
-side; a careless "keep the correctly-named one" deletes the working plane. It also touches
+concurrently with anything else: `busbar-plane-streaming` (4,750 lines) and `busbar-voice` (4,396)
+are near-duplicates — 7 of 14 files byte-identical, 3 substantially diverged. It also touches
 `units_voice.rs`, which is a money file.
+
+> **CORRECTED 2026-09-22 — this paragraph previously said the dead crate was
+> `busbar-plane-streaming` and the live one `busbar-plane-voice`. BOTH HALVES WERE WRONG and the
+> claim is withdrawn; see the survivor ruling above, which withdrew it explicitly and was never
+> propagated here.**
+>
+> 1. **`busbar-plane-streaming` is the BASE and must NOT be deleted.** It is registered zero times,
+>    but that means UNWIRED, not stale — it is the NEWER code, and it carries the money-byte fix
+>    `e15713578` (*"paired turn routes to the DIALED upstream"*). The legacy crate hardcodes
+>    `UpstreamIdx(0)` at `plane.rs:433`, so a gemini-live session with openai declared first bills
+>    **every turn on the wrong provider's lane**. Streaming also holds `9882d8122` (empty Unit-0
+>    egress) and `dd3bfbda9`. Test counts invert the withdrawn claim too: streaming 44, voice 37.
+> 2. **`busbar-plane-voice` does not exist and never did on this trunk.** The legacy crate is
+>    `busbar-voice`. Verified: `crates/busbar-plane-voice` is MISSING; `crates/busbar-voice` and
+>    `crates/busbar-plane-streaming` are both PRESENT.
+>
+> Acting on the withdrawn text deletes the crate holding a money fix. Port `74712b303` forward onto
+> `busbar-plane-streaming`; do not fold in the other direction.
 
 Do the folds **after** the current fix wave lands, not during: these are whole-crate moves and they
 will conflict with every in-flight edit.
