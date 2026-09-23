@@ -279,6 +279,106 @@ if [ -n "$stray_sleeps" ]; then
   fi
 fi
 
+# A THIRD poll-loop rule, because neither rule above can see this one.
+#
+# WHY. A wait loop was found alive at 11h41m. Its parent was a LIVE (stale)
+# claude session, so the ppid==1 orphan rule spared it by design; and it was a
+# `zsh -c` wrapper rather than a bare `sleep`, so the stray-sleep rule never
+# looked at it. It was provably non-terminating on two independent counts:
+#   (1) it waited for '^test result' in a log whose build had already FAILED, so
+#       the string it waits for can never be written; and
+#   (2) its own `pgrep -f 'cargo test -p busbar'` MATCHED ITS OWN COMMAND LINE.
+#       The loop was its own subject, so `! pgrep ...` could never be true.
+# (2) is the general, decidable case: if `pgrep -f <pat>` returns the waiting
+# process's own pid, the loop can never exit no matter what the product does.
+# That is a proof of non-termination, not a heuristic, so a live parent does not
+# protect it -- and it also explains a lying `load:` line, since such a loop is
+# counted as a live `cargo` by any pattern that reads command lines.
+self_matching=$(ps -eo pid,etime,command 2>/dev/null \
+  | awk '/pgrep -f/ && (/until /||/while /) {
+           n=split($2, t, /[-:]/);
+           if (n==2)      secs = t[1]*60 + t[2];
+           else if (n==3) secs = t[1]*3600 + t[2]*60 + t[3];
+           else if (n==4) secs = t[1]*86400 + t[2]*3600 + t[3]*60 + t[4];
+           else           secs = 0;
+           if (secs > 900) print }' \
+  | while read -r pid etime rest; do
+      pat=$(printf '%s\n' "$rest" | sed -n "s/.*pgrep[[:space:]][[:space:]]*-f[[:space:]][[:space:]]*['\"]*\([^'\"]*\).*/\1/p")
+      [ -n "$pat" ] || continue
+      pgrep -f "$pat" 2>/dev/null | grep -qx "$pid" && echo "$pid"
+    done || true)   # a non-match is status 1; `set -e` must not read that as failure
+if [ -n "$self_matching" ]; then
+  n=$(echo "$self_matching" | grep -c .)
+  if [ "$REAP" = "1" ]; then
+    echo "$self_matching" | xargs kill -9 2>/dev/null
+    echo "self-watching poll loops: reaped $n (pgrep pattern matches own argv; cannot terminate)"
+  else
+    echo "self-watching poll loops: WOULD REAP $n (pgrep pattern matches own argv; cannot terminate)"
+  fi
+fi
+
+# ABANDONED-COLD REAPER -- the complement of the hot rule above, and the fix for
+# a blind spot that hid two dead processes for eighteen hours.
+#
+# WHY. `target/debug/xtask full-gate` was found orphaned (ppid 1) at 18h21m with
+# a child `xtask gate plane-purity` at 14h17m. Neither was reaped, for two
+# independent reasons:
+#   (1) ORPHAN_PATTERNS is 'release/busbar|busbar-oracle' -- it names the product
+#       and the oracle but never the tool that RUNS THE GATES, so the orphan rule
+#       could not see an xtask no matter how long it sat there; and
+#   (2) the hot rule needs >=20% cpu, and these were at 0%.
+# They had each burned a FIFTH OF A SECOND of cpu in eighteen hours, and `sample`
+# put both stacks at `_dyld_start + 0` -- stalled in the dynamic linker, before
+# main(). They never ran a single gate. Two `--selftest` poll loops waited on
+# them for seven hours and could never have been answered.
+#
+# THE TEST IS DECIDABLE, not a heuristic: sample the process's accumulated CPU
+# time twice, COLD_SAMPLE_SECS apart. A process doing work advances it. One that
+# does not advance it over a live interval, after an hour of wall clock, is not
+# slow -- it is stopped. That distinction is what lets this rule name `cargo` and
+# `xtask`, which the orphan rule dares not, without ever killing a live worker.
+COLD_PATTERNS='xtask|[c]argo|rustc|release/busbar|busbar-oracle'
+COLD_MIN_AGE_SECS=${COLD_MIN_AGE_SECS:-3600}
+COLD_SAMPLE_SECS=6
+
+cold_candidates=$(ps -eo pid,ppid,etime,command 2>/dev/null \
+  | grep -E "$COLD_PATTERNS" | grep -v grep \
+  | awk '$2==1 { n=split($3, t, /[-:]/);
+                 if (n==2)      secs = t[1]*60 + t[2];
+                 else if (n==3) secs = t[1]*3600 + t[2]*60 + t[3];
+                 else if (n==4) secs = t[1]*86400 + t[2]*3600 + t[3]*60 + t[4];
+                 else           secs = 0;
+                 if (secs > '"$COLD_MIN_AGE_SECS"') print $1 }' || true)
+
+cold_stuck=''
+if [ -n "$cold_candidates" ]; then
+  # snapshot, wait, snapshot again -- only a pid whose cpu time is IDENTICAL in
+  # both samples is declared stuck.
+  for p in $cold_candidates; do
+    printf '%s %s\n' "$p" "$(ps -o time= -p "$p" 2>/dev/null | tr -d ' ')"
+  done > /tmp/.reap-cold-t0
+  sleep "$COLD_SAMPLE_SECS"
+  while read -r p t0; do
+    [ -n "$t0" ] || continue
+    t1=$(ps -o time= -p "$p" 2>/dev/null | tr -d ' ')
+    [ -n "$t1" ] || continue
+    [ "$t0" = "$t1" ] && cold_stuck="$cold_stuck $p"
+  done < /tmp/.reap-cold-t0
+  rm -f /tmp/.reap-cold-t0
+fi
+
+if [ -n "${cold_stuck# }" ]; then
+  n=$(echo "$cold_stuck" | tr ' ' '\n' | grep -c .)
+  if [ "$REAP" = "1" ]; then
+    # children first: a stalled parent's children are stalled with it.
+    for p in $cold_stuck; do pgrep -P "$p" 2>/dev/null | xargs kill -9 2>/dev/null; done
+    echo "$cold_stuck" | tr ' ' '\n' | grep . | xargs kill -9 2>/dev/null
+    echo "abandoned cold tools: reaped $n (orphaned >1h, cpu time did not advance over ${COLD_SAMPLE_SECS}s)"
+  else
+    echo "abandoned cold tools: WOULD REAP $n ($(echo "$cold_stuck" | tr -s ' '))"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # RUNAWAY REAPER — a SECOND rule, because the orphan rule cannot see these.
 #
@@ -336,12 +436,27 @@ reap_runaways
 # of a core. A gate binary is not rustc, not cargo, not under target/*/deps/ and
 # not release/busbar -- four patterns, and the thing actually running matched
 # none of them. Same lesson as the test-bins column, one layer out.
+# ...and every one of those counters COUNTED MENTIONS, NOT PROCESSES. They
+# matched the pattern against the WHOLE command line, so two different things
+# were counted as a running build:
+#   * the `grep` doing the counting, whose own argv contains the pattern; and
+#   * any `zsh -c` agent wrapper whose SCRIPT TEXT merely names a cargo path --
+#     one 8-hour-stale shell held `cargo` at 1 on a box with no cargo at all.
+# `cargo` was therefore never 0, so the housekeeping rule that reclaims the main
+# `target/` only "when rustc/cargo/test-bins are all 0" could never fire: a
+# cleanup gate held shut by its own instrument.
+# The fix is to match the EXECUTABLE, not the sentence -- field 1 of the command
+# line, which a wrapper shell cannot forge by talking about it. (`pgrep -fc`
+# looks tidier and was tried first; it silently missed a live
+# `./target/debug/turnstile-web`, and a quieter wrong answer is worse.)
+live() { ps -eo command 2>/dev/null | awk '{print $1}' | grep -cE "$1"; }
+
 printf 'load: %s | rustc %s, cargo %s, test-bins %s, tool-bins %s, product %s\n' \
   "$(uptime | sed 's/.*load averages*: //')" \
-  "$(ps -eo command 2>/dev/null | grep -cE '/bin/rustc$')" \
-  "$(ps -eo command 2>/dev/null | grep -cE '/bin/cargo ')" \
-  "$(ps -eo command 2>/dev/null | grep -cE '/(debug|release)/deps/[a-z_]+-[0-9a-f]{8,}')" \
-  "$(ps -eo command 2>/dev/null | grep -cE '/(debug|release)/[a-z_-]+$')" \
+  "$(live '/bin/rustc$')" \
+  "$(live '/bin/cargo$')" \
+  "$(live '/(debug|release)/deps/[a-z_]+-[0-9a-f]{8,}$')" \
+  "$(live '/(debug|release)/[a-z_-]+$')" \
   "$(pgrep -fc 'release/busbar' 2>/dev/null || echo 0)"
 
 # ---------------------------------------------------------------------------
