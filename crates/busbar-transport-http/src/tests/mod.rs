@@ -3,10 +3,14 @@
 //! the frame-meta honesty check.
 
 use super::*;
+// The `Transport` surface, its meta and its claim forms moved to the kind's own `transport.rs`,
+// `meta.rs` and `claims.rs` (`PLUGIN-TREE.md` §3), so `use super::*` no longer carries them.
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::WireStatus;
+use busbar_contract::transport::wire::{CloseReason, FrameMeta, TransportError};
 use busbar_contract::ConfigView;
+use busbar_contract::{ScratchBytes, Transport, TransportConfigView, TransportKeyHandle};
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 

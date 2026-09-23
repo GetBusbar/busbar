@@ -3,8 +3,13 @@
 //! deflating fixture must fail it — the "must turn red" cell from the design's transport battery).
 
 use super::*;
-use busbar_contract::transport::wire::FrameMeta;
-use busbar_contract::{ConfigView, Frame};
+// The `Transport` surface, its meta and its claim forms moved to the kind's own `transport.rs`,
+// `meta.rs` and `claims.rs` (`PLUGIN-TREE.md` §3), so `use super::*` no longer carries them.
+use busbar_contract::transport::wire::{CloseReason, FrameMeta, Listener};
+use busbar_contract::{
+    ConfigView, Frame, Plugin, ScratchBytes, StreamId, Transport, TransportConfigView,
+    TransportMeta,
+};
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 

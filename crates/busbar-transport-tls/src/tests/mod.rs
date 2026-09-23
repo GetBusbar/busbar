@@ -4,12 +4,20 @@
 //! opaque key handle's slot).
 
 use super::*;
+// The `Transport` surface, its meta and its claim forms moved to the kind's own `transport.rs`,
+// `meta.rs` and `claims.rs` (`PLUGIN-TREE.md` §3), so `use super::*` no longer carries them.
 use busbar_contract::plugin::KernelSeal;
+use busbar_contract::transport::wire::{CloseReason, Listener};
 use busbar_contract::ConfigView;
+use busbar_contract::{
+    Plugin, ScratchBytes, StreamId, Transport, TransportConfigView, TransportKeyHandle,
+    TransportMeta,
+};
 use futures::StreamExt;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::sync::Arc as StdArc;
+use tokio_rustls::TlsConnector;
 
 /// New file per the mutation-hardening pass on this crate: `src/tests/mutation_hardening.rs`.
 mod mutation_hardening;

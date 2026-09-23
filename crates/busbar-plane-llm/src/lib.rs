@@ -27,9 +27,9 @@
 #![deny(missing_docs)]
 
 pub mod claims;
-pub mod codec;
 pub mod dialect;
 pub mod meta;
+pub mod plane;
 
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
