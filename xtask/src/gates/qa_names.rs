@@ -1,4 +1,5 @@
-//! `cargo xtask gate qa-names` — EVERY NAME IN `qa/*.toml` RESOLVES TO SOMETHING THAT EXISTS.
+//! `cargo xtask gate qa-names` — EVERY NAME IN `qa/*.toml` AND IN A `const` UNDER `xtask/src/`
+//! RESOLVES TO SOMETHING THAT EXISTS.
 //!
 //! A gate's config table names a kind, a crate, a path or a glob. Every one of those is a STRING,
 //! and a string does not move when the thing it names is renamed, folded or deleted. What happens
@@ -114,6 +115,23 @@ use crate::toml_doc::{self, Value};
 pub const QA_ROOT: &str = "qa";
 pub const QA_EXT: &str = "toml";
 
+/// THE SECOND COVERED ROOT, AND THE REASON IT IS HERE. Every scan root, named-file list, allowlist
+/// and floor a gate in this crate owns is a Rust `const`, not a `qa/*.toml` value — and until this
+/// root was added, the instrument for *"does this name still resolve"* could not see the place most
+/// names live. That is LEDGER **G25** in terms (*"it reads only `qa/*.toml` — not Rust, not shell,
+/// not `qa/*.json`"*) and **G22**'s generalisation (*"FIXING A RULE'S TOML DOES NOT FIX THE RULE"*).
+///
+/// It was not a hypothetical. The census that closed this took 277 path-shaped literals out of the
+/// constants under `xtask/src/` and found **two live money-path scan-set entries naming nothing**:
+/// `no_float_money.rs`'s `COUNT_READ_ROOTS` still led its MCP group with `crates/busbar-mcp-codec/src`
+/// (the crate dissolved at `5fbd891e0`), and `PERSISTED_RECORD_HOMES` still named
+/// `crates/busbar-kernel-ledger/src/records.rs` (renamed `R100` into the contract at `1059d3c36`).
+/// The first held `no-float-money:scan-floor` red; the SECOND COULD NOT GO RED AT ALL, because an
+/// absent home is a `continue` there. Nothing in the tree could have told anyone about the second
+/// one. That is the whole argument for this root.
+pub const XTASK_ROOT: &str = "xtask/src";
+pub const XTASK_EXT: &str = "rs";
+
 /// The file that carries the kind vocabulary every other kind name is checked against.
 pub const CONFIG_REL: &str = "qa/construction.toml";
 /// The kind table: its KEYS are the kind universe.
@@ -127,6 +145,8 @@ pub const CODEC_TABLE: &str = "gate.plane_codec_crates";
 
 /// The declaration, in the one comment spelling a TOML file has. Matched on the TRIMMED line.
 pub const DECL: &str = "# qa-names:";
+/// The same declaration, in the one comment spelling a Rust file has.
+pub const DECL_RS: &str = "// qa-names:";
 /// The separator between a declaration's three fields.
 pub const SEP: &str = " -- ";
 
@@ -139,6 +159,25 @@ pub const ROW_GLOB: &str = "qa-names:glob-matches-something";
 pub const ROW_DECL_LIVE: &str = "qa-names:declaration-names-a-live-name";
 pub const ROW_DECL_FILE: &str = "qa-names:declaration-names-a-live-file";
 pub const ROW_DECL_REASON: &str = "qa-names:declaration-reason";
+pub const ROW_XTASK_FLOOR: &str = "qa-names:xtask-const-floor";
+
+// ── TWO DECLARATIONS THAT BELONG BESIDE THEIR SITE AND ARE NOT, AND THE REASON IS WRITTEN DOWN ──
+//
+// `config_schema`'s `SNAPSHOT_HOMES` is "EVERY HOME THE COMMITTED FINGERPRINT HAS EVER HAD, newest
+// first" — its own words. The two older homes are read with `git show <ref>:<path>` AT A REF WHERE
+// THEY EXISTED, so their absence from the working tree is the fact the constant records, not a
+// defect in it. That is the same shape `qa/audit-ledger.json`'s `moved_from[]` has and which
+// `audit-ledger:scope-paths-exist` correctly leaves alone: historical by construction.
+//
+// They are declared HERE rather than beside the site because `xtask/src/gates/config_schema/mod.rs`
+// carries another agent's uncommitted work as this lands, and `git commit --only` on a path commits
+// the WORKING TREE state of that path — which would sweep their in-flight edit into this commit.
+// The mechanism is name-scoped, not file-scoped, so a declaration is valid wherever it is written
+// and names the covered file it excuses; MOVE THESE TWO LINES BESIDE `SNAPSHOT_HOMES` the moment
+// that file is free. If the constant is struck instead, `qa-names:declaration-names-a-live-name`
+// reds on both of these, which is the mechanism working and not a surprise.
+// qa-names: crates/busbar-core/src/config/config-schema.snapshot.json -- xtask/src/gates/config_schema/mod.rs -- a HISTORICAL home of the config fingerprint, read with `git show <ref>:<path>` at a ref where it existed; absence from the working tree is the fact it records
+// qa-names: crates/busbar/src/config/config-schema.snapshot.json -- xtask/src/gates/config_schema/mod.rs -- the ORIGINAL home, the one the released tags v1.5.3/v1.5.4/v1.5.5 carry; a baseline older than the move has to ask for the path as it was THEN
 
 /// The floor under the resolvable package universe. `package-selectors`' number and its reason: a
 /// universe that COLLAPSED makes every live crate name look dead, which is a defect in the
@@ -153,6 +192,13 @@ pub const KIND_FLOOR: usize = 7;
 /// COLLAPSED, and an empty scan set is the one state in which "every name resolves" is true and
 /// means nothing.
 pub const NAME_FLOOR: usize = 400;
+/// The floor under the names discovered in `xtask/src/**.rs` CONSTANTS, counted on its own.
+///
+/// SEPARATE FROM [`NAME_FLOOR`] ON PURPOSE. The `qa/*.toml` half alone is ~1_182 names, so a
+/// combined floor of 400 is cleared by the TOML scan whatever the Rust scan does — and a Rust
+/// reader whose item parser stopped matching would report ZERO dead constants and a green row. A
+/// scan set gets its own floor or it has none.
+pub const XTASK_NAME_FLOOR: usize = 150;
 /// The shortest exemption reason that is a reason rather than a shrug. `feature-sets`' number, kept.
 pub const MIN_REASON: usize = 30;
 
@@ -429,17 +475,36 @@ fn kind_universe(cx: &Ctx) -> Result<(Vec<String>, BTreeMap<String, i64>), Strin
 // discovery
 // ---------------------------------------------------------------------------------------------
 
-/// Every covered file, DERIVED by walking `qa/` for `.toml`. A hand-kept list of config files is how
-/// a config file stops being checked.
+/// Every covered file, DERIVED by walking `qa/` for `.toml` and `xtask/src/` for `.rs`. A hand-kept
+/// list of config files is how a config file stops being checked, and a hand-kept list of GATE
+/// files is how a scan root stops being checked.
+///
+/// The `qa/` half comes FIRST and the order is load-bearing: the self-test's stale-declaration plant
+/// appends a `#`-spelled declaration to `files.first()`, which has to be a TOML.
 fn covered(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
-    let files = cx
+    let qa = cx
         .walk(&WalkSpec::new([QA_ROOT]).ext(QA_EXT))
         .map_err(|e| format!("the `{QA_ROOT}` walk failed: {e}"))?;
-    Ok(files.into_iter().map(|f| (f.rel_str(), f.text)).collect())
+    let rust = cx
+        .walk(&WalkSpec::new([XTASK_ROOT]).ext(XTASK_EXT))
+        .map_err(|e| format!("the `{XTASK_ROOT}` walk failed: {e}"))?;
+    Ok(qa
+        .into_iter()
+        .chain(rust)
+        .map(|f| (f.rel_str(), f.text))
+        .collect())
+}
+
+/// Is this covered file read as Rust rather than as TOML?
+fn is_rust(rel: &str) -> bool {
+    rel.ends_with(".rs")
 }
 
 /// Every name and every declaration one covered file carries.
 fn scan(rel: &str, text: &str, tops: &BTreeSet<String>) -> (Vec<Name>, Vec<(usize, Decl)>) {
+    if is_rust(rel) {
+        return scan_rust(rel, text, tops);
+    }
     let mut names = Vec::new();
     let mut decls = Vec::new();
 
@@ -534,13 +599,249 @@ fn scan(rel: &str, text: &str, tops: &BTreeSet<String>) -> (Vec<Name>, Vec<(usiz
 /// is NOT silently skipped: it comes back with the empty fields it parsed to, so the file and reason
 /// rules report it.
 fn parse_decl(trimmed: &str) -> Option<Decl> {
-    let rest = trimmed.strip_prefix(DECL)?.trim();
+    // ONE DECLARATION, TWO COMMENT SPELLINGS. A `.toml` writes `#` and a `.rs` writes `//`; the
+    // three fields, the separator and all three liveness rules are the same either way, because an
+    // exemption that means something different in Rust is a second mechanism to forget about.
+    let rest = trimmed
+        .strip_prefix(DECL)
+        .or_else(|| trimmed.strip_prefix(DECL_RS))?
+        .trim();
     let mut parts = rest.splitn(3, SEP);
     Some(Decl {
         name: parts.next().unwrap_or_default().trim().to_string(),
         file: parts.next().unwrap_or_default().trim().to_string(),
         reason: parts.next().unwrap_or_default().trim().to_string(),
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// the SECOND covered root: the Rust the gates are written in
+// ---------------------------------------------------------------------------------------------
+
+/// The name of the `const` or `static` a line opens, or `None` if it opens neither.
+///
+/// Hand-parsed rather than matched, because this crate has no regex dependency and
+/// `segregation:xtask-dep-closure` is the reason it never will.
+fn const_name(code: &str) -> Option<String> {
+    let mut s = code.trim_start();
+    if let Some(rest) = s.strip_prefix("pub") {
+        // `pub`, `pub(crate)`, `pub(super)`, `pub(in path)` — and never `public_thing`.
+        let rest = if rest.starts_with('(') {
+            rest.split_once(')').map(|(_, t)| t)?
+        } else if rest.starts_with(char::is_whitespace) {
+            rest
+        } else {
+            return None;
+        };
+        s = rest.trim_start();
+    }
+    let rest = s
+        .strip_prefix("const ")
+        .or_else(|| s.strip_prefix("static "))?
+        .trim_start();
+    let rest = rest.strip_prefix("mut ").unwrap_or(rest).trim_start();
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() {
+        return None;
+    }
+    // `const fn f(` opens no constant: the token after the identifier decides, and only `:` does.
+    rest[name.len()..]
+        .trim_start()
+        .starts_with(':')
+        .then_some(name)
+}
+
+/// The string literals one already-blanked line carries, as `(char offset, text)`.
+///
+/// [`crate::scan::blank_code`] keeps every `"` delimiter and blanks the body to spaces without
+/// changing the char count, so the blanked copy is a MASK: each pair of `"` in it marks a literal,
+/// and the same char range of the unblanked line is that literal's text. Reusing the house lexer
+/// rather than writing a second one is the point — it is the only thing in this crate that knows
+/// `r#"…"#` from `"…"` from `'{'`, and a second copy would be the first to get one of them wrong.
+fn literals_via_mask(raw: &[char], blanked: &[char]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut open: Option<usize> = None;
+    for (i, c) in blanked.iter().enumerate() {
+        if *c != '"' {
+            continue;
+        }
+        match open.take() {
+            None => open = Some(i),
+            Some(start) if i > start + 1 => out.push(raw[start + 1..i].iter().collect()),
+            Some(_) => {}
+        }
+    }
+    out
+}
+
+/// Every path-shaped literal the `const`s and `static`s of one xtask source file name.
+///
+/// THE SCOPE IS AN ITEM, NOT A FILE, AND THAT IS THE WHOLE DISCRIMINATION. A scan root, a named
+/// file list, an allowlist and a floor are written as constants; a path built at a call site or
+/// handed to a plant is not. Reading only constants is what keeps the rule from flagging the
+/// hundreds of fixture paths a self-test hands to an `Overlay`, without a single per-file
+/// exclusion — the technique this gate's own header warns about under the name SHAPE C.
+///
+/// TWO NARROWINGS, BOTH DELIBERATE AND BOTH STATED SO NEITHER IS MISTAKEN FOR HELD:
+///
+/// 1. `#[cfg(test)]` module bodies are out, via [`crate::scan::production_lines`]. A constant that
+///    cargo compiles only under `--test` is not a scan set the gate reads at run time; `probe`'s
+///    `qa/zz-falsification-marker.txt` is the shape, and the gate READS ITS ABSENCE on purpose.
+/// 2. Only the PATH class is read. A bare `busbar-foo` literal in Rust could be a crate, a feature,
+///    a needle or a word, and no key says which — where a `qa/*.toml` has a key that does. So the
+///    dead KIND names still spelled in `construction/rules2.rs` (LEDGER G22) are NOT covered by
+///    this and are not claimed to be.
+fn scan_rust(rel: &str, text: &str, tops: &BTreeSet<String>) -> (Vec<Name>, Vec<(usize, Decl)>) {
+    let mut names = Vec::new();
+    let mut decls = Vec::new();
+
+    // ONE PASS, AND IT IS A BUDGET DECISION AS MUCH AS A CORRECTNESS ONE. `xtask/src` is 98_715
+    // lines against `qa/*.toml`'s 13_506, so this reader is seven-eighths of everything this gate
+    // looks at and every self-test case pays for it three times (baseline, planted, inert). The
+    // first shape called `scan::production_lines` for the `#[cfg(test)]` line set and then lexed
+    // the file again for the literals — three full lexes per file, which took the self-test to
+    // 10_050 work units against a budget of 9_000. `gates::mod`'s own budget doctrine is explicit
+    // about which way that gets resolved: *"FIXED, NOT RE-BASELINED"*. So the test-module
+    // bookkeeping is folded in here and the file is lexed ONCE.
+    //
+    // THE LEXER IS `blank_code` AND **NOT** `strip_comment_line`, AND THAT IS NOT A PREFERENCE.
+    // `strip_comment_line` carries no multi-line literal state, so the first continued string in a
+    // file (`"… \` at end of line) leaves it believing it is outside a literal for the remainder,
+    // and the next `/*` or `*/` it then meets INSIDE one flips it into a phantom block comment that
+    // eats the rest of the file. Measured, not supposed: reading this very file through it returned
+    // an EMPTY line for `const PLANTED_PATH` and the fragment `src";` for `const PLANTED_GLOB`,
+    // whose value ends `*/` — a block-comment close. Two of this gate's own dead names were
+    // invisible to this gate for exactly that reason, and the defect is upstream in
+    // `scan::production_lines`, which every gate that calls it inherits.
+    let mut lex = crate::scan::LexState::default();
+    let mut item: Option<(String, i32)> = None;
+    let mut depth: i32 = 0;
+    let mut brace: i32 = 0;
+    let mut pending_test_attr = false;
+    let mut test_mod_depth: Option<i32> = None;
+
+    for (idx, raw) in text.lines().enumerate() {
+        let no = idx + 1;
+        if let Some(d) = parse_decl(raw.trim()) {
+            decls.push((no, d));
+        }
+
+        // THE FAST PATH, AND WHY IT IS SAFE. `blank_code` can only change what it returns, or carry
+        // state to the next line, when the line holds a quote, an apostrophe or a slash. A line
+        // with none of the three, read with no literal or comment already open, blanks to itself —
+        // so it is used as-is and neither the allocation nor the walk is paid. Roughly half of a
+        // Rust file is such a line.
+        let neutral = lex == crate::scan::LexState::default()
+            && !raw.bytes().any(|b| b == b'"' || b == b'\'' || b == b'/');
+        let owned;
+        let blanked: &str = if neutral {
+            raw
+        } else {
+            owned = crate::scan::blank_code(raw, &mut lex);
+            &owned
+        };
+        let trimmed = blanked.trim();
+
+        // `#[cfg(test)]` MODULES ARE OUT, tracked over the blanked copy exactly as
+        // `scan::production_lines` tracks it over its own — same attribute, same `mod … {` shape,
+        // same "the opening and the closing line are themselves test lines" arithmetic. A constant
+        // cargo compiles only under `--test` is not a scan set any gate reads at run time; `probe`'s
+        // `qa/zz-falsification-marker.txt` is the shape, and that gate READS ITS ABSENCE on purpose.
+        let this_line_is_test = test_mod_depth.is_some();
+        if !this_line_is_test && trimmed.contains("#[cfg(test)]") {
+            pending_test_attr = true;
+        } else if !this_line_is_test
+            && !trimmed.is_empty()
+            && !trimmed.starts_with('#')
+            && !trimmed.contains("mod ")
+        {
+            pending_test_attr = false;
+        }
+        if !this_line_is_test
+            && pending_test_attr
+            && trimmed.contains("mod ")
+            && blanked.contains('{')
+        {
+            test_mod_depth = Some(brace);
+            pending_test_attr = false;
+        }
+
+        if item.is_none() {
+            if let Some(name) = const_name(raw) {
+                item = Some((name, depth));
+            }
+        }
+
+        let was_test = test_mod_depth.is_some();
+        if let Some((konst, _)) = &item {
+            // A constant whose NAME says FRAGMENT, PATTERN, SYMBOL or NEEDLE holds a thing matched
+            // against names, never a name — the same veto the TOML half applies by key.
+            if !was_test
+                && !this_line_is_test
+                && raw.contains('/')
+                && !has_token(&konst.to_ascii_lowercase(), FRAGMENT_TOKENS)
+            {
+                let raw_chars: Vec<char> = raw.chars().collect();
+                let mask: Vec<char> = blanked.chars().collect();
+                for value in literals_via_mask(&raw_chars, &mask) {
+                    if !is_path_shaped(&value, tops) {
+                        continue;
+                    }
+                    names.push(Name {
+                        text: value,
+                        file: rel.to_string(),
+                        line: no,
+                        site: format!("const {konst}"),
+                        class: Class::Path,
+                        // A Rust array item cannot take a planted sibling without the file ceasing
+                        // to compile, and this gate's plants are read as text by a gate that is
+                        // itself compiled from it. The Rust arm plants a WHOLE FILE instead.
+                        in_array: false,
+                    });
+                }
+            }
+        }
+
+        // ONE WALK FOR ALL THREE PAIRS. `scan::delta` is two passes per pair, which is six over a
+        // line this gate already touches four times.
+        let (mut opens, mut closes, mut braces_moved, mut semi) = (0i32, 0i32, false, false);
+        for b in blanked.bytes() {
+            match b {
+                b'(' | b'[' => opens += 1,
+                b')' | b']' => closes += 1,
+                b'{' => {
+                    opens += 1;
+                    brace += 1;
+                    braces_moved = true;
+                }
+                b'}' => {
+                    closes += 1;
+                    brace -= 1;
+                    braces_moved = true;
+                }
+                b';' => semi = true,
+                _ => {}
+            }
+        }
+        depth += opens - closes;
+
+        if let Some(d) = test_mod_depth {
+            if brace <= d && braces_moved {
+                test_mod_depth = None;
+            }
+        }
+
+        if let Some((_, start)) = &item {
+            if depth <= *start && semi {
+                item = None;
+            }
+        }
+    }
+
+    (names, decls)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -555,6 +856,7 @@ fn unproven(why: &str) -> Verdict {
     let mut rows = vec![Row::fail(ROW_UNIVERSE, "a universe did not load", why)];
     for id in [
         ROW_FLOOR,
+        ROW_XTASK_FLOOR,
         ROW_KIND,
         ROW_CRATE,
         ROW_PATH,
@@ -592,6 +894,7 @@ impl Gate for QaNamesGate {
         [
             ROW_UNIVERSE,
             ROW_FLOOR,
+            ROW_XTASK_FLOOR,
             ROW_KIND,
             ROW_CRATE,
             ROW_PATH,
@@ -675,6 +978,28 @@ impl Gate for QaNamesGate {
                  resolves' is true and means nothing.",
                 names.len(),
                 files.len()
+            ),
+        ));
+
+        // THE RUST HALF GETS ITS OWN DENOMINATOR, because the TOML half clears the combined floor
+        // on its own and would mask a Rust reader that had stopped reading.
+        let rust_files = files.iter().filter(|(r, _)| is_rust(r)).count();
+        let rust_names = names.iter().filter(|n| is_rust(&n.file)).count();
+        rows.push(row(
+            ROW_XTASK_FLOOR,
+            rust_names >= XTASK_NAME_FLOOR,
+            "the gates' own constants were read, above their floor",
+            format!(
+                "{rust_names} path(s) named by `const`s across {rust_files} file(s) under \
+                 `{XTASK_ROOT}/**.{XTASK_EXT}` (floor {XTASK_NAME_FLOOR})"
+            ),
+            "the scan of the gates' own constants collapsed",
+            format!(
+                "only {rust_names} path(s) were found in `const`s across {rust_files} file(s) under \
+                 `{XTASK_ROOT}/**.{XTASK_EXT}` (floor {XTASK_NAME_FLOOR}). Every scan root this \
+                 crate owns is a Rust constant; a reader that stopped matching them reports zero \
+                 dead names and a green row, which is the exact failure this gate is named for, \
+                 turned on itself.",
             ),
         ));
 
@@ -787,7 +1112,7 @@ impl Gate for QaNamesGate {
         rows.push(row(
             ROW_PATH,
             dead_path.is_empty(),
-            "every path names something on this tree",
+            "every path a config table or a gate constant names exists",
             format!(
                 "{} path(s) checked",
                 names
@@ -795,11 +1120,13 @@ impl Gate for QaNamesGate {
                     .filter(|n| n.class == Class::Path && !n.is_glob())
                     .count()
             ),
-            "a config table names a PATH that is not on this tree",
+            "a config table or a gate CONSTANT names a PATH that is not on this tree",
             format!(
                 "{} — a scan root, a reviewed site or a ratchet entry that names a path the tree no \
                  longer has scans zero files and passes. Repoint it, strike it, or write a `{DECL} \
-                 <name>{SEP}<file>{SEP}<reason>` line beside it.",
+                 <name>{SEP}<file>{SEP}<reason>` line beside it (`{DECL_RS}` in a `.rs`). A \
+                 REPOINT is a fix; a STRIKE is a claim that the rule is obsolete and owes the same \
+                 proof as any delete.",
                 cites(&dead_path)
             ),
         ));
@@ -884,7 +1211,8 @@ impl Gate for QaNamesGate {
             "a declared exception names a file this gate does not cover",
             format!(
                 "{} — a claim pointing at a path that was renamed away is a claim nobody can check. \
-                 The file must be one of the covered files under `{QA_ROOT}/*.{QA_EXT}`.",
+                 The file must be one of the covered files: `{QA_ROOT}/*.{QA_EXT}` or \
+                 `{XTASK_ROOT}/**.{XTASK_EXT}`.",
                 bad_file.join(" | ")
             ),
         ));
@@ -929,6 +1257,23 @@ impl Gate for QaNamesGate {
                 ROW_DECL_REASON,
             ],
             Overlay::new(),
+        ));
+        // THE TWO NEGATIVE CONTROLS FOR THE RUST ARM. `prove_rows_green` takes a baseline and the
+        // planted run, so a row that was already green stays a pass on its own merit and a row that
+        // was already RED cannot be scored as this case's green.
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "a gate constant naming a path that IS on this tree is not flagged",
+            &[ROW_PATH, ROW_GLOB, ROW_XTASK_FLOOR],
+            planted_rs_live_only(),
+        ));
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "a dead path in a comment or a fn body is not a constant and is not flagged",
+            &[ROW_PATH, ROW_GLOB],
+            planted_rs_not_a_const(),
         ));
         for plant in plants(cx) {
             report.push(plant.case(cx, self));
@@ -1048,15 +1393,103 @@ impl Plant {
 
 /// The names planted into a real covered file — deliberately ones no table, manifest, lockfile or
 /// directory in this tree carries.
+///
+/// THREE OF THESE ARE PATH-SHAPED AND THEREFORE NAMES THIS GATE READS OUT OF ITS OWN SOURCE, which
+/// is the correct outcome and not an embarrassment: the Rust arm makes no exception for the file it
+/// is written in. They are declared rather than renamed, because "a path this tree does not have"
+/// is the entire specification of a plant and a spelling that resolved would make every case
+/// vacuous.
 const PLANTED_KIND: &str = "busbar_selftest_no_such_kind";
 const PLANTED_CRATE: &str = "busbar-selftest-no-such-package";
-const PLANTED_PATH: &str = "crates/busbar-selftest-no-such-crate/src/lib.rs";
-const PLANTED_GLOB: &str = "crates/busbar-selftest-no-such-family-*/src";
+/// THE PLANTED PATH AND THE PLANTED GLOB, IN HALVES, AND THE REASON IS THE RULE ITSELF.
+///
+/// Writing either of these whole as a `const` makes it a name this gate reads OUT OF ITS OWN
+/// SOURCE — the Rust arm makes no exception for the file it is written in — and the only way to
+/// clear the row it would then redden is to DECLARE it. A declaration excuses a name GLOBALLY, by
+/// spelling, which would leave both plants unable to redden anything at all: the gate would have
+/// been told to ignore the very string the case plants. **A plant its own gate has been instructed
+/// to overlook proves nothing, and it proves it in green.** That is `prove_red`'s `Inert` verdict
+/// arriving through the front door, and the Rust arm found it in this file on its first run.
+///
+/// So the halves. Neither is path-shaped on its own — `crates` carries no `/`, and
+/// `busbar-selftest-…/src` has a first segment that is no directory at the repo root — so neither
+/// is a name, and the whole is assembled where it is used.
+const PLANTED_UNDER: &str = "crates";
+const PLANTED_PATH_TAIL: &str = "busbar-selftest-no-such-crate/src/lib.rs";
+const PLANTED_GLOB_TAIL: &str = "busbar-selftest-no-such-family-*/src";
+
+/// A path no directory in this tree carries, assembled rather than spelled. See [`PLANTED_UNDER`].
+fn planted_path() -> String {
+    format!("{PLANTED_UNDER}/{PLANTED_PATH_TAIL}")
+}
+
+/// A glob no directory in this tree matches, assembled rather than spelled. See [`PLANTED_UNDER`].
+fn planted_glob() -> String {
+    format!("{PLANTED_UNDER}/{PLANTED_GLOB_TAIL}")
+}
 const PLANTED_NEVER: &str = "busbar-selftest-never-written-down";
 /// A path this gate does not cover, for the stale-file plant.
+// qa-names: qa/deleted-by-this-fixture.toml -- xtask/src/gates/qa_names.rs -- the stale-declaration plant names a covered file that is not there on purpose; the rule under proof is that the FILE field must resolve
 const PLANTED_GONE_FILE: &str = "qa/deleted-by-this-fixture.toml";
 /// A reason long enough to satisfy [`MIN_REASON`], so a plant aimed at one rule cannot redden two.
 const PLANTED_REASON: &str = "planted by this gate's own self-test, which is a reason of its own";
+
+/// Where the Rust arm's plants live: under the covered Rust root, reached by no `mod`, and present
+/// only in an [`Overlay`]. It is not path-shaped as written (`xtask` is a directory at the repo
+/// root, so it WOULD be — and the file it names is not there, which is the point), so it carries
+/// its own declaration below.
+// qa-names: xtask/src/zzz_qa_names_planted.rs -- xtask/src/gates/qa_names.rs -- the Rust arm's overlay-only plant file; it exists for the length of one verdict and a spelling that resolved would leave a plant behind in the tree
+const PLANTED_RS_FILE: &str = "xtask/src/zzz_qa_names_planted.rs";
+
+/// The two dead subjects the Rust arm plants, in halves, for the reason [`PLANTED_UNDER`] gives.
+const PLANTED_RS_ROOT_TAIL: &str = "busbar-selftest-no-such-rust-root/src";
+const PLANTED_RS_GLOB_TAIL: &str = "busbar-selftest-no-such-rust-family-*/src";
+
+/// THE NEGATIVE CONTROLS, SPELLED WHOLE ON PURPOSE. These two resolve, so writing them as ordinary
+/// constants is exactly what the rule says is fine — and this file being GREEN with them in it is
+/// the first half of the control, before any case runs at all.
+const LIVE_ROOT: &str = "crates/busbar-kernel/src/lib.rs";
+const LIVE_FAMILY: &str = "crates/busbar-plane-*/src";
+
+fn planted_rs_root() -> String {
+    format!("{PLANTED_UNDER}/{PLANTED_RS_ROOT_TAIL}")
+}
+
+fn planted_rs_glob() -> String {
+    format!("{PLANTED_UNDER}/{PLANTED_RS_GLOB_TAIL}")
+}
+
+/// One overlay carrying one planted file under the covered Rust root.
+fn planted_rs(body: String) -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set(PLANTED_RS_FILE, body);
+    ov
+}
+
+/// THE FIRST NEGATIVE CONTROL: a planted constant naming a path that IS on this tree, and a planted
+/// glob that DOES match. Without it, "every path a constant names is dead" would pass the red arm
+/// and no repair could ever satisfy the rule.
+fn planted_rs_live_only() -> Overlay {
+    planted_rs(format!(
+        "//! Planted by qa-names' own self-test. No `mod` reaches this file.\n\
+         const LIVE_ROOT: &str = \"{LIVE_ROOT}\";\n\
+         const LIVE_FAMILY: &str = \"{LIVE_FAMILY}\";\n"
+    ))
+}
+
+/// THE SECOND NEGATIVE CONTROL: the identical dead path in the two positions that are NOT a
+/// constant — a comment and a `fn` body. The scope of this rule is the ITEM, and that is the only
+/// reason it can read 130 gate sources without drowning in the fixture paths their self-tests hand
+/// to an `Overlay`. If either of these reddens a row, the rule has become a text grep.
+fn planted_rs_not_a_const() -> Overlay {
+    planted_rs(format!(
+        "//! Planted by qa-names' own self-test. No `mod` reaches this file.\n\
+         // {dead} — a dead path in a comment is prose, exactly as it is in a `qa/*.toml`.\n\
+         fn planted() -> &'static str {{\n    \"{dead}\"\n}}\n\
+         const LIVE_ROOT: &str = \"{LIVE_ROOT}\";\n",
+        dead = planted_rs_root()
+    ))
+}
 
 /// Insert `phantom` as a SIBLING of an existing array item, on the line that item is written on.
 /// Purely additive: nothing the file already says stops being true, so a plant aimed at one rule
@@ -1129,13 +1562,17 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
     // THE DEFECT THIS GATE IS NAMED FOR, RE-PLANTED, once per universe.
     let kind = beside(cx, |n| n.class == Class::Kind, PLANTED_KIND);
     let krate = beside(cx, |n| n.class == Class::Crate, PLANTED_CRATE);
-    let path = beside(cx, |n| n.class == Class::Path && !n.is_glob(), PLANTED_PATH);
+    let path = beside(
+        cx,
+        |n| n.class == Class::Path && !n.is_glob(),
+        &planted_path(),
+    );
     // NOT under `[gate.plugin_kinds]`: that table is judged per KIND, and a kind that still finds
     // its crates is not reddened by one more entry. The kind-level arm is planted separately.
     let glob = beside(
         cx,
         |n| n.class == Class::Path && !n.site.starts_with(&format!("[{KIND_TABLE}]")),
-        PLANTED_GLOB,
+        &planted_glob(),
     );
 
     // A KIND WHOSE WHOLE GLOB LIST FINDS NOTHING, and whose census row does not declare the zero.
@@ -1173,7 +1610,7 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
             .skip(head + 1)
             .position(|l| l.starts_with('['))
             .map_or(lines.len(), |n| head + 1 + n);
-        lines.insert(tail, format!("{first} = [\"{PLANTED_GLOB}\"]"));
+        lines.insert(tail, format!("{first} = [\"{}\"]", planted_glob()));
         let mut ov = Overlay::new();
         ov.set(CONFIG_REL, format!("{}\n", lines.join("\n")));
         Some(ov)
@@ -1252,11 +1689,70 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         Some(ov)
     });
 
+    // ── THE RUST ARM ─────────────────────────────────────────────────────────────────────────
+    //
+    // Planted as ONE file under the covered Rust root, carrying five constants at once, so the RED
+    // arm and its two controls are measured against the same tree in the same run. The file is an
+    // orphan module no `mod` reaches, and it exists only in the overlay — cargo never sees it.
+    //
+    // THE TWO CONTROLS ARE THE POINT. A rule that flagged every path-shaped string in `xtask/src/`
+    // would pass the red arm and be useless, so the same planted file also carries:
+    //
+    //   * `LIVE_ROOT` — a constant naming a path that IS there. Flagging it would mean the rule is
+    //     "every path in a const is dead", which no repair could ever satisfy.
+    //   * a dead path written in a COMMENT and another written inside a `fn` BODY. Neither is a
+    //     constant, and the scope of this rule is the ITEM, not the file — that is the whole reason
+    //     it can read 130 gate sources without drowning in self-test fixtures, and it is only true
+    //     if these two stay invisible.
+    let rs_dead = planted_rs(format!(
+        "//! Planted by qa-names' own self-test. No `mod` reaches this file.\n\
+         const PLANTED_ROOT: &str = \"{}\";\n\
+         const LIVE_ROOT: &str = \"{LIVE_ROOT}\";\n",
+        planted_rs_root()
+    ));
+    let rs_glob = planted_rs(format!(
+        "//! Planted by qa-names' own self-test. No `mod` reaches this file.\n\
+         const PLANTED_FAMILY: &str = \"{}\";\n\
+         const LIVE_ROOT: &str = \"{LIVE_ROOT}\";\n",
+        planted_rs_glob()
+    ));
+    // THE RUST SCAN THAT READ NOTHING. Every `qa/*.toml` is untouched, so `name-floor` clears its
+    // own floor on the TOML half alone — which is the entire reason the Rust half has a floor of
+    // its own, and this case is what says so.
+    let rs_empty = cx
+        .walk(&WalkSpec::new([XTASK_ROOT]).ext(XTASK_EXT))
+        .ok()
+        .map(|files| {
+            let mut ov = Overlay::new();
+            for f in &files {
+                ov.remove(&f.rel);
+            }
+            ov
+        });
+
     // THE KIND TABLE GONE. Everything below rule 1 is UNPROVEN, never passed.
     let mut no_config = Overlay::new();
     no_config.remove(CONFIG_REL);
 
     vec![
+        Plant {
+            label: "a gate CONSTANT names a path that is not on this tree",
+            rule: ROW_PATH,
+            naming: vec![planted_rs_root()],
+            overlay: Some(rs_dead),
+        },
+        Plant {
+            label: "a gate CONSTANT carries a glob that matches nothing",
+            rule: ROW_GLOB,
+            naming: vec![planted_rs_glob()],
+            overlay: Some(rs_glob),
+        },
+        Plant {
+            label: "the scan of the gates' own constants reading nothing is refused",
+            rule: ROW_XTASK_FLOOR,
+            naming: vec!["floor".to_string()],
+            overlay: rs_empty,
+        },
         Plant {
             label: "a config table names a kind that is no key of the kind table",
             rule: ROW_KIND,
@@ -1272,13 +1768,13 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         Plant {
             label: "a config table names a path that is not on this tree",
             rule: ROW_PATH,
-            naming: vec![PLANTED_PATH.to_string()],
+            naming: vec![planted_path()],
             overlay: path,
         },
         Plant {
             label: "a config table carries a glob that matches nothing",
             rule: ROW_GLOB,
-            naming: vec![PLANTED_GLOB.to_string()],
+            naming: vec![planted_glob()],
             overlay: glob,
         },
         Plant {

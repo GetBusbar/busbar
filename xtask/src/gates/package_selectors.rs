@@ -818,6 +818,7 @@ const PLANTED_DEAD: &str = "busbar-selftest-no-such-package";
 const PLANTED_EXCUSED: &str = "busbar-selftest-excused-package";
 const PLANTED_NEVER: &str = "busbar-selftest-never-selected";
 /// A path this gate does not cover, for the stale-file plant.
+// qa-names: scripts/deleted-by-this-fixture.sh -- xtask/src/gates/package_selectors.rs -- the stale-declaration plant names a covered script that is not there on purpose; a spelling that resolved would prove nothing
 const PLANTED_GONE_FILE: &str = "scripts/deleted-by-this-fixture.sh";
 /// A reason long enough to satisfy [`MIN_REASON`], so a plant aimed at one rule cannot redden two.
 const PLANTED_REASON: &str = "planted by this gate's own self-test, which is a reason of its own";

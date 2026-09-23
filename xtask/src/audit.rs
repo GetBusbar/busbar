@@ -134,6 +134,7 @@ pub const UNCOVERED_BY_DESIGN: &[(&str, &str)] = &[
         "crates/*/Cargo.lock",
         "resolved lockfile -- governed by the build gates, not a code audit",
     ),
+    // qa-names: crates/*/fixtures/** -- xtask/src/audit.rs -- an EXCLUSION matching nothing excludes nothing, so it is rot and not blindness; no crate has a fixtures/ dir at its root any more (the surviving ones are nested under src/), and striking the row regenerates the committed register copy, which is a separate reviewed act
     (
         "crates/*/fixtures/**",
         "fixture inputs a crate's own gate reads; not shipped code",

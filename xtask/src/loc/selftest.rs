@@ -220,6 +220,22 @@ const CASES: &[Case] = &[
 ];
 
 /// The path fixtures. `TopLevelTestsOnly` is the live bug, stated as a pair.
+///
+/// EVERY PATH HERE IS AN INPUT TO A STRING CLASSIFIER, NEVER A FILE. `loc` decides "is this a proof
+/// or is it surface" from the SHAPE of a path — `src/tests/**`, `_tests.rs`, `benches/` — and the
+/// answer must not depend on what happens to be in the tree today, or the classifier would be
+/// untestable for any shape the tree does not currently contain. `crates/x` is deliberately not a
+/// crate. So these are declared to `qa-names` rather than repointed at real files: repointing them
+/// at live paths would silently couple this table to the roster and retire the shapes nobody has
+/// written yet, which is the only reason the table exists.
+// qa-names: crates/x/src/lib.rs -- xtask/src/loc/selftest.rs -- a classifier INPUT, never opened; loc decides proof-vs-surface from the path shape alone
+// qa-names: crates/x/src/tests.rs -- xtask/src/loc/selftest.rs -- a classifier INPUT, never opened; the `mod tests;` file convention as a string
+// qa-names: crates/x/src/tests/helper.rs -- xtask/src/loc/selftest.rs -- a classifier INPUT, never opened; the top-level tests tree as a string
+// qa-names: crates/x/src/engine/tests/router_tests.rs -- xtask/src/loc/selftest.rs -- a classifier INPUT, never opened; the nested src/<module>/tests/** shape as a string
+// qa-names: crates/x/src/engine/router_tests.rs -- xtask/src/loc/selftest.rs -- a classifier INPUT, never opened; the `_tests.rs`-beside-the-module shape as a string
+// qa-names: crates/x/benches/throughput.rs -- xtask/src/loc/selftest.rs -- a classifier INPUT, never opened; benches are proofs, stated as a string
+// qa-names: crates/x/tests/integration.rs -- xtask/src/loc/selftest.rs -- a classifier INPUT, never opened; the integration-test tree as a string
+// qa-names: crates/x/src/attestation.rs -- xtask/src/loc/selftest.rs -- a classifier INPUT, never opened; the negative control, a name that SOUNDS like a test and is surface
 const PATH_CASES: &[(&str, bool, &str)] = &[
     (
         "crates/x/src/lib.rs",
