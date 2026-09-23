@@ -17,6 +17,36 @@
 //! what was actually used enters the settled column. Doing one without the other is exactly the
 //! shape of imbalance the identity exists to catch, so they are one function and not two.
 //!
+//! ## ONE GUARD POLICY FOR THIS FILE: EVERY BOOK OPERATOR SATURATES
+//!
+//! Every arithmetic operator in this file that moves a money column is `saturating_*`. Not some of
+//! them, and not "the ones that can overflow" — all of them, because which ones can overflow is a
+//! fact about today's callers and the policy has to survive tomorrow's.
+//!
+//! This file used to hold two policies at once, which is the defect this states away. Twenty
+//! operators moved the books with a bare `-=`, `+=` or `-`, and the repricing fold thirty lines
+//! below them used `saturating_add` — so the crate's own guarded and unguarded arithmetic sat in
+//! one file with nothing to say which was intended. A reader could take either as the house rule.
+//!
+//! SATURATING RATHER THAN CHECKED, for two reasons and they are not the same reason. First, it is
+//! what the rest of this crate already does (`totals.rs`, the fold at the bottom of this file,
+//! `cost::nanos_sum`), and one policy per file is worth more than the marginally better policy
+//! applied to half of it. Second, `post` returns a `Settlement`, not a `Result`, and every caller
+//! of it is a settlement that has ALREADY HAPPENED — the value was delivered, the hold is consumed
+//! by value, and there is no arm left that could decline. A `checked_` here would have to either
+//! unwrap (a panic on the money path) or silently drop the movement (a lost posting), and both are
+//! worse than pinning at the ceiling.
+//!
+//! WHAT SATURATION BUYS, in the numbers it was measured at: `figures.settled += settled` with a
+//! bare `+=` panics on overflow in a debug build and WRAPS in a release one, and the wrap is the
+//! dangerous half because it is silent. A book holding `i128::MAX - 9.2e18` that settles one more
+//! `u64::MAX` posting reads back `-170141183460469231722463931679029329921` — a NEGATIVE settled
+//! column on a fully-drawn book — and `Totals::headroom` then reports
+//! `+170141183460469231722463931679029329921` of room on it. Pinned at `i128::MAX` instead, the
+//! column stays at the ceiling and the headroom stays exhausted. An over-the-top book that reads as
+//! over-the-top is a wrong number somebody chases; one that reads as headroom is a wrong number
+//! that admits requests.
+//!
 //! ## The dual write is a hook, not a branch
 //!
 //! The previous release keeps its own rows, and they must keep being written so that everything
@@ -177,7 +207,7 @@ impl Ledger {
         let reserved = i128::from(posted.reserved());
         let settled = i128::from(posted.settled());
         let overdraft = i128::from(posted.overdraft());
-        let released = (reserved - settled).max(0);
+        let released = reserved.saturating_sub(settled).max(0);
 
         let figures = self.book.entry(key.clone(), window);
         // Three figures move together, and they have to. What was reserved stops being held; what
@@ -185,10 +215,10 @@ impl Ledger {
         // slice it came out of, because it is still drawn and has to be somewhere. Spending more
         // than was reserved is the overdraft, and that is the one part of the amount that was never
         // drawn — which is exactly why the identity subtracts it.
-        figures.open_holds -= reserved;
-        figures.settled += settled;
-        figures.open_slice_remainders += released;
-        figures.overdraft_carried_out += overdraft;
+        figures.open_holds = figures.open_holds.saturating_sub(reserved);
+        figures.settled = figures.settled.saturating_add(settled);
+        figures.open_slice_remainders = figures.open_slice_remainders.saturating_add(released);
+        figures.overdraft_carried_out = figures.overdraft_carried_out.saturating_add(overdraft);
 
         if let Some(rows) = self.legacy.as_mut() {
             // Best effort by design: the previous release's rows are a parity obligation, not the
@@ -217,27 +247,29 @@ impl Ledger {
 
     /// Open a hold's reservation in the books. Called when the door says yes.
     pub fn record_hold_opened(&mut self, key: &TotalsKey, window: WindowStart, reserved: u64) {
-        self.book.entry(key.clone(), window).open_holds += i128::from(reserved);
+        let figures = self.book.entry(key.clone(), window);
+        figures.open_holds = figures.open_holds.saturating_add(i128::from(reserved));
     }
 
     /// Record a draw from the store.
     pub fn record_draw(&mut self, key: &TotalsKey, window: WindowStart, amount: i128) {
         let figures = self.book.entry(key.clone(), window);
-        figures.drawn += amount;
-        figures.open_slice_remainders += amount;
+        figures.drawn = figures.drawn.saturating_add(amount);
+        figures.open_slice_remainders = figures.open_slice_remainders.saturating_add(amount);
     }
 
     /// Record a slice being spent out of its remainder into a hold.
     pub fn record_slice_spent(&mut self, key: &TotalsKey, window: WindowStart, amount: i128) {
-        self.book.entry(key.clone(), window).open_slice_remainders -= amount;
+        let figures = self.book.entry(key.clone(), window);
+        figures.open_slice_remainders = figures.open_slice_remainders.saturating_sub(amount);
     }
 
     /// Record a release back to the store.
     pub fn record_release(&mut self, key: &TotalsKey, window: WindowStart, amount: i128) {
         let figures = self.book.entry(key.clone(), window);
-        figures.released += amount;
-        figures.drawn -= amount;
-        figures.open_slice_remainders -= amount;
+        figures.released = figures.released.saturating_add(amount);
+        figures.drawn = figures.drawn.saturating_sub(amount);
+        figures.open_slice_remainders = figures.open_slice_remainders.saturating_sub(amount);
     }
 
     /// Record a correction that reverses part of what was settled.
@@ -247,8 +279,8 @@ impl Ledger {
     /// positive to give value back to the payer, negative to take more.
     pub fn record_adjustment(&mut self, key: &TotalsKey, window: WindowStart, amount: i128) {
         let figures = self.book.entry(key.clone(), window);
-        figures.adjustments += amount;
-        figures.settled -= amount;
+        figures.adjustments = figures.adjustments.saturating_add(amount);
+        figures.settled = figures.settled.saturating_sub(amount);
     }
 
     /// Record a correction inside the open window that also gives headroom back to the store.
@@ -281,11 +313,11 @@ impl Ledger {
         amount: i128,
     ) {
         let out = self.book.entry(key.clone(), from_window);
-        out.open_slice_remainders -= amount;
-        out.cross_window_transfers += amount;
+        out.open_slice_remainders = out.open_slice_remainders.saturating_sub(amount);
+        out.cross_window_transfers = out.cross_window_transfers.saturating_add(amount);
         let into = self.book.entry(key.clone(), to_window);
-        into.open_slice_remainders += amount;
-        into.cross_window_transfers -= amount;
+        into.open_slice_remainders = into.open_slice_remainders.saturating_add(amount);
+        into.cross_window_transfers = into.cross_window_transfers.saturating_sub(amount);
     }
 
     /// Record that an amount already posted has not yet been agreed with by the recompute.
@@ -300,8 +332,8 @@ impl Ledger {
     /// has not confirmed.
     pub fn record_unreconciled(&mut self, key: &TotalsKey, window: WindowStart, amount: i128) {
         let figures = self.book.entry(key.clone(), window);
-        figures.unreconciled += amount;
-        figures.settled -= amount;
+        figures.unreconciled = figures.unreconciled.saturating_add(amount);
+        figures.settled = figures.settled.saturating_sub(amount);
     }
 
     /// Book one adjusting entry: **the only way a history amendment moves money.**
@@ -321,8 +353,8 @@ impl Ledger {
     /// into a signed checkpoint cannot be rewritten, and it does not have to be.
     pub fn record_repricing(&mut self, entry: &Repricing) {
         let figures = self.book.entry(entry.key.clone(), entry.window);
-        figures.adjustments += entry.delta;
-        figures.drawn += entry.delta;
+        figures.adjustments = figures.adjustments.saturating_add(entry.delta);
+        figures.drawn = figures.drawn.saturating_add(entry.delta);
     }
 }
 
@@ -448,12 +480,12 @@ pub fn adjusting_entries<'a>(
         entry.new_nanos = entry
             .new_nanos
             .saturating_add(i128::try_from(new.priced_nanos).unwrap_or(i128::MAX));
-        entry.postings += 1;
+        entry.postings = entry.postings.saturating_add(1);
     }
     groups
         .into_values()
         .filter_map(|mut entry| {
-            entry.delta = entry.new_nanos - entry.old_nanos;
+            entry.delta = entry.new_nanos.saturating_sub(entry.old_nanos);
             // Class order, because the entry is journalled and signed and a batch whose field order
             // came out of an insertion sequence would digest differently on two nodes that saw the
             // same lines in a different order.

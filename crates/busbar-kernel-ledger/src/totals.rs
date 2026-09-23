@@ -19,6 +19,24 @@
 //! separate direction flag is how a sign error becomes invisible. Nothing here is floating point,
 //! for the reason nothing in a ledger ever is.
 
+//! ## ONE GUARD POLICY FOR THIS FILE: EVERY BOOK OPERATOR SATURATES
+//!
+//! Every arithmetic operator in this file saturates — the same policy `settle.rs` states, for the
+//! same reason, so the two files that move the books cannot be read as disagreeing about it.
+//!
+//! The two derived figures below are the ones that mattered. `headroom` subtracted four `i128`s
+//! bare and `overdraft_carried` two, in a file whose statement fold thirty lines further down
+//! already used `saturating_add` — one file, two policies, and the unguarded pair were the figures
+//! the budget gate reads. Measured: `budget = 0`, `settled = i128::MAX`, `open_holds = i128::MAX`
+//! is a book with `-340282366920938463463374607431768211454` of headroom, and the bare subtraction
+//! returns **`2`**. An exhausted budget reporting two nano-units of room is a request admitted.
+//! Saturated, the same book returns `i128::MIN` — no room, which is the true reading narrowed to
+//! what the type can say, and it fails CLOSED.
+//!
+//! Saturation is also why the figures stay derived rather than stored: pinning at a bound is only
+//! honest if the bound is recomputed from the columns every read, and a saturated figure written
+//! back into a column would be a lie the next read could not detect.
+
 use std::collections::BTreeMap;
 
 use crate::cost::{CurrencyCode, HistorySeq, HistoryView};
@@ -196,12 +214,16 @@ impl Totals {
     /// The two fields survive separately because a checkpoint seals both, and an operator asking
     /// "what did the last window hand us" is asking for the one the identity has already folded in.
     pub fn overdraft_carried(&self) -> i128 {
-        self.overdraft_carried_out - self.overdraft_carried_in
+        self.overdraft_carried_out
+            .saturating_sub(self.overdraft_carried_in)
     }
 
     /// What is left of the budget once everything posted, held, and carried is accounted for.
     pub fn headroom(&self) -> i128 {
-        self.budget - self.settled - self.open_holds - self.overdraft_carried_in
+        self.budget
+            .saturating_sub(self.settled)
+            .saturating_sub(self.open_holds)
+            .saturating_sub(self.overdraft_carried_in)
     }
 }
 
@@ -264,7 +286,7 @@ impl Book {
     pub fn retain_from(&mut self, window: WindowStart) -> usize {
         let before = self.totals.len();
         self.totals.retain(|(_, at), _| *at >= window);
-        before - self.totals.len()
+        before.saturating_sub(self.totals.len())
     }
 
     /// The book as a plain map, for a checkpoint to seal.
@@ -366,7 +388,7 @@ pub fn totals_as_of<'a>(
                     .priced_nanos
                     .saturating_add(i128::try_from(priced.priced_nanos).unwrap_or(i128::MAX));
                 row.fee_count = row.fee_count.saturating_add(priced.fee_count);
-                row.lines += 1;
+                row.lines = row.lines.saturating_add(1);
             }
             Err(why) => unpriceable.push(Unpriced {
                 node: line.node,

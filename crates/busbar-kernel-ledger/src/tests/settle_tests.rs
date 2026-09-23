@@ -275,3 +275,130 @@ fn posting_an_already_built_settlement_moves_the_same_books_as_settling_a_hold()
         through_posting.book().get(&k, 1)
     );
 }
+
+// ── THE BOOKS SATURATE (#10 `BUSBAR-1.6.0.md:331`) ───────────────────────────────────────────────
+// Twenty operators in `settle.rs` moved the books with a bare `-=`, `+=` or `-`. A plain `+` panics
+// on overflow in a debug build and WRAPS in a release one, and the wrap is the silent half. These
+// are the settled book, the open-hold book and the slice remainders — the most authoritative money
+// figures the node holds.
+
+/// **A SETTLED COLUMN AT THE CEILING STAYS AT THE CEILING; IT DOES NOT GO NEGATIVE.**
+///
+/// Measured before the fix. `settled` is fed from `Posted::settle`, which already clamps a `u128`
+/// price into `u64::MAX`, so a node that has saturated even a handful of postings accumulates
+/// `n × 1.8e19` in an `i128` column. One posting past the ceiling, with overflow checks OFF, the
+/// bare `+=` wrapped the column to `-170141183460469231722463931679029329921` — a NEGATIVE settled
+/// book on a fully-drawn node — and `Totals::headroom` then reported
+/// `+170141183460469231722463931679029329921` of room on it. With overflow checks ON the same
+/// posting PANICKED on the money path.
+///
+/// Saturated, the column pins at `i128::MAX` and the headroom stays exhausted.
+#[test]
+fn a_settled_column_at_the_ceiling_pins_rather_than_wrapping() {
+    let mut ledger = Ledger::new();
+    let token = ledger_token();
+    let k = key("at-the-ceiling");
+
+    // Drive the settled column to the top through the book's own doors: `record_adjustment` moves
+    // `amount` out of settled, so a maximally negative adjustment moves the maximum INTO it.
+    ledger.record_adjustment(&k, 1, -i128::MAX);
+    assert_eq!(ledger.book().get(&k, 1).settled, i128::MAX);
+
+    ledger.record_hold_opened(&k, 1, u64::MAX);
+    ledger.settle(
+        &k,
+        1,
+        hold("over-the-top", u64::MAX),
+        u128::from(u64::MAX),
+        &usage("tokens", u64::MAX),
+        &token,
+    );
+
+    let figures = ledger.book().get(&k, 1);
+    assert_eq!(
+        figures.settled,
+        i128::MAX,
+        "the settled book must pin at the ceiling, never wrap past it into a credit"
+    );
+    assert!(figures.settled > 0, "a fully-drawn book that reads negative is a book that reads as headroom");
+    assert!(
+        figures.headroom() < 0,
+        "and the gate that reads it must still see no room"
+    );
+}
+
+/// The open-hold column pins too, in the direction a hold moves it.
+#[test]
+fn the_open_hold_column_pins_at_both_ends() {
+    let mut ledger = Ledger::new();
+    let token = ledger_token();
+    let k = key("holds");
+
+    // Open the maximum hold twice: `u64::MAX + u64::MAX` is inside an `i128`, so this is ordinary
+    // arithmetic and must be exact — the saturation is a ceiling, not a cap on normal figures.
+    ledger.record_hold_opened(&k, 1, u64::MAX);
+    ledger.record_hold_opened(&k, 1, u64::MAX);
+    assert_eq!(
+        ledger.book().get(&k, 1).open_holds,
+        i128::from(u64::MAX) * 2
+    );
+
+    // Now settle against a column already at the floor: the subtraction pins rather than wrapping
+    // up into a positive reservation that was never opened.
+    ledger.settle(
+        &k,
+        2,
+        hold("a", u64::MAX),
+        0,
+        &usage("tokens", 0),
+        &token,
+    );
+    assert_eq!(ledger.book().get(&k, 2).open_holds, -i128::from(u64::MAX));
+}
+
+/// **BYTE-NEUTRALITY FOR ORDINARY SETTLEMENTS.** Saturation changes no answer the bare operators
+/// could give: the same reservations and the same usages produce the same three columns.
+///
+/// The reference is computed here from the definition — reserved leaves open-holds, settled enters
+/// settled, the unused remainder goes back to the slice — rather than read off the implementation,
+/// so this is a check of the arithmetic and not of itself.
+#[test]
+fn saturating_the_books_moves_no_ordinary_settlement() {
+    let token = ledger_token();
+    let amounts: [u64; 8] = [0, 1, 7, 999, 1_000_000, 1_000_000_000, 4_000_000_000, 1 << 40];
+    let mut checked = 0u32;
+    for &reserved in &amounts {
+        for &used in &amounts {
+            let mut ledger = Ledger::new();
+            let k = key("sweep");
+            ledger.record_draw(&k, 1, i128::from(reserved));
+            ledger.record_hold_opened(&k, 1, reserved);
+            ledger.record_slice_spent(&k, 1, i128::from(reserved));
+            let posted = ledger.settle(
+                &k,
+                1,
+                hold("p", reserved),
+                u128::from(used),
+                &usage("tokens", used),
+                &token,
+            );
+            let figures = ledger.book().get(&k, 1);
+            let want_settled = i128::from(posted.settled());
+            let want_released = (i128::from(posted.reserved()) - want_settled).max(0);
+            assert_eq!(figures.settled, want_settled, "settled moved at {reserved}/{used}");
+            assert_eq!(figures.open_holds, 0, "open_holds moved at {reserved}/{used}");
+            assert_eq!(
+                figures.open_slice_remainders,
+                want_released,
+                "the slice remainder moved at {reserved}/{used}"
+            );
+            assert_eq!(
+                figures.overdraft_carried_out,
+                i128::from(posted.overdraft()),
+                "the overdraft moved at {reserved}/{used}"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 64, "the sweep must actually have run");
+}
