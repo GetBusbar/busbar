@@ -721,16 +721,54 @@ work-handle at 202 and resumes via nested lookup — NOT reclaimed at future-dro
 Both are `egress_open(&EgressDesc{ kind: Http|RawConn|Subprocess, ... })`; kind is data, the governance
 is one path. Removes the 4 subprocess capability slots as protocol-specific furniture.
 
-## Axis 4 — METERING, money-scalar (reserve/settle is an EXTENSION POINT, not 1.6.0)
+## Axis 4 — METERING, money-scalar (reserve/settle: the DEMOTION BELOW SHIPPED ANYWAY — read the box)
 `CostBreakdown` is already a neutral money scalar (tunnel foil: byte-metering fits via `top("Bytes",…)`),
 and `Usage` is opaque-component (tokens|bytes|frames|queries) — that covers all 3 shipping planes:
 A2A meters once per hop (`a2a/meter.rs`), MCP charges per discrete round (`mcp/method.rs::charge_round`),
 LLM per-token path is untouched. So per-request `meter_charge` is the 1.6.0 implement-set.
-**reserve/settle (`CostHold`) is DEMOTED to an EXTENSION POINT** (REPANEL-2 + REPANEL-3 both: zero
+> ### ⛔ THIS DEMOTION IS OUT OF DATE. reserve/settle SHIPPED. (measured 2026-09-22)
+>
+> Its premise is *"zero production callers among the 3 planes"* and its conclusion is *"a reserved shape,
+> **not implemented wiring**"*. Both are now false, and nothing about that is a scheduling question:
+>
+> * **The slots are wired to a REAL host.** `cost_reserve`/`cost_settle` are declared at
+>   `crates/busbar-plugin/src/hot/host.rs:722,724` and bound at
+>   `crates/busbar-kernel/src/plane_host/vtable.rs:121-122` — `cost_reserve: Some(super::cost_host::cost_reserve)`
+>   — over 224 lines of host-owned `CostHold` lease registry
+>   (`crates/busbar-kernel/src/plane_host/cost_host.rs`), with the neutral-seam twin at
+>   `crates/busbar-kernel/src/plane_host/mod.rs:594` sharing the SAME registry. It landed as "minor-19".
+> * **The `unimplemented!()` pair at `hot/host.rs:1348`/`:1359` is NOT the host.** It is `mod stub`, the
+>   compile-surface fixture that type-checks the signatures and is never dispatched. Mistaking it for the
+>   host is the easy error here, and this correction was written after making it.
+> * **There are four planes, not three.** #18 makes STREAMING the fourth plane of 1.6.0 and #45
+>   (OWNER-LOCKED 2026-09-20) puts its first billable cut in this release. That plane is the production
+>   caller: `HostMeteringPort` forwards to both legs (`crates/busbar-voice/src/runtime/metering.rs:350,389`),
+>   bound as the production path by `build_runtime_hosted` and reached from the live mount.
+>   Tracker K2 is `[x]`: *"real per-key metering lease wired"*.
+>
+> **So no work falls out of this — an AMENDMENT does.** This paragraph and
+> `1.6.0-duplex-plane-and-realtime.md`’s decision **D2** (*"reserved but **not present** in
+> `PlaneHostVtable`"*, *"do **not** ship the slots in 1.6.0"*) both describe a tree that no longer exists.
+> A reviewer trusting either would read the streaming plane’s D2 lease as unridden scaffolding; it is the
+> production money path.
+>
+> The words *"the future high-rate-carrier **minor bump**"* were also a DECISIONS #15 evasion — "minor
+> bump" is `1.6.x` with the letters changed, and *"an EXTENSION POINT, **not 1.6.0**"* is "out of scope for
+> 1.6.0" with the words changed. Found by the banned-word adjudication, `docs/design/1.6.0-map-proof.md` §A.
+>
+> **Checkable, so this box cannot rot the way the paragraph under it did:**
+> ```sh
+> grep -n "cost_reserve: Some" crates/busbar-kernel/src/plane_host/vtable.rs   # -> :121
+> wc -l crates/busbar-kernel/src/plane_host/cost_host.rs                       # -> 224
+> ```
+>
+> The paragraph is kept, not deleted: its REPANEL reasoning is the record of why the slot was demoted, and
+> that reasoning was correct on the day it was written.
+
+**[SUPERSEDED BY THE BOX ABOVE] reserve/settle (`CostHold`) is DEMOTED to an EXTENSION POINT** (REPANEL-2 + REPANEL-3 both: zero
 production callers among the 3 planes; its only justification was the *deferred* RTP carrier, so shipping
 it trips acceptance gate §11a "no 0-caller ABI" and v5's own "implement only what the 3 planes use"
-rule). The `CostHold` TYPE stays in place (fully tested) for the future high-rate-carrier minor bump —
-it's a reserved shape, not implemented wiring.
+rule). The `CostHold` TYPE stays in place (fully tested) — **and the streaming plane is now its rider.**
 
 ## The re-derived CAPABILITY set (implement only what 3 planes use; rest = extension points)
 NEUTRAL CORE (tunnel-proven, all/most planes): `govern_admit`, `meter_charge` + `cost_reserve/settle`,
@@ -3263,7 +3301,7 @@ still un-enveloped, so it does not yet.
 | `busbar-kernel-ledger` | Record SHAPES / ledger SEMANTICS | `records.rs` (604 surf) → 13, **less** its `scope_kinds` `RwLock` registry (~30), which is runtime state ⇒ 2. `settle` `checkpoint` `recompute` `cost/*` `usage/*` `totals` `verify` `identity` `migration` `legacy` stay (def 6). |
 | `api` | Plugin contracts / I-O machinery / migration logic / shim | `auth` `hooks` `secret` `operation` `signal` `redacted` (727) → 13. `durable.rs` (110, real `fsync` path) → 2. `usage_migration.rs` (66) → 6. `store.rs` (9) is a pure `pub use` shim → delete. Crate dies. |
 | `busbar-kernel` | ≥6 kinds | Residual grab-bag: `config/`+`config_validate/` (31k), `plane_host/` (18k), `governance/` (12k), `auth/` (11k, duplicates def 3's territory), `plane/` (11k), `egress/` (9k, duplicates def 7's). Def 2 is `teller.rs` + the seams; the rest is owed a home. |
-| `busbar-core-admin` | HTTP surface / verb semantics | **CLOSED 2026-09-22 — the plane entry face is DELETED, not re-homed.** `admin_codec/codec.rs` (the `Plane` impl) and its exclusive tails are gone: that trait is how TRAFFIC enters the dispatch loop and this crate serves operators, never traffic (#3/#5/#83 def 11). It was never dispatched through — an admin request arrives on `admin_listen`, is matched against `admin_codec::verbs::resolve`, and walks the loop as the ADMIN UNITS (`crates/busbar/src/root/units_admin`). `kind-isolation:faces` FAIL → PASS; `construction:kernel-seal-impls` FAIL → PASS with it (the deleted test harness held the tree's last untracked `KernelSeal` forgery). `admin_codec/` is now the closed verb table, the one claim and the frozen error envelope — DECLARATIONS, no entry face. `v1/` (12.8k) = def 11. Top-level `keys/verb/rate/restart/posture/…` (4.7k) = verb-execution semantics, still owed a home; the crate split is a later wave. |
+| `busbar-core-admin` | HTTP surface / verb semantics | **CLOSED 2026-09-22 — the plane entry face is DELETED, not re-homed.** `admin_codec/codec.rs` (the `Plane` impl) and its exclusive tails are gone: that trait is how TRAFFIC enters the dispatch loop and this crate serves operators, never traffic (#3/#5/#83 def 11). It was never dispatched through — an admin request arrives on `admin_listen`, is matched against `admin_codec::verbs::resolve`, and walks the loop as the ADMIN UNITS (`crates/busbar/src/root/units_admin`). `kind-isolation:faces` FAIL → PASS; `construction:kernel-seal-impls` FAIL → PASS with it (the deleted test harness held the tree's last untracked `KernelSeal` forgery). `admin_codec/` is now the closed verb table, the one claim and the frozen error envelope — DECLARATIONS, no entry face. `v1/` (12.8k) = def 11. Top-level `keys/verb/rate/restart/posture/…` (4,825 lines measured 2026-09-22) = verb-execution semantics, **and their home is THIS CRATE.** The previous wording — *"still owed a home; the crate split is a later wave"* — is struck: it contradicted two OWNER-LOCKED decisions in this same document. **#37** (`:360`) names *"the surviving compiled-in scaffolding = exactly `busbar-core-admin` (cleanliness: **admin codec + verb execution**)"*, and **#36** (`:359`) rules *"`verbs` → `busbar-core-admin` (admin owns its own execution — **no codec/exec split**, since admin is a cleanliness crate not a plane)"*. Roster def 11 (`:3009`) already covers both halves. `crates/busbar-unit-verbs` does not exist; the absorption is done. There is no split to schedule and no wave to schedule it into — Part 5’s W0–W8 and its 39-row granular table name no admin verb-execution split, because #36 forbade one. (Stale destination to fix separately: `docs/design/1.6.0-composition-root-plan.md:582` still routes execution to a `busbar-unit-verbs` that #36 deleted.) Banned-word adjudication, `docs/design/1.6.0-map-proof.md` §A. |
 | `busbar-llm` · `busbar-mcp` · `busbar-a2a` · `busbar-voice` | Protocol orchestration / plane entry face | Session, turn and dialect rules → 16–20. But `unit/{admit,approve,meter,route}` and `runtime/metering.rs` decide admission and price — that is defs 5/6, not a plane. |
 | `busbar-plane-decision` | Adapter / codec / kernel-side `PlaneDecl` builder | Adapter+codec = def 20 (#39 ruled the 113-LOC codec too small to split out). `registry.rs` names `busbar-kernel` — its own header calls it a #40 violation. |
 | `busbar-kernel-audit` | Record shape / a second chain mechanism | `record.rs`+`amend.rs` = def 10. `legacy/{chain,entry}.rs` (1,019) is a self-contained hash chain — def 9's KIND, kept only so 1.5.5 digests still verify. |
