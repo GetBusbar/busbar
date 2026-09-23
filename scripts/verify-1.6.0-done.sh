@@ -906,6 +906,19 @@ if [ -f qa/teller-steps.json ]; then
   # importing its subject." A `cargo xtask teller-steps --rig-legs` would break segregation; the
   # repoint is to the restored script, not to a new gate flag.
   #
+  #
+  # WHAT THIS LEDGER COVERS, WRITTEN DOWN SO THE STEP LABEL CANNOT BE READ AS MORE THAN IT IS. The
+  # rig column fills 50 plane x step slots, 2 of which are declared gaps, leaving 48 named cells.
+  # This ledger folds FOUR namespaces -- mcp.rig, a2a.battery, a2a.tck, voice.rig -- which is 21 of
+  # them. Another 23 (teller|*, llm|*, concurrency|*, admin.ops|*) are shadow-oracle corpus cells
+  # and RUN in the PARITY group against the published 1.5.5 golden. That leaves FOUR named cells
+  # with a resolvable owner and no arm in this file that runs them:
+  #   mcp.battery|ADV.MALFORMED-JSON, mcp.battery|SEAM.UPSTREAM-FAILURE-IS-TOOL-ERROR
+  #     -> testing/mcp-conformance/src/suites/{server-adversarial,seam}.mjs
+  #   a2a.supplement|AUTH-SERVER-002, a2a.supplement|AUTH-SCOPE-001
+  #     -> testing/a2a-supplement/run-supplement.sh
+  # Both runners exist in this tree; neither is wired to a done-oracle arm. Named here as a gap
+  # someone can close rather than left as the difference between what the label says and what ran.
   # The self-test runs FIRST (the house rule): a ledger whose own vacuity guards have stopped firing
   # is worse than none, and this one proves six of them — a flipped baseline row, a red run, a zero-
   # row run, a leg that enumerated nothing, and --rebaseline refusing on red / writing on green.
@@ -922,7 +935,7 @@ if [ -f qa/teller-steps.json ]; then
   else
     step "rigs-ledger --selftest (the ledger's own vacuity guards still fire)" \
       bash testing/shadow-oracle/rigs-ledger.sh --selftest
-    step "the rig suites the matrix cites RUN and pass" \
+    step "the rig suites the matrix cites RUN and pass (mcp.rig / a2a.battery / a2a.tck / voice.rig)" \
       bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check
   fi
   printf '  \033[36m[info]\033[0m '
