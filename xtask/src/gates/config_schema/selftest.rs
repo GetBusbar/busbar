@@ -81,16 +81,27 @@ fn snapshot(cx: &Ctx) -> Value {
         .unwrap_or_else(|_| json!({ "types": {} }))
 }
 
-/// An overlay whose `HEAD` carries `doc` as the baseline snapshot.
+/// An overlay whose BASELINE REF carries `doc` as the baseline snapshot.
 ///
 /// The ref is planted as WELL as the file. A synthetic ref is answered entirely from the overlay
 /// (see [`crate::ctx::Ctx::git_show`]), so this cannot fall through to the real repository and
-/// silently judge against the real `HEAD`.
+/// silently judge against a real ref.
+///
+/// IT PLANTS [`super::DEFAULT_BASELINE_REF`] AND NEVER A LITERAL. Every plant in this file used to
+/// name `HEAD`, because that is what the default was; the moment the default moved to the freeze
+/// point those plants would have addressed a ref the gate no longer asks about, the overlay would
+/// have gone unread, and every case would have judged the real tree against the real tag while
+/// believing it was judging its own mutation. The cases would not have failed — several would have
+/// stayed green — so the constant is the only safe spelling.
 fn baseline_doc(doc: &Value) -> Overlay {
     let mut ov = Overlay::new();
-    ov.set_command("git-ref:HEAD", "1");
+    ov.set_command(format!("git-ref:{}", super::DEFAULT_BASELINE_REF), "1");
     ov.set_command(
-        format!("git-show:HEAD:{}", schema::SNAPSHOT),
+        format!(
+            "git-show:{}:{}",
+            super::DEFAULT_BASELINE_REF,
+            schema::SNAPSHOT
+        ),
         schema::canonical(doc),
     );
     ov
@@ -174,6 +185,25 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &[ROW_TRACKED_SOURCES, ROW_SNAPSHOT_DRIFT, ROW_BASELINE],
         Overlay::new(),
     ));
+    // THIS CONTROL IS RED ON THIS TREE, AND THE RED IS TRUE. Leave it.
+    //
+    // It was vacuous until the baseline was repaired: with `DEFAULT_BASELINE_REF = "HEAD"` it
+    // compared the tree against itself, so "the real render against the real baseline is additive"
+    // was a sentence that could not be false. Against the freeze point it is a real assertion, and
+    // on this tree it FAILS — `PoolMember` has lost seven fields (`attempt_timeout_ms`,
+    // `context_max`, `model`, `reasoning`, `tags`, `tier`, `weight`) out of a grammar declared
+    // frozen since 1.5.3, with an EMPTY waiver register. The names reappear under a new type,
+    // `RichMember`; `crates/busbar-kernel/src/config/pools.rs`'s hand-written `Deserialize`
+    // forwards to it, so the WIRE still parses all seven and no operator's config breaks. The
+    // fingerprint's namespace lost them anyway, and to an additive-only classifier that is seven
+    // removals. See `docs/design/1.6.0-denominator.md` §8.1.
+    //
+    // A standing red here makes every `ROW_ADDITIVE_ONLY` red-proof below report `Impossible`
+    // rather than pass, because `prove_red` demands a GREEN -> RED transition and this row is red
+    // before any plant. That is the harness working: those proofs have no falsifiability to
+    // demonstrate while the row cannot be green. It is NOT a reason to waive the seven paths, to
+    // re-record the snapshot, or to narrow this control to rows it can pass — each of those
+    // restores the green and nothing else. Clear the breach and all of them can be asked again.
     report.push(prove_rows_green(
         cx,
         gate,
@@ -384,7 +414,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // Three bypasses, each of which made every breaking change green.
 
     let mut ov = Overlay::new();
-    ov.set_command("git-ref:HEAD", "0");
+    ov.set_command(format!("git-ref:{}", super::DEFAULT_BASELINE_REF), "0");
     report.push(prove_rows_red(
         cx,
         gate,
@@ -396,7 +426,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 
     // Planted ref, no planted file: resolves, carries no snapshot.
     let mut ov = Overlay::new();
-    ov.set_command("git-ref:HEAD", "1");
+    ov.set_command(format!("git-ref:{}", super::DEFAULT_BASELINE_REF), "1");
     report.push(prove_rows_red(
         cx,
         gate,
@@ -448,7 +478,14 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     let mut ov = baseline_doc(&json!({ "types": { "X": { "kind": "struct" } } }));
-    ov.set_command(format!("git-show:HEAD:{}", schema::SNAPSHOT), "{ not json");
+    ov.set_command(
+        format!(
+            "git-show:{}:{}",
+            super::DEFAULT_BASELINE_REF,
+            schema::SNAPSHOT
+        ),
+        "{ not json",
+    );
     report.push(prove_rows_red(
         cx,
         gate,

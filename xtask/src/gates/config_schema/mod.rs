@@ -13,14 +13,23 @@
 //! | `config-schema:additive-only` | every delta from the baseline to the fresh render is additive (or waived). Field removed/retyped/newly-required, enum variant dropped, a hand-written impl's refusal added *or removed* = RED. |
 //! | `config-schema:waivers` | the waiver register parses, names exact paths with reasons, and carries no STALE entry — a waiver matching nothing is standing permission to break that path later. |
 //!
-//! ## THE BASELINE IS A GIT REF, NEVER THE WORKING TREE
+//! ## THE BASELINE IS A RELEASED TAG — NOT THE WORKING TREE, AND NOT `HEAD` EITHER
 //!
-//! That is the one design decision the whole gate rests on. The drift guard compares the committed
-//! snapshot against a fresh render, so a config change that forgets to regenerate is caught — but
-//! regenerating is a one-line command, and if the additive check also read the working tree then
-//! running it would *launder the break*: the snapshot and the render would agree, and the removal
-//! would be invisible. Reading the baseline from history is what makes "refresh the snapshot" an
-//! honest act rather than a bypass. [`Ctx::git_show`] is the only door to it.
+//! That is the one design decision the whole gate rests on, and until the 1.6.0 denominator audit
+//! it was only half made. The drift guard compares the committed snapshot against a fresh render,
+//! so a config change that forgets to regenerate is caught — but regenerating is a one-line
+//! command, and if the additive check also read the working tree then running it would *launder the
+//! break*: the snapshot and the render would agree, and the removal would be invisible. Reading the
+//! baseline from history is what makes "refresh the snapshot" an honest act rather than a bypass.
+//! [`Ctx::git_show`] is the only door to it.
+//!
+//! **`HEAD` IS THE WORKING TREE WEARING A REF'S CLOTHES.** The default was `"HEAD"`, which the
+//! drift row above has *just finished proving* byte-equal to the fresh render — so the additive
+//! check compared the tree against itself and the delta was empty by construction, on every run.
+//! It was not a weak baseline; it was the absence of one, and the gate had been green on that basis
+//! for the whole release. [`DEFAULT_BASELINE_REF`] carries the repair and the reasoning for which
+//! ref replaces it; [`SNAPSHOT_HOMES`] carries the one mechanical consequence, which is that a
+//! baseline older than the last relocation must be read at the path it used *then*.
 //!
 //! ## THE DECLARED BOOTSTRAP IS NOT A PASS, AND IT IS STILL NOT RED
 //!
@@ -57,9 +66,81 @@ pub const OWED: &[&str] = &[
     ROW_WAIVERS,
 ];
 
-/// The default baseline ref. `CONFIG_SCHEMA_BASELINE_REF` overrides it, through [`crate::ctx::Env`]
-/// rather than out of the process environment, so a runner can see the gate reading it.
-pub const DEFAULT_BASELINE_REF: &str = "HEAD";
+/// THE DEFAULT BASELINE: **the freeze point itself**, `v1.5.3`.
+///
+/// `CONFIG_SCHEMA_BASELINE_REF` overrides it, through [`crate::ctx::Env`] rather than out of the
+/// process environment, so a runner can see the gate reading it.
+///
+/// ## IT WAS `HEAD`, AND `HEAD` IS THE TREE BEING JUDGED
+///
+/// This constant read `"HEAD"` until the 1.6.0 denominator audit
+/// (`docs/design/1.6.0-denominator.md` §8.2) went looking. `HEAD` is not a baseline; it is the
+/// commit under test. The additive check then compared the fresh render against the snapshot
+/// committed in that same tree — and the drift row above has already proven those two byte-equal,
+/// so the delta was **empty by construction, on every run, forever**. The gate reported green
+/// because it had measured nothing, and `.github/workflows/ci.yml` said so in its own comment:
+/// *"On a push, HEAD is the baseline (no-op delta)."* The PR arm was no better over a long-lived
+/// branch: the base branch already contains everything the branch has merged, so **a chain of
+/// per-PR additive checks cannot prove the cumulative diff is additive — each step's baseline is
+/// the previous step's output.**
+///
+/// ## WHICH QUESTION THIS GATE ANSWERS, AND THEREFORE WHICH BASELINE IS RIGHT
+///
+/// The rule is not "has this branch drifted since yesterday." It is the one written on the
+/// artefact's own `_meta` line and repeated in [`classify::FROZEN_MSG`]: *"FROZEN at 1.5.3,
+/// additive-only **forever**"* — a claim about the **published** grammar, i.e. that **every
+/// `config.yaml` an operator has ever shipped still parses**. A question about the published
+/// contract can only be answered against the published contract.
+///
+/// So the baseline is a RELEASED TAG, and specifically the **earliest** one that carries the
+/// fingerprint, which is the freeze point the rule names:
+///
+/// * `v1.5.3` is where the fingerprint was first committed — `v1.5.2` and earlier carry no
+///   snapshot at all, so no older baseline exists to have.
+/// * It is external and unmodifiable: tagged 2026-08-08, twelve days before `v1.5.5` and well
+///   before the 1.6.0 window opened. Nothing in this release can edit it.
+/// * **A freeze point is a CONSTANT, not a pointer.** This is the decisive property and the reason
+///   it is not "the latest release tag". A baseline that ratchets forward at each release lets this
+///   release's removals become the next release's baseline — the same circularity, merely slower.
+///   `additive-only forever` is only literally true if the yardstick never moves.
+/// * Choosing it costs nothing over `v1.5.5`: the snapshot is **byte-identical at `v1.5.3`,
+///   `v1.5.4` and `v1.5.5`** (sha256 `09291129a4ec…`, 75 types / 247 fields at all three), so the
+///   freeze demonstrably held across the released line and the two candidates give the same answer.
+///   `v1.5.3` is chosen because it is the one the rule names, not because it is stricter.
+///
+/// **A stale baseline here cannot become a bypass.** The usual objection to a pinned ref is that it
+/// rots silently; that failure mode needs the pin to move *forward*. This one only ever gets older
+/// relative to the tree, which makes the check strictly stronger over time, never weaker. If the
+/// ref does not resolve — a shallow clone with no tags — [`row_baseline`] is RED and never a skip.
+pub const DEFAULT_BASELINE_REF: &str = "v1.5.3";
+
+/// EVERY HOME THE COMMITTED FINGERPRINT HAS EVER HAD, newest first.
+///
+/// A baseline older than the last time the file moved is read with `git show <ref>:<path>`, and at
+/// that ref the path is whatever it was THEN. The fingerprint has been relocated twice —
+/// `crates/busbar/` → `crates/busbar-core/` → `crates/busbar-kernel/` — so asking `v1.5.3` for
+/// today's path gets "no such file", which [`row_baseline`] correctly refuses as a baseline
+/// carrying no snapshot. Refusing there would make an honest external baseline *unusable* and push
+/// the gate straight back to a ref that happens to share today's layout, i.e. back to `HEAD`.
+///
+/// **THIS IS AN ENUMERATION, NOT A FALLBACK.** The distinction matters, because a silent fallback
+/// to a degenerate baseline is the same defect this constant exists to repair, merely wearing a
+/// guard. So: every home is PROBED, the row NAMES the one that answered, zero homes is RED
+/// ([`BaselineState::NoSnapshot`]), and **two homes at one ref is also RED**
+/// ([`BaselineState::AmbiguousHome`]) rather than "take the first" — picking a winner between two
+/// live fingerprints would freeze one home's grammar and quietly un-freeze the other's, which is
+/// the same coverage hole [`schema::plane_dir`] already refuses for the plane grammars.
+///
+/// The first entry IS [`schema::SNAPSHOT`], by construction rather than by copy, so the census can
+/// never fall out of step with the path the gate actually renders to.
+pub const SNAPSHOT_HOMES: &[&str] = &[
+    // today, since the W4 core-absorption folded `busbar-core` into `busbar-kernel`.
+    schema::SNAPSHOT,
+    // the intermediate home, while the config module lived in `busbar-core`.
+    "crates/busbar-core/src/config/config-schema.snapshot.json",
+    // the original home and the one the RELEASED TAGS carry: v1.5.3, v1.5.4, v1.5.5.
+    "crates/busbar/src/config/config-schema.snapshot.json",
+];
 
 /// The regen command, spelled once so every row that suggests it suggests the same thing.
 const REGEN: &str = "cargo xtask gate config-schema --write";
@@ -197,10 +278,15 @@ fn first_difference(committed: &str, fresh: &str) -> String {
 ///    baseline is not a baseline.
 fn row_baseline(state: &BaselineState) -> Row {
     match state {
-        BaselineState::Ok { r, types } => Row::pass(
+        BaselineState::Ok { r, path, types } => Row::pass(
             ROW_BASELINE,
-            "the additive-only baseline was read from a git ref, not the working tree",
-            format!("baseline '{r}' carries {} with {types} type(s)", schema::SNAPSHOT),
+            "the additive-only baseline was read from a RELEASED TAG, not the tree being judged",
+            format!(
+                "baseline '{r}' carries {path} with {types} type(s). The default is the freeze \
+                 point the rule names ({DEFAULT_BASELINE_REF}); it is external to this release and \
+                 it does not move, so the delta below is measured against something this work did \
+                 not write."
+            ),
         ),
         BaselineState::Bootstrap { r } => Row::pass(
             ROW_BASELINE,
@@ -225,45 +311,84 @@ fn row_baseline(state: &BaselineState) -> Row {
         ),
         BaselineState::NoSnapshot { r } => Row::fail(
             ROW_BASELINE,
-            "the baseline ref resolves but carries NO snapshot",
+            "the baseline ref resolves but carries NO snapshot at any of its known homes",
             format!(
-                "baseline ref '{r}' resolves but carries NO {}. The additive check is the whole \
-                 gate, and it did not run — so nothing was measured. A ref that resolves without \
-                 the snapshot is the same free bypass as a ref that does not resolve at all: any \
-                 commit from before the snapshot landed grants it. Pointing the gate somewhere else \
-                 is not a fix. The ONE legitimate case is declared, not inferred: \
+                "baseline ref '{r}' resolves but carries no config-schema fingerprint at any of \
+                 the {} home(s) it has ever had: {}. The additive check is the whole gate, and it \
+                 did not run — so nothing was measured. A ref that resolves without the snapshot \
+                 is the same free bypass as a ref that does not resolve at all: any commit from \
+                 before the snapshot landed grants it (it first appears at {DEFAULT_BASELINE_REF}). \
+                 Pointing the gate somewhere else is not a fix. If the file has MOVED AGAIN, add \
+                 the new home to SNAPSHOT_HOMES — that census is what lets an older tag be read at \
+                 the path it used then. The ONE legitimate case is declared, not inferred: \
                  CONFIG_SCHEMA_BOOTSTRAP=1.",
-                schema::SNAPSHOT
+                SNAPSHOT_HOMES.len(),
+                SNAPSHOT_HOMES.join(", ")
             ),
         ),
-        BaselineState::Unparseable { r, why } => Row::fail(
+        BaselineState::AmbiguousHome { r, paths } => Row::fail(
+            ROW_BASELINE,
+            "the baseline ref carries the fingerprint at MORE THAN ONE home",
+            format!(
+                "baseline ref '{r}' carries a config-schema fingerprint at {} homes at once: {}. \
+                 The gate will not pick a winner. Judging against one of them would freeze that \
+                 home's grammar and leave the other's silently un-frozen — a coverage hole that \
+                 reads exactly like a clean run, which is the same refusal the plane-grammar \
+                 resolver already makes for zero homes and two. Delete the stale copy, or name \
+                 which one is the fingerprint.",
+                paths.len(),
+                paths.join(", ")
+            ),
+        ),
+        BaselineState::Unparseable { r, path, why } => Row::fail(
             ROW_BASELINE,
             "the baseline snapshot is not readable JSON",
-            format!("baseline '{r}' carries a {} that does not parse: {why}", schema::SNAPSHOT),
+            format!("baseline '{r}' carries a {path} that does not parse: {why}"),
         ),
-        BaselineState::Empty { r, types } => Row::fail(
+        BaselineState::Empty { r, path, types } => Row::fail(
             ROW_BASELINE,
             "the baseline carries an EMPTY type map — every delta would read as additive",
             format!(
-                "baseline '{r}' carries {} with {types} type(s), under the floor of \
+                "baseline '{r}' carries {path} with {types} type(s), under the floor of \
                  {MIN_BASELINE_TYPES}. The classifier reads the baseline's type map, and against an \
                  empty one EVERY type in the fresh render is a `new type/section added` — which is \
                  ADDITIVE, which is GREEN. A truncated or hand-emptied baseline is therefore a \
                  total, silent bypass of the additive rule that looks exactly like a clean run. An \
-                 empty baseline is not a baseline.",
-                schema::SNAPSHOT
+                 empty baseline is not a baseline."
             ),
         ),
     }
 }
 
 enum BaselineState {
-    Ok { r: String, types: usize },
-    Bootstrap { r: String },
-    Unresolvable { r: String },
-    NoSnapshot { r: String },
-    Unparseable { r: String, why: String },
-    Empty { r: String, types: usize },
+    Ok {
+        r: String,
+        path: String,
+        types: usize,
+    },
+    Bootstrap {
+        r: String,
+    },
+    Unresolvable {
+        r: String,
+    },
+    NoSnapshot {
+        r: String,
+    },
+    AmbiguousHome {
+        r: String,
+        paths: Vec<String>,
+    },
+    Unparseable {
+        r: String,
+        path: String,
+        why: String,
+    },
+    Empty {
+        r: String,
+        path: String,
+        types: usize,
+    },
 }
 
 fn row_additive(outcome: &classify::Outcome) -> Row {
@@ -472,11 +597,30 @@ impl Gate for ConfigSchemaGate {
 
 /// Resolve the baseline ref and read the snapshot it carries. Returns the row state and, when there
 /// is one, the parsed baseline the classifier gets.
+///
+/// THE REF IS ASKED FOR EVERY HOME THE FINGERPRINT HAS EVER HAD, and the answer is a census rather
+/// than a first-match: see [`SNAPSHOT_HOMES`] for why zero and two are both hard errors and why
+/// "take the first" is the defect wearing a guard.
 fn read_baseline(cx: &Ctx, r: &str) -> (BaselineState, Option<Value>) {
     if !cx.git_ref_resolves(r) {
         return (BaselineState::Unresolvable { r: r.to_string() }, None);
     }
-    let Ok(text) = cx.git_show(r, schema::SNAPSHOT) else {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for home in SNAPSHOT_HOMES {
+        if let Ok(text) = cx.git_show(r, home) {
+            found.push(((*home).to_string(), text));
+        }
+    }
+    if found.len() > 1 {
+        return (
+            BaselineState::AmbiguousHome {
+                r: r.to_string(),
+                paths: found.into_iter().map(|(p, _)| p).collect(),
+            },
+            None,
+        );
+    }
+    let Some((path, text)) = found.pop() else {
         return if cx.env().config_bootstrap {
             (BaselineState::Bootstrap { r: r.to_string() }, None)
         } else {
@@ -489,6 +633,7 @@ fn read_baseline(cx: &Ctx, r: &str) -> (BaselineState, Option<Value>) {
             return (
                 BaselineState::Unparseable {
                     r: r.to_string(),
+                    path,
                     why: e.to_string(),
                 },
                 None,
@@ -500,6 +645,7 @@ fn read_baseline(cx: &Ctx, r: &str) -> (BaselineState, Option<Value>) {
         return (
             BaselineState::Empty {
                 r: r.to_string(),
+                path,
                 types,
             },
             None,
@@ -508,6 +654,7 @@ fn read_baseline(cx: &Ctx, r: &str) -> (BaselineState, Option<Value>) {
     (
         BaselineState::Ok {
             r: r.to_string(),
+            path,
             types,
         },
         Some(doc),
