@@ -551,3 +551,42 @@ missing-code. By certainty: VERIFIED 12, ADJUDICATE 1 (X-2307), PARK 0.
 - `crates/busbar/src/root/durability.rs:699-712` and `crates/busbar/src/main.rs:913-941` — I
   traced these to clear X-2309 of being a durability hole. The store-backed path is real
   (`adapter.shipper()`); the `NullShipper` path is the documented no-store fallback.
+
+## A hole in the sweep's own denominator, found from inside this slice
+
+The contract's denominator is `git ls-files`. Two source files in a crate I swept are
+**compiled but untracked**, so they are in no slice and in nobody's 2,068:
+
+```
+$ grep -nE "^mod " crates/busbar-kernel-identity/src/tests/mod.rs
+6:mod cache_tests;   7:mod carrier_tests;   8:mod chain_tests;   9:mod exchange_tests;
+10:mod hardening;    11:mod invariants;     12:mod unit_tests;
+$ git ls-files crates/busbar-kernel-identity/src/tests/
+cache_tests.rs  carrier_tests.rs  chain_tests.rs  exchange_tests.rs  mod.rs  unit_tests.rs
+                                           # hardening.rs and invariants.rs are absent
+$ grep -cE "^test tests::(hardening|invariants)::" .sweep/S14-test.log
+14                                         # they compile, and 14 of the crate's 97 tests are theirs
+$ git status --porcelain crates/busbar-kernel-identity/src/tests/mod.rs
+ M crates/busbar-kernel-identity/src/tests/mod.rs
+```
+
+Same shape one crate over: `crates/busbar-kernel-scope/src/tests/mod.rs` (also ` M`) declares
+`mod bitset;` and `mod narrowing;`, and `git ls-files crates/busbar-kernel-scope/src/tests/`
+returns only `hook_veto_tests.rs` and `mod.rs`. File timestamps put all four at 2026-09-22
+19:13-19:18, i.e. uncommitted work from a prior session rather than an agent mid-flight.
+
+Two consequences, both outside my slice and neither acted on:
+
+1. **Unswept auth code.** `hardening.rs` and `invariants.rs` are the identity crate's
+   cache-hardening and chain-invariant batteries — `the_revocation_gate_can_refuse_but_never_admit`,
+   `a_reject_at_any_position_denies_whatever_would_have_admitted_behind_it`,
+   `a_non_cacheable_modules_pass_is_never_committed_even_when_the_chain_identifies` and eleven
+   more. They are auth instruments, they pass, and no slice's denominator contains them.
+2. **A clean checkout does not build.** `mod hardening;` in a tracked `mod.rs` naming an
+   untracked file is a compile error on a fresh clone. The modification to `mod.rs` is itself
+   uncommitted, so nothing is broken on `origin` today — but committing the `mod.rs` change
+   without `git add`ing the four new files would break `busbar-kernel-identity` and
+   `busbar-kernel-scope` for CI and for every other worktree.
+
+Recommended: `git add` the four files before the next commit that touches either `mod.rs`, and
+re-derive the sweep denominator afterwards so the 14 auth tests land in a slice.
