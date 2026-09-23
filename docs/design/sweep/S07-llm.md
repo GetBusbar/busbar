@@ -4,10 +4,14 @@ Slice: `crates/busbar-llm` (83 files). Denominator: `/Users/matthew/Developer/Ge
 X-id block: X-1600 .. X-1699.
 
 All paths in the table below are repo-relative. The slice was swept in three passes over disjoint
-thirds of the denominator (21 + 31 + 31 = 83). **Every one of the 8 FINDING rows was independently
-re-run and re-verified at the top level before being written here** — no finding in this report rests
-on a delegated claim alone. Two delegated claims did not survive that re-verification and were
-corrected; both corrections are recorded in the rows they affect.
+thirds of the denominator (21 + 31 + 31 = 83). **Every one of the original 8 FINDING rows was
+independently re-run and re-verified at the top level before being written here** — no finding in this
+report rests on a delegated claim alone. Two delegated claims did not survive that re-verification and
+were corrected; both corrections are recorded in the rows they affect. A ninth finding (X-1605,
+`translate_offload_tests.rs`) was added afterward by a second independent verification pass over the
+`engine/attempt/` + `engine/exhaustion/` + `engine_tests/` third of this same denominator, which found
+the same X-1600 pattern independently before discovering this file already existed and adding only its
+one net-new, non-overlapping finding.
 
 ## Standing facts this slice established before any file was judged
 
@@ -140,7 +144,7 @@ every `unit/` verdict below was judged on that basis.
 | crates/busbar-llm/src/engine/tests/signal_catalog_tests.rs | CLEAN | Declared engine/mod.rs:233. Real declared-vs-undeclared signal gating via a capturing policy. | - |
 | crates/busbar-llm/src/engine/tests/stop_sequence_cap_degrade_tests.rs | CLEAN | Declared engine/mod.rs:236. Precise value assertion: `stop_sequences == ["a","b","c","d","e"]`, clamped to Cohere's cap of 5. | - |
 | crates/busbar-llm/src/engine/tests/stream_no_usage_bills_zero_tests.rs | CLEAN | Declared engine/mod.rs:239. Read 180L over 6 dialects: asserts `usage.tokens==0`, `spend_cents==0` AND `row.requests==1` (a non-zero component in the same test), against a LIVE rate card (input_utok=2.0/output_utok=6.0) so a broken zero-guard would be caught. Not instrument-blind. | - |
-| crates/busbar-llm/src/engine/tests/translate_offload_tests.rs | CLEAN | Declared engine/mod.rs:242. Threshold claim cross-checked: `git grep -n TRANSLATE_OFFLOAD_THRESHOLD` → attempt/assemble.rs:18 `= 128 * 1024`, matching the test's 300 KiB body / 128 KiB assertion. | - |
+| crates/busbar-llm/src/engine/tests/translate_offload_tests.rs | FINDING | Declared engine/mod.rs:242. Read 94L in full. `git grep -n TRANSLATE_OFFLOAD_THRESHOLD -- crates/` → 3 hits total: decl at assemble.rs:18, the branch at assemble.rs:167, and this file's line 4 — in prose only, never imported or referenced by test code. Positive control: `AT_CAPACITY_RETRY_AFTER_SECS` (used the same way elsewhere) IS imported by its own test file. | X-1605 |
 | crates/busbar-llm/src/engine/tests/usage_tap_tests.rs | CLEAN | Declared engine/mod.rs:245. 8 tests. Money-critical and genuinely two-sided: `test_nonstream_token_fee_uses_charged_at_window_not_clock` (1000 tokens in the right window AND `== 0` in the wrong one), `..._saturates_no_panic_on_overflow` (u64::MAX+5), `ledger_prices_an_aliased_lane_at_the_rate_card` (`spend_cents == 100` exact). | - |
 | crates/busbar-llm/src/engine/tests/wire_tests.rs | FINDING | `git grep -n 'path = "tests/wire_tests.rs"' engine/wire.rs` → :849 reachable. Real 2×2 gate matrix + a golden `client_fault_kind` table cross-checked against `StatusClass`. Same busbar-core grep → :4 names `crates/busbar-core/src/proxy/wire.rs`, a deleted path. | X-1600 |
 | crates/busbar-llm/src/engine/wire.rs | CLEAN | Production scrutiny. `grep -n "\.unwrap()\|f64\|\.expect(\|panic!\|unreachable!"` → 0 hits. Money-vocabulary grep hits only `KIND_RATE_LIMIT` and doc prose — no money arithmetic here. Every `pub(crate)` item has a non-test caller (spot-verified `shape_cross_protocol_error` ← attempt/classify.rs:151, `client_fault_kind` ← :236). Every serialization-failure path returns a shaped error, never an empty body. | - |
@@ -331,13 +335,55 @@ outside the S07-llm denominator.
 ACTION:    Owner ruling. Either record the nine against 1.5.5, or mark them explicitly
            unwitnessable with a reason in `cells.json` so the gap stops reading as an accident.
 
+### X-1605 · `translate_offload_tests.rs` names the huge-body offload arm but never observes which arm ran
+CLASS:     instrument-blind
+CERTAINTY: VERIFIED
+EVIDENCE:
+```
+$ git grep -n "TRANSLATE_OFFLOAD_THRESHOLD" -- crates/
+crates/busbar-llm/src/engine/attempt/assemble.rs:18:pub(crate) const TRANSLATE_OFFLOAD_THRESHOLD: usize = 128 * 1024;
+crates/busbar-llm/src/engine/attempt/assemble.rs:167:    let translated = if hop.body.len() >= TRANSLATE_OFFLOAD_THRESHOLD {
+crates/busbar-llm/src/engine/tests/translate_offload_tests.rs:4://! bodies at/above `TRANSLATE_OFFLOAD_THRESHOLD` run the SAME
+$ grep -n "TRANSLATE_OFFLOAD_THRESHOLD\|assert" crates/busbar-llm/src/engine/tests/translate_offload_tests.rs
+4:...TRANSLATE_OFFLOAD_THRESHOLD...                      # prose only, never `use`d or compared against
+63:    assert!(huge.len() >= 128 * 1024);                 # a hardcoded literal, not the constant
+75:    assert_eq!(resp.status().as_u16(), 200, "a >threshold body must translate on the blocking pool and forward normally");
+93:    assert_eq!(resp.status().as_u16(), 200);
+$ git grep -c "\.unwrap()" -- 'crates/busbar-llm/src/engine/attempt/tests/classify.rs'
+2                                       # POSITIVE CONTROL: this grep shape does find things
+$ git grep -n "AT_CAPACITY_RETRY_AFTER_SECS" -- crates/
+crates/busbar-llm/src/engine/exhaustion/mod.rs:37:...
+crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs:...  # POSITIVE CONTROL: a sibling constant IS
+                                                                # imported by ITS test file, proving the
+                                                                # grep methodology is not systematically
+                                                                # blind to real usages
+```
+The file's only assertions are `status == 200` for a 300 KiB body and `status == 200` for a small body,
+plus a self-check of the fixture (`huge.len() >= 128 * 1024`) against a hardcoded literal, not against
+`TRANSLATE_OFFLOAD_THRESHOLD` itself. Nothing in the test observes which branch of `assemble.rs:167`
+executed — `translate_request_cross_protocol` is a pure, synchronous function that produces the same
+bytes whether it runs inline or on `spawn_blocking`. Two real regressions leave this test green: (a)
+deleting the `spawn_blocking` offload arm entirely, so every body translates inline — correctness is
+unchanged for this test, but the whole point of the offload (not head-of-line-blocking the
+`current_thread` data-plane reactor on a large translate) silently regresses; (b) raising
+`TRANSLATE_OFFLOAD_THRESHOLD` above 300 KiB, which silently moves this test onto the inline arm while
+its name and doc comment ("THE HUGE-BODY OFFLOAD PROOF") still claim offload coverage. Per the
+CONTRACT's law 1, an instrument that cannot produce a NO for the property it names in its own header is
+not a check for that property — it is a check for a weaker one (`forward_with_pool` returns 200 for a
+large body), correctly passing under a name that promises more.
+ACTION:    Import `TRANSLATE_OFFLOAD_THRESHOLD` and derive the body size from it
+           (`TRANSLATE_OFFLOAD_THRESHOLD + 1`) so a threshold change cannot silently re-route the test
+           off the arm it claims to cover; add one discriminating observable for the arm itself — e.g. a
+           `#[cfg(test)]` counter incremented on the `spawn_blocking` branch of `assemble.rs:177`,
+           asserted `== 1` after the huge body and `== 0` after the small one.
+
 ## TALLY
 ```
 files in slice:  83      (= wc -l /Users/matthew/Developer/GetBusbar/.sweep/S07-llm.txt)
 verdict lines:   83
-CLEAN:           75
-FINDING:          8      rows raised: 5  (X-1600 cited on 5 files; X-1601, X-1602, X-1603 on 1 each;
-                                          X-1604 is out-of-slice and cited on no file row)
+CLEAN:           74
+FINDING:          9      rows raised: 6  (X-1600 cited on 5 files; X-1601, X-1602, X-1603, X-1605 on
+                                          1 each; X-1604 is out-of-slice and cited on no file row)
 DELETABLE:        0
 UNREADABLE:       0
 ```
