@@ -501,3 +501,73 @@ fn request_moves_url_userinfo_into_a_sensitive_basic_auth_header() {
     );
     assert!(req.headers().get(http::header::AUTHORIZATION).is_none());
 }
+
+/// AN OPERATOR'S PROXY PASSWORD MUST NOT REACH THE REFUSAL TEXT.
+///
+/// `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` may carry userinfo (RFC 3986 §3.2.1) and a corporate
+/// deployment routinely puts a service account there —
+/// `https://svcacct:hunter2-Pr0xyP@ss@proxy.corp:3128`. Every refusal arm of `parse_proxy`
+/// interpolated the RAW env value with `{v:?}`, userinfo included, and that string is not
+/// swallowed: `resolve_config` hands it to `install_proxy_tunnel_if_configured`, whose `Err` the
+/// llm engine's runtime build turns into a `panic!` with no `catch_unwind` under it. So the
+/// password reached stderr, the crash report, and whatever CI log collected them — from a value the
+/// operator set once in a systemd unit and never looked at again.
+///
+/// The password here is a planted marker and its ABSENCE is what is asserted; the test never prints
+/// a real credential to fail informatively. `hunter2-Pr0xyP@ss` is unique in this file, so a
+/// regression that reinstates `{v:?}` fails on the very first assertion.
+///
+/// `parse_proxy`'s third arm (`has no host`) is not driven here because it is unreachable: the
+/// scheme arm above it has already established `http`, and `url::Url` refuses an empty host for a
+/// special scheme, so `host_str()` cannot be `None` by the time control gets there. It is redacted
+/// all the same — a defensive arm that leaks when it is finally reached is still a leak.
+#[test]
+fn proxy_env_refusals_never_echo_the_proxy_password() {
+    const PASSWORD: &str = "hunter2-Pr0xyP@ss";
+    // Two values, both carrying the same credential, one per REACHABLE refusal arm:
+    //  * an `https://` proxy — parses fine, refused by the scheme arm (the brief's repro);
+    //  * a bad port — refused by the `url::Url::parse` arm, where a URL-reparsing masker is a
+    //    provable no-op (the parse it would have to do is the parse that just failed), which is
+    //    why the redaction this path uses is textual.
+    let values = [
+        "https://svcacct:hunter2-Pr0xyP@ss@proxy.corp:3128",
+        "http://svcacct:hunter2-Pr0xyP@ss@proxy.corp:notaport",
+    ];
+    for v in values {
+        let err = tunnel::parse_proxy_for_tests(v)
+            .expect_err("both values must be refused, or this test proves nothing");
+        assert!(
+            !err.contains(PASSWORD),
+            "the proxy password must never be interpolated into a refusal, got: {err}"
+        );
+        assert!(
+            !err.contains("hunter2"),
+            "not even a fragment of it, got: {err}"
+        );
+        // What the operator IS owed still arrives: the host they typed, so they can tell WHICH
+        // variable is wrong, and why it was refused.
+        assert!(
+            err.contains("proxy.corp"),
+            "the host is the diagnosis and must survive redaction, got: {err}"
+        );
+    }
+
+    // AND THROUGH THE BOOT PATH THAT ACTUALLY RUNS, so the assertion is anchored to the reachable
+    // call and not only to the parser underneath it: this is the exact function
+    // `install_proxy_tunnel_if_configured` calls, with the env read injected instead of mutated.
+    for slot in 0..3 {
+        let bad = Some(values[0].to_string());
+        let env = tunnel::ProxyEnvValuesForTests {
+            https: (slot == 0).then(|| bad.clone()).flatten(),
+            http: (slot == 1).then(|| bad.clone()).flatten(),
+            all: (slot == 2).then(|| bad.clone()).flatten(),
+            no: None,
+        };
+        let err = tunnel::resolve_config_for_tests(&env)
+            .expect_err("a garbage proxy value must refuse to resolve");
+        assert!(
+            !err.contains(PASSWORD) && !err.contains("hunter2"),
+            "the boot refusal must not carry the proxy password either (slot {slot}), got: {err}"
+        );
+    }
+}
