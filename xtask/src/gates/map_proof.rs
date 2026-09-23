@@ -114,6 +114,12 @@ pub const ROW_UNREFUSED: &str = "map-proof:unrefused";
 /// Every `# ->` payload is in the machine-checkable convention.
 pub const ROW_COUNTABLE: &str = "map-proof:countable";
 
+/// A per-document floor of zero is not a floor: `usize` cannot go under zero, so the comparison
+/// at the extraction row can never produce a NO for that document. This row is the NO — it names
+/// every corpus document whose bound-expectation floor is unenforceable, and it is RED for any
+/// document that prints commands while binding none of its numbers.
+pub const ROW_FLOORED: &str = "map-proof:floored";
+
 /// `map-proof:reproduces/<slug>` — one per source document.
 fn row_reproduces(slug: &str) -> String {
     format!("map-proof:reproduces/{slug}")
@@ -1678,6 +1684,43 @@ impl MapProofGate {
             )
         });
 
+        // --- floored ------------------------------------------------------------------------
+        // A floor of zero passes for every possible tree. Name those documents out loud rather
+        // than letting the extraction row report "every per-document floor met" over them.
+        let unfloored: Vec<String> = CORPUS
+            .iter()
+            .filter(|src| src.floor_expectations == 0)
+            .map(|src| {
+                let bound = c
+                    .extraction
+                    .iter()
+                    .find(|(p, ..)| *p == src.path)
+                    .map(|(_, _, e, _)| *e)
+                    .unwrap_or(0);
+                format!(
+                    "{}: floor_expectations 0 (unenforceable), binds {bound}",
+                    src.path
+                )
+            })
+            .collect();
+        rows.push(if unfloored.is_empty() {
+            Row::pass(
+                ROW_FLOORED,
+                "every map-corpus document carries an enforceable bound-expectation floor",
+                format!(
+                    "{} document(s), every floor_expectations >= 1",
+                    CORPUS.len()
+                ),
+            )
+        } else {
+            Row::fail(
+                ROW_FLOORED,
+                "a bound-expectation floor of zero cannot produce a NO — these documents print \
+                 commands and bind none of their numbers, and the extraction row calls that a pass",
+                listing(&unfloored, 8),
+            )
+        });
+
         // --- bound ---------------------------------------------------------------------------
         let orphans: Vec<String> = c
             .orphans
@@ -1841,6 +1884,7 @@ impl Gate for MapProofGate {
     fn owed(&self) -> Vec<String> {
         let mut v = vec![
             ROW_EXTRACTION.to_string(),
+            ROW_FLOORED.to_string(),
             ROW_BOUND.to_string(),
             ROW_RUNNABLE.to_string(),
             ROW_UNREFUSED.to_string(),
