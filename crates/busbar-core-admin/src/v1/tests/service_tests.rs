@@ -3101,8 +3101,7 @@ mod usage_as_of {
 mod one_recorded_usage_every_surface {
     use super::*;
     use busbar_kernel_ledger::cost::{
-        self as ledger_cost, Author, CardEntryDraft, History, LedgerEntry, RateCard,
-        TierRates,
+        self as ledger_cost, Author, CardEntryDraft, History, LedgerEntry, RateCard, TierRates,
     };
 
     /// The one lane the recorded usage was served on — a metering row's `model`, a card entry's
@@ -3197,9 +3196,7 @@ mod one_recorded_usage_every_surface {
             )
             .expect("the memory store accepts a metering delta");
         }
-        Arc::new(
-            busbar_kernel::governance::GovState::new(store, None).expect("governance builds"),
-        )
+        Arc::new(busbar_kernel::governance::GovState::new(store, None).expect("governance builds"))
     }
 
     /// THE SAME RECORDED USAGE, as the ENFORCEMENT book holds it: one cell per (bucket, window),
@@ -3225,9 +3222,7 @@ mod one_recorded_usage_every_surface {
             busbar_contract::records::RecordStore::put_usage(store.as_ref(), KEY, window, &ledger)
                 .expect("the memory store accepts a usage ledger");
         }
-        Arc::new(
-            busbar_kernel::governance::GovState::new(store, None).expect("governance builds"),
-        )
+        Arc::new(busbar_kernel::governance::GovState::new(store, None).expect("governance builds"))
     }
 
     /// The recorded usage as the ONE FUNCTION's input: one [`LedgerEntry`] per posting, each
@@ -3263,11 +3258,8 @@ mod one_recorded_usage_every_surface {
         let cost = current_cost();
 
         // ── SURFACE 5: THE ONE FUNCTION — money = f(ledger_slice, card_history) (#79).
-        let one = ledger_cost::price_ledger(
-            &one_function_slice(bucket, edit_ms),
-            &hist,
-        )
-        .expect("both postings are priced by the card in force at their own instant");
+        let one = ledger_cost::price_ledger(&one_function_slice(bucket, edit_ms), &hist)
+            .expect("both postings are priced by the card in force at their own instant");
         let one_micros = i64::try_from(one.micros()).expect("the figure fits");
 
         // ── SURFACE 1: GET /api/v1/admin/usage — the METERING book, through the real service.
@@ -3289,13 +3281,7 @@ mod one_recorded_usage_every_surface {
         let gov = enforcement(now);
         //    GET /api/v1/admin/groups/{name}/usage — service_operations.rs:371.
         let group_cents = gov
-            .derived_bucket_usage(
-                &cost,
-                KEY,
-                busbar_kernel::governance::WINDOW_DAY,
-                true,
-                now,
-            )
+            .derived_bucket_usage(&cost, KEY, busbar_kernel::governance::WINDOW_DAY, true, now)
             .expect("the group bucket reads")
             .spend_cents;
         //    GET /api/v1/admin/keys/{id}/usage — keys.rs:1783, via `usage_for` -> WINDOW_TOTAL.
@@ -3338,12 +3324,27 @@ mod one_recorded_usage_every_surface {
 
         eprintln!("\n── ONE RECORDED USAGE: 2 x {TOKENS} input tokens on `{LANE}`, one posting");
         eprintln!("   under a {RATE_EARNED} card and one under a {RATE_CURRENT} card ────────────");
-        row("THE ONE FUNCTION   price(ledger, history)  [micro]", one_micros);
+        row(
+            "THE ONE FUNCTION   price(ledger, history)  [micro]",
+            one_micros,
+        );
         row("GET /admin/usage                           [micro]", admin);
-        row("GET /groups/{g}/usage                      [cents]", group_cents);
-        row("GET /keys/{id}/usage                       [cents]", key_cents);
-        row("the budget gate  try_admit                 [cents]", gate_cents);
-        row("the hook seam    budget_state              [micro]", hook_micros);
+        row(
+            "GET /groups/{g}/usage                      [cents]",
+            group_cents,
+        );
+        row(
+            "GET /keys/{id}/usage                       [cents]",
+            key_cents,
+        );
+        row(
+            "the budget gate  try_admit                 [cents]",
+            gate_cents,
+        );
+        row(
+            "the hook seam    budget_state              [micro]",
+            hook_micros,
+        );
         eprintln!("   ─── the same five, in ONE unit (micro-units) ───");
         row("THE ONE FUNCTION", one_micros);
         row("GET /admin/usage", admin);
@@ -3365,7 +3366,8 @@ mod one_recorded_usage_every_surface {
             "the dated admin read and the one function are the same function"
         );
         assert_eq!(
-            one_micros, 39_000,
+            one_micros,
+            39_000,
             "one posting at the {RATE_EARNED} card it was earned under ({}) plus one at the \
              {RATE_CURRENT} card in force now ({}) — #79 `BUSBAR-1.6.0.md:423`",
             (RATE_EARNED as i64) * (TOKENS as i64),

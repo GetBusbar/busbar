@@ -83,9 +83,7 @@ fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
     let view = head.view();
     let entries = view.entries();
     assert_eq!(
-        entries[0]
-            .card()
-            .fee_unit_price_nanos(),
+        entries[0].card().fee_unit_price_nanos(),
         30_000_000,
         "the entry the first apply wrote was rewritten by a later one"
     );
@@ -94,18 +92,8 @@ fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
         busbar_kernel_ledger::cost::HistorySeq(0),
         "the first entry was renumbered, which unmakes every invoice that named a snapshot"
     );
-    assert_eq!(
-        entries[1]
-            .card()
-            .fee_unit_price_nanos(),
-        110_000_000
-    );
-    assert_eq!(
-        entries[2]
-            .card()
-            .fee_unit_price_nanos(),
-        290_000_000
-    );
+    assert_eq!(entries[1].card().fee_unit_price_nanos(), 110_000_000);
+    assert_eq!(entries[2].card().fee_unit_price_nanos(), 290_000_000);
 }
 
 /// **AN ENTRY PRICES WHAT HAPPENS AFTER IT.** An instant before a reload resolves to the entry

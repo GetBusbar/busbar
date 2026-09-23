@@ -112,10 +112,7 @@ pub fn derive_spend_micros<'a>(
 
 /// The shared accumulation both derivations run: sum nano-units over every (lane, lines) pair,
 /// skipping any lane the present card does not name.
-fn sum_nanos<'a>(
-    card: &RateCard,
-    lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
-) -> u128 {
+fn sum_nanos<'a>(card: &RateCard, lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>) -> u128 {
     let mut nanos: u128 = 0;
     for (lane, lines) in lanes {
         if let Some(rates) = card.lane_rates(lane) {

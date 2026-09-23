@@ -57,8 +57,7 @@
 use std::collections::BTreeMap;
 
 use crate::cost::{
-    price, History, HistorySeq, HistoryView, Posting as CostPosting, Priced,
-    Quantity, Unpriceable,
+    price, History, HistorySeq, HistoryView, Posting as CostPosting, Priced, Quantity, Unpriceable,
 };
 use busbar_contract::caps::MeterClassId;
 

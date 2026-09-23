@@ -363,11 +363,9 @@ impl RateCard {
         if !self.present {
             return Some(LaneRates { classes: None });
         }
-        self.prices
-            .get(lane)
-            .map(|classes| LaneRates {
-                classes: Some(classes),
-            })
+        self.prices.get(lane).map(|classes| LaneRates {
+            classes: Some(classes),
+        })
     }
 }
 

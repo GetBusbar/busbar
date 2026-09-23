@@ -3490,7 +3490,13 @@ fn the_canonical_amend_payload_names_no_currency() {
     );
     // The domain separator and every field that IS signed are still there, in order.
     assert!(text.starts_with("busbar/amend-rate-history/v1\n"), "{text}");
-    for key in ["effective_from=", "effective_until=", "per_request_fee=", "reason=", "rates="] {
+    for key in [
+        "effective_from=",
+        "effective_until=",
+        "per_request_fee=",
+        "reason=",
+        "rates=",
+    ] {
         assert!(text.contains(key), "the payload dropped {key}: {text}");
     }
 }

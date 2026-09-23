@@ -6,8 +6,8 @@
 
 use super::*;
 use crate::cost::{
-    nano_rate, price, Author, CardEntryDraft, History, HistorySeq, LaneClass,
-    Posting, RateCard, STANDARD_TIER_BP,
+    nano_rate, price, Author, CardEntryDraft, History, HistorySeq, LaneClass, Posting, RateCard,
+    STANDARD_TIER_BP,
 };
 
 /// The conversion rounds to NEAREST, half away from zero — it does not truncate. Fifteen
@@ -117,9 +117,7 @@ fn nano_rate_refuses_the_one_value_past_the_ceiling_that_the_max_cast_admits() {
 #[test]
 fn card_carries_integer_rates_per_class() {
     let c = card4("quad", [1.0, 2.0, 0.5, 4.0], 0);
-    let r = c
-        .lane_rates("quad")
-        .expect("the lane is priced");
+    let r = c.lane_rates("quad").expect("the lane is priced");
     assert_eq!(
         (
             r.nanos_per_unit(INPUT),
@@ -142,9 +140,7 @@ fn lane_lookup_has_exactly_three_outcomes() {
         !none.lane_unpriced("anything"),
         "with no card there is nothing to be missing from"
     );
-    let view = none
-        .lane_rates("anything")
-        .expect("a zero-rate view");
+    let view = none.lane_rates("anything").expect("a zero-rate view");
     assert_eq!(view.nanos_per_unit(INPUT), 0);
 
     let present = card("known", 1.0, 1.0, 0);

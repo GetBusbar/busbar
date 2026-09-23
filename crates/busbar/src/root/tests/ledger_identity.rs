@@ -8,8 +8,7 @@ use busbar_contract::caps::{Admittance, Grant};
 use busbar_contract::caps::{Consumption, Hold, Usage, WriteMoney};
 use busbar_contract::caps::{KernelSeal, MeterClassId, PrincipalId, QuantitySource, UsageLine};
 use busbar_kernel_ledger::cost::{
-    derive_spend_micros, price, History, LaneClass, Posting, RateCard,
-    STANDARD_TIER_BP,
+    derive_spend_micros, price, History, LaneClass, Posting, RateCard, STANDARD_TIER_BP,
 };
 use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_kernel_ledger::settle::Ledger;
@@ -156,8 +155,8 @@ fn drive(
             .expect("the usage report is within the line limit");
         let fee_count = u64::from(s.billable);
         let quantities = Posting::from_usage(s.lane, &usage, fee_count, STANDARD_TIER_BP, 0, 0);
-        let posting = price(&view, &quantities)
-            .expect("the opening entry covers instant zero and names USD");
+        let posting =
+            price(&view, &quantities).expect("the opening entry covers instant zero and names USD");
 
         // The books move whatever the snapshot does: the red proof below drops a posting from
         // what the CHECK sees, not from what the ledger did, because the defect it stands in
@@ -249,8 +248,8 @@ fn every_dual_written_row_carries_the_figures_its_posting_moved() {
             0,
             0,
         );
-        let priced = price(&view, &quantities)
-            .expect("the opening entry covers instant zero and names USD");
+        let priced =
+            price(&view, &quantities).expect("the opening entry covers instant zero and names USD");
         let reserved = priced.priced_nanos.min(u128::from(u64::MAX)) as u64;
 
         assert_eq!(

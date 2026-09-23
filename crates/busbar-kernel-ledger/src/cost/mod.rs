@@ -73,8 +73,7 @@ mod view;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
 pub use posting::{
     apply_tier, apply_tier_signed, checked_apply_tier, price, price_at_card, price_fail_closed,
-    CachedPrice, Posting, Priced, PricedLine,
-    Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
+    CachedPrice, Posting, Priced, PricedLine, Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
 };
 pub use project::{
     cents_of, derive_spend_cents, derive_spend_micros, derive_spend_minor, micros_of, minor_of,

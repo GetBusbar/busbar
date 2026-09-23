@@ -19,8 +19,7 @@
 use std::collections::BTreeMap;
 
 use busbar_kernel_ledger::cost::{
-    self as ledger_cost, Author, CardEntryDraft, History, LaneClass, LedgerEntry,
-    RateCard,
+    self as ledger_cost, Author, CardEntryDraft, History, LaneClass, LedgerEntry, RateCard,
 };
 
 /// The lane every case serves on.
@@ -587,10 +586,7 @@ fn d5_an_unpriced_class_on_a_priced_lane_bills_as_free_everywhere_but_the_one_fu
     let units = enforcement_units(&counts);
     let kernel_micros = kernel.derive_spend_micros([(LANE, &units)].into_iter(), 0, true);
 
-    let one = ledger_cost::price_ledger(
-        &[one_entry(&counts, 0, 0)],
-        &History::opening(card, 0),
-    );
+    let one = ledger_cost::price_ledger(&[one_entry(&counts, 0, 0)], &History::opening(card, 0));
 
     row(
         "ledger  derive_spend_micros             [micro-units]",
@@ -636,18 +632,14 @@ fn d6_the_tier_multiplier_is_applied_by_the_lookup_and_ignored_by_every_derivati
             .expect("a report within the line bound")
     };
     let posting = ledger_cost::Posting::from_usage(LANE, &usage, 0, half, 0, 0);
-    let lookup = ledger_cost::price(&history.current(), &posting)
-        .expect("the lookup prices");
+    let lookup = ledger_cost::price(&history.current(), &posting).expect("the lookup prices");
 
     let lines = usage_lines(&counts);
     let derived =
         ledger_cost::derive_spend_micros(&card, [(LANE, &lines[..])].into_iter(), 0, true);
 
-    let one = ledger_cost::price_ledger(
-        &[one_entry(&counts, 0, 0).with_tier(half)],
-        &history,
-    )
-    .expect("prices");
+    let one = ledger_cost::price_ledger(&[one_entry(&counts, 0, 0).with_tier(half)], &history)
+        .expect("prices");
 
     row(
         "cost::price  (lookup, tier applied)     [micro-units]",
@@ -814,11 +806,8 @@ fn d9_a_sub_day_back_dated_correction_is_a_no_op_for_the_admin_read() {
     let admin_figure = admin_row_at_card(admin_card, &alias_seam(), LANE, &counts, 0);
 
     // ── WHAT #79 SAYS: the posting's OWN instant.
-    let one = ledger_cost::price_ledger(
-        &[one_entry(&counts, arrived_ms, 0)],
-        &history,
-    )
-    .expect("prices");
+    let one =
+        ledger_cost::price_ledger(&[one_entry(&counts, arrived_ms, 0)], &history).expect("prices");
 
     row(
         "GET /admin/usage  (resolves at bucket start)         ",
@@ -885,13 +874,9 @@ fn e_every_implementation_agrees_on_the_case_they_were_all_written_for() {
         0,
         0,
     );
-    let lookup = ledger_cost::price(&history.current(), &posting)
-        .expect("the lookup prices");
-    let one = ledger_cost::price_ledger(
-        &[one_entry(&counts, 0, requests)],
-        &history,
-    )
-    .expect("prices");
+    let lookup = ledger_cost::price(&history.current(), &posting).expect("the lookup prices");
+    let one =
+        ledger_cost::price_ledger(&[one_entry(&counts, 0, requests)], &history).expect("prices");
 
     row(
         "ledger  derive_spend_micros             [micro-units]",
@@ -978,11 +963,8 @@ fn e_billing_off_is_zero_everywhere_and_the_fee_still_posts() {
         ledger_cost::derive_spend_micros(&card, [(LANE, &lines[..])].into_iter(), 3, true);
     let kernel_micros = kernel.derive_spend_micros([(LANE, &units)].into_iter(), 3, true);
     let door_cents = door.derive_spend_cents([(LANE, &units)].into_iter(), 3, true);
-    let one = ledger_cost::price_ledger(
-        &[one_entry(&counts, 0, 3)],
-        &History::opening(card, 0),
-    )
-    .expect("an absent card prices everything at nothing");
+    let one = ledger_cost::price_ledger(&[one_entry(&counts, 0, 3)], &History::opening(card, 0))
+        .expect("an absent card prices everything at nothing");
 
     row(
         "ledger  derive_spend_micros             [micro-units]",

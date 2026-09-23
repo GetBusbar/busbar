@@ -7,8 +7,8 @@
 
 use super::*;
 use crate::cost::{
-    price, price_fail_closed, Author, CachedPrice, CardEntryDraft, History,
-    HistorySeq, LaneClass, Posting, RateCard, Unpriceable, STANDARD_TIER_BP,
+    price, price_fail_closed, Author, CachedPrice, CardEntryDraft, History, HistorySeq, LaneClass,
+    Posting, RateCard, Unpriceable, STANDARD_TIER_BP,
 };
 
 /// A card pricing one class on one lane at a named rate.
@@ -91,11 +91,9 @@ fn appending_assigns_the_next_seq_and_rewrites_nothing() {
     // And the rate the first entry holds is still the first entry's rate.
     let at_zero = history.snapshot(HistorySeq(0));
     assert_eq!(
-        price(
-            &at_zero,
-            &posting_at("m", 100, &[(INPUT, 1_000)]))
-        .expect("entry zero is open-ended")
-        .pre_tier_nanos,
+        price(&at_zero, &posting_at("m", 100, &[(INPUT, 1_000)]))
+            .expect("entry zero is open-ended")
+            .pre_tier_nanos,
         1_000_000,
     );
 }
@@ -174,10 +172,7 @@ fn a_snapshot_answers_the_same_way_forever() {
     );
 
     // Asked again, byte for byte the same.
-    assert_eq!(
-        price(&at_one, &posting).expect("covered"),
-        older
-    );
+    assert_eq!(price(&at_one, &posting).expect("covered"), older);
 }
 
 /// **A HOLE IS A REFUSAL, NOT A ZERO.** An instant no entry covers cannot be priced, and the
@@ -268,10 +263,7 @@ fn a_corrupted_cache_never_becomes_the_bill() {
     assert_eq!(honest.priced_nanos, 2_000_000);
     posting.cached = Some(honest.as_cache(HistorySeq(0)));
     assert!(!posting.cache_diverges(&honest));
-    assert_eq!(
-        posting.priced_nanos(&view),
-        Ok(2_000_000)
-    );
+    assert_eq!(posting.priced_nanos(&view), Ok(2_000_000));
 
     // A hundredfold corruption of the stored figure.
     posting.cached = Some(CachedPrice {
@@ -324,10 +316,7 @@ fn the_fail_closed_posture_refuses_an_unpriced_lane_without_a_second_arithmetic(
     );
     // A lane the card DOES name passes both postures with the same answer.
     let known = posting_at("known", 0, &[(INPUT, 1_000_000)]);
-    assert_eq!(
-        price_fail_closed(&view, &known),
-        price(&view, &known)
-    );
+    assert_eq!(price_fail_closed(&view, &known), price(&view, &known));
 }
 
 /// A snapshot above the head sees the whole history rather than refusing: the refusal for a seq

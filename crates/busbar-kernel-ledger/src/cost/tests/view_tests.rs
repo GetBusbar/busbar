@@ -12,8 +12,7 @@ use busbar_contract::count::Count;
 
 use crate::cost::{
     derive_spend_cents, derive_spend_micros, price_exact, price_in_view, price_ledger, Author,
-    CardEntryDraft, History, LaneClass, LedgerEntry, Money, MoneyError, RateCard,
-    STANDARD_TIER_BP,
+    CardEntryDraft, History, LaneClass, LedgerEntry, Money, MoneyError, RateCard, STANDARD_TIER_BP,
 };
 
 use super::{lines, CACHE_READ, INPUT, OUTPUT};
@@ -112,11 +111,8 @@ fn a_known_ledger_times_a_known_card_history_is_a_known_figure() {
 
 #[test]
 fn the_known_figure_is_exact_at_scale_six() {
-    let exact = price_exact(
-        &known_ledger(),
-        &known_history().current(),
-    )
-    .expect("the known slice prices");
+    let exact =
+        price_exact(&known_ledger(), &known_history().current()).expect("the known slice prices");
     // Nothing was dropped by the single projection: the scale-15 accumulator is a whole number of
     // scale-6 steps. A figure that cannot say this about itself is a figure with a rounding in it.
     assert_eq!(exact % 1_000_000_000, 0);
@@ -291,7 +287,7 @@ fn the_same_slice_against_the_same_history_is_one_figure_with_no_scale_to_choose
     // The minor projection has one divisor and it is the constant, not a parameter.
     assert_eq!(
         once.minor(),
-        once.micros() / i128::try_from(crate::cost::MICROS_PER_CENT).expect("fits")
+        once.micros() / i128::from(crate::cost::MICROS_PER_CENT)
     );
 }
 
@@ -349,8 +345,7 @@ fn it_equals_the_posting_lookup_on_the_same_quantities() {
     let history = History::opening(card, 0);
     let usage = super::usage(&[(INPUT, 1_000), (OUTPUT, 250), (CACHE_READ, 7_000)]);
     let posting = crate::cost::Posting::from_usage(LANE, &usage, 3, STANDARD_TIER_BP, 0, 0);
-    let lookup = crate::cost::price(&history.current(), &posting)
-        .expect("the lookup prices");
+    let lookup = crate::cost::price(&history.current(), &posting).expect("the lookup prices");
 
     let slice = vec![LedgerEntry::new(LANE, 0)
         .with_whole(INPUT, 1_000)
@@ -399,12 +394,7 @@ fn a_fraction_of_a_micro_unit_is_kept_across_lines_not_floored_per_line() {
     let slice = vec![LedgerEntry::new(LANE, 0)
         .with_whole(INPUT, 1)
         .with_whole(OUTPUT, 1)];
-    assert_eq!(
-        price_ledger(&slice, &history)
-            .expect("prices")
-            .micros(),
-        1
-    );
+    assert_eq!(price_ledger(&slice, &history).expect("prices").micros(), 1);
 }
 
 #[test]
@@ -417,16 +407,12 @@ fn a_seconds_reading_where_milliseconds_belong_resolves_to_the_wrong_card() {
     let secs = vec![LedgerEntry::new(LANE, 2_000).with_whole(OUTPUT, 1_000)];
 
     assert_eq!(
-        price_ledger(&ms, &history)
-            .expect("prices")
-            .micros(),
+        price_ledger(&ms, &history).expect("prices").micros(),
         4_000,
         "card B, correctly"
     );
     assert_eq!(
-        price_ledger(&secs, &history)
-            .expect("prices")
-            .micros(),
+        price_ledger(&secs, &history).expect("prices").micros(),
         16_000,
         "card A, because 2,000 milliseconds is before card B's instant"
     );

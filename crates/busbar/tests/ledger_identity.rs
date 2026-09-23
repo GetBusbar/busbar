@@ -55,9 +55,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::caps::{
     Consumption, Grant, KernelSeal, MeterClassId, QuantitySource, Usage, UsageLine,
 };
-use busbar_kernel_ledger::cost::{
-    price, History, LaneClass, Posting, RateCard, STANDARD_TIER_BP,
-};
+use busbar_kernel_ledger::cost::{price, History, LaneClass, Posting, RateCard, STANDARD_TIER_BP};
 
 // The binary has no library target, so the composition root's identity check is reached the only
 // way an integration test can reach it: by compiling the same source file into this test binary.

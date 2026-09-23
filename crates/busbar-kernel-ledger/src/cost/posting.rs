@@ -436,10 +436,7 @@ pub fn price_at_card(
 /// read reports an unpriced lane per row so an operator can see it, and a settlement that refuses
 /// unpriced usage fails closed rather than serving for free. Neither posture is ever a SILENT
 /// nothing: the read says it on the line, and settlement says it here.
-pub fn price_fail_closed(
-    view: &HistoryView<'_>,
-    posting: &Posting,
-) -> Result<Priced, Unpriceable> {
+pub fn price_fail_closed(view: &HistoryView<'_>, posting: &Posting) -> Result<Priced, Unpriceable> {
     let priced = price(view, posting)?;
     if priced.lane_unpriced {
         return Err(Unpriceable::LaneUnpriced {

@@ -393,7 +393,11 @@ pub fn price_exact(ledger: &[LedgerEntry], view: &HistoryView<'_>) -> Result<i12
         let tiered_magnitude =
             checked_apply_tier(amount.unsigned_abs(), tier_bp).ok_or(MoneyError::Overflow)?;
         let narrowed = i128::try_from(tiered_magnitude).map_err(|_| MoneyError::Overflow)?;
-        let tiered = if amount.is_negative() { -narrowed } else { narrowed };
+        let tiered = if amount.is_negative() {
+            -narrowed
+        } else {
+            narrowed
+        };
         total = total.checked_add(tiered).ok_or(MoneyError::Overflow)?;
     }
     Ok(total)

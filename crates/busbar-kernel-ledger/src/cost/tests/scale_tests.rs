@@ -100,8 +100,8 @@ fn a_fee_of_nothing_is_an_explicit_zero_row_and_a_named_fee_bills() {
     let mut charged = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 5.0)], 0);
     charged.set_fee(3);
     assert_eq!(charged.fee(), 3);
-    let priced_fee = price_ledger(&slice, &History::opening(charged, 0))
-        .expect("the card names a fee");
+    let priced_fee =
+        price_ledger(&slice, &History::opening(charged, 0)).expect("the card names a fee");
     assert_eq!(priced_fee.to_decimal_string(), "0.125000");
 
     // A NEGATIVE configured fee clamps at resolve, once, and can never credit a budget back
