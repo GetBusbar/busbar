@@ -95,6 +95,21 @@ pub const ROW_DISJOINT: &str = "sweep-coverage:disjoint";
 /// difference between a finished sweep and a sweep that finished once.
 pub const ROW_REACHABILITY: &str = "sweep-coverage:reachability-axis";
 
+/// THE HOLE IN THE DENOMINATOR, AND WHY IT IS THE WORST KIND.
+///
+/// `git ls-files` lists TRACKED files. A file that is untracked but *declared* by a `mod` or
+/// `#[path]` statement compiles here and does not exist on a clean checkout — so it is invisible
+/// to this gate's denominator, invisible to every other gate that walks git, and present in every
+/// local test run. The tree passes on the machine that wrote it and cannot build anywhere else.
+///
+/// This is not hypothetical. At the time this row was written five such files existed, and one of
+/// them was `xtask/src/gates/kind_abi_lane.rs` — declared at `gates/mod.rs:40` and REGISTERED as a
+/// gate at `:2467`. On a fresh clone `xtask` does not compile, which means *no gate runs at all*,
+/// which means the entire harness that proves this release is absent from the release.
+///
+/// A completeness proof that cannot see a compiling file is not complete. This row closes it.
+pub const ROW_TRACKED: &str = "sweep-coverage:compiles-and-tracked";
+
 /// The prior sweep's document and its closed verdict vocabulary.
 pub const PRIOR_SWEEP: &str = "docs/design/1.6.0-file-verdicts.md";
 pub const PRIOR_VERDICTS: &[&str] = &[
@@ -402,6 +417,52 @@ impl SweepCoverageGate {
             )
         });
 
+        // --- compiles-and-tracked ------------------------------------------------------------
+        // An untracked file that some module declares is a file that exists here and nowhere else.
+        let untracked = cx
+            .git_lines(&["ls-files", "--others", "--exclude-standard", "*.rs"])
+            .unwrap_or_default();
+        let mut ghosts: Vec<String> = Vec::new();
+        for f in untracked {
+            let f = f.trim();
+            if f.is_empty() {
+                continue;
+            }
+            let (dir, file) = match f.rsplit_once('/') {
+                Some((d, b)) => (d, b),
+                None => ("", f),
+            };
+            let stem = file.trim_end_matches(".rs");
+            // Search the sibling directory and its parent for a declaration of this module.
+            let mut declared_in: Option<String> = None;
+            for probe in [format!("{dir}/mod.rs"), format!("{dir}/lib.rs"), format!("{dir}/main.rs")] {
+                if let Ok(text) = cx.read(&probe) {
+                    let needle = format!("mod {stem};");
+                    if text.lines().any(|l| l.trim_start().trim_start_matches("pub ").starts_with(&needle)) {
+                        declared_in = Some(probe);
+                        break;
+                    }
+                }
+            }
+            if let Some(site) = declared_in {
+                ghosts.push(format!("{f} (declared in {site})"));
+            }
+        }
+        rows.push(if ghosts.is_empty() {
+            Row::pass(
+                ROW_TRACKED,
+                "every file that compiles is a file git has",
+                "no untracked .rs file is declared by a module statement".to_string(),
+            )
+        } else {
+            Row::fail(
+                ROW_TRACKED,
+                "a file compiles here and does not exist on a clean checkout — it is invisible to \
+                 every gate that walks git, and the tree cannot build anywhere else",
+                listing(&ghosts, 10),
+            )
+        });
+
         rows
     }
 }
@@ -419,6 +480,7 @@ impl Gate for SweepCoverageGate {
             ROW_LEGAL.to_string(),
             ROW_DISJOINT.to_string(),
             ROW_REACHABILITY.to_string(),
+            ROW_TRACKED.to_string(),
         ]
     }
 
