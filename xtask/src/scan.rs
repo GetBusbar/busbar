@@ -518,10 +518,18 @@ fn char_literal_end(chars: &[char], i: usize) -> Option<usize> {
     (chars.get(i + 1).is_some() && chars.get(i + 2) == Some(&'\'')).then_some(i + 2)
 }
 
-/// One line with `//` and `/* */` comments removed. `in_block` carries block-comment state across
-/// lines. String literals are preserved verbatim, so a `//` inside a `"…"` is not a comment.
-pub fn strip_comment_line(line: &str, in_block: &mut bool) -> String {
-    let mut out = String::new();
+/// One line split into **(code, comment)** — the same single pass as [`strip_comment_line`], which
+/// now delegates here, except the comment text is HANDED BACK rather than dropped on the floor.
+///
+/// There is one lexer so the two halves cannot disagree: anything absent from `code` is present in
+/// `comment` and vice versa. String literals stay verbatim in the CODE half, so a `//` inside a
+/// `"…"` is not a comment — which is precisely the distinction
+/// [`crate::gates::no_deferral`]'s Class-B comment tags stand on. A `TODO(migrate):` inside a
+/// `format!("# TODO(migrate): {t}")` is **data the program emits**, not a label its author attached
+/// to this code, and only the second of those is a deferral marker.
+pub fn split_comment_line(line: &str, in_block: &mut bool) -> (String, String) {
+    let mut code = String::new();
+    let mut comment = String::new();
     let bytes: Vec<char> = line.chars().collect();
     let mut i = 0;
     let mut in_str = false;
@@ -531,15 +539,16 @@ pub fn strip_comment_line(line: &str, in_block: &mut bool) -> String {
                 *in_block = false;
                 i += 2;
             } else {
+                comment.push(bytes[i]);
                 i += 1;
             }
             continue;
         }
         if in_str {
-            out.push(bytes[i]);
+            code.push(bytes[i]);
             if bytes[i] == '\\' {
                 if let Some(c) = bytes.get(i + 1) {
-                    out.push(*c);
+                    code.push(*c);
                 }
                 i += 2;
                 continue;
@@ -556,16 +565,24 @@ pub fn strip_comment_line(line: &str, in_block: &mut bool) -> String {
             continue;
         }
         if bytes[i] == '/' && bytes.get(i + 1) == Some(&'/') {
+            comment.extend(bytes[i + 2..].iter());
             break;
         }
         if bytes[i] == '"' {
             in_str = true;
-            out.push(bytes[i]);
+            code.push(bytes[i]);
             i += 1;
             continue;
         }
-        out.push(bytes[i]);
+        code.push(bytes[i]);
         i += 1;
     }
-    out
+    (code, comment)
 }
+
+/// One line with `//` and `/* */` comments removed. `in_block` carries block-comment state across
+/// lines. String literals are preserved verbatim, so a `//` inside a `"…"` is not a comment.
+pub fn strip_comment_line(line: &str, in_block: &mut bool) -> String {
+    split_comment_line(line, in_block).0
+}
+

@@ -10,8 +10,29 @@
 //!   is the comment strip that excludes prose, never a position anchor: an anchor at line start
 //!   also excluded `_ => todo!(…)`, `let v = unimplemented!();` and `fn f() -> u8 { todo!() }`,
 //!   which are reachable deferrals and are how most of them are actually written.
-//! * **Class B** — a deferral PHRASE the author self-declares, matched on the RAW line, because
-//!   comments are exactly where those labels live.
+//! * **Class B** — a deferral LABEL the author self-declares, because comments are exactly where
+//!   those labels live. Two halves: five PHRASE forms (`SKELETON`, `dev-only until`, `until DoD`,
+//!   `HONEST PENDING`, `PlaneDecl::STUB`) matched on the RAW line, and the four CONVENTIONAL TAGS
+//!   `TODO` / `FIXME` / `XXX` / `HACK` matched in TAG form on the COMMENT text — see
+//!   [`comment_tag`] for both narrowings and what each one costs.
+//!
+//! **THE FOUR TAGS WERE MATCHED BY NOTHING UNTIL 2026-09-23.** The playbook
+//! (`docs/design/playbook/gate-no-deferral.md` §1b) has listed `\bTODO\b \bFIXME\b \bXXX\b
+//! \bHACK\b` under Class B since the gate was specified; the implementation carried the five
+//! phrases and none of the tags. The gate was therefore structurally incapable of saying NO about
+//! the marker class the rule is named after, and both of the tree's un-owned source deferrals
+//! (`busbar-contract/src/signal.rs`) lived in that hole — declared in the signal catalog,
+//! implemented by nothing, invisible to the instrument that exists to find exactly that. A green
+//! `:unwaived` row means "every marker I look for is waived"; it never meant "there are no
+//! markers", and the gap between those two sentences was four tags wide.
+//!
+//! **SCOPE IS `crates/**/*.rs`, AND `xtask/` IS OUT ON PURPOSE.** The playbook's §1a file scope is
+//! `crates/**/*.rs` and the gate's single claim is about the SHIPPED source tree; `xtask/` is build
+//! tooling that ships to nobody. The census grep in `1.6.0-map-proof.md` §8.2 reads
+//! `crates/` + `xtask/`, which is the AUDITOR's scope, not the rule's — all 17 `todo!` and all 4
+//! `XXX` hits in that census are in `xtask/`, and every one of them is a gate's own test corpus or
+//! a `\uXXXX` JSON escape. Widening discovery to `xtask/` would make this gate red on the fixture
+//! strings in its OWN `selftest`, which is a gate failing on its test data, not a finding.
 //!
 //! `#[cfg(test)]` scaffolding is out of scope for both — but the predicate is matched AS A
 //! PREDICATE, not hunted for as a substring: `#[cfg(not(test))]` is the arm that SHIPS, and a
@@ -145,13 +166,61 @@ fn class_a(code: &str) -> bool {
     false
 }
 
-/// A self-declared debt label, matched on the RAW line.
-fn class_b(raw: &str) -> bool {
+/// A self-declared debt label. The five phrase forms are matched on the RAW line; the four
+/// CONVENTIONAL COMMENT TAGS are matched on the COMMENT text only — see [`comment_tag`].
+fn class_b(raw: &str, comment: &str) -> bool {
     word_at(raw, "SKELETON", &[])
         || two_words(raw, "dev-only", "until")
         || two_words(raw, "until", "DoD")
         || two_words(raw, "HONEST", "PENDING")
         || raw.contains("PlaneDecl::STUB")
+        || comment_tag(comment)
+}
+
+/// THE FOUR COMMENT TAGS THE RULE IS NAMED AFTER — `TODO` / `FIXME` / `XXX` / `HACK`.
+///
+/// `docs/design/playbook/gate-no-deferral.md` §1b lists all four under Class B. **This gate matched
+/// none of them with anything for as long as it existed**, so the four tags that define the rule
+/// were enforced by nothing and the tree's only un-owned source deferrals sat in exactly that hole
+/// (`1.6.0-LEDGER.md` G55). A marker class the gate never looks at cannot be waived, cannot go
+/// stale, and cannot make the gate say NO — it is a green row about a question never asked.
+///
+/// Two deliberate narrowings, each stated because each is a thing this detector does NOT see:
+///
+/// * **TAG FORM, not the bare word.** The tag must be immediately followed by `:` or `(` — the
+///   universal `TODO:` / `TODO(owner):` convention, and the same shape Class A already demands of
+///   `todo!(`. The bare English noun is not a marker: measured over this gate's own scan set, the
+///   bare word matches **44** lines of which **39** are `config/migrate.rs`, `migrate_export.rs`
+///   and `root/cli.rs` PROSE ABOUT THE MIGRATOR'S TODO-EMITTING PRODUCT FEATURE ("prints TODO
+///   comments wherever a human must decide"). Banning the noun would red the gate permanently on a
+///   shipped feature's documentation, and a gate that is always red is read exactly as often as one
+///   that is always green. **The cost: `// TODO fix this` — tagless — is NOT matched.** Nothing in
+///   the tree is written that way today; if that changes the rule, not the spelling list, is what
+///   should move.
+/// * **IN A COMMENT, not in a string literal.** `format!("# TODO(migrate): {t}")` at
+///   `config/migrate.rs:428` is the migrator WRITING a TODO into an operator's YAML. That is data
+///   the program emits, not a label its author attached to this code. Class A deliberately reads
+///   literals (a reachable `todo!()` is reachable however it is spelled); Class B deliberately does
+///   not. **The cost: a tag hidden inside a `"…"` is NOT matched** — it is also not a self-label.
+fn comment_tag(comment: &str) -> bool {
+    for tag in ["TODO", "FIXME", "XXX", "HACK"] {
+        let mut from = 0usize;
+        while let Some(pos) = comment[from..].find(tag) {
+            let at = from + pos;
+            from = at + tag.len();
+            let prev_ok = comment[..at]
+                .chars()
+                .next_back()
+                .map(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(true);
+            // `\uXXXX` is excluded twice over: `u` is an identifier character on the left, and the
+            // character on the right is `X`, not `:` or `(`.
+            if prev_ok && matches!(comment[from..].chars().next(), Some(':') | Some('(')) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// `first` followed by one-or-more spaces/tabs and then `second`.
@@ -222,7 +291,10 @@ fn markers_in(rel: &str, text: &str) -> Vec<String> {
     let mut lex = scan::LexState::default();
 
     for (i, raw) in text.lines().enumerate() {
-        let code = scan::strip_comment_line(raw, &mut in_block);
+        // ONE PASS, BOTH HALVES. `code` is what Class A reads (literals kept, comments gone);
+        // `comment` is what Class B's four tags read (comments only, literals gone). They come out
+        // of the same lexer so a line can never be both "not code" and "not comment".
+        let (code, comment) = scan::split_comment_line(raw, &mut in_block);
         // `code` keeps literal contents so `class_a` can still see a marker spelled in one; the
         // brace arithmetic reads the blanked copy, or a `'{'` in a test module leaves `testdepth`
         // permanently open and every marker after it goes unreported.
@@ -262,7 +334,7 @@ fn markers_in(rel: &str, text: &str) -> Vec<String> {
         if class_a(&code) {
             out.push(loc.clone());
         }
-        if class_b(raw) {
+        if class_b(raw, &comment) {
             out.push(loc);
         }
     }
@@ -706,6 +778,51 @@ impl Gate for NoDeferralGate {
             &[ROW_UNWAIVED],
             ov,
             &["xtask_no_deferral_plant.rs:1"],
+        ));
+
+        // ── THE FOUR COMMENT TAGS THE RULE IS NAMED AFTER. Every one of these ran GREEN until
+        //    2026-09-23: the playbook specified them, the scanner matched none of them, and the
+        //    tree's only un-owned source deferrals were written in exactly this shape.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/xtask_no_deferral_plant.rs",
+            "/// TODO(latency-p95): wire a reservoir once the collection cost is justified.\npub \
+             fn a() -> u8 { 1 }\n// FIXME: the resolver reads slot 0 and the second cert is \
+             unreachable\npub fn b() -> u8 { 2 }\n/* HACK(sni): bypasses the ceiling until the \
+             real one lands */\npub fn c() -> u8 { 3 }\n//! XXX: this module's invariants are \
+             documented and unenforced\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "TODO / FIXME / HACK / XXX in tag form are the four labels the rule is named after",
+            &[ROW_UNWAIVED],
+            ov,
+            &[
+                "xtask_no_deferral_plant.rs:1",
+                "xtask_no_deferral_plant.rs:3",
+                "xtask_no_deferral_plant.rs:5",
+                "xtask_no_deferral_plant.rs:7",
+            ],
+        ));
+
+        // ── ...AND THE TAG RULE DID NOT WIDEN INTO "BAN THE WORD". The migrator DOCUMENTS that it
+        //    emits TODO comments and EMITS them from a format string; 39 of the 44 bare-word hits
+        //    in the real scan set are that one product feature. Prose and emitted data are both
+        //    silent, planted together so the green is not one case's luck.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/xtask_no_deferral_plant.rs",
+            "// The migrator prints TODO comments wherever a human must decide, never a panic.\npub \
+             fn emit(t: &str) -> String { format!(\"# TODO(migrate): {t}\\n\") }\n/// Look for the \
+             `# TODO` the migrator emitted for that exact path.\npub fn d() -> u8 { 4 }\n/// Every \
+             non-ASCII character becomes a `\\uXXXX` escape.\npub fn e() -> u8 { 5 }\n",
+        );
+        report.push(prove_green(
+            &cx.with_overlay(ov),
+            self,
+            "the bare noun, an EMITTED `# TODO(migrate):` and `\\uXXXX` are all silent",
+            &[ROW_UNWAIVED],
         ));
 
         // ── `#[cfg(not(test))]` IS THE CODE THAT SHIPS. The one attribute that guarantees code

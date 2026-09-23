@@ -158,3 +158,32 @@ crates/busbar-plugin/src/hot/host.rs:1324	class-A STUB fn-pointer slot `PlaneHos
 crates/busbar-plugin/src/hot/host.rs:1337	class-A STUB fn-pointer slot `PlaneHost::gate_decide`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
 crates/busbar-plugin/src/hot/host.rs:1348	class-A STUB fn-pointer slot `PlaneHost::cost_reserve`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. HOT: a plane already names this slot plane-side, so its real host is H6 work, not fixture upkeep. [owner: architect] [retires: H5]
 crates/busbar-plugin/src/hot/host.rs:1359	class-A STUB fn-pointer slot `PlaneHost::cost_settle`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. HOT: a plane already names this slot plane-side, so its real host is H6 work, not fixture upkeep. [owner: architect] [retires: H5]
+
+# ── THE FOUR COMMENT TAGS, DECLARED FOR THE FIRST TIME, 2026-09-23 ──────────────────────────────
+# Until 2026-09-23 this gate matched `TODO` / `FIXME` / `XXX` / `HACK` WITH NOTHING. The playbook
+# (docs/design/playbook/gate-no-deferral.md §1b) has listed all four under Class B since the gate was
+# specified; xtask/src/gates/no_deferral.rs carried the five PHRASE forms and none of the tags. So the
+# four rows below are not new markers — they are markers that were always there, in the marker class
+# the rule is NAMED after, in front of an instrument that could not see them. `1.6.0-LEDGER.md` G55
+# called it "the headline blind spot" and it was right.
+#
+# THEY ARE NOT `hot/` ROWS, AND THAT IS THE POINT. `no-deferral-strict-done` FAILS while any non-hot
+# row stands, so the release done-oracle is now RED with four named reasons instead of green with
+# none. That is the correct reading of BUSBAR-1.6.0.md:1218, which already lists NO-DEFERRAL among
+# the RED drift groups — before today the gate and the spec disagreed and the gate was wrong.
+#
+# WHY WAIVED AND NOT FIXED. Two of the four (N3) are stale or mislabelled prose whose repair is a
+# one-word relabel. §3 of the playbook is explicit that this gate "cannot be satisfied by renaming a
+# marker", and an agent that renames `TODO:` to `NOTE:` to turn its own finding green has performed
+# precisely the evasion the gate exists to resist — however sound its reasoning. Declaring a marker
+# with a reason, an owner and a retirement condition is what this file is FOR; erasing it is not.
+#
+# RETIREMENT, AS COMMANDS THAT RUN AGAINST THIS TREE (no row names a document):
+#   N1  grep -n 'Signal::CandidateLatencyP95Ms' crates/busbar-llm/src/engine/hooks.rs  # non-empty => computed
+#   N2  grep -n 'Signal::ResponseTokensOut'     crates/busbar-llm/src/engine/hooks.rs  # non-empty => computed
+#   (for N1/N2 the other honest retirement is deletion from `Signal::ALL`, which drops the whole row)
+#   N3  the owner rules; the marker then either goes away or stops being spelled as a deferral tag
+crates/busbar-contract/src/signal.rs:81	class-B tag `TODO(latency-p95)` on `Signal::CandidateLatencyP95Ms`: the variant IS in `Signal::ALL` (:112), so it parses from operator config and takes a `RequestedSignals` bit, but the one projection site (crates/busbar-llm/src/engine/hooks.rs:682-704) pushes only CandidateBreakerState and CandidateErrorRate — a declared signal that silently never arrives. A REAL open deferral, not a fixture; waived only so it is declared with an owner rather than invisible. [owner: architect] [retires: N1]
+crates/busbar-contract/src/signal.rs:95	class-B tag `TODO(outcome-signals)` on `Signal::ResponseTokensOut`: same defect as :81 with a larger blocker — the response/completion-tap `OutcomeInputs` seam does not exist, so there is no response-phase projection site for ANY outcome signal. A REAL open deferral. [owner: architect] [retires: N2]
+crates/busbar-oauth2/src/cimd.rs:209	class-B tag `TODO(chore/1.6.0-oauth-as-0.9.3)`: NOT a deferred capability — the same comment states "The checks below are busbar's own and are ENFORCED TODAY; nothing here is a placeholder." It is an upstream feature-flag note about the `oauth-as` crate's own CIMD validator, which this tree pins at 0.9.3 without enabling. Mislabelled, not postponed; the relabel is the owner's, not an auditor's. [owner: architect] [retires: N3]
+crates/plugin-loader/src/sign.rs:86	class-B tag `TODO(release-keys)`: STALE — the CI wiring it asks for exists and is guarded. MEASURED 2026-09-23: .github/workflows/build-artifact.yml:126 exports BUSBAR_RELEASE_PUBKEY from the org variable, scripts/release-key-guard.sh refuses to build a release binary without a well-formed 64-hex key and carries assert-embedded cases, and scripts/release-gate/platform-checks.sh:199 fails the pubkey row when it is absent. Finished work wearing a marker's clothing. [owner: architect] [retires: N3]
