@@ -3274,12 +3274,11 @@ fn a_configured_name_cannot_break_out_of_the_document() {
 
 // ── D38 `amend_rate_history` — the money-path verb's effect half ──────────────────────────────────
 
-/// A history seeded with one opening card, effective from instant zero, priced in USD.
+/// A history seeded with one opening card, effective from instant zero.
 #[cfg(test)]
 fn a_seeded_history() -> crate::root::kernel::RootHistory {
     let history = crate::root::kernel::RootHistory::default();
-    let opening = busbar_kernel_ledger::cost::RateCard::from_micro_rates_in(
-        busbar_kernel_ledger::cost::CurrencyCode::USD,
+    let opening = busbar_kernel_ledger::cost::RateCard::from_micro_rates(
         [(
             busbar_kernel_ledger::cost::LaneClass::new(
                 "gpt",
@@ -3340,7 +3339,6 @@ fn a_correction_body() -> Vec<u8> {
     signed_correction(serde_json::json!({
         "effective_from": 4_000,
         "effective_until": 9_000,
-        "currency": "USD",
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
         "operator_fingerprint": a_test_operator_fingerprint(),
@@ -3415,6 +3413,86 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
         .card_at(instant)
         .expect("the old snapshot still prices the instant");
     assert_eq!(old_seq, busbar_kernel_ledger::cost::HistorySeq(0));
+}
+
+/// **A CORRECTION THAT NAMES A DENOMINATION IS REFUSED, NOT IGNORED** (#66 `BUSBAR-1.6.0.md:528`,
+/// owner-locked: money is UNITLESS abstract cost, no currency type and no symbol).
+///
+/// THE DEFECT THIS CLOSES. `amend_rate_history` used to read a `currency` key off the correction
+/// body into an ISO-4217 code, and that code decided a ROUNDING SCALE: `"JPY"` moved the divisor
+/// from ten million nano-units per minor unit to a billion, so the SAME `micro_per_unit` figures on
+/// a corrected card became a hundred times different money — with no conversion, no restatement,
+/// and nothing on the sealed amendment record to say the scale had moved. Every other card in the
+/// tree was built at one hardcoded scale; this one body could move it.
+///
+/// **REFUSED, NOT ACCEPTED-AND-IGNORED**, which is the whole point. Tolerating the key and quietly
+/// pricing at the one scale would leave a caller believing it had asked for yen and been given yen,
+/// which is the same defect with a longer fuse. A body written against a contract this node does not
+/// honour is refused at the shape, before it can touch the history — and a refusal appends nothing.
+///
+/// Every spelling refuses, including the ones a "just validate it" reading would let through: a
+/// code the old table knew, a code it did not, the node's own former default, and `null`.
+#[test]
+fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
+    for named in [
+        serde_json::json!("JPY"),
+        serde_json::json!("USD"),
+        serde_json::json!("nonsense"),
+        serde_json::json!(null),
+    ] {
+        let history = a_seeded_history();
+        let body = signed_correction(serde_json::json!({
+            "effective_from": 4_000,
+            "effective_until": 9_000,
+            "currency": named,
+            "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
+            "reason": "vendor corrected the March price sheet",
+            "operator_fingerprint": a_test_operator_fingerprint(),
+        }));
+        let err = amend_rate_history_effect(&history, &body, 6, a_sealed_operator())
+            .expect_err("a correction naming a currency must be refused");
+        assert!(
+            matches!(err, busbar_core_admin::GovernanceError::Validation),
+            "a correction naming {named} must refuse Validation, got {err:?}"
+        );
+        assert_eq!(
+            history.len(),
+            1,
+            "a refused correction appends nothing: {named}"
+        );
+    }
+
+    // THE CONTROL: the same body WITHOUT the key applies. Without this arm a rule that refused
+    // every correction would satisfy the assertions above.
+    let history = a_seeded_history();
+    amend_rate_history_effect(&history, &a_correction_body(), 6, a_sealed_operator())
+        .expect("the same correction with no `currency` key applies");
+    assert_eq!(history.len(), 2);
+}
+
+/// **THE SIGNED PAYLOAD CANNOT COVER A KEY NOTHING CAN SEND.** `currency` is gone from the canonical
+/// amend payload's fixed key order, so the bytes an operator signs are the bytes this seam verifies
+/// and neither carries a denomination. A payload that still rendered `currency=null` would be a
+/// field in the signature for a field the shape refuses.
+#[test]
+fn the_canonical_amend_payload_names_no_currency() {
+    let body = serde_json::json!({
+        "effective_from": 4_000,
+        "effective_until": 9_000,
+        "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
+        "reason": "vendor corrected the March price sheet",
+    });
+    let payload = canonical_amend_payload(body.as_object().expect("an object"));
+    let text = String::from_utf8(payload).expect("the payload is text");
+    assert!(
+        !text.contains("currency"),
+        "the signed payload still names a currency: {text}"
+    );
+    // The domain separator and every field that IS signed are still there, in order.
+    assert!(text.starts_with("busbar/amend-rate-history/v1\n"), "{text}");
+    for key in ["effective_from=", "effective_until=", "per_request_fee=", "reason=", "rates="] {
+        assert!(text.contains(key), "the payload dropped {key}: {text}");
+    }
 }
 
 /// VALIDATION REFUSALS. Every malformed or empty correction is refused at its shape, before it can
@@ -3548,7 +3626,6 @@ fn amend_rate_history_refuses_a_correction_from_an_unknown_operator_fingerprint(
     let body = signed_correction(serde_json::json!({
         "effective_from": 4_000,
         "effective_until": 9_000,
-        "currency": "USD",
         "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
         "operator_fingerprint": "a-fingerprint-that-names-no-sealed-key",
@@ -3682,8 +3759,7 @@ const A_LANE: &str = "gpt";
 
 /// A card naming one lane and one class, at `micro_per_unit`, with a flat fee in minor units.
 fn a_card_at(micro_per_unit: f64, fee_minor: i64) -> busbar_kernel_ledger::cost::RateCard {
-    busbar_kernel_ledger::cost::RateCard::from_micro_rates_in(
-        busbar_kernel_ledger::cost::CurrencyCode::USD,
+    busbar_kernel_ledger::cost::RateCard::from_micro_rates(
         [(
             busbar_kernel_ledger::cost::LaneClass::new(
                 A_LANE,
@@ -3725,7 +3801,6 @@ fn a_booked_line(
         fee_count,
         tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
         arrived_ms,
-        currency: busbar_kernel_ledger::cost::CurrencyCode::USD,
         cached: busbar_kernel_ledger::DerivedPrice {
             history_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
             card_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
@@ -3977,10 +4052,10 @@ fn the_totals_view_and_the_usage_read_derive_the_same_figure() {
         estimated: false,
     }];
     let rates = card
-        .lane_rates(A_LANE, busbar_kernel_ledger::cost::CurrencyCode::USD)
+        .lane_rates(A_LANE)
         .expect("the fixture's card names the lane");
     let usage_micros = busbar_kernel_ledger::cost::micros_of(rates.nanos(&lines)).saturating_add(
-        card.per_request_fee(busbar_kernel_ledger::cost::CurrencyCode::USD)
+        card.fee()
             .saturating_mul(busbar_kernel_ledger::cost::MICROS_PER_CENT)
             .saturating_mul(i64::try_from(FEES).expect("small")),
     );

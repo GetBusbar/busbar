@@ -3101,7 +3101,7 @@ mod usage_as_of {
 mod one_recorded_usage_every_surface {
     use super::*;
     use busbar_kernel_ledger::cost::{
-        self as ledger_cost, Author, CardEntryDraft, CurrencyCode, History, LedgerEntry, RateCard,
+        self as ledger_cost, Author, CardEntryDraft, History, LedgerEntry, RateCard,
         TierRates,
     };
 
@@ -3266,7 +3266,6 @@ mod one_recorded_usage_every_surface {
         let one = ledger_cost::price_ledger(
             &one_function_slice(bucket, edit_ms),
             &hist,
-            CurrencyCode::USD,
         )
         .expect("both postings are priced by the card in force at their own instant");
         let one_micros = i64::try_from(one.micros()).expect("the figure fits");

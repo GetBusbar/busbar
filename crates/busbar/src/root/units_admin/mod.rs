@@ -1107,14 +1107,26 @@ fn amend_rate_history_effect(
         .ok_or(GovernanceError::Validation)?;
     let reason_hash: [u8; 32] = sha2::Sha256::digest(reason.as_bytes()).into();
 
-    // The corrected card. The currency defaults to the one a 1.5.5 deployment's figures are read as;
-    // the fee defaults to zero. A correction must move at least one figure — a rate or the fee —
-    // because an amendment that changes no price is a history append and nothing else.
-    let currency = match obj.get("currency").and_then(serde_json::Value::as_str) {
-        Some(code) => busbar_kernel_ledger::cost::CurrencyCode::new(code)
-            .ok_or(GovernanceError::Validation)?,
-        None => busbar_kernel_ledger::cost::CurrencyCode::USD,
-    };
+    // **A CORRECTION MAY NOT NAME A DENOMINATION**, and one that tries is REFUSED rather than
+    // accepted-and-ignored (#66 `BUSBAR-1.6.0.md:528`: money is UNITLESS abstract cost).
+    //
+    // THIS IS THE DEFECT THIS FIELD EXISTED AS. The key used to be read into a currency code, and a
+    // currency code decided a ROUNDING SCALE: `"currency":"JPY"` moved the divisor from ten million
+    // nano-units per minor unit to a billion, so the SAME rate figures on a corrected card became a
+    // hundred times different money — with no conversion, no restatement, and nothing on the
+    // amendment record to say the scale had moved. An operator correcting a typo in one rate could
+    // reprice a whole window by two orders of magnitude by typing three letters.
+    //
+    // Tolerating the key silently would leave exactly that bug with an extra step, so the shape
+    // refuses it: a body carrying `currency` at all is a body written against a contract this node
+    // does not honour, and an amendment is the last place to guess what its author meant. The scale
+    // is now `NANOS_PER_CENT`, a constant no request can name.
+    if obj.contains_key("currency") {
+        return Err(GovernanceError::Validation);
+    }
+    // The corrected card. The fee defaults to zero. A correction must move at least one figure — a
+    // rate or the fee — because an amendment that changes no price is a history append and nothing
+    // else.
     let per_request_fee = match obj.get("per_request_fee") {
         None | Some(serde_json::Value::Null) => None,
         Some(v) => Some(v.as_i64().ok_or(GovernanceError::Validation)?),
@@ -1149,8 +1161,7 @@ fn amend_rate_history_effect(
     if entries.is_empty() && per_request_fee.is_none() {
         return Err(GovernanceError::Validation);
     }
-    let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates_in(
-        currency,
+    let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates(
         entries,
         per_request_fee.unwrap_or(0),
     );
@@ -1240,10 +1251,13 @@ fn amend_rate_history_effect(
 /// begins with this line.
 fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> Vec<u8> {
     let mut payload = String::from("busbar/amend-rate-history/v1\n");
+    // `currency` is NOT in this list, and its absence is load-bearing rather than tidy: the field
+    // is refused at the shape above (#66 — money is unitless, and a denomination decided a rounding
+    // scale), so a body that carried one never reaches this function. A key nothing can send is a
+    // key nothing can sign.
     for key in [
         "effective_from",
         "effective_until",
-        "currency",
         "per_request_fee",
         "reason",
         "rates",
@@ -1422,17 +1436,9 @@ fn derived_totals_rows(
     }
     // THE SNAPSHOT THIS READ IS ANSWERED AT: the history as the pin holds it, for every row of it.
     let snapshot = pinned.view();
-    let currency = crate::root::kernel::node_currency();
-    // A STATEMENT NAMES EXACTLY ONE CURRENCY, and `totals_as_of` enforces that by SKIPPING a line
-    // denominated in another — which is right for a statement and would be wrong here, because a
-    // skipped line leaves this row reporting a smaller figure rather than an incomplete one. Two
-    // currencies never sum and nothing here converts between them, so a line the node's own
-    // currency cannot express is a refusal for the whole read, exactly as a hole in the history is.
-    // Unreachable while `node_currency` is the one answer a deployment has; the guard is what keeps
-    // it unreachable the day that changes.
-    if lines.iter().any(|line| line.currency != currency) {
-        return None;
-    }
+    // There is no denomination to segregate by (#66): money is unitless abstract cost, every line
+    // is at the one scale, and the only thing `totals_as_of` skips is a line from another WINDOW —
+    // which is why every window the lines fall in is cut below rather than one of them.
     // The windows the lines fall in. A statement is cut per window because a window is what a row's
     // `day` names, and a set rather than a list because a busy day is many lines on one window.
     let windows: std::collections::BTreeSet<busbar_kernel_ledger::totals::WindowStart> =
@@ -1440,8 +1446,7 @@ fn derived_totals_rows(
 
     let mut rows = crate::root::ledger_identity::LedgerSnapshot::new();
     for window in windows {
-        let statement =
-            busbar_kernel_ledger::totals_as_of(&snapshot, window, currency, lines.iter());
+        let statement = busbar_kernel_ledger::totals_as_of(&snapshot, window, lines.iter());
         // A hole in the record is a refusal for the WHOLE read. One row quietly costing nothing is
         // the silent zero #42 forbids, and a view that served the derivation for the priceable rows
         // and the balance for the rest would be publishing two vintages under one field name.

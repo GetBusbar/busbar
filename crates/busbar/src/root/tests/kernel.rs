@@ -46,15 +46,15 @@ fn an_apply_moves_the_head_and_leaves_a_pinned_reader_on_the_snapshot_it_took() 
     );
 }
 
-/// The flat fee the entry in force at `at` names, in the node's currency. The one reading the
-/// tests below compare cards by, so that a comparison is a lookup rather than a field peek.
+/// The flat fee the entry in force at `at` names. The one reading the tests below compare cards
+/// by, so that a comparison is a lookup rather than a field peek.
 fn fee_at(pinned: &PinnedHistory, at: u64) -> u128 {
     pinned
         .view()
         .card_at(at)
         .expect("an entry covers the instant")
         .1
-        .fee_unit_price_nanos(node_currency())
+        .fee_unit_price_nanos()
 }
 
 /// **APPEND, NEVER REWRITE.** A reload puts a SECOND entry on the history and leaves the first
@@ -83,7 +83,9 @@ fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
     let view = head.view();
     let entries = view.entries();
     assert_eq!(
-        entries[0].card().fee_unit_price_nanos(node_currency()),
+        entries[0]
+            .card()
+            .fee_unit_price_nanos(),
         30_000_000,
         "the entry the first apply wrote was rewritten by a later one"
     );
@@ -93,11 +95,15 @@ fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
         "the first entry was renumbered, which unmakes every invoice that named a snapshot"
     );
     assert_eq!(
-        entries[1].card().fee_unit_price_nanos(node_currency()),
+        entries[1]
+            .card()
+            .fee_unit_price_nanos(),
         110_000_000
     );
     assert_eq!(
-        entries[2].card().fee_unit_price_nanos(node_currency()),
+        entries[2]
+            .card()
+            .fee_unit_price_nanos(),
         290_000_000
     );
 }
@@ -167,30 +173,33 @@ fn every_config_apply_records_the_generation_that_wrote_it() {
     );
 }
 
-/// The card a config apply builds is in the node's currency, and asking it for that currency is
-/// an answer rather than a refusal.
+/// **THE CARD A CONFIG APPLY BUILDS CARRIES THE FEE IT WAS CONFIGURED WITH, AT THE ONE SCALE.**
 ///
-/// The one assertion that catches a card built in one currency and read in another: the lookup
-/// would report `CurrencyNotPriced`, which a caller that mapped errors to zero would post as a
-/// free request.
+/// This stands where `the_card_an_apply_builds_prices_the_currency_the_node_reads_it_in` stood.
+/// That case caught a card built in one denomination and read in another — the lookup would report
+/// `CurrencyNotPriced`, which a caller that mapped errors to zero would post as a free request.
+/// #66 (`BUSBAR-1.6.0.md:528`) removes the denomination, so the mismatch cannot be CONSTRUCTED
+/// rather than merely refused; what is left to assert is that the configured figure reaches the
+/// card unmoved and at the one scale.
 #[test]
-fn the_card_an_apply_builds_prices_the_currency_the_node_reads_it_in() {
+fn the_card_an_apply_builds_carries_its_configured_fee_at_the_one_scale() {
     let holder = RootHistory::default();
     holder.apply(
         super::card_from_config(
             std::iter::empty::<(&str, busbar_substrate_values::billing::RawTierRates)>(),
             7,
             true,
-            node_currency(),
         ),
         1_000,
     );
     let head = holder.pin().expect("the apply put an entry in place");
     let view = head.view();
     let (_, card) = view.card_at(1_000).expect("an entry covers it");
-    assert!(
-        card.prices_currency(node_currency()),
-        "the node's own currency is not on the card the node's own config built"
+    assert_eq!(card.fee(), 7, "the configured fee reached the card unmoved");
+    assert_eq!(
+        card.fee_unit_price_nanos(),
+        7 * busbar_kernel_ledger::cost::NANOS_PER_CENT,
+        "the fee lifts to nano-units at the one scale and no other"
     );
 }
 

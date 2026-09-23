@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 
 use busbar_kernel_ledger::cost::{
-    self as ledger_cost, Author, CardEntryDraft, CurrencyCode, History, LaneClass, LedgerEntry,
+    self as ledger_cost, Author, CardEntryDraft, History, LaneClass, LedgerEntry,
     RateCard,
 };
 
@@ -271,7 +271,6 @@ fn d1_a_rate_card_edit_splits_the_tree_into_two_answers() {
             one_entry(&counts, 2_000_000, 1),
         ],
         &history,
-        CurrencyCode::USD,
     )
     .expect("every class is priced on both cards");
 
@@ -371,7 +370,6 @@ fn d2_an_open_meter_class_bills_as_nothing_on_the_enforcement_side() {
     let one = ledger_cost::price_ledger(
         &[one_entry(&counts, 0, 0)],
         &History::opening(card.clone(), 0),
-        CurrencyCode::USD,
     )
     .expect("the card prices both classes");
 
@@ -515,7 +513,6 @@ fn d4_an_unpriced_lane_blocks_at_the_door_refuses_in_the_one_function_and_still_
             })
             .with_fee_count(1)],
         &History::opening(card.clone(), 0),
-        CurrencyCode::USD,
     );
 
     row(
@@ -593,7 +590,6 @@ fn d5_an_unpriced_class_on_a_priced_lane_bills_as_free_everywhere_but_the_one_fu
     let one = ledger_cost::price_ledger(
         &[one_entry(&counts, 0, 0)],
         &History::opening(card, 0),
-        CurrencyCode::USD,
     );
 
     row(
@@ -640,7 +636,7 @@ fn d6_the_tier_multiplier_is_applied_by_the_lookup_and_ignored_by_every_derivati
             .expect("a report within the line bound")
     };
     let posting = ledger_cost::Posting::from_usage(LANE, &usage, 0, half, 0, 0);
-    let lookup = ledger_cost::price(&history.current(), &posting, CurrencyCode::USD)
+    let lookup = ledger_cost::price(&history.current(), &posting)
         .expect("the lookup prices");
 
     let lines = usage_lines(&counts);
@@ -650,7 +646,6 @@ fn d6_the_tier_multiplier_is_applied_by_the_lookup_and_ignored_by_every_derivati
     let one = ledger_cost::price_ledger(
         &[one_entry(&counts, 0, 0).with_tier(half)],
         &history,
-        CurrencyCode::USD,
     )
     .expect("prices");
 
@@ -822,7 +817,6 @@ fn d9_a_sub_day_back_dated_correction_is_a_no_op_for_the_admin_read() {
     let one = ledger_cost::price_ledger(
         &[one_entry(&counts, arrived_ms, 0)],
         &history,
-        CurrencyCode::USD,
     )
     .expect("prices");
 
@@ -891,12 +885,11 @@ fn e_every_implementation_agrees_on_the_case_they_were_all_written_for() {
         0,
         0,
     );
-    let lookup = ledger_cost::price(&history.current(), &posting, CurrencyCode::USD)
+    let lookup = ledger_cost::price(&history.current(), &posting)
         .expect("the lookup prices");
     let one = ledger_cost::price_ledger(
         &[one_entry(&counts, 0, requests)],
         &history,
-        CurrencyCode::USD,
     )
     .expect("prices");
 
@@ -957,14 +950,14 @@ fn e_every_implementation_agrees_on_the_case_they_were_all_written_for() {
     );
     row(
         "ONE function  .minor(USD)               [cents]      ",
-        one.minor(CurrencyCode::USD),
+        one.minor(),
     );
 
     for (label, figure) in [
         ("ledger derive", i128::from(ledger_cents)),
         ("kernel derive", i128::from(kernel_cents)),
         ("the door", i128::from(door_cents)),
-        ("the one function", one.minor(CurrencyCode::USD)),
+        ("the one function", one.minor()),
     ] {
         assert_eq!(figure, 1_068, "{label} answers the same figure");
     }
@@ -988,7 +981,6 @@ fn e_billing_off_is_zero_everywhere_and_the_fee_still_posts() {
     let one = ledger_cost::price_ledger(
         &[one_entry(&counts, 0, 3)],
         &History::opening(card, 0),
-        CurrencyCode::USD,
     )
     .expect("an absent card prices everything at nothing");
 
@@ -1013,5 +1005,5 @@ fn e_billing_off_is_zero_everywhere_and_the_fee_still_posts() {
     assert_eq!(kernel_micros, 60_000);
     assert_eq!(door_cents, 6);
     assert_eq!(one.micros(), 60_000);
-    assert_eq!(one.minor(CurrencyCode::USD), 6);
+    assert_eq!(one.minor(), 6);
 }

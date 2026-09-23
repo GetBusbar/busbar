@@ -243,8 +243,8 @@ fn row_counts(b: &UsageBreakdown) -> impl Iterator<Item = (&'static str, u64)> +
 /// # The one case that does NOT change, and why it is a PARK
 ///
 /// `price_in_view` REFUSES where the legacy projection answered a number: an unnamed lane
-/// ([`busbar_kernel_ledger::cost::MoneyError::LaneUnpriced`]), an unnamed class, an unnamed
-/// currency, or an accumulator that left the representable range. #42 (`:367`) says that refusal is
+/// ([`busbar_kernel_ledger::cost::MoneyError::LaneUnpriced`]), an unnamed class, or an accumulator
+/// that left the representable range. #42 (`:367`) says that refusal is
 /// the correct answer and that a silent zero is right ONLY when the card is ABSENT. But 1.5.5
 /// answered a FIGURE for each of those, and turning a served figure into a refusal is a
 /// customer-visible money-byte change, which is the owner's under #10 (`:328`) and #59 (`:391`) and
@@ -271,11 +271,7 @@ pub fn derive_spend_micros_row_at_card(
             |e, (class, quantity)| e.with_whole(class, quantity),
         )
         .with_fee_count(b.requests);
-    match busbar_kernel_ledger::cost::price_in_view(
-        std::slice::from_ref(&entry),
-        view,
-        busbar_kernel_ledger::cost::CurrencyCode::USD,
-    ) {
+    match busbar_kernel_ledger::cost::price_in_view(std::slice::from_ref(&entry), view) {
         Ok(money) => i64::try_from(money.micros()).unwrap_or(i64::MAX),
         // THE #42 PARK. See the doc above: the refusal is the ruled-correct answer and the figure
         // below is the one 1.5.5 served. Neither is this function's to choose between.
