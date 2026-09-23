@@ -1124,9 +1124,12 @@ Ruled NAY under standing money authority. The scale becomes one constant.
 
 It was already ruled on 2026-09-22 (*"delete it. wtf is a testkit."*) and #33 has said since
 2026-09-18 that there is no testkit. It is still here: `crates/busbar-kernel/src/testkit/`, 7
-files, 2,188 LOC, exported as `pub mod testkit;` at `crates/busbar-kernel/src/lib.rs:320` — NOT
-feature-gated, so it compiles into the shipped binary. 180 references across 60 files; only 5 of
-those files are inside busbar-kernel. Every outside consumer is a plane. The kernel ships test
+files, 2,188 LOC, at `crates/busbar-kernel/src/lib.rs:320`. **CORRECTION:** an earlier reading
+of this line claimed the module was not feature-gated and therefore shipped in the production
+binary. That was wrong — line 319 carries `#[cfg(any(test, feature = "test-support"))]`, so it
+never entered a production build. The error was reading the `pub mod` without reading the
+attribute above it. The reason to delete it does not rest on that claim and is unchanged: 180
+references across 60 files, only 5 of them inside busbar-kernel. Every outside consumer is a plane. The kernel ships test
 scaffolding whose only users are plugins, which is the exact thing #33 forbids.
 
 The crate-local testkits are NOT this and are KEPT: `busbar-a2a` (213 LOC), `busbar-mcp` (281),
