@@ -1878,9 +1878,11 @@ excludable from exactly this measurement.
 
 ### WHERE THE 90,667 EXCESS LINES ARE — THE CENSUS, 2026-09-22
 
-**Full evidence: [`docs/design/1.6.0-duplication-census.md`](1.6.0-duplication-census.md).** Every
-line below is from `cargo xtask loc --ref HEAD` / `--ref v1.5.5` at `d63fcd55e`. Do not re-derive
-these; cite the census.
+**Full evidence: [`docs/design/1.6.0-LEDGER.md`](1.6.0-LEDGER.md), the `ENGINE` section (rows
+ENG1–ENG26) and its preamble.** The census that produced it (`1.6.0-duplication-census.md`) was
+folded into the ledger and deleted on 2026-09-22; its 27-row ranked worklist reconciles there at
+Δ = 0. Every line below is from `cargo xtask loc --ref HEAD` / `--ref v1.5.5` at `d63fcd55e`. Do
+not re-derive these; cite the ledger.
 
 Every v1.5.5 file and every trunk file outside the new-plane group was mapped onto the same
 subsystem names. **Both sides balance exactly — 62,956 and 153,623 — with zero unassigned files.**
