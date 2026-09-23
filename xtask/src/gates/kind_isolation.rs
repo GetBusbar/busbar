@@ -141,10 +141,12 @@ use crate::manifest::{self, DepDecl};
 use crate::scan;
 
 mod base;
+mod closure;
 mod inputs;
 mod matrix;
 mod truths;
 
+pub use closure::ROW_CLOSURE;
 pub use inputs::ROW_INPUTS;
 pub use matrix::ROW_MATRIX;
 pub use truths::ROW_TRUTHS;
@@ -504,15 +506,13 @@ const CONSTRUCTION_KIND_KEYS: &[(&str, &str)] = &[
 /// re-worded, because the crate it waived no longer exists — #37 bans the FORM `busbar-core-<kind>`
 /// and the fix was the rename to `busbar-core-connsec`, not a better sentence. The one survivor is
 /// a `busbar-unit-*` crate, which #36 retires on its own schedule.
-const ACCEPTED_NAMES: &[(&str, &str)] = &[
-    (
-        "busbar-unit-transport-key",
-        "the unit that holds TRANSPORT KEYS. `transport` here is the kind word describing what the \
+const ACCEPTED_NAMES: &[(&str, &str)] = &[(
+    "busbar-unit-transport-key",
+    "the unit that holds TRANSPORT KEYS. `transport` here is the kind word describing what the \
          unit's keys are for, never a transport instance — no transport is named, and the crate \
          depends on busbar-contract (contract-transport folded into it) as every unit on that path \
          does.",
-    ),
-];
+)];
 
 // ------------------------------------------------------------------------------------------------
 // the measured dependency graph
@@ -602,7 +602,32 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("store", "contract"),
     ("substrate", "contract"),
     ("transport", "contract"),
-    ("transport", "transport"),
+    // `("transport", "transport")` WAS HERE, AND IT IS STRUCK.
+    //
+    // It granted the CLASS `transport -> transport` — eight live edges (`grpc -> http`,
+    // `grpc -> tcp`, `http -> tcp`, `http -> tls`, `sse -> http`, `tls -> tcp`, `ws -> http`,
+    // `ws -> tcp`) — on the citation *"ARCHITECTURE.md 3.4 `COMPOSES_OVER`: a wire composed over
+    // a lower wire; THE ROOT SUPPLIES THE LAYER."*
+    //
+    // THE CITATION ARGUES AGAINST ITS OWN VERDICT. If the root supplies the layer, the transport
+    // crate does not need to name the lower transport at COMPILE time; `COMPOSES_OVER` is an
+    // associated const on `TransportMeta` (ARCHITECTURE.md:669) — a RUNTIME registry string, not a
+    // crate edge — and §5's composition table is a table of wire layering, not of manifests. What
+    // the cited document actually says about manifests is ARCHITECTURE.md:119 §1.2: *"any
+    // dependency on … another plane or A TRANSPORT is a CI failure"*, with exactly one exception,
+    // a dialect crate naming its own plane. BUSBAR-1.6.0.md:364 #40(a) is flatter still:
+    // `closure ∩ {… any other plugin} = ∅`, and a transport is one of the seven plugin kinds.
+    //
+    // It was also the ONE surviving member of a shape this file may not carry: a blanket grant of
+    // a plugin kind to ITSELF. A granted class is a rule that cannot fail, and #40(a) is not a
+    // rule this gate may be unable to fail. If one of the eight edges is legitimate it owes a
+    // REVIEWED ROW naming those two crates and the sentence that admits them — not a class grant
+    // that admits every transport pair the tree will ever have. `closure::rule_closure` refuses
+    // the shape outright so it cannot come back by way of the citation.
+    //
+    // `("kernel", "kernel")`, `("unit", "unit")` and the TCB's `("plugin-tooling",
+    // "plugin-tooling")` are NOT this shape and stay: none of the three is one of the seven plugin
+    // kinds, and #36's group structure grants intra-tier edges inside the kernel by name.
     ("unit", "contract"),
     ("unit", "unit"),
     // A CLEANLINESS SURFACE (admin/oauth2) is compiled-in with a one-way dep on core (DECISIONS #5).
@@ -3107,6 +3132,60 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
         }
     }
 
+    // A GRANT THAT NAMES A KIND THE TABLE DOES NOT HAVE CAN NEVER MATCH AN EDGE — AND SO CAN
+    // NEVER BE SCORED DEAD EITHER.
+    //
+    // Every other allowance in this file expires: a `[[dep]]` row whose edge is gone is
+    // `dead-dep-edge`, a `[[cell]]` that measures zero is `dead-cell`, a kind with no crates is
+    // `dead-kind`, an accepted name whose crate is gone is `dead-waiver`. The three CLASS tables
+    // had no such rule, and a class naming a kind that is not in [`KINDS`] falls through every one
+    // of them: `verdict_for` only ever asks whether a MEASURED class is in the list, and a class
+    // that cannot be measured is never asked about. `("core", "caps")` is one — `caps` folded into
+    // `busbar-contract` under W2.c — and it has sat in [`PENDING_EDGES`] granting nothing to
+    // nothing ever since. A rule aimed at a crate that does not exist can never fire, and a grant
+    // aimed at a kind that does not exist can never be read.
+    let table_kinds: BTreeSet<&str> = KINDS.iter().map(|d| d.kind).collect();
+    for (table, rows) in [
+        ("ARCHITECTURE_ALLOWED", ARCHITECTURE_ALLOWED),
+        ("PENDING_EDGES", PENDING_EDGES),
+        ("ARCHITECTURE_TCB", ARCHITECTURE_TCB),
+    ] {
+        for (from, to) in rows {
+            for (side, k) in [("from", from), ("to", to)] {
+                if !table_kinds.contains(k) {
+                    offenders.push(format!(
+                        "dead-grant	{table}	`({from}, {to})` names `{k}` in the `{side}`                          position and `{k}` is not a kind in the table. A grant for a kind that                          does not exist matches no edge, so it grants nothing and it is never                          scored dead — it is a line that reads like a decision and is not one.                          Strike it, or add the kind."
+                    ));
+                }
+            }
+        }
+    }
+
+    // A TRANSITIONAL EXEMPTION FOR AN EDGE THAT CANNOT BE TAKEN IS NOT AN EXEMPTION.
+    //
+    // The drain's expiry rule keys on the `from` crate and runs at the SHIP sha (`rule_drain`), so
+    // a row whose `to` crate was absorbed rather than renamed reds at the tag FOR THE WRONG
+    // REASON — "the legacy crate still exists" — and until then exempts an edge to a crate that is
+    // not there. `busbar-a2a -> busbar-admin` and `busbar-mcp -> busbar-admin` are both: `busbar-
+    // admin` folded into `busbar-core-admin` under #37. The `to` may be a `busbar-<kind>-*` GLOB,
+    // which is a claim about a kind rather than a crate and is checked at load (`bad-glob`); only
+    // an exact name is asked for here.
+    for t in &reg.transitional {
+        let dead_from = !present.contains(t.from.as_str());
+        let dead_to = !t.to.ends_with('*') && !present.contains(t.to.as_str());
+        if dead_from || dead_to {
+            let which = match (dead_from, dead_to) {
+                (true, true) => "neither crate is".to_string(),
+                (true, false) => format!("`{}` is not", t.from),
+                _ => format!("`{}` is not", t.to),
+            };
+            offenders.push(format!(
+                "dead-transitional	{REGISTRY_FILE}	`[[transitional]] {} -> {}` ({}) exempts an                  edge that cannot be taken: {which} in the tree. The drain's own expiry runs on                  the `from` crate at the ship sha, so a row whose subject was ABSORBED rather than                  renamed reds at the tag for the wrong reason and exempts nothing until then.                  Strike it.",
+                t.from, t.to, t.reason
+            ));
+        }
+    }
+
     // THE LEGACY RATCHET. The exemption expires with the crate it excuses.
     for name in LEGACY_CRATES {
         if !present.contains(name) {
@@ -4784,6 +4863,7 @@ impl Gate for KindIsolationGate {
             ROW_NAME.to_string(),
             ROW_DEPS.to_string(),
             ROW_TEST_DEPS.to_string(),
+            ROW_CLOSURE.to_string(),
             ROW_INPUTS.to_string(),
             ROW_FACES.to_string(),
             ROW_VOCAB.to_string(),
@@ -4833,10 +4913,11 @@ impl Gate for KindIsolationGate {
                      announced landings, and a table that did not read is not a table that \
                      exempted nothing."
                 );
-                let mut rows: Vec<Row> = [ROW_NAME, ROW_DEPS, ROW_REGISTRY, ROW_MATRIX]
-                    .into_iter()
-                    .map(|id| Row::fail(id, "the kind registry file did not read", why.clone()))
-                    .collect();
+                let mut rows: Vec<Row> =
+                    [ROW_NAME, ROW_DEPS, ROW_CLOSURE, ROW_REGISTRY, ROW_MATRIX]
+                        .into_iter()
+                        .map(|id| Row::fail(id, "the kind registry file did not read", why.clone()))
+                        .collect();
                 rows.push(rule_vocab(cx, &crates, &planes));
                 rows.push(rule_steps(cx, &crates));
                 rows.push(rule_wires(cx, &crates));
@@ -4865,6 +4946,8 @@ impl Gate for KindIsolationGate {
             rule_name(&crates, &planes, &ports, &reg),
             rule_deps(cx, &crates, &reg, Half::Shipped, self.ship),
             rule_deps(cx, &crates, &reg, Half::Test, self.ship),
+            // #40(a) IS A CLOSURE, AND UNTIL THIS ROW NOTHING HERE COMPUTED ONE. See [`closure`].
+            closure::rule_closure(cx, &crates),
             inputs::rule_inputs(cx, &crates, &planes, &reg),
             rule_vocab(cx, &crates, &planes),
             rule_registry(cx, &crates, &reg, self.ship),
@@ -4930,20 +5013,20 @@ impl Gate for KindIsolationGate {
                 &[ROW_WRITE],
                 Overlay::new(),
             ));
-            report.push(prove_rows_red(
+            report.push(plant_registry(
                 cx,
                 self,
                 "--write refuses wholesale when any count would RISE",
                 &[ROW_WRITE],
-                registry_with(
-                    cx,
-                    "crate = \"busbar-kernel\"\nkind = \"plane\"\ncount = \"1\"",
-                    "crate = \"busbar-kernel\"\nkind = \"plane\"\ncount = \"0\"",
-                ),
+                matrix::cell_subst(cx, "busbar-kernel", "plane", "0"),
                 &[
                     "would RISE",
                     "NOTHING was written",
-                    "busbar-kernel × plane 0 -> 1",
+                    // THE CELL AND THE CEILING THIS PLANT WROTE, not the measurement beside them.
+                    // A fixture cannot know what the tree measures without running the gate, and
+                    // the number that used to be here (`0 -> 1`) was a measurement copied out of a
+                    // ratchet that has since re-pinned it to four figures.
+                    "busbar-kernel × plane 0 ->",
                 ],
             ));
             // …AND THE WRITE ARM MEASURES THE WHOLE GATE BEFORE IT WRITES ANYTHING. It did not:
@@ -4952,16 +5035,12 @@ impl Gate for KindIsolationGate {
             // words in a transport's `lib.rs` — a tree the ordinary run reds three ways — and got
             // `PASS kind-isolation:write … 1 row(s), green` and `EXIT=0` out of the same binary.
             // Every rule this gate has, one flag away. The plant is that tree.
-            report.push(prove_rows_red(
+            report.push(plant_registry(
                 cx,
                 self,
                 "--write refuses on a tree the ordinary run reds, whatever the counts would do",
                 &[ROW_WRITE],
-                registry_with(
-                    cx,
-                    "from    = \"busbar-transport-tls\"\nto      = \"busbar-unit-transport-key\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"not-allowed\"",
-                    "from    = \"busbar-transport-tls\"\nto      = \"busbar-unit-transport-key\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"allowed\"",
-                ),
+                verdict_subst(cx, "busbar-transport-tls", "busbar-unit-transport-key"),
                 &[
                     "the gate is RED",
                     "NOTHING was written",
@@ -5353,6 +5432,49 @@ impl Gate for KindIsolationGate {
             &["cross-instance", "busbar-plane-llm"],
         ));
 
+        // #40(a) IS A CLOSURE, AND THE PROOF OF THAT IS A CRATE THAT NAMES NOTHING WRONG.
+        //
+        // The plant is TWO HOPS: `busbar-transport-ws` grows an edge on `busbar-transport-http`,
+        // and `busbar-transport-http` grows one on `busbar-kernel-ledger`. NO MANIFEST OF
+        // `busbar-transport-ws` NAMES THE LEDGER. `:deps` is per-declaration and reports only what
+        // each manifest wrote, so the one thing it cannot say is the thing #40(a) is about, and
+        // `closure-breach busbar-transport-ws -> busbar-kernel-ledger` is that thing said.
+        //
+        // THIS CASE REPORTS `Impossible` ON THIS TREE, AND THAT IS THE HONEST ANSWER RATHER THAN A
+        // HOLE. `:closure` is STANDING RED here — sixteen plugin crates breach the wall today, and
+        // making this row green would mean waiving the finding set it exists to produce. So the
+        // transition this case asks for cannot be shown WHILE THE TREE CARRIES THE DEBT, and
+        // `prove_red` says so in its own words rather than scoring a red it did not cause. The
+        // rule's own mechanics are proven instead by the unit tests in [`closure`] — the two-hop
+        // walk, the path, the optional hop, the preference for an unswitched route — which need no
+        // green baseline. When the closure debt reaches zero this case becomes a real GREEN -> RED
+        // and nothing about it has to change. DO NOT weaken the rule to make it pass; that restores
+        // the green and nothing else.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a crate two hops away is in the closure, and no manifest of the plugin names it",
+            &[closure::ROW_CLOSURE],
+            {
+                let mut ov = manifest_plant(
+                    "crates/busbar-transport-ws",
+                    "busbar-transport-ws",
+                    &["busbar-contract", "busbar-transport-http"],
+                );
+                ov.set(
+                    "crates/busbar-transport-http/Cargo.toml",
+                    "[package]\nname = \"busbar-transport-http\"\nversion = \"0.0.0\"\n\n                     [dependencies]\nbusbar-contract = { workspace = true }\n                     busbar-kernel-ledger = { workspace = true }\n",
+                );
+                ov
+            },
+            &[
+                "closure-breach",
+                "busbar-transport-ws -> busbar-kernel-ledger",
+                "TRANSITIVE, 2 hops",
+                "busbar-transport-ws -> busbar-transport-http | busbar-transport-http ->                  busbar-kernel-ledger",
+            ],
+        ));
+
         // The dialect-direction case retired with the `dialect` kind (DECISIONS #4): a dialect is a
         // thing inside a plane, not a crate, so there is no `busbar-plane-<plane>-<dialect>` edge for
         // a plane to name back and no `plane-names-dialect` refusal to prove.
@@ -5480,17 +5602,13 @@ impl Gate for KindIsolationGate {
             // unreadable value is: at load. `-1` parses as a number, so `bad-count` let it through,
             // and the exact-both-directions comparison then SKIPPED the cell — one character
             // turning off one crate × kind's ratchet, with nothing anywhere saying so.
-            report.push(prove_rows_red(
+            report.push(plant_registry(
                 cx,
                 self,
                 "a negative `[[cell]]` count is refused at load — it is not a ceiling, it is the \
                  absence of one",
                 &[ROW_DEPS],
-                registry_with(
-                    cx,
-                    "crate = \"busbar\"\nkind = \"api\"\ncount = \"122\"",
-                    "crate = \"busbar\"\nkind = \"api\"\ncount = \"-1\"",
-                ),
+                matrix::cell_subst(cx, "busbar", "api", "-1"),
                 &[
                     "bad-count",
                     "is negative",
@@ -5502,12 +5620,13 @@ impl Gate for KindIsolationGate {
             // `dep.starts_with("")`, which is true of every crate in the tree: one character turns
             // the drain's exemption into permission for every legacy -> unit, legacy -> plane,
             // legacy -> dialect and legacy -> transport edge there will ever be.
-            report.push(prove_rows_red(
+            report.push(plant_registry(
                 cx,
                 self,
                 "a `[[transitional]]` glob that covers more than one kind's prefix is refused",
                 &[ROW_DEPS],
-                registry_with(cx, "to = \"busbar-unit-*\"", "to = \"*\""),
+                transitional_anchor(cx)
+                    .map(|(from, to)| (format!("{from}\n{to}"), format!("{from}\nto = \"*\""))),
                 &[
                     "bad-glob",
                     "covers EVERY crate in the tree",
@@ -5518,19 +5637,15 @@ impl Gate for KindIsolationGate {
             // A ROW THAT LEFT SLACK. The other half of the ratchet, and the one a class table could
             // never hold: a count BELOW the measurement is drift nobody drained on the commit that
             // drained the edge.
-            report.push(prove_rows_red(
+            report.push(plant_registry(
                 cx,
                 self,
                 "a dependency row left above the count it measures — stale slack is how drift hides",
                 &[ROW_DEPS],
-                registry_with(
-                    cx,
-                    "from    = \"busbar-kernel\"\nto      = \"busbar-caps\"\nhalf    = \"shipped\"\ncount   = \"1\"",
-                    "from    = \"busbar-kernel\"\nto      = \"busbar-caps\"\nhalf    = \"shipped\"\ncount   = \"9\"",
-                ),
+                dep_subst(cx, "busbar-kernel", "busbar-contract", "9"),
                 &[
                     "dep-ratchet",
-                    "busbar-kernel -> busbar-caps",
+                    "busbar-kernel -> busbar-contract",
                     "STALE SLACK",
                 ],
             ));
@@ -5538,16 +5653,12 @@ impl Gate for KindIsolationGate {
             // A ROW THAT GRANTED ITSELF AN EDGE THE ARCHITECTURE WITHHOLDS. `allowed` is a READING
             // of ARCHITECTURE.md, not an opinion a ledger row is entitled to hold — otherwise the
             // ledger IS the architecture and the ratchet loosens by editing one word.
-            report.push(prove_rows_red(
+            report.push(plant_registry(
                 cx,
                 self,
                 "a ledger row cannot grant itself an edge the architecture withholds",
                 &[ROW_DEPS],
-                registry_with(
-                    cx,
-                    "from    = \"busbar-transport-tls\"\nto      = \"busbar-unit-transport-key\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"not-allowed\"",
-                    "from    = \"busbar-transport-tls\"\nto      = \"busbar-unit-transport-key\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"allowed\"",
-                ),
+                verdict_subst(cx, "busbar-transport-tls", "busbar-unit-transport-key"),
                 &[
                     "unsupported-verdict",
                     "busbar-transport-tls -> busbar-unit-transport-key",
@@ -5560,46 +5671,52 @@ impl Gate for KindIsolationGate {
             // them down is that the owner can rule by reading this file. A pending row whose
             // question is gone has stopped asking, and an unruled edge that has stopped asking is
             // an edge that passes by being unreadable.
-            report.push(prove_rows_red(
+            report.push(plant_registry(
                 cx,
                 self,
                 "an unruled edge whose question was struck out has stopped asking",
                 &[ROW_DEPS],
-                registry_with(
-                    cx,
-                    "[[question]]\nfrom     = \"busbar-substrate\"\nto       = \"busbar-api\"",
-                    "[[question]]\nfrom     = \"busbar-substrate-values\"\nto       = \"busbar-api\"",
-                ),
-                &["unasked-question", "busbar-substrate -> busbar-api"],
+                Ok((
+                    "from     = \"busbar-substrate-values\"\nto       = \"busbar-api\"\n"
+                        .to_string(),
+                    "from     = \"busbar-substrate-values\"\nto       = \"busbar-api-struck\"\n"
+                        .to_string(),
+                )),
+                &["unasked-question", "busbar-substrate-values -> busbar-api"],
             ));
 
             // TWO ROWS FOR ONE EDGE. Two numbers for one measurement, and the one a reader believes
             // is the one nobody checked.
-            report.push(prove_rows_red(
+            report.push(plant_registry(
                 cx,
                 self,
                 "two rows for one edge is two numbers for one measurement",
                 &[ROW_DEPS],
-                registry_with(
-                    cx,
-                    "[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-caps\"",
-                    "[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-caps\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"allowed\"\ncite    = \"x\"\nwhy     = \"x\"\ndrain   = \"x\"\n\n[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-caps\"",
-                ),
-                &["duplicate-dep", "busbar-kernel -> busbar-caps"],
+                dep_anchor(cx, "busbar-kernel", "busbar-contract").map(|anchor| {
+                    (
+                        "[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-contract\""
+                            .to_string(),
+                        format!(
+                            "[[dep]]\n{anchor}\nverdict = \"allowed\"\ncite    = \"x\"\nwhy     = \"x\"\ndrain   = \"x\"\n\n[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-contract\""
+                        ),
+                    )
+                }),
+                &["duplicate-dep", "busbar-kernel -> busbar-contract"],
             ));
 
             // A ROW WITH A NUMBER AND NO SENTENCE IS A BUDGET — refused at LOAD, by the same reader
             // that refuses a `[[cell]]` with half a sentence.
-            report.push(prove_rows_red(
+            report.push(plant_registry(
                 cx,
                 self,
                 "a dependency row whose citation was emptied is refused at load",
                 &[ROW_DEPS],
-                registry_with(
-                    cx,
-                    "from    = \"busbar-kernel\"\nto      = \"busbar-caps\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"allowed\"\ncite    = \"",
-                    "from    = \"busbar-kernel\"\nto      = \"busbar-caps\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"allowed\"\ncite    = \"\"\nunused  = \"",
-                ),
+                dep_anchor(cx, "busbar-kernel", "busbar-contract").map(|anchor| {
+                    (
+                        format!("{anchor}\nverdict = \"allowed\"\ncite    = \""),
+                        format!("{anchor}\nverdict = \"allowed\"\ncite    = \"\"\nunused  = \""),
+                    )
+                }),
                 &["empty-field", "cite"],
             ));
         }
@@ -6138,16 +6255,15 @@ impl Gate for KindIsolationGate {
             ));
 
             // AND A ROW WHOSE IMPLEMENTATION IS GONE IS A DEAD ALLOWANCE.
-            report.push(prove_rows_red(
+            report.push(plant_registry(
                 cx,
                 self,
                 "a reviewed face row that covers no implementation any more is struck",
                 &[ROW_FACES],
-                registry_with(
-                    cx,
-                    "crate = \"busbar-a2a\"\nface = \"Transport\"",
-                    "crate = \"busbar-a2a-planted\"\nface = \"Transport\"",
-                ),
+                Ok((
+                    "crate = \"busbar-a2a\"\nface = \"Transport\"".to_string(),
+                    "crate = \"busbar-a2a-planted\"\nface = \"Transport\"".to_string(),
+                )),
                 &["dead-face", "busbar-a2a-planted", "Strike the row"],
             ));
         }
@@ -7533,7 +7649,7 @@ fn kind_gone(cx: &Ctx, marker: &str) -> Overlay {
 /// whose subject is a live row goes dark the day that row lands or dies, and says nothing while it
 /// does.
 ///
-/// Appended to the whole file rather than planted alone, for the same reason [`registry_with`] gives:
+/// Appended to the whole file rather than planted alone, for the same reason [`registry_subst`] gives:
 /// a ledger of 220 rows is not something a plant of one row can stand in for.
 fn registry_announcing(cx: &Ctx, name: &str, kind: &str) -> Overlay {
     let text = cx.read(REGISTRY_FILE).unwrap_or_default();
@@ -7553,11 +7669,137 @@ fn registry_announcing(cx: &Ctx, name: &str, kind: &str) -> Overlay {
 /// it an edge the architecture withholds, strike a question or double a row — against the whole
 /// file rather than a synthetic one, because a ledger of 220 rows is exactly the thing a plant of
 /// three rows cannot stand in for.
-fn registry_with(cx: &Ctx, from: &str, to: &str) -> Overlay {
-    let text = cx.read(REGISTRY_FILE).unwrap_or_default();
+///
+/// A NEEDLE THAT IS NO LONGER IN THE FILE IS AN UNPLANTABLE CASE, NEVER A QUIET NO-OP. This was a
+/// bare `replacen` with no needle check for as long as it existed, and `replacen` over a needle
+/// that is not there returns the string it was given: the overlay then wrote the ledger back
+/// BYTE-FOR-BYTE, the gate read the tree it would have read unplanted, and the case scored
+/// whatever that tree scores. Nine cases in this battery were doing exactly that — every one of
+/// them anchored on a `count = "…"` the ratchet had since re-pinned or a crate the tree had since
+/// renamed — and every one of them was PASSING, because the row they cover is red on this tree
+/// either way. `Expect::Inert` names that shape now, and this refuses to produce it.
+fn registry_subst(cx: &Ctx, from: &str, to: &str) -> Result<Overlay, String> {
+    let text = cx.read(REGISTRY_FILE)?;
+    if !text.contains(from) {
+        return Err(format!(
+            "`{}` is not in {REGISTRY_FILE} to plant over",
+            from.replace('\n', " / ")
+        ));
+    }
     let mut ov = Overlay::new();
     ov.set(REGISTRY_FILE, text.replacen(from, to, 1));
-    ov
+    Ok(ov)
+}
+
+/// NOTHING TO PLANT IS A VISIBLE CASE, counted as unproven — never a silent green. The shape
+/// `ci_umbrella` and `service_images` already use at the same door.
+pub(super) fn unplantable(
+    name: &str,
+    covers: &[&str],
+    naming: &[&str],
+    why: String,
+) -> crate::gates::Case {
+    crate::gates::Case {
+        name: format!("{name} ({why})"),
+        covers: covers.iter().map(|s| (*s).to_string()).collect(),
+        expected: crate::gates::Expect::Red {
+            naming: naming.iter().map(|s| (*s).to_string()).collect(),
+        },
+        got: crate::gates::Expect::Skipped,
+    }
+}
+
+/// [`prove_rows_red`] over a ONE-SUBSTITUTION plant into the real registry, with the substitution
+/// given as the `(anchor, replacement)` the caller worked out — `Err` when the anchor could not be
+/// read off the ledger at all, which is the case saying so rather than planting nothing.
+fn plant_registry<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
+    name: &str,
+    covers: &[&str],
+    subst: Result<(String, String), String>,
+    naming: &[&str],
+) -> crate::gates::CasePlan<'a> {
+    match subst.and_then(|(from, to)| registry_subst(cx, &from, &to)) {
+        Ok(ov) => prove_rows_red(cx, gate, name, covers, ov, naming),
+        Err(why) => unplantable(name, covers, naming, why).into(),
+    }
+}
+
+/// The four lines that open the SHIPPED `[[dep]]` row for `from -> to`, down to the opening quote
+/// of its count.
+fn dep_head(from: &str, to: &str) -> String {
+    format!("from    = \"{from}\"\nto      = \"{to}\"\nhalf    = \"shipped\"\ncount   = \"")
+}
+
+/// The same four lines with a count written into them.
+fn dep_row(from: &str, to: &str, count: &str) -> String {
+    format!("{}{count}\"", dep_head(from, to))
+}
+
+/// THE SHIPPED `[[dep]]` ROW FOR `from -> to` AS THE LEDGER SPELLS IT TODAY, count included.
+///
+/// A FIXTURE MAY NOT HARD-CODE A RATCHET VALUE. `count` is TODAY'S MEASUREMENT by construction and
+/// is re-pinned by every landing that moves the edge; a plant that quotes one is a plant with an
+/// expiry date nobody diarised, and the three `[[dep]]` cases below spent that expiry silently.
+/// The crate names are NOT derived — those move only when a landing renames a crate, and
+/// [`registry_subst`] now makes that loud — but the number is read off the file every run.
+fn dep_anchor(cx: &Ctx, from: &str, to: &str) -> Result<String, String> {
+    let text = cx.read(REGISTRY_FILE)?;
+    let head = dep_head(from, to);
+    let at = text.find(&head).ok_or_else(|| {
+        format!("no shipped `[[dep]]` row for {from} -> {to} in {REGISTRY_FILE} to plant over")
+    })?;
+    let rest = &text[at + head.len()..];
+    let end = rest.find('"').ok_or_else(|| {
+        format!("the shipped `[[dep]]` row for {from} -> {to} has an unterminated `count`")
+    })?;
+    Ok(format!("{head}{}\"", &rest[..end]))
+}
+
+/// That row, and the same row with `count` moved to `count`.
+fn dep_subst(cx: &Ctx, from: &str, to: &str, count: &str) -> Result<(String, String), String> {
+    Ok((dep_anchor(cx, from, to)?, dep_row(from, to, count)))
+}
+
+/// That row, with its `verdict` flipped from `not-allowed` to `allowed` — the ledger granting
+/// itself an edge the architecture withholds, with the count read off the file rather than copied
+/// into the fixture.
+fn verdict_subst(cx: &Ctx, from: &str, to: &str) -> Result<(String, String), String> {
+    let anchor = dep_anchor(cx, from, to)?;
+    Ok((
+        format!("{anchor}\nverdict = \"not-allowed\""),
+        format!("{anchor}\nverdict = \"allowed\""),
+    ))
+}
+
+/// THE `from`/`to` PAIR OF THE FIRST `[[transitional]]` ROW, exactly as the ledger spells it.
+///
+/// Two lines rather than one because `to = "…"` is not unique in a file that also carries an
+/// `[[edge]]` table, and derived rather than written out because this table IS THE DRAIN: every row
+/// in it is there to be deleted, so a fixture that names one names a row whose whole purpose is to
+/// stop existing. The case that used to name `to = "busbar-unit-*"` outlived the last glob in the
+/// table by however long it has been since one was written.
+fn transitional_anchor(cx: &Ctx) -> Result<(String, String), String> {
+    let text = cx.read(REGISTRY_FILE)?;
+    let at = text
+        .find("\n[[transitional]]\n")
+        .ok_or_else(|| format!("no `[[transitional]]` row in {REGISTRY_FILE} to plant over"))?;
+    let mut from = None;
+    for line in text[at + 1..].lines().skip(1) {
+        if line.trim().is_empty() {
+            break;
+        }
+        if line.starts_with("from = \"") {
+            from = Some(line.to_string());
+        }
+        if let (Some(from), true) = (&from, line.starts_with("to = \"")) {
+            return Ok((from.clone(), line.to_string()));
+        }
+    }
+    Err(format!(
+        "the first `[[transitional]]` row in {REGISTRY_FILE} has no `from`/`to` pair to plant over"
+    ))
 }
 
 /// The real `Cargo.lock` with one workspace-internal name added to a package's dependency list —

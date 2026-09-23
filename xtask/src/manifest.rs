@@ -76,6 +76,15 @@ pub struct DepDecl {
     pub renamed_here: bool,
     /// The declaration inherits from `[workspace.dependencies]`.
     pub inherits: bool,
+    /// `optional = true` — the edge is real in the manifest and real in the build CLOSURE whenever
+    /// the feature that names it is on.
+    ///
+    /// IT IS AN EDGE, NOT AN ABSENCE, and that distinction is what a closure rule is for. A gate
+    /// that reads only the default feature set reports a wall standing while a feature CI builds
+    /// on every push walks through it: `busbar-plugin-sdk`'s `pack` pulls the loader, and the
+    /// loader carries the money one-book into six plugin closures. See [`feature_table`] for the
+    /// other half — WHICH feature turns it on.
+    pub optional: bool,
     /// The `path = "…"` this declaration states, verbatim and unresolved, when it states one.
     ///
     /// A PATH DEPENDENCY IS A DIFFERENT FACT FROM A REGISTRY ONE, and the rule that needed this
@@ -343,6 +352,7 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
                     section: head,
                     renamed_here: false,
                     inherits: false,
+                    optional: false,
                     path: None,
                 });
                 subtable = Some(out.len() - 1);
@@ -359,6 +369,9 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
             }
             if scalar_true(t, "workspace") {
                 out[i].inherits = true;
+            }
+            if scalar_true(t, "optional") {
+                out[i].optional = true;
             }
             if let Some(p) = scalar_string(t, "path") {
                 out[i].path = Some(p);
@@ -389,6 +402,7 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
                                 section: head.clone(),
                                 renamed_here: renamed.is_some(),
                                 inherits: scalar_true(&v, "workspace"),
+                                optional: scalar_true(&v, "optional"),
                                 path: scalar_string(&v, "path"),
                             });
                         }
@@ -404,6 +418,7 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
                             section: head,
                             renamed_here: renamed.is_some(),
                             inherits: scalar_true(value, "workspace"),
+                            optional: scalar_true(value, "optional"),
                             path: scalar_string(value, "path"),
                         });
                         continue;
@@ -425,8 +440,88 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
             section: section_name,
             renamed_here: renamed.is_some(),
             inherits: scalar_true(value, "workspace"),
+            optional: scalar_true(value, "optional"),
             path: scalar_string(value, "path"),
         });
+    }
+    out
+}
+
+/// THE `[features]` TABLE, so a closure can name the FEATURE that carries an optional edge.
+///
+/// An optional dependency is an edge with a switch on it, and "which switch" is the difference
+/// between a breach nobody can reach and a breach CI builds on every push. The map is
+/// `feature -> the items it activates`, verbatim: `dep:busbar-plugin-loader`, `other-feature`,
+/// `some-dep/their-feature`. Resolving what those MEAN is the caller's job — this reader only
+/// promises to have read every line of the table, including the inline
+/// `features = { pack = ["dep:x"] }` spelling that sits under no header at all.
+pub fn feature_table(text: &str) -> BTreeMap<String, Vec<String>> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut inside = false;
+    // A FEATURE'S VALUE MAY SPAN LINES, and a line-at-a-time reader that does not say so reports
+    // the wall standing over the half of the array it could not see. An open `[` is carried
+    // forward until its `]` arrives.
+    let mut pending: Option<(String, String)> = None;
+    for raw in text.lines() {
+        let t = strip_comment(raw);
+        if let Some((key, mut acc)) = pending.take() {
+            acc.push(' ');
+            acc.push_str(t);
+            if acc.contains(']') {
+                out.insert(key, string_array(&acc));
+            } else {
+                pending = Some((key, acc));
+            }
+            continue;
+        }
+        if let Some(header) = t.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            inside = header_segments(header.trim()) == ["features"];
+            continue;
+        }
+        if t.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = split_kv(t) else {
+            continue;
+        };
+        if inside && value.trim_start().starts_with('[') && !value.contains(']') {
+            pending = Some((key, value.to_string()));
+            continue;
+        }
+        // `features = { a = ["b"] }` — the inline spelling, under no header.
+        if !inside {
+            if key.trim() == "features" && value.trim_start().starts_with('{') {
+                for (k, v) in inline_entries(value) {
+                    out.insert(k, string_array(&v));
+                }
+            }
+            continue;
+        }
+        out.insert(key, string_array(value));
+    }
+    out
+}
+
+/// The strings of a `["a", "b"]` array, ignoring anything that is not a quoted scalar.
+fn string_array(value: &str) -> Vec<String> {
+    let inner = value
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for ch in inner.chars() {
+        match quote {
+            Some(q) if ch == q => {
+                out.push(std::mem::take(&mut cur));
+                quote = None;
+            }
+            Some(_) => cur.push(ch),
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None => {}
+        }
     }
     out
 }
