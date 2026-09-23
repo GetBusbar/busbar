@@ -1040,6 +1040,88 @@ pub(super) fn committed_params(args_json: &[u8]) -> Result<serde_json::Value, St
     Ok(value)
 }
 
+/// THE SUBJECT the rewrite leg's join-failure diagnostic and its refusal name in the `hook` field.
+///
+/// A join failure is the SEAM failing to answer, not a hook declining, so no single hook name is
+/// knowable at this site — the plane holds no resolved chain (the Seam-B inversion puts the chain
+/// behind the host). The operator is therefore told WHICH CONTROL went unanswered — this plus the
+/// `agent` whose chain it is — rather than being handed a blank where a name belongs.
+const TAP_CHAIN: &str = "<the agent's prompt: rw chain>";
+
+/// THE REWRITE (`prompt: rw`) VERDICT WHEN THE HOST LEG DID NOT JOIN — the plane's own rule for
+/// "the seam never answered at all", its own function for the same reason [`committed_params`] is:
+/// the plane cannot make the host seam misbehave, and the rule the plane owns is what it does when
+/// it does.
+///
+/// # Why this REFUSES where the voice twin proceeds
+///
+/// The two sites are the same statement over different bytes, and the bytes decide it.
+///
+/// In `busbar-voice` the "originals" a join failure proceeds with are the PLANE's OWN LOCKED params
+/// — values the operator configured — so proceeding hands the session exactly what the operator
+/// asked for and is genuinely fail-safe. **Here the originals are the CALLER'S UNTRUSTED `params`**:
+/// the submission's `message.parts`, the prose a screening hook is attached to read. Proceeding
+/// relays attacker-influenced input to a backend agent, over busbar's leased credential, with the
+/// hook's verdict UNKNOWN — and unknown is not allow. The hooks on this path are not observers: the
+/// same chain that rewrites can also REJECT (`TransformVerdict::Reject`, the arm directly below this
+/// one, proven on real traffic by `hook_tap_tests::a_rewrite_gate_can_reject_on_the_params_it_screens`).
+///
+/// # Why it is not the seam's own fail-safe arms with a different answer
+///
+/// `transform_over_over` is fail-safe by design: a hook that errors, times out or abstains — or a
+/// runtime that will not start — proceeds with the original payload. Every one of those is the SEAM
+/// HAVING RUN and the operator's own `on_error` disposition having been applied to the result (a
+/// `Failed` call becomes a `Reject` when the operator declared the hook load-bearing; see
+/// `hooks::RewriteOnError`). **A join failure is the seam NOT having run**, so `on_error` is never
+/// consulted, and an operator who wrote `on_error: reject` gets the opposite of what they wrote. The
+/// refusal is therefore minted as the seam's own "a required hook could not answer" verdict — the
+/// same `503` + content-free message every other firing site renders for that condition — and
+/// travels the `Reject` route this plane already implements, audited `rejected` like any other hook
+/// refusal.
+///
+/// It also makes the two legs of one seam agree: the admission gate's join, in this same function,
+/// already refuses (`GateOutcome::Reject`, 403) on exactly this condition.
+///
+/// # What can actually arrive here
+///
+/// A PANICKING HOOK DOES NOT. A `kind: hook` cdylib's panic is caught three times before it could
+/// reach a join — the SDK's mandatory export-boundary `catch_unwind`, the engine's `ffi_guard`
+/// inside `transport_call`, and `DlopenPolicy::call`'s own belt-and-braces guard — and arrives as
+/// `TransformOutcome::Failed`, which the operator's `on_error` disposes of and the seam logs.
+/// Pinned by `hook_tap_tests::a_hook_that_panics_is_the_seams_own_failed_verdict_never_a_join_failure`.
+/// What reaches this arm is a panic in busbar's OWN glue on the blocking thread, or a blocking task
+/// cancelled at runtime shutdown — a busbar bug or a shutdown, and on either of those refusing an
+/// unscreened submission is the answer. So this is a GUARD on the host seam, the same standing the
+/// `Err` arm of [`committed_params`] has, not a hole reachable through today's hooks.
+pub(super) fn tap_join_verdict(
+    joined: Result<busbar_kernel::plane_host::TransformVerdict, tokio::task::JoinError>,
+    agent: &str,
+    method: &str,
+) -> busbar_kernel::plane_host::TransformVerdict {
+    match joined {
+        Ok(verdict) => verdict,
+        Err(e) => {
+            // NEVER SILENT. This was the one disposition on this seam that left no trace at all:
+            // `transform_over_over` logs its own `Failed` and timeout arms, so a join failure was
+            // the only way a `prompt: rw` hook could stop answering with no line naming anything.
+            tracing::error!(
+                agent = %agent,
+                method = %method,
+                hook = TAP_CHAIN,
+                error = %e,
+                "the a2a submission rewrite (prompt: rw) leg did not join; the chain's verdict is \
+                 UNKNOWN, so the submission is REFUSED rather than relayed carrying the caller's \
+                 unscreened params"
+            );
+            busbar_kernel::plane_host::TransformVerdict::Reject {
+                status: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                message: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
+                hook: TAP_CHAIN.to_string(),
+            }
+        }
+    }
+}
+
 /// EVERYTHING AFTER THE ENVELOPE: this plane's own vocabulary and its verb dispatch — steps 9 to
 /// 12 of the measurement in `busbar_kernel::ingress::protocol`.
 ///
@@ -1314,6 +1396,9 @@ async fn admitted(
             .unwrap_or(serde_json::Value::Null);
         let args_json = serde_json::to_vec(&params).unwrap_or_default();
         let tool = super::local::method_of(&envelope).to_string();
+        // The method, kept for the join-failure diagnostic — the seam owns `tool` from here. Only
+        // ever allocated on the already-non-zero-cost hooked branch.
+        let method = tool.clone();
         let request_id = engine_host.next_request_id();
         let agent = admitted.dispatch.agent_id.clone();
         let key_pair = (key.id.clone(), key.name.clone());
@@ -1330,13 +1415,11 @@ async fn admitted(
                 (!sid.is_empty()).then_some(sid.as_str()),
             )
         })
-        .await
-        // A join panic is FAIL-SAFE on the transform path (the gate already admitted): proceed with
-        // the original `params`, unchanged.
-        .unwrap_or(busbar_kernel::plane_host::TransformVerdict::Proceed {
-            applied: false,
-            args_json: Vec::new(),
-        });
+        .await;
+        // A LEG THAT DID NOT JOIN REFUSES THE SUBMISSION, and says so. The rule is
+        // `tap_join_verdict`'s, stated there with the reasoning that makes it differ from the voice
+        // twin: here the "originals" a proceed would forward are the CALLER'S UNTRUSTED `params`.
+        let verdict = tap_join_verdict(verdict, &admitted.dispatch.agent_id, &method);
         match verdict {
             busbar_kernel::plane_host::TransformVerdict::Reject {
                 status,
