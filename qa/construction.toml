@@ -1537,7 +1537,8 @@ which is the row that can name the home the call belongs in, so one site is neve
 # `cap_nanos` / `settled_nanos` / `fee_nanos` / `estimate_nanos` / `reserved_nanos` -- NANODOLLARS,
 # as `metering.rs`'s own header says ("a reserve-then-settle lease over ALREADY-PRICED
 # nanodollars"), not the time-sense `_nanos` this rule's `allowed_vocabulary` excuses. They are real
-# money and real DEBT -- but they are not THIS row's debt. `plane-pricing-blindness` (DECISION #87,
+# money and real DEBT -- but they are not THIS row's debt. `plane-pricing-blindness` (DECISION #43,
+# Part 7 §13(3),
 # `qa/plane-pricing-blindness.toml`) is the gate built to burn exactly them down, with a per-file
 # ledger and a human-supplied reachability claim on every row; its own worked example row is
 # `crates/busbar-voice/src/runtime/metering.rs`. Counting them a second time under a `max_hits = 0`

@@ -1,7 +1,7 @@
 //! THE PLANE PRICING-BLINDNESS GATE, DRIVEN THROUGH THE DISPATCHER.
 //!
-//! DECISION #87 owes a RED-provable gate for "planes always ledger; the money acts are kernel-side"
-//! (#43's PRICING-BLIND, #71's one-fact-per-unit). The gate is registered and is RED ON HEAD BY
+//! DECISION #43 (Part 7 §13(3)) owes a RED-provable gate for "planes always ledger; the money acts
+//! are kernel-side" (PRICING-BLIND, #71's one-fact-per-unit). The gate is registered and is RED ON HEAD BY
 //! DESIGN — the #83 roster's own SPLIT row already says of `busbar-{llm,mcp,a2a,voice}` that
 //! `unit/{admit,approve,meter,route}` and `runtime/metering.rs` "decide admission and price — that
 //! is defs 5/6, not a plane" — so `full_gate::REGISTRY_NOT_IN_CI` excuses it from ci.yml and points

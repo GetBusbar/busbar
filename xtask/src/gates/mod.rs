@@ -142,7 +142,7 @@ pub const REPORT_ONLY: &[Posture] = &[
     },
     Posture {
         name: "plane-pricing-blindness",
-        why: "DECISION #87's WITNESS — planes always ledger, and the money acts are kernel-side. \
+        why: "DECISION #43's WITNESS (Part 7 §13(3)) — planes always ledger, and the money acts are kernel-side. \
               RED BY DESIGN on HEAD: the #83 roster's own SPLIT row says of busbar-{llm,mcp,a2a,\
               voice} that `unit/{admit,approve,meter,route}` and `runtime/metering.rs` decide \
               admission and price, `that is defs 5/6, not a plane` — so the debt is named in the \
@@ -2242,7 +2242,7 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(plane_pricing_blindness::PlanePricingBlindnessGate),
         summary:
-            "no plane crate resolves a card, prices, mints a unit key or arithmetics a hold (#43/#71/#87)",
+            "no plane crate resolves a card, prices, mints a unit key or arithmetics a hold (#43/#71)",
     },
     Registration {
         name: "structure-lint",

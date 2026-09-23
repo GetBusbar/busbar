@@ -1636,7 +1636,7 @@ pub fn settle(
 /// The same six lines as `units_a2a::A2aUnits::rate_card_version` and
 /// `units_mcp::Provenance::rate_card_version`, and the same `card_at` the admin read resolves
 /// through (`busbar-core-admin/src/v1/service.rs:2375`). FOUR COPIES OF ONE RULING IS FOUR CHANCES
-/// TO GET IT WRONG — this is the fourth, written to match rather than to differ, and #87's end
+/// TO GET IT WRONG — this is the fourth, written to match rather than to differ, and #43's end
 /// state is the one kernel-side implementation that retires all four.
 fn card_in_force(card: Option<&crate::root::kernel::PinnedHistory>, arrived_ms: u64) -> u64 {
     card.and_then(|pinned| pinned.view().card_at(arrived_ms).map(|(seq, _)| seq.get()))
