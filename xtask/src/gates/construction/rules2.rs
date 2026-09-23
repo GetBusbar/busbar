@@ -56,7 +56,6 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
     let c = cfg.rule("loc-ceilings")?;
     let kernel_crate = need_str(c, "kernel_crate", "loc-ceilings")?;
     let kernel_ceiling = need_int(c, "kernel_ceiling", "loc-ceilings")?;
-    let caps_crate = need_str(c, "caps_crate", "loc-ceilings")?;
     let contract_crate = need_str(c, "contract_crate", "loc-ceilings")?;
     let caps_contract_ceiling = need_int(c, "caps_contract_ceiling", "loc-ceilings")?;
     let unit_glob = need_str(c, "unit_crate_glob", "loc-ceilings")?;
@@ -82,7 +81,7 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
     // Scoped to the crates THIS rule measures, so an unrelated crate's half-written file is not
     // this rule's refusal; within them it is, because a ceiling honoured by a file nobody could
     // read is not honoured.
-    let unreadable: Vec<String> = [kernel_crate, caps_crate, contract_crate]
+    let unreadable: Vec<String> = [kernel_crate, contract_crate]
         .iter()
         .flat_map(|c| measured.errors_for(c))
         .map(|e| format!("{} ({})", e.path, e.error))
@@ -212,17 +211,21 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
         ));
     }
 
-    let caps = crate_total(caps_crate);
-    let contract = crate_total(contract_crate);
-    let caps_contract = caps + contract;
+    // ONE CRATE, NOT TWO. `caps_crate = "busbar-caps"` was read here until 2026-09-22 and the
+    // crate has not been in this workspace since 2c9eddecf folded it into busbar-contract (#37/#38,
+    // now `crates/busbar-contract/src/caps/`). `crate_total` returned 0 for it, so the row printed
+    // `busbar-caps 0 + busbar-contract 6837 = 6837`: a term that could only ever be zero, summed
+    // into a total that read like it had two measured halves. The key is struck in the ceilings
+    // file rather than repointed, because the caps lines are already inside `contract_crate` and
+    // naming that crate twice would double-count it. THE ROW ID AND THE CEILING ARE UNCHANGED —
+    // `loc-ceilings:caps-contract` is what `ceilings.rs` pins to `caps_contract_ceiling` — so the
+    // measurement, the ratchet and this row's standing red all survive the rename of its subject.
+    let caps_contract = crate_total(contract_crate);
     rows.push(plain(
         "loc-ceilings:caps-contract",
         caps_contract <= caps_contract_ceiling,
-        format!("{caps_crate} + {contract_crate} together stay within their LOC ceiling"),
-        format!(
-            "{caps_crate} {caps} + {contract_crate} {contract} = {caps_contract} (ceiling \
-             {caps_contract_ceiling})"
-        ),
+        format!("{contract_crate} (busbar-caps folded in, #37/#38) stays within its LOC ceiling"),
+        format!("{contract_crate} {caps_contract} (ceiling {caps_contract_ceiling})"),
         caps_contract,
         caps_contract_ceiling,
         vec![],
@@ -283,9 +286,9 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
     rows.push(plain(
         "loc-ceilings:union",
         union_total <= union_ceiling,
-        "the kernel + caps/contract + unit-* union stays within its LOC ceiling",
+        "the kernel + contract + unit-* union stays within its LOC ceiling",
         format!(
-            "kernel {kernel_total} + caps/contract {caps_contract} + unit-* {unit_total} = \
+            "kernel {kernel_total} + contract {caps_contract} + unit-* {unit_total} = \
              {union_total} (ceiling {union_ceiling}); a call-graph-reachable unit file counts once \
              here AND once in its own crate's unit-total, so this sum over-counts rather than \
              hides an overage"

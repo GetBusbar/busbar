@@ -1141,6 +1141,24 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
     // A KIND WHOSE WHOLE GLOB LIST FINDS NOTHING, and whose census row does not declare the zero.
     // This is the arm the three documented zeros (`dialect`, `control`, `egress_auth`) go through,
     // proven from the other side: strike the declaration and the same shape is RED.
+    // THE REDEFINITION MUST GO AT THE *END* OF THE TABLE, NOT THE TOP, AND THE DIFFERENCE IS THE
+    // WHOLE PLANT.
+    //
+    // This inserted `<first> = ["<dead glob>"]` at `head + 1` — immediately under the
+    // `[gate.plugin_kinds]` header and therefore immediately ABOVE the real `<first> = [...]` list.
+    // `toml_doc::Table::insert` is LAST-WINS (`self.values.insert(key, value)` unconditionally), so
+    // the genuine list overwrote the planted one on the very next line and the kind kept every glob
+    // it had. The plant changed nothing.
+    //
+    // IT PASSED ANYWAY, FOR TWO YEARS OF NOTHING, BECAUSE `ROW_GLOB` WAS ALREADY RED: the three
+    // `[rules.plane-no-money].scope_globs` over `crates/busbar-{mcp,a2a,voice}/src/unit/*` held that
+    // row red on the real tree, so `got.contains(p.rule)` was satisfied by the STANDING DEBT rather
+    // than by the plant, in both `each_plant_reddens_its_own_row...` and the selftest. Draining
+    // those globs on 2026-09-22 took the mask away and the plant failed on its first honest run.
+    // That is the same defect this whole gate exists to find, wearing the clothes of a positive
+    // control: an instrument reporting a result it did not measure.
+    //
+    // Appending inside the table instead makes the planted definition the last one, so it wins.
     let empty_kind = covered(cx).ok().and_then(|files| {
         let (_, text) = files.iter().find(|(r, _)| r == CONFIG_REL)?;
         let doc = toml_doc::parse_str(text).ok()?;
@@ -1149,7 +1167,13 @@ fn plants(cx: &Ctx) -> Vec<Plant> {
         let head = lines
             .iter()
             .position(|l| l.trim() == format!("[{KIND_TABLE}]"))?;
-        lines.insert(head + 1, format!("{first} = [\"{PLANTED_GLOB}\"]"));
+        // The last line still inside this table: up to the next table header, or end of file.
+        let tail = lines
+            .iter()
+            .skip(head + 1)
+            .position(|l| l.starts_with('['))
+            .map_or(lines.len(), |n| head + 1 + n);
+        lines.insert(tail, format!("{first} = [\"{PLANTED_GLOB}\"]"));
         let mut ov = Overlay::new();
         ov.set(CONFIG_REL, format!("{}\n", lines.join("\n")));
         Some(ov)

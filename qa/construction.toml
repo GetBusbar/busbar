@@ -293,11 +293,25 @@ why = """An installable seam (a substrate `install_*` / `set_*_factory` that fil
 static) is a promise that boot fills it. A seam only the test kit installs is a seam production \
 never fills — the stream-translator factory fault that made real streams pass through \
 untranslated while every test was green."""
-# BOTH HALVES of the substrate. The value families split into `busbar-substrate-values` so a plane's
-# closure resolves no hyper/reqwest/tokio edge, and `install_protocols`,
-# `install_stream_translator_factory` and `install_diagnostics` all went with them — the second root
-# is what keeps this rule reading the seams the fault it exists for actually lived in.
-seam_root = ["crates/busbar-substrate/src", "crates/busbar-substrate-values/src"]
+# BOTH HALVES of the substrate, AS THEY EXIST TODAY. The value families split into
+# `busbar-substrate-values` so a plane's closure resolves no hyper/reqwest/tokio edge, and
+# `install_protocols`, `install_stream_translator_factory` and `install_diagnostics` all went with
+# them — that root is what keeps this rule reading the seams the fault it exists for actually
+# lived in.
+#
+# THE ENGINE HALF IS `crates/busbar-kernel/src`, NOT `crates/busbar-substrate/src`. This row named
+# the deleted path and therefore scanned a population of ZERO on that side — a ban over nothing,
+# printing PASS. REPOINT, NOT A WIDENING, and the git evidence is rename-detection at 100%
+# similarity rather than a judgement call: `5fa320208` ("W4.b P2: absorb busbar-substrate ENGINE
+# into busbar-kernel; delete busbar-substrate") carries
+# `R100 crates/busbar-substrate/src/rate_apply.rs -> crates/busbar-kernel/src/rate_apply.rs` and
+# `R100 crates/busbar-substrate/src/ingress/arrival.rs -> crates/busbar-kernel/src/ingress/arrival.rs`,
+# and `673ecdaaa` ("W4.a: absorb busbar-core INTO busbar-kernel") carries
+# `R099 crates/busbar-core/src/plane/registry.rs -> crates/busbar-kernel/src/plane/registry.rs`.
+# Measured at `5fa320208^`: `crates/busbar-substrate/src` held ELEVEN `pub fn install_*` seams and
+# `crates/busbar-core/src` held SIX; all seventeen stand today under `crates/busbar-kernel/src` at
+# the same relative path, nine of them at the SAME LINE NUMBER. The subject moved; the name did not.
+seam_root = ["crates/busbar-kernel/src", "crates/busbar-substrate-values/src"]
 seam_name_pattern = '^(install_[a-z0-9_]+|set_[a-z0-9_]+_factory)$'
 # A file whose path contains one of these is NOT production and cannot count as an installer.
 non_production_path_fragments = ["testkit", "test_support", "plugin-testkit", "fixtures.rs"]
@@ -413,6 +427,44 @@ dispatch_methods = ["route_leg", "reached"]
 opener_closing_step = "audit"
 max_findings = 0
 
+# ── WHAT AN ARM MAY LEGITIMATELY NOT RUN ────────────────────────────────────────────────────────
+# The rule judges EVERY PATH through the loop on its own: the steps a path calls must appear in the
+# canonical order, none twice, and a path may STOP early (that is a refusal) but may not walk PAST a
+# step it never ran. These entries are the ONLY thing that excuses walking past one — a branch is
+# not, by itself, an excuse. Each names the function whose body holds the branch, a substring of the
+# arm's own pattern text, the steps that arm does not run, and WHY. An entry that matches no arm the
+# walk reaches is itself a finding, so a refactor cannot leave a licence behind its arm.
+
+[[rules.teller-step-order.arm_may_omit]]
+function = "open_to_door"
+arm = "Authenticated::Challenge"
+steps = ["verify"]
+why = """A challenge round has no principal and no destination set, so there is nothing for Verify \
+to seal. Verify answers WHERE a unit may go FOR A NAMED PRINCIPAL and seals that answer with the \
+trust grant Route and Meter consume; a round that dials nothing has nothing to seal, and recording \
+the anonymous identity there would put an identity nobody established onto the unit's own record. \
+The sealed set stays EMPTY, which every later seat already accepts. The arm still faces Approve \
+(the hook-veto seat, an opinion about the exchange rather than about where it goes) and Admit (the \
+door, where a frozen group and a disabled bucket are read), so the two POLICY seats are not \
+skipped — only the one step that cannot apply to a round with no principal."""
+
+[[rules.teller-step-order.arm_may_omit]]
+function = "run_unit_async"
+arm = "Some(outcome)"
+steps = ["route", "meter"]
+why = """The cell refused a second hold: the unit lost the race at the door and never reached the \
+wire, so there is no Route leg to await and no spend to meter. It still ends where every admitted \
+unit ends — `terminal`, and so the real `audit` step — which is exactly why this path has to be \
+allowed to reach Audit without Route and Meter rather than pretended to stop at the door."""
+
+[[rules.teller-step-order.arm_may_omit]]
+function = "under_hold"
+arm = "Err(refusal)"
+steps = ["meter"]
+why = """The Route leg refused, so there is no completed leg to meter. The refusal becomes the \
+unit's outcome and the same terminal audit seals it; metering a leg that did not happen would post \
+usage against nothing."""
+
 # ── 10. one-teller-loop ──────────────────────────────────────────────────────────────────────────
 [rules.one-teller-loop]
 why = """Each plane enters the loop from one place, so a unit cannot be run twice or half-run. The \
@@ -495,7 +547,21 @@ kernel_crate = "busbar-kernel"
 # from the parse, and which is also the counter `[gate.surface_ceilings]` reads — one instrument,
 # so the two rows of this file's pair cannot disagree about a measurement again.
 kernel_ceiling = 52950
-caps_crate = "busbar-caps"
+# `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
+# busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
+# `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
+# `busbar-caps` crate (#37/#38)". The row summed `crate_total("busbar-caps") + crate_total(
+# "busbar-contract")` and printed `busbar-caps 0 + busbar-contract 6837 = 6837` — a name contributing
+# a permanent zero to a sum, which is the shape that reads like a measured half.
+#
+# IT IS STRUCK RATHER THAN REPOINTED, AND THE ARITHMETIC IS UNCHANGED BY EITHER READING. There is
+# nowhere to repoint it TO: the caps lines are already inside `contract_crate`, so naming
+# busbar-contract twice would DOUBLE-COUNT the crate and invent 6837 lines of overage that do not
+# exist. The measured total (6837), the ceiling (5652) and the row id (`loc-ceilings:caps-contract`,
+# which `ceilings.rs` pins to `caps_contract_ceiling`) are all left exactly as they were, so this
+# row remains RED by 1185 and nothing is re-baselined. The sibling row `surface-ceiling:contract`
+# already words it this way — "the contract crate's plugin-visible surface (caps folded in,
+# #37/#38)" — and the two now describe the same crate in the same terms.
 contract_crate = "busbar-contract"
 # RAISED 3480 -> 3545 for the upstream status table's contract face, pinned at what it MEASURES
 # rather than at a round number above it: `ceiling-slack` says a ceiling above its measurement is
@@ -948,8 +1014,20 @@ max_sites = 0
 # crate may not name busbar-contract's caps module at all (section 1.2, and manifest-allowlist makes
 # it an automatic RED), so their test seals cannot move onto a token until the contract offers a seal
 # a plane is allowed to name. That is debt this rule now PINS rather than debt it hides.
+#
+# STRUCK 2026-09-22: `crates/busbar-plane-admin/src/tests/mod.rs`. GONE, NOT MOVED — the file's
+# successor LIVES but the debt in it does not, which is the case a path-exists check cannot tell
+# from a working row. Followed end to end: `a39ec8633` renamed it to
+# `crates/busbar-core-admin/src/tests/mod.rs`, `92e823cd5` renamed that to
+# `crates/busbar-core-admin/src/admin_codec/tests/mod.rs` (which EXISTS at HEAD), and `ae4f22210`
+# ("kind-isolation: delete the admin plane entry face") deleted the `struct TestSeal; impl
+# busbar_contract::plugin::KernelSeal for TestSeal` block outright — `grep -c KernelSeal` on that
+# file is now 0, and no file under `crates/busbar-core-admin/` implements the trait. So the entry is
+# NOT repointed at the successor: a row pointed at a path with no finding suppresses nothing today
+# and would silently excuse the seal if anyone re-forged one there. Striking it puts that path back
+# under the rule immediately, which is what the ratchet is for. The seal debt that remains is the
+# nine below, each still forging today.
 known_sites = [
-  "crates/busbar-plane-admin/src/tests/mod.rs",
   "crates/busbar-plane-streaming/src/tests/harness.rs",
   "crates/busbar-transport-grpc/src/tests/battery.rs",
   "crates/busbar-transport-http/src/tests/mod.rs",
@@ -1041,7 +1119,47 @@ max_sites = 0
 #
 #   The plane-host, plugin-loader and plugin-sdk boundaries catch a panic crossing the ABI, which is
 #   the design: a plugin that panics must not take the node with it, and no hold is in scope on
-#   either side of those calls. busbar-core is the crate being emptied; its sites move or go with it.
+#   either side of those calls. busbar-core was the crate being emptied; its sites MOVED, and this
+#   list has now followed them. See the repoint note below.
+#
+#   ── REPOINTED 2026-09-22: SIX ENTRIES NAMED TWO DELETED CRATES ─────────────────────────────────
+#
+#   Three entries were scoped to `crates/busbar-core/…` and three to `crates/busbar-substrate/…`.
+#   NEITHER CRATE IS IN THIS TREE. A `known_sites` entry that matches no path suppresses nothing, so
+#   all 65 escapes it had reviewed came back as findings — the row was RED on debt somebody HAD
+#   read, under names that had died. Repointing restores the ratchet; it does not raise a ceiling.
+#
+#   EVERY REPOINT IS A RENAME GIT DETECTED, NOT A JUDGEMENT. `673ecdaaa` (absorb busbar-core) and
+#   `5fa320208` (absorb busbar-substrate) carry, at 99–100% similarity:
+#     R099 crates/busbar-core/src/router.rs            -> crates/busbar-kernel/src/router.rs
+#     R099 crates/busbar-core/src/plane/registry.rs    -> crates/busbar-kernel/src/plane/registry.rs
+#     R100 crates/busbar-core/src/plane_host/*.rs      -> crates/busbar-kernel/src/plane_host/*.rs
+#     R100 crates/busbar-substrate/src/plane/handle_engine.rs
+#                                                      -> crates/busbar-kernel/src/plane/handle_engine.rs
+#   and `5fa320208` MERGED substrate's `plane_host/{mod,scope}.rs` INTO the core-descended kernel
+#   files of the same name (+1775 and +596 lines).
+#
+#   THE DIRECTORY ENTRY IS DELIBERATELY NOT REPOINTED AS A DIRECTORY, and this is the whole care of
+#   this edit. `crates/busbar-kernel/src/plane_host/` is the union of TWO former directories: core's
+#   (which the old entry covered whole) and substrate's (which it never covered — the reviewer took
+#   only `mod.rs` and `scope.rs::reclaim_all` from that side, by name, deliberately). Repointing a
+#   directory at a directory that has since absorbed SEVEN files it never reviewed
+#   (build_input, egress_trust, engine_view, identity, slots_through, spki, trust_anchor) would
+#   silently excuse whatever lands in them. Those seven carry ZERO escapes today, so the widening
+#   would cost nothing this minute and everything the first time one grew — which is exactly how a
+#   ratchet becomes laundering. So the directory is replaced by the TEN core-descended files that
+#   actually carry the reviewed escapes. That is strictly NARROWER than what it replaces (creds.rs,
+#   govern.rs and the plane_host test files drop out of coverage at 0 escapes each), and a ratchet
+#   may always tighten.
+#
+#   NOTHING NEW IS EXCUSED, AND THAT IS MEASURED, NOT ASSERTED. Escapes per file in
+#   `crates/busbar-core/src/plane_host/` at `673ecdaaa^` were 4/3/7/10/2/2/13/3/8/8 = 60 across
+#   breaker, cost_host, dispatch, egress, guard, identity_admit, journal, pipe, trust, vtable. The
+#   same ten files at HEAD read 4/3/7/10/2/2/13/3/8/8 = 60. FILE FOR FILE IDENTICAL — no escape
+#   accrued in the blind spot while the name was dead. The remaining five findings are the other
+#   five entries one-for-one: plane_host/mod.rs:2433 (substrate's leak, the +1775 merge),
+#   plane_host/scope.rs:355 (inside `reclaim_all`, line 343), plane/registry.rs:489,
+#   plane/handle_engine.rs:858 (inside `sweep`, line 820), router.rs:680. 60 + 5 = the 65.
 #
 #   The two remaining leaks are boot-time interners of the same shape as ids.rs.
 #
@@ -1065,12 +1183,31 @@ max_sites = 0
 #   panicking one mean the same thing — this handle was not abandoned.
 known_sites = [
   "crates/busbar-contract/src/ids.rs::key",
-  "crates/busbar-core/src/plane_host/",
-  "crates/busbar-core/src/plane/registry.rs",
-  "crates/busbar-core/src/router.rs",
-  "crates/busbar-substrate/src/plane/handle_engine.rs::sweep",
-  "crates/busbar-substrate/src/plane_host/mod.rs",
-  "crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all",
+  # was crates/busbar-core/src/plane_host/ (a whole directory) — the ten files of it that carry a
+  # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
+  "crates/busbar-kernel/src/plane_host/breaker.rs",
+  "crates/busbar-kernel/src/plane_host/cost_host.rs",
+  "crates/busbar-kernel/src/plane_host/dispatch.rs",
+  "crates/busbar-kernel/src/plane_host/egress.rs",
+  "crates/busbar-kernel/src/plane_host/guard.rs",
+  "crates/busbar-kernel/src/plane_host/identity_admit.rs",
+  "crates/busbar-kernel/src/plane_host/journal.rs",
+  "crates/busbar-kernel/src/plane_host/pipe.rs",
+  "crates/busbar-kernel/src/plane_host/trust.rs",
+  "crates/busbar-kernel/src/plane_host/vtable.rs",
+  # was crates/busbar-core/src/plane/registry.rs (R099)
+  "crates/busbar-kernel/src/plane/registry.rs",
+  # was crates/busbar-core/src/router.rs (R099)
+  "crates/busbar-kernel/src/router.rs",
+  # was crates/busbar-substrate/src/plane/handle_engine.rs::sweep (R100); `sweep` is still the
+  # enclosing function — the escape is at :858, the fn opens at :820.
+  "crates/busbar-kernel/src/plane/handle_engine.rs::sweep",
+  # was crates/busbar-substrate/src/plane_host/mod.rs — MERGED into the core-descended kernel file
+  # of the same name by 5fa320208 (+1775 lines). The one escape there (:2433) is substrate's.
+  "crates/busbar-kernel/src/plane_host/mod.rs",
+  # was crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all — merged the same way (+596).
+  # Still named BY FUNCTION, so the rest of the merged file is still held to the rule.
+  "crates/busbar-kernel/src/plane_host/scope.rs::reclaim_all",
   "crates/busbar-substrate-values/src/proto.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/plugin-loader/src/",
@@ -1120,11 +1257,21 @@ because = "aborting skips every exit path at once; the node drains instead"
 [rules.hold-escapes.symbols.assert-unwind-safe]
 symbol = "AssertUnwindSafe"
 confined_to = "kernel/src/teller"
-# The Teller loop's two homes in this tree: the kernel's own teller.rs, and the substrate teller
-# module that rules 12 and 13 above already treat as where the loop is entered. The third site is
+# The Teller loop's ONE home in this tree: the kernel's own teller.rs. The second site is
 # busbar-timing's atexit diagnostic dump: a debug-only (`feature = "timing"`) profiling crate that
 # holds no unit, so its catch_unwind cannot smuggle a hold across — a distinct, provably-safe use.
-confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-substrate/src/teller", "crates/busbar-timing/src/lib.rs", "crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
+#
+# STRUCK 2026-09-22: `crates/busbar-substrate/src/teller`. GONE, NOT MOVED, and the distinction is
+# the whole point — there is no successor to repoint at. The list described "the Teller loop's TWO
+# homes"; `f6a869ac0` ("busbar 1.6.0: the second Teller loop deleted onto the kernel's one loop")
+# and `05fa6d33d` ("W2.b: re-point llm/a2a/streaming onto the unified kernel loop; delete substrate
+# teller") DELETED all six files of it — mod.rs, run.rs, steps.rs, tests.rs, tokens.rs, unit.rs —
+# with `--name-status` showing `D` for every one and no `R` anywhere. `crates/busbar-kernel/src/
+# teller.rs` is NOT its successor: it was born independently at `ad49838bf` as an `A`, it is the
+# loop that SURVIVED, and it is already on this list in its own right. Repointing the struck entry
+# at it would be inventing coverage for a scope that no longer exists; the substrate teller's
+# AssertUnwindSafe went away with its code. The remaining paths already confine the live loop.
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-timing/src/lib.rs", "crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place (plus busbar-timing's holdless atexit dump)"
 
 [rules.hold-escapes.symbols.join-abort]
@@ -1246,16 +1393,50 @@ are nanoseconds, not nano-units of money. The seam verb that turns usage INTO an
 (`cost_price_usage`) is deliberately not in the symbol list below: it is scanned by one-pricing-site, \
 which is the row that can name the home the call belongs in, so one site is never counted twice."""
 # Where a plane's own production source lives: the plugin-side plane crates, the pure codec half of
-# each plane, and the plane-side unit modules. Only the llm plane has a unit module today; the mcp,
-# a2a and voice legs still run their steps from the composition root's wiring (which is the one place
-# allowed to price), so their globs match nothing yet and say so in the row rather than failing.
+# each plane, the llm plane's unit modules, and the three protocol-plugin crates that carry a
+# plane's worth of state behind the same on/off switch as their codec.
+#
+# ── REPOINTED 2026-09-22. THREE OF THESE FOUR GLOBS MATCHED ZERO FILES AND THE ROW READ THAT
+#    PERMANENT ZERO BACK AS A FACT ABOUT THE TREE ────────────────────────────────────────────────
+#
+# `crates/busbar-{mcp,a2a,voice}/src/unit/*` were written beside the llm glob on the assumption that
+# `src/unit/` generalises across the planes. IT DOES NOT, AND THE GLOBS WERE WRONG ON THE DAY THEY
+# LANDED. At ae307a648 — the commit that added them — `git ls-tree -d ae307a648 crates/busbar-mcp/src`
+# already reported `mcp` and `tests` and no `unit`; `busbar-a2a` reported `a2a`; `busbar-voice`
+# reported `bin`, `runtime`, `tests`, `topology`. `git log --all -- crates/busbar-mcp/src/unit`
+# returns ZERO commits, and the same for a2a and voice: no such directory has ever existed in this
+# repository. This was never a subject that MOVED and never a kind with no crate yet. It is a name
+# that resolved to nothing from birth, and the comment it replaces ("their globs match nothing YET")
+# is the sentence a scan over zero always invites somebody to write.
+#
+# WHAT THE ROW WAS ACTUALLY MISSING, AND WHY IT IS THIS WIDTH. `busbar-mcp`'s own crate docs say it
+# holds BOTH halves — the codec in `src/codec/` and "the MCP plane ... ~18k lines" in `src/mcp/` —
+# and `busbar-a2a` has the same shape in `src/a2a/`, because `busbar-mcp-codec` (5fbd891e0) and
+# `busbar-a2a-codec` (0e41eeb9e) DISSOLVED INTO THEM under #39; see `[gate.plugin_kinds]`'s own note
+# above, which records exactly that. So `crates/busbar-*-codec/src/*` kept matching the two codec
+# crates that survive (llm, voice) and never went red when the other two folded into the very crates
+# these globs were supposed to reach: the mcp and a2a codec halves have been unscanned since the
+# fold. `busbar-voice` likewise carries its plane in `src/runtime/` and `src/topology/`. Each glob
+# now names its crate's whole `src`, which is what this rule's own `why` asks for ("a plane crate,
+# the pure codec half it shed") and the same width `crates/busbar-plane-*/src/*` already uses for a
+# plane crate.
+#
+# MEASURED BEFORE AND AFTER ON THIS TREE, AND THE DIFFERENCE IS THE FINDING: 1 -> 113 money symbols.
+# A rule asserting that a plane names no price was green over three of its four planes. Under
+# #43/#71 a plane is pricing-blind, so every one of those is a real hit and NOT ONE of them is
+# allowlisted here; the row stays red at 113 until they are neutralised.
+#
+# `busbar-llm` IS DELIBERATELY LEFT AT `src/unit/*`. That glob RESOLVES — it is not a dead name, and
+# widening it to `crates/busbar-llm/src/*` would pull `src/engine/` into scope in the same edit that
+# fixes a staleness defect. Adding unreviewed debt under cover of a repoint is the move this whole
+# exercise exists to refuse; widening llm is a separate edit that owes its own review.
 scope_globs = [
   "crates/busbar-plane-*/src/*",
   "crates/busbar-*-codec/src/*",
   "crates/busbar-llm/src/unit/*",
-  "crates/busbar-mcp/src/unit/*",
-  "crates/busbar-a2a/src/unit/*",
-  "crates/busbar-voice/src/unit/*",
+  "crates/busbar-mcp/src/*",
+  "crates/busbar-a2a/src/*",
+  "crates/busbar-voice/src/*",
 ]
 # Each is matched as a whole word (an entry starting with `_` as a suffix), and judged against the
 # WHOLE identifier it lands in, so the vocabulary below can excuse a word rather than a substring.

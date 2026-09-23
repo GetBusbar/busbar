@@ -367,7 +367,11 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a>
 
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-substrate/src/zz_planted_seam.rs",
+        // Under `[rules.no-uninstalled-seam].seam_root` AS REPOINTED: the engine half of the
+        // substrate is `crates/busbar-kernel/src` (5fa320208 absorbed it at R100), so a plant at
+        // the deleted `crates/busbar-substrate/src` would sit under no declared root and this
+        // positive control would stop proving anything at all.
+        "crates/busbar-kernel/src/zz_planted_seam.rs",
         "static PLANTED_SEAM_CELL: OnceLock<u32> = OnceLock::new();\n\npub fn \
          install_planted_seam(v: u32) {\n    let _ = PLANTED_SEAM_CELL.set(v);\n}\n",
     );

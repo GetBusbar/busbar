@@ -172,21 +172,21 @@ pub const REPORT_ONLY: &[Posture] = &[
     Posture {
         name: "qa-names",
         why:
-            "RED BY DESIGN on HEAD, about a NAMED, FINITE set of rows and nothing else. This gate \
-              was built on 2026-09-22 to close a defect class found FIVE TIMES THAT DAY, and a \
-              gate for a class that is still open reds on the open instances or it does not work. \
-              The three rows below are the ones carrying that standing debt, twenty-five names in \
-              all: five crate names (a `caps_crate` and four kind-isolation ledger rows) naming \
-              crates the 1.6.0 folds deleted; seventeen paths (nine in qa/construction.toml under \
-              the deleted `busbar-core`/`busbar-substrate` and the renamed `busbar-plane-admin`, \
-              six qa/full-gate.toml skip scripts that moved into `testing/shadow-oracle/scripts/`, \
-              two qa/instance-noun-neutrality.toml ledger rows); and three `scope_globs` over \
-              `src/unit/` directories three planes no longer have. Every one is printed in full on \
-              every run and every one is another change's to drain. The \
-              other six rows are SCORED: a new dead name, a kind that names no key, a scan that \
-              collapsed or a stale declaration is a regression like any other. DELETE THIS POSTURE \
-              when the three names below are drained -- the stale-name check will red until you \
-              do, which is the point.",
+            "THE LIST IS EMPTY AND THE GATE IS GREEN OUTRIGHT. This posture was written on \
+              2026-09-22 naming three rows and twenty-five dead names -- five crate names, \
+              seventeen paths and three `scope_globs` -- and ALL TWENTY-FIVE ARE DRAINED, so the \
+              list that scored them is `&[]` and every row of this gate is now SCORED like any \
+              other: a new dead name, a kind that names no key, a scan that collapsed or a stale \
+              declaration reds `--all` and `--posture` alike. An empty `OnlyRows` cannot excuse \
+              anything -- `excused_from_all` is only consulted when the verdict is red, and with no \
+              named row every red is a NEW RED -- so this entry is inert rather than a waiver. It \
+              is kept for exactly one reason: `ci.yml` and `full_gate::CARGO_LOCAL` both invoke \
+              `cargo xtask gate qa-names --posture`, and `--posture` on a gate with NO posture \
+              entry exits 2 by design. DELETING THIS ENTRY IS A THREE-FILE EDIT and must be all \
+              three at once: strike this `Posture` and `QA_NAMES_STANDING_REDS` here, change \
+              ci.yml's step to plain `cargo xtask gate qa-names`, and change the matching string in \
+              `full_gate::CARGO_LOCAL` -- the full-gate selftest holds those two in set equality, \
+              so editing either alone reds it.",
         excuse: Excused::OnlyRows(QA_NAMES_STANDING_REDS),
     },
     Posture {
@@ -240,21 +240,46 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
 /// that has gone green is STALE and is scored too, so the list cannot outlive its facts and cannot
 /// quietly become a blanket.
 pub const QA_NAMES_STANDING_REDS: &[&str] = &[
-    // `[rules.loc-ceilings].caps_crate = "busbar-caps"` (the crate was folded into busbar-contract)
-    // plus four `qa/kind-isolation.toml` ledger rows naming `busbar-plugin-pack`/`busbar-plugin-sign`.
-    "qa-names:crate-names-a-live-package",
-    // Seventeen: `[rules.no-uninstalled-seam].seam_root`, six `[rules.hold-escapes].known_sites`
-    // and one `confined_to_paths` under the deleted `busbar-core`/`busbar-substrate`, one
-    // `[rules.kernel-seal-impls].known_sites` under the renamed `busbar-plane-admin`, six
-    // `qa/full-gate.toml` skip scripts that moved to `testing/shadow-oracle/scripts/`, and two
-    // `qa/instance-noun-neutrality.toml` ledger rows. An eighteenth -- `[rules.no-default-bodies]`
-    // `transport_file` naming `crates/busbar-contract/src/transport.rs`, which had become a
-    // DIRECTORY -- was struck by `016422be7` between this gate first reporting it and this list
-    // being written, which is the drain working.
-    "qa-names:path-names-a-live-path",
-    // `[rules.plane-no-money].scope_globs` scopes `crates/busbar-{mcp,a2a,voice}/src/unit/*`, and
-    // none of those three directories exists: the rule scans zero files in three of its planes.
-    "qa-names:glob-matches-something",
+    // EMPTY, 2026-09-22, and that is the drain finishing rather than the list being switched off.
+    //
+    // It held three row ids covering twenty-five dead names in `qa/*.toml`. Each was decided by the
+    // same question -- did the SUBJECT move, or is it gone? -- and the two answers have different
+    // edits, because repointing a row at a subject it never covered launders debt nobody reviewed:
+    //
+    //   * `qa-names:crate-names-a-live-package` (5). `[rules.loc-ceilings].caps_crate =
+    //     "busbar-caps"` STRUCK: the crate folded into busbar-contract (2c9eddecf) and there is
+    //     nowhere to repoint it, because `contract_crate` already counts those lines and naming the
+    //     crate twice would double-count it. The row's measurement (6837), its ceiling (5652) and
+    //     its standing red are unchanged. Four `qa/kind-isolation.toml` `[[cell]]` rows naming
+    //     `busbar-plugin-pack`/`busbar-plugin-sign` STRUCK on the owning gate's own instruction:
+    //     it reported each as `dead-cell ... the cell measures 0. Strike it`. (`busbar-plugin-pack`
+    //     went to busbar-plugin-SDK in 38db9d48e, not the loader; `busbar-plugin-sign` went to the
+    //     loader in d81a76f7f. Both destinations are measured under their own names already.)
+    //
+    //   * `qa-names:path-names-a-live-path` (17). Nine `qa/construction.toml` entries under the
+    //     deleted `busbar-core`/`busbar-substrate` and the renamed `busbar-plane-admin` REPOINTED.
+    //     Six `qa/full-gate.toml` skip rows STRUCK -- all six were BORN DEAD, because 446d771f3
+    //     (which created that file) is a descendant of c73ae4f66 (deleted the five shadow-oracle
+    //     harness scripts) and 378572b3f (deleted release-order-lint.py, saying in its own message
+    //     that the skip entry and its special case both had to go). `cargo xtask full-gate --list`
+    //     shows the six invocations actually skipped, and not one of the struck rows was among
+    //     them. Two `qa/instance-noun-neutrality.toml` rows: `crates/plugin-sign/src/tests/
+    //     lib_tests.rs` REPOINTED to `crates/plugin-loader/src/tests/sign_tests.rs` (a real `git
+    //     mv` in d81a76f7f, and the freshly measured baseline gives the destination the SAME count
+    //     36 and the same wave, so the ratchet moved with the file); `crates/busbar-plane-voice/
+    //     src/claims.rs` STRUCK, because fbead1a31 says in as many words "NOT A RELOCATION, SO NOT
+    //     AN R" -- voice was the losing duplicate and the survivor
+    //     `crates/busbar-plane-streaming/src/claims.rs` already carries its own identical row.
+    //
+    //   * `qa-names:glob-matches-something` (3). `[rules.plane-no-money].scope_globs` named
+    //     `crates/busbar-{mcp,a2a,voice}/src/unit/*`. `git log --all` returns ZERO commits for all
+    //     three: those directories have never existed here, and all three crates already had their
+    //     real layouts at ae307a648, the commit that wrote the globs. Not stale -- never resolved.
+    //     REPOINTED at the crates' real `src` roots, AND THE REPOINT IS THE FINDING: a rule
+    //     asserting that a plane names no price went from 1 money symbol to 113, having been green
+    //     over three of its four planes (and, since #39 dissolved busbar-mcp-codec and
+    //     busbar-a2a-codec INTO those crates, over two codec halves as well). Nothing is
+    //     allowlisted; `plane-no-money` stays red at 113 on `CONSTRUCTION_STANDING_REDS`.
 ];
 
 /// One entry of [`REPORT_ONLY`].
