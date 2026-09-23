@@ -402,6 +402,9 @@
    "exclude": [
     "crates/busbar-a2a/src/tests"
    ],
+   "moved_from": [
+    "crates/busbar-plane-a2a-host/src"
+   ],
    "rounds": [
     {
      "round": 1,
@@ -415,73 +418,6 @@
       "LOW": 3
      },
      "report": "audits/prod-a2a.md — PARTIAL first read (wind-down): backend URL leaks into refusals; legacy pushback token never revoked; unmetered GetExtendedAgentCard/ListTasks"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-a2a-codec/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-a2a-codec/src"
-   ],
-   "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
-   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
-   "round": 7,
-   "result": "findings",
-   "counts": {
-    "LOW": 1,
-    "NIT": 1
-   },
-   "report": "the crate does not forbid unsafe while every plane crate does; one wire error code is declared twice, once here in the shared table and once again in the plane module that reads this table by identity",
-   "auditor": "opus-plane-auditor-b",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-a2a-codec/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
-     "counts": {
-      "HIGH": 3,
-      "MEDIUM": 11,
-      "LOW": 8,
-      "NIT": 8
-     },
-     "report": "findings against transports+codecs+substrate-values; the reading's detail was not carried into the register"
-    },
-    {
-     "round": 5,
-     "result": "in_progress",
-     "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
-     "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
-    },
-    {
-     "round": 6,
-     "result": "zero",
-     "auditor": "opus-pass2",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
-     "counts": {},
-     "report": "zero; every production file read fully"
-    },
-    {
-     "round": 7,
-     "result": "findings",
-     "auditor": "opus-plane-auditor-b",
-     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
-     "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
-     "counts": {
-      "LOW": 1,
-      "NIT": 1
-     },
-     "report": "the crate does not forbid unsafe while every plane crate does; one wire error code is declared twice, once here in the shared table and once again in the plane module that reads this table by identity"
     }
    ]
   },
@@ -576,7 +512,151 @@
    "exclude": [
     "crates/busbar-contract/src/tests"
    ],
+   "moved_from": [
+    "crates/busbar-grammar/src",
+    "crates/busbar-contract-transport/src"
+   ],
    "rounds": [
+    {
+     "round": 5,
+     "result": "findings",
+     "auditor": "opus",
+     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+     "tree_hash": "06ad1f4a9ba3733455b7ac4f679b19c27389590baf88a694913ece948a3a7eff",
+     "counts": {
+      "MEDIUM": 3,
+      "LOW": 1
+     },
+     "report": "findings against grammar (adversarial pass); the reading's detail was not carried into the register",
+     "hashed_as": {
+      "id": "crates/busbar-grammar/src",
+      "paths": [
+       "crates/busbar-grammar/src"
+      ],
+      "exclude": [
+       "crates/busbar-grammar/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-grammar/src"
+     ]
+    },
+    {
+     "round": 5,
+     "result": "in_progress",
+     "auditor": "round-5 finder fleet",
+     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+     "tree_hash": "c3ab5d71b260e8ba3cc59b4090a0ce8f05fe2ba22d0359afc287e0396af988be",
+     "counts": {},
+     "report": "in flight; no reading recorded against this scope yet",
+     "hashed_as": {
+      "id": "crates/busbar-grammar/src",
+      "paths": [
+       "crates/busbar-grammar/src"
+      ],
+      "exclude": [
+       "crates/busbar-grammar/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-grammar/src"
+     ]
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-pass2",
+     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+     "tree_hash": "06ad1f4a9ba3733455b7ac4f679b19c27389590baf88a694913ece948a3a7eff",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1,
+      "NIT": 2
+     },
+     "report": "span not readable back from the journal (fixed); skip_container punctuation; read fully",
+     "hashed_as": {
+      "id": "crates/busbar-grammar/src",
+      "paths": [
+       "crates/busbar-grammar/src"
+      ],
+      "exclude": [
+       "crates/busbar-grammar/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-grammar/src"
+     ]
+    },
+    {
+     "round": 5,
+     "result": "findings",
+     "auditor": "opus",
+     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+     "tree_hash": "cb61b9c060ad4ad9906a2191be7207c65716cd7f61ea4da139a636fa4b8a06ec",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 11,
+      "LOW": 8,
+      "NIT": 8
+     },
+     "report": "findings against transports+codecs+substrate-values; the reading's detail was not carried into the register",
+     "hashed_as": {
+      "id": "crates/busbar-contract-transport/src",
+      "paths": [
+       "crates/busbar-contract-transport/src"
+      ],
+      "exclude": [
+       "crates/busbar-contract-transport/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-contract-transport/src"
+     ]
+    },
+    {
+     "round": 5,
+     "result": "in_progress",
+     "auditor": "round-5 finder fleet",
+     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+     "tree_hash": "cb61b9c060ad4ad9906a2191be7207c65716cd7f61ea4da139a636fa4b8a06ec",
+     "counts": {},
+     "report": "in flight; no reading recorded against this scope yet",
+     "hashed_as": {
+      "id": "crates/busbar-contract-transport/src",
+      "paths": [
+       "crates/busbar-contract-transport/src"
+      ],
+      "exclude": [
+       "crates/busbar-contract-transport/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-contract-transport/src"
+     ]
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-pass3",
+     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+     "tree_hash": "97b62ddfb154ce554e9956bd11c186ff347497e271b487b5b58a5d542e7ce4ed",
+     "counts": {
+      "HIGH": 1
+     },
+     "report": "transport_registry.rs real-stack copy drifted from production (ws over http,tcp,tls; grpc over http); read fully",
+     "hashed_as": {
+      "id": "crates/busbar-contract-transport/src",
+      "paths": [
+       "crates/busbar-contract-transport/src"
+      ],
+      "exclude": [
+       "crates/busbar-contract-transport/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-contract-transport/src"
+     ]
+    },
     {
      "round": 5,
      "result": "findings",
@@ -641,126 +721,6 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-contract-transport/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-contract-transport/src"
-   ],
-   "tree_hash": "97b62ddfb154ce554e9956bd11c186ff347497e271b487b5b58a5d542e7ce4ed",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1
-   },
-   "report": "transport_registry.rs real-stack copy drifted from production (ws over http,tcp,tls; grpc over http); read fully",
-   "auditor": "opus-pass3",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-contract-transport/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "cb61b9c060ad4ad9906a2191be7207c65716cd7f61ea4da139a636fa4b8a06ec",
-     "counts": {
-      "HIGH": 3,
-      "MEDIUM": 11,
-      "LOW": 8,
-      "NIT": 8
-     },
-     "report": "findings against transports+codecs+substrate-values; the reading's detail was not carried into the register"
-    },
-    {
-     "round": 5,
-     "result": "in_progress",
-     "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "cb61b9c060ad4ad9906a2191be7207c65716cd7f61ea4da139a636fa4b8a06ec",
-     "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
-    },
-    {
-     "round": 6,
-     "result": "findings",
-     "auditor": "opus-pass3",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "97b62ddfb154ce554e9956bd11c186ff347497e271b487b5b58a5d542e7ce4ed",
-     "counts": {
-      "HIGH": 1
-     },
-     "report": "transport_registry.rs real-stack copy drifted from production (ws over http,tcp,tls; grpc over http); read fully"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-core/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-core/src"
-   ],
-   "tree_hash": "0a1eef10e66a725f644483e54a281e4a74a2aa26c9770516151131f75d8ddc9b",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 2,
-   "result": "findings",
-   "counts": {
-    "HIGH": 3,
-    "MEDIUM": 10,
-    "LOW": 6,
-    "NIT": 3
-   },
-   "report": "rotate_key unbounded id (fixed), auth.mode replaced the chain (fixed), malformed pools/export replaced with empty (fixed), consent decoder panic (fixed); validate cannot see boot-only checks, inferred pool knobs discarded, oauth_as task leak per apply, overlay no interpolation reported",
-   "auditor": "opus-pass2",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-core/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "0a1eef10e66a725f644483e54a281e4a74a2aa26c9770516151131f75d8ddc9b",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 2
-     },
-     "report": "legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths"
-    },
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-pass1",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "0a1eef10e66a725f644483e54a281e4a74a2aa26c9770516151131f75d8ddc9b",
-     "counts": {
-      "HIGH": 4,
-      "MEDIUM": 3,
-      "LOW": 1
-     },
-     "report": "rotate_key unbounded id (fixed), login authorize url panic (fixed); config/validate endpoint rejects plane config and reads caller paths unbounded, admin-tokens terminal reject, limits_guard commit before persist, shutdown flush_budgets gate reported; migrate.rs 1100-1740, store tests, auth chain tests unread"
-    },
-    {
-     "round": 2,
-     "result": "findings",
-     "auditor": "opus-pass2",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "0a1eef10e66a725f644483e54a281e4a74a2aa26c9770516151131f75d8ddc9b",
-     "counts": {
-      "HIGH": 3,
-      "MEDIUM": 10,
-      "LOW": 6,
-      "NIT": 3
-     },
-     "report": "rotate_key unbounded id (fixed), auth.mode replaced the chain (fixed), malformed pools/export replaced with empty (fixed), consent decoder panic (fixed); validate cannot see boot-only checks, inferred pool knobs discarded, oauth_as task leak per apply, overlay no interpolation reported"
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-core-connsec/src",
    "kind": "production",
    "paths": [
@@ -776,64 +736,6 @@
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-connsec/src/tests"
-   ]
-  },
-  {
-   "id": "crates/busbar-grammar/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-grammar/src"
-   ],
-   "tree_hash": "06ad1f4a9ba3733455b7ac4f679b19c27389590baf88a694913ece948a3a7eff",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 1,
-    "LOW": 1,
-    "NIT": 2
-   },
-   "report": "span not readable back from the journal (fixed); skip_container punctuation; read fully",
-   "auditor": "opus-pass2",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-grammar/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "06ad1f4a9ba3733455b7ac4f679b19c27389590baf88a694913ece948a3a7eff",
-     "counts": {
-      "MEDIUM": 3,
-      "LOW": 1
-     },
-     "report": "findings against grammar (adversarial pass); the reading's detail was not carried into the register"
-    },
-    {
-     "round": 5,
-     "result": "in_progress",
-     "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "c3ab5d71b260e8ba3cc59b4090a0ce8f05fe2ba22d0359afc287e0396af988be",
-     "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
-    },
-    {
-     "round": 6,
-     "result": "findings",
-     "auditor": "opus-pass2",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "06ad1f4a9ba3733455b7ac4f679b19c27389590baf88a694913ece948a3a7eff",
-     "counts": {
-      "MEDIUM": 1,
-      "LOW": 1,
-      "NIT": 2
-     },
-     "report": "span not readable back from the journal (fixed); skip_container punctuation; read fully"
-    }
    ]
   },
   {
@@ -856,7 +758,186 @@
    "exclude": [
     "crates/busbar-kernel/src/tests"
    ],
+   "moved_from": [
+    "crates/busbar-substrate/src",
+    "crates/busbar-core/src"
+   ],
    "rounds": [
+    {
+     "round": 5,
+     "result": "findings",
+     "auditor": "opus",
+     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+     "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 9,
+      "LOW": 6,
+      "NIT": 5
+     },
+     "report": "findings against substrate+plugin-loader+plugin-sdk+timing; the reading's detail was not carried into the register",
+     "hashed_as": {
+      "id": "crates/busbar-substrate/src",
+      "paths": [
+       "crates/busbar-substrate/src"
+      ],
+      "exclude": [
+       "crates/busbar-substrate/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-substrate/src"
+     ]
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-pass2",
+     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+     "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 3,
+      "NIT": 2
+     },
+     "report": "mutate splits a durable write with no compensation; identity/trust-anchor registries hold private keys with no removal path; cancelled unit at route/meter never posted; all 15 production files and 5 test files read, teller/tests.rs unread; no fix shipped, fix agent dispatched",
+     "hashed_as": {
+      "id": "crates/busbar-substrate/src",
+      "paths": [
+       "crates/busbar-substrate/src"
+      ],
+      "exclude": [
+       "crates/busbar-substrate/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-substrate/src"
+     ]
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-pass1",
+     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+     "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 6,
+      "NIT": 1
+     },
+     "report": "nat64-embedded v4 bypassed the imds refusal (fixed); host_matches_any block side, alternate-encoding trailing dot, metrics spawn panic, telemetry bank growth reported; 36 production files read fully",
+     "hashed_as": {
+      "id": "crates/busbar-substrate/src",
+      "paths": [
+       "crates/busbar-substrate/src"
+      ],
+      "exclude": [
+       "crates/busbar-substrate/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-substrate/src"
+     ]
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-pass2",
+     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+     "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 5
+     },
+     "report": "inbound ws acceptor had no message or frame ceiling (fixed); outbound ws mirror, limits install ordering, retry header restore reported; test files unread",
+     "hashed_as": {
+      "id": "crates/busbar-substrate/src",
+      "paths": [
+       "crates/busbar-substrate/src"
+      ],
+      "exclude": [
+       "crates/busbar-substrate/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-substrate/src"
+     ]
+    },
+    {
+     "round": 5,
+     "result": "findings",
+     "auditor": "opus",
+     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+     "tree_hash": "0a1eef10e66a725f644483e54a281e4a74a2aa26c9770516151131f75d8ddc9b",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 2
+     },
+     "report": "legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths",
+     "hashed_as": {
+      "id": "crates/busbar-core/src",
+      "paths": [
+       "crates/busbar-core/src"
+      ],
+      "exclude": [
+       "crates/busbar-core/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-core/src"
+     ]
+    },
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-pass1",
+     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+     "tree_hash": "0a1eef10e66a725f644483e54a281e4a74a2aa26c9770516151131f75d8ddc9b",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 3,
+      "LOW": 1
+     },
+     "report": "rotate_key unbounded id (fixed), login authorize url panic (fixed); config/validate endpoint rejects plane config and reads caller paths unbounded, admin-tokens terminal reject, limits_guard commit before persist, shutdown flush_budgets gate reported; migrate.rs 1100-1740, store tests, auth chain tests unread",
+     "hashed_as": {
+      "id": "crates/busbar-core/src",
+      "paths": [
+       "crates/busbar-core/src"
+      ],
+      "exclude": [
+       "crates/busbar-core/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-core/src"
+     ]
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-pass2",
+     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+     "tree_hash": "0a1eef10e66a725f644483e54a281e4a74a2aa26c9770516151131f75d8ddc9b",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 10,
+      "LOW": 6,
+      "NIT": 3
+     },
+     "report": "rotate_key unbounded id (fixed), auth.mode replaced the chain (fixed), malformed pools/export replaced with empty (fixed), consent decoder panic (fixed); validate cannot see boot-only checks, inferred pool knobs discarded, oauth_as task leak per apply, overlay no interpolation reported",
+     "hashed_as": {
+      "id": "crates/busbar-core/src",
+      "paths": [
+       "crates/busbar-core/src"
+      ],
+      "exclude": [
+       "crates/busbar-core/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-core/src"
+     ]
+    },
     {
      "round": 5,
      "result": "findings",
@@ -923,14 +1004,74 @@
    "paths": [
     "crates/busbar-kernel/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "99c121cdb1cf5f33b7c86ca5049e5ae639bbaf31ada428a56ff57b0bb1554fb0",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 3,
+    "LOW": 3
+   },
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
+   "auditor": "opus-test-auditor-substrate",
+   "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-core/src/tests",
+    "crates/busbar-substrate/src/tests"
+   ],
+   "hashed_as": {
+    "id": "crates/busbar-substrate/src/tests",
+    "paths": [
+     "crates/busbar-substrate/src/tests"
+    ]
+   },
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-core",
+     "audited_at": "759280973a9075e8c1197116643156290af970a0",
+     "tree_hash": "a86ee2c767b7ca142d4002b0db57f6d6843f7e118c6a529269cf12deb80d3dd2",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 4,
+      "LOW": 9
+     },
+     "report": "busbar-landq-state/gate/audits/tests-core.md",
+     "hashed_as": {
+      "id": "crates/busbar-core/src/tests",
+      "paths": [
+       "crates/busbar-core/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-core/src/tests"
+     ]
+    },
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-substrate",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "99c121cdb1cf5f33b7c86ca5049e5ae639bbaf31ada428a56ff57b0bb1554fb0",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 3,
+      "LOW": 3
+     },
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md",
+     "hashed_as": {
+      "id": "crates/busbar-substrate/src/tests",
+      "paths": [
+       "crates/busbar-substrate/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-substrate/src/tests"
+     ]
+    }
+   ]
   },
   {
    "id": "crates/busbar-kernel/benches",
@@ -938,14 +1079,43 @@
    "paths": [
     "crates/busbar-kernel/benches"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "28ea7fb4572361032187d5d346b1edbc47aecf0c1829e5b2a91cb88122d37427",
+   "audited_at": "759280973a9075e8c1197116643156290af970a0",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "report": "busbar-landq-state/gate/audits/tests-core.md",
+   "auditor": "opus-test-auditor-core",
+   "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-core/benches"
+   ],
+   "hashed_as": {
+    "id": "crates/busbar-core/benches",
+    "paths": [
+     "crates/busbar-core/benches"
+    ]
+   },
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-core",
+     "audited_at": "759280973a9075e8c1197116643156290af970a0",
+     "tree_hash": "28ea7fb4572361032187d5d346b1edbc47aecf0c1829e5b2a91cb88122d37427",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-core.md",
+     "hashed_as": {
+      "id": "crates/busbar-core/benches",
+      "paths": [
+       "crates/busbar-core/benches"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-core/benches"
+     ]
+    }
+   ]
   },
   {
    "id": "crates/busbar-llm/src",
@@ -1088,6 +1258,9 @@
    "exclude": [
     "crates/busbar-mcp/src/tests"
    ],
+   "moved_from": [
+    "crates/busbar-plane-mcp-host/src"
+   ],
    "rounds": [
     {
      "round": 5,
@@ -1113,73 +1286,6 @@
       "LOW": 12
      },
      "report": "bare-host format carried a url past the ssrf guard (fixed), handshake id collided with the opening handshake (fixed), call-log dispatched for calls that never left (fixed), token endpoint body unbounded (fixed), secret sources leaked to callers (fixed); notify not cancel-safe, supervisor reset never fires, listen ungated, sampling input unbounded, demotion row skipped silently reported"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-mcp-codec/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-mcp-codec/src"
-   ],
-   "tree_hash": "83e9793543bff14b7620caca98f41d6aaeba6f02255cefcff3b397aaf6cf9764",
-   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
-   "round": 8,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 1,
-    "LOW": 1
-   },
-   "report": "the markup-normalisation floor is applied by the retiring engine and by nothing in the plane crate that replaces it, so the migration drops a control the module header calls universal and security-critical; the crate does not forbid unsafe",
-   "auditor": "opus-plane-auditor-b",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-mcp-codec/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
-     "counts": {
-      "HIGH": 3,
-      "MEDIUM": 11,
-      "LOW": 8,
-      "NIT": 8
-     },
-     "report": "findings against transports+codecs+substrate-values; the reading's detail was not carried into the register"
-    },
-    {
-     "round": 5,
-     "result": "in_progress",
-     "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
-     "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
-    },
-    {
-     "round": 6,
-     "result": "zero",
-     "auditor": "opus-pass2",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
-     "counts": {},
-     "report": "zero; every production file read fully"
-    },
-    {
-     "round": 8,
-     "result": "findings",
-     "auditor": "opus-plane-auditor-b",
-     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
-     "tree_hash": "83e9793543bff14b7620caca98f41d6aaeba6f02255cefcff3b397aaf6cf9764",
-     "counts": {
-      "MEDIUM": 1,
-      "LOW": 1
-     },
-     "report": "the markup-normalisation floor is applied by the retiring engine and by nothing in the plane crate that replaces it, so the migration drops a control the module header calls universal and security-critical; the crate does not forbid unsafe"
     }
    ]
   },
@@ -1223,7 +1329,102 @@
    "exclude": [
     "crates/busbar-plane-a2a/src/tests"
    ],
+   "moved_from": [
+    "crates/busbar-a2a-codec/src"
+   ],
    "rounds": [
+    {
+     "round": 5,
+     "result": "findings",
+     "auditor": "opus",
+     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+     "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 11,
+      "LOW": 8,
+      "NIT": 8
+     },
+     "report": "findings against transports+codecs+substrate-values; the reading's detail was not carried into the register",
+     "hashed_as": {
+      "id": "crates/busbar-a2a-codec/src",
+      "paths": [
+       "crates/busbar-a2a-codec/src"
+      ],
+      "exclude": [
+       "crates/busbar-a2a-codec/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-a2a-codec/src"
+     ]
+    },
+    {
+     "round": 5,
+     "result": "in_progress",
+     "auditor": "round-5 finder fleet",
+     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+     "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
+     "counts": {},
+     "report": "in flight; no reading recorded against this scope yet",
+     "hashed_as": {
+      "id": "crates/busbar-a2a-codec/src",
+      "paths": [
+       "crates/busbar-a2a-codec/src"
+      ],
+      "exclude": [
+       "crates/busbar-a2a-codec/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-a2a-codec/src"
+     ]
+    },
+    {
+     "round": 6,
+     "result": "zero",
+     "auditor": "opus-pass2",
+     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+     "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
+     "counts": {},
+     "report": "zero; every production file read fully",
+     "hashed_as": {
+      "id": "crates/busbar-a2a-codec/src",
+      "paths": [
+       "crates/busbar-a2a-codec/src"
+      ],
+      "exclude": [
+       "crates/busbar-a2a-codec/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-a2a-codec/src"
+     ]
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
+     "counts": {
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "the crate does not forbid unsafe while every plane crate does; one wire error code is declared twice, once here in the shared table and once again in the plane module that reads this table by identity",
+     "hashed_as": {
+      "id": "crates/busbar-a2a-codec/src",
+      "paths": [
+       "crates/busbar-a2a-codec/src"
+      ],
+      "exclude": [
+       "crates/busbar-a2a-codec/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-a2a-codec/src"
+     ]
+    },
     {
      "round": 5,
      "result": "findings",
@@ -1304,24 +1505,6 @@
    ]
   },
   {
-   "id": "crates/busbar-plane-a2a-host/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-plane-a2a-host/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-plane-a2a-host/src/tests"
-   ]
-  },
-  {
    "id": "crates/busbar-core-admin/src",
    "kind": "production",
    "paths": [
@@ -1345,7 +1528,8 @@
    "moved_from": [
     "crates/busbar-plane-admin/src",
     "crates/busbar-plane-admin/src/tests",
-    "crates/busbar-admin/src"
+    "crates/busbar-admin/src",
+    "crates/busbar-unit-verbs/src"
    ],
    "hashed_as": {
     "id": "crates/busbar-plane-admin/src",
@@ -1357,6 +1541,124 @@
     ]
    },
    "rounds": [
+    {
+     "round": 5,
+     "result": "findings",
+     "auditor": "opus",
+     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+     "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 6,
+      "LOW": 5,
+      "NIT": 3
+     },
+     "report": "findings against units+caps+contract; the reading's detail was not carried into the register",
+     "hashed_as": {
+      "id": "crates/busbar-unit-verbs/src",
+      "paths": [
+       "crates/busbar-unit-verbs/src"
+      ],
+      "exclude": [
+       "crates/busbar-unit-verbs/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-unit-verbs/src"
+     ]
+    },
+    {
+     "round": 5,
+     "result": "in_progress",
+     "auditor": "round-5 finder fleet",
+     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+     "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
+     "counts": {},
+     "report": "in flight; no reading recorded against this scope yet",
+     "hashed_as": {
+      "id": "crates/busbar-unit-verbs/src",
+      "paths": [
+       "crates/busbar-unit-verbs/src"
+      ],
+      "exclude": [
+       "crates/busbar-unit-verbs/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-unit-verbs/src"
+     ]
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-pass2",
+     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+     "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 1,
+      "NIT": 2
+     },
+     "report": "verify/plane_facts executed as mutations (fixed); debug-only mint guard (fixed)",
+     "hashed_as": {
+      "id": "crates/busbar-unit-verbs/src",
+      "paths": [
+       "crates/busbar-unit-verbs/src"
+      ],
+      "exclude": [
+       "crates/busbar-unit-verbs/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-unit-verbs/src"
+     ]
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-p3-wal-ledger-verbs",
+     "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
+     "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 3
+     },
+     "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds",
+     "hashed_as": {
+      "id": "crates/busbar-unit-verbs/src",
+      "paths": [
+       "crates/busbar-unit-verbs/src"
+      ],
+      "exclude": [
+       "crates/busbar-unit-verbs/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-unit-verbs/src"
+     ]
+    },
+    {
+     "round": 8,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "1ba453ab2313c7fe43830eacb7225da04186c5f9dc2dfe0947a29309043ca205",
+     "counts": {},
+     "report": "the mint plan, idempotency probe, posture and rate paths were read and nothing survived triage; the group-name ceiling sits at the provisioning door by design",
+     "hashed_as": {
+      "id": "crates/busbar-unit-verbs/src",
+      "paths": [
+       "crates/busbar-unit-verbs/src"
+      ],
+      "exclude": [
+       "crates/busbar-unit-verbs/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-unit-verbs/src"
+     ]
+    },
     {
      "round": 5,
      "result": "findings",
@@ -1532,7 +1834,102 @@
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
    ],
+   "moved_from": [
+    "crates/busbar-mcp-codec/src"
+   ],
    "rounds": [
+    {
+     "round": 5,
+     "result": "findings",
+     "auditor": "opus",
+     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+     "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 11,
+      "LOW": 8,
+      "NIT": 8
+     },
+     "report": "findings against transports+codecs+substrate-values; the reading's detail was not carried into the register",
+     "hashed_as": {
+      "id": "crates/busbar-mcp-codec/src",
+      "paths": [
+       "crates/busbar-mcp-codec/src"
+      ],
+      "exclude": [
+       "crates/busbar-mcp-codec/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-mcp-codec/src"
+     ]
+    },
+    {
+     "round": 5,
+     "result": "in_progress",
+     "auditor": "round-5 finder fleet",
+     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+     "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
+     "counts": {},
+     "report": "in flight; no reading recorded against this scope yet",
+     "hashed_as": {
+      "id": "crates/busbar-mcp-codec/src",
+      "paths": [
+       "crates/busbar-mcp-codec/src"
+      ],
+      "exclude": [
+       "crates/busbar-mcp-codec/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-mcp-codec/src"
+     ]
+    },
+    {
+     "round": 6,
+     "result": "zero",
+     "auditor": "opus-pass2",
+     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+     "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
+     "counts": {},
+     "report": "zero; every production file read fully",
+     "hashed_as": {
+      "id": "crates/busbar-mcp-codec/src",
+      "paths": [
+       "crates/busbar-mcp-codec/src"
+      ],
+      "exclude": [
+       "crates/busbar-mcp-codec/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-mcp-codec/src"
+     ]
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "83e9793543bff14b7620caca98f41d6aaeba6f02255cefcff3b397aaf6cf9764",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "the markup-normalisation floor is applied by the retiring engine and by nothing in the plane crate that replaces it, so the migration drops a control the module header calls universal and security-critical; the crate does not forbid unsafe",
+     "hashed_as": {
+      "id": "crates/busbar-mcp-codec/src",
+      "paths": [
+       "crates/busbar-mcp-codec/src"
+      ],
+      "exclude": [
+       "crates/busbar-mcp-codec/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-mcp-codec/src"
+     ]
+    },
     {
      "round": 5,
      "result": "findings",
@@ -1595,46 +1992,10 @@
    ]
   },
   {
-   "id": "crates/busbar-plane-mcp-host/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-plane-mcp-host/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-plane-mcp-host/src/tests"
-   ]
-  },
-  {
    "id": "crates/busbar-plane-streaming/src",
    "kind": "production",
    "paths": [
     "crates/busbar-plane-streaming/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-plane-streaming/src/tests"
-   ]
-  },
-  {
-   "id": "crates/busbar-plane-voice/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-plane-voice/src"
    ],
    "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
    "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
@@ -1649,8 +2010,20 @@
    "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-plane-voice/src/tests"
+    "crates/busbar-plane-streaming/src/tests"
    ],
+   "moved_from": [
+    "crates/busbar-plane-voice/src"
+   ],
+   "hashed_as": {
+    "id": "crates/busbar-plane-voice/src",
+    "paths": [
+     "crates/busbar-plane-voice/src"
+    ],
+    "exclude": [
+     "crates/busbar-plane-voice/src/tests"
+    ]
+   },
    "rounds": [
     {
      "round": 5,
@@ -1662,7 +2035,19 @@
       "HIGH": 1,
       "MEDIUM": 4
      },
-     "report": "findings against plane-voice; the reading's detail was not carried into the register"
+     "report": "findings against plane-voice; the reading's detail was not carried into the register",
+     "hashed_as": {
+      "id": "crates/busbar-plane-voice/src",
+      "paths": [
+       "crates/busbar-plane-voice/src"
+      ],
+      "exclude": [
+       "crates/busbar-plane-voice/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-plane-voice/src"
+     ]
     },
     {
      "round": 5,
@@ -1671,7 +2056,19 @@
      "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
      "tree_hash": "e770cb46b434dc34c1b196a0af0f9f62c89e196fe7258283fc333e4b5ebb2dbf",
      "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
+     "report": "in flight; no reading recorded against this scope yet",
+     "hashed_as": {
+      "id": "crates/busbar-plane-voice/src",
+      "paths": [
+       "crates/busbar-plane-voice/src"
+      ],
+      "exclude": [
+       "crates/busbar-plane-voice/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-plane-voice/src"
+     ]
     },
     {
      "round": 6,
@@ -1685,7 +2082,19 @@
       "LOW": 1,
       "NIT": 4
      },
-     "report": "second turn of a call never a unit (fixed), downlink frames named no turn (fixed), telephony frames carried an empty stream id (fixed), style check read half the source (fixed); every file read fully"
+     "report": "second turn of a call never a unit (fixed), downlink frames named no turn (fixed), telephony frames carried an empty stream id (fixed), style check read half the source (fixed); every file read fully",
+     "hashed_as": {
+      "id": "crates/busbar-plane-voice/src",
+      "paths": [
+       "crates/busbar-plane-voice/src"
+      ],
+      "exclude": [
+       "crates/busbar-plane-voice/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-plane-voice/src"
+     ]
     },
     {
      "round": 7,
@@ -1698,7 +2107,19 @@
       "MEDIUM": 8,
       "LOW": 3
      },
-     "report": "unit 0's egress body never dialect-framed (session.update reaches the upstream as empty bytes; encode_egress untested); a barge-in drops the interrupted turn's audio_ms_in/tool_calls and misattributes the next usage report; twilio stop drops the same counters; the Pending stash is written on the client half and taken on the destination half so it is always dead; encode_refusal is dialect-blind on a justification that is false (PlaneSessionState::get takes &self); refusal map has a catch-all and its battery samples 9 of ~77 variants; the crate-root dependency-seam doc is false in three respects; twilio mediaFormat parsed then discarded; empty streamSid defeats the forgery guard; ulaw tests are self-consistency (algorithm itself re-derived and cleared). 4 rejected of 21 distinct, 2 off-by-one quote mismatches; tests/clippy/plane-purity/voice-conformance all green against every finding"
+     "report": "unit 0's egress body never dialect-framed (session.update reaches the upstream as empty bytes; encode_egress untested); a barge-in drops the interrupted turn's audio_ms_in/tool_calls and misattributes the next usage report; twilio stop drops the same counters; the Pending stash is written on the client half and taken on the destination half so it is always dead; encode_refusal is dialect-blind on a justification that is false (PlaneSessionState::get takes &self); refusal map has a catch-all and its battery samples 9 of ~77 variants; the crate-root dependency-seam doc is false in three respects; twilio mediaFormat parsed then discarded; empty streamSid defeats the forgery guard; ulaw tests are self-consistency (algorithm itself re-derived and cleared). 4 rejected of 21 distinct, 2 off-by-one quote mismatches; tests/clippy/plane-purity/voice-conformance all green against every finding",
+     "hashed_as": {
+      "id": "crates/busbar-plane-voice/src",
+      "paths": [
+       "crates/busbar-plane-voice/src"
+      ],
+      "exclude": [
+       "crates/busbar-plane-voice/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-plane-voice/src"
+     ]
     },
     {
      "round": 8,
@@ -1711,7 +2132,19 @@
       "MEDIUM": 3,
       "NIT": 1
      },
-     "report": "every streamed tool-call argument is discarded (only the call-open event is read, so a tool call reaches its executor with a name and an identifier and no arguments); a banned owned byte carrier is constructed per uplink frame on the fifty-hertz path; the tool-executor port is referenced by nothing and is the only reason this pure crate names an async-trait dependency"
+     "report": "every streamed tool-call argument is discarded (only the call-open event is read, so a tool call reaches its executor with a name and an identifier and no arguments); a banned owned byte carrier is constructed per uplink frame on the fifty-hertz path; the tool-executor port is referenced by nothing and is the only reason this pure crate names an async-trait dependency",
+     "hashed_as": {
+      "id": "crates/busbar-plane-voice/src",
+      "paths": [
+       "crates/busbar-plane-voice/src"
+      ],
+      "exclude": [
+       "crates/busbar-plane-voice/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-plane-voice/src"
+     ]
     }
    ]
   },
@@ -1762,81 +2195,6 @@
       "LOW": 1
      },
      "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-substrate/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-substrate/src"
-   ],
-   "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 8,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 1,
-    "LOW": 5
-   },
-   "report": "inbound ws acceptor had no message or frame ceiling (fixed); outbound ws mirror, limits install ordering, retry header restore reported; test files unread",
-   "auditor": "opus-pass2",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-substrate/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
-     "counts": {
-      "HIGH": 2,
-      "MEDIUM": 9,
-      "LOW": 6,
-      "NIT": 5
-     },
-     "report": "findings against substrate+plugin-loader+plugin-sdk+timing; the reading's detail was not carried into the register"
-    },
-    {
-     "round": 6,
-     "result": "findings",
-     "auditor": "opus-pass2",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
-     "counts": {
-      "MEDIUM": 2,
-      "LOW": 3,
-      "NIT": 2
-     },
-     "report": "mutate splits a durable write with no compensation; identity/trust-anchor registries hold private keys with no removal path; cancelled unit at route/meter never posted; all 15 production files and 5 test files read, teller/tests.rs unread; no fix shipped, fix agent dispatched"
-    },
-    {
-     "round": 7,
-     "result": "findings",
-     "auditor": "opus-pass1",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
-     "counts": {
-      "MEDIUM": 1,
-      "LOW": 6,
-      "NIT": 1
-     },
-     "report": "nat64-embedded v4 bypassed the imds refusal (fixed); host_matches_any block side, alternate-encoding trailing dot, metrics spawn panic, telemetry bank growth reported; 36 production files read fully"
-    },
-    {
-     "round": 8,
-     "result": "findings",
-     "auditor": "opus-pass2",
-     "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-     "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
-     "counts": {
-      "MEDIUM": 1,
-      "LOW": 5
-     },
-     "report": "inbound ws acceptor had no message or frame ceiling (fixed); outbound ws mirror, limits install ordering, retry header restore reported; test files unread"
     }
    ]
   },
@@ -3219,84 +3577,6 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-verbs/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-unit-verbs/src"
-   ],
-   "tree_hash": "1ba453ab2313c7fe43830eacb7225da04186c5f9dc2dfe0947a29309043ca205",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-   "round": 8,
-   "result": "in_progress",
-   "counts": {},
-   "report": "the mint plan, idempotency probe, posture and rate paths were read and nothing survived triage; the group-name ceiling sits at the provisioning door by design",
-   "auditor": "opus-units-auditor-b",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-unit-verbs/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 6,
-      "LOW": 5,
-      "NIT": 3
-     },
-     "report": "findings against units+caps+contract; the reading's detail was not carried into the register"
-    },
-    {
-     "round": 5,
-     "result": "in_progress",
-     "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
-     "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
-    },
-    {
-     "round": 6,
-     "result": "findings",
-     "auditor": "opus-pass2",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
-     "counts": {
-      "HIGH": 1,
-      "LOW": 1,
-      "NIT": 2
-     },
-     "report": "verify/plane_facts executed as mutations (fixed); debug-only mint guard (fixed)"
-    },
-    {
-     "round": 7,
-     "result": "findings",
-     "auditor": "opus-p3-wal-ledger-verbs",
-     "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
-     "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 1,
-      "LOW": 3
-     },
-     "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds"
-    },
-    {
-     "round": 8,
-     "result": "in_progress",
-     "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "1ba453ab2313c7fe43830eacb7225da04186c5f9dc2dfe0947a29309043ca205",
-     "counts": {},
-     "report": "the mint plan, idempotency probe, posture and rate paths were read and nothing survived triage; the group-name ceiling sits at the provisioning door by design"
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-kernel-wal/src",
    "kind": "production",
    "paths": [
@@ -4208,47 +4488,66 @@
    "rounds": []
   },
   {
-   "id": "crates/busbar-a2a-codec/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-a2a-codec/src/tests"
-   ],
-   "tree_hash": "2e229a92f24b87e0d2ed8d317599f593f8a0148c2a3f9a2837f11e1d36624130",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-planes",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "2e229a92f24b87e0d2ed8d317599f593f8a0148c2a3f9a2837f11e1d36624130",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-planes.md"
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-core-admin/src/tests",
    "kind": "test",
    "paths": [
     "crates/busbar-core-admin/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "3dc4eecacb0222d99751ed94a5c6d4bdc52c2e5d43188d55d883755b976d998a",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "moved_from": [
-    "crates/busbar-admin/src/tests"
+    "crates/busbar-admin/src/tests",
+    "crates/busbar-unit-verbs/src/tests"
+   ],
+   "hashed_as": {
+    "id": "crates/busbar-unit-verbs/src/tests",
+    "paths": [
+     "crates/busbar-unit-verbs/src/tests"
+    ]
+   },
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "35fbb9f9df27762183c4cd404dceb4595b29976835bedbb8bd8d8252866f8233",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md",
+     "hashed_as": {
+      "id": "crates/busbar-unit-verbs/src/tests",
+      "paths": [
+       "crates/busbar-unit-verbs/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-unit-verbs/src/tests"
+     ]
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "3dc4eecacb0222d99751ed94a5c6d4bdc52c2e5d43188d55d883755b976d998a",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened",
+     "hashed_as": {
+      "id": "crates/busbar-unit-verbs/src/tests",
+      "paths": [
+       "crates/busbar-unit-verbs/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-unit-verbs/src/tests"
+     ]
+    }
    ]
   },
   {
@@ -4280,47 +4579,10 @@
    "report": "busbar-landq-state/gate/audits/tests-kernel.md",
    "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-kernel",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "23ce9e4d68053fc3f7cb30591dc94ab5ada43903b7191d1706622b67d059b506",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-contract-transport/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-contract-transport/src/tests"
+   "moved_from": [
+    "crates/busbar-contract-transport/tests",
+    "crates/busbar-grammar/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-contract-transport/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-contract-transport/tests"
-   ],
-   "tree_hash": "e8145960243ab7a5428878e0c03b2d853477894cd90b7ee124c978774221e852",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
-   "auditor": "opus-test-auditor-kernel",
-   "fixed_at": null,
    "rounds": [
     {
      "round": 1,
@@ -4329,117 +4591,41 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "e8145960243ab7a5428878e0c03b2d853477894cd90b7ee124c978774221e852",
      "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-core/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-core/src/tests"
-   ],
-   "tree_hash": "a86ee2c767b7ca142d4002b0db57f6d6843f7e118c6a529269cf12deb80d3dd2",
-   "audited_at": "759280973a9075e8c1197116643156290af970a0",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "HIGH": 0,
-    "MEDIUM": 4,
-    "LOW": 9
-   },
-   "report": "busbar-landq-state/gate/audits/tests-core.md",
-   "auditor": "opus-test-auditor-core",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-core",
-     "audited_at": "759280973a9075e8c1197116643156290af970a0",
-     "tree_hash": "a86ee2c767b7ca142d4002b0db57f6d6843f7e118c6a529269cf12deb80d3dd2",
-     "counts": {
-      "HIGH": 0,
-      "MEDIUM": 4,
-      "LOW": 9
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md",
+     "hashed_as": {
+      "id": "crates/busbar-contract-transport/tests",
+      "paths": [
+       "crates/busbar-contract-transport/tests"
+      ]
      },
-     "report": "busbar-landq-state/gate/audits/tests-core.md"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-core/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-core/tests"
-   ],
-   "tree_hash": "e0a9e1f71f4cdc38d7463cc25f3b347db57b2544453401ff020805deb0e4321e",
-   "audited_at": "759280973a9075e8c1197116643156290af970a0",
-   "round": 1,
-   "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-core.md",
-   "auditor": "opus-test-auditor-core",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-core",
-     "audited_at": "759280973a9075e8c1197116643156290af970a0",
-     "tree_hash": "e0a9e1f71f4cdc38d7463cc25f3b347db57b2544453401ff020805deb0e4321e",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-core.md"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-core/benches",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-core/benches"
-   ],
-   "tree_hash": "28ea7fb4572361032187d5d346b1edbc47aecf0c1829e5b2a91cb88122d37427",
-   "audited_at": "759280973a9075e8c1197116643156290af970a0",
-   "round": 1,
-   "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-core.md",
-   "auditor": "opus-test-auditor-core",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-core",
-     "audited_at": "759280973a9075e8c1197116643156290af970a0",
-     "tree_hash": "28ea7fb4572361032187d5d346b1edbc47aecf0c1829e5b2a91cb88122d37427",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-core.md"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-grammar/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-grammar/tests"
-   ],
-   "tree_hash": "d3c391149ca3217a2e2f010833994294e78b771a450f93ce15222093e0604192",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
-   "auditor": "opus-test-auditor-kernel",
-   "fixed_at": null,
-   "rounds": [
+     "moved_from": [
+      "crates/busbar-contract-transport/tests"
+     ]
+    },
     {
      "round": 1,
      "result": "findings",
      "auditor": "opus-test-auditor-kernel",
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "d3c391149ca3217a2e2f010833994294e78b771a450f93ce15222093e0604192",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md",
+     "hashed_as": {
+      "id": "crates/busbar-grammar/tests",
+      "paths": [
+       "crates/busbar-grammar/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-grammar/tests"
+     ]
+    },
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-kernel",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "23ce9e4d68053fc3f7cb30591dc94ab5ada43903b7191d1706622b67d059b506",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-kernel.md"
     }
@@ -4463,7 +4649,28 @@
    "report": "busbar-landq-state/gate/audits/tests-kernel.md",
    "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-core/tests"
+   ],
    "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-core",
+     "audited_at": "759280973a9075e8c1197116643156290af970a0",
+     "tree_hash": "e0a9e1f71f4cdc38d7463cc25f3b347db57b2544453401ff020805deb0e4321e",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-core.md",
+     "hashed_as": {
+      "id": "crates/busbar-core/tests",
+      "paths": [
+       "crates/busbar-core/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-core/tests"
+     ]
+    },
     {
      "round": 1,
      "result": "findings",
@@ -4557,6 +4764,9 @@
    "report": "busbar-landq-state/gate/audits/tests-legacy-planes.md",
    "auditor": "opus-test-auditor-legacy-planes",
    "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-plane-mcp-host/src/tests"
+   ],
    "rounds": [
     {
      "round": 1,
@@ -4570,32 +4780,6 @@
       "LOW": 5
      },
      "report": "busbar-landq-state/gate/audits/tests-legacy-planes.md"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-mcp-codec/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-mcp-codec/src/tests"
-   ],
-   "tree_hash": "bae2bdf74469067ef3206f018819f6a2427638c08ece9559d2505d0aed7b0bcb",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-planes",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "bae2bdf74469067ef3206f018819f6a2427638c08ece9559d2505d0aed7b0bcb",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
   },
@@ -4630,7 +4814,28 @@
    "report": "the session-counter test increments the field itself and then asserts the result, so it passes with the production increment deleted; the refusal totality test enumerates twenty of forty-two reasons by hand against a match that carries a catch-all arm, so it can never force the list to grow",
    "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-a2a-codec/src/tests"
+   ],
    "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "2e229a92f24b87e0d2ed8d317599f593f8a0148c2a3f9a2837f11e1d36624130",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-planes.md",
+     "hashed_as": {
+      "id": "crates/busbar-a2a-codec/src/tests",
+      "paths": [
+       "crates/busbar-a2a-codec/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-a2a-codec/src/tests"
+     ]
+    },
     {
      "round": 1,
      "result": "findings",
@@ -4788,7 +4993,28 @@
    "report": "the session-counter test increments the field itself and then asserts the result, so it passes with the production increment deleted; the refusal totality test enumerates twenty of forty-two reasons by hand against a match that carries a catch-all arm, so it can never force the list to grow",
    "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-mcp-codec/src/tests"
+   ],
    "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "bae2bdf74469067ef3206f018819f6a2427638c08ece9559d2505d0aed7b0bcb",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-planes.md",
+     "hashed_as": {
+      "id": "crates/busbar-mcp-codec/src/tests",
+      "paths": [
+       "crates/busbar-mcp-codec/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-mcp-codec/src/tests"
+     ]
+    },
     {
      "round": 1,
      "result": "findings",
@@ -4846,55 +5072,10 @@
    ]
   },
   {
-   "id": "crates/busbar-plane-mcp-host/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-plane-mcp-host/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
    "id": "crates/busbar-plane-streaming/src/tests",
    "kind": "test",
    "paths": [
     "crates/busbar-plane-streaming/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-plane-streaming/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-plane-streaming/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-plane-voice/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-plane-voice/src/tests"
    ],
    "tree_hash": "3409918ca80cf53dccde9639bc85f3c67b74f07ac86f18372892e0802ae18d1d",
    "audited_at": "64b54387c4f177667ba688f7680877455579b293",
@@ -4904,6 +5085,15 @@
    "report": "busbar-landq-state/gate/audits/tests-planes.md",
    "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-plane-voice/src/tests"
+   ],
+   "hashed_as": {
+    "id": "crates/busbar-plane-voice/src/tests",
+    "paths": [
+     "crates/busbar-plane-voice/src/tests"
+    ]
+   },
    "rounds": [
     {
      "round": 1,
@@ -4912,15 +5102,24 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "3409918ca80cf53dccde9639bc85f3c67b74f07ac86f18372892e0802ae18d1d",
      "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-planes.md",
+     "hashed_as": {
+      "id": "crates/busbar-plane-voice/src/tests",
+      "paths": [
+       "crates/busbar-plane-voice/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-plane-voice/src/tests"
+     ]
     }
    ]
   },
   {
-   "id": "crates/busbar-plane-voice/tests",
+   "id": "crates/busbar-plane-streaming/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-plane-voice/tests"
+    "crates/busbar-plane-streaming/tests"
    ],
    "tree_hash": "1288699d61795d4c4cce8c37ed6cc29bd2bd00ebc2573f60673105df178833a7",
    "audited_at": "64b54387c4f177667ba688f7680877455579b293",
@@ -4930,6 +5129,15 @@
    "report": "busbar-landq-state/gate/audits/tests-planes.md",
    "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-plane-voice/tests"
+   ],
+   "hashed_as": {
+    "id": "crates/busbar-plane-voice/tests",
+    "paths": [
+     "crates/busbar-plane-voice/tests"
+    ]
+   },
    "rounds": [
     {
      "round": 1,
@@ -4938,7 +5146,16 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "1288699d61795d4c4cce8c37ed6cc29bd2bd00ebc2573f60673105df178833a7",
      "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-planes.md",
+     "hashed_as": {
+      "id": "crates/busbar-plane-voice/tests",
+      "paths": [
+       "crates/busbar-plane-voice/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-plane-voice/tests"
+     ]
     }
    ]
   },
@@ -5008,66 +5225,6 @@
      "tree_hash": "e140bce4e2785ab92dccb81e5145b3a4a5af8d1a1252556085d6373052be57bf",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-planes.md"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-substrate/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-substrate/src/tests"
-   ],
-   "tree_hash": "99c121cdb1cf5f33b7c86ca5049e5ae639bbaf31ada428a56ff57b0bb1554fb0",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "MEDIUM": 3,
-    "LOW": 3
-   },
-   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
-   "auditor": "opus-test-auditor-substrate",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-substrate",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "99c121cdb1cf5f33b7c86ca5049e5ae639bbaf31ada428a56ff57b0bb1554fb0",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 3,
-      "LOW": 3
-     },
-     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-substrate/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-substrate/tests"
-   ],
-   "tree_hash": "e8dc6d23cd79cd96eb3e18e814daa8b5cdfecea0ddf0bd5c097ffb9c5ac1d1c5",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
-   "auditor": "opus-test-auditor-substrate",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-substrate",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "e8dc6d23cd79cd96eb3e18e814daa8b5cdfecea0ddf0bd5c097ffb9c5ac1d1c5",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
     }
    ]
   },
@@ -5838,41 +5995,6 @@
      "auditor": "opus-units-auditor-b",
      "audited_at": "0fe2cef653de2f97d74437f1f1be407e223037f8",
      "tree_hash": "9309abc5883ec589cea0970f58d1fcf88d56759f1117135f99738ad498ac1484",
-     "counts": {},
-     "report": "read for tautologies and shared-fixture races; none found in what was opened"
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-unit-verbs/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-unit-verbs/src/tests"
-   ],
-   "tree_hash": "3dc4eecacb0222d99751ed94a5c6d4bdc52c2e5d43188d55d883755b976d998a",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-   "round": 2,
-   "result": "in_progress",
-   "counts": {},
-   "report": "read for tautologies and shared-fixture races; none found in what was opened",
-   "auditor": "opus-units-auditor-b",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-test-auditor-units",
-     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-     "tree_hash": "35fbb9f9df27762183c4cd404dceb4595b29976835bedbb8bd8d8252866f8233",
-     "counts": {},
-     "report": "busbar-landq-state/gate/audits/tests-units.md"
-    },
-    {
-     "round": 2,
-     "result": "in_progress",
-     "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "3dc4eecacb0222d99751ed94a5c6d4bdc52c2e5d43188d55d883755b976d998a",
      "counts": {},
      "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
