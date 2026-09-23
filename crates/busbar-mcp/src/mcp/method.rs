@@ -1713,13 +1713,13 @@ async fn tools_call(
                 (!sid.is_empty()).then_some(sid.as_str()),
             )
         })
-        .await
-        // A join panic is FAIL-SAFE on the transform path (the gate already admitted the request):
-        // proceed with the original arguments, unchanged.
-        .unwrap_or(busbar_kernel::plane_host::TransformVerdict::Proceed {
-            applied: false,
-            args_json: Vec::new(),
-        });
+        .await;
+        // A LEG THAT DID NOT JOIN REFUSES THE CALL, and says so. The rule is `tap_join_verdict`'s,
+        // stated there: the arm this replaces proceeded on the premise that "the gate already
+        // admitted the request", which conflates the admission gate (may this caller call?) with
+        // this one (may THESE BYTES be relayed?) — and the bytes it would relay are the caller's own
+        // untrusted `params.arguments`.
+        let verdict = tap_join_verdict(verdict, &selected.server, &selected.namespaced);
         match verdict {
             busbar_kernel::plane_host::TransformVerdict::Reject {
                 status,
@@ -2451,6 +2451,94 @@ pub(super) fn committed_arguments(args_json: &[u8]) -> Result<serde_json::Value,
         return Err("the output is JSON but not an arguments object".to_string());
     }
     Ok(value)
+}
+
+/// THE SUBJECT the rewrite leg's join-failure diagnostic and its refusal name in the `hook` field.
+///
+/// A join failure is the SEAM failing to answer, not a hook declining, so no single hook name is
+/// knowable at this site — the plane holds no resolved chain (the Seam-B inversion puts the chain
+/// behind the host, re-selected by `(plane_key, container)`). The operator is therefore told WHICH
+/// CONTROL went unanswered — this plus the `server` whose chain it is and the `tool` it was called
+/// on — rather than being handed a blank where a name belongs.
+const TAP_CHAIN: &str = "<the server's prompt: rw chain>";
+
+/// THE REWRITE (`prompt: rw`) VERDICT WHEN THE HOST LEG DID NOT JOIN — the plane's own rule for
+/// "the seam never answered at all", its own function for the same reason [`committed_arguments`]
+/// is: the plane cannot make the host seam misbehave, and the rule the plane owns is what it does
+/// when it does.
+///
+/// # Why this REFUSES
+///
+/// The arm this replaces proceeded with the original arguments, on the premise — stated in its own
+/// comment — that "the gate already admitted the request". That premise conflates TWO gates. The
+/// admission gate one block up decided WHETHER THE CALLER MAY CALL; this `prompt: rw` chain decides
+/// WHETHER THESE BYTES MAY BE RELAYED. The second gate not having run is not made safe by the first
+/// one having run.
+///
+/// And the bytes decide it. What a proceed here forwards is `params.arguments` off the caller's own
+/// `tools/call` — **the caller's UNTRUSTED input**, the exact bytes a screening hook is attached to
+/// read. Proceeding relays attacker-influenced arguments to an upstream MCP server, over the
+/// credential busbar leases on the caller's behalf, with the chain's verdict UNKNOWN — and unknown
+/// is not allow. The hooks on this path are not observers: the same chain that rewrites can also
+/// REJECT (`TransformVerdict::Reject`, the arm directly below this one, proven on real traffic by
+/// `hook_tap_tests::a_rewrite_gate_can_reject_on_the_arguments_it_screens` — a token inside
+/// `arguments` refuses with 451 and the upstream is never reached).
+///
+/// # Why it is not the seam's own fail-safe arms with a different answer
+///
+/// `transform_over_over` is fail-safe by design: a hook that errors, times out or abstains — or a
+/// runtime that will not start — proceeds with the original payload. Every one of those is the SEAM
+/// HAVING RUN and the operator's own `on_error` disposition having been applied to the result (a
+/// `Failed` call becomes a `Reject` when the operator declared the hook load-bearing; see
+/// `hooks::RewriteOnError`). **A join failure is the seam NOT having run**, so `on_error` is never
+/// consulted, and an operator who wrote `on_error: reject` silently gets the opposite of what they
+/// wrote. That inversion is the defect. The refusal is therefore minted as the seam's own "a
+/// required gate could not complete" verdict — the same `503` + content-free message every other
+/// firing site renders for that condition — and travels the `Reject` route this plane already
+/// implements, audited `rejected` like any other hook refusal.
+///
+/// It also makes the two legs of one seam agree: the admission gate's join, one block up in this
+/// same function, already refuses (`GateOutcome::Reject`, 403) on exactly this condition.
+///
+/// # What can actually arrive here
+///
+/// A PANICKING HOOK DOES NOT. A `kind: hook` cdylib's panic is caught three times before it could
+/// reach a join — the SDK's mandatory export-boundary `catch_unwind`, the engine's `ffi_guard`
+/// inside `transport_call`, and `DlopenPolicy::call`'s own belt-and-braces guard — and arrives as
+/// `TransformOutcome::Failed`, which the operator's `on_error` disposes of and the seam logs.
+/// Pinned by `hook_tap_tests::a_hook_that_panics_is_the_seams_own_failed_verdict_never_a_join_failure`.
+/// What reaches this arm is a panic in busbar's OWN glue on the blocking thread, or a blocking task
+/// cancelled at runtime shutdown — a busbar bug or a shutdown, and on either of those refusing an
+/// unscreened call is the answer. So this is a GUARD on the host seam, the same standing the `Err`
+/// arm of [`committed_arguments`] has, not a hole reachable through today's hooks.
+pub(super) fn tap_join_verdict(
+    joined: Result<busbar_kernel::plane_host::TransformVerdict, tokio::task::JoinError>,
+    server: &str,
+    tool: &str,
+) -> busbar_kernel::plane_host::TransformVerdict {
+    match joined {
+        Ok(verdict) => verdict,
+        Err(e) => {
+            // NEVER SILENT. This was the one disposition on this seam that left no trace at all:
+            // `transform_over_over` logs its own `Failed` arm and the gate leg logs its refusal, so
+            // a join failure was the only way a `prompt: rw` hook could stop answering with no line
+            // naming anything.
+            tracing::error!(
+                server = %server,
+                tool = %tool,
+                hook = TAP_CHAIN,
+                error = %e,
+                "the mcp tools/call rewrite (prompt: rw) leg did not join; the chain's verdict is \
+                 UNKNOWN, so the call is REFUSED rather than dispatched carrying the caller's \
+                 unscreened arguments"
+            );
+            busbar_kernel::plane_host::TransformVerdict::Reject {
+                status: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                message: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
+                hook: TAP_CHAIN.to_string(),
+            }
+        }
+    }
 }
 
 /// CHARGE one round on the caller's own budget plane, then meter it.

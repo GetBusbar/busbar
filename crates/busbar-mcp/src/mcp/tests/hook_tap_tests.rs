@@ -286,3 +286,205 @@ fn the_rewrite_apply_site_never_falls_back_to_the_caller_s_original_arguments() 
          evidence of nothing"
     );
 }
+
+/// **WHAT A PANICKING `prompt: rw` HOOK ACTUALLY PRODUCES — and it is not a join failure.**
+///
+/// This is the reachability leg for [`crate::mcp::method::tap_join_verdict`], and it is driven
+/// through the REAL cdylib rather than asserted from the source, because the whole disposition
+/// question at that join turns on what can arrive there. A missing check is not a vulnerability
+/// until the line is shown to execute.
+///
+/// A `kind: hook` plugin's panic is caught THREE times before it could reach a plane: the SDK's
+/// mandatory export-boundary `catch_unwind` (→ `STATUS_PANIC`), the engine's `ffi_guard` inside
+/// `transport_call`, and `DlopenPolicy::call`'s own belt-and-braces guard. It therefore arrives at
+/// `transform_over_over` as `TransformOutcome::Failed` — **the seam RAN and produced a verdict** —
+/// and the operator's `on_error` decides what happens next. Both halves are here because the pair
+/// is the point:
+///
+/// * `on_error: weighted` — the call is SERVED and the upstream receives the caller's ORIGINAL
+///   `arguments`. That answer is only possible if the panic never reached the plane's
+///   `spawn_blocking` join, which now REFUSES. This half is the falsifier.
+/// * `on_error: reject` — the same panic refuses the call. The operator's declared disposition is
+///   consulted, which is exactly the lever a join failure takes away, since on a join failure the
+///   chain never ran for `on_error` to be applied to.
+#[tokio::test]
+async fn a_hook_that_panics_is_the_seams_own_failed_verdict_never_a_join_failure() {
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+    let params = serde_json::json!({ "name": "fs_read", "arguments": { "path": "/etc/hosts" } });
+
+    // ── `on_error: weighted`: a panicking rewrite hook is a hook that could not answer, and the
+    //    operator did not declare it load-bearing, so the call proceeds UNCHANGED. ───────────────
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let mut cfg = rewrite(serde_json::Value::Null);
+    cfg["settings"] = serde_json::json!({ "panic_transform": true });
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .tools_hooks(&["panicky"])
+        .hook("panicky", cfg)
+        .hook_env(hook_env())
+        .build();
+    let (status, body) =
+        call_as(&app, &g, "tap-panic-weighted", "tools/call", params.clone()).await;
+    assert_eq!(
+        status, 200,
+        "a PANICKING rewrite hook is caught at the ABI boundary and reaches the seam as a FAILED \
+         call, which `on_error: weighted` proceeds through. A 503 here would mean the panic had \
+         reached the plane's join instead — the arm this test exists to prove is NOT the \
+         hook-panic path: {body}"
+    );
+    assert_eq!(peer.mcp_hits(), 1, "the call was dispatched exactly once");
+    assert_eq!(
+        peer.last_mcp().json()["params"]["arguments"]["path"],
+        "/etc/hosts",
+        "and it carried the caller's ORIGINAL arguments: the seam's own fail-safe arm, chosen by \
+         the operator, not the plane's join",
+    );
+
+    // ── `on_error: reject`: the SAME panic, declared load-bearing. The operator's disposition is
+    //    applied — which is the lever a join failure removes, because the chain never ran. ───────
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let mut cfg = rewrite(serde_json::Value::Null);
+    cfg["on_error"] = serde_json::json!("reject");
+    cfg["settings"] = serde_json::json!({ "panic_transform": true });
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&peer, SUBJECT))
+        .tools_hooks(&["panicky-required"])
+        .hook("panicky-required", cfg)
+        .hook_env(hook_env())
+        .build();
+    let (status, _body) = call_as(&app, &g, "tap-panic-reject", "tools/call", params).await;
+    assert_eq!(
+        status,
+        busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+        "a load-bearing rewrite hook that panicked refuses the call on the seam's own 'a required \
+         gate could not complete' verdict"
+    );
+    assert_eq!(
+        peer.mcp_hits(),
+        0,
+        "and nothing was dispatched: the refusal precedes the hop"
+    );
+}
+
+/// **A REWRITE LEG THAT DID NOT JOIN REFUSES THE CALL, AND IS NEVER SILENT.**
+///
+/// The `spawn_blocking` join for the `prompt: rw` tap was `.unwrap_or(Proceed { applied: false, .. })`
+/// — the one disposition on this seam that left NO TRACE AT ALL (`transform_over_over` logs its own
+/// `Failed` arm and the gate leg logs its refusal), and the one that answers an UNKNOWN verdict with
+/// "dispatch the caller's `arguments`". Those arguments are `params.arguments` off the caller's own
+/// `tools/call` — UNTRUSTED input, the exact bytes a screening hook is attached to read — so
+/// proceeding forwards to an upstream MCP server, over the credential busbar leases on the caller's
+/// behalf, exactly the payload a hook was installed to inspect and possibly reject. Unknown is not
+/// allow.
+///
+/// **The premise of the arm it replaces was false.** "The gate already admitted the request"
+/// conflates two gates: admission decided whether the CALLER may call; this chain decides whether
+/// THESE BYTES may be relayed. The second gate not running is not made safe by the first one having
+/// run — and the gate leg's own join, one block up in the same function, already refuses.
+///
+/// Driven at the DECISION rather than through a hook chain for the reason
+/// [`crate::mcp::method::committed_arguments`] is: the plane cannot make the host seam misbehave,
+/// and the rule under test is what the PLANE does when it does. The
+/// `a_hook_that_panics_is_the_seams_own_failed_verdict_never_a_join_failure` cell above is the other
+/// leg — what CAN arrive here — and the `JoinError` below is real, produced by an actual panicked
+/// blocking task, never a constructed stand-in.
+#[tokio::test]
+async fn a_rewrite_leg_that_did_not_join_refuses_the_call_and_is_never_silent() {
+    use busbar_kernel::plane_host::TransformVerdict;
+    use busbar_kernel::testkit::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    // A REAL `JoinError`: exactly the value the tap leg receives when its blocking task panics.
+    let joined: Result<TransformVerdict, tokio::task::JoinError> =
+        tokio::task::spawn_blocking(|| -> TransformVerdict { panic!("the rewrite leg blew up") })
+            .await;
+    assert!(
+        joined.is_err(),
+        "the fixture must actually be a panicked join"
+    );
+
+    // THE CONTROL, first: a leg that DID join is passed through untouched, so the rule refuses a
+    // missing verdict rather than refusing rewrites.
+    let passed = crate::mcp::method::tap_join_verdict(
+        Ok(TransformVerdict::Proceed {
+            applied: false,
+            args_json: Vec::new(),
+        }),
+        "fs",
+        "fs.fs_read",
+    );
+    assert!(
+        matches!(passed, TransformVerdict::Proceed { applied: false, .. }),
+        "a verdict that arrived is the verdict"
+    );
+
+    let cap = WarnCapture::default();
+    let verdict =
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(cap.clone()), || {
+            crate::mcp::method::tap_join_verdict(joined, "fs", "fs.fs_read")
+        });
+
+    match verdict {
+        TransformVerdict::Reject {
+            status,
+            message,
+            hook,
+        } => {
+            assert_eq!(
+                status,
+                busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                "a leg that never answered is the seam's own 'a required gate could not complete' \
+                 condition, minted at the one status every other firing site renders for it"
+            );
+            assert_eq!(
+                message,
+                busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+                "and the one content-free message, so a client learns nothing about the operator's \
+                 hook topology from a leg that fell over"
+            );
+            assert!(
+                !hook.is_empty(),
+                "the refusal names the subject the plane's own reject arm logs; a blank here is \
+                 the silence this fix removes, one field further in"
+            );
+        }
+        TransformVerdict::Proceed { applied, .. } => panic!(
+            "a rewrite leg that did not join must REFUSE the call — proceeding dispatches the \
+             caller's UNTRUSTED `params.arguments` to the upstream server with the hook chain's \
+             verdict unknown, which is the whole reason this seam exists. Got: \
+             Proceed {{ applied: {applied} }}"
+        ),
+    }
+
+    // AND THE SILENCE IS GONE. Every one of these is load-bearing for an operator reading the log:
+    // what failed, whose chain, which verb, the error, and what busbar did about it.
+    let lines = cap.messages().join("\n");
+    assert!(
+        cap.contains("did not join"),
+        "the join failure must be logged at all — it was the only hook-failure mode on this seam \
+         with no line: {lines}"
+    );
+    assert!(
+        cap.contains("prompt: rw"),
+        "and it must name the CONTROL that went unanswered: {lines}"
+    );
+    assert!(
+        cap.contains("tools/call"),
+        "and the VERB it went unanswered on: {lines}"
+    );
+    assert!(
+        cap.contains("server=fs") && cap.contains("tool=fs.fs_read"),
+        "and the subject: whose chain it is, and which tool it was called on: {lines}"
+    );
+    assert!(
+        cap.contains("the rewrite leg blew up"),
+        "and the underlying error, so the line is a diagnosis and not a notification: {lines}"
+    );
+    assert!(
+        cap.contains("REFUSED"),
+        "and what busbar did about it — silence and success must never be the same output at the \
+         hook seam: {lines}"
+    );
+}
