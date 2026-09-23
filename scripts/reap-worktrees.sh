@@ -343,3 +343,33 @@ printf 'load: %s | rustc %s, cargo %s, test-bins %s, tool-bins %s, product %s\n'
   "$(ps -eo command 2>/dev/null | grep -cE '/(debug|release)/deps/[a-z_]+-[0-9a-f]{8,}')" \
   "$(ps -eo command 2>/dev/null | grep -cE '/(debug|release)/[a-z_-]+$')" \
   "$(pgrep -fc 'release/busbar' 2>/dev/null || echo 0)"
+
+# ---------------------------------------------------------------------------
+# /private/tmp SWEEP (owner instruction 2026-09-22). Dead agent scratch dirs and
+# abandoned cargo targets accumulate here without limit -- 559 GB when first
+# measured. NEVER touch claude-501/: that is where LIVE agents write their task
+# output, and deleting it kills every running agent's transcript.
+# Anything modified in the last 10 minutes is skipped as possibly in use.
+# ---------------------------------------------------------------------------
+tmp_freed=0; tmp_killed=0
+if [ -d /private/tmp ]; then
+  for d in /private/tmp/*/; do
+    case "$d" in
+      /private/tmp/claude-501/|/private/tmp/com.apple.*|/private/tmp/.*) continue ;;
+    esac
+    [ -d "$d" ] || continue
+    [ -n "$(find "$d" -maxdepth 0 -mmin -10 2>/dev/null)" ] && continue
+    sz=$(du -sxm "$d" 2>/dev/null | cut -f1); sz=${sz:-0}
+    if [ "$REAP" = "1" ]; then
+      rm -rf "$d" 2>/dev/null && { tmp_freed=$((tmp_freed+sz)); tmp_killed=$((tmp_killed+1)); }
+    else
+      tmp_freed=$((tmp_freed+sz)); tmp_killed=$((tmp_killed+1))
+    fi
+  done
+fi
+if [ "$REAP" = "1" ]; then
+  echo "/private/tmp: removed $tmp_killed dir(s), freed $((tmp_freed/1024)) GB (claude-501 preserved)"
+else
+  echo "/private/tmp: $tmp_killed dir(s) reapable, $((tmp_freed/1024)) GB (dry run; claude-501 preserved)"
+fi
+
