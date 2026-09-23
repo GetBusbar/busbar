@@ -1084,6 +1084,55 @@ SWAPS the shipped request path or touches the money book waits for a green candi
 execution + is surfaced to the owner. Money is sacred; deny-and-fix on any user-visible byte; never
 self-approve a billed-byte change. Quality + byte-identity outrank raw agent count.
 
+## Owner rulings — 2026-09-23
+
+Seven questions were put to the owner one at a time. The answers are below, with what each one
+costs. Two of them turned out to be rulings against the CODE, not against this document: rows 33
+and 66 were already right and the code had drifted away from them. That is the blueprint working
+as intended — the drawing did not move, the building did.
+
+| Q | Ruling | What it changes |
+|---|---|---|
+| 1 | Auth vocabulary (`bearer`, `spki`, `mtls`) is **protocol vocabulary, not an instance noun** — agreed. `sigv4` stays an instance noun. | The neutrality gate exempts the three; ~265 files stop being counted as leaks. |
+| 2 | **Something must still run 1.5.5 and 1.6.0 and confirm they are the same.** | The parity bindings survive wherever they live. The doc collapse may not orphan them (item 21). |
+| 3 | **Fix both security advisories in 1.6.0. Disclosure timing is the owner's, not the release's.** | Item 22 becomes code work; no disclosure gate blocks the cut. |
+| 4 | **No currency.** *"it assumes you change $1.50 to 1.50GBP we convert? no, hence 1.50 is it."* | #66 stands UNAMENDED — see below; the code, not the row, was wrong. |
+| 5 | Admin verb count — the question was asked badly and is re-put in plain English. | Open. |
+| 6 | **Delete testkit.** Second time this has been ruled (see #33, ruled 2026-09-22). | `crates/busbar-kernel/src/testkit/` ceases to exist. |
+| 7 | The list is reviewed with the owner before sign-off, then burned down at full pace. | Sequence: docs -> adversarial audit -> sign-off -> burn. |
+
+### On #4: the ruling was right, for a reason that had not been found yet
+
+The owner's stated reason was that currency is a display label. It is not — and that makes the
+ruling MORE correct, not less. `CurrencyCode::minor_exponent()` returns 0 for JPY, 3 for BHD, 4
+for CLF and 2 otherwise, and that number feeds `nanos_per_minor()`. It is the ROUNDING SCALE.
+
+The defect this exposes: an admin `amend_rate_history` request body may carry `"currency": "JPY"`
+(`crates/busbar/src/root/units_admin/mod.rs:1113`). That single three-letter string shifts
+`nanos_per_minor` from 10,000,000 to 1,000,000,000 — **the same rate figures on a corrected card
+become 100x different money**, with no conversion and no audit of the scale change. Every other
+construction site in the repo is a hardcoded `CurrencyCode::USD`.
+
+Measured against the published tag: `CurrencyCode` appears in **0** files at `v1.5.5`,
+`amend_rate_history` does not exist there, and the admin `openapi.json` contains **0** occurrences
+of `"currency"`. The entire currency surface is a 1.6.0-only addition. Removing it therefore
+RESTORES 1.5.5 parity rather than risking it, and it is a C3 gain, not a C3 cost.
+
+Ruled NAY under standing money authority. The scale becomes one constant.
+
+### On #6: why testkit keeps coming back
+
+It was already ruled on 2026-09-22 (*"delete it. wtf is a testkit."*) and #33 has said since
+2026-09-18 that there is no testkit. It is still here: `crates/busbar-kernel/src/testkit/`, 7
+files, 2,188 LOC, exported as `pub mod testkit;` at `crates/busbar-kernel/src/lib.rs:320` — NOT
+feature-gated, so it compiles into the shipped binary. 180 references across 60 files; only 5 of
+those files are inside busbar-kernel. Every outside consumer is a plane. The kernel ships test
+scaffolding whose only users are plugins, which is the exact thing #33 forbids.
+
+The crate-local testkits are NOT this and are KEPT: `busbar-a2a` (213 LOC), `busbar-mcp` (281),
+`busbar-oauth2` (65), `busbar-llm` (44). A plugin testing itself is self-contained and correct —
+the same principle as self-naming.
+
 ## Anti-recurrence
 - Every settled decision is a Part 2 row with an enforcing gate; drift → RED, not re-litigation.
 - THIS FILE is authoritative — Parts 1, 3, 2, 5 in that order; all other docs reconciled to it or
