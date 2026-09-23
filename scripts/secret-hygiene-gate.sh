@@ -13,6 +13,33 @@
 #               derived Debug/Serialize could leak it.
 #     Check 2 — a `.expose_secret()` call on the SAME statement as a log/audit/metric SINK, i.e. the
 #               plaintext deliberately un-redacted straight into a tracing/println/audit/metric line.
+#     Check 3 — a secret-bearing value INTERPOLATED INTO A MESSAGE that reaches a caller: a
+#               `format!`/`write!`/`panic!` enclosed by an `Err(...)`/`map_err`/`ok_or_else`/
+#               `push(...)`/diagnostic call. See below for why this had to be added.
+#
+# WHY CHECK 3 EXISTS — TWO COMMITTED LEAKS SHIPPED WITH THIS INSTRUMENT WATCHING (49d781bd1).
+#   `egress/engine/mod.rs` `parse_proxy` rendered the RAW `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`
+#   value with `{v:?}` on three refusal arms; those variables carry `user:password@` (RFC 3986
+#   §3.2.1) and the refusal becomes a boot panic with no `catch_unwind` under it. And
+#   `egress_auth/jwt_bearer.rs` `pem_to_pkcs8_der` interpolated `base64::DecodeError`'s own
+#   `Display`, which names a byte OF THE KEY BODY — `InvalidLastSymbol` prints a VALID base64
+#   character, i.e. six bits of the operator's RSA private key — into a string `config_validate`
+#   copies verbatim into the `errors` array admin `config/validate` returns to a READ-SCOPE caller.
+#
+#   NEITHER WAS IN RANGE OF CHECKS 1 OR 2, structurally, and not by accident:
+#     * Check 1 scans struct FIELD DECLARATIONS. Both sites are a fn PARAMETER or a third-party
+#       error's `Display`. This file's own GREEN selftest case asserted that a fn param
+#       `api_key: String` must NOT be flagged — true of Check 1 (a param has no derived Debug to
+#       leak through) and, until Check 3, true of the whole gate. That case ENCODED THE BLIND SPOT.
+#     * Check 2 needs `.expose_secret()` on the same statement as a SINK, and `format!` was not in
+#       `SINKS` at all. A secret interpolated into a message that is RETURNED rather than LOGGED
+#       had no rule anywhere in this file.
+#   `docs/design/1.6.0-secret-hygiene.md` §1.3 said "No direct `println!(secret)` found in
+#   production" — the audit looked at types, derives and sinks, and never at interpolation.
+#
+#   THE REMEDY CHECK 3 ASKS FOR IS REDACTION AT THE FORMATTING SITE, NEVER DELETING THE
+#   DIAGNOSTIC. An error that no longer says which setting was wrong is a worse error. Both real
+#   fixes keep the failing variable, the failing field and the reason; only the value goes.
 #
 # This mirrors scripts/plane-grep-gate.sh exactly: a comment/doc/test-stripping substring/field scanner,
 # a narrow path-scoped ALLOWLIST (never inline markers — the .rs files stay frozen), a --selftest that
@@ -81,6 +108,64 @@ CONTEXT_STRUCT_RE="Key|Cred|Token|Secret|Auth|Lease|Issued|Mint"
 # ── CHECK 2 SINKS ────────────────────────────────────────────────────────────────────────────────
 # A log/audit/metric egress. `.expose_secret()` on the SAME statement as any of these is a leak.
 SINKS="tracing:: log:: println! eprintln! print! dbg! panic! info! warn! error! debug! trace! counter! gauge! histogram! metrics_emit journal_append AuditRecord PlaneAuditLog"
+
+# ── CHECK 3 NEEDLES (the MESSAGE-INTERPOLATION class) ─────────────────────────────────────────────
+# THREE RULES, ONE CLASS, EACH WITH ITS OWN RED AND ITS OWN NEGATIVE CONTROL IN `--selftest`. A rule
+# that flags everything satisfies a red arm exactly as well as a correct one, so every rule below is
+# paired with a GREEN fixture that it must NOT fire on.
+#
+#   A  secret-named-binding        — the value RENDERS UNDER a secret name. Same tail-matching rule
+#                                    Check 1 uses (`fname == N || fname ends with _N`), applied to
+#                                    the last segment of the interpolated path, because that is what
+#                                    actually reaches the string: `cred.meta.public_id` renders
+#                                    `public_id`, not `cred`.
+#   B  decoder-error-on-secret-    — a decoder error's `Display` interpolated, where the decoder's
+#      input                         INPUT is a secret. base64 and hex name bytes OF THE INPUT on
+#                                    every failure; serde/toml echo a VALUE on a data error. The
+#                                    "is the input a secret" evidence is the decoded binding's NAME
+#                                    (`hex_seed`) or the message's own SUBJECT (`private_key`), so
+#                                    `hex::decode(&manifest.signature)` — a PUBLIC signature — and
+#                                    `base64.decode(value)` on declared media stay green.
+#   C  secret-subject-parameter    — the message NAMES a secret subject right where it interpolates
+#                                    the enclosing fn's OWN PARAMETER. This is the `parse_proxy`
+#                                    shape and the only rule that could have caught it: in that
+#                                    function NOTHING is secret-named — the param is `v`, the local
+#                                    is `url`, the error is `e`. The only evidence that the value is
+#                                    a credential is the sentence the author wrote about it.
+#
+# SUBJECTS: words that make a message a statement about WHAT THE VALUE IS. `proxy` is here on
+# measured grounds, not vibes: `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` are RFC 3986 URLs with a
+# userinfo component, which is the canonical place a corporate proxy password lives, and that is
+# precisely the leak that shipped. Matched on WORD BOUNDARIES and within C3_PROXIMITY characters of
+# the capture, so the `credential` inside `put_credential:` (a function name) is not a subject and a
+# subject forty lines of prose away from the capture is not one either.
+C3_SUBJECTS="service-account|service account|token response|proxy|password|passphrase|private_key|private key|api_key|api key|client_secret|signing key|signing_key|bearer|credential|credentials|pkcs8|passwd|userinfo|secret"
+# Decoders whose error `Display` echoes its INPUT. Not a guess: `base64::DecodeError::InvalidByte`
+# prints the decimal byte and offset, `InvalidLastSymbol` prints the symbol as hex AND as the
+# character AND its decoded bits; `hex::FromHexError::InvalidHexCharacter { c, index }` prints the
+# character; serde's `invalid type: string "…"` prints the value.
+C3_DECODERS="base64:: hex::decode hex::FromHex percent_decode serde_json::from_ serde_yaml::from_ toml::from_ toml::de::"
+# Secret-bearing SOURCE names beyond the Check-1 needles, for "what was being decoded". `seed` is
+# what makes `hex::decode(hex_seed.trim())` — LEDGER S21's `pack.rs` companion — visible without a
+# subject word in its message.
+C3_SOURCE="seed pem pkcs8 privkey keypair passphrase jwk"
+# The safe-to-log IDENTITY of a secret, which is what the remedy asks you to print INSTEAD of the
+# value, so printing one is never the violation. Tail-matched, so `public_id`/`key_id` ride on `id`.
+# `url`/`uri`/`endpoint` are in here and that is a NAMED RESIDUAL: an RFC 3986 URL can carry
+# userinfo, so a credential-bearing URL bound to a `*_url` name is a shape this check waves through.
+# It is here because `token_url`/`token_uri` are endpoints this tree names dozens of times and the
+# measured alternative was a rule that fired on every one of them.
+C3_IDENTITY="host hostname port scheme status code len count index idx offset id sub kind class name field addr method verb line column slot alias label at section module server url uri endpoint path location reference pointer selector"
+# A capture whose SOURCE TEXT contains one of these is already redacted at the formatting site,
+# which IS the remedy. `describe()` is this tree's own: `SecretRef::describe()` renders `env:VAR` /
+# `file:/path` / `none` and never a value.
+C3_REDACTORS="redact mask sanitiz fingerprint elide scrub obfusc SecretRef reference() key_id describe()"
+C3_MSG="format! write! writeln! panic! unreachable! todo! assert! assert_eq! assert_ne! bail! anyhow! println! eprintln! print! .expect("
+# An err/diagnostic call that must ENCLOSE the macro (see `errencloses`). `push(` is here because
+# that is the exact carrier of the jwt_bearer leak: `config_validate` does `errors.push(format!(…))`
+# and the `errors` array is what admin `config/validate` returns to a READ-SCOPE caller.
+C3_ERRCTX="Err( map_err ok_or_else ok_or( panic! .expect( bail! anyhow! assert write! writeln! unreachable! todo! println! eprintln! print! tracing:: log:: .context( with_context push("
+C3_PROXIMITY=56
 
 # ── THE ALLOWLIST (path-scoped, never global; NEEDLE|PATH-PREFIX|FIELD) ─────────────────────────────
 # A Check-1 hit is suppressed iff needle==NEEDLE, path STARTS WITH PATH-PREFIX, and the field name
@@ -179,6 +264,16 @@ upstream_credentials|crates/busbar-kernel/src/admin/v1/contract/mod.rs|upstream_
 token|crates/busbar-plugin/src/cold/auth.rs|
 secret|crates/busbar-plugin/src/cold/auth.rs|
 token|crates/busbar-llm-codec/src/ir/types.rs|token"
+
+# CHECK 3 HAS NO EXCEPTIONS AND THAT IS A MEASUREMENT, NOT AN OVERSIGHT. Every one of the findings
+# Check 3 makes on this tree was read against the source and is a real member of the class (see
+# docs/design/1.6.0-secret-hygiene.md Part 5 for the row-by-row disposition). The four shapes that
+# LOOK like the class and are not — `SecretRef::describe()`, a public key/signature through
+# `hex::decode`, declared media through base64, a `format!` building a header VALUE rather than a
+# message — are held green BY THE RULES, not by rows here, which is the disposition this file
+# prefers: a rule that is right needs no list. Rows use the same NEEDLE|PATH-PREFIX|FIELD shape and
+# the same liveness check as Check 1, so adding one is not a code change.
+ALLOWLIST_C3=""
 
 # ── THE FIELD SCANNER (Check 1) ────────────────────────────────────────────────────────────────────
 # Emits one TSV line per violation:  FIELD<TAB>file:line<TAB>trimmed-source
@@ -346,6 +441,391 @@ scan_sinks() {
   ' "$@"
 }
 
+# ── THE MESSAGE SCANNER (Check 3) ──────────────────────────────────────────────────────────────────
+# Emits: RULE<TAB>file:line<TAB>rendered-name<TAB>trimmed-statement
+scan_msgs() {
+  local strong="$1" context="$2" subjects="$3" decoders="$4" source="$5" identity="$6" redactors="$7" msgs="$8" errctx="$9" prox="${10}"; shift 10
+  [ "$#" -gt 0 ] || return 0
+  LC_ALL=C awk -v strong="$strong" -v context="$context" -v subjects="$subjects" -v decoders="$decoders" -v source="$source" \
+      -v identity="$identity" -v redactors="$redactors" -v msgs="$msgs" -v errctx="$errctx" -v prox="$prox" '
+    function strip2(line,   i, n, c, c2, j, k, p, ok, ch, isb) {
+      scode = ""; sblank = ""; n = length(line); i = 1
+      while (i <= n) {
+        c = substr(line, i, 1); c2 = substr(line, i, 2)
+        if (inblk) { if (c2 == "*/") { inblk = 0; i += 2 } else { i++ } continue }
+        if (inraw) {
+          while (i <= n) {
+            if (substr(line, i, 1) == "\"") {
+              ok = 1; for (k = 1; k <= rawh; k++) if (substr(line, i + k, 1) != "#") ok = 0
+              if (ok) { scode = scode "\""; sblank = sblank " "
+                        for (k = 0; k < rawh; k++) { scode = scode " "; sblank = sblank " " }
+                        i += 1 + rawh; inraw = 0; break }
+            }
+            ch = substr(line, i, 1)
+            scode = scode ((ch == "\"" || ch == "\\" || ch == "{" || ch == "}") ? " " : ch); sblank = sblank " "; i++
+          }
+          continue
+        }
+        if (instr) {
+          if (c == "\\") { scode = scode "  "; sblank = sblank "  "; i += 2; continue }
+          scode = scode c; sblank = sblank " "
+          if (c == "\"") instr = 0
+          i++; continue
+        }
+        if (c2 == "/*") { inblk = 1; i += 2; continue }
+        if (c2 == "//") break
+        # RAW STRINGS, INCLUDING THE BYTE FORMS. `br#"…"#` is why this is spelled out: the first cut
+        # keyed on `r` with a non-identifier char before it, so the `b` of `br#"` disqualified it,
+        # the literal was read as code, its inner `"` flipped the string state, and every finding in
+        # the rest of that file became untrustworthy. The lexer now says so out loud (PARSE-WARN)
+        # instead of returning a quiet zero.
+        isb = 0
+        if (c == "b" && substr(line, i + 1, 1) == "r") { isb = 1 }
+        if (c == "r" || isb) {
+          j = i + 1 + isb; rawh = 0
+          while (substr(line, j, 1) == "#") { rawh++; j++ }
+          if (substr(line, j, 1) == "\"") {
+            p = (i > 1) ? substr(line, i - 1, 1) : " "
+            if (p !~ /[A-Za-z0-9_]/) {
+              inraw = 1
+              for (k = i; k < j; k++) { scode = scode " "; sblank = sblank " " }
+              scode = scode "\""; sblank = sblank " "
+              i = j + 1; continue
+            }
+          }
+        }
+        if (c == "\x27") {
+          if (substr(line, i + 1, 1) == "\\" && substr(line, i + 3, 1) == "\x27") { scode = scode "    "; sblank = sblank "    "; i += 4; continue }
+          if (substr(line, i + 2, 1) == "\x27") { scode = scode "   "; sblank = sblank "   "; i += 3; continue }
+        }
+        if (c == "\"") { instr = 1; scode = scode c; sblank = sblank " "; i++; continue }
+        scode = scode c; sblank = sblank c; i++
+      }
+    }
+    function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    function tailmatch(f, n) { return (f == n) || qualified(f, n) }
+    function qualified(f, n) { return (length(f) > length(n) + 1 && substr(f, length(f) - length(n)) == "_" n) }
+    function hasany(s, arr, cnt,   k) { for (k = 1; k <= cnt; k++) if (index(s, arr[k]) > 0) return 1; return 0 }
+    function isident(x) { return (x ~ /^[A-Za-z_][A-Za-z0-9_]*$/) }
+    function isupperconst(s,   i, c) {
+      if (s !~ /^[A-Z]/) return 0
+      for (i = 1; i <= length(s); i++) { c = substr(s, i, 1); if (c >= "a" && c <= "z") return 0 }
+      return 1
+    }
+    function isidentity(x,   k) {
+      for (k = 1; k <= nid; k++) if (tailmatch(x, ID[k])) return 1
+      return 0
+    }
+    # Every `{IDENT}`/`{IDENT:spec}` inline capture and every positional `, PATH` argument after
+    # `from`. cap[] = the name the value RENDERS UNDER (the last path segment, because that is what
+    # actually reaches the string), capbase[] = the root binding (what the param test asks about),
+    # cappos[] = where it sits, for the proximity test.
+    function captures(s, bl, from,   i, n, c, id, j, ch, seg, nseg, segs, base, start) {
+      ncap = 0; n = length(s); i = from
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (substr(bl, i, 1) == " " && c != " ") {
+          if (c == "{") {
+            if (substr(s, i + 1, 1) == "{") { i += 2; continue }
+            j = i + 1; id = ""
+            while (j <= n) { ch = substr(s, j, 1); if (ch ~ /[A-Za-z0-9_]/) { id = id ch; j++ } else break }
+            ch = substr(s, j, 1)
+            if (id != "" && id !~ /^[0-9]/ && (ch == "}" || ch == ":")) { ncap++; cap[ncap] = id; capbase[ncap] = id; cappos[ncap] = i; captext[ncap] = id }
+            i = j; continue
+          }
+          i++; continue
+        }
+        if (c == ",") {
+          j = i + 1; start = i
+          while (substr(s, j, 1) == " ") j++
+          while (substr(s, j, 1) ~ /[&*%?]/) { j++; while (substr(s, j, 1) == " ") j++ }
+          nseg = 0; base = ""
+          while (1) {
+            id = ""
+            while (j <= n) { ch = substr(s, j, 1); if (ch ~ /[A-Za-z0-9_]/) { id = id ch; j++ } else break }
+            if (id == "") break
+            if (substr(s, j, 2) == "()") { j += 2; ch = substr(s, j, 1); if (ch == ".") { j++; continue } ; break }
+            nseg++; segs[nseg] = id
+            if (base == "") base = id
+            if (substr(s, j, 1) == ".") { j++; continue }
+            break
+          }
+          ch = substr(s, j, 1)
+          if (nseg > 0 && segs[1] !~ /^[0-9]/ && (ch == "," || ch == ")" || ch == "" || ch == " " || ch == "?")) {
+            ncap++; cap[ncap] = segs[nseg]; capbase[ncap] = base; cappos[ncap] = start
+            captext[ncap] = substr(s, start + 1, j - start - 1)
+          }
+          i++; continue
+        }
+        i++
+      }
+    }
+    # Lowercased literal text with code positions blanked, index-aligned to `s`, so proximity is
+    # measured in the string the reader actually sees.
+    function litmap(s, bl,   i, n, res) {
+      res = ""; n = length(s)
+      for (i = 1; i <= n; i++) {
+        if (substr(bl, i, 1) == " " && substr(s, i, 1) != "\"" && substr(s, i, 1) != " ") res = res tolower(substr(s, i, 1))
+        else res = res " "
+      }
+      return res
+    }
+    # A subject word within `prox` characters of `pos`, matched on WORD BOUNDARIES (so the
+    # `credential` inside `put_credential:` is not a subject — that is a function name, not a
+    # statement about what the value IS).
+    function subjectnear(lm, pos,   k, lo, hi, w, seg, base, r, q, before, after) {
+      lo = pos - prox; if (lo < 1) lo = 1
+      hi = pos + prox; if (hi > length(lm)) hi = length(lm)
+      seg = substr(lm, lo, hi - lo + 1)
+      for (k = 1; k <= nsb; k++) {
+        w = SB[k]; base = 0
+        while (1) {
+          r = index(substr(seg, base + 1), w); if (r == 0) break
+          q = base + r
+          before = (q == 1) ? " " : substr(seg, q - 1, 1)
+          after  = substr(seg, q + length(w), 1)
+          if (before !~ /[a-z0-9_]/ && after !~ /[a-z0-9_]/) return 1
+          base = q
+        }
+      }
+      return 0
+    }
+    function firstmsg(s,   k, p, best) {
+      best = 0
+      for (k = 1; k <= nms; k++) { p = index(s, MS[k]); if (p > 0 && (best == 0 || p < best)) best = p }
+      return best
+    }
+    # The msg-macro call that lexically contains `pos`: its opening `(` in code positions.
+    function enclosingmacro(bl, pos,   n, best, k, w, base, r, p, o, d, j) {
+      best = 0; n = length(bl)
+      for (k = 1; k <= nms; k++) {
+        w = MS[k]; base = 0
+        while (1) {
+          r = index(substr(bl, base + 1), w); if (r == 0) break
+          p = base + r; base = p
+          o = p + length(w) - 1
+          while (o <= n && substr(bl, o, 1) != "(") o++
+          if (o > n) break
+          d = 0; j = o
+          for (j = o; j <= n; j++) {
+            if (substr(bl, j, 1) == "(") d++
+            else if (substr(bl, j, 1) == ")") { d--; if (d == 0) break }
+          }
+          if (o <= pos && pos <= j && o > best) best = o
+        }
+      }
+      return best
+    }
+    # AN ERR/DIAGNOSTIC CALL THAT IS STILL OPEN AT `mo`. Sharing a statement is not enough: a
+    # builder chain writes `.header(AUTHORIZATION, format!("Bearer {}", api_key)).map_err(|e| …)`
+    # as ONE statement, and reading that as "the api_key format! is in error context" flagged a
+    # header injection — the exact shape Check 2 already proves GREEN. The question the rule asks
+    # is whether an err/diagnostic call ENCLOSES the macro, which is the question that means
+    # "this string is going to a caller as a message".
+    function errencloses(bl, mo,   n, k, w, base, r, p, o, d, j) {
+      n = length(bl)
+      for (k = 1; k <= nec; k++) {
+        w = EC[k]; base = 0
+        while (1) {
+          r = index(substr(bl, base + 1), w); if (r == 0) break
+          p = base + r; base = p
+          o = p + length(w) - 1
+          while (o <= n && substr(bl, o, 1) != "(") o++
+          if (o > n) break
+          if (o > mo) continue
+          d = 0
+          for (j = o; j <= n; j++) {
+            if (substr(bl, j, 1) == "(") d++
+            else if (substr(bl, j, 1) == ")") { d--; if (d == 0) break }
+          }
+          if (o <= mo && mo <= j) return 1
+        }
+      }
+      return 0
+    }
+    # The first identifier path handed to a decoder call, for the "what was being decoded" test.
+    function decodersource(s, bl,   k, p, o, n, j, id, ch, res) {
+      n = length(bl); res = ""
+      for (k = 1; k <= ndc; k++) {
+        p = index(bl, DC[k]); if (p == 0) continue
+        o = p + length(DC[k]) - 1
+        while (o <= n && substr(bl, o, 1) != "(") o++
+        j = o + 1
+        while (substr(bl, j, 1) ~ /[ &*]/) j++
+        id = ""
+        while (j <= n) { ch = substr(bl, j, 1); if (ch ~ /[A-Za-z0-9_:]/ || ch == ".") { id = id ch; j++ } else break }
+        if (id != "") res = res " " id
+      }
+      return res
+    }
+    # EVERY segment of the decoded path, not just the last: `hex::decode(hex_seed.trim())` hands
+    # the decoder `hex_seed.trim`, and reading only the tail asks whether `trim` is a secret.
+    function secretsource(src,   nn, i, mm, j, seg, k) {
+      nn = split(src, SS, " ")
+      for (i = 1; i <= nn; i++) {
+        mm = split(SS[i], SEG, /[.:]+/)
+        for (j = 1; j <= mm; j++) {
+          seg = SEG[j]; if (seg == "") continue
+          for (k = 1; k <= ns; k++) if (tailmatch(seg, S[k])) return 1
+          for (k = 1; k <= nsr; k++) if (tailmatch(seg, SR[k])) return 1
+        }
+      }
+      return 0
+    }
+    function closureparams(s, bl,   i, n, id, j, ch) {
+      nclp = 0; n = length(bl); i = 1
+      while (i <= n) {
+        if (substr(bl, i, 1) == "|") {
+          j = i + 1
+          while (substr(bl, j, 1) == " ") j++
+          if (substr(bl, j, 4) == "mut ") { j += 4; while (substr(bl, j, 1) == " ") j++ }
+          id = ""
+          while (j <= n) { ch = substr(bl, j, 1); if (ch ~ /[A-Za-z0-9_]/) { id = id ch; j++ } else break }
+          while (substr(bl, j, 1) == " ") j++
+          ch = substr(bl, j, 1)
+          if (id != "" && (ch == "|" || ch == ":" || ch == ",")) { nclp++; clp[nclp] = id }
+          i = j; continue
+        }
+        i++
+      }
+    }
+    function isclosureparam(x,   k) { for (k = 1; k <= nclp; k++) if (clp[k] == x) return 1; return 0 }
+    function parseparams(sig, bl,   i, n, d, j, c, ch, id, inner, bi) {
+      i = 0; n = length(bl)
+      for (j = 1; j <= n - 2; j++) {
+        if (substr(bl, j, 3) == "fn " && (j == 1 || substr(bl, j - 1, 1) !~ /[A-Za-z0-9_]/)) {
+          bi = j + 3
+          while (substr(bl, bi, 1) == " ") bi++
+          while (substr(bl, bi, 1) ~ /[A-Za-z0-9_]/) bi++
+          if (substr(bl, bi, 1) == "<") { d = 0
+            while (bi <= n) { c = substr(bl, bi, 1); if (c == "<") d++; else if (c == ">") { d--; if (d == 0) { bi++; break } } bi++ } }
+          if (substr(bl, bi, 1) == "(") { i = bi; break }
+        }
+      }
+      if (i == 0) return
+      d = 0; inner = ""
+      for (j = i; j <= n; j++) {
+        c = substr(bl, j, 1)
+        if (c == "(") { d++; if (d == 1) continue }
+        if (c == ")") { d--; if (d == 0) break }
+        if (d >= 1) inner = inner c
+      }
+      n = length(inner); j = 1; d = 0
+      while (j <= n) {
+        c = substr(inner, j, 1)
+        if (c == "<" || c == "(" || c == "[") { d++; j++; continue }
+        if (c == ">" || c == ")" || c == "]") { d--; j++; continue }
+        if (d == 0 && c ~ /[A-Za-z_]/) {
+          id = ""
+          while (j <= n) { ch = substr(inner, j, 1); if (ch ~ /[A-Za-z0-9_]/) { id = id ch; j++ } else break }
+          while (substr(inner, j, 1) == " ") j++
+          if (substr(inner, j, 1) == ":" && id != "mut" && id != "self") param[id] = 1
+          continue
+        }
+        j++
+      }
+    }
+    function flush(   i, mpos, lm, cp, bs, k, hit, isbyte, isdoc, seen) {
+      if (stmt == "") { stmt = ""; sbl = ""; stmtline = 0; pdepth = 0; return }
+      mpos = firstmsg(stmt)
+      if (mpos == 0) { stmt = ""; sbl = ""; stmtline = 0; pdepth = 0; return }
+      captures(stmt, sbl, mpos)
+      if (ncap == 0) { stmt = ""; sbl = ""; stmtline = 0; pdepth = 0; return }
+      lm = litmap(stmt, sbl)
+      isdec = hasany(stmt, DC, ndc)
+      decsrc = isdec ? decodersource(stmt, sbl) : ""
+      decsecret = isdec ? secretsource(decsrc) : 0
+      closureparams(stmt, sbl)
+      for (k in seen) delete seen[k]
+      for (i = 1; i <= ncap; i++) {
+        cp = cap[i]; bs = capbase[i]
+        if (cp in seen) continue
+        seen[cp] = 1
+        if ((cp in redacted) || (bs in redacted)) continue
+        if (isupperconst(cp)) continue
+        skip = 0
+        for (k = 1; k <= nrd; k++) if (index(captext[i], RD[k]) > 0) skip = 1
+        if (skip) continue
+        mo = enclosingmacro(sbl, cappos[i])
+        if (mo == 0) continue
+        if (!errencloses(sbl, mo) && errdepth < 0) continue
+        hit = ""
+        # A — the value RENDERS UNDER a secret name (Check 1 tail rule, on the rendered segment).
+        for (k = 1; k <= ns; k++) if (tailmatch(cp, S[k])) hit = "secret-named-binding"
+        if (hit == "") for (k = 1; k <= nc; k++) if (qualified(cp, C[k])) hit = "secret-named-binding"
+        if (hit == "" && isidentity(cp)) { continue }
+        # B — a DECODER ERROR whose Display names bytes/values OF ITS INPUT, where the input is a
+        #     secret: evidenced by the decoded binding NAME or by the message own SUBJECT.
+        if (hit == "" && isdec && isclosureparam(cp) && (decsecret || subjectnear(lm, cappos[i]))) hit = "decoder-error-on-secret-input"
+        # C — the message NAMES a secret subject right where it interpolates the fn own parameter.
+        if (hit == "" && (bs in param) && subjectnear(lm, cappos[i])) hit = "secret-subject-parameter"
+        if (hit != "") printf "%s\t%s:%d\t%s\t%s\n", hit, stmtfile, stmtline, cp, substr(trim(stmt), 1, 200)
+      }
+      stmt = ""; sbl = ""; stmtline = 0; pdepth = 0
+    }
+    function newfile(f) {
+      if (prevfile != "" && (instr || inraw || inblk))
+        printf "PARSE-WARN\t%s:0\tlexer-unterminated\tstring/raw/comment still open at EOF — findings for this file are NOT trustworthy\n", prevfile
+      prevfile = f
+      stmt = ""; sbl = ""; stmtline = 0; pdepth = 0; inblk = 0; instr = 0; inraw = 0; depth = 0; errdepth = -1
+      for (k in param) delete param[k]; for (k in redacted) delete redacted[k]
+      insig = 0; sigbuf = ""; sigbl = ""; sigdepth = 0; testmod = 0; tdepth = 0; pendtest = 0
+    }
+    BEGIN {
+      ns = split(strong, S, " "); nc = split(context, C, " ")
+      nsb = split(subjects, SB, "|"); ndc = split(decoders, DC, " "); nsr = split(source, SR, " ")
+      lastp = 0
+      nid = split(identity, ID, " "); nrd = split(redactors, RD, " ")
+      nms = split(msgs, MS, " "); nec = split(errctx, EC, " ")
+      prevfile = ""
+    }
+    FNR == 1 { newfile(FILENAME) }
+    {
+      strip2($0)
+      code = scode; bcode = sblank
+      no = gsub(/{/, "{", bcode); ncl = gsub(/}/, "}", bcode)
+      op = gsub(/\(/, "(", bcode); cp2 = gsub(/\)/, ")", bcode)
+      if (testmod) { tdepth += no - ncl; if (tdepth <= 0) { testmod = 0; tdepth = 0 } next }
+      if (code ~ /#\[cfg\(/ && code ~ /(^|[^a-z])test([^a-z]|$)/) { pendtest = 1 }
+      else if (pendtest && code ~ /(^|[^A-Za-z0-9_])mod([^A-Za-z0-9_])/) { pendtest = 0; if (no > 0) { testmod = 1; tdepth = no - ncl } next }
+      else if (code ~ /[^[:space:]]/ && code !~ /#\[/) { pendtest = 0 }
+
+      tc = trim(code); tbl = substr(bcode, length(code) - length(tc) + 1)
+      if (tc == "") next
+
+      if (!insig && bcode ~ /(^|[^A-Za-z0-9_])fn[ \t]+[A-Za-z_]/) {
+        for (k in param) delete param[k]; for (k in redacted) delete redacted[k]
+        insig = 1; sigbuf = ""; sigbl = ""; sigdepth = 0
+      }
+      if (insig) {
+        sigbuf = sigbuf " " code; sigbl = sigbl " " bcode
+        sigdepth += op - cp2
+        if (sigdepth <= 0 && index(sigbl, "(") > 0) { parseparams(sigbuf, sigbl); insig = 0; sigbuf = ""; sigbl = "" }
+      }
+      if (bcode ~ /(^|[^A-Za-z0-9_])let[ \t]+/) {
+        lv = bcode; sub(/.*[^A-Za-z0-9_]let[ \t]+/, "", lv); sub(/^let[ \t]+/, "", lv); sub(/^mut[ \t]+/, "", lv)
+        nm = lv; sub(/[^A-Za-z0-9_].*/, "", nm)
+        if (nm != "") for (k = 1; k <= nrd; k++) if (index(code, RD[k]) > 0) redacted[nm] = 1
+      }
+
+      if (stmt == "") { stmt = tc; sbl = tbl; stmtline = FNR; stmtfile = FILENAME }
+      else { stmt = stmt " " tc; sbl = sbl " " tbl }
+      pdepth += op - cp2
+      if (pdepth < 0) pdepth = 0
+      last = substr(tc, length(tc), 1)
+      willopen = (no > ncl)
+      if (pdepth == 0 && (last == ";" || last == "{" || last == "}" || last == ",")) {
+        pend_err = (hasany(stmt, EC, nec) && willopen)
+        flush()
+        if (pend_err && errdepth < 0) errdepth = depth
+      }
+      depth += no - ncl
+      if (errdepth >= 0 && depth <= errdepth) errdepth = -1
+    }
+    END { flush(); if (prevfile != "" && (instr || inraw || inblk)) printf "PARSE-WARN\t%s:0\tlexer-unterminated\tstring/raw/comment still open at EOF\n", prevfile }
+  ' "$@"
+}
+
 # Production .rs under the roots, minus test files.
 prod_files() {
   find "$@" -name '*.rs' 2>/dev/null | grep -v '/tests/' | grep -Ev '_tests?\.rs$' | grep -v '^$' | sort
@@ -392,6 +872,7 @@ check_allowlist_paths() {
     fi
   done <<EOF
 $ALLOWLIST_C1
+$ALLOWLIST_C3
 EOF
   return "$stale"
 }
@@ -400,7 +881,12 @@ EOF
 run_selftest() {
   hdr "secret-hygiene-gate SELF-TEST (the field/sink scanner cannot be lied to)"
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
-  local fail=0 out
+  local fail=0 out n
+
+  # Every Check-3 fixture below runs through the SHIPPED needles — not a copy of them — so a needle
+  # edit that breaks a proof breaks this self-test rather than passing against a private duplicate.
+  c3() { scan_msgs "$STRONG_NEEDLES" "$CONTEXT_NEEDLES" "$C3_SUBJECTS" "$C3_DECODERS" "$C3_SOURCE" \
+                   "$C3_IDENTITY" "$C3_REDACTORS" "$C3_MSG" "$C3_ERRCTX" "$C3_PROXIMITY" "$@"; }
 
   # ── RED (Check 1): a bare `api_key: String` + a context `secret: String` on a *Key* struct. ──
   cat >"$tmp/c1_red.rs" <<'RED'
@@ -423,6 +909,20 @@ RED
   if [ "$hit_baseurl" -eq 0 ];then note "RED c1: did NOT flag the non-secret \`base_url: String\`"; else fail=1; note "RED c1 FAILED: base_url false-positive"; fi
 
   # ── GREEN (Check 1): the SAME fields wrapped in Redacted — zero hits. Plus a comment + a fn param. ──
+  #
+  # THE FN-PARAM LINE IN HERE ENCODED THE BLIND SPOT, and it is kept ONLY because the case below it
+  # now closes it. As originally written this case asserted, flatly, that a fn parameter named
+  # `api_key: String` must not be flagged — and for CHECK 1 that is correct and stays correct: a
+  # parameter is not a field, it has no derived `Debug`/`Serialize` to leak through, and flagging it
+  # here would be flagging a shape that cannot leak by the mechanism Check 1 exists for.
+  #
+  # But nothing else in this file looked at it either, and that is what the case was really
+  # recording. Both leaks of 49d781bd1 were exactly this: a fn parameter (`parse_proxy(v: &str)`)
+  # and a third-party error's `Display`, interpolated into a `format!` that becomes a returned
+  # `Err`. The green line said "not a Check-1 violation"; the gate as a whole read it as "not a
+  # violation". `c1_green_param_is_c3_red` immediately below takes the VERY SAME source text and
+  # proves Check 3 DOES see it. The case is not deleted, because deleting it would lose the true
+  # statement it makes; it is PAIRED, because on its own it was load-bearing for a false one.
   cat >"$tmp/c1_green.rs" <<'GREEN'
 // api_key: String  <- a comment naming the bad shape must be ignored
 pub struct LaneConfig {
@@ -439,6 +939,25 @@ GREEN
     note "GREEN c1: Redacted-wrapped field + comment + fn-param + non-secret token:usize flagged NONE"
   else
     fail=1; note "GREEN c1 FAILED: expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # ── THE PAIRING: the SAME fn param, now in a message. Check 1 green, Check 3 RED. ──
+  cat >"$tmp/c1_green_param_is_c3_red.rs" <<'PAIR'
+fn set(api_key: String) -> Result<(), String> {
+    Err(format!("api_key {api_key} was rejected by the upstream"))
+}
+PAIR
+  out="$(scan_fields "$STRONG_NEEDLES" "$CONTEXT_NEEDLES" "$CONTEXT_STRUCT_RE" "$tmp/c1_green_param_is_c3_red.rs")"
+  if [ -z "$out" ]; then
+    note "PAIR: Check 1 is still (correctly) silent on a fn param — a param is not a field"
+  else
+    fail=1; note "PAIR FAILED: Check 1 started flagging a fn param; that is not its rule"
+  fi
+  out="$(c3 "$tmp/c1_green_param_is_c3_red.rs")"
+  if printf '%s\n' "$out" | grep -q 'secret-named-binding'; then
+    note "PAIR: Check 3 FLAGS that same fn param once it reaches a message — the blind spot is closed"
+  else
+    fail=1; note "PAIR FAILED: the fn param the c1 GREEN case excuses is STILL invisible to the gate"
   fi
 
   # ── RED (Check 1, QUALIFIED): the prefix/suffix class the equality matcher was blind to. ──
@@ -548,11 +1067,264 @@ GREEN2
     fail=1; note "GREEN c2 FAILED: expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
   fi
 
+  # ══ CHECK 3 — the MESSAGE-INTERPOLATION class ══════════════════════════════════════════════════
+  #
+  # THE TWO REAL LEAKS ARE PERMANENT FIXTURES HERE, VERBATIM FROM THEIR PRE-FIX CONTENT
+  # (49d781bd1^). A check written after an incident is worth exactly what it proves against that
+  # incident, and "I read the rule and it looks like it would have caught it" is not a proof. These
+  # are the bytes that shipped. If a future edit to the needles or the lexer stops seeing them, this
+  # self-test goes red rather than the gate going quiet.
+
+  # ── RED (Check 3, REAL LEAK #1 — egress/engine/mod.rs `tunnel::parse_proxy`, pre-49d781bd1). ──
+  # Three refusal arms rendering the RAW proxy env value with `{v:?}`. `HTTPS_PROXY`/`HTTP_PROXY`/
+  # `ALL_PROXY` carry `user:password@`, and this refusal is not swallowed — it becomes a boot panic
+  # with no `catch_unwind` under it, so the password reached stderr, the crash report and the CI log.
+  # NOTHING IN THIS FUNCTION IS SECRET-NAMED: the param is `v`, the local is `url`, the error is `e`.
+  # Only rule C can see it, and only because of the sentence the author wrote about the value.
+  cat >"$tmp/c3_red_proxy.rs" <<'RED3A'
+pub(super) fn parse_proxy(v: &str) -> Result<ProxySpec, String> {
+    let url = if v.contains("://") {
+        v.to_string()
+    } else {
+        format!("http://{v}")
+    };
+    let parsed = url::Url::parse(&url)
+        .map_err(|e| format!("proxy env value {v:?} is not a valid URL: {e}"))?;
+    if parsed.scheme() != "http" {
+        return Err(format!(
+            "proxy env value {v:?} uses scheme {:?}: only plain http:// CONNECT proxies are \
+             supported (an https:// proxy would need TLS-to-proxy, which this tunnel does not \
+             speak)",
+            parsed.scheme()
+        ));
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("proxy env value {v:?} has no host"))?
+        .to_string();
+    Ok(ProxySpec { host })
+}
+RED3A
+  out="$(c3 "$tmp/c3_red_proxy.rs")"
+  n="$(printf '%s\n' "$out" | awk -F'\t' '$1=="secret-subject-parameter"{n++} END{print n+0}')"
+  if [ "$n" -eq 3 ]; then
+    note "RED c3: REAL LEAK #1 — all THREE \`parse_proxy\` refusal arms named (raw \$HTTPS_PROXY into an Err)"
+  else
+    fail=1; note "RED c3 FAILED: expected 3 parse_proxy arms, got $n — the shipped proxy-password leak would pass"
+    printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # ── RED (Check 3, REAL LEAK #2 — egress_auth/jwt_bearer.rs `pem_to_pkcs8_der`, pre-49d781bd1). ──
+  # `base64::DecodeError`'s own Display names a byte OF THE KEY BODY. `InvalidLastSymbol` prints the
+  # symbol as hex AND as the character AND its decoded bits — and for that variant the symbol is a
+  # VALID base64 character, i.e. six bits of the operator's RSA private key. `validate_credential` ->
+  # `config_validate` copies the string verbatim into the `errors` array admin `config/validate`
+  # returns to a READ-SCOPE caller. A privilege boundary, not log hygiene.
+  cat >"$tmp/c3_red_pem.rs" <<'RED3B'
+fn pem_to_pkcs8_der(pem: &str) -> Result<Vec<u8>, String> {
+    let body: String = pem
+        .lines()
+        .filter(|l| !l.starts_with("-----"))
+        .flat_map(|l| l.chars())
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if body.is_empty() {
+        return Err("service-account private_key is empty or not PEM-armored".to_string());
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(body.as_bytes())
+        .map_err(|e| format!("service-account private_key base64 is invalid: {e}"))
+}
+RED3B
+  out="$(c3 "$tmp/c3_red_pem.rs")"
+  if printf '%s\n' "$out" | grep -q 'decoder-error-on-secret-input'; then
+    note "RED c3: REAL LEAK #2 — \`base64::DecodeError\`'s Display into a read-scope \`errors\` string, named"
+  else
+    fail=1; note "RED c3 FAILED: the shipped RSA-key-symbol leak would pass"; printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # ── RED (Check 3, LEDGER S21 companion — plugin-sdk/src/pack.rs:538, STILL LIVE). ──
+  # `hex::FromHexError::InvalidHexCharacter { c, index }` prints the character AND its index, which
+  # for the 32-byte ed25519 seed in $BUSBAR_SIGN_KEY is a nibble of the signing key. There is no
+  # subject word in that message at all — `{SIGN_KEY_ENV}` is the env var NAME, a const — so the
+  # only evidence is the decoded binding: `hex_seed`. This is the case C3_SOURCE exists for.
+  cat >"$tmp/c3_red_hexseed.rs" <<'RED3C'
+fn sign_it(allow_unsigned: bool) -> Result<Manifest, String> {
+    let hex_seed = std::env::var(SIGN_KEY_ENV).map_err(|_| "unset".to_string())?;
+    let seed = hex::decode(hex_seed.trim())
+        .map_err(|e| format!("{SIGN_KEY_ENV} is not valid hex: {e}"))?;
+    Ok(seed)
+}
+RED3C
+  out="$(c3 "$tmp/c3_red_hexseed.rs")"
+  if printf '%s\n' "$out" | grep -q 'decoder-error-on-secret-input'; then
+    note "RED c3: LEDGER S21 companion — \$BUSBAR_SIGN_KEY's hex error (a nibble of the ed25519 seed), named"
+  else
+    fail=1; note "RED c3 FAILED: the pack.rs signing-seed echo would pass"; printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # ── RED (Check 3, rule A — the PLANT). A secret-NAMED binding straight into a returned Err. ──
+  cat >"$tmp/c3_red_named.rs" <<'RED3D'
+fn check(cfg: &Lane) -> Result<(), String> {
+    if cfg.api_key.is_empty() {
+        return Err(format!("upstream rejected api_key {}", cfg.api_key));
+    }
+    let admin_password = cfg.pw();
+    if admin_password.len() < 8 {
+        return Err(format!("admin_password {admin_password} is too short"));
+    }
+    Ok(())
+}
+RED3D
+  out="$(c3 "$tmp/c3_red_named.rs")"
+  n="$(printf '%s\n' "$out" | awk -F'\t' '$1=="secret-named-binding"{n++} END{print n+0}')"
+  if [ "$n" -ge 2 ]; then
+    note "RED c3: a secret-NAMED binding (api_key, admin_password) interpolated into a returned Err, named"
+  else
+    fail=1; note "RED c3 FAILED: expected >=2 secret-named-binding, got $n"; printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # ── GREEN (Check 3): BOTH REAL LEAKS AS THEY ARE FIXED TODAY. ──
+  # The remedy is redaction AT THE FORMATTING SITE, never deleting the diagnostic. Both of these
+  # still say which variable failed, which field failed, and why; neither says the value. If the
+  # check cannot tell the fix from the leak it is not a check, it is a ban on error messages.
+  cat >"$tmp/c3_green_fixed.rs" <<'GREEN3A'
+fn redact_userinfo(v: &str) -> String {
+    let (scheme, rest) = match v.split_once("://") {
+        Some((s, r)) => (Some(s), r),
+        None => (None, v),
+    };
+    match scheme { Some(s) => format!("{s}://{rest}"), None => rest.to_string() }
+}
+pub(super) fn parse_proxy(v: &str) -> Result<ProxySpec, String> {
+    let shown = redact_userinfo(v);
+    let url = if v.contains("://") { v.to_string() } else { format!("http://{v}") };
+    let parsed = url::Url::parse(&url)
+        .map_err(|e| format!("proxy env value {shown:?} is not a valid URL: {e}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("proxy env value {shown:?} has no host"))?
+        .to_string();
+    Ok(ProxySpec { host })
+}
+fn pem_to_pkcs8_der(pem: &str) -> Result<Vec<u8>, String> {
+    let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(body.as_bytes())
+        .map_err(|e| {
+            let why = match e {
+                base64::DecodeError::InvalidByte(..) => "it contains a character outside the base64 alphabet",
+                base64::DecodeError::InvalidLength(..) => "its final base64 group is short",
+                base64::DecodeError::InvalidLastSymbol { .. } => "its final symbol carries bits decoding would discard",
+                base64::DecodeError::InvalidPadding => "its `=` padding is absent or malformed",
+            };
+            format!("service-account private_key base64 is invalid: {why}.")
+        })
+}
+GREEN3A
+  out="$(c3 "$tmp/c3_green_fixed.rs")"
+  if [ -z "$out" ]; then
+    note "GREEN c3: BOTH real leaks AS FIXED flag NONE — redaction at the format site is recognised, and the diagnostic survives"
+  else
+    fail=1; note "GREEN c3 FAILED: the check cannot tell the fix from the leak — expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # ── GREEN (Check 3): THE NEGATIVE CONTROL. Without this, a rule that flags every interpolation
+  #    satisfies every RED arm above and is worthless. Eight shapes that LOOK like the class:
+  #      1. a plain non-secret value in an Err message
+  #      2. a `format!` building a header VALUE (not a message) — sharing a statement with a
+  #         trailing `.map_err` must not make it one
+  #      3. `SecretRef::describe()` — the safe identity, which is what the remedy asks you to print
+  #      4. the identity nouns (`host`, `port`, `location`) inside a message about a secret
+  #      5. `hex::decode` of a PUBLIC key and of a signature
+  #      6. base64 of declared media
+  #      7. a subject word that is part of a FUNCTION name (`put_credential:`), not a claim about
+  #         the value
+  #      8. an ALL-CAPS const, which names an env var and is not its contents
+  cat >"$tmp/c3_green_control.rs" <<'GREEN3B'
+fn a(base_url: &str, retries: u32) -> Result<(), String> {
+    Err(format!("upstream {base_url} refused after {retries} retries"))
+}
+fn b(&self) -> Result<Request, MintError> {
+    http::Request::builder()
+        .header(http::header::AUTHORIZATION, format!("Bearer {}", self.api_key))
+        .body(Full::new(Bytes::new()))
+        .map_err(|e| MintError::Provider(format!("mint request did not build: {e}")))
+}
+fn c(secret: &SecretRef, module: &str) -> Result<Vec<u8>, String> {
+    Err(format!(
+        "secret module '{module}' failed to resolve {}; a secret that cannot resolve is fatal",
+        secret.describe()
+    ))
+}
+fn d(host: &str, port: u16, location: &str) -> Result<(), String> {
+    Err(format!("proxy refused CONNECT {host}:{port}; no secret is declared at {location}"))
+}
+fn e(s: &str, manifest: &Manifest) -> Result<Vec<u8>, String> {
+    let bytes = hex::decode(s.trim()).map_err(|e| format!("public key not valid hex: {e}"))?;
+    let sig = hex::decode(&manifest.signature).map_err(|e| format!("signature not hex: {e}"))?;
+    Ok(bytes)
+}
+fn f(at: &str, field: &str, value: &str) -> Result<(), String> {
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|e| format!("{at}: `{field}` is not valid standard base64 ({e}); it is declared media"))?;
+    Ok(())
+}
+fn g(slot: u32, kind: &str) -> Result<(), String> {
+    Err(format!("put_credential: slot {slot} for kind '{kind}' is already live"))
+}
+fn h() -> Result<(), String> {
+    Err(format!("{SIGN_KEY_ENV} is not set; pass --allow-unsigned to package unsigned"))
+}
+GREEN3B
+  out="$(c3 "$tmp/c3_green_control.rs")"
+  if [ -z "$out" ]; then
+    note "GREEN c3: NEGATIVE CONTROL — 8 non-secret/redacted/header-value/public-material shapes flagged NONE"
+  else
+    fail=1; note "GREEN c3 FAILED: the rule over-fires; a check that flags everything proves nothing. Got:"
+    printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # ── THE LEXER, RED THEN GREEN. A scanner that loses string state returns a SILENT ZERO for the
+  #    rest of the file, and that is the failure mode this whole file is armed against. The first
+  #    cut of Check 3 did exactly that on `br#"…"#`: the `b` disqualified the raw-string rule, the
+  #    literal was read as code, its inner `"` flipped the state, and every later finding in that
+  #    file became fiction. It is proven BOTH ways: the byte-raw-string must parse clean, and a
+  #    genuinely unterminated literal must SAY SO rather than report zero.
+  cat >"$tmp/c3_lexer_green.rs" <<'LEXG'
+fn pieces() {
+    for piece in [r#"{"loc"#, r#"ation":"SF"}"#] { let _ = piece; }
+    let b = Bytes::from_static(br#"{"location":"S"#);
+    let c = br#"["a","b"]"#;
+    let d = r"a raw string with no hashes";
+}
+fn after(api_key: String) -> Result<(), String> {
+    Err(format!("api_key {api_key} was rejected"))
+}
+LEXG
+  out="$(c3 "$tmp/c3_lexer_green.rs")"
+  if printf '%s\n' "$out" | grep -q 'PARSE-WARN'; then
+    fail=1; note "LEXER FAILED: \`br#\"…\"#\` lost string state — every finding after it is fiction"
+  elif printf '%s\n' "$out" | grep -q 'secret-named-binding'; then
+    note "LEXER GREEN: byte/raw strings (\`br#\"…\"#\`, \`r#\"…\"#\`, \`r\"…\"\`) parse clean AND the leak AFTER them is still seen"
+  else
+    fail=1; note "LEXER FAILED: parsed clean but went blind — the planted leak after the raw strings was not seen"
+  fi
+  printf 'fn x() {\n    let s = "unterminated\n' >"$tmp/c3_lexer_red.rs"
+  out="$(c3 "$tmp/c3_lexer_red.rs")"
+  if printf '%s\n' "$out" | grep -q 'PARSE-WARN'; then
+    note "LEXER RED: an unterminated literal is REPORTED, not silently scanned as zero findings"
+  else
+    fail=1; note "LEXER RED FAILED: a file the lexer could not parse produced a quiet zero"
+  fi
+
   # ── THE ALLOWLIST-LIVENESS DETECTOR, red then green. A detector that cannot go red is the same
   #    silent instrument it was written to replace, so it is proven on a planted stale row first and
   #    on the REAL list second — which also means every run of this self-test re-asserts that the
   #    shipped allowlist still names only live paths.
-  local real_allowlist="$ALLOWLIST_C1"
+  local real_allowlist="$ALLOWLIST_C1" real_allowlist3="$ALLOWLIST_C3"
+  ALLOWLIST_C3=""
   ALLOWLIST_C1="token|crates/busbar-this-crate-does-not-exist/src/x.rs|token"
   if check_allowlist_paths >/dev/null 2>&1; then
     fail=1; note "RED allowlist FAILED: a row at a path that does not exist was accepted"
@@ -565,7 +1337,7 @@ GREEN2
   else
     fail=1; note "GREEN allowlist FAILED: a row at a real path was refused — the detector over-fires"
   fi
-  ALLOWLIST_C1="$real_allowlist"
+  ALLOWLIST_C1="$real_allowlist"; ALLOWLIST_C3="$real_allowlist3"
   if check_allowlist_paths >/dev/null 2>&1; then
     note "GREEN allowlist: every row of the SHIPPED allowlist names a path in this tree"
   else
@@ -573,32 +1345,61 @@ GREEN2
   fi
 
   if [ "$fail" -ne 0 ]; then
-    red "secret-hygiene-gate SELF-TEST FAILED — the scanner would let a bare secret / a logged secret through"
+    red "secret-hygiene-gate SELF-TEST FAILED — the scanner would let a bare secret / a logged secret / a secret in a returned message through"
     return 1
   fi
-  grn "secret-hygiene-gate self-test: ALL GREEN (Check-1 field RED/GREEN + Check-2 sink RED/GREEN + allowlist-liveness RED/GREEN proven)"
+  grn "secret-hygiene-gate self-test: ALL GREEN (Check-1 field RED/GREEN + Check-2 sink RED/GREEN + Check-3 message RED/GREEN incl. BOTH real leaks pre-fix and post-fix + lexer RED/GREEN + allowlist-liveness RED/GREEN proven)"
   return 0
 }
 
 # ── THE REAL RUN ──────────────────────────────────────────────────────────────────────────────────
 REPORT_TOTAL=0
+SCAN_BROKEN=0
 run_report() {
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
-  : >"$tmp/c1"; : >"$tmp/c2"
+  : >"$tmp/c1"; : >"$tmp/c2"; : >"$tmp/c3"
   local files; files="$(prod_files $ROOTS)"
   # shellcheck disable=SC2086
   [ -n "$files" ] && scan_fields "$STRONG_NEEDLES" "$CONTEXT_NEEDLES" "$CONTEXT_STRUCT_RE" $files >>"$tmp/c1"
   # shellcheck disable=SC2086
   [ -n "$files" ] && scan_sinks "$SINKS" $files >>"$tmp/c2"
+  # THE SCANNER'S OWN EXIT CODE, IN ITS OWN VARIABLE, BEFORE ANYTHING ELSE TOUCHES $?. Check 3's awk
+  # bailed out mid-tree on the first run of this file — `illegal byte sequence` on an em-dash under a
+  # UTF-8 locale (fixed with LC_ALL=C in the scanner) — and a bail is a PARTIAL scan that still
+  # prints a number. "Measured nothing" and "measured everything and it passed" must never be the
+  # same output, so a non-zero rc here is a hard FAIL, not a smaller count.
+  local rc3=0
+  # shellcheck disable=SC2086
+  if [ -n "$files" ]; then
+    scan_msgs "$STRONG_NEEDLES" "$CONTEXT_NEEDLES" "$C3_SUBJECTS" "$C3_DECODERS" "$C3_SOURCE" \
+              "$C3_IDENTITY" "$C3_REDACTORS" "$C3_MSG" "$C3_ERRCTX" "$C3_PROXIMITY" $files >>"$tmp/c3"
+    rc3=$?
+  fi
+  if [ "$rc3" -ne 0 ]; then
+    red "secret-hygiene gate: FAIL — the Check-3 scanner exited $rc3; its scan was PARTIAL."
+    note "A scanner that bailed still prints a count, and that count is a false zero. Fix the scanner."
+    SCAN_BROKEN=1
+  fi
+  local nwarn
+  nwarn="$(awk -F'\t' '$1=="PARSE-WARN"{n++} END{print n+0}' "$tmp/c3")"
+  if [ "$nwarn" -gt 0 ]; then
+    red "secret-hygiene gate: FAIL — the Check-3 lexer lost string state in $nwarn file(s)."
+    awk -F'\t' '$1=="PARSE-WARN"{printf "  %s  %s\n", $2, $4}' "$tmp/c3"
+    note "Every finding in those files is untrustworthy — a swallowed literal reads as code and a"
+    note "swallowed code region reports NOTHING. This is the silent-zero class, so it is a hard fail."
+    SCAN_BROKEN=1
+  fi
 
-  local n1 n2 total
+  local n1 n2 n3 total
   n1="$(awk 'END{print NR+0}' "$tmp/c1")"
   n2="$(awk 'END{print NR+0}' "$tmp/c2")"
-  total=$((n1 + n2)); REPORT_TOTAL="$total"
+  n3="$(awk -F'\t' '$1!="PARSE-WARN"{n++} END{print n+0}' "$tmp/c3")"
+  total=$((n1 + n2 + n3)); REPORT_TOTAL="$total"
 
-  hdr "SECRET-HYGIENE report — bare secret VALUE types + secrets at a log/audit/metric sink (production .rs under $ROOTS)"
+  hdr "SECRET-HYGIENE report — bare secret VALUE types + secrets at a sink + secrets in a MESSAGE (production .rs under $ROOTS)"
   note "Check 1 (bare secret field, not Redacted/Zeroizing/SecretRef): $n1"
   note "Check 2 (.expose_secret() on a log/audit/metric sink line):     $n2"
+  note "Check 3 (secret interpolated into a message a caller receives): $n3"
 
   if [ "$n1" -gt 0 ]; then
     hdr "Check 1 — bare secret fields (convert to busbar_api::Redacted<T>)"
@@ -608,9 +1409,14 @@ run_report() {
     hdr "Check 2 — secret exposed at a sink (log the SecretRef/id, never the value)"
     awk -F'\t' '{printf "  %-14s %s\n", $1, $2}' "$tmp/c2"
   fi
+  if [ "$n3" -gt 0 ]; then
+    hdr "Check 3 — secret interpolated into a message a CALLER receives (redact AT the format site; never delete the diagnostic)"
+    awk -F'\t' '$1!="PARSE-WARN"{printf "  %-30s %-58s %s\n", $1, $2, $3}' "$tmp/c3"
+  fi
 
   cp "$tmp/c1" "${SECRET_GATE_C1_OUT:-/dev/null}" 2>/dev/null || true
   cp "$tmp/c2" "${SECRET_GATE_C2_OUT:-/dev/null}" 2>/dev/null || true
+  cp "$tmp/c3" "${SECRET_GATE_C3_OUT:-/dev/null}" 2>/dev/null || true
 }
 
 # ── modes ─────────────────────────────────────────────────────────────────────────────────────────
@@ -625,6 +1431,12 @@ case "${1:-}" in
     check_allowlist_paths || exit 1
     run_report
     hdr "verdict"
+    # A BROKEN INSTRUMENT IS NOT "REPORT-ONLY". Same posture `check_allowlist_paths` already takes:
+    # a debt count is a thing to burn down, a scanner that did not finish is a thing that is lying.
+    if [ "$SCAN_BROKEN" -ne 0 ]; then
+      red "secret-hygiene gate: FAIL — the scan did not complete; the counts above are NOT a verdict."
+      exit 1
+    fi
     report_only="${SECRET_GATE_REPORT_ONLY:-1}"
     if [ "$REPORT_TOTAL" -eq 0 ]; then
       grn "secret-hygiene gate: PASS — no bare secret value type, no secret at a sink"
@@ -633,17 +1445,38 @@ case "${1:-}" in
     if [ "$report_only" = "0" ]; then
       red "secret-hygiene gate: FAIL — $REPORT_TOTAL secret-hygiene violation(s) (see report above)"
       note "Wrap each secret VALUE in busbar_api::Redacted<T>; log a SecretRef/id, never .expose_secret() output."
+      note "For a Check-3 hit: REDACT AT THE FORMAT SITE. Do not delete the diagnostic — an error that"
+      note "no longer says which setting was wrong is a worse error than one that says too much."
       exit 1
     fi
     ylw "secret-hygiene gate: $REPORT_TOTAL violation(s) — REPORT-ONLY (SECRET_GATE_REPORT_ONLY=1, non-blocking)."
     note "Baseline debt; Phase-2 (post-pivot) converts the remaining offenders. Set SECRET_GATE_REPORT_ONLY=0 to arm the hard gate."
     exit 0
     ;;
+  --scan3)
+    # CHECK 3 AGAINST NAMED FILES — how the retro-proof is run, and why it is a shipped mode rather
+    # than a copy of the scanner in somebody's scratch directory. "Would this check have caught the
+    # leak?" is answerable ONLY against the bytes that shipped, so:
+    #
+    #   git show 49d781bd1^:crates/busbar-kernel/src/egress/engine/mod.rs      > /tmp/pre/a.rs
+    #   git show 49d781bd1^:crates/busbar-kernel/src/egress_auth/jwt_bearer.rs > /tmp/pre/b.rs
+    #   scripts/secret-hygiene-gate.sh --scan3 /tmp/pre/a.rs /tmp/pre/b.rs
+    #
+    # must name both. A copy of the rules run by hand proves something about the copy. This runs the
+    # SHIPPED needles and the SHIPPED lexer, so it cannot drift from what CI does.
+    shift
+    [ "$#" -gt 0 ] || { echo "usage: $0 --scan3 <file.rs...>" >&2; exit 2; }
+    scan_msgs "$STRONG_NEEDLES" "$CONTEXT_NEEDLES" "$C3_SUBJECTS" "$C3_DECODERS" "$C3_SOURCE" \
+              "$C3_IDENTITY" "$C3_REDACTORS" "$C3_MSG" "$C3_ERRCTX" "$C3_PROXIMITY" "$@"
+    rc=$?
+    [ "$rc" -eq 0 ] || { red "secret-hygiene gate: FAIL — the Check-3 scanner exited $rc (PARTIAL scan)"; exit 1; }
+    exit 0
+    ;;
   -h | --help)
     sed -n '2,40p' "$0"
     ;;
   *)
-    echo "usage: $0 [--selftest | --report | --check]   (env SECRET_GATE_REPORT_ONLY=1 default report-only; =0 blocking)" >&2
+    echo "usage: $0 [--selftest | --report | --check | --scan3 <file.rs...>]   (env SECRET_GATE_REPORT_ONLY=1 default report-only; =0 blocking)" >&2
     exit 2
     ;;
 esac
