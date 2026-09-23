@@ -217,7 +217,11 @@ reap_abandoned_hot() {
     [ "$secs" -gt "$ORPHAN_HOT_MIN_AGE_SECS" ] || continue
     # the fourth leg: cwd inside the repo tree. lsof only for the tiny candidate set.
     local cwd
-    cwd=$(/usr/sbin/lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    # `set -o pipefail` + lsof's non-zero rc on a SIP-protected process used to kill
+    # the whole script HERE, silently, before the abandoned-hot / poll-loop / tmp /
+    # load lines ever printed. It surfaced as rc=1 with no stderr. An empty cwd is a
+    # NORMAL answer (system daemons deny it) and the case below already spares them.
+    cwd=$(/usr/sbin/lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1 || true)
     case "$cwd" in "$ORPHAN_CWD_ROOT"*) ;; *) continue ;; esac
     found=$((found + 1))
     if [ "$REAP" = "1" ]; then
