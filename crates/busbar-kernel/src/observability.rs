@@ -248,9 +248,10 @@ pub(crate) fn validate_webhook_url(url: Option<String>) -> Result<Option<String>
 /// block DIFFERENT sets on the LOCALHOST family.
 ///
 /// The METADATA family is NOT a place the two may differ, and this is no longer a second copy: it
-/// is [`crate::net_guard::METADATA_HOSTS`] itself. It used to be a private two-name list beside a
-/// six-name one, which is a telemetry guard that had never heard of four names the config guard
-/// refused.
+/// is [`crate::net_guard::METADATA_HOSTS`] itself — which is now the egress unit's list, reached
+/// through the re-export shim, so there is exactly ONE metadata list in the tree and this guard
+/// reads it rather than a sibling of it. It used to be a private two-name list beside a six-name
+/// one, which is a telemetry guard that had never heard of four names the config guard refused.
 use crate::net_guard::METADATA_HOSTS;
 
 /// True for an IPv4 literal busbar must not POST telemetry to. Shared by the V4 arm and the

@@ -399,11 +399,11 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
- "busbar-a2a-codec",
  "busbar-api",
  "busbar-contract",
  "busbar-core-admin",
  "busbar-kernel",
+ "busbar-plane-a2a",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-secret-ref",
@@ -435,15 +435,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
-]
-
-[[package]]
-name = "busbar-a2a-codec"
-version = "1.6.0"
-dependencies = [
- "busbar-api",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -572,11 +563,11 @@ dependencies = [
  "base64 0.23.1",
  "bumpalo",
  "busbar-a2a",
- "busbar-a2a-codec",
  "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-contract",
  "busbar-hooks-ranking",
+ "busbar-kernel-egress",
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin",
@@ -838,8 +829,8 @@ dependencies = [
 name = "busbar-plane-a2a"
 version = "1.6.0"
 dependencies = [
- "busbar-a2a-codec",
  "busbar-contract",
+ "serde",
  "serde_json",
 ]
 

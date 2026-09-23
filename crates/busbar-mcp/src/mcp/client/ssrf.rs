@@ -18,7 +18,7 @@
 //! What stays here is what is genuinely THIS caller's: its knobs, and its WORDING. An operator
 //! diagnosing a refusal needs to read "MCP upstream URL", not "a fetch was refused", and the remedy
 //! sentence names `allow_private` on a SERVER registration. [`SsrfRefusal`] is therefore a
-//! rendering of [`busbar_kernel::net_guard::GuardRefusal`] rather than a second decision about it.
+//! rendering of [`busbar_kernel::net_guard::AddressRefusal`] rather than a second decision about it.
 //!
 //! ## Why the existing startup guards are not enough, stated precisely
 //!
@@ -48,7 +48,7 @@
 //! targets sub-100µs, while dispatch is milliseconds-class and does DNS. This runs on dispatch, and
 //! the separation is what lets it do a blocking-class lookup without breaking the selection number.
 
-use busbar_kernel::net_guard::{self, GuardPolicy, GuardRefusal, PinnedTarget};
+use busbar_kernel::net_guard::{self, AddressRefusal, GuardPolicy, PinnedTarget};
 use std::net::{IpAddr, SocketAddr};
 
 /// The operator's addressing posture for ONE upstream. Per server rather than global, because the
@@ -94,7 +94,7 @@ pub(crate) const DISPATCH_CONNECT_TIMEOUT: std::time::Duration = std::time::Dura
 /// Why a dispatch target was refused. Every arm names the address or scheme, because an SSRF refusal
 /// an operator cannot diagnose is an SSRF refusal an operator disables.
 ///
-/// This is the MCP dispatch path's RENDERING of [`GuardRefusal`], not a second judgement: every
+/// This is the MCP dispatch path's RENDERING of [`AddressRefusal`], not a second judgement: every
 /// value is constructed by the `From` below and by nothing else.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SsrfRefusal {
@@ -130,40 +130,39 @@ pub(crate) enum SsrfRefusal {
     /// Carried rather than flattened into one of the arms above so that if the guard ever hands
     /// this path a bound it does not set, an operator reads the actual reason instead of a nearby
     /// one. Rendering the shared refusal verbatim is the honest answer to "this should not happen".
-    Bound(GuardRefusal),
+    Bound(AddressRefusal),
 }
 
-impl From<GuardRefusal> for SsrfRefusal {
-    fn from(g: GuardRefusal) -> Self {
+impl From<AddressRefusal> for SsrfRefusal {
+    fn from(g: AddressRefusal) -> Self {
         match g {
-            GuardRefusal::Scheme { url, .. } => SsrfRefusal::Scheme(url),
-            GuardRefusal::Plaintext { url, .. } => SsrfRefusal::PlaintextToPublicHost(url),
-            GuardRefusal::NoHost(url) => SsrfRefusal::NoHost(url),
-            GuardRefusal::ObfuscatedHost(host) => SsrfRefusal::ObfuscatedHost(host),
-            GuardRefusal::MetadataName(host) => SsrfRefusal::MetadataHostName(host),
-            GuardRefusal::LoopbackName(host) => SsrfRefusal::LoopbackHostName(host),
-            GuardRefusal::Unresolvable { host, reason } => {
+            AddressRefusal::Scheme { url, .. } => SsrfRefusal::Scheme(url),
+            AddressRefusal::Plaintext { url, .. } => SsrfRefusal::PlaintextToPublicHost(url),
+            AddressRefusal::NoHost(url) => SsrfRefusal::NoHost(url),
+            AddressRefusal::ObfuscatedHost(host) => SsrfRefusal::ObfuscatedHost(host),
+            AddressRefusal::MetadataName(host) => SsrfRefusal::MetadataHostName(host),
+            AddressRefusal::LoopbackName(host) => SsrfRefusal::LoopbackHostName(host),
+            AddressRefusal::Unresolvable { host, reason } => {
                 SsrfRefusal::Unresolvable { host, reason }
             }
             // An empty answer and a failed lookup are different FACTS in core and are kept apart
             // there; this path has always reported them with one sentence, and the sentence is the
             // part an operator has in a runbook.
-            GuardRefusal::NoAddresses(host) => SsrfRefusal::Unresolvable {
+            AddressRefusal::NoAddresses(host) => SsrfRefusal::Unresolvable {
                 host,
                 reason: "resolver returned no addresses".to_string(),
             },
-            GuardRefusal::InternalAddress { host, addr } => {
+            AddressRefusal::InternalAddress { host, addr } => {
                 SsrfRefusal::InternalAddress { host, addr }
             }
-            GuardRefusal::CloudMetadataAddress { host, addr } => {
+            AddressRefusal::CloudMetadataAddress { host, addr } => {
                 SsrfRefusal::CloudMetadata { host, addr }
             }
-            GuardRefusal::Redirect { status, location } => {
+            AddressRefusal::Redirect { status, location } => {
                 SsrfRefusal::Redirect { status, location }
             }
-            other @ (GuardRefusal::TooManyRedirects { .. } | GuardRefusal::BodyTooLarge { .. }) => {
-                SsrfRefusal::Bound(other)
-            }
+            other @ (AddressRefusal::TooManyRedirects { .. }
+            | AddressRefusal::BodyTooLarge { .. }) => SsrfRefusal::Bound(other),
         }
     }
 }
@@ -248,7 +247,13 @@ pub(crate) async fn pin_upstream(
     policy: SsrfPolicy,
 ) -> Result<PinnedTarget, SsrfRefusal> {
     let (https, host, port, _path) = precheck(url, policy)?;
-    Ok(net_guard::resolve_and_pin_async(&host, port, https, policy.guard()).await?)
+    Ok(net_guard::resolve_and_pin(
+        &host,
+        port,
+        https,
+        &net_guard::SystemResolver,
+        policy.guard(),
+    )?)
 }
 
 /// Refuse if ANY address in `addrs` is inadmissible.

@@ -15,7 +15,7 @@
 //!   built from the [`EgressDesc`] outbound tail (the `verb`, the packed header set, and the one-shot
 //!   request `body`), the credential is INJECTED host-side (the resolved credential the plane named by
 //!   ref, never plaintext the plane held — see [`inject_credential`]), then resolve-then-pin over
-//!   [`crate::net_guard::resolve_and_pin_async`], a per-hop PINNED client (the a2a lesson — a pooled
+//!   [`crate::net_guard::resolve_and_pin`], a per-hop PINNED client (the a2a lesson — a pooled
 //!   client re-resolves and reopens the DNS-rebind window, so a governed hop pins the address and
 //!   refuses a second lookup), the post-connect observed peer identity handed back in the
 //!   [`EgressHead`], a background streaming task that pumps `resp.chunk().await` into a bounded
@@ -892,9 +892,13 @@ fn run_http_stream(
         // address judged, the survivor pinned.
         let socket_addr = match pinned {
             Some(addr) => addr,
-            None => match crate::net_guard::resolve_and_pin_async(host_name, port, https, policy)
-                .await
-            {
+            None => match crate::net_guard::resolve_and_pin(
+                host_name,
+                port,
+                https,
+                &crate::net_guard::SystemResolver,
+                policy,
+            ) {
                 Ok(pin) => pin.socket_addr(),
                 Err(refusal) => {
                     let _ = head_tx.send(HeadMsg::Refused(refusal.to_string()));

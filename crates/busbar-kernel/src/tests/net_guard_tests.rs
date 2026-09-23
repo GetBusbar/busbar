@@ -1,9 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-substrate/src/net_guard.rs`.
+//! Tests for the network guard AS REACHED THROUGH `busbar_kernel::net_guard`.
+//!
+//! The guard itself is `busbar_kernel_egress::trust::net` and is tested there too. This suite is not
+//! a second copy of that one: it is driven through the SHIM, so it is also the statement that the
+//! shim still resolves to the one judge. A re-grown local definition behind `crate::net_guard`
+//! would have to pass every row below to go unnoticed — including
+//! `the_dialing_guard_and_the_config_guard_know_the_same_metadata_names`, which is the bug that was
+//! actually live.
 
 use super::*;
+// The address type these assertions name. It used to arrive through `use super::*` from
+// the guard's own imports; the shim imports only what IT needs, so a suite that names a type
+// says so itself.
+use std::net::Ipv4Addr;
 
 #[test]
 fn is_cgnat_shared_v4_covers_rfc6598_only() {
@@ -350,10 +361,26 @@ fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
     }
 
     // An operator denylist entry written in the bare v4 form must also catch the NAT64 spelling —
-    // otherwise the denylist is trivially evaded by re-encoding the same address.
+    // otherwise the denylist is trivially evaded by re-encoding the same address. Asked through the
+    // operator's OWN door rather than through the canonicalizer, and asked on an address the
+    // hardcoded denylist does NOT hold (`10.99.99.99` is a legitimate upstream by default), so the
+    // refusal can only be coming from the entry: the control below shows the same host passing when
+    // the list is empty.
+    const NAT64_OF_10_99_99_99: &str = "https://[64:ff9b::a63:6363]/";
     assert!(
-        host_matches_any("64:ff9b::a9fe:a9fe", &["169.254.169.254".to_string()]),
+        ssrf_blocked_host(
+            NAT64_OF_10_99_99_99,
+            &[],
+            false,
+            &["10.99.99.99".to_string()]
+        )
+        .is_some(),
         "a denylist entry naming the v4 address must match its NAT64 embedding"
+    );
+    assert!(
+        ssrf_blocked_host(NAT64_OF_10_99_99_99, &[], false, &[]).is_none(),
+        "the control: without the operator entry this host is an ordinary private upstream, so the \
+         assertion above is about the entry and not about the hardcoded denylist"
     );
 
     // Public addresses are unaffected: 8.8.8.8 embedded in NAT64 is still public.

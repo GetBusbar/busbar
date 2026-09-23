@@ -278,7 +278,7 @@ fn the_production_fetch_policy_is_the_bounded_one() {
 ///
 /// The point is the WIRING, not the ranges: `net_guard`'s tests already prove the predicate. This
 /// one proves [`GuardedFetch`] calls it, and goes red if the `judge_scheme` /
-/// `resolve_and_pin_async` pair is ever dropped from the fetch — an edit that leaves every other
+/// `resolve_and_pin` pair is ever dropped from the fetch — an edit that leaves every other
 /// test in the tree green while pointing an unauthenticated endpoint at IMDS.
 #[tokio::test]
 async fn the_production_fetch_refuses_the_addresses_the_guard_exists_for() {

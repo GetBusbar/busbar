@@ -43,6 +43,16 @@ busbar-substrate-values = { path = "../busbar-substrate-values" }
 # consumer (router, the chain-verification module, config, config_validate) never has to name
 # "admin" to check a scope.
 busbar-contract = { path = "../busbar-contract" }
+# THE ONE NETWORK JUDGE (#36: "the upstream leg — walk + swrr weighting + pre-dial guard; trust
+# folded in"). `busbar_kernel_egress::trust::net` is the single definition of the SSRF/metadata
+# guard — the metadata name list, the address predicates, the WHATWG host extraction, the
+# resolve-then-pin. `src/net_guard.rs` is a re-export shim over it, so every in-core call site and
+# all three plane crates keep naming `busbar_kernel::net_guard::…` unchanged and no plane→unit edge
+# is created. There WAS a second copy of that guard in this crate; it drifted, and the drift was a
+# live metadata bypass (`metadata.platformequinix.com` resolves and pins to a routable address, so
+# nothing but the NAME arm can refuse it, and the name arm read a two-entry list). One judge is the
+# fix; this edge is what makes one judge reachable from here.
+busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.

@@ -3329,6 +3329,16 @@ drain   = "delete the busbar-hooks-ranking dependency from busbar-kernel's Cargo
 
 [[dep]]
 from    = "busbar-kernel"
+to      = "busbar-kernel-egress"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md — kernel workflow crates form the loop; #36 group structure permits intra-tier edges (ARCHITECTURE_ALLOWED kernel -> kernel). #36 gives the egress unit 'the upstream leg — walk + swrr weighting + pre-dial guard; trust folded in', and the pre-dial guard is what this edge names."
+why     = "busbar-kernel names busbar-kernel-egress: declared normal in the shipped graph, 1 declaration(s) at this commit. THE ONE NETWORK JUDGE: src/net_guard.rs was a second 1,345-line definition of the SSRF/metadata guard beside the unit’s. The fork drifted and the drift was a live bypass — the dialing arm read a two-entry METADATA_HOSTS while config validation read six, and metadata.platformequinix.com answers on a routable address, so nothing but the NAME arm could refuse it. The shim collapses the fork; this edge is what makes the surviving judge reachable, and it keeps the three plane crates naming busbar_kernel::net_guard so no plane -> unit edge is grown instead."
+drain   = "none: ARCHITECTURE.md grants the kernel -> kernel class. What this row holds is the NUMBER — draining the edge would mean re-forking the guard, which is the defect it was added to close."
+
+[[dep]]
+from    = "busbar-kernel"
 to      = "busbar-plugin"
 half    = "shipped"
 count   = "1"

@@ -14,7 +14,7 @@
 //!
 //! A `wss://` upstream is an operator/runtime target, so it is resolved-then-pinned-then-guarded on
 //! EXACTLY the discipline the HTTP egress seam applies — never a raw `connect_async` that resolves DNS
-//! itself. The order is [`crate::net_guard::resolve_and_pin_async`] FIRST (structural refusals, one
+//! itself. The order is [`crate::net_guard::resolve_and_pin`] FIRST (structural refusals, one
 //! resolution, every answered address judged, the survivor pinned), then a TCP connect to THAT pinned
 //! address, then a TLS handshake presenting the URL host for SNI / certificate validation, then the
 //! client WS handshake OVER that already-guarded stream. The socket is never opened to anything the
@@ -27,7 +27,7 @@ use futures::{Sink, SinkExt, Stream, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::net_guard::{self, GuardPolicy, GuardRefusal};
+use crate::net_guard::{self, AddressRefusal, GuardPolicy};
 
 /// How many frames an upstream may have in flight ahead of the leg reading them. The same reasoning
 /// the inbound acceptor's queue is bounded by, pointed the other way: an upstream that emits faster
@@ -48,14 +48,14 @@ const MAX_QUEUED_OUTBOUND_FRAMES: usize =
     crate::config::limits::DEFAULT_DUPLEX_OUTBOUND_QUEUE_FRAMES;
 
 /// Why an outbound duplex dial failed — the FACT, kept separate so a caller renders its own sentence
-/// (mirroring how [`GuardRefusal`] callers convert into their own vocabulary).
+/// (mirroring how [`AddressRefusal`] callers convert into their own vocabulary).
 #[derive(Debug)]
 pub enum DialError {
     /// The URL was not a `ws(s)://` URL, or had no usable host/port.
     Url(String),
     /// The net-guard refused the target (SSRF, plaintext, unresolvable, internal, metadata, …). The
     /// dial NEVER opens a socket past this — the guard is the reason a socket exists at all.
-    Guard(GuardRefusal),
+    Guard(AddressRefusal),
     /// The TCP connect to the pinned address failed.
     Connect(String),
     /// The TLS handshake to the pinned address (SNI = the URL host) failed.
@@ -78,8 +78,8 @@ impl std::fmt::Display for DialError {
 
 impl std::error::Error for DialError {}
 
-impl From<GuardRefusal> for DialError {
-    fn from(r: GuardRefusal) -> Self {
+impl From<AddressRefusal> for DialError {
+    fn from(r: AddressRefusal) -> Self {
         DialError::Guard(r)
     }
 }
@@ -174,7 +174,8 @@ pub async fn dial(
     // THE GUARD, FIRST — resolve then pin then judge. `https = secure`: a `ws://` target is judged as
     // plaintext (admitted only under the policy's plaintext stance), a `wss://` as TLS. No socket is
     // opened to anything this did not pin.
-    let pinned = net_guard::resolve_and_pin_async(&host, port, secure, policy).await?;
+    let pinned =
+        net_guard::resolve_and_pin(&host, port, secure, &net_guard::SystemResolver, policy)?;
 
     // TCP to the PINNED address — never re-resolving the name (the TOCTOU the pin closes).
     let tcp = TcpStream::connect(pinned.socket_addr())

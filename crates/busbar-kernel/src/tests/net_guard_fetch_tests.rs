@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ONE GUARDED FETCH: resolve-then-pin, the address judgement, the redirect policy and the
-//! caps, tested where they now live rather than once per plane.
+//! caps, tested where they now live rather than once per plane — and driven through
+//! `busbar_kernel::net_guard`, the shim, so this is also the statement that the shim still reaches
+//! the one judge in `busbar_kernel_egress::trust::net` rather than a re-grown local copy.
 //!
 //! The rebinding cases are the reason this file exists. They are driven through a SCRIPTED RESOLVER
 //! that answers differently on the second lookup, because that is the only way to state the claim
@@ -14,7 +16,7 @@
 use super::{
     default_port, judge_address, judge_addresses, judge_host_name, judge_scheme, pin_answer,
     refuse_hop_overflow, refuse_oversized_body, refuse_redirect, resolve_and_pin, split_url,
-    GuardPolicy, GuardRefusal, Resolver,
+    AddressRefusal, GuardPolicy, Resolver,
 };
 use std::cell::RefCell;
 use std::net::IpAddr;
@@ -119,7 +121,7 @@ fn a_name_that_answers_the_metadata_address_first_is_refused_outright() {
         .expect_err("an IMDS answer must refuse");
     assert_eq!(
         err,
-        GuardRefusal::CloudMetadataAddress {
+        AddressRefusal::CloudMetadataAddress {
             host: "rebind.example".to_string(),
             addr: ip("169.254.169.254"),
         }
@@ -136,7 +138,7 @@ fn a_mixed_answer_is_refused_whole_in_either_order() {
         .expect_err("a loopback address in the answer must refuse the resolution");
     assert_eq!(
         err,
-        GuardRefusal::InternalAddress {
+        AddressRefusal::InternalAddress {
             host: "mixed.example".to_string(),
             addr: ip("127.0.0.1"),
         }
@@ -209,7 +211,7 @@ fn cloud_metadata_is_refused_unconditionally_and_as_metadata() {
             let err = judge_address("meta", ip(a), policy)
                 .expect_err("metadata is refused under every policy");
             assert!(
-                matches!(err, GuardRefusal::CloudMetadataAddress { .. }),
+                matches!(err, AddressRefusal::CloudMetadataAddress { .. }),
                 "{a} must be refused AS METADATA, not merely as internal: {err:?}"
             );
         }
@@ -242,7 +244,7 @@ fn unlisted_link_local_metadata_is_refused_as_metadata_under_allow_private() {
             let err = judge_address("meta", ip(a), policy)
                 .expect_err("link-local metadata is refused under every policy");
             assert!(
-                matches!(err, GuardRefusal::CloudMetadataAddress { .. }),
+                matches!(err, AddressRefusal::CloudMetadataAddress { .. }),
                 "{what} ({a}) must be refused AS METADATA, not merely as internal: {err:?}"
             );
         }
@@ -266,7 +268,7 @@ fn nat64_dns64_synthesis_of_imds_is_refused_even_under_allow_private() {
          allow_private",
     );
     assert!(
-        matches!(err, GuardRefusal::CloudMetadataAddress { .. }),
+        matches!(err, AddressRefusal::CloudMetadataAddress { .. }),
         "must be refused AS METADATA, not merely pinned as an ordinary public address: {err:?}"
     );
 }
@@ -287,7 +289,7 @@ fn the_metadata_names_are_refused_under_every_policy_and_localhost_only_by_defau
         for policy in [strict(), private_ok()] {
             assert_eq!(
                 judge_host_name(name, policy),
-                Err(GuardRefusal::MetadataName(name.to_string())),
+                Err(AddressRefusal::MetadataName(name.to_string())),
                 "`{name}` is a cloud-metadata name and `allow_private` may not reach it"
             );
         }
@@ -296,7 +298,7 @@ fn the_metadata_names_are_refused_under_every_policy_and_localhost_only_by_defau
         assert!(
             matches!(
                 judge_host_name(name, strict()),
-                Err(GuardRefusal::LoopbackName(_))
+                Err(AddressRefusal::LoopbackName(_))
             ),
             "`{name}` is the loopback family and is refused by default"
         );
@@ -314,7 +316,7 @@ fn alternate_ipv4_encodings_are_refused_before_the_resolver_sees_them() {
         for policy in [strict(), private_ok()] {
             assert_eq!(
                 judge_host_name(host, policy),
-                Err(GuardRefusal::ObfuscatedHost(host.to_string())),
+                Err(AddressRefusal::ObfuscatedHost(host.to_string())),
                 "`{host}` is an encoding the resolver expands and the check cannot read"
             );
         }
@@ -331,7 +333,7 @@ fn a_literal_is_judged_and_pinned_without_a_resolver() {
 
     assert!(matches!(
         resolve_and_pin("127.0.0.1", 9000, true, &NeverAsked, strict()),
-        Err(GuardRefusal::InternalAddress { .. })
+        Err(AddressRefusal::InternalAddress { .. })
     ));
     let t = resolve_and_pin("127.0.0.1", 9000, false, &NeverAsked, private_ok())
         .expect("an opted-in private literal pins");
@@ -346,7 +348,7 @@ fn a_resolution_failure_and_an_empty_answer_are_different_facts() {
     let failing = ScriptedResolver::new(vec![Err("NXDOMAIN".to_string())]);
     assert_eq!(
         resolve_and_pin("a.example", 443, true, &failing, strict()),
-        Err(GuardRefusal::Unresolvable {
+        Err(AddressRefusal::Unresolvable {
             host: "a.example".to_string(),
             reason: "NXDOMAIN".to_string(),
         })
@@ -354,7 +356,7 @@ fn a_resolution_failure_and_an_empty_answer_are_different_facts() {
     let empty = ScriptedResolver::new(vec![Ok(vec![])]);
     assert_eq!(
         resolve_and_pin("a.example", 443, true, &empty, strict()),
-        Err(GuardRefusal::NoAddresses("a.example".to_string())),
+        Err(AddressRefusal::NoAddresses("a.example".to_string())),
         "an empty answer has nothing to connect to and nothing to have judged"
     );
 }
@@ -376,7 +378,7 @@ fn only_http_and_https_are_recognised() {
     assert_eq!(banned.len(), 8, "the banned-scheme set must not shrink");
     for url in banned {
         assert!(
-            matches!(split_url(url), Err(GuardRefusal::Scheme { .. })),
+            matches!(split_url(url), Err(AddressRefusal::Scheme { .. })),
             "`{url}` must be refused on its scheme"
         );
     }
@@ -387,7 +389,7 @@ fn only_http_and_https_are_recognised() {
 fn userinfo_is_refused_rather_than_stripped() {
     assert!(matches!(
         split_url("https://evil.test@good.example/mcp"),
-        Err(GuardRefusal::NoHost(_))
+        Err(AddressRefusal::NoHost(_))
     ));
 }
 
@@ -439,7 +441,7 @@ fn default_ports_are_derived_from_the_scheme_and_ipv6_comes_back_unbracketed() {
 fn plaintext_is_refused_unless_the_policy_admits_it() {
     assert!(matches!(
         judge_scheme("http://public.example/x", false, strict()),
-        Err(GuardRefusal::Plaintext { .. })
+        Err(AddressRefusal::Plaintext { .. })
     ));
     assert!(judge_scheme("https://public.example/x", true, strict()).is_ok());
     // Either knob admits it, because opting an upstream into private addressing at all is one
@@ -463,7 +465,7 @@ fn a_redirect_is_refused_and_names_its_target() {
     for status in [301u16, 302, 303, 307, 308] {
         assert_eq!(
             refuse_redirect(status, Some("http://169.254.169.254/latest/meta-data/")),
-            Err(GuardRefusal::Redirect {
+            Err(AddressRefusal::Redirect {
                 status,
                 location: "http://169.254.169.254/latest/meta-data/".to_string(),
             })
@@ -475,7 +477,7 @@ fn a_redirect_is_refused_and_names_its_target() {
     }
     assert_eq!(
         refuse_redirect(302, None),
-        Err(GuardRefusal::Redirect {
+        Err(AddressRefusal::Redirect {
             status: 302,
             location: "<absent>".to_string(),
         })
@@ -493,7 +495,7 @@ fn the_hop_bound_refuses_at_the_limit_rather_than_past_it() {
     }
     assert_eq!(
         refuse_hop_overflow(3, "https://a.example/", three),
-        Err(GuardRefusal::TooManyRedirects {
+        Err(AddressRefusal::TooManyRedirects {
             limit: 3,
             at: "https://a.example/".to_string(),
         })
@@ -511,7 +513,7 @@ fn the_body_cap_refuses_over_the_ceiling_and_not_at_it() {
     assert!(refuse_oversized_body("https://a.example/", 5 * 1024, policy).is_ok());
     assert_eq!(
         refuse_oversized_body("https://a.example/", 5 * 1024 + 1, policy),
-        Err(GuardRefusal::BodyTooLarge {
+        Err(AddressRefusal::BodyTooLarge {
             url: "https://a.example/".to_string(),
             bytes: 5 * 1024 + 1,
         })
@@ -549,6 +551,6 @@ fn the_pin_carries_the_first_admissible_address_and_the_scheme_it_was_judged_und
     assert!(t.is_https());
     assert_eq!(
         pin_answer("a.example", 443, true, &[], strict()),
-        Err(GuardRefusal::NoAddresses("a.example".to_string()))
+        Err(AddressRefusal::NoAddresses("a.example".to_string()))
     );
 }
