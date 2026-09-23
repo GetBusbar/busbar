@@ -97,3 +97,108 @@ fn the_plane_declares_the_one_wire_format_jev_speaks() {
         &[busbar_kernel::plane::WIRE_HTTP_JSON]
     );
 }
+
+// ── THE SECTION'S GRAMMAR, NOT JUST ITS NAME ────────────────────────────────────────────────────
+// The four tests above prove the declaration's IDENTITY. These four prove the thing identity alone
+// bought nothing for: that what an operator writes under `decisions:` is read through the plane's
+// OWN typed shape. Before the seam hooks were wired the section fell through
+// `deserialize_plane_section`'s `None` arm to an untyped `RawPlaneSection` capture, so
+// `decisions: "hello"` PARSED and the typed section's `deny_unknown_fields` never ran — a config an
+// operator writes that does nothing. Each test below fails on that build and passes on this one.
+//
+// They run under a `TestRegistryIsolation` seeded with exactly this decl: the seam resolves the
+// owning plane out of the PROCESS registry, so the registry is the input under test and it is
+// installed explicitly rather than depended on from a sibling test's registration.
+
+/// The parse seam is resolved through the plane REGISTRY, so a test that means to exercise it has to
+/// install the decl. Seeded (not `empty()` + `register_test_plane`) because the serial lock is not
+/// reentrant — see `TestRegistryIsolation::seeded`.
+fn decisions_registered() -> busbar_kernel::plane::registry::TestRegistryIsolation {
+    busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&PLANE_DECL])
+}
+
+/// A document whose only interesting key is `decisions:`. The three other top-level keys are the
+/// minimum `DeployCfg` shape the sibling config tests already use.
+fn doc(decisions: &str) -> String {
+    format!("providers: {{}}\nmodels: {{}}\npools: {{}}\n{decisions}")
+}
+
+/// THE FINDING, AS A TEST. `decisions: "hello"` is not a section — it is a scalar where a mapping
+/// belongs. With the seam unwired it was captured raw and ACCEPTED, which is the exact shape of a
+/// support ticket: the operator's block is syntactically impossible and boot says nothing.
+#[test]
+fn a_scalar_decisions_block_is_refused() {
+    let _reg = decisions_registered();
+    let err = busbar_kernel::config::deploy_from_yaml_str(&doc("decisions: \"hello\"\n"))
+        .expect_err("`decisions: \"hello\"` is not a section and must be refused, not captured");
+    let msg = err.to_string();
+    assert!(
+        msg.contains(CONFIG_SECTION),
+        "the refusal must name the key the operator wrote, got: {msg}"
+    );
+}
+
+/// `deny_unknown_fields` INSIDE the block, which is the whole reason the plane's own typed section
+/// carries it: a typo'd member must fail boot rather than be silently ignored. The raw capture
+/// accepted `modles:` without a word.
+#[test]
+fn a_typo_d_member_of_the_decisions_block_is_refused() {
+    let _reg = decisions_registered();
+    let err = busbar_kernel::config::deploy_from_yaml_str(&doc("decisions:\n  modles: {}\n"))
+        .expect_err("a typo'd member of `decisions:` must fail boot (deny_unknown_fields)");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown field") && msg.contains("modles"),
+        "the refusal must name the unknown member, got: {msg}"
+    );
+}
+
+/// THE ASSERTION THE LANDING COMMIT'S TEST COULD NOT MAKE. `is_present()` is true of a raw capture
+/// too, so it cannot tell typed from untyped. This reads the parsed value back as the PLANE'S OWN
+/// `DecisionsSection` — which only the wired `parse_section` hook can produce.
+#[test]
+fn a_valid_decisions_block_lands_as_the_plane_s_own_typed_section() {
+    let _reg = decisions_registered();
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(&doc(
+        "decisions:\n  models:\n    jev: { provider: typesafe, upstream_model: jev-1.13.0 }\n",
+    ))
+    .expect("a valid `decisions:` block must parse");
+
+    let section = deploy
+        .decisions
+        .0
+        .as_any()
+        .downcast_ref::<super::DecisionsCfg>()
+        .expect(
+            "`decisions:` must land as the plane's own typed section, not as an untyped raw capture",
+        );
+    let model = section
+        .0
+        .models
+        .get("jev")
+        .expect("the operator's model entry must survive the lowering");
+    assert_eq!(model.provider, "typesafe");
+    assert_eq!(model.upstream_model.as_deref(), Some("jev-1.13.0"));
+    assert!(deploy.decisions.0.is_present());
+}
+
+/// THE `default_section` HALF. Without it an ABSENT `decisions:` falls back to the neutral raw
+/// default, so the carrier's type would depend on whether the operator wrote the block — and the
+/// downcast above would hold for a configured deployment and fail for an unconfigured one.
+#[test]
+fn an_absent_decisions_block_defaults_to_the_plane_s_own_empty_section() {
+    let _reg = decisions_registered();
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(&doc(""))
+        .expect("a document with no `decisions:` section still parses");
+    let section = deploy
+        .decisions
+        .0
+        .as_any()
+        .downcast_ref::<super::DecisionsCfg>()
+        .expect("an ABSENT `decisions:` must default to the plane's own empty section");
+    assert!(section.0.models.is_empty());
+    assert!(
+        !deploy.decisions.0.is_present(),
+        "an empty section is not a section the operator wrote"
+    );
+}

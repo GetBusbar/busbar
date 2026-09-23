@@ -3957,9 +3957,16 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
 /// DECISIONS #47/#48 (`docs/design/BUSBAR-1.6.0.md:373`/`:374`): `decisions:` is the FIFTH plane's
 /// declaring top-level section, so the config PRE-PASS must lift it. `DeployCfg` is
 /// `deny_unknown_fields`, so before the lift existed a document carrying `decisions:` was refused
-/// outright AT THAT KEY, before any plane seam was consulted — exactly the state
-/// `crates/busbar/src/root/plane_decision.rs`'s module doc names as the one thing that declaration
-/// does not wire.
+/// outright AT THAT KEY, before any plane seam was consulted.
+///
+/// THE LIFT IS ALL THIS PROVES, and that is deliberate: `is_present()` is true of an untyped raw
+/// capture too, so no assertion available HERE can tell a typed section from a raw one. This crate
+/// cannot name the decision plane (the dep wall, DECISIONS #40), so the plane that owns `decisions:`
+/// is never registered in this test binary and the seam always takes its raw arm. The typed half —
+/// that the hooks are wired, that `deny_unknown_fields` runs inside the block, and that
+/// `decisions: "hello"` is REFUSED — is proven where the owning decl is written and registrable,
+/// `crates/busbar/src/root/tests/plane_decision.rs`. What THIS binary can prove about a build with
+/// no owning plane is the test below it.
 #[test]
 fn test_decisions_section_parses() {
     crate::test_support::register_neutral_test_plane();
@@ -3986,5 +3993,56 @@ fn test_decisions_section_parses() {
     assert!(
         !bare.decisions.0.is_present(),
         "an omitted `decisions:` section leaves the carrier at its Default"
+    );
+}
+
+/// THE DELETION-GATE LEG FOR `decisions:`. A section an operator wrote, in a build compiled without
+/// the plane that owns it, names a grammar busbar cannot serve — and must be REFUSED at resolve,
+/// exactly as a present `tools:`/`agents:`/`streams:` naming a compiled-out plane already is.
+///
+/// This leg did not exist: `resolve`'s `NAMED_MAP_SECTIONS` loop does not contain `decisions` (it is
+/// a singular model-serving section, deliberately not a named-definition map), and the hand-written
+/// leg beside it covered `streams:` alone. So a `decisions:` block in a `--no-default-features`
+/// build parsed, named a plane that was not there, and boot said nothing.
+///
+/// This test binary IS that build: `busbar-kernel` may not name `busbar-plane-decision`, so nothing
+/// here can register a plane owning `decisions` and the condition the leg refuses on is the
+/// standing state rather than one a fixture has to manufacture.
+#[test]
+fn a_decisions_section_with_no_owning_plane_is_refused_at_resolve() {
+    crate::test_support::register_neutral_test_plane();
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
+        "decisions:\n  \
+           models:\n    \
+             jev: { provider: typesafe }\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect(
+        "with no plane to own it the section is captured raw — the parse is not where it fails",
+    );
+
+    let errors = resolve(&deploy, &HashMap::new()).expect_err(
+        "a `decisions:` block naming a plane this build does not have must be refused at resolve",
+    );
+    assert!(
+        errors.iter().any(|e| {
+            e.contains("`decisions:` is configured")
+                && e.contains("compiled without the plane that owns it")
+        }),
+        "the refusal must name the SECTION the operator wrote; got: {errors:?}"
+    );
+
+    // The control, in the same test, because a leg that refuses everything is not a leg: an ABSENT
+    // `decisions:` must not trip it. Without this the assertion above would still pass if the leg
+    // fired unconditionally.
+    let bare: DeployCfg =
+        crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\npools: {}\n")
+            .expect("a document with no `decisions:` section still parses");
+    let bare_errors = resolve(&bare, &HashMap::new()).err().unwrap_or_default();
+    assert!(
+        !bare_errors
+            .iter()
+            .any(|e| e.contains("`decisions:` is configured")),
+        "an absent `decisions:` section must not be refused; got: {bare_errors:?}"
     );
 }

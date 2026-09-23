@@ -2543,23 +2543,33 @@ pub fn resolve(
             ));
         }
     }
-    // The `streams:` section's owning plane's section is SINGULAR (one live session posture per
-    // deployment), so it is NOT a `NamedMapSection` and not in the mirror above — it is checked the
-    // same way in its own right: a present `streams:` block with no registered owning plane (the
-    // default, off build) names a section this build cannot serve and is refused at resolve,
-    // byte-identical to a present `tools:`/`agents:` naming a compiled-out plane. With that plane
-    // registered the decl is present and this never fires; with it compiled out the
+    // THE SINGULAR PLANE SECTIONS. Each of these is one posture (or one model-serving table) per
+    // deployment rather than a registry of named definitions, so neither is a `NamedMapSection` and
+    // neither is in the mirror above — they are checked here, on the same terms: a present block
+    // with no registered owning plane names a section this build cannot serve and is refused at
+    // resolve, byte-identical to a present `tools:`/`agents:` naming a compiled-out plane. With the
+    // owning plane registered the decl is present and this never fires; with it compiled out the
     // `RawPlaneSection` reports `is_present()` for a section the operator wrote, and there is no
     // decl for it.
-    if deploy.streams.0.is_present()
-        && crate::plane::registry::plane_decl_for_config_section("streams").is_none()
-    {
-        errors.push(
-            "`streams:` is configured, but this build was compiled without the plane that owns it, \
-             so busbar cannot serve it. Rebuild with that plane's feature enabled, or remove the \
-             `streams:` block."
-                .to_string(),
-        );
+    //
+    // WRITTEN AS ONE LIST RATHER THAN AS ONE `if` PER SECTION, because the `if` per section is
+    // exactly how this went wrong once: `streams:` had a leg, `decisions:` arrived beside it and
+    // got none, and a `decisions:` block in a build without that plane was accepted in silence —
+    // the same class of no-op the section's own grammar exists to refuse. The list does not make
+    // the next singular section IMPOSSIBLE to omit (it cannot be derived: reading a section's
+    // `is_present()` means naming its `DeployCfg` field, and the fields are concrete), but it is
+    // one obvious place to add it, beside the two already there, rather than a shape to re-copy.
+    for (section, present) in [
+        ("streams", deploy.streams.0.is_present()),
+        ("decisions", deploy.decisions.0.is_present()),
+    ] {
+        if present && crate::plane::registry::plane_decl_for_config_section(section).is_none() {
+            errors.push(format!(
+                "`{section}:` is configured, but this build was compiled without the plane that \
+                 owns it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
+                 remove the `{section}:` block."
+            ));
+        }
     }
 
     // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates

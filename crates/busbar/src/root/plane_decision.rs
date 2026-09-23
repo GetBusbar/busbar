@@ -46,19 +46,44 @@
 //! refusal is judged against. Before this, a hook named `decisions.<x>` was a name no reader
 //! recognised as another plane's.
 //!
-//! ## The one thing this does NOT wire, stated plainly rather than left to be discovered
+//! ## The grammar seam, and the ONE thing the dep wall makes this file do differently
 //!
-//! An operator cannot yet WRITE a `decisions:` block. `parse_section` and `default_section` are
-//! `None` here, and they would not be enough on their own: the top-level key would also have to be
-//! lifted by `busbar_kernel::config::prepass`, whose key list is frozen at
-//! `["mcp", "oauth_as", "tools", "agents", "streams"]`, and `DeployCfg` is `deny_unknown_fields`,
-//! so a `decisions:` document is refused before any plane seam is consulted. Wiring that grammar is
-//! a config-seam stage of its own — it moves a kernel-side list — and doing it inside a
-//! registration change would be two landings in one. The plane's typed
-//! `busbar_plane_decision::config::DecisionsSection` is already written and tested and is what that
-//! stage will lower through.
+//! An operator CAN write a `decisions:` block. The top-level key is lifted by
+//! `busbar_kernel::config::prepass`, whose key list is
+//! `["mcp", "oauth_as", "tools", "agents", "streams", "decisions"]`, and lands on
+//! `DeployCfg.decisions` — the neutral boxed carrier `busbar_kernel::plane::config::DecisionsSection`
+//! — which lowers through THIS declaration's [`PLANE_DECL`]`.parse_section` /
+//! [`PLANE_DECL`]`.default_section` hooks, exactly as `tools:`, `agents:` and `streams:` lower
+//! through their own planes'. With those two hooks `None` the seam falls through to an UNTYPED raw
+//! capture: the section's `deny_unknown_fields` never runs, and `decisions: "hello"` parses. That is
+//! a config an operator writes that does nothing, which is worse than one that is rejected, so both
+//! hooks are wired — see [`decisions_parse_section`] and [`decisions_default_section`].
+//!
+//! The four sibling planes put those two functions in their own crate, beside the typed section
+//! they lower. This one cannot, and for the same reason the declaration itself is here:
+//! `Box<dyn PlaneCfg>` is a `busbar-kernel` type and `busbar-plane-decision` may name
+//! `busbar-contract` and nothing else (the dep wall, DECISIONS #40). So the hooks are written HERE,
+//! over the plane's own already-written and already-tested
+//! `busbar_plane_decision::config::DecisionsSection`, and the ONE piece of mechanism this file adds
+//! that the other four do not need is [`DecisionsCfg`]: a newtype, because the trait
+//! (`busbar-kernel`'s) and the section (`busbar-plane-decision`'s) are both foreign to this crate
+//! and an `impl PlaneCfg for DecisionsSection` written here would be an orphan. The newtype carries
+//! no grammar of its own — it wraps, and every method below either forwards or answers for a
+//! section shape that has no such thing.
+//!
+//! ## What the section reaches, and what it does not
+//!
+//! Stated here rather than left to be discovered. What it reaches: the BOOT REFUSAL surface. A
+//! `decisions:` that is not a mapping, or that carries a member the plane does not declare, fails
+//! `--validate` and fails boot, naming the key. The parsed value is banked on `DeployCfg.decisions`
+//! and reads back as the plane's own `DecisionsSection` through `PlaneCfg::as_any`. What it does
+//! NOT reach: any request. `build` is `None` and the plane has no unit path in `root/` yet, so
+//! `decisions.models.<m>` names a lane nothing dispatches to. That is the same state `claims`,
+//! `admission` and `build` are in, and it is why this file wires the CONFIG seam and not a runtime
+//! one.
 
 use busbar_contract::plane::PlaneMeta;
+use busbar_plane_decision::config::DecisionsSection;
 use busbar_plane_decision::DecisionPlane;
 
 /// THE DECLARING SECTION for the decision plane — the top-level `config.yaml` noun whose mere
@@ -133,15 +158,20 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
-        // THE CONFIG-GRAMMAR SEAM, DELIBERATELY UNWIRED — see the module doc's last section for the
-        // precise reason and for what has to move first.
-        parse_section: None,
+        // THE CONFIG-GRAMMAR SEAM. `decisions:` is deserialized through the plane's OWN typed
+        // section, so `deny_unknown_fields` runs inside the block and a scalar where a mapping
+        // belongs is a refusal rather than a raw capture. Written here rather than in the plane
+        // crate because the boxed return type is a kernel one — see the module doc.
+        parse_section: Some(decisions_parse_section),
         parse_endpoint: None,
         lower_endpoint: None,
         build_runtime: None,
         viewer: None,
         retain_verify_gates: None,
-        default_section: None,
+        // The empty `decisions:`, so an ABSENT section decodes to the plane's own
+        // `DecisionsSection::default()` rather than falling back to the neutral raw capture — the
+        // carrier's type must not depend on whether the operator wrote the block.
+        default_section: Some(decisions_default_section),
         // THIS PLANE OWNS `decisions:` AND NOBODY ELSE DOES. Unlike `pools`/`models`/`providers`,
         // the section was never a concrete `DeployCfg` field — it is greenfield, post-1.5.5 — so
         // claiming it evicts nothing from core and the dup-claim guard admits it. What the claim
@@ -152,6 +182,126 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // from this plane's own section, not from the `providers:` catalog merge.
         resolve_provider: None,
     };
+
+/// THE PLANE'S TYPED `decisions:` SECTION, WEARING THE KERNEL'S NEUTRAL SECTION TRAIT.
+///
+/// A newtype and nothing else. `busbar_kernel::plane::config::PlaneCfg` is a `busbar-kernel` trait
+/// and [`DecisionsSection`] is a `busbar-plane-decision` type; both are foreign to this crate, so
+/// the impl below could not be written for the section directly (orphan rule). The four sibling
+/// planes have no such problem because each of them owns one side of the pair — which is the whole
+/// of why this wrapper exists, and the whole of what it does. It adds no field, no default and no
+/// serde attribute: the grammar an operator writes is [`DecisionsSection`]'s, unchanged.
+#[derive(Debug, Clone, Default)]
+pub struct DecisionsCfg(pub DecisionsSection);
+
+impl busbar_kernel::plane::config::PlaneCfg for DecisionsCfg {
+    /// The `decisions:` section carries NO secret reference. The EXHAUSTIVE destructure (no `..`) is
+    /// what keeps that true: a credential-bearing member added to the plane's section fails to
+    /// compile here until someone decides, at this line, whether it is a secret — the same
+    /// anti-omission force `ToolsCfg`/`AgentsCfg`/`StreamsCfg` carry. `models.<m>.provider` is a
+    /// NAME into `providers:`, and the credential lives on the provider entry, which core's own walk
+    /// already enumerates; `upstream_credentials` is a two-variant mode, not a secret.
+    fn secret_refs(&self) -> Vec<(String, &busbar_api::SecretRef)> {
+        let DecisionsSection {
+            models: _,
+            hooks: _,
+            upstream_credentials: _,
+        } = &self.0;
+        Vec::new()
+    }
+
+    /// `decisions:` is a MODEL-SERVING section (`models:` plus the two reserved members), not a
+    /// 1.5.3 named-definition map — the same shape `pools:` and `streams:` have. The decl's
+    /// `named_def_list`/`named_def_get`/`registry_contains` are all `None`, so the generic admin
+    /// CRUD never routes a write here and these four answer for a registry that does not exist.
+    /// `models` is a map of lanes, NOT a definition registry: reporting its keys as `def_names`
+    /// would fold them into the global pool-name uniqueness sets and invent a collision rule
+    /// nothing ruled.
+    fn contains_def(&self, _name: &str) -> bool {
+        false
+    }
+
+    fn def_names(&self) -> Vec<&str> {
+        Vec::new()
+    }
+
+    fn entry_document(&self, _name: &str) -> Option<serde_json::Value> {
+        None
+    }
+
+    fn insert_def(&mut self, _name: &str, _def: &serde_json::Value) -> Result<(), String> {
+        Err("`decisions:` has no named definitions".to_string())
+    }
+
+    /// The reserved section-level `hooks:` attach list, handed over verbatim. There are no
+    /// per-registration containers: a decision model is a lane, not a hook seat, and the plane seats
+    /// none of its own.
+    fn container_gates(&self) -> busbar_kernel::plane::config::ContainerGateInputs {
+        busbar_kernel::plane::config::ContainerGateInputs {
+            section_hooks: self.0.hooks.clone(),
+            containers: Vec::new(),
+        }
+    }
+
+    /// No cross-registration rule. Every rule this section has is about ONE entry and is enforced by
+    /// [`DecisionsSection`]'s own `Deserialize`; there is no section-wide constraint spanning the
+    /// `models` map.
+    fn validate_registry(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// True when the operator wrote CONTENT — anything other than the plane's own empty section.
+    /// Spelled field by field rather than as `!= Default::default()` because the section derives no
+    /// `PartialEq`, and exhaustively for the same anti-omission reason as `secret_refs`: a member
+    /// added without a decision here would make a configured deployment read as unconfigured, and
+    /// the deletion-gate leg that refuses a `decisions:` naming a compiled-out plane reads exactly
+    /// this answer.
+    fn is_present(&self) -> bool {
+        let DecisionsSection {
+            models,
+            hooks,
+            upstream_credentials,
+        } = &self.0;
+        !models.is_empty() || !hooks.is_empty() || upstream_credentials.is_some()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn clone_box(&self) -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
+        Box::new(self.clone())
+    }
+
+    fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+        std::sync::Arc::new(self.clone())
+    }
+}
+
+/// `PLANE_DECL.parse_section` — deserialize `decisions:` through the plane's own typed shape, boxed
+/// as the neutral [`busbar_kernel::plane::config::PlaneCfg`]. Mirror of `mcp_parse_section` /
+/// `a2a_parse_section` / `streams_parse_section`, with the one difference the dep wall forces: the
+/// function lives in the composition root and boxes [`DecisionsCfg`] rather than the section itself.
+///
+/// The refusal NAMES THE KEY. The `serde_yaml::Value` intermediate carries no source position, so
+/// without the prefix an operator reading a failed `--validate` is told the name of a Rust type they
+/// have never seen instead of the name of the block they wrote. `export.<n>.durable` sets the
+/// standard this follows: a declared surface that cannot be honoured as written refuses loudly and
+/// says which key it means.
+fn decisions_parse_section(
+    v: &serde_yaml::Value,
+) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
+    serde_yaml::from_value::<DecisionsSection>(v.clone())
+        .map(|c| Box::new(DecisionsCfg(c)) as Box<dyn busbar_kernel::plane::config::PlaneCfg>)
+        .map_err(|e| format!("`{CONFIG_SECTION}:` is not valid: {e}"))
+}
+
+/// `PLANE_DECL.default_section` — the empty `decisions:`, so an ABSENT section decodes to
+/// [`DecisionsSection::default`] rather than to the neutral raw capture. Mirror of
+/// `a2a_default_section` / `mcp_default_section` / `streams_default_section`.
+fn decisions_default_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
+    Box::<DecisionsCfg>::default()
+}
 
 #[cfg(test)]
 #[path = "tests/plane_decision.rs"]
