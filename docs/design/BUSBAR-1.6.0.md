@@ -2504,6 +2504,42 @@ the recorded binary configures no `streams:` block — so the realtime path is u
 executes in ZERO cells. Nothing to park. **That the oracle cannot see this seam is a coverage gap,
 not a safety proof.**
 
+#### H6 — THE PLUGIN ABI HAS NO PLANE CROSSING IT, AND IT IS A CUT GATE WITH NO ENFORCEMENT
+
+**1.6.0 is "Protocols as Plugins." Measured 2026-09-22: ZERO plane crates cross the plugin ABI.**
+
+```
+grep -rl PlaneHostVtable crates/busbar-plane-*/src   -> 0
+grep -rl export_plane_plugin crates/busbar-plane-*/src -> 0
+```
+
+`PlaneHostVtable` appears in `busbar-plugin`, `plugin-sdk`, `plugin-loader` and one kernel test — and
+in **no plane crate**. The host side is wired 44/44. The plane side is empty.
+
+**What planes DO satisfy.** `McpPlane` implements the `Plugin` trait and `busbar_contract::plane::
+PlaneMeta`, so the COMPILED-IN half is real and works. What is missing is the cdylib FFI entry point:
+no plane invokes `export_plane_plugin!`, and the SDK's own module docs reference only
+`export_store_plugin!`.
+
+**So the plane kind meets universal rule (1) and fails universal rule (2)** — *"each plugin can be
+compiled into the binary OR dropped into the plugins/ folder"* (#11). A plane today cannot be dropped
+in. `token-auth` is cited as "the working proof of the model"; it is the proof for the AUTH kind, and
+no plane has repeated it.
+
+**THE PART THAT MAKES THIS A RELEASE ITEM RATHER THAN A TODO:** acceptance gate **§11a makes "no
+0-caller ABI" a CUT GATE** — a condition on the release itself — **and no CI row reds on it.** The
+gate exists, the condition is violated, and nothing measures it. That is the same shape as everything
+else in the section below: a check whose subject is real, whose verdict is never taken.
+
+Compounding, from the same audit: **§11a is UNPASSABLE on its own terms** (it scores against a
+baseline file that has never existed in 13,625 commits across 2,391 refs) and **§11b is VACUOUS**. So
+the gate that would catch this cannot be run even if someone wired it.
+
+**This is a re-discovery, which is itself the finding.** "The plane kind failing both universal plugin
+rules" was already parked for the owner earlier in this session. It surfaced again independently
+because nothing in the tree measures it — a parked item with no gate behind it is indistinguishable
+from a closed one, and this is the second time it has had to be found by hand.
+
 #### THE DEFINITION OF DONE IS PARTLY VACUOUS — audited 2026-09-22
 
 Full evidence: `docs/design/1.6.0-instrument-audit.md`. Every "cannot red" claim below is a MATCHED
