@@ -118,9 +118,32 @@ awk -v r="$reclaimable" -v m="$main_kb" -v n="$reaped" -v k="$kept" 'BEGIN{
 # The main target/ is the biggest single consumer and the most dangerous thing to
 # clear, so this only ever ADVISES. A `cargo clean` mid-wave makes every running
 # agent rebuild from zero.
-builders=$(pgrep -c rustc 2>/dev/null || echo 0)
-if [ "$builders" -gt 0 ]; then
-  echo "main target/: NOT cleaning — $builders rustc process(es) live. Re-run when the wave drains."
+# THE GUARD IS THE WHOLE ADVISORY, so it must be as wide as the advice.
+#
+# WHY. This once printed "over 50 GB and nothing is building — 'cargo clean' is
+# safe now" while 8 rustc and 16 cargo processes were live and ~20 agents were
+# mid-build. Following it would have forced every one of them to rebuild from
+# zero. Two defects, both the same shape as everything else this release keeps
+# finding:
+#   * it guarded on `rustc` ALONE, while the rule it advises says
+#     rustc AND cargo AND test-binaries must all be zero. A cargo between rustc
+#     invocations -- linking, fingerprinting, fetching -- reads as idle.
+#   * it measured MINUTES before it spoke. `du -sk` over a 58 GB target/ is slow,
+#     so the process count was stale by the time the sentence printed.
+# Both are fixed here: every column the `load:` line reports is counted, by the
+# same `live()` helper, and counted IMMEDIATELY before the advice is given.
+# `grep -c` prints 0 AND exits 1 when it matches nothing, so under
+# `set -euo pipefail` a bare assignment from it aborts the script on the HEALTHY
+# path. Swallow the status inside the helper, never at the call site.
+live() { local n; n=$(ps -eo command 2>/dev/null | awk '{print $1}' | grep -cE "$1" || true); echo "${n:-0}"; }
+
+n_rustc=$(live '/bin/rustc$')
+n_cargo=$(live '/bin/cargo$')
+n_tests=$(live '/(debug|release)/deps/[a-z_]+-[0-9a-f]{8,}$')
+n_busy=$(( n_rustc + n_cargo + n_tests ))
+
+if [ "$n_busy" -gt 0 ]; then
+  echo "main target/: NOT cleaning — rustc $n_rustc, cargo $n_cargo, test-bins $n_tests live. Re-run when the wave drains."
 elif [ "$main_kb" -gt 52428800 ]; then
   echo "main target/: over 50 GB and nothing is building — 'cargo clean' is safe now."
 fi
