@@ -132,3 +132,95 @@ fn ordinary_counts_still_sum_exactly() {
         100 * 3 + 200 * 5 + 300 * 7 + 400 * 11
     );
 }
+
+// ── #42 — THE DOOR MUST NOT ADMIT WHAT IT CANNOT PRICE ───────────────────────────────────────────
+// `docs/design/BUSBAR-1.6.0.md:370` (#42): *"rate_card PRESENT ⇒ billed: a hit class not priced ⇒
+// REFUSE (money-sacred, never a silent 0) … A silent 0 is ONLY ever returned when rate_card is
+// absent."*
+//
+// The three tests below are ONE statement taken in three positions, and the refusal arm alone does
+// not make it: a rule that blocks every derivation satisfies the first and breaks the node. The
+// second and third are what say the refusal is about being UNPRICED and not about being cheap.
+
+/// A pricer holding a card that names `priced` and nothing else.
+fn card_naming_only_priced() -> crate::price::Pricer {
+    crate::price::Pricer::with_card(
+        2,
+        BTreeMap::from([(
+            "priced".to_string(),
+            RateNanos::from_micros_per_token(3.0, 16.0, 0.0, 0.0),
+        )]),
+    )
+}
+
+/// A million input and a million output tokens, the shape the worked example bills.
+fn a_million_each() -> BTreeMap<String, u64> {
+    BTreeMap::from([
+        (UNIT_INPUT.to_string(), 1_000_000u64),
+        (UNIT_OUTPUT.to_string(), 1_000_000u64),
+    ])
+}
+
+/// THE REFUSAL. A present card with no entry for the model must not derive that model's
+/// consumption as nothing.
+///
+/// This derivation GATES ADMISSION against a group's `budget:` cap, so the old answer — the flat
+/// fee and not one nano-unit of the tokens — let an unpriced model run uncapped on spend forever.
+/// It pins at the top instead, which is the fail-closed value this same function already uses for
+/// its overflow arm.
+#[test]
+fn a_present_card_silent_about_the_model_blocks_rather_than_deriving_free() {
+    let pricer = card_naming_only_priced();
+    let units = a_million_each();
+    assert!(
+        pricer.model_unpriced("nobody-priced-me"),
+        "the fixture's premise: the card is present and does not name this model"
+    );
+    assert_eq!(
+        pricer.derive_spend_cents([("nobody-priced-me", &units)].into_iter(), 1, true),
+        i64::MAX,
+        "#42: an unpriced model on a billed node is a refusal, never a silent 0 — and on THIS \
+         path the silent 0 was an admission"
+    );
+}
+
+/// THE EXPLICIT-FREE CONTROL. A model the card DOES name, priced at zero on every tier, is free —
+/// legitimately, under #77(5) (*"free is an EXPLICIT zero row"*) — and must derive the flat fee
+/// and nothing more. It must NOT block.
+///
+/// Without this arm the test above is satisfied by a pricer that blocks on everything.
+#[test]
+fn a_model_the_card_prices_at_explicit_zero_is_free_and_does_not_block() {
+    let pricer = crate::price::Pricer::with_card(
+        2,
+        BTreeMap::from([(
+            "free-on-purpose".to_string(),
+            RateNanos::from_micros_per_token(0.0, 0.0, 0.0, 0.0),
+        )]),
+    );
+    assert!(
+        !pricer.model_unpriced("free-on-purpose"),
+        "an entry that exists is priced, whatever it is priced AT"
+    );
+    assert_eq!(
+        pricer.derive_spend_cents([("free-on-purpose", &a_million_each())].into_iter(), 1, true),
+        2,
+        "two million tokens at an explicit zero rate cost the flat fee and nothing else"
+    );
+}
+
+/// THE BILLING-OFF CONTROL. With NO card there is nothing for a model to be missing from, so #42's
+/// one legal silent zero still reads zero and nothing blocks.
+#[test]
+fn with_no_card_at_all_an_unknown_model_still_reads_the_fee_alone() {
+    let pricer = crate::price::Pricer::flat(2);
+    assert!(
+        !pricer.model_unpriced("anything-at-all"),
+        "billing off: no card, so no class is unpriced"
+    );
+    assert_eq!(
+        pricer.derive_spend_cents([("anything-at-all", &a_million_each())].into_iter(), 1, true),
+        2,
+        "#42: a silent 0 is correct — and only correct — when rate_card is absent"
+    );
+}

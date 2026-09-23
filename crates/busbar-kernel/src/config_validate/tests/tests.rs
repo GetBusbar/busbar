@@ -3931,6 +3931,30 @@ fn cost_cfg(model_names: &[&str]) -> RootCfg {
     make_root_cfg(providers, models, pools)
 }
 
+/// One fully-written, genuinely priced card entry — every tier PRESENT, none of them zero. The
+/// shape a real Anthropic card has, used where the test is about something other than the rates.
+fn priced_entry() -> config::RateEntryCfg {
+    serde_yaml::from_str(
+        "input_utok: 3.0\noutput_utok: 15.0\ncache_read_utok: 0.3\ncache_write_utok: 3.75\n",
+    )
+    .expect("a fully-written entry must parse")
+}
+
+/// A `tools:` section the operator actually WROTE content for, through the same neutral
+/// type-erased seam `DeployCfg` deserializes it through — so this reads the same in a build with
+/// the owning plane compiled in (a parsed registry) and one with it compiled out (a raw capture).
+fn present_tools_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
+    let section: crate::plane::config::ToolsSection = serde_yaml::from_str(
+        "an-mcp-server:\n  url: \"https://mcp.example.com/mcp\"\n",
+    )
+    .expect("a one-registration tools section must parse");
+    assert!(
+        section.0.is_present(),
+        "the fixture must be a section the operator wrote content for"
+    );
+    section.0
+}
+
 /// A zeroed rate card over the given CONFIG model names.
 fn rate_card_of(entries: &[&str]) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
     entries
@@ -4151,6 +4175,158 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
     assert!(
         !msgs.iter().any(|m| m.contains("priced-model")),
         "a model with non-zero rates must NOT warn: {msgs:?}"
+    );
+}
+
+// ── #77(5) / #42 — ABSENT IS NOT ZERO ────────────────────────────────────────────────────────────
+// `docs/design/BUSBAR-1.6.0.md:423` (#77(5)): *"Unpriced class = BOOT REFUSAL when billing is on;
+// free is an EXPLICIT zero row, never silent"*. `:370` (#42): *"a hit class not priced ⇒ REFUSE
+// (money-sacred, never a silent 0) … A silent 0 is ONLY ever returned when rate_card is absent."*
+//
+// These two tests are a PAIR and neither is meaningful alone: the first says an OMITTED tier
+// refuses, the second says an EXPLICITLY WRITTEN zero does not. A rule that refuses everything
+// satisfies the first and is still wrong, because #77(5)'s whole point is that the two facts are
+// different facts.
+
+/// **M-07, WITNESSED — PARKED, NOT FIXED.** A card entry that OMITS a tier key is ACCEPTED today,
+/// and that class's entire traffic bills at NOTHING.
+///
+/// #77(5) (`docs/design/BUSBAR-1.6.0.md:423`) requires the opposite: *"Unpriced class = BOOT
+/// REFUSAL when billing is on; free is an EXPLICIT zero row, never silent"*. The refusal cannot
+/// fire because `RateEntryCfg` defaults an omitted tier to `0.0`, which `RateCard::from_config`
+/// then writes as a PRESENT cell — so `class_priced()` answers true about a class the operator
+/// never priced, and `MoneyError::ClassUnpriced` is unreachable for any card a deployment can
+/// build.
+///
+/// THIS TEST ASSERTS THE DEFECT, DELIBERATELY, because the correction is blocked on a recorded
+/// 1.5.5 difference and not on code: every shadow-oracle rate-card cell writes exactly this shape
+/// (`{"m-anthropic":{"input_utok":10000000,"output_utok":20000000}, …}`), as do the back-compat
+/// corpus cards (`02_rate_card_tiers.yaml` `gpt-4o`, `05_full_billing_surface.yaml`
+/// `gemini-flash`) and `examples/clean-config-1.5.0.yaml` (`sonnet-bedrock`). Turning the refusal
+/// on converts each of those from a 200 to a 400, which moves goldens. When that difference is
+/// accepted, this test inverts: the `is_ok` below becomes `expect_err`, and the two
+/// `rate_card['claude-sonnet'].cache_*_utok` paths become the thing the message must name.
+///
+/// Driven through the YAML parse rather than a struct literal ON PURPOSE: the fact under test is
+/// what serde does with a key the document does not carry, which a Rust literal cannot express.
+#[test]
+fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_class_at_zero() {
+    let mut cfg = cost_cfg(&["claude-sonnet"]);
+    // The exact card from the M-07 worked example: the two token tiers priced, both cache tiers
+    // simply not written.
+    let card: std::collections::BTreeMap<String, config::RateEntryCfg> =
+        serde_yaml::from_str("claude-sonnet:\n  input_utok: 3.0\n  output_utok: 15.0\n")
+            .expect("the two-tier card must parse");
+    cfg.rate_card = Some(card);
+
+    assert!(
+        validate(&cfg).is_ok(),
+        "WITNESS: boot ACCEPTS a card that leaves two classes unpriced — #77(5) says it must \
+         refuse. If this line starts failing, the refusal has landed and this test should be \
+         inverted, not deleted."
+    );
+
+    // …and here is what that acceptance costs, in the units the ledger bills in. A prompt-caching
+    // workload of ten million cache-read tokens in a day, against a card whose `cache_read_utok`
+    // was never written.
+    let entry = cfg.rate_card.as_ref().unwrap()["claude-sonnet"];
+    let rate = crate::cost::RateNanos::from_cfg(&entry);
+    let a_day_of_cache_reads =
+        std::collections::BTreeMap::from([("cache_read".to_string(), 10_000_000u64)]);
+    assert_eq!(
+        rate.reserved_nanos(&a_day_of_cache_reads),
+        0,
+        "the silent zero, measured: ten million cache-read tokens bill at nothing"
+    );
+    // Had the operator's intended 0.3 micro-units/token been written, the SAME traffic bills three
+    // whole units a day — ninety over a thirty-day month, delivered and never charged for.
+    let priced: config::RateEntryCfg = serde_yaml::from_str(
+        "input_utok: 3.0\noutput_utok: 15.0\ncache_read_utok: 0.3\ncache_write_utok: 3.75\n",
+    )
+    .unwrap();
+    assert_eq!(
+        crate::cost::RateNanos::from_cfg(&priced).reserved_nanos(&a_day_of_cache_reads),
+        3_000_000_000,
+        "three whole units (1e9 nano-units each) a day is what the silent zero swallowed"
+    );
+}
+
+/// THE CONTROL. An EXPLICIT `0.0` is a priced-at-free row under #77(5) and must NOT refuse.
+///
+/// Without this arm the test above is satisfied by a rule that refuses every card, which would
+/// collapse exactly the distinction #77(5) exists to draw.
+#[test]
+fn test_validate_rate_card_entry_with_explicit_zero_tiers_is_free_not_unpriced() {
+    let mut cfg = cost_cfg(&["claude-sonnet"]);
+    let card: std::collections::BTreeMap<String, config::RateEntryCfg> = serde_yaml::from_str(
+        "claude-sonnet:\n  input_utok: 3.0\n  output_utok: 15.0\n  cache_read_utok: 0.0\n  \
+         cache_write_utok: 0.0\n",
+    )
+    .expect("the four-tier card must parse");
+    cfg.rate_card = Some(card);
+
+    assert!(
+        validate(&cfg).is_ok(),
+        "#77(5): free is an EXPLICIT zero row — a tier the operator WROTE as 0.0 is priced, and \
+         priced at nothing is legal: {:?}",
+        validate(&cfg).err()
+    );
+}
+
+/// The all-four-explicitly-zero entry stays a WARN (it is deliberate free), not a refusal — the
+/// boundary between the two tests above, held at the extreme.
+#[test]
+fn test_validate_rate_card_entry_all_four_explicit_zeros_still_only_warns() {
+    let mut cfg = cost_cfg(&["free-on-purpose"]);
+    let card: std::collections::BTreeMap<String, config::RateEntryCfg> = serde_yaml::from_str(
+        "free-on-purpose:\n  input_utok: 0.0\n  output_utok: 0.0\n  cache_read_utok: 0.0\n  \
+         cache_write_utok: 0.0\n",
+    )
+    .expect("the all-zero card must parse");
+    cfg.rate_card = Some(card);
+    assert!(
+        validate(&cfg).is_ok(),
+        "an EXPLICITLY all-zero entry is a deliberate free model: {:?}",
+        validate(&cfg).err()
+    );
+}
+
+// ── #42 — A BILLED PLANE THAT CANNOT BE PRICED ───────────────────────────────────────────────────
+
+/// `rate_card:` PRESENT is billing ON (#42, `:370`). A non-LLM plane's registrations meter classes
+/// the top-level card cannot name — it is keyed by `models:` entries and validated against them —
+/// so every one of those classes is UNPRICED, which #42 makes a REFUSAL rather than a silent zero.
+#[test]
+fn test_validate_refuses_a_present_card_with_a_non_llm_plane_configured() {
+    let mut cfg = cost_cfg(&["claude-sonnet"]);
+    cfg.rate_card = Some(std::collections::BTreeMap::from([(
+        "claude-sonnet".to_string(),
+        priced_entry(),
+    )]));
+    cfg.tool_defs = present_tools_section();
+
+    let errs = validate(&cfg).expect_err(
+        "#42: billing is ON (a rate_card is present) and the mcp plane's metered classes have no \
+         rate — an unpriced class is a REFUSAL, never a silent 0",
+    );
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("tools:") && joined.contains("rate_card"),
+        "the refusal must name the plane section that cannot be priced: {joined}"
+    );
+}
+
+/// THE CONTROL for the row above: billing OFF (no `rate_card:`) and the same plane configured must
+/// still boot. #42: *"rate_card ABSENT ⇒ NOT billed … no boot-refusal"*.
+#[test]
+fn test_validate_allows_a_non_llm_plane_when_billing_is_off() {
+    let mut cfg = cost_cfg(&["claude-sonnet"]);
+    assert!(cfg.rate_card.is_none(), "the fixture starts billing-off");
+    cfg.tool_defs = present_tools_section();
+    assert!(
+        validate(&cfg).is_ok(),
+        "billing off must never refuse a configured plane: {:?}",
+        validate(&cfg).err()
     );
 }
 
