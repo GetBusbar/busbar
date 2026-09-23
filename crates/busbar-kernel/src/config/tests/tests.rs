@@ -44,6 +44,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         tools: Default::default(),
         agents: Default::default(),
         streams: Default::default(),
+        decisions: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Left at its type default (unset).
         mcp: Default::default(),
@@ -3951,4 +3952,39 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
     let err = crate::config::deploy_from_yaml_str(&ceiling_typo)
         .expect_err("a typo'd ceiling key must be rejected (deny_unknown_fields)");
     assert!(err.to_string().contains("unknown field"), "got: {err}");
+}
+
+/// DECISIONS #47/#48 (`docs/design/BUSBAR-1.6.0.md:373`/`:374`): `decisions:` is the FIFTH plane's
+/// declaring top-level section, so the config PRE-PASS must lift it. `DeployCfg` is
+/// `deny_unknown_fields`, so before the lift existed a document carrying `decisions:` was refused
+/// outright AT THAT KEY, before any plane seam was consulted — exactly the state
+/// `crates/busbar/src/root/plane_decision.rs`'s module doc names as the one thing that declaration
+/// does not wire.
+#[test]
+fn test_decisions_section_parses() {
+    crate::test_support::register_neutral_test_plane();
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
+        "decisions:\n  \
+           models:\n    \
+             primary: { provider: example-upstream, upstream_model: example-1 }\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("a document carrying the 1.6.0 `decisions:` section must parse");
+
+    // The second half, because "the document parsed" is ALSO true of a key read and thrown away:
+    // the lifted value must be BANKED onto the carrier (`PlaneCfg` is already in scope).
+    assert!(
+        deploy.decisions.0.is_present(),
+        "the lifted `decisions:` value must land on its carrier, not be dropped on the floor"
+    );
+
+    // And its twin, so `is_present` above is reading the SECTION and not a default that is always
+    // present: an omitted `decisions:` leaves the carrier at its `Default`.
+    let bare: DeployCfg =
+        crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\npools: {}\n")
+            .expect("a document with no `decisions:` section still parses");
+    assert!(
+        !bare.decisions.0.is_present(),
+        "an omitted `decisions:` section leaves the carrier at its Default"
+    );
 }

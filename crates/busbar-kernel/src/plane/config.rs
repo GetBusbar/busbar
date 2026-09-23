@@ -338,6 +338,39 @@ impl<'de> serde::Deserialize<'de> for StreamsSection {
     }
 }
 
+/// THE `decisions:` SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
+/// neutral seam the owning plane's own config type deserializes through, so `DeployCfg` names no
+/// plane-local type. Absent ⇒ the plane's `Default` (the empty `decisions:`).
+///
+/// THE FIFTH SECTION (DECISIONS #47/#48, `docs/design/BUSBAR-1.6.0.md:373`/`:374`): the decision
+/// plane's declaring noun, beside `pools:`, `tools:`, `agents:` and `streams:`. It is written HERE,
+/// as a neutral boxed carrier, and NOT as `busbar_plane_decision::config::DecisionsSection`, for
+/// the reason #40's dep wall states: `busbar-kernel` has no dependency on any plane crate and must
+/// not gain one, so the plane's own typed section cannot be named from a kernel struct. It lowers
+/// through this seam at `parse_section` exactly as the four above it do.
+///
+/// Keyed by the bare `"decisions"` config-section literal rather than a
+/// [`NAMED_MAP_SECTIONS`] index, on the same terms as [`StreamsSection`]: the generic seam resolves
+/// the owning plane's decl by config section, and `decisions:` is deliberately NOT a
+/// named-definition-map section — joining that frozen array would mount admin routes and move a
+/// second golden, which this stage does not do.
+#[derive(Debug)]
+pub struct DecisionsSection(pub Box<dyn PlaneCfg>);
+
+impl Default for DecisionsSection {
+    fn default() -> Self {
+        DecisionsSection(default_plane_section("decisions"))
+    }
+}
+impl<'de> serde::Deserialize<'de> for DecisionsSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_plane_section("decisions", deserializer).map(DecisionsSection)
+    }
+}
+
 /// THE `mcp:` ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
 /// neutral seam the owning plane's own endpoint-config type deserializes through. Absent/null ⇒
 /// `None` (endpoint not configured), byte-identical to the pre-seam typed field's `Default`.

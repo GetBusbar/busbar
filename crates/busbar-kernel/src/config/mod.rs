@@ -49,7 +49,8 @@ pub use crate::breaker::status_class_from_str;
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
+use crate::plane::config::McpEndpointSection; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
+use crate::plane::config::{AgentsSection, DecisionsSection, StreamsSection, ToolsSection};
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
@@ -1283,6 +1284,21 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub streams: StreamsSection,
+    /// The top-level `decisions:` section (1.6.0) — the FIFTH plane's declaring noun (DECISIONS
+    /// #47/#48, `docs/design/BUSBAR-1.6.0.md:373`/`:374`), carrying its owning plane's own config:
+    /// the `models:` map of busbar-facing decision models, plus the two reserved members every
+    /// model-serving section carries (`hooks`, `upstream_credentials`). Its mere EXISTENCE declares
+    /// the decision plane, exactly as `streams:` declares the voice plane.
+    // Type-erased through the neutral `DecisionsSection` seam: `decisions:` deserializes into its
+    // owning plane's own config type behind `dyn PlaneCfg`, so `DeployCfg` names no plane-specific
+    // type — and, per #40's dep wall, `busbar-kernel` names no plane CRATE either, which is why the
+    // plane's own `busbar_plane_decision::config::DecisionsSection` cannot appear here. The plane
+    // compiled out captures it RAW and refuses a present section at `resolve`, exactly as
+    // `tools:`/`agents:`/`streams:` do — so no `#[cfg]` guards the field itself.
+    ///
+    /// A lifted CARRIER, exactly as `mcp:` above is.
+    #[serde(skip)]
+    pub decisions: DecisionsSection,
     // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
     // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and each
     // plane's pools are projected to their own carriers in `resolve`. A 1.5.4/1.6.0-dev config still
