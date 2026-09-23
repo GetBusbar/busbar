@@ -231,7 +231,7 @@ jobs:
       # be injected invisibly by `bin/oracle` on every replay — which is why no run could ever
       # fire the guard — and is opt-in now. DELETE it when oracle-rerecord re-takes the golden.
       - name: Replay — candidate vs golden (0 divergences, gaps named)
-        run: ./bin/oracle replay --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci --allow-harness-skew
+        run: ./bin/oracle replay --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci --allow-harness-skew --strict
       - name: Upload the report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

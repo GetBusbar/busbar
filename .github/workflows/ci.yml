@@ -690,6 +690,22 @@ jobs:
         run: cargo xtask gate plane-abi-neutrality --selftest
       - name: Plane-ABI neutrality witness (BLOCKING — no protocol/role noun in the plane ABI hot lane)
         run: cargo xtask gate plane-abi-neutrality
+      # KIND-ABI-LANE gate: DECISIONS #30 binds each plugin kind to exactly ONE ABI lane by HEAT — a
+      # plugin uses the tier matched to its heat, NOT both. HOT/POD lane = plane, transport (the only
+      # kinds in the per-token streaming inner loop, driven over the `#[repr(C)]` `PlaneDecl` vtable);
+      # COLD/JSON lane = store, secret, auth, hook, export (each fires per-request-once or at
+      # boot/write-behind, NEVER per-token, and stays on the six-symbol JSON wire — required for 1.5.5
+      # byte-identity). #30 NAMES this gate as its enforcement, and for the whole of the consolidated
+      # line it did not exist: nothing stopped a hot kind being wired onto the cold JSON `call`, or a
+      # cold kind sprouting a POD surface on the per-token hot lane. The lane assignment is READ from
+      # #30 itself (not copied beside it), the per-kind declaration is read off `supported_abi(kind)`
+      # in the loader registry, and the per-token-loop grep asserts the hot lane names only
+      # {plane, transport}. Self-test runs FIRST — the wrong-lane declaration and the cold-kind-on-the
+      # -hot-lane are planted and proven RED before the verdict is trusted.
+      - name: Kind-ABI-lane self-test (a wrong-lane declaration, planted and proven RED)
+        run: cargo xtask gate kind-abi-lane --selftest
+      - name: Kind-ABI-lane gate (BLOCKING — each kind on the ONE lane #30 assigns it by heat)
+        run: cargo xtask gate kind-abi-lane
       # KIND-ISOLATION gate: busbar is core + plugins, and the ~10 plugin kinds can never
       # cross-contaminate (owner ruling, 2026-09-07). A proposal to create `busbar-transport-a2a`
       # was ruled catastrophic — it fuses a KIND with another kind's INSTANCE and merges back what
@@ -1380,14 +1396,28 @@ jobs:
       # `Gate::run`, so a rule that stopped firing is caught rather than reported as a clean tree.
       - name: Config-schema gate self-test (prove RED/GREEN before trusting the verdict)
         run: cargo xtask gate config-schema --selftest
-      # On a PR, the anti-launder baseline is the BASE branch's snapshot (a break committed alongside
-      # a refreshed snapshot on the PR tip is still caught against the base). On a push, HEAD is the
-      # baseline (no-op delta). `fetch-depth: 0` above is what makes either resolvable — the gate
-      # refuses an unresolvable ref rather than skipping the check, because a skipped additive check
-      # is a free bypass.
+      # THE BASELINE IS NOT SET HERE ANY MORE, AND THAT IS THE FIX.
+      #
+      # This step used to pass `CONFIG_SCHEMA_BASELINE_REF: <base branch> || 'HEAD'`, and the
+      # comment that stood here described what the second arm produced in its own words: a "no-op
+      # delta". On a push the baseline WAS the commit under test, so the additive check compared the
+      # tree against itself and could only ever report "no change" — which is what it had been
+      # reporting, green, for the whole release. The PR arm was no better on a long-lived branch:
+      # `origin/<base>` already contains everything the branch has merged, so a chain of per-PR
+      # additive checks cannot prove the cumulative diff is additive — each step's baseline is the
+      # previous step's output. Neither arm ever reached a RELEASED tag, which is the only thing the
+      # "frozen since 1.5.3, additive-only forever" claim is actually about.
+      #
+      # The gate now carries its own baseline: the freeze point the rule names (see
+      # DEFAULT_BASELINE_REF in xtask/src/gates/config_schema/mod.rs, and
+      # docs/design/1.6.0-denominator.md §8.2 for how the old default was found). Leaving this
+      # variable unset is what lets that default apply — setting it here at all is how the check
+      # got pointed back at the tree it was judging, so a future override needs a reason written
+      # beside it and should never name `HEAD`, `github.sha`, or the branch under test.
+      #
+      # `fetch-depth: 0` above is what makes the tag resolvable; the gate refuses an unresolvable
+      # ref rather than skipping the check, because a skipped additive check is a free bypass.
       - name: Config-schema gate (drift + additive-only)
-        env:
-          CONFIG_SCHEMA_BASELINE_REF: ${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD' }}
         run: cargo xtask gate config-schema
 
   # GENERATED-ARTIFACT DRIFT gate. Sibling to the openapi (`openapi-schema`) and config-schema
@@ -3309,7 +3339,7 @@ jobs:
       # in and the reason is written beside it. DELETE this flag when the oracle-rerecord
       # workflow re-takes the golden with the Rust engine and the revisions agree.
       - name: Replay — candidate vs golden (0 divergences, gaps named)
-        run: ./bin/oracle replay --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci --allow-harness-skew
+        run: ./bin/oracle replay --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci --allow-harness-skew --strict
       - name: Upload the report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
