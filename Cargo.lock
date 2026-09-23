@@ -1033,8 +1033,6 @@ name = "busbar-transport-http"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-transport-tcp",
- "busbar-transport-tls",
  "bytes",
  "futures",
  "http",

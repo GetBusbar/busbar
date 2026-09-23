@@ -11,12 +11,20 @@ license = "Apache-2.0"
 # the trusted computing base and is reviewed rather than manifest-gated. `memchr` is the one
 # non-plumbing name here: the framing scanners search for their terminators with it, and it is
 # already in the lock through hyper's own tree, so naming it adds no crate to the graph.
+#
+# AND NO SIBLING TRANSPORT. This crate declared `busbar-transport-tcp` and `busbar-transport-tls`
+# and referenced neither in any of its source files: `listen`/`accept` bind their own socket through
+# `tokio::net`, and the egress client's TLS is `rustls`/`hyper-rustls` directly. The two names were
+# the only reason `busbar-transport-tls` and `busbar-unit-transport-key` stood in the dependency
+# closure of `-http`, `-ws`, `-sse` and `-grpc`, which is four plugin crates made to carry a
+# capability crate by two lines that compiled nothing (DECISIONS #40 — the wall is over the CLOSURE,
+# and a transitive member is invisible in the manifest that causes it). What `http` composes over is
+# still stated, but it is stated where it is true: `COMPOSES_OVER = &["tcp", "tls"]` in `meta.rs` is
+# a declared wire fact the registry reads, and it needs no link edge to be true.
 [dependencies]
 tokio-util = { workspace = true }
 memchr = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
-busbar-transport-tcp = { path = "../busbar-transport-tcp" }
-busbar-transport-tls = { path = "../busbar-transport-tls" }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "time"] }
 tokio-rustls = { workspace = true }

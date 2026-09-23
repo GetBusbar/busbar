@@ -14,10 +14,13 @@ path = "src/lib.rs"
 [dependencies]
 tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
-# The layers this one composes over: `grpc` drives HTTP/2 over a stream one of them gives up, and
-# opens no socket of its own.
+# The layer this one composes over: `grpc` drives HTTP/2 over a stream it gives up, and opens no
+# socket of its own. `src/mount.rs` is written against `busbar_transport_http::mount` and says so,
+# so this edge is real and shipped — it is the one transport-to-transport edge this crate keeps, and
+# whether it should exist at all is the open question in DECISIONS #40's dep wall, not a thing a
+# manifest edit settles. `busbar-transport-tcp` is NOT here: its only mention in the crate is
+# `src/tests/battery.rs`, and it has moved to `[dev-dependencies]` accordingly.
 busbar-transport-http = { path = "../busbar-transport-http" }
-busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 tokio = { workspace = true, features = ["rt", "macros", "io-util", "sync", "time"] }
 # `tonic` here is used ONLY for its codec/status/streaming machinery (`tonic::codec::Codec`,
 # `tonic::Status`, `tonic::server::Grpc`, `tonic::client::Grpc`) — the gRPC WIRE FRAMING (the
@@ -42,4 +45,6 @@ futures = { workspace = true }
 # fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
 # forge their own. Dev-only and feature-gated, so it is absent from every release build.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+# The socket the battery opens under the stack — test-time only; see the note above.
+busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
