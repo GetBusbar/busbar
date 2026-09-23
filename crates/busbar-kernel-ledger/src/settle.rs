@@ -23,10 +23,12 @@
 //! them, and not "the ones that can overflow" — all of them, because which ones can overflow is a
 //! fact about today's callers and the policy has to survive tomorrow's.
 //!
-//! This file used to hold two policies at once, which is the defect this states away. Twenty
-//! operators moved the books with a bare `-=`, `+=` or `-`, and the repricing fold thirty lines
-//! below them used `saturating_add` — so the crate's own guarded and unguarded arithmetic sat in
-//! one file with nothing to say which was intended. A reader could take either as the house rule.
+//! This file used to hold two policies at once, which is the defect this states away.
+//! TWENTY-THREE operators moved a money column with a bare `-=`, `+=` or `-` (counted off the
+//! diff, not estimated; a twenty-fourth moved a posting COUNT), and the repricing fold thirty
+//! lines below them used `saturating_add` — so the crate's own guarded and unguarded arithmetic
+//! sat in one file with nothing to say which was intended. A reader could take either as the house
+//! rule. The money sweep that found this counted FOUR of them.
 //!
 //! SATURATING RATHER THAN CHECKED, for two reasons and they are not the same reason. First, it is
 //! what the rest of this crate already does (`totals.rs`, the fold at the bottom of this file,
