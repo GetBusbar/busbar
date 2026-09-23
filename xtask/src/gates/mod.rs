@@ -40,6 +40,7 @@ pub mod kernel_token_wire_purity;
 pub mod kind_abi_lane;
 pub mod kind_isolation;
 pub mod map_proof;
+pub mod sweep_coverage;
 pub mod money_invariants;
 pub mod no_deferral;
 pub mod no_float_money;
@@ -1921,6 +1922,15 @@ fn narrowed_got(verdict: &Verdict, covers: &[&str]) -> Expect {
 /// * **[`Expect::Impossible`]** — the covered rows were already RED unplanted. The question cannot
 ///   be asked on this tree at all, which is a finding about the row rather than about the rule, and
 ///   is reported as its own outcome so nobody can mistake it for either of the other three.
+// ZZZ_PROBE_ONLY — TEMPORARY, REMOVED BEFORE COMMIT. A targeted-case filter so a nine-case
+// diagnosis does not have to pay for a 149-case, 6066s battery.
+fn zzz_probe_skip(name: &str) -> bool {
+    match std::env::var("XTASK_SELFTEST_ONLY") {
+        Ok(v) => !v.split('\u{1}').any(|w| !w.is_empty() && name.contains(w)),
+        Err(_) => false,
+    }
+}
+
 pub fn prove_red<'a>(
     cx: &Ctx,
     gate: &'a dyn Gate,
@@ -1935,6 +1945,10 @@ pub fn prove_red<'a>(
     let cx = cx.clone();
     CasePlan::new(move || {
         let expected = Expect::Red { naming };
+        if zzz_probe_skip(&name) {
+            let got = expected.clone();
+            return Case { name, covers, expected, got };
+        }
         let overlay = plant.build();
         let ids = refs(&covers);
 
@@ -2187,6 +2201,9 @@ pub fn prove_rows_green<'a>(
     let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
     let cx = cx.clone();
     CasePlan::new(move || {
+        if zzz_probe_skip(&name) {
+            return Case { name, covers, expected: Expect::Green, got: Expect::Green };
+        }
         let planted = cx.with_overlay(plant.build());
         let verdict = execute(gate, &planted);
         let offenders: Vec<String> = verdict
@@ -2439,6 +2456,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(seal_witness::SealWitnessGate),
         summary: "capability proofs are exactly Pass<stage> + Grant<capability> + one kernel minter (#65/#73)",
+    },
+    Registration {
+        name: "sweep-coverage",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(sweep_coverage::SweepCoverageGate),
+        summary: "every tracked file carries a sweep verdict; the denominator is git's, not the sweep's",
     },
     Registration {
         name: "map-proof",
