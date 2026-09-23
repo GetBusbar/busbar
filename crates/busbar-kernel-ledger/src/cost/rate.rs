@@ -39,7 +39,17 @@ use crate::cost::currency::CurrencyCode;
 /// whether the float that produced it was infinite or merely a config typo with too many zeros.
 pub fn nano_rate(micro_per_unit: f64) -> u64 {
     let v = (micro_per_unit * 1000.0).round();
-    if v.is_finite() && v > 0.0 && v <= u64::MAX as f64 {
+    // REJECT AT THE TRUE BOUNDARY. `u64::MAX` is `2^64 - 1`, which an `f64` cannot represent, so
+    // `u64::MAX as f64` rounds UP to exactly `2^64` and a `v <= u64::MAX as f64` guard admits a
+    // finite `v == 2^64` — one past the top — which `v as u64` then SATURATES to `u64::MAX`: the
+    // astronomical overcharge described above, arriving at the one input the guard was written to
+    // stop. Comparing against `2^64` itself is the boundary the cast actually has, so an
+    // out-of-range value falls to `0` as the paragraph above promises.
+    //
+    // BYTE-NEUTRAL for every rate a deployment can hold: the largest `f64` strictly below `2^64` is
+    // `2^64 - 2048`, it still passes, and it still converts to itself. Exactly one `f64` changes
+    // answer, and it is the one that was never a rate.
+    if v.is_finite() && v > 0.0 && v < 2.0_f64.powi(64) {
         v as u64
     } else {
         0

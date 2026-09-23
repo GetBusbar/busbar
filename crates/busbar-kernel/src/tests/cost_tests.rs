@@ -985,7 +985,12 @@ fn from_raw_is_byte_identical_to_the_unclamped_projection_for_every_in_range_rat
     // into u64::MAX.
     fn unclamped_reference(utok: f64) -> Option<u64> {
         let v = (utok * 1000.0).round();
-        (v.is_finite() && v > 0.0 && v <= u64::MAX as f64).then_some(v as u64)
+        // The in-range test is `< 2^64`, NOT `<= u64::MAX as f64`. `u64::MAX` is `2^64 - 1` and no
+        // `f64` holds it, so that cast rounds UP to `2^64`; a reference written the second way would
+        // claim `v == 2^64` has the answer `v as u64` — which SATURATES to `u64::MAX` — and would
+        // then certify the delegation as correct for doing exactly that. An oracle that carries the
+        // defect it is meant to detect cannot report it.
+        (v.is_finite() && v > 0.0 && v < 2.0_f64.powi(64)).then_some(v as u64)
     }
 
     let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
