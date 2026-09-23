@@ -775,7 +775,46 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let allowed_root = need_str(c, "allowed_root", "token-sealed")?;
     let root = format!("{}/", allowed_root.trim_end_matches('/'));
     let max_sites = need_int(c, "max_sites", "token-sealed")?;
-    // EACH ROW OWNS A DISJOINT SET OF SITES: the two dedicated sub-rows below scan symbols this
+    // THE SUB-ROWS, DECLARED ONCE AND READ TWICE: `(row id, pattern key, ceiling key, subject key,
+    // ROOT KEY)`.
+    //
+    // THE ROOT IS PER SUB-ROW (X-178), because "sealed" does not mean "kernel" for every sealed
+    // constructor. `SecretOnce::mint(`'s own doc says "Verbs unit only" and its one production site
+    // is the Verbs unit, so a row that judged it against `kernel_root` would stand RED on the single
+    // call the design REQUIRES — and the only way to green it would be a waiver for a correct call,
+    // which is how a gate learns to lie. A symbol whose home is not the kernel gets a row that says
+    // so, not an exemption from being scanned at all.
+    //
+    // ONE TABLE, NOT TWO LISTS. The delegation set immediately below and the rows emitted further
+    // down are this same table read twice. When they were two lists, a sub-row added to one and
+    // forgotten in the other produced either a symbol counted twice (once by its own row, once by
+    // the family scan) or a symbol whose row exists while the family scan still claims its sites —
+    // and that drift is the exact shape of X-177. Adding a fourth sub-row is now one edit.
+    const SUB_ROWS: [(&str, &str, &str, &str, &str); 3] = [
+        (
+            "token-sealed:kernel-seal",
+            "kernel_seal_pattern",
+            "max_kernel_seal_sites",
+            "kernel_seal_subject",
+            "kernel_root",
+        ),
+        (
+            "token-sealed:admit-token-mint",
+            "admit_token_mint_pattern",
+            "max_admit_token_mint_sites",
+            "admit_token_mint_subject",
+            "kernel_root",
+        ),
+        (
+            "token-sealed:secret-once-mint",
+            "secret_once_mint_pattern",
+            "max_secret_once_mint_sites",
+            "secret_once_mint_subject",
+            "secret_once_root",
+        ),
+    ];
+
+    // EACH ROW OWNS A DISJOINT SET OF SITES: the dedicated sub-rows below scan symbols this
     // list would otherwise reach too, and one forged mint counted twice is not two proofs.
     //
     // THE DELEGATION IS BY SITE, NOT BY PATTERN STRING (X-177). It used to drop a `patterns` entry
@@ -784,9 +823,9 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     // FAMILIES: a family regex is never string-equal to the one spelling a sub-row owns, so the
     // only way to keep the two sets disjoint is to ask, per line, whether a sub-row already claims
     // it.
-    let delegated_rx: Vec<Regex> = ["kernel_seal_pattern", "admit_token_mint_pattern"]
-        .into_iter()
-        .map(|k| need_str(c, k, "token-sealed").and_then(Regex::new))
+    let delegated_rx: Vec<Regex> = SUB_ROWS
+        .iter()
+        .map(|(_, pat_key, _, _, _)| need_str(c, pat_key, "token-sealed").and_then(Regex::new))
         .collect::<Result<_, _>>()?;
 
     // Files that are the SPECIFICATION for this very scan rather than surface it scans (e.g. the
@@ -863,8 +902,6 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         offenders,
     )];
 
-    let kernel_root = need_str(c, "kernel_root", "token-sealed")?;
-    let kroot = format!("{}/", kernel_root.trim_end_matches('/'));
     // THE SUBJECT IS READ BESIDE THE PATTERN, NEVER HARD-CODED HERE (X-177). These two strings used
     // to be literals in this table, and `token-sealed:admit-token-mint` printed "`AdmitToken::mint(`
     // is spelled only inside crates/busbar-kernel/src" while its pattern scanned for
@@ -872,38 +909,30 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     // could not see. A row that asserts a property about a symbol it does not scan is worse than no
     // row. `need_str` makes a missing subject a refusal, so the label cannot drift from the pattern
     // again without the gate saying so.
-    for (sub_id, pat_key, ceil_key, subj_key) in [
-        (
-            "token-sealed:kernel-seal",
-            "kernel_seal_pattern",
-            "max_kernel_seal_sites",
-            "kernel_seal_subject",
-        ),
-        (
-            "token-sealed:admit-token-mint",
-            "admit_token_mint_pattern",
-            "max_admit_token_mint_sites",
-            "admit_token_mint_subject",
-        ),
-    ] {
+    for (sub_id, pat_key, ceil_key, subj_key, root_key) in SUB_ROWS {
+        // THE HOME IS READ BESIDE THE PATTERN TOO (X-178). Same argument as the subject one line
+        // down: a row that prints "is spelled only inside X" while filtering against Y is a row
+        // whose claim and whose scan are two different assertions.
+        let home = need_str(c, root_key, "token-sealed")?;
+        let hroot = format!("{}/", home.trim_end_matches('/'));
         let subject = need_str(c, subj_key, "token-sealed")?;
         let rx_pat = Regex::new(need_str(c, pat_key, "token-sealed")?)?;
         let sites: Vec<String> = tree
             .grep(&rx_pat, true, None)
             .into_iter()
-            .filter(|(rel, _)| !rel.starts_with(kroot.as_str()))
+            .filter(|(rel, _)| !rel.starts_with(hroot.as_str()))
             .map(|(rel, l)| format!("{rel}:{}", l.no))
             .collect();
         let ceiling = need_int(c, ceil_key, "token-sealed")?;
         let detail = format!(
-            "{} production call site(s) of {subject} outside {kernel_root} (ceiling {ceiling}): {}",
+            "{} production call site(s) of {subject} outside {home} (ceiling {ceiling}): {}",
             sites.len(),
             join_or_none(&sites)
         );
         rows.push(plain(
             sub_id,
             sites.len() as i64 <= ceiling,
-            format!("{subject} is spelled only inside {kernel_root}"),
+            format!("{subject} is spelled only inside {home}"),
             detail,
             sites.len() as i64,
             ceiling,

@@ -190,6 +190,9 @@ impl ConstructionGate {
             "token-sealed",
             "token-sealed:kernel-seal",
             "token-sealed:admit-token-mint",
+            // X-178. Same shape as the two above and one crate along: the one-time secret
+            // placeholder's home is the Verbs unit, not the kernel, so it states its own root.
+            "token-sealed:secret-once-mint",
             "teller-step-order",
             "one-teller-loop",
             "one-teller-loop:run_gauntlet",

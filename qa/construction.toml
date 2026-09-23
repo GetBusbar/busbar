@@ -430,7 +430,15 @@ types rather than discipline: a step can only be answered with that step's token
 be opened by Admit, a posting can only be minted after Audit. Every one of those constructors takes \
 a token, so a unit spelling Decision::proceed or Hold::open with its own token is the design working; \
 the forgery surface is MINTING a token. That holds exactly as long as nothing outside the kernel can \
-spell a token constructor. Every such spelling elsewhere is a forged token."""
+spell a token constructor. Every such spelling elsewhere is a forged token.
+
+The same argument covers the kernel's own VALUE constructors, which are sealed on the same seal and \
+were scanned by nothing at all until X-178: the request generation a proof is bound to, a unit's \
+origin, its session, its replay-claim key, and the end that closes it. A forged generation makes a \
+stray proof match any call; a forged origin is a plane claiming to be a tick and skipping the door. \
+"Nobody spells it outside the kernel today" is the reason to write the rule down, not a reason to \
+leave it out — a capability confined only by convention is confined until the first author who does \
+not know the convention."""
 patterns = ["Pass::mint(", "Grant::<WriteMoney>::mint(", "Grant::<Consumption>::mint(", "Grant::<Exit>::mint("]
 # ── WIDENED 2026-09-23 (X-177): THIS ROW NAMED FOUR OF TWENTY MARKERS AND CALLED THAT "SEALED" ───
 #
@@ -458,6 +466,13 @@ pattern_families = [
   # The inferred-marker spelling of the same two, which `patterns` covers only for `Pass::mint(`.
   '(?<![A-Za-z0-9_])(Pass|Grant)::mint_bound\(',
   '(?<![A-Za-z0-9_])Grant::mint\(',
+  # QUALIFIED-PATH SYNTAX (X-178) — the fourth spelling X-177 NAMED as a gap and did not close.
+  # `<Grant<Dial>>::mint(` writes the marker inside the type rather than after a turbofish `::`, so
+  # it carries no `Grant::<` for the two families above to bite on and no bare `Grant::mint(`
+  # either: measured against the pre-X-178 family set, `<Grant<Dial>>::mint(` and
+  # `<Pass<Approve>>::mint_bound(` both scored ZERO. It is ordinary Rust and it is the last way left
+  # to spell either generic constructor.
+  '<(Grant|Pass)<[^<>]*>>::mint(_bound)?\(',
   # THE PRE-#73 TOKEN ZOO'S CONSTRUCTORS. These names are dead (caps/token.rs documents the
   # unification) and `cargo xtask gate seal-witness` bans the identifiers outright -- but this row
   # claims "the Teller's tokens are minted only inside the Teller", and a resurrected zoo
@@ -466,6 +481,44 @@ pattern_families = [
   # `AdmitToken::mint(` is deliberately absent: it belongs to the admit-token-mint sub-row below,
   # which is the row whose own claim text names it.
   '(?<![A-Za-z0-9_])(UnitToken|TrustToken|UsageToken|LedgerToken|DurabilityToken|EgressAuthToken|TransportKeyToken|AdminToken|RecoveryToken|ExitToken)::mint(_bound)?\(',
+  # ── X-178: THE KERNEL'S OWN VALUE CONSTRUCTORS, WHICH NOTHING AT ALL SCANNED ──────────────────
+  #
+  # X-177 widened this row across the TOKEN family and left the kernel's other sealed constructors
+  # where it found them: unscanned. A grep of qa/ and xtask/src/ returned ZERO for every symbol
+  # below. Five of them take `&KernelSeal` exactly as `Grant`/`Pass` do (caps/token.rs:115,
+  # caps/unit_end.rs:50/115/135) or the exit token (caps/unit_end.rs:223), so each is the same
+  # forgery surface this row exists to close, and each was reachable from any crate in the tree by
+  # writing one line. Measured on this tree with all six planted in an orphan module under
+  # crates/busbar-llm/src, the pre-X-178 scanners scored ZERO hits and all three token-sealed rows
+  # stood PASS.
+  #
+  # "There is no production site outside the kernel today" is the reason to write these down, not
+  # a reason to skip them: a capability confined only by convention is confined until the first
+  # agent who does not know the convention. The kernel owns the badge press (spec Part 0, #73 at
+  # :413, hardened by #65 at :401) and a mint outside it must be impossible to spell.
+  #
+  # Each is a FAMILY, not a literal, for the same reason X-177's are: the optional `(?:…::)*` path
+  # prefix covers the fully-qualified spelling (`busbar_contract::caps::SecretOnce::mint(` is
+  # written today at crates/busbar/src/root/units_admin/tests/units_admin.rs:851), the `>?` covers
+  # the qualified-path form `<UnitEnd>::seal(`, and `(_bound)?` covers the #74 call-bound variant
+  # the day one of these grows it. A turbofish arm is deliberately absent HERE and only here: all
+  # six types are non-generic (they carry a `u64`, a `[u8; 32]`, an `OriginKind`), so `T::<X>::seal(`
+  # does not parse for any of them and an arm matching it would be an arm no tree can ever exercise.
+  #
+  # `SecretOnce::mint(` is deliberately absent from this list: its home is the VERBS unit, not the
+  # kernel, so it belongs to the `secret-once-mint` sub-row below, which is the row that can state
+  # its actual confinement. Same reason `AdmitToken::mint(` is absent.
+  #
+  # `CallId::seal(` mints the #74 generation `bound_to` compares, so a forged one makes a stray
+  # proof match any call. `Origin::seal(`'s own doc gives the attack: "a plane that could claim to
+  # be a tick could skip the door". `IdempotencyKey::mint(` is the replay-claim key and is ON THE
+  # MONEY PATH — it has NO production site anywhere in this tree, which is the strongest possible
+  # position from which to seal it, because the ceiling can be 0 with nothing to grandfather.
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*CallId>?::seal(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*Origin>?::seal(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*SessionId>?::mint(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*IdempotencyKey>?::mint(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*UnitEnd>?::seal(_bound)?\(',
 ]
 allowed_root = "crates/busbar-kernel/src"
 max_sites = 0
@@ -500,6 +553,34 @@ admit_token_mint_subject = "the arrival-hold mint (`Grant::<Admittance>::mint[_b
 kernel_root = "crates/busbar-kernel/src"
 max_kernel_seal_sites = 0
 max_admit_token_mint_sites = 0
+
+# ── X-178: THE ONE SEALED CONSTRUCTOR WHOSE HOME IS NOT THE KERNEL ──────────────────────────────
+#
+# `SecretOnce::mint(` mints the placeholder for a credential a verb creates ONCE, at ONE declared
+# location; if the encoded bytes do not carry the nonce exactly once at that location the unit fails
+# and the mint is reversed. That is what stops a credential-minting verb leaking its output into a
+# log, a fact, or a second copy of the response — so a forged mint is a second copy of a secret with
+# nothing to reverse it.
+#
+# Its confinement is "Verbs unit only" (caps/egress.rs:149), NOT "kernel only", and it is the only
+# one of the six that has a live production site: crates/busbar-core-admin/src/verbs.rs:285. That is
+# why it gets a sub-row with `secret_once_root` rather than a `pattern_families` entry — the family
+# list is judged against `allowed_root` (the kernel), which would stand this row RED on the single
+# call the design REQUIRES. Greening that would need a waiver for a correct call, and a waiver for a
+# correct call is how a gate learns to lie. The row that can state the real confinement is the row
+# that gets to make the claim.
+#
+# TWO TYPES, ONE SPELLING — SAID OUT LOUD BECAUSE A TEXT SCANNER CANNOT SEE IT. There are two live
+# `SecretOnce` types with two different `mint` signatures: `caps::egress::SecretOnce::mint(&Grant
+# <AdminVerb>, nonce, unit, target)` (caps/egress.rs:150) and `dest::SecretOnce::mint(&dyn
+# KernelSeal, nonce, target)` (dest.rs:379), both re-exported from the contract crate's root. This
+# pattern matches BOTH, and that is correct rather than sloppy: both docs say the verbs unit is the
+# only minter ("Verbs unit only"; "Verbs-unit-only; the seal is what says so"), so one home holds
+# for both. `dest::SecretOnce::mint` has no production caller at all today.
+secret_once_mint_pattern = '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*SecretOnce>?::mint(_bound)?\('
+secret_once_mint_subject = "the one-time secret placeholder mint (`SecretOnce::mint(`, both the capability and the destination type of that name)"
+secret_once_root = "crates/busbar-core-admin/src"
+max_secret_once_mint_sites = 0
 
 # ── 9. teller-step-order ─────────────────────────────────────────────────────────────────────────
 [rules.teller-step-order]
