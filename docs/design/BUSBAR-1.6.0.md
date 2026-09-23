@@ -317,8 +317,8 @@ are IN this file — nothing outside it does.
 | # | Decision (LAW) | Enforcing gate |
 |---|----------------|----------------|
 | 1 | **Architecture = core + plugins.** Core is a thin engine running ONE uniform per-unit governance workflow (Authenticate·Verify·Approve·Admit·Route·Meter·Audit) that every plane's data passes through. Core names ZERO plane types. | plane-purity (reverse), plane-abi-neutrality grep, teller-steps |
-| 2 | **A PLUGIN IS A PLUGIN — exactly TWO requirements, every kind (plane included):** (1) compiled-in OR dropped-in (same contract, one loading path); (2) communicates ONLY over the ABI. No third requirement. **A PLUGIN = A 3rd PARTY — ACCEPTANCE TEST:** a plugin SELF-REGISTERS via `busbar_plugin_sdk::export_<kind>_plugin!` and TESTS ITSELF; the kernel never tests it and never names it — not in code and NOT in its own tests. The grep for a concrete instance noun stays neutral INCLUDING under `tests/`: if the kernel names or tests a specific plugin by name, it has stopped treating it as a 3rd party and the row is violated. | kind-isolation, instance-noun-neutrality, construction:ports-only-tests, token-auth cdylib proof |
-| 3 | **Plugin kinds (7):** store, secret, auth, hook, export, PLANE, TRANSPORT. A kind = a capability core brokers by key, swappable (compiled-in OR dropped-in over the ABI), of which core names no concrete instance. **Direction (inbound/outbound) is a usage mode, never a kind boundary.** TRANSPORT is one kind, bidirectional: a plane declares a transport need and, if core lacks that carrier, you install the transport plugin too — impls busbar-transport-{http,ws,stdio,tcp,tls,sse,grpc}; transport-key = server-side facet of transport. AUTH is ONE kind: inbound-verify and outbound-sign/decorate are two OPERATIONS of the auth kind, not two kinds — there is NO separate "egress-auth" kind (the code's `auth`/`egress-auth` split is an ABI detail inside one kind). A plane declares its needs as (transport, auth) per direction — inbound {transport=X, auth=Y}, outbound {transport=A, auth=B}. NOT kinds: control (admin/oauth2 = cleanliness crates, #5), dialect (inside a plane, #4), unit (core's governance workflow). Impls: store(store-example-plugin, store-memory, +external pg/mysql/valkey/sqlite), secret(secret-example-plugin), auth(auth-static-plugin/token-auth; outbound schemes bearer/mTLS/SigV4/GCP/SPKI-pin currently internal units, drop-in packaging owed), hook(hook-test-plugin), export(export-prometheus, export-webhook, export-file, export-otlp — OWNER RULING 2026-09-18: the four built-in sinks in busbar-core/src/export/{prometheus,webhook,file} + observability otlp were COMPILED-IN-ONLY "half plugins" violating #11 both-ways; they are finished into real both-ways export-kind plugins over the COLD/JSON export ABI (#30), self-testing (#2), and export-example-plugin is then DELETED; behavior stays byte-identical to 1.5.5 — oracle-gated on the export/metrics path), plane(busbar-plane-{llm,mcp,a2a,streaming,decision} — 5 planes, #48), transport(7 carriers above). | kind-isolation:registry (7 kinds) |
+| 2 | **A PLUGIN IS A PLUGIN — exactly TWO requirements, every kind (plane included):** (1) compiled-in OR dropped-in (same contract, one loading path); (2) communicates ONLY over the ABI. No third requirement. **A PLUGIN = A 3rd PARTY — ACCEPTANCE TEST:** a plugin SELF-REGISTERS via `busbar_plugin_sdk::export_<kind>_plugin!` and TESTS ITSELF; the kernel never tests it and never names it — not in code and NOT in its own tests. The grep for a concrete instance noun stays neutral INCLUDING under `tests/`: if the kernel names or tests a specific plugin by name, it has stopped treating it as a 3rd party and the row is violated. **THE ENFORCING WITNESS IS THE EXPORT CONFORMANCE TEST, AND THE AUTH KIND HAS NONE.** `crates/plugin-loader/src/tests/export_conformance_tests.rs` is a genuine both-ways witness: it LINKS the crate (`run_compiled_in` calls `busbar_export_example_plugin::open` and dispatches through the plugin'"'"'s own `dispatch_compiled_in`) AND `dlopen`s the same crate'"'"'s cdylib (`run_dropped_in`), then compares the two folds; it keeps a named RED arm, `the_pre_envelope_path_loses_a_dropped_in_plugins_counters`, and refuses to skip silently under CI. Both its working fixtures are wired the way a both-ways proof requires — `crate-type = ["cdylib", "rlib"]` AND a path dependency from `plugin-loader/Cargo.toml`, so the compiled-in arm actually links. **This gate used to read "token-auth cdylib proof", which names nothing.** `token-auth` has never existed as code at any tag: it is the English compound *"token-auth code"* from the 1.3.0 marketing blog post (`39fd06918`, 2026-07-12) naming the static-token allowlist module `auth/tokens/`, and the point of that sentence was compile-time SUBTRACTION. That module was DELETED at `8f94c7f6b`, 2026-07-22; the spec picked the phrase up at `d154d1ab6`, 2026-08-21 — one day after the v1.5.5 tag, a month after the code died — with the meaning INVERTED into a dynamic-load proof. Full archaeology, every search controlled against a known-present string: `docs/design/1.6.0-token-auth-archaeology.md`. **THE HONEST RECORD: the auth kind has NO both-ways proof at ANY tag, v1.5.5 included** — there is no regression to mourn, only an absence. `auth-static-plugin` is not a renamed `token-auth` (independent origin, different content), its dropped-in half is real, and in v1.5.5 it was `crate-type = ["cdylib"]`, which cannot be a Rust dependency at all, so its compiled-in half could never have been linked. **THE COST OF A REAL AUTH WITNESS, IN ORDER — the blocker is upstream of the manifest, and `14a49131d` already wrote the rule that governs every step: "ADDING THE ARTIFACT IS NOT THE WITNESS."** (1) `crates/plugin-sdk/src/lib.rs` — add `dispatch_auth_enveloped`, the auth twin of `dispatch_export_enveloped`, which is the SDK'"'"'s ONLY enveloped dispatch (#85 enveloped `export` and no other kind), and the envelope is what makes "observationally identical" testable; this step decides the size of the whole item. (2) `crates/plugin-sdk/src/lib.rs` — `export_auth_plugin!` emits a `dispatch_compiled_in` twin of the `busbar_call` symbol, as `export_export_plugin!` does. (3) `crates/auth-static-plugin/src/lib.rs` — `pub fn open`, which is private today. (4) `crates/plugin-loader/Cargo.toml` — the `busbar-auth-static-plugin = { path = "../auth-static-plugin" }` dep line, worthless without 1-3. (5) `crates/plugin-loader/src/tests/auth_conformance_tests.rs` — new, modelled on the export file: `run_compiled_in` / `run_dropped_in` / compare. The rlib already landed at `14a49131d`; steps 1-3 are the work. | kind-isolation, instance-noun-neutrality, construction:ports-only-tests, export-conformance both-ways witness (`crates/plugin-loader/src/tests/export_conformance_tests.rs`) |
+| 3 | **Plugin kinds (7):** store, secret, auth, hook, export, PLANE, TRANSPORT. A kind = a capability core brokers by key, swappable (compiled-in OR dropped-in over the ABI), of which core names no concrete instance. **Direction (inbound/outbound) is a usage mode, never a kind boundary.** TRANSPORT is one kind, bidirectional: a plane declares a transport need and, if core lacks that carrier, you install the transport plugin too — impls busbar-transport-{http,ws,stdio,tcp,tls,sse,grpc}; transport-key = server-side facet of transport. AUTH is ONE kind: inbound-verify and outbound-sign/decorate are two OPERATIONS of the auth kind, not two kinds — there is NO separate "egress-auth" kind (the code's `auth`/`egress-auth` split is an ABI detail inside one kind). A plane declares its needs as (transport, auth) per direction — inbound {transport=X, auth=Y}, outbound {transport=A, auth=B}. NOT kinds: control (admin/oauth2 = cleanliness crates, #5), dialect (inside a plane, #4), unit (core's governance workflow). Impls: store(store-example-plugin, store-memory, +external pg/mysql/valkey/sqlite), secret(secret-example-plugin), auth(auth-static-plugin — the ONLY auth impl; it is NOT a rename of `token-auth`, which has never existed as code at any tag, and its compiled-in half is linked by nothing, so the auth kind holds no both-ways witness — see #2; outbound schemes bearer/mTLS/SigV4/GCP/SPKI-pin currently internal units, drop-in packaging owed), hook(hook-test-plugin), export(export-prometheus, export-webhook, export-file, export-otlp — OWNER RULING 2026-09-18: the four built-in sinks in busbar-core/src/export/{prometheus,webhook,file} + observability otlp were COMPILED-IN-ONLY "half plugins" violating #11 both-ways; they are finished into real both-ways export-kind plugins over the COLD/JSON export ABI (#30), self-testing (#2), and export-example-plugin is then DELETED; behavior stays byte-identical to 1.5.5 — oracle-gated on the export/metrics path), plane(busbar-plane-{llm,mcp,a2a,streaming,decision} — 5 planes, #48), transport(7 carriers above). | kind-isolation:registry (7 kinds) |
 | 4 | **A DIALECT is a thing INSIDE a plane** (llm 6, mcp 1, a2a 1, streaming N). It is NOT a plugin and NOT a kind. No per-dialect crates, no Dialect trait/kind. | kind-isolation:truths (dialect kind ⇒ RED) |
 | 5 | **admin & oauth2 are NOT plugins.** They are compiled-in cleanliness crates, one-way dep on core, off the hot path. There is no "control" plugin kind. | kind-isolation:registry/truths |
 | 6 | **One crate per plane** `busbar-plane-<x>`, pure. ALL plane logic — dialects, codecs, modes — folds INTO that one crate; there is NO separate `busbar-*-codec` crate (#39). A plane opens no socket; all wire I/O is the transport plugin's (#7/#40). The plane crate's dep closure names no kernel/core type (#40). | construction loc/surface ceilings; no busbar-*-codec crate |
@@ -453,7 +453,12 @@ Commit authorship comes from git config (GitHub noreply). No AI attribution, eve
 > *Absorbed verbatim from `1.6.0-plane-extraction-LOCKED.md`, which this document replaced and DELETED (`49ab4aca2`) — that name is history, not a path. Outranks Part 2 where they disagree.*
 
 
-Owner ruling: **repr(C) plugin ABI NOW** (full dynamic-load parity with token-auth). Survived 3
+Owner ruling: **repr(C) plugin ABI NOW** — full dynamic-load parity with the tree's both-ways
+conformance witnesses, `crates/plugin-loader/src/tests/{export,plane}_conformance_tests.rs` (#2).
+(CORRECTED 2026-09-23: this ruling was recorded at `d154d1ab6` as *"full dynamic-load parity with
+token-auth"*. `token-auth` has never existed as code at any tag, so the standard named was an empty
+set — see #2 and `docs/design/1.6.0-token-auth-archaeology.md`. The RULING is unchanged; only its
+referent is made reachable.) Survived 3
 adversarial rounds (r1: 9 spine-adjacent breaks fixed; r2: ~10 refinements, 0 spine breaks; r3: 0 spine
 breaks, RR1/RR2/RR3/RR7/RR8 survived, RR3b + 2 mechanical fixes folded here). Pin: `db7fcd68`.
 
@@ -468,7 +473,9 @@ breaks, RR1/RR2/RR3/RR7/RR8 survived, RR3b + 2 mechanical fixes folded here). Pi
 > WorkItem-lock/server-rename corrections). Implementation-ready, pending owner "go" on Phase 0.
 
 ## Locked decisions (owner-ratified 2026-08-22)
-1. **repr(C) plugin ABI NOW** — full dynamic-load parity with token-auth (not a deferred/in-process trait).
+1. **repr(C) plugin ABI NOW** — full dynamic-load parity with the export/plane conformance witnesses
+   (`crates/plugin-loader/src/tests/{export,plane}_conformance_tests.rs`), not an in-process trait.
+   (As recorded this read "parity with token-auth"; that name has never been code — #2.)
 2. **1.6.0 is the FINAL release — there is no "after."** The extraction lands INSIDE 1.6.0 and BLOCKS the
    cut. Must be as rock-solid as the rest of the release.
 3. **HOT/COLD split:** HOT plugins (mcp/a2a) use the POD-fast lane; COLD capability plugins
@@ -480,8 +487,10 @@ breaks, RR1/RR2/RR3/RR7/RR8 survived, RR3b + 2 mechanical fixes folded here). Pi
 
 ## 0. Law
 Plugin behavior ⟂ linkage. Compiled-in vs plugins-folder = packaging only. Seam ALWAYS used. ONE code
-path. Every plugin (store/secret/auth/hook/export AND mcp/a2a) speaks the same protocol; token-auth is
-the proof. **`core/src/mcp/` and `core/src/a2a/` cease to exist.** Core names ZERO plane types. This
+path. Every plugin (store/secret/auth/hook/export AND mcp/a2a) speaks the same protocol;
+`export_conformance_tests.rs` — one crate LINKED and `dlopen`ed, folds compared, RED arm kept — is the
+proof (#2). (As recorded this read "token-auth is the proof"; that name has never been code, and the
+AUTH kind holds no both-ways witness at any tag.) **`core/src/mcp/` and `core/src/a2a/` cease to exist.** Core names ZERO plane types. This
 OVERRIDES the shipped D8 deferral (`plane/host.rs:11-17`) per owner: "no 1.6.x, design the final."
 
 ## 1. Forcing argument
@@ -647,7 +656,8 @@ cleanliness 7, tests/benches 8). The rerun must confirm:
 - Net engine score ≥ 9 (regression below 9 fails the cut).
 
 ## 10. What this buys (the sell)
-- **The claim becomes true, not aspirational**: mcp/a2a are plugins in the SAME sense as token-auth —
+- **The claim becomes true, not aspirational**: mcp/a2a are plugins in the SAME sense as the export
+  and plane fixtures that hold the tree's only both-ways witnesses (#2) —
   drop a `.so` in the folder or compile it in, identical behavior, linkage is packaging. Seam witnesses
   prove core names zero plane types and planes touch only the ABI.
 - **~84k LOC leave core**; core/src/{mcp,a2a} deleted; the neutral engine gets smaller and its blast
@@ -978,7 +988,7 @@ the next serialization point. Owner = lead(L)+implementers(N)+verifier(V)+advers
 | **W1.a** | Money-book seam + byte-identical pass-through stub | oracle byte-identical (money path unchanged) | W0 |
 | **W1.b** | Capability-keyed dispatch table + `register_units(key,impl)` | build + dispatch-table selftest green | W0 |
 | **W1.c** | HOST-CAPS seams (egress trust/SPKI, inbound JWS, SSE reframe) | build + seam tests; oracle byte-identical | W0 |
-| **W1.d** | HOT-ABI de-stub + drop-in `open_plane` loader + manifest claim-seal + cdylib SDK | loader loads a signed plane cdylib; token-auth proof passes; oracle byte-identical | W0 |
+| **W1.d** | HOT-ABI de-stub + drop-in `open_plane` loader + manifest claim-seal + cdylib SDK | loader loads a signed plane cdylib; the both-ways conformance witnesses pass (`plugin-loader/src/tests/{export,plane}_conformance_tests.rs`, #2 — the "token-auth proof" this row used to name has never been code); oracle byte-identical | W0 |
 | **W1.e** | busbar-core drain facades (per-step re-export) | build; steps relocatable in any order; oracle byte-identical | W0 |
 | **W1.GATE** | Seams both-ends complete, dormant | full oracle byte-identical; shipped path unchanged | W1.a-e |
 | **W2.a** | Lift dispatch onto ONE `teller::run_unit`; MCP proof FIRST | MCP oracle byte-identical on the unified loop | W1.GATE |
@@ -2525,8 +2535,23 @@ no plane invokes `export_plane_plugin!`, and the SDK's own module docs reference
 
 **So the plane kind meets universal rule (1) and fails universal rule (2)** — *"each plugin can be
 compiled into the binary OR dropped into the plugins/ folder"* (#11). A plane today cannot be dropped
-in. `token-auth` is cited as "the working proof of the model"; it is the proof for the AUTH kind, and
-no plane has repeated it.
+in. **And it is not alone: the spec used to say `token-auth` was "the working proof of the model" and
+"the proof for the AUTH kind". Both halves are false.** `token-auth` has never existed as code at any
+tag — it is a phrase from the 1.3.0 marketing blog post (`39fd06918`) naming a compile-OUT cargo
+feature, the module it named was deleted at `8f94c7f6b` (2026-07-22), and the spec re-minted the
+phrase at `d154d1ab6` (2026-08-21), one day after the v1.5.5 tag, with the meaning inverted from
+compile-time subtraction to dynamic-load proof. **The AUTH kind has no both-ways proof at any tag**:
+in v1.5.5 `auth-static-plugin` was `crate-type = ["cdylib"]`, which cannot be a Rust dependency, so
+its compiled-in half was never linked and never tested. There is no regression here — the proof the
+spec cited never existed. The tree's real both-ways witnesses are
+`crates/plugin-loader/src/tests/export_conformance_tests.rs` and `plane_conformance_tests.rs`, and
+**no plane crate has repeated the export fixture's trick**: `plane_conformance_tests` compares the
+linked `PLANE_DECL` against the `dlopen`ed one for the EXAMPLE fixture, while the five shipped plane
+crates invoke `export_plane_plugin!` zero times. Archaeology, with every search controlled against a
+known-present string: `docs/design/1.6.0-token-auth-archaeology.md`. The cost of giving AUTH a real
+witness — `dispatch_auth_enveloped`, then the `export_auth_plugin!` compiled-in twin, then `pub fn
+open`, then the dep line, then the test — is recorded on #2; `14a49131d` added the rlib and wrote the
+rule for all five steps: **"ADDING THE ARTIFACT IS NOT THE WITNESS."**
 
 **THE PART THAT MAKES THIS A RELEASE ITEM RATHER THAN A TODO:** acceptance gate **§11a makes "no
 0-caller ABI" a CUT GATE** — a condition on the release itself — **and no CI row reds on it.** The
