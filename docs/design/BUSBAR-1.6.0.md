@@ -1113,10 +1113,22 @@ The defect this exposes: an admin `amend_rate_history` request body may carry `"
 become 100x different money**, with no conversion and no audit of the scale change. Every other
 construction site in the repo is a hardcoded `CurrencyCode::USD`.
 
-Measured against the published tag: `CurrencyCode` appears in **0** files at `v1.5.5`,
-`amend_rate_history` does not exist there, and the admin `openapi.json` contains **0** occurrences
-of `"currency"`. The entire currency surface is a 1.6.0-only addition. Removing it therefore
-RESTORES 1.5.5 parity rather than risking it, and it is a C3 gain, not a C3 cost.
+Measured against the published tag: `CurrencyCode` appears in **0** files at `v1.5.5` and
+`amend_rate_history` does not exist there. Both are 1.6.0-only, so removing them restores parity.
+
+**CORRECTION — the third measurement in this paragraph was a false zero and is withdrawn.** It
+claimed the admin `openapi.json` carried 0 occurrences of `"currency"` at `v1.5.5`. The grep ran
+against `crates/busbar-core-admin/src/v1/json/openapi.json`, a path that does not exist at that
+tag — the crate was renamed. `git show v1.5.5:<missing-path>` produced nothing and `grep -c`
+reported 0. No positive control was run. At the real path,
+`crates/busbar/src/admin/v1/json/openapi.json`, `UsageView.currency` is present at `:2564` and is
+listed as REQUIRED at `:2590`. It is a published 1.5.5 response field and it STAYS; deleting it
+would have broken a shipped contract and moved the file away from the golden.
+
+The two facts are consistent, and the distinction is the owner's own: the published field is a
+DISPLAY LABEL on a read-time view — *"thats a display issue for user"* — while what #66 forbids is
+a currency TYPE on the money path. The label survives; the type is gone. #66 and the 1.5.5 wire
+contract do not conflict.
 
 Ruled NAY under standing money authority. The scale becomes one constant.
 
