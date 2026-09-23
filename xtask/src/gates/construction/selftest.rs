@@ -287,10 +287,22 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a>
             "token-sealed:admit-token-mint",
         ],
         ov,
+        // X-177: THIS CASE WAS ALREADY FAILING, AND WHAT IT WAS FAILING ABOUT WAS TRUE. The plant
+        // this case carries is the exact forgery the finding reproduces, and two of the three rows
+        // it covers went PASS under it — `narrowed_got` reported Green where Red was expected, so
+        // `cargo xtask gate construction --selftest` was red on the one case that holds the badge
+        // press. The case was right and the ROWS were wrong; the rows are widened now.
+        //
+        // The third string used to read "call site(s) of `AdmitToken::mint(`", which the sub-row's
+        // detail satisfied out of a HARD-CODED subject label rather than out of anything it
+        // scanned. It is now two strings against the same row: that its claim still NAMES the
+        // pre-#73 constructor, and that it reported the planted `AdmitToken::mint(` line (4) as an
+        // offender SITE — so the label can no longer be green on a symbol the scan cannot see.
         &[
             "`UnitToken::mint(` at crates/busbar-llm/src/zz_planted_token.rs",
             "call site(s) of `KernelSeal::acquire_for_kernel(`",
-            "call site(s) of `AdmitToken::mint(`",
+            "pre-#73 name `AdmitToken::mint(`",
+            "(ceiling 0): crates/busbar-llm/src/zz_planted_token.rs:4",
         ],
     ));
 

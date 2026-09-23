@@ -775,11 +775,18 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let allowed_root = need_str(c, "allowed_root", "token-sealed")?;
     let root = format!("{}/", allowed_root.trim_end_matches('/'));
     let max_sites = need_int(c, "max_sites", "token-sealed")?;
-    // EACH ROW OWNS A DISJOINT SET OF SITES: the two dedicated sub-rows below scan the same two
-    // symbols this list would, and one forged mint counted twice is not two proofs.
-    let delegated: Vec<String> = ["kernel_seal_pattern", "admit_token_mint_pattern"]
+    // EACH ROW OWNS A DISJOINT SET OF SITES: the two dedicated sub-rows below scan symbols this
+    // list would otherwise reach too, and one forged mint counted twice is not two proofs.
+    //
+    // THE DELEGATION IS BY SITE, NOT BY PATTERN STRING (X-177). It used to drop a `patterns` entry
+    // whose literal text equalled a sub-rule's unescaped pattern — a test that no entry has ever
+    // satisfied, and one that cannot work at all now that this rule also scans constructor
+    // FAMILIES: a family regex is never string-equal to the one spelling a sub-row owns, so the
+    // only way to keep the two sets disjoint is to ask, per line, whether a sub-row already claims
+    // it.
+    let delegated_rx: Vec<Regex> = ["kernel_seal_pattern", "admit_token_mint_pattern"]
         .into_iter()
-        .map(|k| need_str(c, k, "token-sealed").map(|s| s.replace('\\', "")))
+        .map(|k| need_str(c, k, "token-sealed").and_then(Regex::new))
         .collect::<Result<_, _>>()?;
 
     // Files that are the SPECIFICATION for this very scan rather than surface it scans (e.g. the
@@ -794,17 +801,48 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         })
     };
 
-    let mut offenders = Vec::new();
+    // THE SCAN SET IS LITERALS PLUS FAMILIES (X-177). `patterns` are exact spellings, escaped and
+    // word-anchored; `pattern_families` are REGEXES, because `Grant<C>::mint` and `Pass<S>::mint`
+    // are one generic constructor each over a sealed marker set, and a list of per-marker literals
+    // is blind to every marker nobody remembered to add to it.
+    let mut scans: Vec<(String, Regex)> = Vec::new();
     for pat in c.list_of("patterns") {
-        if delegated.contains(&pat) {
-            continue;
-        }
         let rx_pat = Regex::new(&word(&pat))?;
-        for (rel, l) in tree.grep(&rx_pat, true, None) {
+        scans.push((pat, rx_pat));
+    }
+    for pat in c.list_of("pattern_families") {
+        let rx_pat = Regex::new(&pat)?;
+        scans.push((pat, rx_pat));
+    }
+
+    // ONE SITE IS ONE FINDING. A line a literal and a family both name is a single forged mint, so
+    // the first scan to reach it labels it and the rest pass over.
+    let mut seen: std::collections::BTreeSet<(&str, usize)> = std::collections::BTreeSet::new();
+    let mut offenders = Vec::new();
+    for (pat, rx_pat) in &scans {
+        for (rel, l) in tree.grep(rx_pat, true, None) {
             if rel.starts_with(root.as_str()) || excluded(rel) {
                 continue;
             }
-            offenders.push(format!("`{pat}` at {rel}:{}", l.no));
+            if delegated_rx.iter().any(|d| d.is_match(l.code_bytes())) {
+                continue;
+            }
+            if !seen.insert((rel, l.no)) {
+                continue;
+            }
+            // NAME THE SPELLING, NOT THE SCANNER. A literal pattern IS its own match, so this is
+            // unchanged for `patterns`; a family pattern would otherwise print its regex, and
+            // "`(?<![A-Za-z0-9_])Grant::<[^<>]*>::mint(_bound)?\(` at x.rs:12" tells a reader
+            // which scanner fired rather than which token was forged.
+            // `get` rather than an index: the match bounds are byte offsets, and a gate that
+            // panics slicing a line is worse than one that falls back to naming its pattern.
+            let hit = rx_pat
+                .find_iter(l.code_bytes())
+                .first()
+                .and_then(|m| l.code.get(m.start..m.end))
+                .map(str::to_string)
+                .unwrap_or_else(|| pat.clone());
+            offenders.push(format!("`{hit}` at {rel}:{}", l.no));
         }
     }
     let current = offenders.len() as i64;
@@ -827,20 +865,28 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 
     let kernel_root = need_str(c, "kernel_root", "token-sealed")?;
     let kroot = format!("{}/", kernel_root.trim_end_matches('/'));
-    for (sub_id, pat_key, ceil_key, subject) in [
+    // THE SUBJECT IS READ BESIDE THE PATTERN, NEVER HARD-CODED HERE (X-177). These two strings used
+    // to be literals in this table, and `token-sealed:admit-token-mint` printed "`AdmitToken::mint(`
+    // is spelled only inside crates/busbar-kernel/src" while its pattern scanned for
+    // `Grant::<Admittance>::mint(` — the pre-#73 name the claim NAMED was the one spelling the row
+    // could not see. A row that asserts a property about a symbol it does not scan is worse than no
+    // row. `need_str` makes a missing subject a refusal, so the label cannot drift from the pattern
+    // again without the gate saying so.
+    for (sub_id, pat_key, ceil_key, subj_key) in [
         (
             "token-sealed:kernel-seal",
             "kernel_seal_pattern",
             "max_kernel_seal_sites",
-            "`KernelSeal::acquire_for_kernel(`",
+            "kernel_seal_subject",
         ),
         (
             "token-sealed:admit-token-mint",
             "admit_token_mint_pattern",
             "max_admit_token_mint_sites",
-            "`AdmitToken::mint(`",
+            "admit_token_mint_subject",
         ),
     ] {
+        let subject = need_str(c, subj_key, "token-sealed")?;
         let rx_pat = Regex::new(need_str(c, pat_key, "token-sealed")?)?;
         let sites: Vec<String> = tree
             .grep(&rx_pat, true, None)

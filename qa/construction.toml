@@ -432,6 +432,41 @@ a token, so a unit spelling Decision::proceed or Hold::open with its own token i
 the forgery surface is MINTING a token. That holds exactly as long as nothing outside the kernel can \
 spell a token constructor. Every such spelling elsewhere is a forged token."""
 patterns = ["Pass::mint(", "Grant::<WriteMoney>::mint(", "Grant::<Consumption>::mint(", "Grant::<Exit>::mint("]
+# ── WIDENED 2026-09-23 (X-177): THIS ROW NAMED FOUR OF TWENTY MARKERS AND CALLED THAT "SEALED" ───
+#
+# `patterns` above is a list of LITERAL spellings, one per capability somebody happened to write
+# down. But `Grant<C>::mint` and `Pass<S>::mint` are ONE GENERIC CONSTRUCTOR EACH (busbar-contract/
+# src/caps/token.rs) over a SEALED marker set -- ten capabilities in caps/capability.rs, ten steps
+# in caps/step.rs. A per-marker literal list is therefore stale the moment a marker is added, and
+# this one was stale on arrival: measured on this tree, the literals reached four markers and left
+# SIX CAPABILITIES (Dial, DurableWrite, KeyHandle, Sign, AdminVerb, Recover), the ENTIRE turbofish
+# `Pass::<S>::mint(` form the kernel itself writes 31 times, the FULLY-QUALIFIED
+# `Grant::<busbar_contract::caps::C>::mint(` form it writes 42 times, and `mint_bound` in a place
+# no row of this gate looked at. A forged mint spelled any of those ways sat under a green row.
+#
+# `pattern_families` are REGEXES (not escaped literals) and they match the constructor FAMILY, so
+# an eleventh capability is covered on the day it is declared rather than on the day somebody
+# remembers this file. They are scanned with the same `allowed_root`, `exclude_files` and
+# max_sites=0 ceiling; nothing here is loosened, and a site a literal and a family both reach is
+# counted once.
+pattern_families = [
+  # The two generic constructors, in every spelling the tree actually uses: bare marker
+  # (`Grant::<Dial>`), fully-qualified marker (`Grant::<busbar_contract::caps::Dial>`), and both
+  # the unbound `mint(` and the call-bound `mint_bound(` (#74).
+  '(?<![A-Za-z0-9_])Pass::<[^<>]*>::mint(_bound)?\(',
+  '(?<![A-Za-z0-9_])Grant::<[^<>]*>::mint(_bound)?\(',
+  # The inferred-marker spelling of the same two, which `patterns` covers only for `Pass::mint(`.
+  '(?<![A-Za-z0-9_])(Pass|Grant)::mint_bound\(',
+  '(?<![A-Za-z0-9_])Grant::mint\(',
+  # THE PRE-#73 TOKEN ZOO'S CONSTRUCTORS. These names are dead (caps/token.rs documents the
+  # unification) and `cargo xtask gate seal-witness` bans the identifiers outright -- but this row
+  # claims "the Teller's tokens are minted only inside the Teller", and a resurrected zoo
+  # constructor called from outside the kernel is exactly that claim being false. Two rows holding
+  # one property from two directions is the point; a name that only ONE row can see is not.
+  # `AdmitToken::mint(` is deliberately absent: it belongs to the admit-token-mint sub-row below,
+  # which is the row whose own claim text names it.
+  '(?<![A-Za-z0-9_])(UnitToken|TrustToken|UsageToken|LedgerToken|DurabilityToken|EgressAuthToken|TransportKeyToken|AdminToken|RecoveryToken|ExitToken)::mint(_bound)?\(',
+]
 allowed_root = "crates/busbar-kernel/src"
 max_sites = 0
 # The RULE-SPEC DATA for the hold-discipline scan below, not surface this rule scans: its own header
@@ -449,8 +484,19 @@ exclude_files = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 # named seam, so the mint itself should never be spelled anywhere else -- it is scanned only by the
 # admit-token-mint sub-rule below, not by the `patterns` list above, so each seal-site symbol has
 # exactly one scanner.
+#
+# THAT LAST SENTENCE WAS THE BUG (X-177). "Scanned only by the sub-rule, not by the patterns list"
+# is a correct description of an intent and was a false description of the code: the sub-rule
+# scanned `Grant::<Admittance>::mint\(` and NOTHING scanned the bare-marker variants, the
+# fully-qualified variant, `mint_bound`, or the pre-#73 `AdmitToken::mint(` that the sub-row's own
+# printed claim named. A symbol assigned to one mechanism and matched by neither is covered by
+# neither, and the row said PASS about it. The patterns below are widened to the same family shape
+# `pattern_families` above uses; `*_subject` is the text the row PRINTS, read from beside the
+# pattern it describes so a claim can no longer name a symbol its scan cannot see.
 kernel_seal_pattern = 'KernelSeal::acquire_for_kernel\('
-admit_token_mint_pattern = 'Grant::<Admittance>::mint\('
+kernel_seal_subject = "`KernelSeal::acquire_for_kernel(`"
+admit_token_mint_pattern = '(?<![A-Za-z0-9_])(Grant::<([A-Za-z0-9_]+::)*Admittance>|AdmitToken)::mint(_bound)?\('
+admit_token_mint_subject = "the arrival-hold mint (`Grant::<Admittance>::mint[_bound](`, and its pre-#73 name `AdmitToken::mint(`)"
 kernel_root = "crates/busbar-kernel/src"
 max_kernel_seal_sites = 0
 max_admit_token_mint_sites = 0
