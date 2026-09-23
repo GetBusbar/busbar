@@ -1148,6 +1148,45 @@ The crate-local testkits are NOT this and are KEPT: `busbar-a2a` (213 LOC), `bus
 `busbar-oauth2` (65), `busbar-llm` (44). A plugin testing itself is self-contained and correct —
 the same principle as self-naming.
 
+## Owner rulings — 2026-09-23, second set
+
+| # | Ruling | Consequence |
+|---|---|---|
+| 8 | **The 1.5.5 under-billing is CORRECTED in 1.6.0, with no customer restatement.** | C4 wins over C3 on the 42 affected cells. |
+| 9 | **Land the ABI rider. C2 is real, not amended down.** | §11a stands as written; the drop-in fold gets built. |
+| 10 | **No date. The plan is for DONE.** Owner: *"forget a date, i want a plan for DONE"* and *"it takes what it takes."* | The list is ordered by dependency, not by what fits before a deadline. |
+
+### On ruling 8 — why no restatement is the correct answer, not the convenient one
+
+The register entry `G-1`, owner-signed 2026-09-07, records that published 1.5.5 **under**-counted
+every grounded / server-tool turn on one dialect by exactly one term — 32 of 222 tokens, 14%.
+`M-3`, `PR2-D4` and `D-3` are the same shape. 42 cells total, all marked `kind: "breaking"` by the
+register itself.
+
+The direction is what settles the disclosure question. Customers were charged LESS than the rate
+card specified, not more. Nobody was overcharged, so there is no restatement owed to anyone — the
+loss was busbar's, and it stops in 1.6.0. Had the sign been the other way this ruling would have to
+be the opposite, and that asymmetry is the point: a bank auditor asks who is short, not whether the
+number moved.
+
+This is the first place C3 and C4 have been in open contradiction, and the contradiction was real
+rather than a misreading: C3 demands 1.6.0 serve the same bytes 1.5.5 served, and those bytes are
+wrong. **C4 outranks C3 where they meet.** The 42 cells become signed C3 exceptions carrying this
+ruling as their reason, and `accepted-differences.json` grows a sign-off field to hold it (item 11).
+
+### On ruling 9 — what "C2 is real" costs
+
+`open_export` has zero callers anywhere in the tree. `open_plane` has zero production callers. The
+shipped binary never mentions `load_plane` or `DynPlane`. All five real planes are built on the
+native Rust `PlaneDecl` (`plane/registry.rs:811`), not the `#[repr(C)]` ABI one
+(`busbar-plugin/src/hot/decl.rs:131`) — which is used by exactly one crate, the example.
+
+So "every plugin compiles in OR drops in" is today true of zero kinds in production. The tracker's
+H6 names the two honest outcomes — land the rider, or amend §11a — and says shipping while calling
+it satisfied is not one of them. The owner has chosen the rider: the C-ABI-to-native decl adapter,
+the loop routed through `PlaneHostVtable`, one real plane built as a `cdylib`, and `open_plane`
+called from the composition root. Transport gets the same treatment under item 6.
+
 ## Anti-recurrence
 - Every settled decision is a Part 2 row with an enforcing gate; drift → RED, not re-litigation.
 - THIS FILE is authoritative — Parts 1, 3, 2, 5 in that order; all other docs reconciled to it or
