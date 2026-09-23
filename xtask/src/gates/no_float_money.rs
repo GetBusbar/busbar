@@ -237,9 +237,27 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
         ],
         floor: 28,
     },
+    // THE ONE FOLD THIS GROUP WAS BUILT FOR ACTUALLY HAPPENED, AND THE GROUP DID NOT MOVE WITH IT.
+    // `crates/busbar-mcp-codec/src` was this group's first home and the crate dissolved at
+    // `5fbd891e0` ("fold(#39): busbar-mcp-codec dissolves — the dialect to the plane, the registry
+    // row to the engine"). Its twelve files went to exactly three places, named in that commit's own
+    // body: the WIRE DIALECT to `crates/busbar-plane-mcp` (already a home here), the REGISTRY ROW
+    // and the two cells to `crates/busbar-mcp/src/codec/`, and the DURABLE ROWS — `McpCallRecord`,
+    // `McpDemotionRow` and their store helpers — to `crates/busbar-mcp/src/record.rs`. The last two
+    // were in no money scan set at all, so for the life of this branch a count read defaulted to
+    // zero in the MCP call record could not have produced a RED for any reason.
+    //
+    // The group's own doc says a fold "that moves them OUT of every home this list knows about is a
+    // RED that names the area" — and it was, correctly: 11 files against a floor of 12. The repair
+    // the red asked for is this one, and it is the two destinations the fold commit names, not a
+    // lowered floor.
     CountRoot {
-        area: "the tool codec and plane",
-        homes: &["crates/busbar-mcp-codec/src", "crates/busbar-plane-mcp/src"],
+        area: "the tool codec, its records and the plane",
+        homes: &[
+            "crates/busbar-mcp/src/codec",
+            "crates/busbar-mcp/src/record.rs",
+            "crates/busbar-plane-mcp/src",
+        ],
         floor: 12,
     },
     CountRoot {
@@ -468,9 +486,23 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
 /// pinning one path would red the gate for a relocation and pinning none would let the ban follow
 /// the file out of the tree. The rule is: scan every home that is there, and refuse only when none
 /// of them is.
+///
+/// AND THAT TOLERANCE IS WHY THE SECOND MOVE LEFT A DEAD ENTRY BEHIND FOR FREE. `cx.read` on a home
+/// that is not there is a `continue`, so `crates/busbar-kernel-ledger/src/records.rs` sat in this
+/// list naming nothing and cost the row no verdict at all. The move is on the record, not inferred:
+///
+/// ```text
+/// $ git log --diff-filter=R --name-status -- crates/busbar-kernel-ledger/src/records.rs
+/// 1059d3c36  R100  crates/busbar-kernel-ledger/src/records.rs -> crates/busbar-contract/src/records.rs
+/// ```
+///
+/// `R100` — a byte-identical rename, into the home that is already first on this list. So the entry
+/// is struck rather than repointed: its destination is enumerated, and the ledger crate is not a
+/// persisted-record home any more by a second measure as well — it derives `Serialize` on nothing
+/// (`grep -rn 'derive(.*Serialize' crates/busbar-kernel-ledger/src` is empty against a control of 19
+/// hits in the contract's `records.rs`). Nothing this list used to see is unseen now.
 const PERSISTED_RECORD_HOMES: &[&str] = &[
     "crates/busbar-contract/src/records.rs",
-    "crates/busbar-kernel-ledger/src/records.rs",
     "crates/api/src/usage_migration.rs",
     "crates/plugin-loader/src/legacy_usage.rs",
 ];
