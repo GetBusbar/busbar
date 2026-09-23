@@ -77,6 +77,14 @@ pub mod topology;
 #[cfg(feature = "runtime")]
 pub mod mount;
 
+/// THIS PLANE'S OWN TEST-KIT — the in-memory engine-host double, the loopback HTTP provider and the
+/// metrics capture this crate's batteries drive. A plane tests ITSELF (1.6.0 Locked Decision #33:
+/// "the kernel never tests a plugin"), so these doubles live HERE rather than in the deleted
+/// `busbar_kernel::testkit`. Behind `runtime` for the same reason `mount`/`topology` are — every cell
+/// that drives them is runtime-gated, and the doubles name the async/metrics deps that feature pulls.
+#[cfg(all(feature = "runtime", any(test, feature = "test-support")))]
+pub mod testkit;
+
 /// THE `PLANE_DECL.build_runtime` VALUE — wired to the real runtime constructor
 /// ([`runtime::build_runtime`]) behind the `runtime` feature, `None` when the feature is off so the
 /// default `PLANE_DECL` is byte-unchanged. Split by `cfg` because the

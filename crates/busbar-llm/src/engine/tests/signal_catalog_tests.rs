@@ -83,7 +83,7 @@ async fn run_with_declared(signals: Vec<Signal>) -> Vec<busbar_api::SignalBag> {
 /// Run `decide_policy_order` once against an ALREADY-BUILT one-lane app, returning the
 /// per-candidate signal bags the policy observed. Split out of [`run_with_declared`] so a caller can
 /// hand in any already-built snapshot rather than only the one the `TestApp` fixture produces.
-async fn run_decide<A: busbar_kernel::testkit::BuiltAppSeam + ?Sized>(
+async fn run_decide<A: busbar_kernel::test_support::BuiltAppSeam + ?Sized>(
     app: &std::sync::Arc<A>,
 ) -> Vec<busbar_api::SignalBag> {
     let (host, rt) = crate::engine::test_host_rt(app);

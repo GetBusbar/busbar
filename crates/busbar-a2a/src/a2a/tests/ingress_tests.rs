@@ -10,7 +10,7 @@
 
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
-use busbar_kernel::testkit::engine_kit_plus::EngineAppPlus;
+use busbar_kernel::test_support::engine_kit_plus::EngineAppPlus;
 use busbar_plugin_loader::RouteAuth;
 
 // THE ONE `unpinned_agent`, not a third field-for-field copy of it. `AgentDefCfg` gaining a field

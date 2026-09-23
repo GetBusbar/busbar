@@ -43,8 +43,8 @@ fn minimal_app() -> Arc<App> {
 /// the way a composition root states it, and only this one takes the registry and the table as the
 /// neutral kit handles, so a fixture never has to name the engine's `GovState`/`CostModel`.
 fn governed_minimal_app(
-    gov: std::sync::Arc<dyn busbar_kernel::testkit::engine_kit::GovKit>,
-    cost: std::sync::Arc<dyn busbar_kernel::testkit::engine_kit::CostKit>,
+    gov: std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::GovKit>,
+    cost: std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::CostKit>,
 ) -> Arc<App> {
     TestApp::new()
         .governance_kit(gov)
@@ -145,7 +145,7 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
 /// can pass a matching GovCtx to `finish`. Just assembles the App + key; it performs no charge.
 fn governed_app_with_key() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     // 30 cents flat per request, no per-token fee (the fee now lives on the CostModel).
@@ -383,7 +383,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     crate::testkit::install_test_seams();
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::governance::SECS_PER_DAY;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
@@ -477,7 +477,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
     crate::testkit::install_test_seams();
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::governance::SECS_PER_DAY;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
@@ -583,7 +583,7 @@ use std::sync::Arc as StdArc;
 
 /// Spin up the real router over a loopback listener; returns (addr, abort-handle).
 async fn serve(app: StdArc<App>) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -2120,7 +2120,7 @@ async fn test_served_request_increments_hot_path_metrics() {
 #[tokio::test]
 async fn test_role_bound_principal_governed_like_a_virtual_key() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
     let state = StdArc::new(MockServerState::new());
@@ -3272,7 +3272,7 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
 /// request to any other pool is pool-rejected with 403). Returns the key for the GovCtx.
 fn governed_app_pool_restricted() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -3520,7 +3520,7 @@ fn assert_leak_free(body: &str, key_id: &str, pool: &str) {
 /// Governance-enabled App whose only key has a zero budget cap, so it is immediately over budget.
 fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -3566,7 +3566,7 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
 /// first request is rate-limited (keys carry no caps; the group is the limiter).
 fn governed_app_rate_limited() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -5059,7 +5059,7 @@ async fn governed_pool_acl_router(
     protocol: &'static str,
     provider: &str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     // The lane needs a base_url, but the pool-ACL 403 short-circuits before any forward, so an
     // unreachable upstream is fine.
@@ -5320,7 +5320,7 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
 #[tokio::test]
 async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
@@ -5416,7 +5416,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
 #[tokio::test]
 async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
@@ -5608,7 +5608,7 @@ async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
 #[tokio::test]
 async fn test_adhoc_governance_pool_acl_403_via_router() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
     let store = StdArc::new(MemoryStore::new());
@@ -5931,7 +5931,7 @@ async fn governed_limit_router(
     over: &'static str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = StdArc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -6292,7 +6292,7 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
 #[allow(clippy::field_reassign_with_default)]
 fn governed_app_group_blocked() -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -6398,7 +6398,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
     crate::testkit::install_test_seams();
     busbar_kernel::metrics::init();
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -6467,7 +6467,7 @@ fn governed_app_downgrade(
     allowed_pools: Option<Vec<String>>,
 ) -> (Arc<App>, busbar_api::VirtualKey) {
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -6555,7 +6555,7 @@ async fn test_budget_exhaustion_downgrades_pool() {
 async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
     crate::testkit::install_test_seams();
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT

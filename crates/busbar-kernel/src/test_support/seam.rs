@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE NEUTRAL TEST-APP SEAM — the plane test-kits' one doorway onto the engine's test fixture,
-//! so a plane crate builds/drives the test App WITHOUT naming `busbar_kernel::state::App` or
-//! `busbar_kernel::test_support::TestApp`.
+//! THE TEST-APP SEAM — the object-safe doorway onto the engine's OWN test fixture, so a caller
+//! builds/drives the test App without naming `busbar_kernel::state::App` or
+//! `busbar_kernel::test_support::TestApp` concretely.
 //!
-//! Before this seam, `busbar-mcp`/`busbar-a2a`'s `testkit` reached BACKWARDS into
-//! `busbar_kernel::test_support::TestApp` — a plane crate naming core implementation, the exact side
-//! channel the neutral-purity lint forbids. The concrete fixture still lives in core (it builds a
-//! `busbar_kernel::state::App`, which is core-central), but core now IMPLEMENTS this trait for it and
-//! the plane test-kits consume only the trait — an opaque handle they drive through the same neutral
-//! install seams (`install_plane_runtime`, `mount_plane`/`admit_plane`, the type-erased scratch, the
-//! build-time finalizer) core's own `build()` reads. No `&App`, no `busbar_kernel::` name crosses.
+//! IT IS NOT A "TESTKIT". This module used to live at `busbar_kernel::testkit` — a name that claimed
+//! the kernel ships a test product FOR a plugin. 1.6.0 Locked Decision #33 says that thing does not
+//! exist ("the kernel never tests a plugin"), so the name is gone and what remains sits where it
+//! belongs: inside `test_support`, the kernel's own scaffolding, alongside the `TestApp` it is a view
+//! onto. The concrete fixture is core's (it builds a `busbar_kernel::state::App`, which is
+//! core-central); core IMPLEMENTS this trait for it, and a caller drives the handle through the same
+//! neutral install seams (`install_plane_runtime`, `mount_plane`/`admit_plane`, the type-erased
+//! scratch, the build-time finalizer) core's own `build()` reads.
 //!
 //! Object-safe by construction (so a finalizer is a `Box<dyn FnOnce(&mut dyn TestAppSeam)>` and a
 //! plane can drive the handle as `&mut dyn TestAppSeam`): the generic scratch accessors live on the
@@ -22,35 +23,6 @@ use crate::plane::PlaneAdmission;
 use crate::plane_host::{EngineHost, PlaneSlots};
 use std::any::Any;
 use std::sync::Arc;
-
-/// The neutral warn-capture tracing layer a plane's tests assert diagnostics through — the fixture
-/// that used to be reachable only as `busbar_kernel::test_support::warn_capture`. It is a pure
-/// `tracing_subscriber::Layer`, so it moved into the values crate with the diagnostics it asserts on
-/// and is re-exported here: `busbar_kernel::testkit::warn_capture::WarnCapture` resolves as before.
-pub use busbar_substrate_values::testkit::warn_capture;
-
-/// The in-memory [`EngineHost`] a plane's tests drive when no engine `App` is in their closure at all
-/// (see the module docs): scripted hook gates/rewrites, breaker cells and a per-key ledger behind the
-/// same seam production reaches.
-pub mod fixture_host;
-
-/// A loopback HTTP provider that records what it was dialed with, for a plane's egress legs.
-pub mod loopback_http;
-
-/// An in-memory `metrics` recorder + exposition render, for asserting a plane's counter emits.
-pub mod metrics_capture;
-
-/// THE ENGINE TEST-KIT (see the module docs): the object-safe provider a plane's test binary drives
-/// the whole engine fixture through — building the test App, minting keys, the call log and audit
-/// ring, the store-plugin fixture, and the built App's router / host / handle / breaker cells —
-/// naming no engine item. The engine implements it; a plane's test tree binds it in one function.
-pub mod engine_kit;
-
-/// THE ENGINE TEST-KIT, WIDENED (see the module docs): the mount table, audience bindings, route
-/// auth bars and forced breaker cells of a built App; the public URL and candidate pools of the
-/// builder; the metrics exposition, TLS provider, built-in secret resolver and named-map chassis
-/// facts of the provider. Same one-function binding as `engine_kit`.
-pub mod engine_kit_plus;
 
 /// THE BUILT-APP SEAM — the second half of the fixture doorway. [`TestAppSeam`] is what a plane drives
 /// while the test App is being BUILT; this trait is what it drives on the App that came OUT of
@@ -91,7 +63,7 @@ pub trait BuiltAppSeam: PlaneSlots {
 }
 
 /// Free-fn sugar over [`BuiltAppSeam::engine_host_of`], so a test reads
-/// `testkit::engine_host(&app)` where it used to read `busbar_kernel::plane_host::engine_host(&app)`.
+/// `test_support::engine_host(&app)` where it used to read `busbar_kernel::plane_host::engine_host(&app)`.
 pub fn engine_host<A: BuiltAppSeam + ?Sized>(app: &Arc<A>) -> Arc<dyn EngineHost> {
     A::engine_host_of(app)
 }
@@ -103,7 +75,7 @@ pub fn engine_host_value<A: BuiltAppSeam + ?Sized>(
     A::engine_host_value_of(Arc::clone(app))
 }
 
-/// Free-fn sugar over [`BuiltAppSeam::router_of`], so a test reads `testkit::build_router(app)` where
+/// Free-fn sugar over [`BuiltAppSeam::router_of`], so a test reads `test_support::build_router(app)` where
 /// it used to read `busbar_kernel::build_router(app)`.
 pub fn build_router<A: BuiltAppSeam + ?Sized>(app: Arc<A>) -> axum::Router {
     A::router_of(app)

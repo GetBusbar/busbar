@@ -226,3 +226,9 @@ impl TestAppSeam for AppBuilder {
         self.inner.set_plane_defs_any(plane_key, defs)
     }
 }
+
+// ── THE ENGINE'S OWN IMPLEMENTATION ──────────────────────────────────────────────────────────────
+// Same fold as `engine_kit`: trait and the engine's implementation of it are ONE module under
+// `test_support`, the kernel's own scaffolding, rather than a `testkit` the kernel pretends to ship
+// for a plugin (1.6.0 Locked Decision #33).
+mod core_impl;

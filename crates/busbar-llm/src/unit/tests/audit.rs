@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use busbar_contract::caps::KernelSeal;
 use busbar_kernel::proxy::reqlog::{RequestRecord, REQUESTS};
-use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 use busbar_store_memory::MemoryStore;
 
 /// The one operation class these fixtures seal, as a plane names its own.

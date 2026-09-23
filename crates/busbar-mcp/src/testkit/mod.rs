@@ -6,7 +6,7 @@
 //!
 //! Before the plane split, `TestApp` in busbar-core built the MCP resource/runtime itself (naming
 //! `crate::mcp::*` back INTO core through the `#[path]` dual-compile). Now those builder methods live
-//! here as an extension trait over the neutral `busbar_kernel::testkit::TestAppSeam` (which core
+//! here as an extension trait over the neutral `busbar_kernel::test_support::TestAppSeam` (which core
 //! implements for its `TestApp`), and they lower to the real, externally-linked `busbar-mcp` crate
 //! through core's neutral install seams
 //! (`install_plane_runtime`, `mount_plane`/`admit_plane`, `set_container_hooks`, `on_built`).
@@ -15,10 +15,15 @@
 //! accumulating into a per-plane [`McpScratch`] stashed in `TestApp`'s type-erased scratch, plus ONE
 //! finalizer that runs at the top of `build()` and turns that accumulation into a real plane.
 
+/// A loopback HTTP provider that records what it was dialed with, for this plane's sampling /
+/// upstream legs. Carried HERE, on the plane, because a plane tests itself: the kernel ships no
+/// scaffolding for a plugin (1.6.0 Locked Decision #33).
+pub mod loopback_http;
+
 use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::config::{McpServerDefCfg, ToolsCfg};
 use crate::mcp::{McpCfg, McpResource, McpRuntime};
-use busbar_kernel::testkit::{TestAppSeam, TestAppSeamExt};
+use busbar_kernel::test_support::{TestAppSeam, TestAppSeamExt};
 use std::sync::Arc;
 
 /// The MCP plane's key in `TestApp`'s scratch map — the same string as `PLANE_DECL.key`.

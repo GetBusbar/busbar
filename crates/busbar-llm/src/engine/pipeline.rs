@@ -33,7 +33,7 @@ use busbar_substrate_values::diagnostics::{
 /// that construct a request from raw bytes.
 // App-retype WEDGE 3 (THE FLIP): the two bytes-in, key-less/keyed TEST-ONLY convenience entries live
 // in a `#[cfg(test)] mod` and take the built test App GENERICALLY, through the neutral built-app seam
-// (`busbar_kernel::testkit::BuiltAppSeam`, which core implements for its `App`) — so the ~81 test
+// (`busbar_kernel::test_support::BuiltAppSeam`, which core implements for its `App`) — so the ~81 test
 // call sites are unchanged and nothing here names a core type. Each mints the neutral `host`/`rt` the
 // production forward path threads (one `engine_host` Arc + the alloc-free `native_runtime_arc` slot
 // read) and delegates to the production `forward_with_pool_parsed`. Production ingress never routes
@@ -46,7 +46,7 @@ pub(crate) use test_forward_entry::{forward_with_pool, forward_with_pool_keyed};
 mod test_forward_entry {
     use super::*;
 
-    use busbar_kernel::testkit::BuiltAppSeam;
+    use busbar_kernel::test_support::BuiltAppSeam;
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn forward_with_pool<A: BuiltAppSeam + ?Sized>(
@@ -97,7 +97,7 @@ mod test_forward_entry {
         client_fwd: Vec<(HeaderName, axum::http::HeaderValue)>,
     ) -> Response {
         // Mint the neutral host/rt the production path threads (see the module note).
-        let host = busbar_kernel::testkit::engine_host(app);
+        let host = busbar_kernel::test_support::engine_host(app);
         let rt = crate::engine::native_runtime_arc(host.as_ref());
         // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the
         // production entry — identical `LazyBody::parse` guard + parser).

@@ -450,3 +450,16 @@ pub trait EngineTestKit: Send + Sync {
     /// Open the example store plugin over the ABI with `cfg` — a fresh dlopen per call (a restart).
     fn open_store_plugin(&self, cfg: &str) -> Arc<dyn Store>;
 }
+
+// ── THE ENGINE'S OWN IMPLEMENTATION ──────────────────────────────────────────────────────────────
+// The trait above and the engine's implementation of it are ONE module (`test_support::engine_kit`),
+// not two. They used to be two — the trait sat in a `busbar_kernel::testkit` module that advertised
+// itself as a product the kernel ships FOR a plugin, which 1.6.0 Locked Decision #33 ("the kernel
+// never tests a plugin") says does not exist. The name is gone; what the kernel actually has is its
+// OWN test scaffolding, and it lives in `test_support` under its own name.
+mod core_impl;
+pub use core_impl::{CoreEngineKit, CORE_ENGINE_KIT};
+// The two seam→concrete lowerings the fixture builder itself calls (`TestApp::cost_kit` /
+// `TestApp::gov_kit`), kept crate-internal: they hand back core's own `CostModel` / `GovState`, which
+// is not something a consumer of the kit ever names.
+pub(crate) use core_impl::{cost_model, gov_state};

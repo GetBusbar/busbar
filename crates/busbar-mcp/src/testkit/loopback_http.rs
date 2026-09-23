@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A LOOPBACK HTTP "PROVIDER" for plane tests: a real listener on `127.0.0.1` that answers the
-//! queued replies and RECORDS what it was dialed with (path, headers, body), so a plane's egress leg
+//! A LOOPBACK HTTP "PROVIDER" for THIS plane's tests: a real listener on `127.0.0.1` that answers the
+//! queued replies and RECORDS what it was dialed with (path, headers, body), so the MCP sampling leg
 //! is exercised over the production request path and the test asserts on the bytes the upstream
-//! actually saw. The neutral twin of the mock server core's own test support carries, so a plane crate
-//! drives a loopback provider without naming `busbar_kernel::test_support`.
+//! actually saw. A plane tests ITSELF (1.6.0 Locked Decision #33, "the kernel never tests a plugin"),
+//! so this double lives on the plane rather than in the deleted `busbar_kernel::testkit` — the voice
+//! plane carries its own copy for the same reason.
 
 use axum::{
     body::Body,

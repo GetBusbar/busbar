@@ -4,7 +4,7 @@
 //! the stream-end tap runs once, with no usage to hand it.
 use super::{forward_with_pool, UsageSink};
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_kernel::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
+use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, TestAppKit};
 use std::sync::Arc;
 
 /// An OpenAI chat SSE stream with one content delta and a stop, and NO usage chunk.

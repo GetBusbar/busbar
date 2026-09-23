@@ -17,7 +17,7 @@ use super::{translate_response_cross_protocol, BudgetSpendGuard};
 use crate::engine::AppEngineExt as _;
 use crate::engine::TapCell;
 use busbar_kernel::governance::NewKeySpec;
-use busbar_kernel::testkit::engine_kit::{CostKit, EngineTestKit as _, GovKit};
+use busbar_kernel::test_support::engine_kit::{CostKit, EngineTestKit as _, GovKit};
 use busbar_store_memory::MemoryStore;
 use std::sync::Arc;
 

@@ -2,19 +2,19 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ENGINE'S IMPLEMENTATION of the widened engine test-kit seam
-//! (`busbar_kernel::testkit::engine_kit_plus`), on the SAME fixture types the base kit is
+//! (`busbar_kernel::test_support::engine_kit_plus`), on the SAME fixture types the base kit is
 //! implemented for ([`CoreEngineKit`], `TestApp`, `App`): every verb is a thin delegate to the fixture
 //! builder, the built App's own tables (`planes`, `plane_breakers`, the data route table view) or the
 //! process-wide service (`metrics::render`, the prometheus exporter, `tls::install_crypto_provider`,
 //! the built-in secret resolver, the named-map chassis) a plane's tests used to name directly. A
-//! plane's test tree binds [`CORE_ENGINE_KIT`](super::engine_kit::CORE_ENGINE_KIT) once as
+//! plane's test tree binds [`CORE_ENGINE_KIT`](crate::test_support::engine_kit::CORE_ENGINE_KIT) once as
 //! `&'static dyn EngineTestKitPlus` and reaches both kits through it.
 
-use super::engine_kit::CoreEngineKit;
-use super::TestApp;
+use crate::test_support::engine_kit::CoreEngineKit;
+use crate::test_support::TestApp;
 use busbar_api::SecretResolve;
 use busbar_kernel::plane::PlaneAdmission;
-use busbar_kernel::testkit::engine_kit_plus::{
+use super::{
     AppBuilder, EngineAppPlus, EngineTestKitPlus, NamedMapSectionFacts, TestAppKitPlus,
 };
 use busbar_plugin::cold::endpoint::RouteAuth;

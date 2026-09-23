@@ -95,10 +95,10 @@ fn sign_bedrock_request(
 }
 
 /// Local helper: serve a router on an ephemeral port, returning (addr, join handle).
-async fn dp_serve<A: busbar_kernel::testkit::BuiltAppSeam>(
+async fn dp_serve<A: busbar_kernel::test_support::BuiltAppSeam>(
     app: std::sync::Arc<A>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -107,11 +107,11 @@ async fn dp_serve<A: busbar_kernel::testkit::BuiltAppSeam>(
 
 /// A governance engine (admin token set) with ONE enabled, pool-`pa` virtual key. Returns (gov, secret).
 fn dp_gov_with_key() -> (
-    std::sync::Arc<dyn busbar_kernel::testkit::engine_kit::GovKit>,
+    std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::GovKit>,
     String,
 ) {
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -201,7 +201,7 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -307,7 +307,7 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
 async fn test_disabled_virtual_key_is_rejected_401() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
@@ -371,7 +371,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         .governance_kit(gov)
         .build();
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -438,7 +438,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
 async fn test_governance_accepts_vendor_carriers_and_native_401() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
@@ -504,7 +504,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
         .governance_kit(gov)
         .build();
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -581,7 +581,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
 async fn test_governance_revoked_signed_token_key_rejected() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
@@ -628,7 +628,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
         .governance_kit(gov.clone())
         .build();
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -684,7 +684,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
 async fn test_governance_inert_without_admin_token_static_token_admitted() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
@@ -732,7 +732,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
         .governance_kit(gov)
         .build();
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -783,7 +783,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
 async fn test_governance_inert_without_admin_token_open_relay_admits() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
@@ -825,7 +825,7 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
         .governance_kit(gov)
         .build();
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -854,7 +854,7 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
 async fn test_governance_active_with_admin_token_enforces_minted_key() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
@@ -918,7 +918,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
         .governance_kit(gov)
         .build();
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -978,7 +978,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use busbar_api::{Store, VirtualKey};
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
@@ -1053,7 +1053,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
         .governance_kit(gov)
         .build();
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1113,7 +1113,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
 async fn test_active_governance_persisted_key_is_enforced() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use serde_json::json;
     use std::sync::Arc;
@@ -1166,7 +1166,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
         .governance_kit(gov)
         .build();
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1302,7 +1302,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
         "open chain admits regardless of the presented vkey"
     );
     // PURE ANONYMOUS: the voluntarily-presented key was ignored → its ledger recorded no spend.
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(1);
     let spend = gov
         .usage_for(cost.as_ref(), &key_id, busbar_kernel::store::now())
@@ -1408,7 +1408,7 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
     let state = std::sync::Arc::new(MockServerState::new());

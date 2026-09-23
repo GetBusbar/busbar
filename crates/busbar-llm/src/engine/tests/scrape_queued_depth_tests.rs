@@ -7,7 +7,7 @@
 
 use crate::engine::AppEngineExt as _;
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_kernel::testkit::BuiltAppSeam as _;
+use busbar_kernel::test_support::BuiltAppSeam as _;
 
 const POOL_QUEUED: &str = "busbar_pool_queued";
 

@@ -358,7 +358,7 @@ impl busbar_kernel::plane_host::EngineTablesView for NativeRuntime {
 /// threads `host: &Arc<dyn EngineHost>` + resolves `rt` via [`native_runtime_arc`] and builds
 /// [`EngineTables::new`]. This `&App` extension survives ONLY for the many tests that hold a `TestApp`
 /// and read `app.engine_tables()`, so the trait is `cfg(test)`-ONLY, and its impl is BLANKET over the
-/// neutral built-app seam (`busbar_kernel::testkit::BuiltAppSeam`) rather than over core's `App`,
+/// neutral built-app seam (`busbar_kernel::test_support::BuiltAppSeam`) rather than over core's `App`,
 /// so even this crate's test scope names no core type.
 #[cfg(test)]
 pub(crate) trait AppEngineExt {
@@ -377,7 +377,7 @@ pub(crate) trait AppEngineExt {
     fn llm_runtime_mut(&mut self) -> &mut NativeRuntime;
 }
 
-// The impl is BLANKET over the neutral built-app seam (`busbar_kernel::testkit::BuiltAppSeam`,
+// The impl is BLANKET over the neutral built-app seam (`busbar_kernel::test_support::BuiltAppSeam`,
 // which core implements for its `App`), so this file names no core type even in test scope: the
 // tests hold whatever `Arc<A>` the fixture's `build()` handed back and read `app.engine_tables()` /
 // `app.llm_runtime_mut()` through the trait, exactly as before.
@@ -388,7 +388,7 @@ pub(crate) use app_engine_ext_impl::test_host_rt;
 #[cfg(test)]
 mod app_engine_ext_impl {
     use super::*;
-    use busbar_kernel::testkit::BuiltAppSeam;
+    use busbar_kernel::test_support::BuiltAppSeam;
 
     /// TEST-ONLY: mint the neutral `(host, rt)` pair the production forward path threads, over the built
     /// test App — so a test that drives an internal engine fn (`translate_request_cross_protocol`,
@@ -402,7 +402,7 @@ mod app_engine_ext_impl {
         Arc<dyn busbar_kernel::plane_host::EngineHost>,
         Arc<NativeRuntime>,
     ) {
-        let host = busbar_kernel::testkit::engine_host(app);
+        let host = busbar_kernel::test_support::engine_host(app);
         let rt = super::native_runtime_arc(host.as_ref());
         (host, rt)
     }

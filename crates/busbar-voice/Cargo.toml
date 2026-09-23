@@ -149,10 +149,14 @@ runtime = ["dep:async-trait", "dep:futures", "dep:tokio", "dep:tokio-tungstenite
 # `#[cfg(feature = "openapi-schema")]` field site and the struct definition in lock-step. The plane
 # contributes no schemas (the field is `None`), so no `schemars` dep is pulled.
 openapi-schema = ["busbar-kernel/openapi-schema"]
-# THE HOST-DRIVING TEST SURFACE: reveals the substrate's `testkit` (the in-memory fixture host, the
-# loopback HTTP provider, the metrics capture) to the cells that drive a plane-host seam — the breaker,
-# hook-gate/tap, metrics, SDP-broker and billing-ledger batteries. Pulls NO busbar-core: the fixture
-# host is a substrate double reached through the same seam production uses.
+# THE HOST-DRIVING TEST SURFACE: reveals THIS CRATE'S OWN `testkit` (src/testkit) — the in-memory
+# fixture host, the loopback HTTP provider, the metrics capture — to the cells that drive a plane-host
+# seam (the breaker, hook-gate/tap, metrics, SDP-broker and billing-ledger batteries) and to the
+# `voice-conform` binary. Those three doubles USED to live in `busbar_kernel::testkit`; that module is
+# deleted (1.6.0 Locked Decision #33 — "the kernel never tests a plugin"), so a plane carries the
+# doubles it drives. They still name only the neutral plane-host seam production uses, so this pulls
+# no core test fixture: the `busbar-kernel/test-support` forward below is for the OTHER cells in this
+# crate that build a core `TestApp`, not for the doubles.
 test-support = ["busbar-kernel/test-support"]
 
 [dev-dependencies]

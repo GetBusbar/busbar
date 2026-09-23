@@ -20,7 +20,7 @@ use crate::topology::{dial_provider, stream_breaker_key, DialProviderError};
 use busbar_kernel::net_guard::GuardPolicy;
 use busbar_kernel::plane_host::BreakerHost;
 use busbar_kernel::store::BreakerState;
-use busbar_kernel::testkit::fixture_host::FixtureHost;
+use crate::testkit::fixture_host::FixtureHost;
 use busbar_substrate_values::breaker::{CanonicalSignal, StatusClass};
 
 /// A canonical hard-down signal — the disposition a definitive provider failure (auth/billing, or a

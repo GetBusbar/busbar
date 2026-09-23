@@ -20,7 +20,7 @@
 
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
-use busbar_kernel::testkit::engine_kit_plus::EngineAppPlus;
+use busbar_kernel::test_support::engine_kit_plus::EngineAppPlus;
 use ed25519_dalek::{Verifier, VerifyingKey};
 use serde_json::{json, Value};
 

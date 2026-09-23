@@ -261,7 +261,7 @@ async fn connect_needs_full_scope_while_the_reads_do_not() {
     metrics_init();
     assert_eq!(
         engine().admin_required_scope(&axum::http::Method::POST, "/api/v1/admin/tools/fs/connect"),
-        busbar_kernel::testkit::engine_kit::AdminScope::Full,
+        busbar_kernel::test_support::engine_kit::AdminScope::Full,
         "connect is a mutation: it contacts an endpoint and can quarantine a server"
     );
     for path in [
@@ -270,7 +270,7 @@ async fn connect_needs_full_scope_while_the_reads_do_not() {
     ] {
         assert_eq!(
             engine().admin_required_scope(&axum::http::Method::GET, path),
-            busbar_kernel::testkit::engine_kit::AdminScope::ReadOnly,
+            busbar_kernel::test_support::engine_kit::AdminScope::ReadOnly,
             "{path} is a derived read"
         );
     }

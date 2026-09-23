@@ -4,7 +4,7 @@
 //! THE ENGINE BINDING for this plane's test binary — the ONE place in the MCP test tree that names
 //! the engine crate. Every other test file reaches the engine (the test-App builder, governance
 //! registries, the call log, the audit ring, the store-plugin fixture, the built App's router /
-//! host / handle / breaker cells) through the neutral `busbar_kernel::testkit::engine_kit` seam,
+//! host / handle / breaker cells) through the neutral `busbar_kernel::test_support::engine_kit` seam,
 //! by way of [`engine`] and the small helpers here.
 //!
 //! The helpers keep the tests' old call shapes (`engine_host(&app)`, `build_router(app)`,
@@ -12,7 +12,7 @@
 //! Test files glob-import this module.
 
 use busbar_kernel::plane_host::EngineHost;
-pub(crate) use busbar_kernel::testkit::engine_kit::{
+pub(crate) use busbar_kernel::test_support::engine_kit::{
     EngineApp, EngineHandle, EngineTestKit, GovKit, HookEnvHandle, HookNeed, TestAppKit,
     TestAppKitExt,
 };

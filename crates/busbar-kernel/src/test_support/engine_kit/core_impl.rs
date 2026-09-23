@@ -2,14 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ENGINE'S IMPLEMENTATION of the neutral engine test-kit seam
-//! (`busbar_kernel::testkit::engine_kit`): every verb is a thin delegate to the fixture or
+//! (`busbar_kernel::test_support::engine_kit`): every verb is a thin delegate to the fixture or
 //! process-wide service a plane's tests used to name directly (`TestApp`, `GovState`, `metrics::init`,
 //! the call log, the audit ring, the admin contract table, the store-plugin fixture, `build_router`,
 //! `plane_host::engine_host`, `AppHandle`). A plane's test tree binds [`CORE_ENGINE_KIT`] in one
-//! function and reaches all of it through `busbar_kernel::testkit::engine_kit::EngineTestKit` —
+//! function and reaches all of it through `busbar_kernel::test_support::engine_kit::EngineTestKit` —
 //! the plane names this crate in exactly that one binding line and nowhere else.
 
-use super::TestApp;
+use crate::test_support::TestApp;
 use busbar_api::{AuditRecord, MeteringRow, Store, VirtualKey};
 use busbar_kernel::governance::signing::TokenSigner;
 use busbar_kernel::governance::NewKeySpec;
@@ -17,7 +17,7 @@ use busbar_kernel::plane::calllog::CallRecorded;
 use busbar_kernel::plane::store::PlaneStore;
 use busbar_kernel::plane_host::{EngineHost, LiveHostFactory};
 use busbar_kernel::store::BreakerState;
-use busbar_kernel::testkit::engine_kit::{
+use super::{
     AdminScope, CostKit, EngineApp, EngineHandle, EngineTestKit, GovKit, HookEnvHandle, HookNeed,
     TestAppKit,
 };
@@ -83,7 +83,7 @@ impl EngineTestKit for CoreEngineKit {
         prompt: HookNeed,
         user: HookNeed,
     ) -> Option<HookEnvHandle> {
-        super::test_hook_env(
+        crate::test_support::test_hook_env(
             aliases,
             busbar_plugin_loader::sign::HookNeeds {
                 prompt: need(prompt),
@@ -156,11 +156,11 @@ impl EngineTestKit for CoreEngineKit {
     }
 
     fn durable_store_cfg(&self, tag: &str) -> (PathBuf, String) {
-        super::plugin_store::durable_cfg(tag)
+        crate::test_support::plugin_store::durable_cfg(tag)
     }
 
     fn open_store_plugin(&self, cfg: &str) -> Arc<dyn Store> {
-        super::plugin_store::open_plugin(cfg)
+        crate::test_support::plugin_store::open_plugin(cfg)
     }
 }
 
@@ -281,14 +281,14 @@ fn cost_model_ref(cost: &dyn CostKit) -> &crate::cost::CostModel {
 /// Take the engine's concrete pricing table back out of the neutral handle a plane held — the
 /// [`CostKit`] twin of [`gov_state`]. The `Arc` is kept whole (the fixture holds an
 /// `Arc<CostModel>` anyway), so a plane may hand the same handle to more than one App.
-pub(super) fn cost_model(cost: Arc<dyn CostKit>) -> Arc<crate::cost::CostModel> {
+pub(crate) fn cost_model(cost: Arc<dyn CostKit>) -> Arc<crate::cost::CostModel> {
     let any: Arc<dyn Any + Send + Sync> = cost;
     any.downcast::<crate::cost::CostModel>()
         .expect("a CostKit the engine's own kit minted is a CostModel")
 }
 
 /// Take the engine's concrete registry back out of the neutral handle a plane held.
-pub(super) fn gov_state(gov: Arc<dyn GovKit>) -> Arc<crate::governance::GovState> {
+pub(crate) fn gov_state(gov: Arc<dyn GovKit>) -> Arc<crate::governance::GovState> {
     let any: Arc<dyn Any + Send + Sync> = gov;
     any.downcast::<crate::governance::GovState>()
         .expect("a GovKit the engine's own kit minted is a GovState")
@@ -333,7 +333,7 @@ impl TestAppKit for TestApp {
         *self = std::mem::take(self).tool_pool(name, members, repeatable);
     }
     fn add_lane(&mut self, model: &str, protocol: &'static str, base_url: &str) {
-        *self = std::mem::take(self).lane(super::LaneSpec::new(model, protocol, base_url));
+        *self = std::mem::take(self).lane(crate::test_support::LaneSpec::new(model, protocol, base_url));
     }
     fn set_durable_store(&mut self, store: Arc<dyn Store>) {
         *self = std::mem::take(self).mcp_durable_store(store);

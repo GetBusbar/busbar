@@ -14,7 +14,7 @@ use crate::mount::{open_governed, GovernedOpen, Ingress, ProviderEndpoint};
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
-use busbar_kernel::testkit::fixture_host::FixtureHost;
+use crate::testkit::fixture_host::FixtureHost;
 use std::sync::{Arc, Mutex};
 
 const RTC_CALL_ID: &str = "rtc_correlated_call_9f8e7d";

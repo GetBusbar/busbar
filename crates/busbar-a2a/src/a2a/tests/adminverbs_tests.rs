@@ -417,7 +417,7 @@ async fn the_trust_verbs_need_full_scope() {
     ] {
         assert_eq!(
             engine().admin_required_scope(&axum::http::Method::POST, path),
-            busbar_kernel::testkit::engine_kit::AdminScope::Full,
+            busbar_kernel::test_support::engine_kit::AdminScope::Full,
             "{path} is a mutation"
         );
     }

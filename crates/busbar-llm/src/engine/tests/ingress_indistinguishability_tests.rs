@@ -496,7 +496,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
 async fn test_untranslatable_2xx_does_not_charge_tokens() {
     crate::testkit::install_test_seams();
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
     let state = Arc::new(MockServerState::new());
@@ -712,7 +712,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
@@ -850,7 +850,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
@@ -991,7 +991,7 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
@@ -1151,7 +1151,7 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt;
@@ -1463,7 +1463,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
@@ -3695,7 +3695,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     use super::FirstByteBody;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt as _;
@@ -3853,7 +3853,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
     use super::FirstByteBody;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::BreakerCfg;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt as _;
@@ -3968,7 +3968,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
     use super::FirstByteBody;
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::store::BreakerCfg;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     use bytes::Bytes;
     use futures::StreamExt as _;

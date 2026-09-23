@@ -333,7 +333,7 @@ fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_
     use busbar_kernel::plane::handle_engine::{
         DurableHandleEngine, HandleMeta, SubmitRecord, SweepBounds,
     };
-    use busbar_kernel::testkit::TestAppSeam;
+    use busbar_kernel::test_support::TestAppSeam;
     use std::any::Any;
     use std::sync::Arc;
 

@@ -314,10 +314,14 @@ pub mod detached;
 pub mod plane_routes;
 pub mod rate_apply;
 pub mod telemetry;
+// `testkit` IS GONE (1.6.0 Locked Decision #33: "there is NO testkit ... the kernel tests no
+// plugin"). What it held has gone two ways: the three concrete doubles a PLUGIN drove (the in-memory
+// engine-host, the loopback HTTP provider, the metrics capture) moved DOWN to the plane crates that
+// drive them, because a plugin tests itself; what was left is the kernel's own fixture seen through
+// its own object-safe seam, and that is not a kit the kernel ships — it is `test_support`, below,
+// where it now lives (`test_support::seam`, `test_support::engine_kit`).
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-#[cfg(any(test, feature = "test-support"))]
-pub mod testkit;
 pub mod tls;
 pub mod topology;
 pub use busbar_substrate_values::transport;
