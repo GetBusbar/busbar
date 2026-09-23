@@ -298,7 +298,11 @@ impl Gate for ChangelogGate {
                 )
             })
             .collect();
-        let newest_not_a_release = ChangelogGate::new()
+        // THE RELEASE ARMS' GREEN CONTROL. `1.5.4` is the newest entry in [`GOOD`], so this gate
+        // over that fixture is the release arm asked the question it is FOR — and answering yes.
+        // Every release-arm proof below is measured from here rather than from the real tree; see
+        // the note above those cases for why the real tree cannot be the baseline.
+        let tagging_the_newest = ChangelogGate::new()
             .with_today(self.today.clone())
             .require_version("1.5.4");
         let mut report = Report::new();
@@ -440,8 +444,23 @@ impl Gate for ChangelogGate {
             &[ROW_RELEASE_TOP_DATED],
         ));
 
+        // THE RELEASE ARMS ARE MEASURED FROM THE FIXTURE, NOT FROM THE REAL TREE — and that is not
+        // a convenience, it is the only baseline these two rows HAVE.
+        //
+        // A proof is a GREEN -> RED transition, so the unplanted run has to be green on the covered
+        // row. `RELEASE-TOP-DATED` and `VERSION-HAS-NOTES` are the RELEASE arm's rows, and the
+        // release arm over a mid-cycle tree is red BY DESIGN: this repository's top entry reads
+        // `## [1.6.0], unreleased`, which is the correct spelling on a branch and a refusal at
+        // release time (that is the entire content of the rule). Asking these four cases against
+        // the real tree therefore asked them against a baseline that can only be green on the one
+        // afternoon a release is stamped — and under the single-run harness all four "passed",
+        // because the planted run went red for the same reason the unplanted one already had.
+        //
+        // The fixture is where the arm is legitimately green, which the two `prove_green` twins
+        // below assert directly, so it is the fixture that carries the baseline. NOTHING about the
+        // rules moved: the same plants, the same covered rows, the same offender strings.
         report.push(prove_red(
-            cx,
+            &cx.with_overlay(plant(GOOD)),
             &release,
             "an undated top entry at release time",
             &[ROW_RELEASE_TOP_DATED],
@@ -457,19 +476,25 @@ impl Gate for ChangelogGate {
         ));
 
         // -- THE VERSION BEING TAGGED, three ways it can lack notes, and the twin -----------------
+        //
+        // THE FIRST TWO PLANT A CONFIGURATION, NOT A TREE. What is wrong in "the version being
+        // released has no section" is the VERSION THIS RUN WOULD TAG — one fixture, two gates — so
+        // the plant is the gate, and `prove_red_by_configuration` is the shape that says so. Under
+        // `prove_red` they planted `GOOD` over a tree that was about to be read as `GOOD` anyway,
+        // which the plant-bites check now calls what it is.
         for (name, naming, gate) in &versioned {
-            report.push(prove_red(
-                cx,
+            report.push(crate::gates::prove_red_by_configuration(
+                &cx.with_overlay(plant(GOOD)),
+                &tagging_the_newest,
                 gate,
                 *name,
                 &[ROW_VERSION_HAS_NOTES],
-                plant(GOOD),
                 &[ROW_VERSION_HAS_NOTES, naming],
             ));
         }
         report.push(prove_red(
-            cx,
-            &newest_not_a_release,
+            &cx.with_overlay(plant(GOOD)),
+            &tagging_the_newest,
             "a file whose newest heading is not a release at all",
             &[ROW_VERSION_HAS_NOTES],
             plant(&GOOD.replace("## [1.5.4], 2026-08-14", "## [Unreleased] but stale")),
@@ -477,7 +502,7 @@ impl Gate for ChangelogGate {
         ));
         report.push(prove_green(
             &cx.with_overlay(plant(GOOD)),
-            &newest_not_a_release,
+            &tagging_the_newest,
             "the newest entry IS the version being released",
             &[ROW_VERSION_HAS_NOTES],
         ));

@@ -514,8 +514,30 @@ impl Gate for QaGateDispatchGate {
         // self-test that needed the network could not prove the `qa` arm at all.
         let base = FIXTURE_BASE.to_string();
         let changed = base.replace("needs: [build, fast]", "needs: [build]");
-        match yaml_lite::parse_structure(&changed) {
-            Ok(shape) => {
+        match (
+            yaml_lite::parse_structure(&base),
+            yaml_lite::parse_structure(&changed),
+        ) {
+            (Ok(base_shape), Ok(shape)) => {
+                // THE BASELINE IS THE PROMOTED TREE, NOT THIS REPOSITORY, and it has to be.
+                //
+                // The promoted copy this arm reads is `base` — a fixture, injected, because a
+                // self-test that needed the network could not prove the `qa` arm at all. Over the
+                // REAL working tree that arm compares this repository's 300-line dispatcher against
+                // a nine-line fixture and is red before anything is planted, on eighteen structural
+                // differences that have nothing to do with the plant. A proof is a GREEN -> RED
+                // transition, so a baseline that is already red is not a baseline: the single-run
+                // harness read the planted red, saw the two strings the case asks for, and scored a
+                // pass that had measured nothing.
+                //
+                // The tree where this arm is legitimately green is the one that HAS been promoted:
+                // workflow == the promoted copy, declared shape == that workflow's own projection.
+                // That is the baseline, the plant is the one run-graph edit, and the transition is
+                // the rule. Nothing about the comparison moved.
+                let mut promoted = Overlay::new();
+                promoted.set(WORKFLOW, base.clone());
+                promoted.set(DECLARED, canonical(&base_shape));
+                let promoted = cx.with_overlay(promoted);
                 let mut ov = Overlay::new();
                 ov.set(WORKFLOW, changed.clone());
                 ov.set(DECLARED, canonical(&shape));
@@ -524,7 +546,7 @@ impl Gate for QaGateDispatchGate {
                 let arm = QaGateDispatchGate::judging_as("qa", DEFAULT_BRANCH_REF, Some(&base));
                 report.push(crate::gates::CasePlan::new(move || {
                     prove_red(
-                        cx,
+                        &promoted,
                         &arm,
                         "on qa an unpromoted run-graph change is red against the default branch",
                         &[ROW_DEFAULT_BRANCH],
@@ -537,7 +559,7 @@ impl Gate for QaGateDispatchGate {
                     .take()
                 }));
             }
-            Err(e) => report.note_infra_failure(format!(
+            (Err(e), _) | (_, Err(e)) => report.note_infra_failure(format!(
                 "the promotion-arm fixture did not parse, so the qa arm is unproven here: {e}"
             )),
         }

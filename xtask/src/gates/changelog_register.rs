@@ -385,8 +385,23 @@ impl Gate for ChangelogRegisterGate {
         ));
 
         // -- THE RELEASE ARM, red and green ------------------------------------------------------
+        //
+        // MEASURED FROM THE FIXTURE, NOT FROM THE REAL TREE. `ROW_VERSION` is the release arm's
+        // row, and the release arm asked about 1.7.0 over THIS repository is red before anything is
+        // planted — the newest section here is 1.6.0, which is the correct state of a tree that has
+        // not tagged 1.7.0. A red that is already standing cannot be a plant's, so this case was
+        // asking a question the tree made unaskable, and the single-run harness scored it a pass.
+        // The green twin below is the tree where the arm is legitimately green, so it is that tree
+        // the transition is measured from. The plant, the covered row and the offenders are
+        // unchanged.
+        let release_green = plant(
+            &register(&[
+                r#"{"id":"X-1","kind":"improvement","changelog":"the grass is now greener"}"#,
+            ]),
+            "## [1.7.0], 2026-09-01\n\n- the grass is now greener\n",
+        );
         report.push(prove_red(
-            cx,
+            &cx.with_overlay(release_green),
             &release,
             "the newest section is not the version being released",
             &[ROW_VERSION],
