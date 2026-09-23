@@ -12,7 +12,36 @@
 [gate]
 # Where Rust source is scanned. Globs relative to the repo root; the composition-root bin
 # (crates/busbar) is included on purpose because production installers live there.
-scan_roots = ["crates/*/src"]
+#
+# ── WIDENED 2026-09-23: THIS ONE LINE WAS THE DENOMINATOR OF ALL 113 ROWS ────────────────────────
+#
+# It read `["crates/*/src"]` and that is not the tree. MEASURED on this branch: `crates/*/src` holds
+# 1471 `.rs` files, `crates/*/tests` holds 139 and `crates/*/benches` holds 4 — 143 files of real,
+# compiled, product-linked Rust that every one of the 113 rows below was asserting about and none of
+# them could open. A forged token mint, a `busbar_core::` reach, a seal site or a test double
+# written into `crates/busbar-llm/tests/` was invisible to this gate, and the census in
+# docs/design/1.6.0-gate-blindspots.md planted one and watched the gate stay green.
+#
+# `crates/*/tests` and `crates/*/benches` are PRODUCT code in the sense that matters here: they
+# compile against the product crates, they can name every type the product exports, and a
+# capability they spell is a capability that crate can reach. They are in.
+#
+# `xtask/src` IS DELIBERATELY NOT, and the reason is structural rather than a preference. `xtask`
+# declares three dependencies (serde_json, proc-macro2, syn) and NO product crate — which is the
+# property `cargo xtask gate segregation` exists to hold — so a line spelling `Grant::<C>::mint(`
+# there names a type xtask cannot reach and would not compile. It is not a forgery surface; it is
+# prose about one. MEASURED: adding `xtask/src` produces 17 non-comment hits on the token-sealed
+# pattern set and every single one is this gate's OWN needle table or its own selftest plant string
+# (`xtask/src/gates/seal_witness.rs:51` is `const MINTER: &str = "KernelSeal::acquire_for_kernel("`).
+# A gate that goes red reading its own specification has not widened its scan, it has lost its
+# subject. The census's P3 plant is therefore recorded as a plant that could never have been a
+# defect.
+#
+# `crates/*/build.rs` (1 file) stays out for a mechanical reason, not a judged one: these are
+# DIRECTORY globs walked by `glob_dirs` + `collect_rs`, so a bare file path cannot be expressed
+# here at all. It is shipped source, it is compiled on every build, and it is in no construction
+# row. PARK: it needs a file-glob arm in `Tree::load`, not an entry on this line.
+scan_roots = ["crates/*/src", "crates/*/tests", "crates/*/benches"]
 # The plane crates (the plugin side): one name per protocol plane, so each carries its own ceiling
 # below. This is the ROW KEY list, not the whole source surface — see gate.plane_codec_crates.
 #
@@ -522,11 +551,30 @@ pattern_families = [
 ]
 allowed_root = "crates/busbar-kernel/src"
 max_sites = 0
-# The RULE-SPEC DATA for the hold-discipline scan below, not surface this rule scans: its own header
-# says "This file is DATA, not surface... the specification", so its literal token-constructor
-# strings (written down so the scan's own test keeps this list from going stale) self-match the
-# scanner. Excluded rather than counted as a forged mint.
-exclude_files = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
+# ── THE BLANKET EXCLUSION IS STRUCK 2026-09-23. IT DID NOT SURVIVE, AND HERE IS WHY ─────────────
+#
+# It read `exclude_files = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]` and the
+# argument beside it was that the file is "DATA, not surface": its literal token-constructor strings
+# self-match this scanner. That argument is true about TWO LINES and the exclusion was written
+# file-wide, so it stood over the whole file — and the file is not data on disk, it is
+# `crates/busbar-contract/src/**.rs`, compiled into the shipped contract crate. A real forged mint
+# written anywhere in it was invisible: the census planted one (`Grant::<Sign>::mint(`, appended)
+# and the row stayed PASS.
+#
+# THE TWO SELF-MATCHES ARE NOW FINDINGS AND ARE REPORTED AS SUCH, zero-touch, with no plant needed:
+# `lint_rules.rs:84` (`symbol: "Grant::<Recover>::mint("`) and `:93`
+# (`symbol: "take(&Grant::<Exit>::mint("`). Both are exact matches for this rule's pattern set, both
+# sit outside `allowed_root`, and the row was green about them.
+#
+# THEY ARE NOT SILENCED HERE. A per-line pragma would be the narrow shape (`plane-purity`'s
+# frozen-wire carve-out is the model) but a pragma is a new permission, and permissions are the
+# owner's. PARK, with the recommendation: move the rule-spec literals out of Rust source into a data
+# file this gate does not walk, which removes the self-match instead of excusing it — a
+# specification that is not compiled cannot be mistaken for a call site by anything.
+#
+# The key stays, empty, because an absent key and an empty list read the same to `list_of` and only
+# one of them is a decision somebody made.
+exclude_files = []
 # Two more of the same shape, scoped to busbar-kernel (not busbar-substrate/src/teller, which is
 # the pre-busbar-kernel path the `patterns` list above still ratchets against): `KernelSeal::
 # acquire_for_kernel(` mints the one seal every token constructor needs, and the unit crates'

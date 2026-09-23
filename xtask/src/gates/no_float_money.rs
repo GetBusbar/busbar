@@ -138,9 +138,25 @@ const BINARY_ROOT: &str = "crates/busbar/src/root";
 /// The contract's EXACT COUNT module (#81): the type every count is measured in, and its parser.
 /// Named rather than walked, because the rest of the contract is not the money path and a wholesale
 /// scan of it would flag a transport window or a backoff curve.
+///
+/// THE THIRD ENTRY IS THE MONEY-PATH DURABLE RECORD SHAPES, ADDED 2026-09-23. `records.rs`'s own
+/// first line is "The MONEY-PATH DURABLE RECORD SHAPES — the data types a `db` plugin … reads and
+/// writes"; it is the file `money-invariants:no-plugin-keyed-money` and `:no-stored-price` scan for
+/// #77(1) and #77(3), and it is the FIRST home in [`PERSISTED_RECORD_HOMES`] below. It was in this
+/// gate's float set through none of those. A float in a persisted money record is the failure #77(8)
+/// is about, written down and read back by every store plugin. MEASURED at the time of the widening:
+/// zero `f64`/`f32` in it today.
+///
+/// THE REST OF THE CONTRACT STAYS OFF THIS LIST, and the measurement is why rather than the prose:
+/// the only production float in `crates/busbar-contract/src` outside these files is
+/// `signal.rs:158`, `SignalValue::F64(f64)` — the closed scalar wire value for the hook
+/// decide/tap path, a ratio and not a price. A wholesale scan of the contract would red this gate
+/// on a hook signal. PARK: SHAPE D is unclosed here — a new money file beside `count.rs` is in no
+/// scan set until somebody edits this list, and nothing tells them to.
 const CONTRACT_MONEY_FILES: &[&str] = &[
     "crates/busbar-contract/src/count.rs",
     "crates/busbar-contract/src/tests/count_tests.rs",
+    "crates/busbar-contract/src/records.rs",
 ];
 
 /// The directory the contract money files live under.
@@ -165,6 +181,35 @@ const BUDGET_SRC: &str = "crates/busbar-kernel-budget/src";
 /// floor sits under that so ordinary churn does not trip it and an emptied or relocated crate does.
 const BUDGET_FLOOR: usize = 5;
 
+/// ── TWO DEDICATED MONEY CRATES THAT WERE IN NO SCAN SET AT ALL (2026-09-23) ─────────────────────
+///
+/// The census in `docs/design/1.6.0-gate-blindspots.md` planted ten floats on the money path and
+/// this gate named two. Two of the eight it missed were whole CRATES, and both of them are where
+/// money stops being arithmetic and becomes a fact somebody can be billed from:
+///
+/// * `busbar-kernel-audit` — **the sealed facts line.** A unit's money facts are sealed and signed
+///   here, so a float in it is a float in the number the seal attests to. The signature does not
+///   make an inexact figure exact; it makes it permanent.
+/// * `busbar-kernel-wal` — **money-record durability.** What is written down is what is read back
+///   and billed. A float anywhere between the settle and the write is a rounding nobody configured,
+///   made durable.
+///
+/// Both are scanned WHOLE, like the ledger and the budget crates and for the same reason: they are
+/// dedicated money crates rather than crates that happen to contain some money, so a new file added
+/// beside an existing one is in the ban the moment it exists. MEASURED at the time of the widening:
+/// neither crate carries a single `f64`/`f32` in production code today, so this costs the tree no
+/// new finding and buys the ban two crates it could not previously have gone red about for any
+/// amount of float. The plants prove it is not vacuous.
+const AUDIT_SRC: &str = "crates/busbar-kernel-audit/src";
+
+/// The denominator floor for the audit scan. Ten production files when this was written.
+const AUDIT_FLOOR: usize = 7;
+
+const WAL_SRC: &str = "crates/busbar-kernel-wal/src";
+
+/// The denominator floor for the WAL scan. Eight production files when this was written.
+const WAL_FLOOR: usize = 6;
+
 /// The KERNEL's DEDICATED money-unit files.
 ///
 /// Named rather than walked, for the same reason the contract crate is on a named list:
@@ -183,9 +228,24 @@ const BUDGET_FLOOR: usize = 5;
 /// live; a copy of them somewhere the ban cannot see is how the two drift, and a rate that is judged
 /// at one value and billed at another is the failure the whole integer-money model exists to make
 /// impossible. The exemption is a FILE, not an arithmetic, so a second copy of it is a finding here.
+///
+/// THE THIRD ENTRY, ADDED 2026-09-23: `rate_apply.rs` — the RATE-APPLY SEAM. Its own header says
+/// "this seam carries a price": it is the one notification that says "this deployment's configured
+/// rates are now these", raised at boot and on every live apply/reload, and answered by whoever
+/// holds a card. A float introduced between the config resolution and the card swap reprices every
+/// derived spend figure on the next read, which is the same failure `cost.rs` is on this list for
+/// and one seam earlier. It moved into the kernel by identity from `busbar-substrate/src/rate_apply.rs`
+/// (`5fa320208`, R100) and was in no money scan set on either side of the move. MEASURED: zero
+/// `f64`/`f32` in it today.
+///
+/// THE REST OF THE KERNEL STAYS OFF THIS LIST for the reason the paragraph above gives, and the
+/// measurement backs it: the kernel is 350-odd files of routing weights, health scores and backoff
+/// curves, all of them legitimate floats. PARK: this is SHAPE D and it is unclosed — nothing in the
+/// tree tells the author of the next kernel money file to add it here.
 const KERNEL_MONEY_FILES: &[&str] = &[
     "crates/busbar-kernel/src/billing.rs",
     "crates/busbar-kernel/src/cost.rs",
+    "crates/busbar-kernel/src/rate_apply.rs",
 ];
 
 /// The float tokens a money path may not name. Word-boundary matched so `nf64` or an identifier that
@@ -962,6 +1022,28 @@ impl Gate for NoFloatMoneyGate {
             }
         };
 
+        // THE SEALED-FACTS AND DURABILITY CRATES (2026-09-23), each held to its own floor the way
+        // the ledger and the budget are. Same treatment for the same reason: a dedicated money crate
+        // that reads as empty is REFUSED, never scanned as zero hits and printed green.
+        let mut whole_crate_files: Vec<crate::ctx::SourceFile> = Vec::new();
+        for (root, floor, what) in [
+            (AUDIT_SRC, AUDIT_FLOOR, "the sealed money-facts crate"),
+            (WAL_SRC, WAL_FLOOR, "the money-record durability crate"),
+        ] {
+            match cx.walk(
+                &WalkSpec::new([root])
+                    .ext("rs")
+                    .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE, EXCLUDE_TESTS_MOD])
+                    .min_files(floor),
+            ) {
+                Ok(f) => whole_crate_files.extend(f),
+                Err(e) => float_scan_problems.push(format!(
+                    "{e} {root} is {what}. If it legitimately moved, point the root at its new home \
+                     in a reviewed diff that says so — do not lower the floor."
+                )),
+            }
+        }
+
         // The binary's dedicated money files and the contract's count module: walk each root once,
         // keep the named set. Every named file must be present — a rename that dropped one out of
         // the ban is a scan-set integrity failure, not a silent narrowing.
@@ -1017,6 +1099,9 @@ impl Gate for NoFloatMoneyGate {
             scan_file(&f.rel_str(), &f.text, &mut offenders);
         }
         for f in &budget_files {
+            scan_file(&f.rel_str(), &f.text, &mut offenders);
+        }
+        for f in &whole_crate_files {
             scan_file(&f.rel_str(), &f.text, &mut offenders);
         }
         for f in &named_files {
@@ -1107,8 +1192,8 @@ impl Gate for NoFloatMoneyGate {
                 ROW_SCAN_FLOOR,
                 "every money scan set is present and above its floor",
                 format!(
-                    "the ledger crate, the budget crate, {} named money file(s) and {} enumerated \
-                     money area(s) all read",
+                    "the ledger, budget, sealed-facts and durability crates, {} named money file(s) \
+                     and {} enumerated money area(s) all read",
                     BINARY_MONEY_FILES.len()
                         + CONTRACT_MONEY_FILES.len()
                         + KERNEL_MONEY_FILES.len(),
