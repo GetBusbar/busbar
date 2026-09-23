@@ -30,6 +30,60 @@ rest mean exactly what they meant before this collapse. Cite a row; never re-lit
 
 ## What 1.6.0 is
 
+> **OWNER-RATIFIED 2026-09-23 — THE BENCHMARK.** The owner read this statement and said:
+> *"LITERALLY PERFECT — LOCK THIS IN AS GOLD. I couldn't have said what 1.6.0 is any better.
+> If ever in doubt this is the benchmark."* When any plan, gate, agent brief or design argument
+> is unsure what the release IS, it is measured against the text in this blockquote — not against
+> a checklist, not against a wave table, and not against a later restatement. Nothing below may
+> contradict it; where something does, this wins.
+>
+> **Today (1.5.5), busbar is one big program that has hard-coded knowledge of every protocol it
+> speaks.** The core, the protocol handlers, and every dialect are mangled together in a single
+> crate. If you want busbar to speak something new, you edit core.
+>
+> **1.6.0 turns that inside out.** Core becomes a thin engine that knows nothing about any specific
+> protocol. Everything that knows about a protocol becomes a **plugin**. You run core, and you drop
+> in plugins. Core treats all of them identically and genuinely does not know whether you've loaded
+> zero plugins or a hundred.
+>
+> That's the whole release in one sentence: **core stops being a monolith that knows about protocols
+> and becomes a thin engine that hosts plugins.**
+>
+> ### The pieces
+>
+> There are **7 kinds of plugin**: store, secret, auth, hook, export, **plane**, **transport**.
+>
+> A **plane** is "how to speak a family of protocols" — there are 5: llm, mcp, a2a, streaming,
+> decisions. A **transport** is "how to move the bytes." A **dialect** (say, OpenAI's wire format vs
+> Anthropic's) lives *inside* a plane — the llm plane has 6 of them. Adding a dialect means editing
+> that plane's crate. **Core doesn't change at all.** That's the test of whether we got it right.
+>
+> **Two rules govern every plugin, and there is no third:**
+> 1. It can be compiled into the binary **or** dropped into a `plugins/` folder — same contract,
+>    same loading path, your choice at packaging time.
+> 2. It talks to core **only** over the ABI.
+>
+> Two lanes exist on that one seam, chosen by how hot the path is: plane and transport get an
+> in-memory `repr(C)` lane measured in sub-microseconds; the other five get JSON. Each kind is bound
+> to exactly one lane — it's a cost decision, not a second contract.
+>
+> ### What must NOT change
+>
+> This is the part that makes it hard rather than just laborious.
+>
+> **A customer running 1.6.0 with only the LLM plane must get byte-identical behaviour to published
+> 1.5.5.** Same config schema, same wire bytes, same everything — proven cell by cell against the
+> real 1.5.5 binary. The four new planes are purely additive and off by default. That oracle is
+> never waived, and a genuine divergence gets parked for the owner, never self-approved.
+>
+> **And money.** Two independent systems — the ledger and the ratecard. Money is a *view*:
+> `money = f(ledger, ratecard)`, computed when someone asks. Nothing ever stores a dollar amount.
+> So money is never wrong — if a number looks wrong, either the ledger is wrong or the ratecard is
+> wrong, and every finding has to name which.
+
+### The same thing again, in the document's own vocabulary
+
+
 One sentence: **core stops being a monolith that knows about protocols, and becomes a thin engine
 that hosts plugins.**
 
