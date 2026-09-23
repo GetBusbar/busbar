@@ -3,6 +3,12 @@
 //! parser tests ported alongside `proto` itself.
 
 use super::*;
+// The battery drives the `Transport` surface, which now lives in the kind's own `transport.rs`
+// (`PLUGIN-TREE.md` §3) rather than in `lib.rs`; `use super::*` no longer carries its imports.
+use busbar_contract::transport::wire::{FrameMeta, TransportError};
+use busbar_contract::{
+    Frame, Plugin, ScratchBytes, StreamId, Transport, TransportConfigView, TransportKeyHandle,
+};
 use busbar_transport_http::ClientSettings;
 use futures::StreamExt;
 

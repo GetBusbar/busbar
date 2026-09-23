@@ -21,7 +21,10 @@
 //!    views ([`crate::verb::LEDGER_VERBS`]) are answered BEFORE this step and never reach it: a view
 //!    reads figures the ledger already holds, so there is no mutation for dual control to check and
 //!    no ceremony for it to wait on. They reach [`crate::governance::Governance::execute_ledger_read`]
-//!    instead, having passed exactly the same scope and rate checks as everything above.
+//!    instead, having passed exactly the same scope and rate checks as everything above. The three
+//!    audit-chain reads ([`crate::verb::AUDIT_VERBS`]) are answered on the same rung, one branch
+//!    later, through [`crate::governance::Governance::execute_audit_read`], for the same reason and
+//!    with the same checks run first.
 //! 4. **Idempotency** (the two legacy replayable mutations only, `create_key`/`rotate_key`,
 //!    reached through their own dedicated methods rather than the generic [`Verbs::execute`] — see
 //!    their doc comments for why they are not folded into the generic dispatch).
@@ -41,7 +44,7 @@ use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{store_error_into_refusal, ReasonCode, Refusal, RefusalStep};
 use crate::verb::{
-    KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
+    KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
 };
 use busbar_contract::caps::{AdminVerb, Grant, SecretOnce, UnitKey};
 use busbar_contract::verb_store::Store;
@@ -468,6 +471,20 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             return self
                 .governance
                 .execute_ledger_read(verb, admin, request)
+                .map_err(GovernanceError::into_refusal);
+        }
+        // An audit-chain read is answered here for the same reason a ledger view is, one branch
+        // above: it never reaches `check_new_verb_admission`, because there is no mutation for dual
+        // control to check and no ceremony a read has to wait for. Without this branch the three
+        // verbs RESOLVED — they are in the closed table, they carry a scope and a rate class — and
+        // then fell past both this arm and the posture-gated one into the legacy catch-all, where a
+        // router that never had those paths answered a 404. A verb that resolves and then refuses is
+        // the worst of the three possible states: the table says the surface exists and the surface
+        // says it does not.
+        if AUDIT_VERBS.contains(&verb) {
+            return self
+                .governance
+                .execute_audit_read(verb, admin, request)
                 .map_err(GovernanceError::into_refusal);
         }
         if NEW_VERBS.contains(&verb) {

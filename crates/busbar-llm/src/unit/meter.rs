@@ -481,6 +481,13 @@ fn metering_row(
         requests: 1,
         billable_requests: 1,
         key_group_at_use: String::new(),
+        // NOT STAMPED HERE, and deliberately. This row is the unit's EVIDENCE of what the accrual
+        // wrote, not the durable write itself — `ledger_and_meter` above is the write, and the
+        // kernel stamps the instant there, where a rate seam may be named at all. A plane crate
+        // asking when a card started would be a plane reaching a rate seam (#43: plugins are
+        // pricing-blind), so this leaves the field at its default and the durable row carries the
+        // instant. Owed: carry it back onto the evidence through the neutral facts seam.
+        priced_from_ms: 0,
         pricing_version: String::new(),
     }
 }

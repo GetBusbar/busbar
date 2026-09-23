@@ -1,0 +1,45 @@
+# plane-pricing-blindness burndown ledger — DECISION #87.
+#
+# One row per (money category, offending file) in a crate the #83 roster places at defs 16–20.
+# The gate is RED while any finding stands; it goes GREEN when no plane crate touches money and
+# this file is empty.
+#
+# ── IT SHIPS EMPTY, ON PURPOSE ───────────────────────────────────────────────────────────────
+#
+# This file is deliberately EMPTY in the commit that lands the gate. Declaring today's findings
+# alongside the scanner that found them would pre-suppress the very things it was built to find,
+# and a gate that arrives with its census already excused teaches nobody anything. So the gate's
+# first run names all sixteen findings on `:undocumented`, and each one is written down here only
+# by a human who has read it and decided it is debt rather than a bug to fix now.
+#
+# ── WHAT A ROW MUST SAY ──────────────────────────────────────────────────────────────────────
+#
+#   [[debt]]
+#   category  = "rate-card" | "billing-switch" | "price" | "unit-key" | "hold"
+#   crate     = "busbar-voice"
+#   file      = "crates/busbar-voice/src/runtime/metering.rs"
+#   count     = 58
+#   placement = "#83 SPLIT -> def 16-20"
+#   act       = "prices, or names the book a price is written into"
+#   reach     = "reachable" | "unreachable"
+#   why       = "the traced call site, in full"
+#
+# `reach` and `why` are NOT optional and the emitter cannot derive them — it writes
+# `reach = "unproven"` and an empty `why`, both of which are RED on
+# `plane-pricing-blindness:reachability`. That is the whole point: a text gate cannot do
+# call-graph analysis honestly, so the claim is a human's, and "I did not look" must not be able
+# to read as "it is dead". A gate that reds the same on provably-dead scaffolding as on a live
+# billing branch teaches its readers to bless it.
+#
+# The key is (category, file) and NOT a line number: a line number rots into a hole at whatever
+# lands on that line, and these files are under active edit.
+#
+# ── DRAINING A ROW ───────────────────────────────────────────────────────────────────────────
+#
+# Move the act kernel-side, then STRIKE the row in the same commit. A row whose finding is gone
+# is STALE and reds on `plane-pricing-blindness:stale-baseline`, so the ledger cannot outlive the
+# debt it tracked.
+#
+# Regenerate the census as TOML with:
+#   XTASK_PPB_EMIT_BASELINE=1 cargo xtask gate plane-pricing-blindness 2>/tmp/ppb.toml
+# then review every row BY HAND and supply `reach` + `why` yourself.

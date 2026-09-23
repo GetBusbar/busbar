@@ -81,13 +81,13 @@ impl Gate for DenylistGate {
         if report.stale_waivers.is_empty() {
             rows.push(Row::pass(
                 ROW_WAIVERS,
-                "every allow-list waiver still covers a live hit",
-                "0 stale waivers".to_string(),
+                "every allow-list waiver and edge exemption still covers a live hit",
+                "0 stale waivers, 0 stale edge exemptions".to_string(),
             ));
         } else {
             rows.push(Row::fail(
                 ROW_WAIVERS,
-                "an allow-list waiver outlived the offender it excused",
+                "an allow-list waiver or edge exemption outlived the offender it excused",
                 report.stale_waivers.join(" | "),
             ));
         }
@@ -171,6 +171,43 @@ impl Gate for DenylistGate {
                     got: Expect::Skipped,
                 },
             });
+        }
+
+        // AN EDGE EXEMPTION CAN ITSELF BE WRONG, AND THE GATE HAS TO SAY SO.
+        //
+        // An exemption is the broader of the two exception shapes: it is keyed on `(dep, via)`, not
+        // on a crate, so ONE entry suppresses findings in every pure kind at once and in crates
+        // nobody had to enumerate. That is exactly why it cannot be the one exception nobody ever
+        // has to defend again. It is held to the same both-ways floor the allow-list has — an
+        // exemption that suppresses NO hit is RED — and this case proves it through `Gate::run`
+        // rather than against a synthetic hit list: the REAL `qa/construction.toml`, plus one extra
+        // exemption for an edge that is not in this tree, planted in an overlay.
+        //
+        // `wasi-libc-shim` is a crate no busbar target resolves. An exemption naming it rules on
+        // nothing, so it must be reported — and if it were NOT, the next reviewer would read it as
+        // a live, reviewed fact about how the pure kinds reach `libc`, which is the precise reading
+        // that let four copies of one `cpufeatures` paragraph accumulate in the allow-list.
+        if let Ok(real_config) = cx.read("qa/construction.toml") {
+            let mut planted = Overlay::new();
+            planted.set(
+                "qa/construction.toml",
+                format!(
+                    "{real_config}\n\n[[rules.source-denylist.edge_exemptions]]\n\
+                     dep = \"libc\"\n\
+                     via = \"wasi-libc-shim\"\n\
+                     symbols = [\"nothing-at-all\"]\n\
+                     reason = \"a planted exemption for an edge no crate in this tree takes\"\n\
+                     owner = \"the denylist gate selftest\"\n"
+                ),
+            );
+            report.push(prove_red(
+                cx,
+                self,
+                "an edge exemption that suppresses nothing is a RED row, same as a stale waiver",
+                &[ROW_WAIVERS],
+                planted,
+                &["exemption", "wasi-libc-shim"],
+            ));
         }
 
         // THE HIT AND THE WAIVER, EACH THROUGH `Gate::run`, over one fixture tree that carries both

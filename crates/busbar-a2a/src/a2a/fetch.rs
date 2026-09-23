@@ -52,7 +52,7 @@
 
 use std::net::IpAddr;
 
-use busbar_kernel::net_guard::{self, GuardPolicy, GuardRefusal, PinnedTarget};
+use busbar_kernel::net_guard::{self, AddressRefusal, GuardPolicy, PinnedTarget};
 
 use super::card::{WELL_KNOWN_CARD_PATH, WELL_KNOWN_CARD_PATH_LEGACY};
 
@@ -159,7 +159,7 @@ pub(crate) enum FetchRefusal {
     BodyTooLarge { url: String, bytes: usize },
     /// The body is not a JSON object, so it is not a card.
     NotACard { url: String, err: String },
-    /// A SHARED REFUSAL THIS CALLER DOES NOT PRODUCE: [`GuardRefusal::Redirect`] is the
+    /// A SHARED REFUSAL THIS CALLER DOES NOT PRODUCE: [`AddressRefusal::Redirect`] is the
     /// never-follow-a-3xx arm, and this fetch FOLLOWS redirects under
     /// [`FetchPolicy::max_redirects`] and reports an over-long chain as
     /// [`FetchRefusal::TooManyRedirects`] instead.
@@ -168,7 +168,7 @@ pub(crate) enum FetchRefusal {
     /// arrives at an operator as itself. The conversion below is TOTAL on purpose: a new shared
     /// refusal must be given a sentence here, not silently dropped into whichever arm happened to
     /// be last.
-    Guard(GuardRefusal),
+    Guard(AddressRefusal),
 }
 
 /// RENDER A SHARED REFUSAL IN THIS PLANE'S VOCABULARY.
@@ -178,39 +178,41 @@ pub(crate) enum FetchRefusal {
 /// address is reported here as an internal one, with the sentence saying it is refused whatever
 /// `allow_private` is set to. That collapse is this plane's WORDING and not its decision: core
 /// keeps the two apart, which is what stops the knob from ever speaking for the metadata arm.
-impl From<GuardRefusal> for FetchRefusal {
-    fn from(g: GuardRefusal) -> Self {
+impl From<AddressRefusal> for FetchRefusal {
+    fn from(g: AddressRefusal) -> Self {
         match g {
-            GuardRefusal::Scheme { url, scheme } | GuardRefusal::Plaintext { url, scheme } => {
+            AddressRefusal::Scheme { url, scheme } | AddressRefusal::Plaintext { url, scheme } => {
                 FetchRefusal::NotHttps { url, scheme }
             }
-            GuardRefusal::NoHost(url) => FetchRefusal::NoHost(url),
-            GuardRefusal::MetadataName(host) => FetchRefusal::InternalHostName {
+            AddressRefusal::NoHost(url) => FetchRefusal::NoHost(url),
+            AddressRefusal::MetadataName(host) => FetchRefusal::InternalHostName {
                 host,
                 why: "a cloud-metadata name",
             },
-            GuardRefusal::LoopbackName(host) => FetchRefusal::InternalHostName {
+            AddressRefusal::LoopbackName(host) => FetchRefusal::InternalHostName {
                 host,
                 why: "a loopback name; set this registration's `allow_private: true` if that is \
                       deliberate",
             },
-            GuardRefusal::ObfuscatedHost(host) => FetchRefusal::InternalHostName {
+            AddressRefusal::ObfuscatedHost(host) => FetchRefusal::InternalHostName {
                 host,
                 why: "an alternate IPv4 encoding a resolver still expands to an internal address",
             },
-            GuardRefusal::Unresolvable { host, reason } => {
+            AddressRefusal::Unresolvable { host, reason } => {
                 FetchRefusal::ResolutionFailed { host, err: reason }
             }
-            GuardRefusal::NoAddresses(host) => FetchRefusal::NoAddresses(host),
-            GuardRefusal::InternalAddress { host, addr }
-            | GuardRefusal::CloudMetadataAddress { host, addr } => {
+            AddressRefusal::NoAddresses(host) => FetchRefusal::NoAddresses(host),
+            AddressRefusal::InternalAddress { host, addr }
+            | AddressRefusal::CloudMetadataAddress { host, addr } => {
                 FetchRefusal::InternalAddress { host, addr }
             }
-            GuardRefusal::TooManyRedirects { limit, at } => {
+            AddressRefusal::TooManyRedirects { limit, at } => {
                 FetchRefusal::TooManyRedirects { limit, at }
             }
-            GuardRefusal::BodyTooLarge { url, bytes } => FetchRefusal::BodyTooLarge { url, bytes },
-            other @ GuardRefusal::Redirect { .. } => FetchRefusal::Guard(other),
+            AddressRefusal::BodyTooLarge { url, bytes } => {
+                FetchRefusal::BodyTooLarge { url, bytes }
+            }
+            other @ AddressRefusal::Redirect { .. } => FetchRefusal::Guard(other),
         }
     }
 }

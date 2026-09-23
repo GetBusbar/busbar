@@ -453,6 +453,31 @@ impl busbar_kernel::rate_apply::RateApply for CardRepricer {
     }
 }
 
+/// **THE ROOT, DATING A PRICE** — the read-side twin of the apply above.
+///
+/// The metering accrual asks WHEN the card it is serving under started, so that a cell aggregated
+/// over a UTC day carries an instant finer than the day and a card published at noon splits the
+/// day rather than repricing all of it (DECISION #79). The answer is the `effective_from` of the
+/// entry the head resolves to at that instant — a DATE, never a rate, which is what lets an
+/// accrual on the serving path ask it at all.
+///
+/// The HEAD, not a pinned snapshot: an accrual is dated when it happens, by the history as it
+/// stands then. A back-dated correction appended afterwards does not change when the cell was
+/// earned; it changes what that instant is worth, and the read resolves that.
+impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {
+    fn effective_from_at(&self, at_ms: u64) -> u64 {
+        let Some(history) = ROOT_CARD.history() else {
+            // No configuration resolved yet: zero, the opening entry's own `effective_from`, so the
+            // cell dates to a card that covers it rather than to none at all.
+            return 0;
+        };
+        history
+            .current()
+            .entry_at(at_ms)
+            .map_or(0, busbar_kernel_ledger::cost::CardEntry::effective_from)
+    }
+}
+
 /// **THE ROOT, ANSWERING THE USAGE READ'S DATED-HISTORY SEAM** (DECISION #79).
 ///
 /// `GET /api/v1/admin/usage` prices each metering row against the card in force at that row's own
@@ -472,28 +497,20 @@ impl busbar_core_admin::v1::service::UsageRateHistory for RootUsageHistory {
     fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
         ROOT_CARD.history()
     }
-
-    /// The root keeps no per-`(key, model, provider)` posting index, and inventing one here would
-    /// be a second ledger. A metering row carries its own instant instead — see the read's own
-    /// resolution — so this answers empty and the read resolves per row.
-    fn postings(
-        &self,
-        _from_secs: u64,
-        _to_secs: u64,
-    ) -> Vec<busbar_core_admin::v1::service::UsagePosting> {
-        Vec::new()
-    }
 }
 
 /// Install the root as the process's rate holder. Boot only, once.
 ///
-/// TWO HALVES OF ONE FACT, installed together because they are one fact: the deployment's rates
-/// live here. The APPLY half hears the engine resolve a configuration and appends a dated entry;
-/// the READ half hands the resulting history to the ledger read that prices against it. Installing
-/// one without the other is a node that dates its prices and then reports them off the newest card
-/// anyway, which is the defect #79 names.
+/// THREE HALVES OF ONE FACT — the deployment's rates live here, and all three readings of that
+/// fact go up together or none does. The APPLY half hears the engine resolve a configuration and
+/// appends a dated entry. The DATE half answers the metering accrual asking when the entry it is
+/// serving under started, which is what gives a UTC-day cell an instant finer than the day. The
+/// READ half hands the history to the ledger read that prices against it. Any two without the
+/// third is a node that dates its prices and then reports them off the newest card anyway, which
+/// is the defect #79 names.
 pub fn install_card_repricer() {
     busbar_kernel::rate_apply::install_rate_apply(&CardRepricer);
+    busbar_kernel::rate_apply::install_rate_epoch(&CardRepricer);
     busbar_core_admin::v1::service::install_usage_rate_history(&RootUsageHistory);
 }
 
@@ -825,7 +842,20 @@ impl ProductionUnits {
         // because what they read is the durability the constructor took ownership of — the handle
         // does not exist until it has. Binding it here is what makes the served figures this node's
         // rather than an empty table that looks like a balanced one.
-        units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(durability, read));
+        units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(
+            Arc::clone(&durability),
+            read,
+        ));
+        // The three audit-chain reads are bound off the SAME handle, for the same reason and at the
+        // same moment. A chain read and a ledger view answer different halves of what this node
+        // holds — evidence and money — and binding one is not binding the other, but both read the
+        // durability this constructor took ownership of and neither exists before it has.
+        //
+        // Until this line the three verbs resolved and refused: a node served its own chain to
+        // nobody, which makes a signed chain a claim rather than evidence.
+        units.admin.audit = Some(Arc::new(crate::root::units_admin::NodeAudit::new(
+            durability,
+        )));
         units
     }
 
@@ -880,7 +910,10 @@ impl ProductionUnits {
     /// `ReadOnly` would hand an unbound principal every read the surface has. The scope unit's matrix
     /// still decides what a grant reaches — the grant is the ceiling, the matrix is the door — and a
     /// caller holding no ceiling never reaches the door at all.
-    pub(crate) fn admin_grant(&self, principal: &PrincipalId) -> Option<busbar_core_admin::VerbScope> {
+    pub(crate) fn admin_grant(
+        &self,
+        principal: &PrincipalId,
+    ) -> Option<busbar_core_admin::VerbScope> {
         if self.front_door_is_open() {
             return Some(busbar_core_admin::VerbScope::Full);
         }

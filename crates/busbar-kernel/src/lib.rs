@@ -275,10 +275,13 @@ pub mod plane;
 #[allow(unsafe_code)]
 pub mod plane_host;
 pub mod plugin_routes;
-// A′ (ABI-purity P4): the hot-path stage profiler relocated DOWN to busbar-substrate so a plane's
-// own extracted engine names it via the ABI. Re-exported here so `crate::profile::…` (the
-// auth/ingress stage spans) is unchanged and byte-identical.
-pub use busbar_substrate_values::profile;
+// The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`). DECISIONS #83a, and
+// the #83(d) test decides it: a stage vocabulary, a bucket cap and a reservoir policy are an
+// implementation's own instrument — a second honest implementation could bucket differently, or not
+// profile at all, and still be correct — so this is SEMANTICS, def 2's kind, and it lives here.
+// Relocated byte-identically out of `busbar-substrate-values`, whose module is DELETED rather than
+// kept as a re-export: one type, one home.
+pub mod profile;
 pub mod proto;
 pub mod proxy;
 /// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0

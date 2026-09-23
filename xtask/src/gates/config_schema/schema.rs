@@ -53,7 +53,7 @@ const META_SURFACE: &str = "serde-Deserialize structs/enums (derived AND hand-im
 /// grammar silently leaves the set, which is the exact hole the set's own refusals close.
 ///
 /// A NAME MATCH IS NOT AN OWNERSHIP CLAIM. The wire-codec split gives a plane a SECOND directory
-/// under its own name (`busbar-a2a-codec/src/a2a/` beside `busbar-a2a/src/a2a/`) holding
+/// under its own name (`busbar-plane-a2a/src/a2a/` beside `busbar-a2a/src/a2a/`) holding
 /// bytes-on-the-wire rather than the `agents:` grammar. So a candidate must also CARRY the grammar
 /// file. Zero homes and two homes are both hard errors: "pick the first" would freeze one home's
 /// shapes and quietly un-freeze the other's, which is a coverage hole that reads green.
@@ -141,7 +141,31 @@ pub fn core_roots(cx: &Ctx) -> Result<Vec<String>, String> {
         // drain names next) are the config layer carved out beside it. The kernel WORKFLOW crates
         // (`busbar-kernel-*`) are NOT config-grammar roots, so the exact `busbar-kernel` name is
         // matched here, never the prefix.
-        if name == "busbar-kernel" || name == "busbar-core" || name.starts_with("busbar-core-") {
+        //
+        // `busbar-core-admin` is the ONE NAMED EXCEPTION to the prefix, and it is named rather than
+        // matched because the two "core-kind" tests are answering DIFFERENT QUESTIONS that used to
+        // agree by coincidence. `kind-isolation` (#37, refactor a39ec8633/92e823cd5) renamed the
+        // folded `busbar-plane-admin` + `busbar-admin` to `busbar-core-admin` because "not a plane"
+        // is its whole naming rule, with no opinion on config grammar. This gate's prefix match
+        // assumed the opposite direction: every `busbar-core-*` crate is a slice of the config-layer
+        // DRAIN out of `busbar-core` (true of `busbar-core-config`/`busbar-core-hooks`, both of
+        // which — like `busbar-core-admin` — have no `config/` submodule, so `grammar_dir` falls
+        // back to their whole `src/` root). For the drain crates that fallback is correct: their
+        // root IS the grammar. For `busbar-core-admin` it is not: its root is the admin HTTP API
+        // (verbs, key rotation, governance), and the only `Deserialize` types directly under
+        // `src/` are `CreateKeyReq`/`UpdateKeyReq` in `keys.rs` — `POST /keys` and `PATCH
+        // /keys/{id}` request bodies, `#[cfg_attr(feature = "openapi-schema", derive(JsonSchema))]`
+        // and already frozen by the BYTE-IDENTITY oracle's `openapi.json` goldens, not by this one.
+        // Sweeping them into the config fingerprint is exactly the hazard `grammar_dir` warns about
+        // (a core-kind crate with no `config/` module whose root also carries non-grammar
+        // `Deserialize` types) — it fired the day the rename landed, reported here rather than
+        // silently, but the fix belongs to THIS gate's over-broad prefix match, not to reorganizing
+        // the admin crate's source layout around a fingerprint it was never part of. If
+        // `busbar-core-admin` ever grows real operator-config grammar, give it a `config/`
+        // submodule (the established escape) and delete this exclusion.
+        if (name == "busbar-kernel" || name == "busbar-core" || name.starts_with("busbar-core-"))
+            && name != "busbar-core-admin"
+        {
             roots.push(format!("{dir}/src"));
         }
     }
@@ -256,6 +280,16 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // `UpstreamCreds` — the `upstream_credentials:` value grammar — moved to the neutral
         // contracts crate in the plane extraction, exactly as `SecretRef` did to `secret-ref`.
         "crates/api/src/auth.rs".to_string(),
+        // `ModelCfg` — the `models:` map's per-entry value grammar, shared by `pools.models.<name>`
+        // (the LLM plane) and `decisions.models.<name>` (DECISIONS #47) — moved out of the engine to
+        // `busbar-contract` (DECISIONS #38/#40: the one contract/ABI crate a plugin crate's whole
+        // dep closure may name) the same way `SecretRef`/`UpstreamCreds` moved to `secret-ref`/`api`
+        // above. Verbatim: same field names, order, types and serde attributes — `busbar-kernel`
+        // re-exports it at its historical `config::providers::ModelCfg` path — so this is a tracked
+        // SOURCE relocation, not a config-surface change; without this entry the type is invisible
+        // to the census (`busbar-contract` matches none of `core_roots`'s core-kind names) and reads
+        // as a straight deletion.
+        "crates/busbar-contract/src/config.rs".to_string(),
         core_file(cx, &core, "auth/mod.rs")?,
         format!("{a2a}/config.rs"),
         // `oauth_as:` — including the `default_grant` CEILING that decides what a self-registered

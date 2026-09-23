@@ -150,3 +150,113 @@ fn an_unsupported_routes_query_loads_with_no_routes() {
         "a sink that cannot answer the routes op carries no HTTP surface"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE ADAPTER WITNESS — a v2 (pre-envelope) sink and a v3 (enveloped) one, over the SAME loader.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Which response shape the fake below answers in. `false` = the BARE `ExportResponse` a sink built
+/// before DECISIONS #85 returns; `true` = the `{ result, metrics[], diagnostics[] }` envelope.
+static ANSWER_ENVELOPED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+
+/// A fake `busbar_call` that answers every op in whichever shape [`ANSWER_ENVELOPED`] selects, so
+/// ONE loader can be driven against BOTH generations of the export wire without two fixtures.
+unsafe extern "C-unwind" fn shaped_call(
+    _handle: *mut c_void,
+    req: *const u8,
+    req_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    let asked: ExportRequest =
+        serde_json::from_slice(std::slice::from_raw_parts(req, req_len)).expect("decode request");
+    let result = match asked {
+        ExportRequest::Streams => ExportResponse::Streams(vec![ExportStream::Metrics]),
+        ExportRequest::Routes => ExportResponse::Routes(Vec::new()),
+        _ => ExportResponse::Delivered,
+    };
+    let enveloped = *ANSWER_ENVELOPED.lock().unwrap_or_else(|p| p.into_inner());
+    let body = if enveloped {
+        // A v3 sink that also REPORTS — the whole point of the envelope, and the half a v2 sink
+        // structurally cannot express.
+        serde_json::to_vec(
+            &busbar_plugin::cold::observe::Observations::none()
+                .metric(busbar_plugin::cold::observe::PluginMetric::counter(
+                    "adapter_witness_total",
+                    1.0,
+                ))
+                .into_envelope(result),
+        )
+        .expect("encode envelope")
+    } else {
+        serde_json::to_vec(&result).expect("encode bare")
+    };
+    let boxed: Box<[u8]> = body.into_boxed_slice();
+    let len = boxed.len();
+    *out = Box::into_raw(boxed) as *mut u8;
+    *out_len = len;
+    STATUS_OK
+}
+
+/// Stage the real cdylib and splice in [`shaped_call`].
+fn raw_with_shaped_call() -> Option<RawPlugin> {
+    let mut raw = raw_with_fake_call()?;
+    raw.call = shaped_call;
+    Some(raw)
+}
+
+/// **THE ADAPTER WITNESS, and this is its only possible home.** DECISIONS #85 moved the export
+/// payload schema to v3 by WIDENING the window to `[2, 3]` rather than moving it — a sink built
+/// against the bare response keeps loading and keeps serving. Nothing else in the tree can witness
+/// that: no export plugin has ever been published, so the oracle corpus has no
+/// `plugins.load|export-*` cell to diverge, and writing one would mean minting a signed v2 artifact
+/// into the corpus and pinning its digest.
+///
+/// So it is witnessed HERE, over the real loader, against BOTH shapes in one test: the same
+/// `load_export_from_bytes` path, the same `transport_call`, the same `DynExport` — only the bytes
+/// the sink answers in differ.
+#[test]
+fn a_pre_envelope_v2_sink_and_an_enveloped_v3_sink_both_load_and_serve() {
+    for enveloped in [false, true] {
+        *ANSWER_ENVELOPED.lock().unwrap_or_else(|p| p.into_inner()) = enveloped;
+        let Some(raw) = raw_with_shaped_call() else {
+            eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
+            return;
+        };
+        let shape = if enveloped { "v3 enveloped" } else { "v2 bare" };
+        let sink = export_from_raw(raw, "adapter-witness")
+            .unwrap_or_else(|e| panic!("a {shape} sink must load: {e}"));
+        // It LOADS: the load-time `streams` and `routes` queries both decoded.
+        assert_eq!(sink.streams(), &[ExportStream::Metrics], "{shape}");
+        assert!(sink.routes().is_empty(), "{shape}");
+        // And it SERVES: a delivery round-trips to an ack.
+        sink.deliver(ExportStream::Metrics, &serde_json::json!({"n": 1}))
+            .unwrap_or_else(|e| panic!("a {shape} sink must serve a delivery: {e}"));
+    }
+    *ANSWER_ENVELOPED.lock().unwrap_or_else(|p| p.into_inner()) = false;
+}
+
+/// THE TWO SHAPES ARE DISJOINT, which is what makes the probe total rather than a guess: every
+/// response variant is externally tagged by its Rust variant name and not one of them is named
+/// `result`, so a bare response can never be mis-read as an envelope and an envelope can never be
+/// mis-read as a bare response.
+///
+/// Asserted on the BYTES, because that is where the property actually lives — a decoder that got
+/// this wrong would still typecheck.
+#[test]
+fn a_bare_response_and_an_enveloped_one_cannot_be_confused() {
+    let bare = serde_json::to_vec(&ExportResponse::Streams(vec![ExportStream::Metrics]))
+        .expect("encode bare");
+    let enveloped = serde_json::to_vec(&busbar_plugin::cold::observe::Envelope::bare(
+        ExportResponse::Streams(vec![ExportStream::Metrics]),
+    ))
+    .expect("encode envelope");
+    assert_ne!(bare, enveloped);
+    // The bare form has no `result` key, so the envelope decode refuses it...
+    assert!(
+        serde_json::from_slice::<busbar_plugin::cold::observe::Envelope<ExportResponse>>(&bare)
+            .is_err()
+    );
+    // ...and the enveloped form is not a variant name, so the bare decode refuses that.
+    assert!(serde_json::from_slice::<ExportResponse>(&enveloped).is_err());
+}

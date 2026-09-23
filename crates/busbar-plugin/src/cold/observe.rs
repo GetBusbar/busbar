@@ -49,6 +49,25 @@
 //! envelope that reach is not representable from either build — both REPORT, the host folds — so the
 //! equivalence becomes true rather than asserted.
 //!
+//! ## THE GAP THIS ENVELOPE DOES NOT CLOSE: it is plugin→host, one way
+//!
+//! Recorded here rather than anywhere else because this is the module an author reads when they ask
+//! "how do I find out what happened", and the honest answer has a hole in it.
+//!
+//! The envelope carries what a plugin OBSERVED. It carries nothing in the other direction, and there
+//! is a real thing the host knows and the plugin does not: **the host owns the admission gate, so
+//! the host is what SHEDS a plugin's batch.** When a sink is saturated the host drops the delivery
+//! and counts it; the sink is never called, so it cannot report the drop, cannot reconcile its own
+//! counters against what actually shipped, and cannot tell a quiet period from a shed one. The same
+//! is true of every other host-owned refusal a plugin would want to know about — an egress the host
+//! declined to open, a metric this module's own bounds refused.
+//!
+//! That is an ABI GAP, not a bug in any of the code below, and closing it is a separate design: a
+//! host→plugin notification has to answer where it is delivered (a sink that was never called has no
+//! call to ride), whether it is ordered against deliveries, and what a plugin is permitted to do in
+//! response. None of those questions is settled, and inventing an answer inside a one-way wire would
+//! produce exactly the kind of half-shape #85 exists to remove.
+//!
 //! ## Where this will live
 //!
 //! Here, beside the other cold-lane shapes (`export.rs`, `hook.rs`, `endpoint.rs`), because that is

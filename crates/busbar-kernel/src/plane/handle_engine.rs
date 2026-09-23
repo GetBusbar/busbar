@@ -289,11 +289,23 @@ impl std::fmt::Display for ScopedMutateError {
     }
 }
 
-/// One live handle in the working set: its opaque row, its neutral projection, and its chain position.
+/// One live handle in the working set: its opaque row, its neutral projection, its chain position,
+/// and the durable row record LAST PERSISTED for it (the ROLLBACK TARGET).
 struct HandleSlot {
     row: Arc<dyn Any + Send + Sync>,
     meta: HandleMeta,
     pos: ChainPosition,
+    /// THE ROLLBACK TARGET — the durable row record memory still agrees with. A mutation whose event
+    /// append fails re-upserts THIS record, so the durable row goes back to the state the live handle
+    /// still holds rather than surviving one write ahead of a chain that never recorded the move.
+    ///
+    /// [`DurableHandleEngine::submit`] sets it to the genesis row it upserted; each mutation whose
+    /// row AND event both landed advances it to the row it just persisted. It is `None` only for a
+    /// handle brought back by [`DurableHandleEngine::rehydrate`], which does not carry the
+    /// plane-encoded record across the boot seam — such a handle has no in-memory pre-image to
+    /// restore, and because this field only advances on a FULLY successful mutation, that gap
+    /// persists across every consecutive failed attempt until the first one that wholly succeeds.
+    row_record: Option<PlaneRecord>,
 }
 
 /// ONE KEY IN THE EXPIRY INDEX: a handle's age and its id, in the order the sweep evicts by — oldest
@@ -466,10 +478,36 @@ impl DurableHandleEngine {
     }
 
     /// Apply one [`Mutation`] to an already-locked `slot`: durable row upsert FIRST, then event append,
-    /// then — only after both persist — the in-memory row/meta/position. A durable failure returns via
-    /// `?` BEFORE any in-memory field is touched, so the slot is left untouched (the caller retries).
-    /// The slot is held under its per-handle inner lock across the whole call, serializing that one
-    /// handle's chain against a concurrent same-handle mutation.
+    /// then — only after both persist — the in-memory row/meta/position. A durable failure returns
+    /// BEFORE any in-memory field is touched, so the IN-MEMORY SLOT is left untouched (the caller
+    /// retries). The slot is held under its per-handle inner lock across the whole call, serializing
+    /// that one handle's chain against a concurrent same-handle mutation.
+    ///
+    /// That "left untouched" is a claim about MEMORY ONLY, and used to be written as though it covered
+    /// the store as well — it never did. The row upsert has already been made durable by the time the
+    /// append is attempted, so a bare `?` on the append returned an error while leaving the durable row
+    /// ONE WRITE AHEAD of a chain that never recorded the transition.
+    ///
+    /// AN EVENT APPEND THAT FAILS TAKES THE ROW WRITE BACK WITH IT — the mutate-path counterpart of the
+    /// compensation [`submit`](Self::submit) already does. The two writes are not one transaction and
+    /// the caller is told the mutation failed either way; what must not survive is the ROW alone. A
+    /// durable row that says terminal while the live handle still says active is a divergence the next
+    /// boot resolves the wrong way: [`rehydrate`](Self::rehydrate) reads the durable row and would
+    /// resolve the handle to a state no event justifies. So the slot's last-persisted record
+    /// ([`HandleSlot::row_record`]) is re-upserted before the failure returns, restoring the row memory
+    /// still agrees with. Where `submit` DELETES (its row named a handle nobody had been told about),
+    /// this RESTORES: the row belongs to a live handle that keeps answering. If the restore fails too
+    /// the divergence is real, and the returned error names BOTH causes.
+    ///
+    /// The one case with nothing to restore is a handle brought back by [`rehydrate`](Self::rehydrate)
+    /// whose first post-boot mutation is the one that fails: it has no in-memory pre-image
+    /// ([`HandleSlot::row_record`] is `None`) because the plane-encoded record is not carried across the
+    /// boot seam. Because that field only advances on a FULLY successful mutation, the gap does not
+    /// close after one failed attempt — it persists across every consecutive failure until the first
+    /// wholly successful one. That residual is logged rather than left silent, so "recovered" and
+    /// "durable row now ahead of the live handle" are distinguishable before the next boot resumes the
+    /// handle wrong; the append error is still returned either way, so the caller is never told the
+    /// mutation succeeded.
     ///
     /// This is the ONE place a live handle's `updated_at` and `terminal` move, so it is where the
     /// expiry index is re-keyed: a handle left under a stale key is a handle the sweep would judge at
@@ -485,7 +523,38 @@ impl DurableHandleEngine {
             self.upsert_record(rec)?;
         }
         if let Some(ev) = &m.event {
-            self.append_record(&ev.record)?;
+            if let Err(e) = self.append_record(&ev.record) {
+                // Only a row write needs taking back; an event-only mutation left the row alone.
+                if m.row_record.is_some() {
+                    match &slot.row_record {
+                        Some(prev) => {
+                            if let Err(undo) = self.upsert_record(prev) {
+                                return Err(StoreError(format!(
+                                    "{e}; the row write that preceded it could NOT be rolled back \
+                                     ({undo}), so the durable row for `{id}` is ahead of the live \
+                                     handle"
+                                )));
+                            }
+                        }
+                        // The documented residual: a rehydrated handle has no in-memory pre-image, so
+                        // there is nothing to restore and the durable row stays ahead of the live
+                        // handle until a mutation wholly succeeds. Logged so that case is visible now
+                        // rather than at the next boot, when rehydrate resumes the handle wrong.
+                        None => tracing::warn!(
+                            handle = %id,
+                            cause = %e,
+                            "event append failed after the row write on a handle with no in-memory \
+                             pre-image (rehydrated, not yet mutated): the durable row is ahead of \
+                             the live handle and cannot be rolled back here"
+                        ),
+                    }
+                }
+                return Err(e);
+            }
+        }
+        // Both durable writes settled; advance the rollback target to the row just persisted.
+        if let Some(rec) = m.row_record {
+            slot.row_record = Some(rec);
         }
         if let Some(ev) = m.event {
             slot.pos.tail_hash = ev.tail_hash;
@@ -622,6 +691,8 @@ impl DurableHandleEngine {
                 row: sr.row,
                 meta: sr.meta,
                 pos,
+                // The genesis row just upserted is this handle's first rollback target.
+                row_record: Some(sr.row_record),
             },
         );
         Ok(row)
@@ -945,7 +1016,15 @@ impl DurableHandleEngine {
                         &mut handles,
                         &self.expiry,
                         id,
-                        HandleSlot { row, meta, pos },
+                        // No in-memory rollback target across the boot seam: the plane-encoded
+                        // record is not carried through rehydrate, so the first post-boot mutation
+                        // that wholly succeeds is what sets one.
+                        HandleSlot {
+                            row,
+                            meta,
+                            pos,
+                            row_record: None,
+                        },
                     );
                     out.active += 1;
                 }

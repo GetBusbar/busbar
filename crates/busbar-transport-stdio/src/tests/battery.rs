@@ -51,7 +51,11 @@ async fn round_trip_byte_exact() {
 
     let payload = b"the quick brown fox jumps over the lazy dog \xE2\x9C\x93".to_vec();
     let n = t
-        .write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&payload))
+        .write(
+            &a,
+            busbar_contract::StreamId(0),
+            ScratchBytes::new(&payload),
+        )
         .await
         .expect("write succeeds");
     assert_eq!(n, payload.len());
@@ -89,7 +93,11 @@ async fn a_payload_carrying_the_delimiter_is_refused_rather_than_split_at_the_pe
 
     let injected = b"{\"id\":1}\n{\"method\":\"admin\"}".to_vec();
     let err = t
-        .write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&injected))
+        .write(
+            &a,
+            busbar_contract::StreamId(0),
+            ScratchBytes::new(&injected),
+        )
         .await
         .expect_err("a payload spelling the frame delimiter must not go on the wire");
     assert_eq!(err, TransportError::Framing);
@@ -116,9 +124,13 @@ async fn a_payload_carrying_the_delimiter_is_refused_rather_than_split_at_the_pe
 
     // And a carriage return that is not the last byte still travels, byte-exact.
     let inner_cr = b"a\rb".to_vec();
-    t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&inner_cr))
-        .await
-        .expect("only the delimiter and the byte the reader strips are refused");
+    t.write(
+        &a,
+        busbar_contract::StreamId(0),
+        ScratchBytes::new(&inner_cr),
+    )
+    .await
+    .expect("only the delimiter and the byte the reader strips are refused");
 }
 
 #[tokio::test]
@@ -254,8 +266,12 @@ async fn backpressure_is_bidirectional() {
         let payload = payload.clone();
         let a = a.clone_for_test();
         async move {
-            t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&payload))
-                .await
+            t.write(
+                &a,
+                busbar_contract::StreamId(0),
+                ScratchBytes::new(&payload),
+            )
+            .await
         }
     });
     // Give the writer a moment to fill the 8-byte duplex and block.
@@ -276,8 +292,12 @@ async fn backpressure_is_bidirectional() {
         let t = t.clone();
         let payload = payload.clone();
         async move {
-            t.write(&b, busbar_contract::StreamId(0), ScratchBytes::new(&payload))
-                .await
+            t.write(
+                &b,
+                busbar_contract::StreamId(0),
+                ScratchBytes::new(&payload),
+            )
+            .await
         }
     });
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -664,7 +684,11 @@ async fn a_write_dropped_while_queued_for_the_lock_does_not_fence_the_connection
     // Stand in for another writer holding the lock: the queued write cannot even begin.
     let held = state.writer.lock().await;
     {
-        let queued = t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(b"queued"));
+        let queued = t.write(
+            &a,
+            busbar_contract::StreamId(0),
+            ScratchBytes::new(b"queued"),
+        );
         tokio::pin!(queued);
         let raced = tokio::time::timeout(Duration::from_millis(20), queued.as_mut()).await;
         assert!(raced.is_err(), "the write cannot have taken the lock");
@@ -722,9 +746,13 @@ async fn a_line_within_the_maximum_is_still_a_frame() {
         let t = t.clone();
         let payload = payload.clone();
         async move {
-            t.write(&a, busbar_contract::StreamId(0), ScratchBytes::new(&payload))
-                .await
-                .unwrap()
+            t.write(
+                &a,
+                busbar_contract::StreamId(0),
+                ScratchBytes::new(&payload),
+            )
+            .await
+            .unwrap()
         }
     });
     let mut frames = t.frames(b);

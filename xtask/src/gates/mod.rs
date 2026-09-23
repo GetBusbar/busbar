@@ -43,11 +43,15 @@ pub mod no_deferral;
 pub mod no_float_money;
 pub mod no_self_filed_issues;
 pub mod no_tracked_ignored;
+pub mod package_selectors;
 pub mod plane_abi_neutrality;
+pub mod plane_pricing_blindness;
 pub mod plane_purity;
 pub mod plane_transport_neutrality;
 pub mod population;
 pub mod qa_gate_dispatch;
+pub mod qa_names;
+pub mod reachability;
 pub mod release_order;
 pub mod response_header;
 pub mod seal_witness;
@@ -136,6 +140,56 @@ pub const REPORT_ONLY: &[Posture] = &[
         excuse: Excused::OnlyAbout("tracked known-debt"),
     },
     Posture {
+        name: "plane-pricing-blindness",
+        why: "DECISION #87's WITNESS — planes always ledger, and the money acts are kernel-side. \
+              RED BY DESIGN on HEAD: the #83 roster's own SPLIT row says of busbar-{llm,mcp,a2a,\
+              voice} that `unit/{admit,approve,meter,route}` and `runtime/metering.rs` decide \
+              admission and price, `that is defs 5/6, not a plane` — so the debt is named in the \
+              roster before this gate ever measured it, and every live file is a row in \
+              qa/plane-pricing-blindness.toml. The five EXTRACTED busbar-plane-* crates are \
+              already clean and the gate is what keeps them that way. It goes green when the \
+              baseline is empty. Every census row names the needle below; the `:undocumented` and \
+              `:stale-baseline` rows do NOT, so a NEW money reference landing in a plane, or a \
+              ledger row that outlived its debt, is scored under `--all` like any regression.",
+        excuse: Excused::OnlyAbout("tracked money debt"),
+    },
+    Posture {
+        name: "reachability",
+        why:
+            "THE PLANE-ROSTER REACHABILITY WITNESS, and it is RED BY DESIGN on HEAD: it was built \
+              on 2026-09-22 to red on `crates/busbar/src/root/units_a2a.rs`, which ships three \
+              money faults in a module whose unit's only construction site in the crate is under \
+              `#[cfg(test)]`. A gate that did not red there would not work. It also reds on four \
+              more nobody had written down (units_voice, units_mcp, money_book, vocabulary) and \
+              PASSES units_llm, which is live. It is a release-time claim — \
+              scripts/verify-1.6.0-done.sh runs it, full_gate's own excuse table is where that is \
+              written down and checked — and every row it is red about is printed in full on every \
+              run, so a red that is not counted here is never a red that was not mentioned. DELETE \
+              THIS POSTURE when qa/reachability.toml's findings are drained (each either switched \
+              on or declared) and the gate is green on HEAD.",
+        excuse: Excused::ReleaseTime,
+    },
+    Posture {
+        name: "qa-names",
+        why:
+            "THE LIST IS EMPTY AND THE GATE IS GREEN OUTRIGHT. This posture was written on \
+              2026-09-22 naming three rows and twenty-five dead names -- five crate names, \
+              seventeen paths and three `scope_globs` -- and ALL TWENTY-FIVE ARE DRAINED, so the \
+              list that scored them is `&[]` and every row of this gate is now SCORED like any \
+              other: a new dead name, a kind that names no key, a scan that collapsed or a stale \
+              declaration reds `--all` and `--posture` alike. An empty `OnlyRows` cannot excuse \
+              anything -- `excused_from_all` is only consulted when the verdict is red, and with no \
+              named row every red is a NEW RED -- so this entry is inert rather than a waiver. It \
+              is kept for exactly one reason: `ci.yml` and `full_gate::CARGO_LOCAL` both invoke \
+              `cargo xtask gate qa-names --posture`, and `--posture` on a gate with NO posture \
+              entry exits 2 by design. DELETING THIS ENTRY IS A THREE-FILE EDIT and must be all \
+              three at once: strike this `Posture` and `QA_NAMES_STANDING_REDS` here, change \
+              ci.yml's step to plain `cargo xtask gate qa-names`, and change the matching string in \
+              `full_gate::CARGO_LOCAL` -- the full-gate selftest holds those two in set equality, \
+              so editing either alone reds it.",
+        excuse: Excused::OnlyRows(QA_NAMES_STANDING_REDS),
+    },
+    Posture {
         name: "ship-ready",
         why: "THE SHIP CRITERION, and the integration line is not the ship SHA. Every one of its \
               rows is a claim about a tree that is ready to promote — the twin at zero, the \
@@ -176,6 +230,56 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     "ports-only-tests:busbar-llm",
     "request-path-fn-size",
     "terminal-doors-in-audit-step",
+];
+
+/// THE `qa-names` GATE'S STANDING REDS, BY NAME.
+///
+/// Three rows, each red about dead names in `qa/*.toml` that were already there when the gate was
+/// written and each of which belongs to a change that is not this one. Same contract as
+/// [`CONSTRUCTION_STANDING_REDS`]: a red this list does not name is scored, and a name on this list
+/// that has gone green is STALE and is scored too, so the list cannot outlive its facts and cannot
+/// quietly become a blanket.
+pub const QA_NAMES_STANDING_REDS: &[&str] = &[
+    // EMPTY, 2026-09-22, and that is the drain finishing rather than the list being switched off.
+    //
+    // It held three row ids covering twenty-five dead names in `qa/*.toml`. Each was decided by the
+    // same question -- did the SUBJECT move, or is it gone? -- and the two answers have different
+    // edits, because repointing a row at a subject it never covered launders debt nobody reviewed:
+    //
+    //   * `qa-names:crate-names-a-live-package` (5). `[rules.loc-ceilings].caps_crate =
+    //     "busbar-caps"` STRUCK: the crate folded into busbar-contract (2c9eddecf) and there is
+    //     nowhere to repoint it, because `contract_crate` already counts those lines and naming the
+    //     crate twice would double-count it. The row's measurement (6837), its ceiling (5652) and
+    //     its standing red are unchanged. Four `qa/kind-isolation.toml` `[[cell]]` rows naming
+    //     `busbar-plugin-pack`/`busbar-plugin-sign` STRUCK on the owning gate's own instruction:
+    //     it reported each as `dead-cell ... the cell measures 0. Strike it`. (`busbar-plugin-pack`
+    //     went to busbar-plugin-SDK in 38db9d48e, not the loader; `busbar-plugin-sign` went to the
+    //     loader in d81a76f7f. Both destinations are measured under their own names already.)
+    //
+    //   * `qa-names:path-names-a-live-path` (17). Nine `qa/construction.toml` entries under the
+    //     deleted `busbar-core`/`busbar-substrate` and the renamed `busbar-plane-admin` REPOINTED.
+    //     Six `qa/full-gate.toml` skip rows STRUCK -- all six were BORN DEAD, because 446d771f3
+    //     (which created that file) is a descendant of c73ae4f66 (deleted the five shadow-oracle
+    //     harness scripts) and 378572b3f (deleted release-order-lint.py, saying in its own message
+    //     that the skip entry and its special case both had to go). `cargo xtask full-gate --list`
+    //     shows the six invocations actually skipped, and not one of the struck rows was among
+    //     them. Two `qa/instance-noun-neutrality.toml` rows: `crates/plugin-sign/src/tests/
+    //     lib_tests.rs` REPOINTED to `crates/plugin-loader/src/tests/sign_tests.rs` (a real `git
+    //     mv` in d81a76f7f, and the freshly measured baseline gives the destination the SAME count
+    //     36 and the same wave, so the ratchet moved with the file); `crates/busbar-plane-voice/
+    //     src/claims.rs` STRUCK, because fbead1a31 says in as many words "NOT A RELOCATION, SO NOT
+    //     AN R" -- voice was the losing duplicate and the survivor
+    //     `crates/busbar-plane-streaming/src/claims.rs` already carries its own identical row.
+    //
+    //   * `qa-names:glob-matches-something` (3). `[rules.plane-no-money].scope_globs` named
+    //     `crates/busbar-{mcp,a2a,voice}/src/unit/*`. `git log --all` returns ZERO commits for all
+    //     three: those directories have never existed here, and all three crates already had their
+    //     real layouts at ae307a648, the commit that wrote the globs. Not stale -- never resolved.
+    //     REPOINTED at the crates' real `src` roots, AND THE REPOINT IS THE FINDING: a rule
+    //     asserting that a plane names no price went from 1 money symbol to 113, having been green
+    //     over three of its four planes (and, since #39 dissolved busbar-mcp-codec and
+    //     busbar-a2a-codec INTO those crates, over two codec halves as well). Nothing is
+    //     allowlisted; `plane-no-money` stays red at 113 on `CONSTRUCTION_STANDING_REDS`.
 ];
 
 /// One entry of [`REPORT_ONLY`].
@@ -400,19 +504,47 @@ const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
 const MEASURED_KIND_ISOLATION: f64 = 128_034.0; // 152 cases, 1360.9 s
 const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
 
-// `audit-ledger` MEASURED 4 433 UNITS (14 cases, 46.5 s) at 2026-09-10 b6f66e929 and was struck as
-// below the default. It has since GROWN BACK PAST 9 000 — 8 779 units, the SAME 14 cases, 99.4 s, at
-// 2026-09-15 abf8e9ce8 — which is exactly the "if the gate grows back past 9 000 the default is what
-// says so" trigger the struck note named. Re-examined: no case was added; the growth is the 1.6.0
-// register itself. The `audited-at-reachable` case asks git to reach EVERY commit the register names,
-// and the register gained the whole 1.6.0 drain — so the same 14 cases now scan a bigger history. It
-// is NOT the per-plant disk rescan the earlier `construction` register had: each case plants a DIFFERENT
-// register, so the reachability answer differs per case and is not memoisable across them. Isolated
-// it is still under the default (8 779), but the battery runs under `cargo test`'s own ~1.4x
-// contention where it crosses it — the same reason every other whole-tree battery here carries the
-// 1.6x slack. Re-baselined below with that slack; a FUTURE doubling (past ~14 000) is still a red row
-// rather than minutes nobody attributes.
-const MEASURED_AUDIT_LEDGER: f64 = 8_779.0; // 14 cases, 99.4 s
+// `audit-ledger` IS STRUCK AGAIN, AND THE EXPLANATION IT WAS RE-BASELINED ON WAS WRONG.
+//
+// The history: it measured 4 433 units (14 cases, 46.5 s) at 2026-09-10 b6f66e929 and was struck as
+// below the default; it grew back to 8 779 (same 14 cases, 99.4 s) at 2026-09-15 abf8e9ce8 and was
+// re-baselined at 8 779 x 1.6 = 14 046; it then blew THAT, at 15 405 units / 190 s, which is the
+// "FUTURE doubling past ~14 000" the re-baseline said would be a red row rather than minutes nobody
+// attributes. It was. This is the attribution.
+//
+// THE RECORDED CAUSE WAS FALSE AND IS RETIRED. The note here and the entry's `why` both blamed
+// the register: "the 1.6.0 register gained the whole drain, so the same 14 cases now scan a
+// bigger history". Measured at abf8e9ce8 against HEAD, `qa/audit-ledger.json` went 247 201 ->
+// 251 865 bytes (+1.9%) over 23 -> 25 distinct commits. A 1.9% input cannot produce a 75% cost,
+// and the count that actually drives the work went DOWN: 133 -> 128 scopes carrying an
+// `audited_at`. Reachability was never the driver either — `Git::reachable` resolves ONE
+// `rev-list` per process behind a `OnceLock` and `Ctx::workspace()` is shared by all 14 cases, so
+// that cost is paid once, not per case. Nor was it scope hashing against a grown tree:
+// `tree_hash` over all 170 scopes measured 0.179 s of a 6.076 s `check`, under 3%.
+//
+// WHAT IT ACTUALLY WAS: `audit::rows` filled in `age` with a `rev-list --count <audited_at>..HEAD`
+// PER SCOPE — 128 git processes per `check`, inside the very function whose doc said it avoided
+// "144 scopes times a process each". Those 128 scopes name only SEVENTEEN distinct commits, so 111
+// of the processes re-asked an answered question. At ~24 ms each (16 ms of it bare fork/exec) that
+// was 6.2 s of a 6.076 s `check` — effectively all of it — and the battery pays it FOURTEEN TIMES,
+// once per planted case: 1 792 git processes for a field no rule reads (`age` is printed by `ledger
+// report`/`next` and by nothing else). It grew on its own without the register changing at all,
+// because every commit that lands on HEAD lengthens every `audited_at..HEAD` walk; 605 commits
+// landed between abf8e9ce8 and HEAD.
+//
+// FIXED, NOT RE-BASELINED. `Git::commits_between` now memoises on the WHOLE INPUT `(old, new)` —
+// see its note for why that key cannot serve a plant a stale reading. Measured at 2026-09-22
+// ee930eac8, at `--jobs 1`: 128 -> 17 processes, `commits_between` 6.216 s -> 0.637 s, `check`
+// 6.076 s -> 3.143 s, and the battery 8 779 -> 2 865 units (14 cases, 43.1 s), holding within 3.5%
+// across a box load that swung from 30 to 62. Under the whole `cargo test -p xtask --lib` shard it
+// reads 4 702 units / 107 s at load ~50, against the 15 405 / 190 s at load ~22 that opened this.
+//
+// 2 865 x 1.6 = 4 584, which is BELOW the default, so the entry is struck rather than lowered —
+// `every_selftest_budget_names_a_registered_gate_with_a_reason` refuses an entry that is not above
+// it. The default 9 000 is now the guard, at 3.1x the serial measurement and 1.9x the worst
+// contended reading. If it grows back past 9 000 the default is what says so, exactly as the first
+// struck note said — and the thing to measure first is the git PROCESS COUNT per `check`, not the
+// size of the register.
 
 /// ONE BUDGETED SELF-TEST: WHAT IT MEASURED, WHEN, ON WHAT, AND WHAT IT IS ALLOWED.
 ///
@@ -517,13 +649,10 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         taken: TAKEN,
         why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input.",
     },
-    Budget {
-        gate: "audit-ledger",
-        measured: MEASURED_AUDIT_LEDGER,
-        allowed: MEASURED_AUDIT_LEDGER * BUDGET_SLACK,
-        taken: "2026-09-15 abf8e9ce8",
-        why: "The `audited-at-reachable` case asks git to reach every commit the register names, and the 1.6.0 register gained the whole drain, so the same 14 cases now scan a bigger history. Isolated it is under the default, but under `cargo test`'s contention it crosses it, so it carries the standard whole-tree-battery slack; struck when it was cheap, re-baselined now that it grew back.",
-    },
+    // `audit-ledger` HAS NO ENTRY HERE. It had one, set from 8 779 units and justified by a
+    // register-growth story that measurement refuted; the cost was 128 `rev-list` processes per
+    // `check` where 17 answer the same questions. Memoised, it measures 2 865, which is under the
+    // default. The struck note sits above, where the measurement constants are.
 ];
 
 /// One WORK UNIT: how long THIS process takes to run a fixed piece of arithmetic, measured once.
@@ -1978,6 +2107,13 @@ pub static REGISTRY: &[Registration] = &[
             "test-scope side-channel debt stays under the ceilings in qa/plane-purity-strict.toml",
     },
     Registration {
+        name: "reachability",
+        batch: 2,
+        tier: Tier::Full,
+        build: || Box::new(reachability::ReachabilityGate),
+        summary: "every plane in the #48 roster is served by a unit path the root constructs",
+    },
+    Registration {
         name: "segregation",
         batch: 1,
         tier: Tier::Fast,
@@ -2093,6 +2229,14 @@ pub static REGISTRY: &[Registration] = &[
             "no crate names a concrete plugin instance outside that instance's own crate family",
     },
     Registration {
+        name: "plane-pricing-blindness",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(plane_pricing_blindness::PlanePricingBlindnessGate),
+        summary:
+            "no plane crate resolves a card, prices, mints a unit key or arithmetics a hold (#43/#71/#87)",
+    },
+    Registration {
         name: "structure-lint",
         batch: 1,
         tier: Tier::Fast,
@@ -2188,6 +2332,20 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(no_tracked_ignored::NoTrackedIgnoredGate),
         summary: "no tracked path matches a .gitignore rule of this tree (git ls-files -ci \
                   --exclude-standard)",
+    },
+    Registration {
+        name: "package-selectors",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(package_selectors::PackageSelectorsGate),
+        summary: "every `-p`/`--package`, matrix cell and xtask cargo string names a live package",
+    },
+    Registration {
+        name: "qa-names",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(qa_names::QaNamesGate),
+        summary: "every kind, crate, path and glob named in qa/*.toml resolves to something here",
     },
 ];
 

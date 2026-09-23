@@ -13,7 +13,9 @@
 #![allow(dead_code)]
 
 use busbar_contract::bounded::SlabBytes;
-use busbar_contract::bounded::{PlaneAlloc, PlaneAllocBudget, ScratchBytes, Facts, Ir, Labels, Span};
+use busbar_contract::bounded::{
+    Facts, Ir, Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, Span,
+};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
 use busbar_contract::plugin::KernelSeal;
@@ -31,7 +33,9 @@ pub struct LeakPlaneAlloc;
 
 impl PlaneAlloc for LeakPlaneAlloc {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
-        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+        Ok(ScratchBytes::new(Box::leak(
+            src.to_vec().into_boxed_slice(),
+        )))
     }
 
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {

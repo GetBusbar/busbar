@@ -8,9 +8,11 @@
 //! money-governance verbs the design names by name (`verify`, `plane_facts`, `plane_record_write`,
 //! `set_operator_key`, `set_escrow`, `chain_break`, `store_restore`, `reseal_epoch_floor`,
 //! `set_dual_control`, `set_overdraft_ceiling`, `set_dispute_max_age`, `commit_upgrade`,
-//! `resolve_dispute`, `resolve_slice`, `adjust`, `export_keyset`, `approve`), and the 5 1.6.0
-//! ledger views (the read-only `/api/v1/admin/ledger/*` surface). Every one of those operations is
-//! a `KernelVerb` destination this table names; none of them is EXECUTED here.
+//! `resolve_dispute`, `resolve_slice`, `adjust`, `export_keyset`, `approve`), the 5 1.6.0
+//! ledger views (the read-only `/api/v1/admin/ledger/*` surface) and the 3 1.6.0 audit-chain reads
+//! (the read-only `/api/v1/admin/audit/{head,range,keys}` surface an outside verifier pulls the
+//! signed chain through). Every one of those operations is a `KernelVerb` destination this table
+//! names; none of them is EXECUTED here.
 //! [`verbs::resolve`] is how the composition root's admin mount asks which row a method and path
 //! name, and [`refusal::envelope_of`] is the one place the wire shape of an admin error is written.
 //!
@@ -45,7 +47,7 @@
 //!
 //! ## What this module is NOT, continued — an explicit scope boundary
 //!
-//! The design's admin section pins the closed 66+17+5 table AND separately names five 1.5.5
+//! The design's admin section pins the closed 66+18+5+3 table AND separately names five 1.5.5
 //! surfaces that live outside it, each pinned by its own handler rather than by this table: the
 //! self-serve token exchange (`POST /auth/token` and its browser-facing `GET` twin), the
 //! governance-scoped model listings (`GET /v1/models`, `/v1beta/models`), `/stats`, the

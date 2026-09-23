@@ -73,10 +73,10 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
     busbar_kernel::plane::registry::PlaneDecl {
         // THE KEY IS THE CODEC'S OWN, named once on the pure side of the split so this declaration
         // and the contract plane in `busbar-plane-a2a` cannot drift apart.
-        key: busbar_a2a_codec::PLANE_KEY,
+        key: busbar_plane_a2a::PLANE_KEY,
         // A MOUNTED plane, not the fallback catch-all.
         fallback: false,
-        config_section: busbar_a2a_codec::CONFIG_SECTION,
+        config_section: busbar_plane_a2a::CONFIG_SECTION,
         scope_kinds: &["agent"],
         subject_noun: "fronted agent",
         admin_noun: "agent",
@@ -546,12 +546,12 @@ pub(crate) fn openapi_fragment() -> serde_json::Value {
 }
 
 pub mod admin_view;
-/// MOVED to `busbar-a2a-codec` (pure wire vocabulary), re-exported here under its old in-crate path
+/// MOVED to `busbar-plane-a2a` (the wire dialect, #39), re-exported here under its old in-crate path
 /// so `super::anomaly::…` and `crate::a2a::anomaly::…` resolve unchanged.
-pub(crate) use busbar_a2a_codec::a2a::anomaly;
-/// MOVED to `busbar-a2a-codec` (pure wire vocabulary), re-exported here under its old in-crate path
+pub(crate) use busbar_plane_a2a::a2a::anomaly;
+/// MOVED to `busbar-plane-a2a` (the wire dialect, #39), re-exported here under its old in-crate path
 /// so `super::canonical::…` and `crate::a2a::canonical::…` resolve unchanged.
-pub(crate) use busbar_a2a_codec::a2a::canonical;
+pub(crate) use busbar_plane_a2a::a2a::canonical;
 pub(crate) mod card;
 pub mod config;
 pub(crate) mod creds;
@@ -566,9 +566,11 @@ pub(crate) mod jws;
 // still calls `pin_a_signed_card` directly (W2 flips it onto the seam).
 pub(crate) mod inbound_jws;
 pub(crate) mod local;
-/// MOVED to `busbar-a2a-codec` (pure wire vocabulary), re-exported here under its old in-crate path
-/// so `super::meter::…` and `crate::a2a::meter::…` resolve unchanged.
-pub(crate) use busbar_a2a_codec::a2a::meter;
+/// METERING ATTRIBUTION — who an A2A task BILLS, and how far the claim reaches. It is here and not
+/// in `busbar-plane-a2a` because #43 puts "whose budget this bills" on the kernel side of the seam
+/// and a plane emits counts per its declared class and nothing else. It came back from the codec
+/// crate on the #39 fold for exactly that reason.
+pub(crate) mod meter;
 /// THE HOPS BUSBAR ORIGINATES ITSELF, on verbs `local` also answers: the callback substitution and
 /// the task-list poll. One relay, one egress gate, one framing lookup — see the module header.
 pub(crate) mod originate;

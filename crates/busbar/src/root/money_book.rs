@@ -211,6 +211,12 @@ impl MoneyBook for PassThroughBook {
             billable_requests: facts.billable_requests,
             key_group_at_use: facts.key_group_at_use.clone(),
             pricing_version: facts.pricing_version.clone(),
+            // The neutral facts carry no instant yet, so this builder leaves the field at its
+            // default. It is not the durable write — the governance accrual is, and that is where
+            // the kernel stamps the entry's `effective_from` (DECISION #79). Owed: a
+            // `priced_from_ms` on `MeteringFacts` so the two readings of one row agree field for
+            // field, which is what this builder's own test asserts.
+            priced_from_ms: 0,
         }
     }
 

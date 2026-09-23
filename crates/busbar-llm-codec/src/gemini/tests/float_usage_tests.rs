@@ -183,7 +183,8 @@ fn an_unreadable_image_count_refuses_instead_of_billing_zero() {
 
     // The same body, float-spelled, still reads: the refusal is about unreadability only.
     let ok = br#"{"predictions":[{"bytesBase64Encoded":"aGk="}],"usageMetadata":{"promptTokenCount":27.0,"candidatesTokenCount":5}}"#;
-    let resp = crate::gemini::handler::read_image_response(ok).expect("a float-spelled count reads");
+    let resp =
+        crate::gemini::handler::read_image_response(ok).expect("a float-spelled count reads");
     match resp.billing() {
         Some(busbar_substrate_values::billing::Billing::Tokens(t)) => {
             assert_eq!(t.input, 27);

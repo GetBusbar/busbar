@@ -5,7 +5,7 @@
 //! The resolution rule is deliberately mechanical and unchanged: a plane's root is the directory
 //! that OWNS it — found by name, then narrowed by ownership. A name match is not an ownership
 //! claim, because the wire-codec split gives a plane a second same-named directory
-//! (`busbar-a2a-codec/src/a2a/` beside `busbar-a2a/src/a2a/`) that holds bytes-on-the-wire and
+//! (`busbar-plane-a2a/src/a2a/` beside `busbar-a2a/src/a2a/`) that holds bytes-on-the-wire and
 //! never declares the plane. A candidate must directly contain a `*.rs` carrying the grammar
 //! (`pub const PLANE_DECL`) to count. Three answers, one of which is a pass:
 //!
@@ -41,17 +41,25 @@ pub fn plane_keys_other(self_key: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// `crates/busbar-<k>/src` for every plane key, plus the `-codec` halves. The gate scans SOURCES,
-/// not manifests, so a split that moved the bulk of a plane's files must be named here or that
-/// bulk stops being scanned — which is the failure mode a split invites.
+/// `crates/busbar-<k>/src` for every plane key, plus the `-codec` halves that still exist. The gate
+/// scans SOURCES, not manifests, so a split that moved the bulk of a plane's files must be named
+/// here or that bulk stops being scanned — which is the failure mode a split invites.
+///
+/// MCP HAS NO `-codec` ROOT ANY MORE, and that is a decision rather than an omission.
+/// `busbar-mcp-codec` dissolved (#39: no `busbar-*-codec` crate). Its `ProtocolDecl` and two
+/// operation cells stayed with the engine at `crates/busbar-mcp/src/codec/`, which the
+/// `crates/busbar-mcp/src` root above already walks. Its WIRE DIALECT went to
+/// `crates/busbar-plane-mcp/src`, which is NOT listed here on purpose: a `busbar-plane-*` crate is
+/// scanned by the PLANE-KIND regime instead — `gate.plugin_kinds.plane` in qa/construction.toml,
+/// `plane_pricing_blindness::PLANE_CRATES`, kind-isolation's closure wall, and the crate's own
+/// `tests/purity.rs` — which is strictly stronger than this legacy-engine needle list. Nothing went
+/// unscanned; it changed which gate reads it.
 pub fn plane_src_roots() -> Vec<String> {
     let mut out: Vec<String> = PLANE_KEYS
         .iter()
         .map(|k| format!("crates/busbar-{k}/src"))
         .collect();
     out.push("crates/busbar-llm-codec/src".to_string());
-    out.push("crates/busbar-mcp-codec/src".to_string());
-    out.push("crates/busbar-a2a-codec/src".to_string());
     out.push("crates/busbar-voice-codec/src".to_string());
     out
 }

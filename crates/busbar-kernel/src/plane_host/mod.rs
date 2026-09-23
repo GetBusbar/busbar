@@ -69,6 +69,21 @@ pub struct HostState<'a> {
     /// The per-dispatch-invocation arena; every acquired host handle registers here and is reclaimed
     /// when this `HostState`'s owning scope drops.
     pub scope: &'a DispatchScope,
+    /// WHO the host is running this dispatch on behalf of — the plane's registry key, as the HOST
+    /// knows it, stamped at the moment the host mints the `HostCtx`.
+    ///
+    /// **Provenance the plane cannot supply, cannot omit and cannot forge** (DECISIONS #85). A
+    /// metric has to be attributable to the thing that emitted it, and an identity the emitter hands
+    /// over is not an attribution — it is a claim, and the same class of defect as the metric NAME
+    /// the `metrics_emit` slot used to take verbatim. So it is set here, by the minter, or it is not
+    /// set at all.
+    ///
+    /// `None` for the host's OWN uses of the vtable — `calllog`, `auditlog`, `trust`, `guard` and
+    /// the breaker all mint a host handle to drive a slot themselves, on nobody's behalf. Those are
+    /// not planes and have no plane to be attributed to, so rather than invent a name for them the
+    /// slots that REQUIRE an attributable emitter refuse a `None`. Use
+    /// [`with_borrowed_host_as`] to mint a handle that carries one.
+    pub emitter: Option<&'static str>,
 }
 
 /// Recover core's [`HostState`] from the opaque [`HostCtx`] the plane handed back — or refuse it.
@@ -143,13 +158,53 @@ pub fn with_borrowed_host<R>(
     scope: &DispatchScope,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    let state = HostState { app, scope };
+    let state = HostState {
+        app,
+        scope,
+        // A host-internal mint: nobody's plane. See `HostState::emitter`.
+        emitter: None,
+    };
     let vtable = build_plane_host_vtable();
     // Open a fresh generation for exactly this `f` call, on THIS thread (`HostGeneration` is
     // thread-local — see its doc). It drops at the end of this fn, right after `f` returns, so a
     // `HostCtx` that escapes `f` and is replayed later is stamped with a generation no longer live.
     let generation = HostGeneration::open();
     // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
+    let ptr = (&state as *const HostState)
+        .cast_mut()
+        .cast::<std::os::raw::c_void>();
+    let host = HostCtx::new(ptr, generation.value(), HostCtx::KIND_PLANE_HOST);
+    let out = f(host, &vtable);
+    let _keep_alive = &state;
+    out
+}
+
+/// Run `f` with a [`HostCtx`] ATTRIBUTED to `plane` — the mint site a real plane dispatch uses.
+///
+/// Identical to [`with_borrowed_host`] in every respect but one: the `HostState` carries the plane's
+/// registry key, so a host slot that must attribute what it is handed
+/// ([`vtable`]'s `metrics_emit`) has an emitter to attribute it to. `plane` is the HOST's word for
+/// which plane it is dispatching — never a string the plane supplied — which is what makes the
+/// attribution unforgeable rather than merely present.
+///
+/// ADDITIVE and currently unridden: no plane dispatch is wired yet (see [`with_dispatch_scope`]'s
+/// own note). That is why the slots requiring an emitter refuse today — a slot nobody has wired
+/// should not be writing unattributable series into the recorder, and refusing is how it says so.
+pub fn with_borrowed_host_as<R>(
+    plane: &'static str,
+    app: &App,
+    scope: &DispatchScope,
+    f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
+) -> R {
+    let state = HostState {
+        app,
+        scope,
+        emitter: Some(plane),
+    };
+    let vtable = build_plane_host_vtable();
+    // Same generation discipline as `with_borrowed_host`: opened for exactly this `f`, on THIS
+    // thread, so a `HostCtx` that escapes and is replayed later is stamped with a dead generation.
+    let generation = HostGeneration::open();
     let ptr = (&state as *const HostState)
         .cast_mut()
         .cast::<std::os::raw::c_void>();
@@ -1705,6 +1760,7 @@ impl<'a> HostDispatch<'a> {
         HostState {
             app: self.app,
             scope: &self.scope,
+            emitter: None,
         }
     }
 
@@ -1772,6 +1828,7 @@ impl SendHostDispatch {
         HostState {
             app: &self.app,
             scope: &self.scope,
+            emitter: None,
         }
     }
 
@@ -1855,6 +1912,7 @@ impl DurableHostDispatch {
         HostState {
             app: &self.app,
             scope: self.durable.arena(),
+            emitter: None,
         }
     }
 

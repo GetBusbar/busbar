@@ -43,6 +43,16 @@ busbar-substrate-values = { path = "../busbar-substrate-values" }
 # consumer (router, the chain-verification module, config, config_validate) never has to name
 # "admin" to check a scope.
 busbar-contract = { path = "../busbar-contract" }
+# THE ONE NETWORK JUDGE (#36: "the upstream leg — walk + swrr weighting + pre-dial guard; trust
+# folded in"). `busbar_kernel_egress::trust::net` is the single definition of the SSRF/metadata
+# guard — the metadata name list, the address predicates, the WHATWG host extraction, the
+# resolve-then-pin. `src/net_guard.rs` is a re-export shim over it, so every in-core call site and
+# all three plane crates keep naming `busbar_kernel::net_guard::…` unchanged and no plane→unit edge
+# is created. There WAS a second copy of that guard in this crate; it drifted, and the drift was a
+# live metadata bypass (`metadata.platformequinix.com` resolves and pins to a routable address, so
+# nothing but the NAME arm can refuse it, and the name arm read a two-entry list). One judge is the
+# fix; this edge is what makes one judge reachable from here.
+busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.
@@ -268,10 +278,11 @@ timing = ["busbar-timing/timing"]
 # keeps the full plane suite in the exact command CI runs, with the dual-compile gone.
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support", "auth-admin-tokens"] }
 busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-tokens"] }
-# The a2a codec's own test-support suite (RFC 8785 canonicalization vectors, meter and anomaly
-# cells) is reached by `cargo test --workspace` only through this edge; the plane's feature does
-# not forward it on purpose, so without this line CI never ran those tests.
-busbar-a2a-codec = { path = "../busbar-a2a-codec", features = ["test-support"] }
+# THE a2a CODEC'S EDGE IS GONE WITH THE CRATE (#39). Its batteries did not go with it: the RFC 8785
+# canonicalization vectors and the anomaly cells are `busbar-plane-a2a`'s now and are UNCONDITIONAL
+# there (a plane is featureless on purpose), so `cargo test --workspace` runs them without any edge
+# at all; the meter cells came back to `busbar-a2a`, which this file already dev-depends on above
+# with `test-support` set. Nothing this line reached went unreached.
 # THE LLM PLANE crate, on the SAME dev-dependency back-edge as MCP/A2A above: core's own test binary
 # names `busbar_llm::PLANE_DECL` (the `#[cfg(test)]` row in `plane::registry::BUILTIN_PLANE_DECLS`) so
 # the process plane list its registry/plane tests drive is the same `[llm, mcp, a2a]` the shipped

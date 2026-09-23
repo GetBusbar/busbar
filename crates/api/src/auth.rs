@@ -5,7 +5,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::redacted::Redacted;
+use busbar_contract::redacted::Redacted;
 
 /// The authenticated PRINCIPAL — who the caller IS, established at the auth stage and keyed to by
 /// everything downstream (governance, audit attribution, the hook `send_user` projection, admin
@@ -264,33 +264,6 @@ pub trait LoginModule: Send + Sync {
 pub trait AuthPlugin: AuthModule + LoginModule {}
 impl<T: AuthModule + LoginModule + ?Sized> AuthPlugin for T {}
 
-/// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much
-/// of a token matches via timing. `#[inline(never)]` + `black_box` keep the optimizer from turning
-/// the accumulation loop into an early-exit branch (which would reintroduce a timing signal for the
-/// contents). The length check IS an early exit, and is only safe to apply to raw secret material
-/// when the material's length is not itself sensitive — which a raw token generally is NOT expected
-/// to be, but a caller comparing genuinely secret raw bytes directly (rather than through
-/// [`sha256_hex`] below) still leaks whether the two lengths matched. Prefer hashing both sides
-/// first (see `sha256_hex`'s doc) so length never enters the comparison at all; this primitive alone
-/// does not guarantee that for its caller.
-#[inline(never)]
-pub fn constant_time_eq(a: &str, b: &str) -> bool {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-
-    if a_bytes.len() != b_bytes.len() {
-        return false;
-    }
-
-    // XOR all bytes and OR the results together. If any bit differs, result > 0.
-    let mut result: u8 = 0;
-    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
-        result |= x ^ y;
-    }
-
-    std::hint::black_box(result) == 0
-}
-
 /// Lowercase hex SHA-256 of `data` — THE digest facility credentials are compared under (a module
 /// hashes both sides before [`constant_time_eq`]: every digest is 64 hex chars, so
 /// `constant_time_eq`'s length early-exit never fires on a length difference driven by the raw
@@ -305,23 +278,24 @@ pub fn sha256_hex(data: &[u8]) -> String {
 #[path = "tests/auth_tests.rs"]
 mod tests;
 
-/// The UPSTREAM-credential mode (`upstream_credentials:`) — whose credential reaches the provider.
-/// DISTINCT from authentication (which auth module, if any, ran at the front door — that's the
-/// `auth.chain`): `Own` (default) signs the upstream call with busbar's configured lane key;
-/// `Passthrough` forwards the CALLER's credential upstream. A proto writer uses THIS to resolve an
-/// otherwise-ambiguous credential scheme to the single native header the caller's real client
-/// produces. (Split out of the old `AuthMode`, now its own config key — `AuthMode` is gone.)
-// `Serialize` is additive and is what lets a config section carrying this field be projected back
-// to a raw definition document — the base half of the config overlay's per-entry MERGE
-// (`NamedMapSection::entry_as_document`). A section whose entry cannot round-trip to a document
-// cannot be patched per field, only replaced wholesale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UpstreamCreds {
-    #[default]
-    Own,
-    Passthrough,
-}
+// `UpstreamCreds` LEFT THIS CRATE and is re-exported, not defined, here. It is a config-grammar
+// value — `own` / `passthrough`, two unit variants and two serde derives — and it is the ONE thing
+// the jev decision plane needed from `busbar-api`. Keeping it here forced that pure plane's
+// manifest to name this crate, and this crate carries `sha2` (for `sha256_hex` above), so the plane
+// inherited `sha2 -> cpufeatures -> libc`: a banned transitive source in a pure plugin kind, and the
+// only plane with that edge. The definition now lives beside the other reserved model-serving
+// member, `ModelCfg`, in the contract crate a plugin may name on its own. This line keeps
+// `busbar_api::UpstreamCreds` resolving for every caller that already spells it that way.
+pub use busbar_contract::config::UpstreamCreds;
+
+// `constant_time_eq` LEFT THIS CRATE too, and for the same reason `UpstreamCreds` did: it is
+// the primitive `busbar_contract::Redacted`'s `PartialEq` is built on, and a security control
+// implemented twice is one that gets fixed once. It travelled WITH `Redacted`; its sibling
+// `sha256_hex` above did NOT, because that one is `sha2 -> cpufeatures -> libc` and the
+// contract sits in every plugin's closure (#40(a)) — the open owner ruling. This line keeps
+// `busbar_api::constant_time_eq` resolving for every caller that already spells it that way,
+// and keeps it in scope for `sha256_hex`'s own doc link.
+pub use busbar_contract::redacted::constant_time_eq;
 
 /// WHY a chain verdict did not resolve to an admitted identity. The DECISION is closed here; the
 /// WORDS are the caller's — the HTTP middleware renders an RFC 6750 challenge or a native envelope,

@@ -789,3 +789,63 @@ pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
 /// the ceremony completes).
 pub const ADMITTED_UNDER_UNSET: &[KernelVerb] =
     &[KernelVerb::SetOperatorKey, KernelVerb::ExportKeyset];
+
+/// THE ONE JOIN between this enum's spelling of a verb and the admin table's spelling of it.
+///
+/// The two were written against the same list and spell it two ways — one in the enumeration's Rust
+/// casing, one in the operation-name casing the closed table's rows carry. This is where they meet.
+///
+/// It lived in the composition root until 1.6.0, which is what made it a SEAM: the table was
+/// declared here and completed there, joined by `verb_name(v) == row.verb` over a `_ => ""` arm, so
+/// a row nobody wrote an arm for resolved to the empty string and the failure surfaced as a silent
+/// test red rather than as a compile error. Neither side could see that the other was incomplete
+/// (`docs/design/BUSBAR-1.6.0.md:2064` names it: "a list that must agree with code, with nothing
+/// forcing the agreement"). Both spellings live in THIS crate — the enum above, the rows in
+/// [`crate::admin_codec`] — so the join belongs here too, where it can be checked against the rows
+/// at compile time. It is, in both directions: see the `const` assertions in
+/// `admin_codec/verbs.rs`, which refuse to build a table whose rows and names disagree.
+///
+/// `None` is NOT "no name was written for this verb". It is "this verb is not joined by name at
+/// all" — the 66 legacy operations and the 8 named surfaces carry a row in the pinned 1.5.5
+/// document and are joined on the method and path that document pinned, which is stronger than a
+/// casing convention either side may change. The compile-time check above is what keeps `None` a
+/// statement rather than an omission: a 1.6.0 verb that reached it would fail the build.
+/// `docs/design/BUSBAR-1.6.0.md:2079` — A GAP AND A FAILURE MUST NEVER BE THE SAME OUTPUT — is why
+/// this returns an option rather than an empty string: a missing thing and a present-but-empty
+/// thing were indistinguishable, and the empty string matched no row, so the verb refused.
+#[must_use]
+pub const fn verb_name(verb: KernelVerb) -> Option<&'static str> {
+    Some(match verb {
+        // The 18 money-governance verbs.
+        KernelVerb::Verify => "verify",
+        KernelVerb::PlaneFacts => "plane_facts",
+        KernelVerb::PlaneRecordWrite => "plane_record_write",
+        KernelVerb::SetOperatorKey => "set_operator_key",
+        KernelVerb::SetEscrow => "set_escrow",
+        KernelVerb::ChainBreak => "chain_break",
+        KernelVerb::StoreRestore => "store_restore",
+        KernelVerb::ResealEpochFloor => "reseal_epoch_floor",
+        KernelVerb::SetDualControl => "set_dual_control",
+        KernelVerb::SetOverdraftCeiling => "set_overdraft_ceiling",
+        KernelVerb::SetDisputeMaxAge => "set_dispute_max_age",
+        KernelVerb::CommitUpgrade => "commit_upgrade",
+        KernelVerb::ResolveDispute => "resolve_dispute",
+        KernelVerb::ResolveSlice => "resolve_slice",
+        KernelVerb::Adjust => "adjust",
+        KernelVerb::ExportKeyset => "export_keyset",
+        KernelVerb::Approve => "approve",
+        KernelVerb::AmendRateHistory => "amend_rate_history",
+        // The 5 ledger views.
+        KernelVerb::GetLedgerTotals => "get_ledger_totals",
+        KernelVerb::GetLedgerCheckpoints => "get_ledger_checkpoints",
+        KernelVerb::GetLedgerReconciliation => "get_ledger_reconciliation",
+        KernelVerb::GetLedgerMigration => "get_ledger_migration",
+        KernelVerb::GetLedgerOpenapiJson => "get_ledger_openapi_json",
+        // The 3 audit-chain reads.
+        KernelVerb::GetAuditHead => "get_audit_head",
+        KernelVerb::GetAuditRange => "get_audit_range",
+        KernelVerb::GetAuditKeys => "get_audit_keys",
+        // Joined by method and path, never by name — see the doc above.
+        _ => return None,
+    })
+}

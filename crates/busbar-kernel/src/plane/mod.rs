@@ -863,9 +863,11 @@ const fn neutral_sibling_decl(
 /// concurrently with it.
 #[cfg(test)]
 pub(crate) fn isolated_three_plane_test_registry() -> registry::TestRegistryIsolation {
-    static ALPHA: registry::PlaneDecl = neutral_sibling_decl("alpha", "alpha-section", "alpha thing");
+    static ALPHA: registry::PlaneDecl =
+        neutral_sibling_decl("alpha", "alpha-section", "alpha thing");
     static BETA: registry::PlaneDecl = neutral_sibling_decl("beta", "beta-section", "beta thing");
-    static GAMMA: registry::PlaneDecl = neutral_sibling_decl("gamma", "gamma-section", "gamma thing");
+    static GAMMA: registry::PlaneDecl =
+        neutral_sibling_decl("gamma", "gamma-section", "gamma thing");
     // `TestRegistryIsolation::seeded`, NOT `empty()` followed by `register_test_plane`: the guard
     // holds `TEST_REGISTRY_SERIAL` for its whole lifetime, and `register_test_plane` takes that same
     // (non-reentrant) lock — calling it after `empty()` on this thread would self-deadlock. `seeded`

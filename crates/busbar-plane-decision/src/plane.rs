@@ -5,7 +5,7 @@
 //! not a price. Nothing in this file opens a connection, reads a file, reads a clock other than the
 //! one the context hands it, or keeps a byte across a call.
 
-use busbar_contract::bounded::{ScratchBytes, FactValue, Facts, Ir};
+use busbar_contract::bounded::{FactValue, Facts, Ir, ScratchBytes};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::SchemeAlt;
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};

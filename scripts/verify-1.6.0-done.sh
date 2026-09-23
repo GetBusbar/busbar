@@ -24,9 +24,10 @@
 #   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
 #   conformance      the conformance rigs' selftests + verdict-covers-every-leg.py + the voice legs =ready.
 #   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
-#                    scenario/script/leg/suite that owns it and the rigs behind them pass (NO
-#                    current entry point RUNS them — see the TELLER-STEPS group, an honest gap, not
-#                    faked green), and every root-leg cell it calls proven runs over the loop.
+#                    scenario/script/leg/suite that owns it, and the rigs behind them RUN and pass
+#                    (testing/shadow-oracle/rigs-ledger.sh, driven from the TELLER-STEPS group
+#                    rather than from the gate runner, which segregation forbids), and every
+#                    root-leg cell it calls proven runs over the loop.
 #   no-deferral      cargo xtask gate no-deferral-strict-done (nothing deferred; voice markers CLEARED).
 #   config-noun      scripts/plane-config-noun-gate.sh armed (GREP_GATE_REPORT_ONLY=0). Its residual is
 #                    a LOCKED-legitimate floor, not zero and not a done condition, so what is asserted
@@ -143,7 +144,7 @@ step() {   # $1 = label ; rest = command
 # So: the number of groups this file DEFINES is counted from the file, the declared constant must
 # agree with it (a group added or removed is a two-place edit a reviewer sees), and the environment
 # may only ever RAISE the floor. A count that cannot be taken is RED, never a floor of zero.
-DONE_GROUPS_DECLARED=22
+DONE_GROUPS_DECLARED=23
 # awk, not `grep -c ... || echo 0`: `grep -c` on a file with no matches PRINTS 0 and EXITS 1, so the
 # obvious fallback fires on top of grep's own output and the variable becomes the two-line string
 # "0\n0" — which then fails every numeric comparison below and takes the honest-floor check with it.
@@ -469,6 +470,21 @@ step "instance-noun gate"       cargo xtask gate instance-noun-neutrality
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+# REACHABILITY — every plane in #48's locked roster is served by a unit path the COMPOSITION ROOT
+# ACTUALLY CONSTRUCTS. It exists because of the 2026-09-22 a2a money findings: three real faults in
+# crates/busbar/src/root/units_a2a.rs that NO corpus cell and NO rig leg could have caught, because
+# `A2aUnits::new`'s only call site in the workspace is under `#[cfg(test)]`. There is no behaviour to
+# witness, so no behavioural witness can exist — the only instrument that sees that class is one that
+# measures the ABSENCE of a caller. RED on HEAD by design, on named rows, and every unreached unit
+# path either gets switched on or gets a written `[[dormant]]` row in qa/reachability.toml. Exactly
+# the footing instance-noun-neutrality is on above: a per-push red would only restate that the plane
+# switch-ons are in flight, so it lives here and not in ci.yml.
+begin_group "REACHABILITY — every locked plane is served by a unit path the composition root constructs"
+step "reachability --selftest" cargo xtask gate reachability --selftest
+step "reachability gate"       cargo xtask gate reachability
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 # THE LOCKED ROSTER IS 5 PLANES, NOT 4, AND NOT {llm,mcp,a2a,voice}. docs/design/BUSBAR-1.6.0.md
 # Part 2:
 #   #18 — "The fourth plane is STREAMING, not voice. Voice is ONE capability/dialect inside the
@@ -527,18 +543,20 @@ begin_group "BYTE-IDENTITY — the money path is byte-stable"
 if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   printf '  \033[32m[ok]\033[0m   bless/regen env (UPDATE_OPENAPI/BLESS_*/BUSBAR_BLESS_GOLDEN) is empty\n'
   # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide, so the plane
-  # crates' `openapi-schema` reaches busbar-admin's dev-dep edges) — the golden tests are cfg-gated on
-  # it, so without both the filter selects ZERO of them. The three byte-identity goldens (json-matches-
-  # committed, served-equals-committed, error-enum-matches) MOVED to busbar-admin with the admin service
-  # (1.6.0), so `-p busbar-admin` is REQUIRED: `-p busbar -p busbar-core` alone selects just 1 test
-  # (busbar-core's `a_plane_with_admin_verbs_documents_at_least_one_openapi_path`) against the expected
-  # 15 — a vacuity the count check catches. With busbar-admin added the `openapi` filter runs the real
-  # set (14 in busbar-admin + 1 in busbar-core = 15), so the oracle's byte-identity check is real,
-  # matching cargo xtask full-gate. Thread-count-independent: every busbar-admin openapi test installs
-  # the plane seam before reading `openapi_doc()` (see `openapi_doc_seamed` in that crate's json tests),
-  # so no `--test-threads=1` pin is needed for determinism.
-  step "openapi.json goldens match committed file"  filtered_cargo_test 15 cargo test -p busbar -p busbar-core -p busbar-admin --features openapi-schema --quiet openapi
-  step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-core --quiet resolved_billing_and_limits_config_is_byte_stable
+  # crates' `openapi-schema` reaches busbar-core-admin's dev-dep edges) — the golden tests are
+  # cfg-gated on it, so without both the filter selects ZERO of them. The three byte-identity goldens
+  # (json-matches-committed, served-equals-committed, error-enum-matches) live in busbar-core-admin
+  # with the admin service (1.6.0; W4.a absorbed busbar-core into busbar-kernel, and #37 folded
+  # busbar-plane-admin + busbar-admin into busbar-core-admin), so `-p busbar-core-admin` is REQUIRED:
+  # `-p busbar -p busbar-kernel` alone selects just 1 test (busbar-kernel's
+  # `a_plane_with_admin_verbs_documents_at_least_one_openapi_path`) against the expected 23 — a
+  # vacuity the count check catches. With busbar-core-admin added the `openapi` filter runs the real
+  # set (22 in busbar-core-admin + 1 in busbar-kernel = 23), so the oracle's byte-identity check is
+  # real, matching cargo xtask full-gate. Thread-count-independent: every busbar-core-admin openapi
+  # test installs the plane seam before reading `openapi_doc()` (see `openapi_doc_seamed` in that
+  # crate's json tests), so no `--test-threads=1` pin is needed for determinism.
+  step "openapi.json goldens match committed file"  filtered_cargo_test 23 cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --quiet openapi
+  step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-kernel --quiet resolved_billing_and_limits_config_is_byte_stable
   # The six `*_round_trip_byte_exact` oracles live in busbar-llm-codec
   # (crates/busbar-llm-codec/src/tests/proto/same_proto_fidelity_tests.rs), not in busbar-llm.
   step "6 same-proto byte-exact oracles"            filtered_cargo_test 6  cargo test -p busbar-llm-codec --quiet round_trip_byte_exact
@@ -609,7 +627,7 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # CORE_ROOT used to read "crates/busbar-core/src", which commit 673ecdaaa deleted when it absorbed
 # busbar-core into busbar-kernel (#19/#37), so the armed gate printed no residual line at all and the
 # 16 was carried forward unverified rather than measured. scripts/plane-config-noun-gate.sh has since
-# been repointed at CORE_ROOTS="crates/busbar-kernel/src crates/busbar-core-config/src" (its own
+# been repointed at CORE_ROOTS="crates/busbar-kernel/src" (its own
 # CORE_ROOTS section), so the gate runs again and the true residual is 17, not 16 -- 16 was the wrong
 # number, not the comment that used to claim 19. Lower this number the moment a section is evicted;
 # a fall is reported as a fall and tells you what to lower it to.
@@ -788,8 +806,19 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "KERNEL — the Teller loop battery, the capability fixtures and attempt identity are green"
 # The kernel crate's integration tests are the loop battery (step order, refusal stops at its step,
-# every reason posts, the settlement table, the two-sided canary, kill points). The caps crate's
-# compile-fail fixtures prove the tokens cannot be forged. attempt_identity proves the one attempt
+# every reason posts, the settlement table, the two-sided canary, kill points). The caps fixtures
+# prove the tokens cannot be forged.
+#
+# THE CAPS STEP NAMES `busbar-contract`, NOT `busbar-caps`. Commit 2c9eddecf (1.6.0 W2.c) folded
+# busbar-caps into busbar-contract as `busbar_contract::caps` and deleted the crate and its
+# workspace member. `cargo test -p busbar-caps` does not run a reduced set against the survivor --
+# cargo cannot resolve the package at all, so the step errored and the whole KERNEL group was red on
+# the harness rather than on the tree. The fixtures came with the fold: they are the ~75 tests under
+# `caps::tests::*` (crates/busbar-contract/src/caps/tests/{mod,the_posting_arithmetic,
+# what_the_record_reads,what_the_usage_report_says}.rs) plus the lint-rule table the construction
+# gate's `hold-escapes` rule reads out of caps/fixtures/lint_rules.rs. The selector is the WHOLE
+# crate, exactly as the busbar-caps line was a whole-crate run -- a superset of what it used to
+# cover, and a whole-crate run is the one shape that cannot go vacuously green on a moved filter. attempt_identity proves the one attempt
 # seam produces the bytes and breaker mutations the two legacy twins produced.
 #
 # THE FILTER MATCHES 2 TESTS, BOTH LEGITIMATE, NOT A LOOSENED FILTER. `attempt_identity` selects by
@@ -806,7 +835,7 @@ begin_group "KERNEL — the Teller loop battery, the capability fixtures and att
 #     accident, so the expected count is 2, not the module's previous 1.
 if [ -d crates/busbar-kernel ]; then
   step "busbar-kernel battery"           cargo test -p busbar-kernel --quiet
-  step "busbar-caps fixtures"            cargo test -p busbar-caps --quiet
+  step "caps fixtures (busbar-contract)" cargo test -p busbar-contract --quiet
   step "attempt identity (busbar-llm)"   filtered_cargo_test 2 cargo test -p busbar-llm --quiet attempt_identity
 else
   absent_step "kernel battery" "crates/busbar-kernel"
@@ -842,39 +871,59 @@ if [ -f qa/teller-steps.json ]; then
   # come with it: a missing rig ledger and a missing release binary are REFUSALS, not skips. Nothing
   # ran, so nothing is proven.
   #
-  # testing/shadow-oracle/rigs-ledger.sh is CONFIRMED ABSENT from this tree (the Phase C cutover
-  # retired the Python oracle tool in favour of the pinned Rust `busbar-oracle` engine,
-  # testing/shadow-oracle/oracle-rust.pin, reached through ./bin/oracle). It does NOT follow that
-  # `bin/oracle rigs-ledger` is the replacement -- that was tried here and is WRONG: `bin/oracle`'s
-  # own dispatcher (bin/oracle:~90-onward) forwards any subcommand it does not special-case straight
-  # to the pinned engine, and that engine's `--help` lists normalize/diff/cells/owed-baseline/record/
-  # replay/harness-rev/merge/renormalize/replay-selftest/selftest/fetch-plugin/tool-dir/fetch-golden
-  # -- no `rigs-ledger`. Confirmed two ways: running it here prints `error: unrecognized subcommand
-  # 'rigs-ledger'`, and the pinned engine's own crates/busbar-release-oracle/PORT-REMAINING.md lists
-  # `rigs-ledger` under "ported as recorder::* leaves + tested; not yet re-exposed as CLI
-  # subcommands (only needed if a caller invokes them directly — none in the money path does)". This
-  # caller does invoke it directly, so the gap is real, not a wrong flag to swap out.
+  # testing/shadow-oracle/rigs-ledger.sh WAS absent from this tree, and the reason this group used to
+  # print for that was wrong in both halves. It said the work had been "ported to library leaves
+  # only, not re-exposed as a CLI arm" in the pinned engine, citing
+  # crates/busbar-release-oracle/PORT-REMAINING.md. That document does not say that. What it says,
+  # verbatim, is one line (busbar-release/crates/busbar-release-oracle/PORT-REMAINING.md:67), filed
+  # under the heading at :57, "STILL DEFERRED (recorder internals the harness itself provides; we
+  # DRIVE them, never reimplement)":
   #
-  # NOR IS THIS AN XTASK REPOINT. `cargo xtask teller-steps` has exactly two run arms,
-  # `--root-legs` (used above) and `--root-legs-gating` (already run as part of `cargo xtask
-  # full-gate` in the BUILD group) -- and its own usage text says why a third, `--rig-legs`, does
-  # not exist: "Driving the oracle's rig ledger means RUNNING the oracle's code, which `cargo xtask
-  # gate segregation` forbids the gate runner from doing... That arm stayed in
-  # scripts/verify-1.6.0-done.sh, where the caller drives the oracle directly." Driving it directly
-  # is exactly what fails above -- the CLI surface to drive isn't there yet.
+  #     - `rigs-ledger.sh` / `fixture-gate-selftest.sh` — separate plane-rigs gate, not the LLM
+  #       money proof.
   #
-  # So: no file, no gate flag, and no CLI subcommand currently lets this tree RUN the rig suites the
-  # matrix cites and check they pass. That is an upstream gap (busbar-release, a separate pinned
-  # repo this file may not patch), not harness drift this script can repoint around. Reported as an
-  # honest absence rather than left as a cryptic clap usage error.
-  if [ ! -x bin/oracle ]; then
-    absent_step "the rig suites the matrix cites" "bin/oracle"
+  # So it was never ported: `grep -rln rigs crates/busbar-release-oracle/src/` returns nothing, and
+  # that crate has no `recorder::*` leaves at all, for rigs or anything else. It was ruled OUT of
+  # that port's scope, by name, as not being the money proof. The old citation both misquoted the
+  # source and understated the work — re-exposing an already-ported CLI arm is small, and this was
+  # not that.
+  #
+  # AND THE RULING IS RIGHT, WHICH MAKES "WAIT FOR UPSTREAM" THE WRONG ANSWER. A plane-rigs gate is
+  # not the LLM money oracle's job, so no CLI surface was ever going to land in busbar-release for
+  # this caller to drive. The gate belongs HERE, beside the other rows that read this tree — and it
+  # was here: testing/shadow-oracle/rigs-ledger.sh, deleted by c73ae4f66 ("the oracle tool leaves
+  # this tree"), a sweep that moved the JUDGE out and took this bridge with it even though the
+  # bridge drives busbar's OWN rigs (scripts/mcp-conformance.sh, scripts/a2a-subject/boot.sh,
+  # testing/voice-conformance/voice-conformance.sh) and never touches the judge. The one upstream
+  # hook it needed — voice-conformance.sh's additive VOICE_RESULT_LOG — survived the sweep intact,
+  # which is what made restoring it a restore rather than a rewrite. It is restored from fa15cd661.
+  #
+  # THIS ARM IS STILL DRIVEN FROM HERE, NOT FROM THE GATE RUNNER, and that is not this file's
+  # opinion: xtask/src/gates/segregation.rs names this exact path and this exact caller as the rule
+  # — "`teller-steps` may ask `rigs-baseline.json` what ids exist, and may NOT run `rigs-ledger.sh`
+  # to find out … that arm stayed in `scripts/verify-1.6.0-done.sh`, where a caller driving the
+  # oracle is a caller, rather than moving into the gate runner, where it would be the runner
+  # importing its subject." A `cargo xtask teller-steps --rig-legs` would break segregation; the
+  # repoint is to the restored script, not to a new gate flag.
+  #
+  # The self-test runs FIRST (the house rule): a ledger whose own vacuity guards have stopped firing
+  # is worse than none, and this one proves six of them — a flipped baseline row, a red run, a zero-
+  # row run, a leg that enumerated nothing, and --rebaseline refusing on red / writing on green.
+  # The refusals stay refusals: a missing script or a missing release binary is a REFUSAL, not a
+  # skip. Nothing ran, so nothing is proven.
+  if [ ! -x testing/shadow-oracle/rigs-ledger.sh ]; then
+    absent_step "the rig suites the matrix cites RUN and pass" \
+      "testing/shadow-oracle/rigs-ledger.sh — the plane-rigs bridge that folds the MCP / A2A / voice rigs into one ledger. Restore it (git show fa15cd661:testing/shadow-oracle/rigs-ledger.sh); it is NOT coming from busbar-release, which ruled it out of the oracle port by name (PORT-REMAINING.md:67)."
   elif [ ! -x target/release/busbar ]; then
-    absent_step "the rig suites the matrix cites" \
+    step "rigs-ledger --selftest (the ledger's own vacuity guards still fire)" \
+      bash testing/shadow-oracle/rigs-ledger.sh --selftest
+    absent_step "the rig suites the matrix cites RUN and pass" \
       "target/release/busbar — the MCP and A2A legs are armed from it (MCP_SUBJECT_BUSBAR_BIN / A2A_SUBJECT_BUSBAR_BIN), so without it the rigs cannot run at all. Build it first: cargo build --release -p busbar"
   else
-    absent_step "the rig suites the matrix cites RUN and pass" \
-      "bin/oracle rigs-ledger — the pinned busbar-oracle engine has no rigs-ledger subcommand (confirmed via --help and its own PORT-REMAINING.md: ported to library leaves only, not re-exposed as a CLI arm). Nothing in this tree can run the rig suites and check them until that CLI surface lands upstream."
+    step "rigs-ledger --selftest (the ledger's own vacuity guards still fire)" \
+      bash testing/shadow-oracle/rigs-ledger.sh --selftest
+    step "the rig suites the matrix cites RUN and pass" \
+      bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check
   fi
   printf '  \033[36m[info]\033[0m '
   cargo xtask teller-steps 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"

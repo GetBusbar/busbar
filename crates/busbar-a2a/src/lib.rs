@@ -43,24 +43,24 @@ pub mod taskstore;
 /// it always did.
 pub mod diagnostics;
 
-/// THE DURABLE RECORD VOCABULARY, RE-EXPORTED FROM `busbar-a2a-codec`.
+/// THE DURABLE RECORD VOCABULARY. The row STRUCTS are this crate's: they name the store seam, which a pure kind may not. Their two KIND strings are the plane's schema ids and are read from there.
 ///
 /// The task and task-event row shapes moved to the pure half of this plugin — split out so
 /// `busbar-plane-a2a` can name the record kinds without linking this crate's axum routes, tonic
 /// binding and reqwest relay leg. Re-exported HERE, under its old name, so every caller that spells
 /// `busbar_a2a::record::…` resolves exactly what it always did.
-pub use busbar_a2a_codec::record;
+pub mod record;
 
 /// THE A2A PLANE'S OWN DURABLE RECORD TYPES — relocated here from `busbar-api` (1.7.0 plane
 /// extraction), re-exported at the crate root so `busbar_a2a::TaskRow` / `busbar_a2a::TaskEventRow`
 /// resolve. The neutral crates name neither.
-pub use busbar_a2a_codec::{TaskEventRow, TaskRow};
+pub use record::{TaskEventRow, TaskRow};
 
 /// A2A'S PLANE CAPABILITY KEY (`"a2a"`) — the string the composition root flips onto the unified
 /// kernel loop and the same string the A2A invoke plane reports from its
 /// `GauntletPlane::capability_key`. Re-exported at the crate root so the `busbar` binary names ONE
 /// stable path (`busbar_a2a::PLANE_KEY`) and the plane and the flip cannot drift onto two literals.
-pub use busbar_a2a_codec::PLANE_KEY;
+pub use busbar_plane_a2a::PLANE_KEY;
 
 /// THE A2A PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name A2A plane
 /// types, kept on the plane so busbar-core's neutral `test_support::TestApp` names none of them. This

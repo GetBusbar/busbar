@@ -1101,8 +1101,14 @@ fn usage_falls_back_to_stated_totals_when_the_modality_breakdown_is_absent() {
         u.text_out, stated_out,
         "the stated output total is billed, not zero: {u:?}"
     );
-    assert_eq!(u.audio_in, 0, "the split is unknown, so nothing claims audio");
-    assert_eq!(u.audio_out, 0, "the split is unknown, so nothing claims audio");
+    assert_eq!(
+        u.audio_in, 0,
+        "the split is unknown, so nothing claims audio"
+    );
+    assert_eq!(
+        u.audio_out, 0,
+        "the split is unknown, so nothing claims audio"
+    );
 
     // The lane the billing fold sums onto is what actually decides the invoice.
     let billed = u.to_billing_usage();

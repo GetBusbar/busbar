@@ -13,7 +13,9 @@
 
 use std::sync::Arc;
 
-use busbar_contract::caps::{Grant, Hold, HoldCell, HoldCellState, OriginKind, PrincipalId, ReasonCode, StepName, UnitKey};
+use busbar_contract::caps::{
+    Grant, Hold, HoldCell, HoldCellState, OriginKind, PrincipalId, ReasonCode, StepName, UnitKey,
+};
 
 use super::{arrival_hold, ArrivalDoor, Enter, InFlight};
 use crate::teller::Kernel;
@@ -21,7 +23,11 @@ use crate::teller::Kernel;
 struct TestDoor;
 
 impl ArrivalDoor for TestDoor {
-    fn arrival_hold(&self, principal: PrincipalId, token: &Grant<busbar_contract::caps::Admittance>) -> Hold {
+    fn arrival_hold(
+        &self,
+        principal: PrincipalId,
+        token: &Grant<busbar_contract::caps::Admittance>,
+    ) -> Hold {
         Hold::open(token, principal, 0)
     }
 }
@@ -71,7 +77,9 @@ fn a_duplicate_key_is_refused_and_the_original_entry_is_untouched() {
 
     // The table still holds the FIRST unit's own slot — not a second slot built for the refused
     // request, and not nothing.
-    let still_there = table.get(key).expect("the original unit is still in the table");
+    let still_there = table
+        .get(key)
+        .expect("the original unit is still in the table");
     assert!(
         Arc::ptr_eq(&first, &still_there),
         "the table must still hold the FIRST unit's own slot, not a replacement"
@@ -85,7 +93,11 @@ fn a_duplicate_key_is_refused_and_the_original_entry_is_untouched() {
     // NOT ORPHANED: the sweep's own view of the table (`snapshot`) sees exactly the one live unit,
     // so there is still exactly one path to a hold that has to be released — never zero.
     let snapshot = table.snapshot();
-    assert_eq!(snapshot.len(), 1, "the sweep must still see exactly one live unit");
+    assert_eq!(
+        snapshot.len(),
+        1,
+        "the sweep must still see exactly one live unit"
+    );
     assert!(Arc::ptr_eq(&snapshot[0], &first));
 
     // The refused unit's OWN arrival hold comes back rather than vanishing, exactly as a full-table

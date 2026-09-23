@@ -1,10 +1,12 @@
 //! What this plane declares about itself, through the contract's own `PlaneMeta` trait.
 //!
 //! Everything here is a constant, because everything here is read once at registration and sealed
-//! into policy. Distinct from `registry.rs`'s `PLANE_DECL`: that is the neutral seam a FUTURE
-//! composition root reaches this plane through (not wired yet — see its own module doc); this is
-//! the contract's own trait, which `plane.rs`'s `impl Plane for DecisionPlane` is checked against
-//! regardless of whether anything outside this crate has been told the plane exists.
+//! into policy. This is the contract's own trait, which `plane.rs`'s `impl Plane for DecisionPlane`
+//! is checked against regardless of whether anything outside this crate has been told the plane
+//! exists. It is the ONLY declaration this crate makes about itself: the kernel-shaped `PlaneDecl`
+//! constant that used to sit beside it in `registry.rs` is gone — it was a generation-1 registration
+//! nothing ever read, and carrying it cost this plugin crate a `busbar-kernel` dependency the
+//! dep-wall forbids.
 
 use busbar_contract::grammar::Claim;
 use busbar_contract::ids::{

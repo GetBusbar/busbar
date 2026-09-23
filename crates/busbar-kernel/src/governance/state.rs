@@ -876,11 +876,27 @@ impl GovState {
         usage: Option<&crate::billing::TokenUsage>,
         now: u64,
     ) {
+        // THE CELL'S PRICE INSTANT (DECISION #79): when the card this response was served under
+        // STARTED, not which card it is. A build with no root ledger in it answers zero, the
+        // opening entry's own `effective_from`, so the cell still dates to a card that covers it
+        // rather than to none.
+        //
+        // READ ON THE MILLISECOND SCALE THE HISTORY IS DATED ON, not lifted from `now`. `now` is
+        // seconds; a card apply records `store::now_ms()`. Lifting `now * 1_000` therefore dates
+        // every response in a second at that second's FIRST instant, and a card applied later in
+        // the same second sorts AFTER all of them — so a request served after an edit priced at the
+        // card before it. That is not a rounding nicety: it was measured, on the oracle's own
+        // `billing|rate-card|history-mid-window` script, as a response landing after the second of
+        // two card publishes and still resolving to the first. Two clocks of different resolution
+        // cannot order two events inside one tick of the coarser one, so the accrual reads the
+        // finer one, which is the one the thing it is being compared against was written on.
+        let priced_from_ms = crate::rate_apply::effective_from_at(crate::store::now_ms());
         let key: MeterKey = (
             key_id.to_string(),
             metering_bucket(now),
             model.to_string(),
             provider.to_string(),
+            priced_from_ms,
         );
         let add = MeterCounts {
             requests: 1,
@@ -926,7 +942,7 @@ impl GovState {
         // the per-key detail (key + error) stays at `debug!`.
         let mut failed = 0usize;
         let mut last_error: Option<String> = None;
-        for ((key_id, bucket, model, provider), counts) in taken {
+        for ((key_id, bucket, model, provider, priced_from_ms), counts) in taken {
             if counts.requests == 0
                 && counts.tokens_input == 0
                 && counts.tokens_output == 0
@@ -948,6 +964,9 @@ impl GovState {
                 billable_requests: counts.requests,
                 key_group_at_use: String::new(),
                 pricing_version: String::new(),
+                // The instant the cell's card started, carried verbatim from the accrual key so the
+                // durable row can be resolved against the dated history exactly as the cell was.
+                priced_from_ms,
             };
             match self.store.add_metering(&delta) {
                 Ok(()) => flushed += 1,
@@ -962,7 +981,7 @@ impl GovState {
                     // sentinel), so no billable usage is dropped and retry is preserved — a re-queued
                     // cell that still exists next tick simply accumulates.
                     self.pending_metering
-                        .accrue((key_id, bucket, model, provider), counts);
+                        .accrue((key_id, bucket, model, provider, priced_from_ms), counts);
                 }
             }
         }

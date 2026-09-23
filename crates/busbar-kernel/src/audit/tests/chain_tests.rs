@@ -547,7 +547,10 @@ fn a_freshly_sealed_admin_audit_digest_now_uses_scheme_two() {
             principal: "admin".to_string(),
         },
     );
-    assert_eq!(entry.scheme, crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED);
+    assert_eq!(
+        entry.scheme,
+        crate::audit_ring::AUDIT_SCHEME_LENGTH_PREFIXED
+    );
     let mut d = Digest::new(Framing::LengthPrefixed);
     d.text(&entry.prev_hash)
         .num(entry.seq)

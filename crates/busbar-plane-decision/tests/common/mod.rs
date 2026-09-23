@@ -8,7 +8,9 @@
 
 #![allow(dead_code)]
 
-use busbar_contract::bounded::{PlaneAlloc, PlaneAllocBudget, ScratchBytes, Labels, SlabBytes, Span};
+use busbar_contract::bounded::{
+    Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, SlabBytes, Span,
+};
 use busbar_contract::ids::{PrincipalId, SessionId};
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};

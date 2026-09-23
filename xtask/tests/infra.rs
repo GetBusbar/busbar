@@ -454,15 +454,45 @@ fn the_plane_key_contract_matches_plane_keys_sh() {
     assert_eq!(src[0], "crates/busbar-llm/src");
     assert!(src.contains(&"crates/busbar-llm-codec/src".to_string()));
     assert!(src.contains(&"crates/busbar-voice-codec/src".to_string()));
+    // READ THE SHELL, DO NOT RESTATE IT. This assertion used to be a literal copy of
+    // `NEUTRAL_ROOTS_LIST`, which is the defect the test's own NAME promises to catch: when
+    // `busbar-core` and `busbar-substrate` were absorbed (673ecdaaa, 5fa320208) the Rust side was
+    // repointed at `busbar-kernel` in d12e1f858 and the literal here was not, so the one test that
+    // exists to hold the two lists equal was red for weeks on its own copy of the answer rather
+    // than on the shell. Parsing the shell makes the binding real: a root moved in one place now
+    // reds here until it moves in the other, which is the whole point of a single list.
+    let keys_sh = std::fs::read_to_string(repo_root().join("scripts/plane-keys.sh"))
+        .expect("scripts/plane-keys.sh is readable");
+    let shell_neutral: Vec<String> = keys_sh
+        .lines()
+        .find_map(|l| {
+            l.trim()
+                .strip_prefix("NEUTRAL_ROOTS_LIST=\"")?
+                .strip_suffix('"')
+        })
+        .expect("scripts/plane-keys.sh declares a `NEUTRAL_ROOTS_LIST=\"...\"` line")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    assert!(
+        !shell_neutral.is_empty(),
+        "an empty neutral-root list would make this equality vacuous"
+    );
     assert_eq!(
         planes::neutral_src_roots(),
-        vec![
-            "crates/busbar-core/src",
-            "crates/busbar-substrate/src",
-            "crates/busbar-substrate-values/src",
-            "crates/api/src",
-        ]
+        shell_neutral,
+        "xtask::planes::neutral_src_roots and scripts/plane-keys.sh's NEUTRAL_ROOTS_LIST are ONE \
+         list; move a root in both or in neither"
     );
+    // And every root in that one list is a directory that EXISTS: a listed-but-absent root is
+    // scanned as zero files, and zero is the passing answer to every ban written against it.
+    for r in &shell_neutral {
+        assert!(
+            repo_root().join(r).is_dir(),
+            "neutral root `{r}` is listed but is not a directory in this tree -- a root that does \
+             not exist is scanned as zero files and passes every ban silently"
+        );
+    }
 }
 
 #[test]

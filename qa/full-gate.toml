@@ -8,10 +8,39 @@
 #    buried in a runner.
 # 2. `cargo xtask gate segregation` forbids `xtask/src` from naming a file under
 #    testing/shadow-oracle/ that is not on its data allowlist: a gate runner that reaches into
-#    the oracle is a runner whose verdict moves when the oracle does. Six of the entries below
-#    are oracle harness scripts. They belong in the register precisely BECAUSE the runner does
-#    not run them, and putting the register in the runner would have meant either weakening
-#    that rule or lying to it. The register is data; the runner reads it.
+#    the oracle is a runner whose verdict moves when the oracle does. The register is data; the
+#    runner reads it, and putting it in the runner would have meant either weakening that rule or
+#    lying to it.
+#
+# ── SIX ROWS WERE STRUCK HERE, 2026-09-22, AND ALL SIX WERE BORN DEAD ──────────────────────────
+#
+# This paragraph used to end "Six of the entries below are oracle harness scripts. They belong in
+# the register precisely BECAUSE the runner does not run them." FIVE of those six named
+# `testing/shadow-oracle/{fetch-golden,fetch-plugin,selftest,record,replay}.sh`, and the sixth named
+# `scripts/release-order-lint.py`. NONE OF THE SIX EXISTED ON THE DAY THIS FILE WAS WRITTEN:
+# c73ae4f66 ("the oracle tool leaves this tree") DELETED the five on 2026-09-06 — its own message
+# says "full-gate discovery ... now names bin/oracle where it named five scripts" — and 378572b3f
+# DELETED release-order-lint.py on 2026-09-07, saying in as many words that "full-gate's SKIP_REASON
+# loses its entry and the special case that entry needed ... keeping either would leave a waiver
+# that excuses nothing". 446d771f3, which created THIS file by lifting the shell runner's
+# SKIP_REASON into data, is a descendant of both and carried all six dead rows across with it.
+#
+# THEY ARE STRUCK, NOT REPOINTED, BECAUSE THERE IS NOTHING TO POINT AT AND NOTHING TO EXCUSE:
+#
+#   * The oracle harness is now the PINNED EXTERNAL TOOL `bin/oracle` (testing/shadow-oracle/
+#     oracle.pin), and `bin/oracle` is invisible to discovery by construction — `discovery::
+#     GATE_ROOTS` is {scripts, testing} and `GATE_EXTS` requires an extension, so an extensionless
+#     path under `bin/` can never be discovered and therefore can never need a skip. Adding a
+#     `bin/oracle` row would be a waiver for something the runner never offers to run.
+#   * `scripts/release-order-lint.py`'s work moved INTO `cargo xtask gate release-order`, which CI
+#     invokes; its only remaining mention in ci.yml is inside a `#` comment, which `strip_prose`
+#     blanks before discovery ever sees it. The `partition()` special case that let it bypass this
+#     table went with it.
+#
+# MEASURED BOTH WAYS: `cargo xtask full-gate --list` reports SKIPPED-WITH-REASON (6), and the six it
+# names are run.sh, proof-manifest.py, build-provenance-gate.sh, loom.sh, plugin-registry-check.sh
+# and txn-fence.sh — not one of the six struck rows. They were matched by nothing, so nothing that
+# CI runs is newly running or newly skipped because they are gone.
 #
 # A skip with an EMPTY reason is refused by `cargo xtask full-gate --selftest`. A skip without a
 # reason becomes permanent.
@@ -56,29 +85,11 @@ reason = "asserts the provenance stamp of a BUILT release binary ('… target/re
 script = "scripts/proof-manifest.py"
 reason = "the Build-Proof-Dashboard collator, run ONLY on the dev/qa/main promotion branches (it needs --version/--out and re-emits docs/proof/<branch>.json). By its own contract it CHANGES NO GATE — it re-runs the cheap grep gates and records their verdicts — so there is nothing to prove locally on an integration branch."
 
-[[skip]]
-script = "scripts/release-order-lint.py"
-reason = "release-graph shape; included via its own entries below, see RELEASE_ORDER."
 
-[[skip]]
-script = "testing/shadow-oracle/fetch-golden.sh"
-reason = "downloads the PUBLISHED 1.5.5 release tarball from GitHub Releases and verifies it against golden-digests.tsv. It measures the network and a published artifact, not this tree."
 
-[[skip]]
-script = "testing/shadow-oracle/fetch-plugin.sh"
-reason = "same: fetches each published plugin artifact by digest over the network, one per plugin named in plugin-digests.tsv."
 
-[[skip]]
-script = "testing/shadow-oracle/selftest.sh"
-reason = "takes TWO built binaries as positional arguments (the release build and the cached 1.5.5 golden). Neither exists on a laptop until fetch-golden.sh has run and a release profile has been built; a bare invocation has nothing to compare."
 
-[[skip]]
-script = "testing/shadow-oracle/record.sh"
-reason = "drives a built binary through every recorded cell and writes a recording tree. Needs the release build and the fetched golden binary, exactly as selftest.sh does — CI runs it twice, once per side."
 
-[[skip]]
-script = "testing/shadow-oracle/replay.sh"
-reason = "compares the two recording trees record.sh produces. With no recordings there is nothing to replay; the harness's own logic IS proven here by testing/shadow-oracle/replay-selftest.sh, which runs."
 
 [[skip]]
 script = "testing/llm-conformance/run.sh"

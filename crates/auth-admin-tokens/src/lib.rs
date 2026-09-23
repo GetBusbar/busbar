@@ -29,6 +29,22 @@ pub const ADMIN_TOKENS_PRINCIPAL_ID: &str = "admin";
 ///
 /// `None` hash (no admin token configured) ⇒ `Pass` — this module has nothing to judge; a chain
 /// that ends all-`Pass` is denied (fail-closed), preserving "admin API disabled without a token".
+///
+/// SHAPE PRE-CHECK — THE CHAIN HAS TO COMPOSE. A candidate shaped like a JWS/JWT compact
+/// serialization (three non-empty dot-separated segments) is never this module's credential
+/// grammar: admin-tokens compares an opaque token HASH, it does not parse structured tokens. Such a
+/// candidate belongs to a different scheme — typically an OIDC/AD admin module configured later in
+/// the same `admin_auth:` chain, which legitimately shares the `Authorization: Bearer` carrier.
+/// `Reject` is TERMINAL in `run_admin_chain`, so rejecting it here denied the request before that
+/// arm ever ran, which is a chain that cannot be composed rather than a door that is shut.
+///
+/// Fail-closed but NON-TERMINAL: this module still never `Identify`s such a candidate; what changes
+/// is that a carrier which is absent, or present but JWS-shaped, does not count as "this module was
+/// addressed", so a JWS-shaped mismatch alone DEFERS (`Pass`) and keeps the next arm reachable. A
+/// carrier that is present and NOT JWS-shaped is a genuine wrong-credential attempt against this
+/// module and still `Reject`s. The timing stance is unchanged: the shape test reads only the PUBLIC
+/// candidate string and never the compare result, and both constant-time hash compares still run
+/// unconditionally on every presented carrier regardless of shape.
 pub fn authenticate_admin_tokens(
     configured_hash: Option<&str>,
     bearer: Option<&str>,
@@ -41,6 +57,10 @@ pub fn authenticate_admin_tokens(
         // No credential presented for this module — defer (the chain's all-Pass denies).
         return AuthOutcome::Pass;
     }
+    // Read off the PUBLIC candidate strings only, BEFORE either compare, so no branch below can
+    // depend on a compare result: the constant-time fold is untouched.
+    let bearer_is_jws = bearer.is_some_and(is_jws_shaped);
+    let header_is_jws = header.is_some_and(is_jws_shaped);
     let bearer_match = u8::from(
         bearer
             .map(|b| constant_time_eq(&sha256_hex(b.as_bytes()), configured_hash))
@@ -52,10 +72,37 @@ pub fn authenticate_admin_tokens(
             .unwrap_or(false),
     );
     if std::hint::black_box(bearer_match | header_match) != 0 {
-        AuthOutcome::Identify(Principal::from_id(ADMIN_TOKENS_PRINCIPAL_ID))
-    } else {
-        AuthOutcome::Reject
+        return AuthOutcome::Identify(Principal::from_id(ADMIN_TOKENS_PRINCIPAL_ID));
     }
+    // Only a carrier that was actually presented AND is not JWS-shaped counts as "addressed to this
+    // module, and wrong" — that still terminally denies. A carrier that is absent, or present but
+    // carrying some other scheme's grammar, defers instead of short-circuiting the chain.
+    let bearer_addressed_me = bearer.is_some() && !bearer_is_jws;
+    let header_addressed_me = header.is_some() && !header_is_jws;
+    if bearer_addressed_me || header_addressed_me {
+        AuthOutcome::Reject
+    } else {
+        AuthOutcome::Pass
+    }
+}
+
+/// Whether `candidate` is shaped like a JWS/JWT compact serialization: exactly three dot-separated
+/// segments, none of them empty (`header.payload.signature`).
+///
+/// A pure SHAPE test — it says nothing about validity, signature or issuer, and is never used to
+/// admit anything. Its only job is to recognise "this is not admin-tokens' grammar" so the chain
+/// can carry the candidate on to the arm whose grammar it IS.
+fn is_jws_shaped(candidate: &str) -> bool {
+    let mut segments = candidate.split('.');
+    let (Some(a), Some(b), Some(c), None) = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) else {
+        return false;
+    };
+    !a.is_empty() && !b.is_empty() && !c.is_empty()
 }
 
 #[cfg(test)]

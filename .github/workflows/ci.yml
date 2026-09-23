@@ -304,6 +304,30 @@ jobs:
         run: cargo xtask gate no-tracked-ignored --selftest
       - name: No-tracked-ignored gate (no tracked path matches a .gitignore rule of this tree)
         run: cargo xtask gate no-tracked-ignored
+      # PACKAGE-SELECTOR LIVENESS: a `cargo ... -p <name>`, a `tests:`/`features:` matrix cell or an
+      # xtask cargo command string that names a crate the 1.6.0 folds deleted. `cargo -p <gone>` does
+      # not select nothing, it FAILS — and scripts/txn-fence.sh's PASS CONDITION IS A BUILD FAILURE,
+      # so for as long as it read `-p busbar-core` it reported a compile fence as holding over a crate
+      # that was never compiled. Self-test FIRST, so the scanner is proven able to name a planted
+      # dead selector before its silence is believed.
+      - name: Package-selector liveness self-test
+        run: cargo xtask gate package-selectors --selftest
+      - name: Package-selector liveness gate (every -p names a package this workspace resolves)
+        run: cargo xtask gate package-selectors
+      # QA-CONFIG NAME LIVENESS: a kind, crate, path or glob named in qa/*.toml that does not exist.
+      # The failure is not a red row -- the lookup resolves to EMPTY, the rule scans a population of
+      # ZERO, and a ban over nothing PASSES. This class was found FIVE TIMES on 2026-09-22 alone:
+      # the fifth plane in no kind list, the export family glob at the wrong path, and
+      # `pure_auth`/`egress_auth` naming no `[gate.plugin_kinds]` key in TWO rules at once, which
+      # left the whole auth kind out of source-denylist and forbid-unsafe. Self-test FIRST, so the
+      # classifier is proven able to name a planted phantom before its silence is believed. The
+      # gate itself runs in `--posture` form: it exits 0 while red on exactly the rows
+      # `gates::REPORT_ONLY` names -- the dead names already in the tree, each another change's to
+      # drain -- and 1 on any other red, so a NEW dead name blocks the push.
+      - name: QA-config name liveness self-test
+        run: cargo xtask gate qa-names --selftest
+      - name: QA-config name liveness gate (every name in qa/*.toml resolves to something here)
+        run: cargo xtask gate qa-names --posture
       # RELEASE-SCRIPT lint — durable guard against the 1.5.2 gate's 2h31m hang: a backgrounded
       # server (serve_forever) whose stdout was NOT redirected, captured via `$(...)`, held the
       # substitution's pipe open until the job timeout. Self-test runs FIRST (never trust the lint's
@@ -1076,7 +1100,7 @@ jobs:
   # if the committed `openapi.json` — the file the runtime serves via `include_str!` — no longer
   # matches what the code generates, and the COVERAGE LOCK proves every operation has a typed body.
   # Regenerate a stale file with:
-  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-kernel -p busbar-admin --features openapi-schema openapi_json_matches_committed_file
+  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema openapi_json_matches_committed_file
       - name: Latchkey Fast Cache (cargo registry + target, save)
         uses: latchkey-dev/cache-action@d0dd21912a57c7435649c77f689b68d348d8a662 # v1
         with:
@@ -1115,7 +1139,7 @@ jobs:
             ${{ env.CARGO_HOME }}/git
             target
       - name: Clippy (--features openapi-schema)
-        run: cargo clippy -p busbar -p busbar-kernel -p busbar-admin --all-targets --features openapi-schema --locked -- -D warnings
+        run: cargo clippy -p busbar -p busbar-kernel -p busbar-core-admin --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
         run: |
           set -euo pipefail
@@ -1123,7 +1147,7 @@ jobs:
           # prints "running 0 tests / test result: ok" and EXITS 0. The floor is not 1 — this step
           # claims to run the drift guard AND the coverage lock AND their neighbours, so a filter
           # that quietly collapsed to a single surviving test would still be a coverage hole.
-          out="$(cargo test -p busbar -p busbar-kernel -p busbar-admin --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
+          out="$(cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
           n="$(echo "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')"
           if [ "$n" -lt 8 ]; then
             echo "::error::the OpenAPI suite ran only ${n} tests, expected >= 8."
@@ -1648,7 +1672,7 @@ jobs:
   # THE DELETION-TEST BUILD MATRIX — the enforcement gate (weak form).
   #
   # THE DELETION TEST: for each plane P, with busbar-<P> absent the NEUTRAL crates —
-  # busbar-core, busbar-substrate, busbar-api — must still COMPILE (and the binary boots serving no P
+  # busbar-kernel, busbar-substrate-values, busbar-api — must still COMPILE (and the binary boots serving no P
   # protocol). This job is the WEAK form of that test, expressed at the neutral-crate level and made a
   # PERMANENT, ASSERTED property: build ONLY the three neutral crates with one plane's feature OFF (the
   # other planes kept ON), and with ALL planes off. It is the compile-only complement to the
@@ -1659,8 +1683,8 @@ jobs:
   # removable, so each removal is an independent fact about the tree and gets its own matrix leg — a
   # leg that goes red names exactly which plane the neutral crates still can't compile without.
   #
-  # LLM: there is NO `plane-llm` feature YET — the LLM PLANE_DECL is still compiled into core
-  # unconditionally and the busbar-core↔busbar-llm backwards dependency is live. So the
+  # LLM: there is NO `plane-llm` feature YET — the LLM PLANE_DECL is still compiled into the kernel
+  # unconditionally and the busbar-kernel↔busbar-llm backwards dependency is live. So the
   # per-plane "llm off" leg cannot be expressed until a `plane-llm` feature lands; TODO: add an
   # `llm` matrix leg (features "plane-mcp,plane-a2a") the moment that feature exists. Until then the
   # ALL-PLANES-OFF leg (`--no-default-features`) is the closest expressible "serves no protocols"
@@ -1720,17 +1744,23 @@ jobs:
             target
       - name: Build neutral crates — ${{ matrix.name }}
         # The three NEUTRAL crates only, no default features, with just the kept plane(s). cargo
-        # applies `--features` to the packages that declare it (busbar-core / busbar-substrate);
-        # busbar-api carries no plane features and is simply built neutral alongside. A red here means
-        # a neutral crate still needs the removed plane crate to compile — a deletion-test failure.
+        # applies `--features` to the packages that declare it (busbar-kernel, which absorbed both
+        # busbar-core at 673ecdaaa and busbar-substrate's engine at 5fa320208 and is where the
+        # plane-<P> features are declared today); busbar-substrate-values (the substrate's pure value
+        # leaves) and busbar-api carry no plane features and are simply built neutral alongside. The
+        # crate NAMES here are the deletion test's subject: while they read `busbar-core`/
+        # `busbar-substrate` after the absorptions, this job could not have gone green at all.
+        # A red here means a neutral crate still needs the removed plane crate to compile — a
+        # deletion-test failure. The same three are single-sourced for the shell and Rust gates in
+        # scripts/plane-keys.sh (NEUTRAL_ROOTS_LIST) and xtask/src/planes.rs (neutral_src_roots).
         run: |
           set -euo pipefail
           FEATS="${{ matrix.features }}"
           if [ -n "$FEATS" ]; then
-            cargo build -p busbar-core -p busbar-substrate -p busbar-api \
+            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-api \
               --no-default-features --features "$FEATS" --locked --verbose
           else
-            cargo build -p busbar-core -p busbar-substrate -p busbar-api \
+            cargo build -p busbar-kernel -p busbar-substrate-values -p busbar-api \
               --no-default-features --locked --verbose
           fi
       - name: Latchkey Fast Cache (cargo registry + target, save)
@@ -1803,34 +1833,25 @@ jobs:
           - name: llm webhook-receiver
             features: busbar-llm/webhook-receiver
             tests: -p busbar-llm
-          - name: mcp-codec test-support
-            features: busbar-mcp-codec/test-support
-            tests: -p busbar-mcp-codec
           # duplex-ws is reachable from the root binary's default `plane-voice` TODAY. It is in this
           # matrix anyway, because reachability is a property of a DEFAULT and a default moving is
           # the exposure this whole job is about. A row that NAMES the feature survives the flip.
           - name: core duplex-ws
             features: busbar-kernel/duplex-ws
             tests: -p busbar-kernel
-          # admin/oauth2 test-support are non-default forwards no sibling edge enables (busbar-admin's
-          # dev-deps deliberately do NOT turn on its own test-support), so nothing builds the
-          # `cfg(all(not(test), feature = "test-support"))` surface behind them. Each row builds and
-          # tests the owning crate with the feature on, exactly like `mcp-codec test-support` above.
+          # admin/oauth2 test-support are non-default forwards no sibling edge enables
+          # (busbar-core-admin's dev-deps deliberately do NOT turn on its own test-support), so nothing
+          # builds the `cfg(all(not(test), feature = "test-support"))` surface behind them. Each row
+          # builds and tests the owning crate with the feature on, exactly like `mcp-codec
+          # test-support` above. The crate is `busbar-core-admin` since #37 folded busbar-admin and
+          # busbar-plane-admin into it; a row naming a crate that is not in the workspace is caught by
+          # `feature-sets:declaration-names-a-live-feature`, which is how this one was found.
           - name: admin test-support
-            features: busbar-admin/test-support
-            tests: -p busbar-admin
+            features: busbar-core-admin/test-support
+            tests: -p busbar-core-admin
           - name: oauth2 test-support
             features: busbar-oauth2/test-support
             tests: -p busbar-oauth2
-          # The author-side packaging CLI (roster def 14) is a `[[bin]]` behind `required-features`
-          # ON PURPOSE: DECISIONS #84 makes the SDK's own busbar closure the thing every plugin
-          # links, so `busbar-plugin-pack`'s edge to the host-facing loader -- which carries the
-          # ledger -- must not be a plain dependency. `required-features` means the DEFAULT build
-          # never type-checks pack.rs, which is precisely the rot this job exists to catch, so the
-          # feature earns its own row rather than a declaration line.
-          - name: sdk pack
-            features: busbar-plugin-sdk/pack
-            tests: -p busbar-plugin-sdk
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
@@ -1900,10 +1921,8 @@ jobs:
             plane:
               - 'crates/busbar-plane-*/**'
               - 'crates/busbar-mcp/**'
-              - 'crates/busbar-mcp-codec/**'
               - 'crates/busbar-a2a/**'
-              - 'crates/busbar-a2a-codec/**'
-              - 'crates/busbar-kernel/**'
+              -               - 'crates/busbar-kernel/**'
               - 'scripts/mcp-subject/**'
               - 'scripts/a2a-subject/**'
               - '.github/workflows/ci.yml'
@@ -2166,12 +2185,11 @@ jobs:
   # feature-covered: busbar-substrate-values/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-a2a/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-a2a/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
-  # feature-covered: busbar-a2a-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-mcp/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-mcp/auth-admin-tokens -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
   # feature-covered: busbar-llm-codec/test-support -- check -- unified in by a dev-dependency under --all-targets in that job
-  # feature-covered: busbar-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-admin with the feature named
+  # feature-covered: busbar-core-admin/openapi-schema -- openapi-schema -- the job clippies and tests -p busbar-core-admin with the feature named
   # feature-covered: busbar-contract/dispatch -- check -- reached from busbar-substrate-values/dispatch in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
   # feature-covered: busbar-contract/runtime -- check -- reached from busbar-substrate-values/runtime in the workspace default build (transport axis folded into busbar-contract, DECISIONS #38)
 
@@ -3138,8 +3156,16 @@ jobs:
           set -euo pipefail
           rm -rf target/oracle/recordings/candidate; mkdir -p target/oracle/recordings/candidate
           ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
+      # `--allow-harness-skew` IS PASSED HERE, BY NAME, AND ONLY HERE. The golden copied in
+      # above is the COMMITTED 1.5.5 recording, taken with the Python harness; the candidate
+      # was just recorded with the Rust engine. That is a harness change BY DESIGN and the
+      # differ's same-revision guard would refuse the pair (rc 2) if it were not told. It used
+      # to be injected invisibly by `bin/oracle` on EVERY replay, which is why no DONE run
+      # could ever fire the guard; it is opt-in now, so this line is the one place that opts
+      # in and the reason is written beside it. DELETE this flag when the oracle-rerecord
+      # workflow re-takes the golden with the Rust engine and the revisions agree.
       - name: Replay — candidate vs golden (0 divergences, gaps named)
-        run: ./bin/oracle replay --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci
+        run: ./bin/oracle replay --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci --allow-harness-skew
       - name: Upload the report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

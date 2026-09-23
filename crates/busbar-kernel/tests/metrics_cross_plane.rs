@@ -17,7 +17,9 @@
 //! idle-timeout constant, …) names no lane/pool topology and stays in the unit module.
 
 use busbar_api::{UsageLedger, VirtualKey};
-use busbar_kernel::governance::{GovState, MemoryStore, MeteringDelta, MeteringRow, Store, StoreError, StoreResult};
+use busbar_kernel::governance::{
+    GovState, MemoryStore, MeteringDelta, MeteringRow, Store, StoreError, StoreResult,
+};
 use busbar_kernel::metrics::{
     init, refresh_scrape_gauges, render, LANE_AVAILABLE, LANE_AVAILABLE_PERMITS, LANE_INFLIGHT,
     LANE_RECOVERY_HINT_MS, LANE_STATE, POOL_QUEUED,
@@ -178,7 +180,10 @@ fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
 
     // `max >= Semaphore::MAX_PERMITS` is the store's unbounded sentinel (no `max_concurrent`).
     let app = TestApp::new()
-        .lane(LaneSpec::new("unb-model", PROTO_OPENAI, "http://u").max(tokio::sync::Semaphore::MAX_PERMITS))
+        .lane(
+            LaneSpec::new("unb-model", PROTO_OPENAI, "http://u")
+                .max(tokio::sync::Semaphore::MAX_PERMITS),
+        )
         .pool("unb-pool", &[(0, 1)])
         .build();
 
@@ -288,7 +293,12 @@ impl Store for ScrapeTimeBrokenKeyListStore {
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
-    fn put_usage(&self, bucket_id: &str, window_start: u64, ledger: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &UsageLedger,
+    ) -> StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
     fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {

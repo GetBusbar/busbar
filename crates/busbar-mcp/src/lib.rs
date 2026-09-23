@@ -25,16 +25,18 @@
 //! the substrate's protocol registry (`busbar_kernel::proto::install_protocols`) at boot.
 
 /// THE CODEC, THE RECORD VOCABULARY AND THE TWO PURE CONTENT PASSES, RE-EXPORTED FROM
-/// `busbar-mcp-codec`.
+/// `busbar-plane-mcp`.
 ///
 /// The protocol declaration, the JSON-RPC dialect and notification pair, the `tools/call` and
 /// subscription operation cells, the durable record types, the content sanitizer and the
-/// structured-output schema check all live in `busbar-mcp-codec` now — the pure half of this
+/// structured-output schema check all live in `busbar-plane-mcp` now — the pure half of this
 /// plugin, split out so `busbar-plane-mcp` can name the codec without linking this crate's axum
 /// routes, stdio serve loop and tokio transports. They are re-exported HERE, under their old names,
 /// so every caller that spells `busbar_mcp::codec::…` or `busbar_mcp::record::…` resolves exactly
 /// what it always did. The split is a MOVE: no item changed shape crossing it.
-pub use busbar_mcp_codec::{codec, outputschema, record, sanitize};
+pub mod codec;
+pub mod record;
+pub use busbar_plane_mcp::{outputschema, sanitize};
 
 /// THE MCP PLANE'S DIAGNOSTICS CATALOG.
 ///
@@ -59,7 +61,7 @@ mod sdk_vocabulary_tests;
 /// extraction), then out again with the codec, re-exported at the crate root so
 /// `busbar_mcp::McpCallRecord` / `busbar_mcp::McpDemotionRow` resolve. The neutral crates name
 /// neither.
-pub use busbar_mcp_codec::{McpCallRecord, McpDemotionRow};
+pub use record::{McpCallRecord, McpDemotionRow};
 
 /// THE MCP PLANE'S TEST-KIT (feature `test-support` only): the fixture builders that name MCP plane
 /// types, kept on the plane so busbar-core's neutral `test_support::TestApp` names none of them. This
@@ -79,11 +81,11 @@ pub use diagnostics::DIAGNOSTICS;
 /// MCP'S PROTOCOL DECLARATION — the `&'static ProtocolDecl` the composition root installs. Re-exported
 /// at the crate root so the `busbar` binary names one stable path (`busbar_mcp::PROTO_DECL`) and does
 /// not reach into the `codec` module for it. See [`codec::DECL`] for the declaration itself.
-pub use busbar_mcp_codec::PROTO_DECL;
+pub use codec::DECL as PROTO_DECL;
 
 /// MCP'S PLANE CAPABILITY KEY (`"mcp"`) — the string the composition root flips onto the unified
 /// kernel loop ([`busbar_kernel::plane_host::register_gauntlet_runner`]) and the same string the
 /// `tools/call` plane reports from its `GauntletPlane::capability_key`. Re-exported at the crate root
 /// so the `busbar` binary names ONE stable path (`busbar_mcp::PLANE_KEY`) and the plane and the flip
 /// cannot drift onto two different literals.
-pub use busbar_mcp_codec::PLANE_KEY;
+pub use busbar_plane_mcp::PLANE_KEY;

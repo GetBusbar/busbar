@@ -46,12 +46,17 @@
 
 use busbar_contract::ids::RecordSchemaId;
 
+/// The `call` kind — the per-call log record's tag on the store seam.
+pub const KIND_CALL: &str = "call";
+
+/// The `demotion` kind — the upstream-demotion record's tag on the store seam.
+pub const KIND_DEMOTION: &str = "demotion";
+
 /// The call log: what each caller asked for, and what they got.
-pub const SCHEMA_CALL: RecordSchemaId = RecordSchemaId::new(busbar_mcp_codec::record::KIND_CALL);
+pub const SCHEMA_CALL: RecordSchemaId = RecordSchemaId::new(KIND_CALL);
 
 /// The quarantine rows: which servers are not being advertised, and why.
-pub const SCHEMA_DEMOTION: RecordSchemaId =
-    RecordSchemaId::new(busbar_mcp_codec::record::KIND_DEMOTION);
+pub const SCHEMA_DEMOTION: RecordSchemaId = RecordSchemaId::new(KIND_DEMOTION);
 
 /// The tool catalogue: what each registered server was observed to offer.
 pub const SCHEMA_CATALOGUE: RecordSchemaId = RecordSchemaId::new("catalogue");

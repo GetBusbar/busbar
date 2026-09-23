@@ -43,11 +43,14 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 # diagnostics macros, the approvals seal, the config-section split, the hostless-egress seam. Carries
 # `plane-mcp` so the plane-gated items (the `HostlessEgress` seam, the relocated leaves) are present
 # in this crate's own default build.
-# THE CODEC. The pure half of this plugin, split out so `busbar-plane-mcp` can name the protocol
-# declaration, the JSON-RPC dialect, the two operation cells and the record vocabulary without
-# pulling this crate's axum routes, stdio serve loop and tokio transports into a pure kind's
-# closure. Every module that moved is re-exported from this crate's `lib.rs` under its old name.
-busbar-mcp-codec = { path = "../busbar-mcp-codec" }
+# THE PLANE. The direction of this edge INVERTED, and that is the point of the fold: the MCP wire
+# dialect — the mount path, the revision, the method names, the `_meta` keys, the error code table,
+# the notification pair, the durable record vocabulary, the content sanitizer and the
+# structured-output check — is the PLANE's, by definition 16–20, so it lives in `busbar-plane-mcp`
+# and this crate READS it. What stayed here is the engine's own: the `ProtocolDecl` registry row and
+# the two operation cells in `src/codec/`, which name the kernel's handler matrix and therefore
+# could not follow the dialect into a pure kind. There is no `busbar-mcp-codec` any more (#39).
+busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
 busbar-substrate-values = { path = "../busbar-substrate-values" }

@@ -354,7 +354,7 @@ dependencies = [
  "busbar-plane-a2a",
  "busbar-plane-llm",
  "busbar-plane-mcp",
- "busbar-plane-voice",
+ "busbar-plane-streaming",
  "busbar-plugin-loader",
  "busbar-store-example-plugin",
  "busbar-substrate-values",
@@ -399,11 +399,11 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
- "busbar-a2a-codec",
  "busbar-api",
  "busbar-contract",
  "busbar-core-admin",
  "busbar-kernel",
+ "busbar-plane-a2a",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-secret-ref",
@@ -438,15 +438,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-a2a-codec"
-version = "1.6.0"
-dependencies = [
- "busbar-api",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "busbar-api"
 version = "1.6.0"
 dependencies = [
@@ -457,8 +448,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "smallvec",
- "zeroize",
 ]
 
 [[package]]
@@ -485,6 +474,8 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "smallvec",
+ "zeroize",
 ]
 
 [[package]]
@@ -572,11 +563,11 @@ dependencies = [
  "base64 0.23.1",
  "bumpalo",
  "busbar-a2a",
- "busbar-a2a-codec",
  "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-contract",
  "busbar-hooks-ranking",
+ "busbar-kernel-egress",
  "busbar-llm",
  "busbar-mcp",
  "busbar-plugin",
@@ -785,7 +776,7 @@ dependencies = [
  "busbar-core-admin",
  "busbar-kernel",
  "busbar-llm",
- "busbar-mcp-codec",
+ "busbar-plane-mcp",
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-secret-ref",
@@ -815,19 +806,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-mcp-codec"
-version = "1.6.0"
-dependencies = [
- "busbar-api",
- "busbar-contract",
- "busbar-substrate-values",
- "bytes",
- "http",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "busbar-oauth2"
 version = "1.6.0"
 dependencies = [
@@ -851,8 +829,8 @@ dependencies = [
 name = "busbar-plane-a2a"
 version = "1.6.0"
 dependencies = [
- "busbar-a2a-codec",
  "busbar-contract",
+ "serde",
  "serde_json",
 ]
 
@@ -860,9 +838,7 @@ dependencies = [
 name = "busbar-plane-decision"
 version = "1.6.0"
 dependencies = [
- "busbar-api",
  "busbar-contract",
- "busbar-kernel",
  "serde",
  "serde_json",
 ]
@@ -882,23 +858,13 @@ name = "busbar-plane-mcp"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-mcp-codec",
+ "bytes",
+ "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "busbar-plane-streaming"
-version = "1.6.0"
-dependencies = [
- "async-trait",
- "busbar-contract",
- "busbar-voice-codec",
- "bytes",
- "serde_json",
-]
-
-[[package]]
-name = "busbar-plane-voice"
 version = "1.6.0"
 dependencies = [
  "async-trait",
@@ -1165,7 +1131,7 @@ dependencies = [
  "axum",
  "busbar-api",
  "busbar-kernel",
- "busbar-plane-voice",
+ "busbar-plane-streaming",
  "busbar-plugin",
  "busbar-substrate-values",
  "busbar-voice-codec",
@@ -5170,7 +5136,9 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
  "serde_json",
+ "syn 2.0.117",
 ]
 
 [[package]]

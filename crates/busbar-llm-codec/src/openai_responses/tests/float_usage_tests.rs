@@ -62,7 +62,10 @@ fn streaming_terminal_reads_float_encoded_counts() {
         usage.input_tokens, 800,
         "input_tokens(1000.0) - cached_tokens(200.0), streamed terminal, both float-spelled"
     );
-    assert_eq!(usage.output_tokens, 50, "output_tokens(50.0), streamed terminal");
+    assert_eq!(
+        usage.output_tokens, 50,
+        "output_tokens(50.0), streamed terminal"
+    );
     assert_eq!(usage.cache_read_input_tokens, Some(200));
     assert_eq!(usage.detail.reasoning_tokens, Some(400));
 }

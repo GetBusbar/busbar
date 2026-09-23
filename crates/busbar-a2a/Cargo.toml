@@ -44,12 +44,15 @@ busbar-kernel = { path = "../busbar-kernel", default-features = false, features 
 busbar-api = { path = "../api" }
 busbar-substrate-values = { path = "../busbar-substrate-values" }
 busbar-contract = { path = "../busbar-contract" }
-# THE WIRE VOCABULARY. The pure half of this plugin, split out so `busbar-plane-a2a` can name the
-# canonicalization, the anomaly grammar, the id remap, the meter classes, the durable task record
-# shapes and the mount paths without pulling this crate's axum routes, tonic binding, reqwest relay
-# leg and socket-capable tokio into a pure kind's closure. Every module that moved is re-exported
-# from this crate under its old name.
-busbar-a2a-codec = { path = "../busbar-a2a-codec" }
+# THE PLANE. The direction of this edge INVERTED, and that is the point of the fold: the A2A wire
+# dialect — the registry key, the config section, the mount, the gRPC service path, the eight
+# routes, the well-known card and metadata paths, the error band with its reason tokens, the local
+# verb names, the canonicalizer, the anomaly grammar and the frame rewriter — is the PLANE's, by
+# definition 16-20, so it lives in `busbar-plane-a2a` and this crate READS it. What came back here
+# is what a plane may not hold: the durable row STRUCTS (they name the store seam's `PlaneRecord`)
+# and `a2a/meter.rs` (it names whose budget a task BILLS, which #43 puts kernel-side). There is no
+# `busbar-a2a-codec` any more (#39).
+busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 # The plane's own runtime surface — the same workspace pins core takes, for the plane code that moved
 # here whole: the transports (tokio, reqwest, futures, tonic/tonic-types/prost + a2a-pb for the gRPC
 # binding, tower), the config codecs (serde, serde_yaml, indexmap), the trust crypto (sha2, hex,

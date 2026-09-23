@@ -18,8 +18,58 @@
 # NOTE: this ref is a feature branch head (`port/oracle-cells-generate`), which is the same shape
 # the previous pin had; re-pin to the integration/merge commit when that branch lands.
 #
+# 2026-09-22: moved to the commit that makes `--filter` real on the paths that took it and ignored
+# it. `HarnessArgs::into_config()` discarded `--filter` (so `replay --filter 'zzz-no-such-cell'`
+# printed the same 913 DIVERGED rows as an unfiltered replay), and the record driver put `--family`
+# in `record.sh`'s `--filter` slot while never passing the id regex at all. Selection itself was
+# never broken: `select_cells` is byte-identical to the refs the bug was filed against, and over the
+# committed corpus `^billing\|` selects 14, `ledger` 6, `^(billing|ledger|config)\|` 20. See
+# findings-2026-09-22-record-filter.md for the measurements and what actually caused the original
+# "0 cells" (a fixed port band shared by three concurrent runs, fixed earlier by 00759df).
+# NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same shape as the
+# previous two pins; re-pin to the integration/merge commit when that branch lands.
+#
+# 2026-09-22: moved to the commit that lands the three oracle-baseline owner rulings, which together
+# change what a GREEN oracle run is allowed to claim. (1) The clock fields stop normalising: `as_of`,
+# `window.start` and `window.end` flattened to `0` before comparison, so a response carrying a wrong
+# rate-card epoch over a wrong billing window was byte-identical to a right one — measured with the
+# shipped binary on the shape of `ledger|rate-history|as-of`, spend figure identical to the byte. A
+# cell may now declare `"clock": {...}`; the recorder binds it into the request as `{CLOCK:<path>}`
+# (the seam that already binds minted key ids and listener addrs) so busbar is DRIVEN to the instant
+# and the echo is compared EXACTLY, with a fixed `<CLOCK-PIN-MISS:...>` marker keeping the red
+# deterministic. `latency_ms` stays masked and is refused as a pin. An UNPINNED cell normalizes
+# byte-identically to before, so no golden moves and none is re-recorded here. (2) A cell with no
+# prior golden reports UNBASELINED, never PASS: measured over this corpus, 1402 of 2318 cells used to
+# produce no ledger row at all and could not be told from a success; they now carry their own row,
+# `unbaselined.txt`, `totals.unbaselined` and a summary line, and reach the turnstile as NoGolden.
+# It does NOT set the exit code — making gaps red is a separate ruling. (3) The golden is a dated
+# history: `--baseline-version <V>` resolves `golden/<V>` and REFUSES a version that does not exist,
+# naming it and listing what the history holds, instead of silently falling back; `golden_version`
+# is no longer the literal "1.5.5", so `golden/1.6.0` can land at the cut and 1.6.1 be judged
+# against it. `--golden-dir` still works and reads the version off the recording's own meta.json.
+# NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same shape as the
+# previous three pins; re-pin to the integration/merge commit when that branch lands.
+#
+# 2026-09-22: moved to the commit that makes `replay-selftest` mean what its label says. Two halves.
+# (1) `owed_ratchet_check` opened the golden with `unwrap_or_default()`, so an ABSENT golden yielded
+# an empty owed set and the containment check over it was vacuously true — measured at 7e00b54,
+# `--golden /tmp/no-such-dir` printed the byte-identical PASS and rc 0 the real 916-cell recording
+# prints. The BASELINE half of the very same function had refused its own empty input since the
+# port; the asymmetry inside one function was the bug. Both halves refuse now, and a golden ledger
+# with rows but zero PASS rows is refused too. (2) The step is labelled "the differ can see a diff"
+# by scripts/verify-1.6.0-done.sh and it never invoked the differ at all — it was a set-containment
+# check over owed-baseline.txt. It now builds its own synthetic recording pair and runs the real
+# differ over it in five legs: the plant is proven ON DISK before any verdict is believed, a clean
+# pair must NOT be reported, the planted divergence MUST be (and the untouched cell must stay PASS),
+# the same-revision guard must REFUSE a candidate under another harness_rev, and
+# `--allow-harness-skew` must be the thing that turns that refusal off. Red-before-green both ways:
+# a `compare()` short-circuited to report nothing reds legs 3 and 5, and a plant made not to plant
+# reds leg 1 and STOPS — a plant that silently fails to plant is indistinguishable from a gate that
+# cannot see. NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same
+# shape as the previous four pins; re-pin to the integration/merge commit when that branch lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=338575545c07cfded73d3da6ca88ca65a6742666
+release_ref=ab88903
 crate=busbar-release-oracle
 bin=busbar-oracle

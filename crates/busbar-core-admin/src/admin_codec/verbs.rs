@@ -1,4 +1,4 @@
-//! The closed 66+17+5 kernel-verb table, and the pure `(method, path) -> verb` match over it.
+//! The closed 66+18+5+3 kernel-verb table, and the pure `(method, path) -> verb` match over it.
 //!
 //! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
 //! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 17 are the
@@ -18,6 +18,7 @@
 //! (`find_verb`, path-pattern matching) does not know these are synthetic.
 
 use crate::admin_codec::generated::verb_table_1_5_5::VERB_TABLE_1_5_5;
+use crate::verb::KernelVerb;
 use busbar_contract::ids::OpClassId;
 
 /// One row of the closed verb table.
@@ -190,10 +191,163 @@ const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
     },
 ];
 
+/// THE THREE AUDIT-CHAIN READS, and their paths are not a judgment call either.
+///
+/// A chain that is signed but that nobody outside can fetch is a chain only we can check, which is
+/// a claim rather than evidence. These three are how somebody else checks it: where the chain is
+/// now, what is in a window of it, and which keys signed it.
+///
+/// PULL, NEVER PUSH. The node ANSWERS these; it opens no outbound connection, holds no cloud
+/// credential and phones nobody. That is what lets an airgapped operator `curl` their own evidence
+/// and a firewalled node be audited at all. The counter-signing and publishing half is a separate
+/// product, definitionally — a node cannot anchor to itself.
+///
+/// All three are `GET` and all three are read-only, which puts them on the same rung as the legacy
+/// `GET /audit` they sit beside: the credential that may read what the admin chain recorded may
+/// read what the record chain sealed, and neither may write anything. A full-scope gate here would
+/// mean the only party who can check the evidence is the party the evidence is about.
+///
+/// The range read takes its window as a query string (`?from=&to=`) rather than as path segments,
+/// because a query names ARGUMENTS to an operation and `from`/`to` are arguments — the same reason
+/// `GET /audit?limit=4` and `GET /audit` are one row here (see [`operation_target`]).
+const AUDIT_VERBS_1_6_0: &[VerbEntry] = &[
+    VerbEntry {
+        method: "GET",
+        path: "/api/v1/admin/audit/head",
+        verb: "get_audit_head",
+        read_only: true,
+    },
+    VerbEntry {
+        method: "GET",
+        path: "/api/v1/admin/audit/range",
+        verb: "get_audit_range",
+        read_only: true,
+    },
+    VerbEntry {
+        method: "GET",
+        path: "/api/v1/admin/audit/keys",
+        verb: "get_audit_keys",
+        read_only: true,
+    },
+];
+
 /// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 18 1.6.0
-/// money-governance verbs (the seventeen plus `amend_rate_history`), and the 5 1.6.0 ledger
-/// views.
-pub(crate) const VERB_COUNT: usize = 66 + 18 + 5;
+/// money-governance verbs (the seventeen plus `amend_rate_history`), the 5 1.6.0 ledger
+/// views, and the 3 audit-chain reads.
+pub(crate) const VERB_COUNT: usize = 66 + 18 + 5 + 3;
+
+// ── THE ROWS AND THEIR NAMES CANNOT DRIFT, AND THE COMPILER IS WHAT SAYS SO ────────────────────
+//
+// A 1.6.0 row is declared HERE, as a string; the verb it names is declared in [`crate::verb`], as
+// an enumeration variant; and the two are joined by [`crate::verb::verb_name`]. Until 1.6.0 that
+// join ran through a `_ => ""` arm in the composition root, so a row nobody wrote a name for
+// resolved to the empty string, matched nothing, and the verb REFUSED — with no compile error and
+// no test naming the cause. `docs/design/BUSBAR-1.6.0.md:2064` names the shape: "a list that must
+// agree with code, with nothing forcing the agreement", and `:2020` names the rule it breaks — A
+// GAP AND A FAILURE MUST NEVER BE THE SAME OUTPUT.
+//
+// So the agreement is forced, at compile time, in BOTH directions and over all three tables: every
+// row has a verb that names it, every verb has a row that carries its name, and the two lists are
+// the same length (which is what catches a row added twice with one of its pair missing). A table
+// and a name list that disagree do not produce a red test; they produce no binary at all.
+
+/// Two `&str`s compared where `==` is not available — a `const` context.
+const fn str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// Whether any verb in `verbs` is the one [`crate::verb::verb_name`] spells `name`.
+const fn some_verb_is_named(verbs: &[KernelVerb], name: &str) -> bool {
+    let mut i = 0;
+    while i < verbs.len() {
+        if let Some(spelling) = crate::verb::verb_name(verbs[i]) {
+            if str_eq(spelling, name) {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Whether any row in `rows` carries `name`.
+const fn some_row_carries(rows: &[VerbEntry], name: &str) -> bool {
+    let mut i = 0;
+    while i < rows.len() {
+        if str_eq(rows[i].verb, name) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Whether one table's rows and one list's verbs name exactly each other.
+const fn rows_and_names_agree(rows: &[VerbEntry], verbs: &[KernelVerb]) -> bool {
+    if rows.len() != verbs.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < rows.len() {
+        if !some_verb_is_named(verbs, rows[i].verb) {
+            return false;
+        }
+        i += 1;
+    }
+    let mut j = 0;
+    while j < verbs.len() {
+        match crate::verb::verb_name(verbs[j]) {
+            None => return false,
+            Some(name) => {
+                if !some_row_carries(rows, name) {
+                    return false;
+                }
+            }
+        }
+        j += 1;
+    }
+    true
+}
+
+const _: () = assert!(
+    rows_and_names_agree(NEW_VERBS_1_6_0, crate::verb::NEW_VERBS),
+    "NEW_VERBS_1_6_0 and crate::verb::NEW_VERBS disagree: a row here has no `verb_name` arm in \
+     crates/busbar-core-admin/src/verb.rs, or an arm there has no row here. Add both."
+);
+
+const _: () = assert!(
+    rows_and_names_agree(LEDGER_VERBS_1_6_0, crate::verb::LEDGER_VERBS),
+    "LEDGER_VERBS_1_6_0 and crate::verb::LEDGER_VERBS disagree: a row here has no `verb_name` arm \
+     in crates/busbar-core-admin/src/verb.rs, or an arm there has no row here. Add both."
+);
+
+const _: () = assert!(
+    rows_and_names_agree(AUDIT_VERBS_1_6_0, crate::verb::AUDIT_VERBS),
+    "AUDIT_VERBS_1_6_0 and crate::verb::AUDIT_VERBS disagree: a row here has no `verb_name` arm in \
+     crates/busbar-core-admin/src/verb.rs, or an arm there has no row here. Add both."
+);
+
+/// The declared count is the count of what is actually declared. A row added without bumping this
+/// used to be a runtime assertion in one test; it is now a condition of the crate existing.
+const _: () = assert!(
+    VERB_COUNT
+        == VERB_TABLE_1_5_5.len()
+            + NEW_VERBS_1_6_0.len()
+            + LEDGER_VERBS_1_6_0.len()
+            + AUDIT_VERBS_1_6_0.len(),
+    "VERB_COUNT does not equal the number of rows the closed table declares"
+);
 
 /// The operation class every read-only verb prices under.
 ///
@@ -226,6 +380,7 @@ pub(crate) fn all_verbs() -> &'static [VerbEntry] {
         );
         v.extend_from_slice(NEW_VERBS_1_6_0);
         v.extend_from_slice(LEDGER_VERBS_1_6_0);
+        v.extend_from_slice(AUDIT_VERBS_1_6_0);
         v
     })
 }

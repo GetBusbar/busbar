@@ -86,4 +86,3 @@ fn a_resolved_lookup_is_returned_untouched() {
 // for the same reason as the test above them: both pin the REAL mcp/a2a admin route table and audit
 // vocabulary, which only `plane_decl("mcp")`/`plane_decl("a2a")` over the REAL registered roster can
 // answer — real plane behaviour, not "a plane merely needs to exist".
-

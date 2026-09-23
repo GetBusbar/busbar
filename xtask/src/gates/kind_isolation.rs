@@ -26,15 +26,15 @@
 //!   `busbar-transport-a2a`, `busbar-plane-http`, `busbar-unit-mcp` and `busbar-plane-transport`
 //!   are all refused.
 //! * `kind-isolation:deps` — the kind-to-kind edge CLASSES in the manifests are the ones measured
-//!   in [`MEASURED_EDGES`]. EVERY SHIPPED DEPENDENCY TABLE IS A MANIFEST EDGE — `[dependencies]`,
-//!   `[build-dependencies]` and the per-target forms of both, with `package = "…"` and
-//!   `[workspace.dependencies]` renames resolved to the package they name; see [`crate::manifest`]
-//!   for the five spellings the one-section reader could not see, every one of which was proven to
-//!   carry a plane into a transport with this row green.
+//!   into [`REGISTRY_FILE`]'s `[[dep]]` rows. EVERY SHIPPED DEPENDENCY TABLE IS A MANIFEST EDGE —
+//!   `[dependencies]`, `[build-dependencies]` and the per-target forms of both, with
+//!   `package = "…"` and `[workspace.dependencies]` renames resolved to the package they name;
+//!   see [`crate::manifest`] for the five spellings the one-section reader could not see, every
+//!   one of which was proven to carry a plane into a transport with this row green.
 //!   A NEW class is refused; a class that no longer exists is refused as a
 //!   dead allowance. The measured graph is printed in the row's detail so the owner can tighten it
 //!   by deleting lines rather than by re-deriving it. Inside the plane family a crate may only
-//!   name its OWN instance, so `busbar-plane-llm` naming `busbar-mcp-codec` is refused.
+//!   name its OWN instance, so `busbar-plane-llm` naming `busbar-llm-codec` is refused.
 //! * `kind-isolation:test-deps` — THE OTHER HALF OF THE BUILD GRAPH. `[dev-dependencies]` was read
 //!   by the battery rule and by nothing else, on the sentence "a test edge is not a shipped edge" —
 //!   which is true, and is not a reason to leave it unmeasured. A plane declared in a transport's
@@ -3298,7 +3298,24 @@ fn plugin_kind_keys(text: &str) -> Vec<String> {
 
 /// The kind's ENTRY TRAIT, derived from the kind's own name rather than tabled beside it:
 /// `plane` → `Plane`, `transport` → `Transport`, `unit` → `Unit`.
+///
+/// ONE KIND IS NOT DERIVABLE, and the reason is a NAME COLLISION rather than an exception.
+///
+/// `export` → `Export` picks `busbar_contract::kinds::Export`, which is **a different kind of
+/// thing wearing the same word**: it is WAL/JOURNAL shipping — `ExportItem::{JournalEntry, Content,
+/// Segment}` acknowledged at-least-once with an `Ack` — and has nothing to do with telemetry
+/// export. It also has ZERO implementors anywhere in the tree, including its own crate's tests, so
+/// deriving the name pointed this rule at a trait no loadable plugin could ever satisfy while the
+/// trait a loadable export MUST implement (`busbar_plugin_sdk::ExportHandler`: `streams` /
+/// `deliver` / `routes` / `handle_http` / `drain_observations`, behind the six C symbols, the signed
+/// manifest and the loader's `[2, 3]` window) went unchecked.
+///
+/// Spelled here so the false friend does not come back: two kinds, one word, and the one with the
+/// riders wins. `kinds::Export` is an unimplemented specification slated for deletion.
 fn entry_trait(kind: &str) -> String {
+    if kind == "export" {
+        return "ExportHandler".to_string();
+    }
     let mut c = kind.chars();
     match c.next() {
         Some(first) => format!("{}{}", first.to_ascii_uppercase(), c.as_str()),
@@ -5321,7 +5338,7 @@ impl Gate for KindIsolationGate {
             manifest_plant(
                 "crates/busbar-plane-llm",
                 "busbar-plane-llm",
-                &["busbar-contract", "busbar-mcp-codec"],
+                &["busbar-contract", "busbar-llm-codec"],
             ),
             &["cross-instance", "busbar-plane-llm"],
         ));

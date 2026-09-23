@@ -225,8 +225,13 @@ jobs:
           set -euo pipefail
           rm -rf target/oracle/recordings/candidate; mkdir -p target/oracle/recordings/candidate
           ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
+      # `--allow-harness-skew` IS PASSED HERE, BY NAME. The golden copied in above is the
+      # COMMITTED 1.5.5 recording (Python harness) and the candidate was just recorded with
+      # the Rust engine, so the differ's same-revision guard would refuse the pair. It used to
+      # be injected invisibly by `bin/oracle` on every replay — which is why no run could ever
+      # fire the guard — and is opt-in now. DELETE it when oracle-rerecord re-takes the golden.
       - name: Replay — candidate vs golden (0 divergences, gaps named)
-        run: ./bin/oracle replay --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci
+        run: ./bin/oracle replay --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci --allow-harness-skew
       - name: Upload the report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

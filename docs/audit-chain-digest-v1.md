@@ -8,10 +8,15 @@ third party can verify a busbar node's audit chain *without the busbar binary* �
 our libraries, or our word for anything. If only busbar can verify busbar's chain then the chain is
 a claim, and a claim is not evidence.
 
-`scripts/verify-audit-chain.py` in this repository is an implementation of exactly this document and
-nothing else: Python standard library only, no busbar, no third-party crypto package, no `openssl`
-subprocess. It exists as the acceptance test for this page. If it could not reproduce a real chain
-from this page alone, the page would be wrong.
+**The page is checked against itself, by something that cannot see the implementation.**
+`crates/busbar-kernel-audit/src/tests/published_recipe_tests.rs` reads the field table below and
+the worked example in section 7 — the published artifacts, nothing else — frames and hashes them by
+the rules stated here, and compares the result against the digest this page and this build each
+claim. It is forbidden from calling the three functions that *are* the recipe, and that ban is
+enforced by a test that reads the check's own source rather than by a comment: a check that asked
+the code what the answer is would go green on a build whose field order had drifted from this page,
+which is precisely the failure worth catching. If the table below could not reproduce a real chain,
+this page would be wrong and the build would say so.
 
 ---
 
@@ -198,7 +203,8 @@ key_id = first 8 bytes of SHA-256(public_key_bytes), as 16 lowercase hex charact
 ```
 
 Derived so that a verifier holding the published key can **recompute** it rather than be told it.
-`verify-audit-chain.py` refuses a key set whose `key_id` is not the derivation of its own key.
+A key set whose `key_id` is not the derivation of its own key should be refused, and
+`the_published_key_set_checks_the_published_examples_signature` refuses one here.
 
 The identifier is a name, not a fingerprint to trust: what proves a record is the **signature**
 checked against the published key, never the identifier.
@@ -354,19 +360,30 @@ preimage is 490 bytes; the digest is
 }
 ```
 
-Checking it:
+Checking it, with nothing but this page: walk the field table in section 3.6, take each member
+named there out of the record above, frame it (`be_u64(len) ‖ bytes` for a text, `be_u64(8) ‖
+be_u64(v)` for a number), concatenate with nothing between, and SHA-256 the result. You get
+`6d63c9b009b359b7f573cab94fc09b03c021b3d00d34ff7b0f884986c8c77a7a`, which is the `hash` the record
+carries. Then prepend `busbar.audit.record.v1` and one `0x00` byte to those 64 hex characters and
+check the `signature` against the `public_key` above with any ed25519 implementation you already
+trust.
 
-```console
-$ ./scripts/verify-audit-chain.py --range range.json --keys keys.json --head head.json
-head: seq 1, hash 6d63c9b009b359b7f573cab94fc09b03c021b3d00d34ff7b0f884986c8c77a7a
-OK: 1 record(s) verified, 1 of them signed, 1 published key(s)
-    recipe busbar.audit.digest.v1, framing length-prefixed, signature domain busbar.audit.record.v1
-```
+Three tests hold this section down, in
+`crates/busbar-kernel-audit/src/tests/published_recipe_tests.rs`:
 
-The three bodies above are **this build's own output**, asserted by
+* `the_published_table_reproduces_the_published_examples_digest` — the page checks out on its own
+  terms, over committed artifacts only, with no chain sealed and no source consulted.
+* `the_published_table_still_describes_what_this_build_seals` — a record sealed by this build,
+  published through the range read, and re-digested **from the table above**. This is the one that
+  catches a build whose field order drifted: such a build agrees with itself perfectly, so every
+  other test in the crate stays green.
+* `the_published_key_set_checks_the_published_examples_signature` — the derived key identifier and
+  the preimage spelling are re-derived from this page, not from the code's constants.
+
+The three bodies are also asserted to be **this build's own output** by
 `the_worked_example_in_the_published_spec_is_what_this_build_answers_with` in
 `crates/busbar-kernel-audit/src/tests/sign_tests.rs`. The page cannot drift from the code without
-that test going red.
+one of these going red.
 
 ---
 

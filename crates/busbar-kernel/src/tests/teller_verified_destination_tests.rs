@@ -201,7 +201,8 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
     let canary = busbar_contract::caps::Canary::new();
     let leases = LeaseCell::new();
     let meter = AccrualMeter::new();
-    let cell = busbar_contract::caps::HoldCell::new(Hold::open(&kernel.admit_token(), principal(), 0));
+    let cell =
+        busbar_contract::caps::HoldCell::new(Hold::open(&kernel.admit_token(), principal(), 0));
 
     let run = Run {
         cell: &cell,
@@ -243,11 +244,15 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
     // The negative half of the proof: neither step saw the stand-in for "whatever a re-deriving
     // Route would have computed on its own" — the sealed set won outright, not by coincidence.
     assert!(
-        !route_seen.iter().any(|d| d.lane().as_str() == PLANE_OWN_IDEA),
+        !route_seen
+            .iter()
+            .any(|d| d.lane().as_str() == PLANE_OWN_IDEA),
         "Route must not see a destination nothing sealed"
     );
     assert!(
-        !meter_seen.iter().any(|d| d.lane().as_str() == PLANE_OWN_IDEA),
+        !meter_seen
+            .iter()
+            .any(|d| d.lane().as_str() == PLANE_OWN_IDEA),
         "Meter must not see a destination nothing sealed"
     );
 }

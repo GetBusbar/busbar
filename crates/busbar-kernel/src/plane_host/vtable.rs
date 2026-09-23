@@ -221,15 +221,28 @@ extern "C-unwind" fn clock_now(host: HostCtx) -> u64 {
 /// plane is entitled to know its telemetry did not land; and it is `Refused` rather than a fault
 /// because a badly-named metric is bad DATA, not a broken peer.
 ///
-/// STILL OWED, and named rather than left to be rediscovered: this slot carries no PROVENANCE. The
-/// cold lane attaches `plugin="<name>"` from the loaded handle, so a folded series says who reported
-/// it; `metrics_emit`'s signature carries only a `HostCtx`, so a plane's series is anonymous and two
-/// planes reporting one name are indistinguishable. Label passthrough (`labels_ptr`/`labels_len`) is
-/// likewise still unread, so plane label cardinality is unbounded the moment it is wired.
+/// PROVENANCE is the host's, from [`super::HostState::emitter`] — stamped when the host MINTS the
+/// `HostCtx`, never read off the sample. A handle minted for the host's own use carries no emitter
+/// and this slot refuses it, because a series nobody can be held to is a series an operator cannot
+/// act on.
+///
+/// CARDINALITY is bounded on the same budget the cold lane uses
+/// ([`crate::metrics::observe::admits_cardinality`]): a cap on distinct series per plugin and on
+/// distinct label sets per series, refused rather than silently dropped. The labels stay opaque —
+/// this ABI says the host does not interpret them — and are fingerprinted instead, so the bound
+/// exists before the label encoding does.
 extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let Some(_state) = (unsafe { recover(host) }) else {
+        let Some(state) = (unsafe { recover(host) }) else {
+            return StatusClass::Refused;
+        };
+        // WHO IS EMITTING. Taken from the host's own `HostState`, never from the sample — an
+        // identity the emitter supplies is a claim, not an attribution, and is the same class of
+        // defect as the metric NAME this slot used to take verbatim. A handle minted for the host's
+        // own use (`calllog`, `auditlog`, trust, the breaker) carries no emitter and is refused
+        // here: a sample nobody can be held to is a series an operator cannot act on.
+        let Some(emitter) = state.emitter else {
             return StatusClass::Refused;
         };
         if sample.is_null() {
@@ -256,9 +269,33 @@ extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) ->
         if !crate::metrics::observe::admits_metric_name(&name) {
             return StatusClass::Refused;
         }
+        // THE CARDINALITY BUDGET — the second question, and the same one the cold lane asks. The
+        // labels are an OPAQUE packed blob this ABI says the host does not interpret, so they are
+        // fingerprinted rather than parsed: telling two label sets apart is all a budget needs, and
+        // it means the bound exists BEFORE the label encoding is designed rather than after the
+        // first explosion. A refusal here is returned to the plane, not swallowed.
+        let labels: &[u8] = if s.labels_ptr.is_null() || s.labels_len == 0 {
+            &[]
+        } else {
+            // SAFETY: `(labels_ptr, labels_len)` is a live borrowed range for the call (ABI).
+            unsafe { std::slice::from_raw_parts(s.labels_ptr, s.labels_len) }
+        };
+        if !crate::metrics::observe::admits_cardinality_opaque(emitter, &name, labels) {
+            return StatusClass::Refused;
+        }
         // Routes to the process-wide `metrics-exporter-prometheus` recorder installed by
-        // `crate::metrics::init` (a no-op sink when the operator did not opt in).
-        metrics::gauge!(name.into_owned()).set(value);
+        // `crate::metrics::init` (a no-op sink when the operator did not opt in). The host's
+        // provenance label is attached here, from the host's own knowledge — the same
+        // `plugin="<name>"` the cold lane's fold attaches, so one plugin reporting on either lane
+        // produces series an operator reads the same way.
+        metrics::gauge!(
+            name.into_owned(),
+            vec![metrics::Label::new(
+                crate::metrics::observe::PLUGIN_LABEL,
+                emitter
+            )]
+        )
+        .set(value);
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.

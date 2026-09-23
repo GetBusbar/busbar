@@ -30,9 +30,3 @@ busbar-secret-ref = { path = "../secret-ref" }
 busbar-contract = { path = "../busbar-contract" }
 sha2 = { workspace = true }
 hex = { workspace = true }
-zeroize = { workspace = true }
-# The decision-observability signal catalog's per-projection signal bag
-# (`SignalBag`): inline capacity for the common 0-4-declared-signals case so the default
-# (nothing declared) path never touches the heap. Already a transitive dependency of the
-# workspace (pulled in via tokio et al.), so this adds no new crate to the tree.
-smallvec = { workspace = true }

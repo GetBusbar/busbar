@@ -214,12 +214,33 @@ const READ_ONLY_POST_PATHS: &[&str] = &["/config/validate", "/plugins/inspect"];
 /// Ported verbatim from 1.5.5's `busbar_kernel::admin::v1::contract::required_scope` (behaviourally
 /// identical; the only change is that `method` is a plain string here instead of `axum::http::Method`,
 /// so this crate carries no HTTP-framework dependency at all).
+///
+/// VERBATIM MEANS VERBATIM, and three ways of being nearly-verbatim were each a defect:
+///
+/// - **The method is compared EXACTLY.** `axum::http::Method`'s equality is case-sensitive, per
+///   RFC 9110 §9.1: the method token is case-sensitive and `get` is not `GET` — it is an EXTENSION
+///   method that happens to look like one. Case-folding it here let a non-canonical verb be folded
+///   into `GET`/`HEAD` and DOWNGRADED to `read-only`, where the enforced matrix fails closed to
+///   `full`. That is the wrong direction for an authorization matrix to differ in, whatever else
+///   filters the verb first.
+/// - **The dry-run paths are matched on PATH ALONE**, with no method gate, exactly as the enforced
+///   matrix does. Requiring `POST` here made this copy answer `full` for a pair the enforced copy
+///   answers `read-only` for — a second matrix with a second opinion, which is the one thing a
+///   ported table may not be.
+/// - **The query string is not part of the operation's identity.** The enforced matrix is handed
+///   `uri().path()`; this one is handed the request's recorded path, which carries `?query` with
+///   it, so `POST /config/validate?x=1` missed the dry-run row and demanded `full` where the
+///   previous release served it to a read-only token. The plane's own verb table already cuts the
+///   query before it matches (`admin_codec::verbs::find_verb`), for precisely this reason.
 pub fn admin_required_scope(method: &str, path: &str) -> Scope {
-    if method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD") {
+    if method == "GET" || method == "HEAD" {
         return Scope::ReadOnly;
     }
+    // Relative to the one true prefix, and without the query: the operation is the (method, path)
+    // pair the table declares, and `?limit=4` never changes which row that is.
+    let path = path.split_once('?').map_or(path, |(before, _)| before);
     let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
-    if method.eq_ignore_ascii_case("POST") && READ_ONLY_POST_PATHS.contains(&rel) {
+    if READ_ONLY_POST_PATHS.contains(&rel) {
         return Scope::ReadOnly;
     }
     Scope::Full

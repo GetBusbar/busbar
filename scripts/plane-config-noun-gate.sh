@@ -107,13 +107,21 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 #
 # A root that stops existing is a LOUD failure (`require_root`, below), not a silent narrowing of the
 # set — exactly the failure mode that let `crates/busbar-core` disappear under this gate unnoticed.
-CORE_ROOTS="crates/busbar-kernel/src crates/busbar-core-config/src"
+#
+# `crates/busbar-core-config/src` WAS the second root and is DELETED HERE, in the reviewed diff this
+# paragraph is, with the crate's disappearance as its stated reason. DECISIONS #37 rules "no
+# `busbar-core-<kind>` ever"; commit 1059d3c36 took the directory off disk and 50d14fd44 finished the
+# kill, bringing its one landed file home as `crates/busbar-kernel/src/config/parse.rs`. That file is
+# UNDER the root below, so the scan loses nothing by dropping the dead entry — it is the same bytes,
+# reached through the surviving root rather than through a path that stopped existing.
+CORE_ROOTS="crates/busbar-kernel/src"
 
 # Resolve the four section nouns from each plane crate's DECLARED PlaneDecl.config_section — never a
 # restated literal. `<key> -> crates/busbar-<key>/src`; read the `config_section: "<noun>",` line.
 #
 # A plane may write the field as a CONSTANT rather than a literal, and one now does: the wire-codec
-# split put A2A's noun in `busbar_a2a_codec::CONFIG_SECTION` and the decl names that path. Reading
+# split put A2A's noun outside the engine crate — it is `busbar_plane_a2a::CONFIG_SECTION` since the
+# codec fold (#39) — and the decl names that path. Reading
 # only the literal form silently dropped that plane from the noun set, and a gate that scans three
 # nouns instead of four reports clean on the fourth by never looking for it. So a non-literal value
 # is FOLLOWED to the constant's own declaration — in the named crate, or in this plane's own sources

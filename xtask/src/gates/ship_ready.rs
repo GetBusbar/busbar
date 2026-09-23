@@ -50,18 +50,71 @@ const SHIPPING_TARGETS: &[&str] = &["qa", "main"];
 
 pub struct ShipReadyGate;
 
-/// What the posture is for this run: the explicit target if one is set, otherwise the branch this
-/// tree is on. Named separately so the self-test can drive every branch of it without a checkout.
-pub fn posture(cx: &Ctx) -> String {
+/// WHAT THE POSTURE IS FOR THIS RUN, AND WHETHER IT IS KNOWN AT ALL.
+///
+/// THIS USED TO BE A `String` ENDING IN `unwrap_or_default()`, WHICH IS A FAIL-OPEN. A git failure
+/// — no repository, a broken index, `git` not on PATH, a checkout with no branch — produced `""`;
+/// `is_shipping("")` is false; and the false arm of [`standing_row`] is the PASS arm. So the one
+/// row in this gate whose entire job is to REFUSE a promotion answered "this is the dev line, carry
+/// on" to a question it had not been able to ask. A release gate that passes because git errored is
+/// pointed the wrong way.
+///
+/// `HEAD` and the empty string are folded in here for the same reason: `git rev-parse --abbrev-ref
+/// HEAD` answers `HEAD` on a detached checkout, which is git saying it cannot name a branch, not
+/// git naming a branch called HEAD. Reading it as a dev-line name is the same fail-open one step
+/// removed. CI sets `XTASK_SHIP_TARGET` explicitly (`ci.yml`, `${{ github.ref_name }}`), which is
+/// the supported way to say what a detached checkout is a checkout OF.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Posture {
+    /// The target, named: `XTASK_SHIP_TARGET` when set and non-empty, else the branch git reports.
+    Named(String),
+    /// Nothing named the target and git could not either. **This is not a dev line** — it is the
+    /// absence of an answer, and it is treated as such. Carries the sentence that explains it.
+    Unknown(String),
+}
+
+impl Posture {
+    /// How the posture reads in a row's detail.
+    fn label(&self) -> String {
+        match self {
+            Posture::Named(t) => format!("`{t}`"),
+            Posture::Unknown(_) => "UNKNOWN".to_string(),
+        }
+    }
+}
+
+/// The posture for this run. Named separately so the self-test can drive every arm of it without a
+/// checkout.
+pub fn posture(cx: &Ctx) -> Posture {
     if let Ok(t) = std::env::var("XTASK_SHIP_TARGET") {
         let t = t.trim().to_string();
         if !t.is_empty() {
-            return t;
+            return Posture::Named(t);
         }
     }
-    cx.git(&["rev-parse", "--abbrev-ref", "HEAD"])
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    posture_of_branch_output(cx.git(&["rev-parse", "--abbrev-ref", "HEAD"]))
+}
+
+/// The branch half of [`posture`], separated from the command that produces it so every arm — a
+/// failure, silence, a detached HEAD, a real branch — is drivable in the self-test without a
+/// throwaway checkout. An arm nothing can reach is an arm nothing proves.
+fn posture_of_branch_output(out: Result<String, String>) -> Posture {
+    match out {
+        Err(e) => Posture::Unknown(format!(
+            "git could not say what this checkout is on ({e}) and XTASK_SHIP_TARGET is not set"
+        )),
+        Ok(s) => match s.trim() {
+            "" => Posture::Unknown(
+                "git named no branch (empty output) and XTASK_SHIP_TARGET is not set".to_string(),
+            ),
+            "HEAD" => Posture::Unknown(
+                "this checkout is DETACHED, so `git rev-parse --abbrev-ref HEAD` answers `HEAD` \
+                 rather than a branch, and XTASK_SHIP_TARGET is not set"
+                    .to_string(),
+            ),
+            t => Posture::Named(t.to_string()),
+        },
+    }
 }
 
 fn is_shipping(target: &str) -> bool {
@@ -70,43 +123,60 @@ fn is_shipping(target: &str) -> bool {
 
 /// THE STANDING-RED ROW. Red for a shipping posture while anything is on the list, and it prints
 /// the list either way: the whole hazard of a written-down exemption is that it stops being read.
-fn standing_row(target: &str, standing: &[&str]) -> Row {
+fn standing_row(target: &Posture, standing: &[&str]) -> Row {
     let listed = if standing.is_empty() {
         "(empty)".to_string()
     } else {
         standing.join(", ")
     };
-    if !is_shipping(target) {
+    // THE LIST FIRST, THE POSTURE SECOND. The claim this row makes is about the LIST; the posture
+    // only decides whether a NON-EMPTY list is excused. An empty list satisfies the criterion under
+    // every posture, including one nobody could read, so it is green there and says which.
+    if standing.is_empty() {
         return Row::pass(
+            ROW_STANDING,
+            "nothing is standing red",
+            format!("target {}: the standing-red list is empty.", target.label()),
+        );
+    }
+    match target {
+        // FAIL CLOSED. Not knowing whether this is a shipping line is not the same as knowing it
+        // is not one, and only one of those two may excuse a written-down breakage.
+        Posture::Unknown(why) => Row::fail(
+            ROW_STANDING,
+            "the posture could not be read, so nothing may be excused against it",
+            format!(
+                "{why}. {} construction row(s) are standing red — {listed} — and the exemption \
+                 that covers them is a DEV-LINE one. A run that cannot tell whether it is on the \
+                 dev line must not help itself to the dev line's conveniences: that is how a \
+                 release gate comes to pass because git errored. Set XTASK_SHIP_TARGET to the line \
+                 this checkout is for.",
+                standing.len()
+            ),
+        ),
+        Posture::Named(t) if !is_shipping(t) => Row::pass(
             ROW_STANDING,
             "the standing-red list is a dev-line convenience, and this is the dev line",
             format!(
-                "target `{target}` is not a shipping line, so the {} standing red(s) still stand: \
+                "target `{t}` is not a shipping line, so the {} standing red(s) still stand: \
                  {listed}. Each one is a construction row that is KNOWN red and deliberately not \
                  blocking. None of them survives a promotion — run this gate with \
                  XTASK_SHIP_TARGET=qa to see what a promotion would refuse.",
                 standing.len()
             ),
-        );
-    }
-    if standing.is_empty() {
-        return Row::pass(
-            ROW_STANDING,
-            "nothing is standing red on a shipping line",
-            format!("target `{target}`: the standing-red list is empty."),
-        );
-    }
-    Row::fail(
-        ROW_STANDING,
-        "a shipping line inherits no standing reds",
-        format!(
-            "target `{target}` is a shipping line and {} construction row(s) are still standing \
-             red: {listed}. A standing red is a rule this tree BREAKS, written down so the dev \
-             line can keep moving while it is drained. Promoting it does not drain it — it \
-             promotes the breakage and retires the record of it. Drain each row, or do not ship.",
-            standing.len()
         ),
-    )
+        Posture::Named(t) => Row::fail(
+            ROW_STANDING,
+            "a shipping line inherits no standing reds",
+            format!(
+                "target `{t}` is a shipping line and {} construction row(s) are still standing \
+                 red: {listed}. A standing red is a rule this tree BREAKS, written down so the \
+                 dev line can keep moving while it is drained. Promoting it does not drain it — it \
+                 promotes the breakage and retires the record of it. Drain each row, or do not ship.",
+                standing.len()
+            ),
+        ),
+    }
 }
 
 /// THE CEILING ROWS. Both are construction-gate rows; this gate does not re-implement either
@@ -223,20 +293,95 @@ impl Gate for ShipReadyGate {
                 Expect::Red {
                     naming: vec!["standing red".to_string(), "plane-no-money".to_string()],
                 },
-                standing_row(target, &["plane-no-money", "one-pick-site"]),
+                standing_row(
+                    &Posture::Named(target.to_string()),
+                    &["plane-no-money", "one-pick-site"],
+                ),
             ));
             report.push(unit_case(
                 format!("a `{target}` target with an EMPTY list is green"),
                 &[ROW_STANDING],
                 Expect::Green,
-                standing_row(target, &[]),
+                standing_row(&Posture::Named(target.to_string()), &[]),
             ));
         }
         report.push(unit_case(
             "the dev line keeps its standing reds, and the row PRINTS them",
             &[ROW_STANDING],
             Expect::Green,
-            standing_row("dev", &["plane-no-money"]),
+            standing_row(&Posture::Named("dev".to_string()), &["plane-no-money"]),
+        ));
+
+        // -- THE FAIL-OPEN, MADE A CASE. `posture()` used to end in `unwrap_or_default()`: a git
+        //    failure became `""`, `is_shipping("")` is false, and the false arm is the PASS arm —
+        //    so the row whose whole job is to refuse a promotion passed BECAUSE it could not tell
+        //    what it was looking at. An unreadable posture is now its own arm and it is RED.
+        report.push(unit_case(
+            "an UNREADABLE posture refuses the standing-red list rather than excusing it",
+            &[ROW_STANDING],
+            Expect::Red {
+                naming: vec![
+                    "could not be read".to_string(),
+                    "plane-no-money".to_string(),
+                ],
+            },
+            standing_row(
+                &Posture::Unknown("git exited 128: not a git repository".to_string()),
+                &["plane-no-money"],
+            ),
+        ));
+        report.push(unit_case(
+            "an unreadable posture over an EMPTY list is still green — the criterion is met",
+            &[ROW_STANDING],
+            Expect::Green,
+            standing_row(
+                &Posture::Unknown("git exited 128: not a git repository".to_string()),
+                &[],
+            ),
+        ));
+        // A DETACHED checkout is git declining to name a branch, not a branch named `HEAD`.
+        report.push(unit_case(
+            "a DETACHED checkout is an unknown posture, not a dev-line one",
+            &[ROW_STANDING],
+            Expect::Red {
+                naming: vec!["DETACHED".to_string()],
+            },
+            standing_row(
+                &posture_of_branch_output(Ok("HEAD\n".to_string())),
+                &["plane-no-money"],
+            ),
+        ));
+        report.push(unit_case(
+            "a real branch name IS a dev-line posture",
+            &[ROW_STANDING],
+            Expect::Green,
+            standing_row(
+                &posture_of_branch_output(Ok("consolidated/1.6.0\n".to_string())),
+                &["plane-no-money"],
+            ),
+        ));
+        // THE MATCHED PAIR, IN ONE PLACE. `Posture::Named("")` is EXACTLY what the old
+        // `unwrap_or_default()` handed to this row on a git failure, and it takes the dev-line
+        // PASS arm — so the case below is green and is the BEFORE half, kept as evidence. The
+        // same failure now arrives as `Posture::Unknown` and is red. Nothing about the list
+        // changed between the two; only whether the posture was allowed to be a guess.
+        report.push(unit_case(
+            "the OLD fail-open shape (an EMPTY target name) still reads as a dev line — which is \
+             why it had to stop being reachable",
+            &[ROW_STANDING],
+            Expect::Green,
+            standing_row(&Posture::Named(String::new()), &["plane-no-money"]),
+        ));
+        report.push(unit_case(
+            "a git FAILURE is an unknown posture",
+            &[ROW_STANDING],
+            Expect::Red {
+                naming: vec!["could not say".to_string()],
+            },
+            standing_row(
+                &posture_of_branch_output(Err("git rev-parse exited 128".to_string())),
+                &["plane-no-money"],
+            ),
         ));
 
         // -- THE CEILING ROWS. A missing evidence row is the failure that matters: a rename in the

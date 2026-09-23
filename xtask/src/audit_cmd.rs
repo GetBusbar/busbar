@@ -1,9 +1,14 @@
 //! `cargo xtask ledger <sub>` — the audit register's commands.
 //!
-//! `sync` / `status` / `next` / `record` / `fixed`, plus `--check`, which is ALSO the registered
-//! gate `audit-ledger` (see `gates/audit_ledger.rs`). The two are one implementation: `--check`
-//! prints the human blocks the Python printed, and the gate reconciles the same findings as ledger
-//! rows. A register that reads red one way and green the other would be worse than either.
+//! `sync` / `status` / `next` / `record` / `fixed` / `move`, plus `--check`, which is ALSO the
+//! registered gate `audit-ledger` (see `gates/audit_ledger.rs`). The two are one implementation:
+//! `--check` prints the human blocks the Python printed, and the gate reconciles the same findings
+//! as ledger rows. A register that reads red one way and green the other would be worse than
+//! either.
+//!
+//! `move` is the one verb the Python never had, and it exists because `sync` matches records to
+//! scopes BY ID while an id is a DIRECTORY PATH: a rename that changes no code drops the audited
+//! record and derives a bare `unaudited` one in its place. See the `move` section below.
 //!
 //! Every stdout line here is byte-identical to `scripts/audit-ledger.py`'s, and both data files —
 //! `qa/audit-ledger.json` and `docs/design/AUDIT-STATUS.md` — are written byte-identically. That is
@@ -23,6 +28,7 @@ usage:
   cargo xtask ledger next                the worklist, worst first
   cargo xtask ledger record --scope S --round N --result R --report P --auditor A [--counts ..] [--at REV]
   cargo xtask ledger fixed --scope S [--commit REV]
+  cargo xtask ledger move <old-id> <new-id> [--at REV]   carry a record across a rename or a fold
   cargo xtask ledger --check             red on an open HIGH/MEDIUM scope or incomplete coverage";
 
 /// `die()` — to stderr, exit 2.
@@ -35,7 +41,16 @@ struct Args {
     map: BTreeMap<String, String>,
     flags: Vec<String>,
     sub: Option<String>,
+    /// The positional arguments after the subcommand. ONLY [`MOVE_SUB`] takes any; for every other
+    /// verb a second positional is still the error it has always been, in the same words, at the
+    /// same point in the parse.
+    rest: Vec<String>,
 }
+
+/// The one verb that reads positionals. `move OLD NEW` reads as the `git mv` it follows, and both
+/// halves are the same kind of thing — a scope id — so naming one `--from` and the other `--to`
+/// would be ceremony around an ordered pair.
+const MOVE_SUB: &str = "move";
 
 /// The options this command takes a value for. AN UNKNOWN OPTION IS AN ERROR, never a value
 /// quietly filed under a name nothing reads: `--att 4d5a05af` would otherwise stamp HEAD while the
@@ -62,6 +77,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         map: BTreeMap::new(),
         flags: Vec::new(),
         sub: None,
+        rest: Vec::new(),
     };
     let mut i = 0;
     while i < args.len() {
@@ -84,6 +100,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
         } else if out.sub.is_none() {
             out.sub = Some(a.clone());
+        } else if out.sub.as_deref() == Some(MOVE_SUB) {
+            out.rest.push(a.clone());
         } else {
             return Err(format!("unexpected argument `{a}`"));
         }
@@ -123,6 +141,7 @@ pub fn main(root: &std::path::Path, args: &[String]) -> i32 {
         Some("next") => cmd_next(&git, &register),
         Some("record") => cmd_record(&git, &register, &a),
         Some("fixed") => cmd_fixed(&git, &register, &a),
+        Some(MOVE_SUB) => cmd_move(&git, &register, &a),
         Some(other) => {
             eprintln!("xtask ledger: unknown subcommand `{other}`");
             eprintln!("{USAGE}");
@@ -1009,6 +1028,444 @@ fn cmd_fixed(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
 }
 
 // ---------------------------------------------------------------------------------------------
+// move — the record follows the code
+//
+// `sync` MATCHES BY ID AND AN ID IS A DIRECTORY PATH, so `git mv crates/plugin-sdk
+// crates/busbar-plugin-sdk` — not one byte of code changed — deletes the audit record for
+// `crates/plugin-sdk/src` and emits a bare `unaudited` record for the new path. The evidence is
+// gone and the register reads as though nobody ever looked. That is not a hypothetical: the 1.6.0
+// crate collapse does it 26 times as folds and 7 times as renames, and hand-editing a 147KB
+// register 33 times is exactly how a round goes missing.
+//
+// `move` is the sentence `sync` cannot say: THIS CODE IS THAT CODE. Everything it does follows from
+// that one claim, and every part of it is measured rather than asserted --
+//
+//   * the destination must be a scope the tree ACTUALLY implies, or the record would describe
+//     nothing and the next `sync` would drop it again — the same laundering, pointed the other way;
+//   * the source must NOT still be on disk, or the move would leave live code with no record;
+//   * `rounds[]` is MERGED, never replaced — losing a round is the failure this exists to prevent;
+//   * a record is re-stamped to the new tree ONLY when the bytes are provably identical and only
+//     the prefix moved ([`audit::relative_files`]); otherwise it keeps the digest it earned and
+//     gains `hashed_as`, the paths that digest is over, so the anti-forgery rule still recomputes
+//     the round's claim against the tree the round named. A record that cannot be shown to describe
+//     the new tree reads `stale` — the honest answer — rather than being quietly re-blessed.
+// ---------------------------------------------------------------------------------------------
+
+/// What happened to one carried record's tree hash.
+enum Carried {
+    /// The bytes are the same and only the prefix moved, so the digest was recomputed at `--at`.
+    Restamped,
+    /// The digest stands as it was, and the record now names the paths it was taken over.
+    Anchored,
+    /// The record claims no tree, so there was nothing to carry.
+    Nothing,
+}
+
+fn scope_index(scopes: &[Json], sid: &str) -> Option<usize> {
+    scopes
+        .iter()
+        .position(|s| s.get("id").as_str() == Some(sid))
+}
+
+/// THE PROVENANCE NOTE, append-only: every id this record has been carried from, oldest first.
+fn note_move(rec: &mut Json, from_id: &str) {
+    let Some(o) = rec.as_object_mut() else {
+        return;
+    };
+    let mut trail: Vec<Json> = o
+        .get("moved_from")
+        .and_then(Json::as_array)
+        .map(<[Json]>::to_vec)
+        .unwrap_or_default();
+    if trail.last().and_then(Json::as_str) != Some(from_id) {
+        trail.push(Json::Str(from_id.to_string()));
+    }
+    o.insert("moved_from", Json::Array(trail));
+}
+
+/// Carry ONE record — a scope's top-level record or one of its rounds — from `from_scope`'s paths
+/// onto `to_scope`'s.
+///
+/// `hashed_at_key` names which of the record's commits its stored digest is over: `fixed_at` for a
+/// top-level record that has been stamped fixed (`fixed` deliberately re-hashes to the fix commit),
+/// `audited_at` for everything else. Getting that wrong would re-stamp against the wrong tree, so
+/// it is a parameter rather than a guess.
+#[allow(clippy::too_many_arguments)]
+fn carry_one(
+    git: &Git,
+    trees: &mut TreeCache,
+    rec: &mut Json,
+    from_scope: &Json,
+    from_id: &str,
+    to_scope: &Json,
+    to_id: &str,
+    hashed_at_key: &str,
+    at: &str,
+    now: &BTreeMap<String, String>,
+) -> Carried {
+    // The shape the record's digest is already over: its own `hashed_as` if a previous move left
+    // one (a chain of moves must not lose the ORIGINAL paths), otherwise the source scope.
+    let under = audit::hashed_scope(from_scope, rec).clone();
+    let under_id = rec
+        .get("hashed_as")
+        .get("id")
+        .as_str()
+        .unwrap_or(from_id)
+        .to_string();
+    // A record whose paths already are the destination's has nothing to anchor — that is the fold's
+    // own destination record, which did not move anywhere.
+    let paths_moved = under.get("paths") != to_scope.get("paths");
+
+    let anchor = |rec: &mut Json| {
+        if !paths_moved {
+            return Carried::Anchored;
+        }
+        if let Some(o) = rec.as_object_mut() {
+            if o.get("hashed_as").is_none() {
+                let mut h = Obj::new();
+                h.insert("id", Json::Str(under_id.clone()));
+                h.insert("paths", under.get("paths").clone());
+                if under.get("exclude").truthy() {
+                    h.insert("exclude", under.get("exclude").clone());
+                }
+                o.insert("hashed_as", Json::Object(h));
+            }
+        }
+        Carried::Anchored
+    };
+
+    // NO DIGEST AND NO COMMIT IS NO CLAIM ABOUT ANY TREE — an `unaudited` scope, or one that owned
+    // no file when it was read. There is nothing to re-stamp and nothing to anchor, and writing a
+    // `hashed_as` onto a record that asserts nothing would be noise in a 147KB file.
+    let (Some(stored), Some(hashed_at)) = (
+        rec.get("tree_hash").as_str().map(str::to_string),
+        rec.get(hashed_at_key).as_str().map(str::to_string),
+    ) else {
+        return Carried::Nothing;
+    };
+    let Ok(then) = trees
+        .entry(hashed_at.clone())
+        .or_insert_with(|| git.files_at(&hashed_at))
+        .clone()
+    else {
+        // The commit cannot be produced, so whether the bytes moved is UNKNOWABLE here. Anchoring
+        // leaves the record saying exactly what it said, and `--check` goes on reporting it as the
+        // unresolvable stamp it already was.
+        return anchor(rec);
+    };
+
+    // A DIGEST THAT WAS NOT THE TREE AT ITS OWN COMMIT IS NOT ONE THIS COMMAND REPAIRS. Re-stamping
+    // it would launder a broken stamp into a green one; anchoring leaves `--check`'s verdict on it
+    // bit for bit what it was before the rename.
+    if audit::tree_hash(&under, &then).as_deref() != Some(stored.as_str()) {
+        return anchor(rec);
+    }
+    // THE MEASUREMENT. Same relative paths, same blob oids: the auditor read these exact bytes, and
+    // the only thing that has happened to them since is a prefix.
+    if audit::relative_files(&under, &under_id, &then)
+        != audit::relative_files(to_scope, to_id, now)
+    {
+        return anchor(rec);
+    }
+    let fresh = audit::tree_hash(to_scope, now);
+    if let Some(o) = rec.as_object_mut() {
+        o.insert("tree_hash", fresh.map_or(Json::Null, Json::Str));
+        // The digest is now over the destination's own paths, so the anchor is no longer true.
+        o.remove("hashed_as");
+        if hashed_at_key == "audited_at" {
+            o.insert("audited_at", Json::Str(at.to_string()));
+        }
+    }
+    Carried::Restamped
+}
+
+/// The key naming the commit a record's stored `tree_hash` is over.
+fn hashed_at_key(rec: &Json) -> &'static str {
+    if rec.get("fixed_at").truthy() {
+        "fixed_at"
+    } else {
+        "audited_at"
+    }
+}
+
+/// A pre-`rounds` record turned into the round it always was, so a fold cannot drop it.
+///
+/// `confirmations` reads a register with no `rounds` list by falling back to the top-level record —
+/// which is fine while the record stays where it is, and is a silent deletion the moment the scope
+/// is folded into another one, because a fold carries `rounds[]` and nothing else. The evidence is
+/// the same evidence either way; this is the shape that survives the move.
+fn round_from_record(sc: &Json) -> Option<Json> {
+    if sc.get("rounds").as_array().is_some_and(|r| !r.is_empty()) {
+        return None;
+    }
+    if !matches!(sc.get("result").as_str(), Some("zero" | "findings")) {
+        return None;
+    }
+    let mut r = Obj::new();
+    for key in audit::RECORD_KEYS {
+        r.insert(key, sc.get(key).clone());
+    }
+    if let Some(h) = sc.as_object().and_then(|o| o.get("hashed_as")) {
+        r.insert("hashed_as", h.clone());
+    }
+    Some(Json::Object(r))
+}
+
+/// EVERY WAY A MOVE IS NOT A MOVE, in one place so each refusal can be read — and tested — as the
+/// sentence it is rather than as an exit code.
+///
+/// `derived` is what the tree implies RIGHT NOW; `recorded` is what the register carries. The four
+/// refusals are the four ways those two and the pair of ids can fail to describe one event.
+pub fn move_refusal(derived: &[&str], recorded: &[&str], from: &str, to: &str) -> Option<String> {
+    if from == to {
+        return Some(format!(
+            "{} is both the source and the destination -- a record that has not moved needs no move",
+            json_lite::py_repr(from)
+        ));
+    }
+    if !derived.contains(&to) {
+        return Some(format!(
+            "{} is not a scope this tree implies -- `derive_scopes` finds no such path on disk, so \
+             a record moved onto it would describe nothing and the next `sync --write` would drop \
+             it. Do the rename or the fold on disk first, then name the scope that absorbed the \
+             code (`ledger sync` prints the derived list).",
+            json_lite::py_repr(to)
+        ));
+    }
+    if derived.contains(&from) {
+        return Some(format!(
+            "{} is STILL a scope this tree implies -- moving its record away would leave code on \
+             disk with no audit record at all. Do the rename or the fold on disk first, then move \
+             the record.",
+            json_lite::py_repr(from)
+        ));
+    }
+    if !recorded.contains(&from) {
+        return Some(format!(
+            "no scope {} in the register (see `status` for the list)",
+            json_lite::py_repr(from)
+        ));
+    }
+    None
+}
+
+fn cmd_move(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
+    let (from, to) = match a.rest.as_slice() {
+        [f, t] => (f.clone(), t.clone()),
+        other => {
+            eprintln!(
+                "xtask ledger: `move` takes exactly two scope ids -- the one the code left and \
+                 the one it arrived at (got {})",
+                other.len()
+            );
+            eprintln!("{USAGE}");
+            return 2;
+        }
+    };
+    let doc = match audit::load(register) {
+        Ok(d) => d,
+        Err(e) => return die(e),
+    };
+
+    let derived = audit::derive_scopes(git.repo());
+    let derived_ids: Vec<&str> = derived
+        .iter()
+        .filter_map(|s| s.get("id").as_str())
+        .collect();
+    let mut scopes = doc.get("scopes").as_array().unwrap_or(&[]).to_vec();
+    let recorded: Vec<&str> = scopes.iter().filter_map(|s| s.get("id").as_str()).collect();
+
+    // NOTHING IS WRITTEN UNTIL ALL FOUR REFUSALS HAVE PASSED. A half-applied move is a register
+    // nobody can reason about, and the refusals are cheap.
+    if let Some(why) = move_refusal(&derived_ids, &recorded, &from, &to) {
+        return die(why);
+    }
+    let Some(dest_derived) = derived
+        .iter()
+        .find(|s| s.get("id").as_str() == Some(to.as_str()))
+        .cloned()
+    else {
+        return die(format!("{to} vanished from the derived list mid-command"));
+    };
+    let Some(si) = scope_index(&scopes, &from) else {
+        return die(format!("{from} vanished from the register mid-command"));
+    };
+
+    let at = match a.map.get("at") {
+        Some(rev) => match git.run(&["rev-parse", rev]) {
+            Ok(s) => s.trim().to_string(),
+            Err(e) => return die(e),
+        },
+        None => match git.head() {
+            Ok(h) => h,
+            Err(e) => return die(e),
+        },
+    };
+    let now = match git.files_at(&at) {
+        Ok(f) => f,
+        Err(e) => return die(e),
+    };
+
+    let source = scopes[si].clone();
+    let mut trees: TreeCache = BTreeMap::new();
+    let mut restamped = 0usize;
+    let mut anchored = 0usize;
+    let mut carried = 0usize;
+
+    let fold = scope_index(&scopes, &to);
+    let (target, kind) = match fold {
+        // A CONTENT FOLD: the destination already has a record of its own, and the source's
+        // reading is additional evidence about the same directory. The destination's own record is
+        // never overwritten -- its tree just grew, which is why it goes `stale` unless the bytes
+        // prove otherwise.
+        Some(di) => {
+            // The destination is re-shaped onto its own DERIVED scope first, so a fold leaves
+            // exactly what `sync` would leave -- same id, kind, paths and excludes -- and cannot
+            // preserve a stale `exclude` the tree no longer implies.
+            let mut dest = audit::carry(&dest_derived, &scopes[di]);
+            let mut rounds: Vec<Json> = dest
+                .get("rounds")
+                .as_array()
+                .map(<[Json]>::to_vec)
+                .unwrap_or_default();
+            let mut incoming: Vec<Json> = source
+                .get("rounds")
+                .as_array()
+                .map(<[Json]>::to_vec)
+                .unwrap_or_default();
+            incoming.extend(round_from_record(&source));
+            for mut r in incoming {
+                match carry_one(
+                    git,
+                    &mut trees,
+                    &mut r,
+                    &source,
+                    &from,
+                    &dest,
+                    &to,
+                    "audited_at",
+                    &at,
+                    &now,
+                ) {
+                    Carried::Restamped => restamped += 1,
+                    Carried::Anchored => anchored += 1,
+                    Carried::Nothing => {}
+                }
+                note_move(&mut r, &from);
+                carried += 1;
+                rounds.push(r);
+            }
+            if let Some(o) = dest.as_object_mut() {
+                o.insert("rounds", Json::Array(rounds));
+            }
+            // The destination's OWN record: re-stamped only if its tree is still, byte for byte,
+            // the tree it read. After a fold it almost never is -- it just absorbed somebody
+            // else's code -- and `stale` is the correct, honest answer to that.
+            let key = hashed_at_key(&dest);
+            let dest_shape = dest.clone();
+            carry_one(
+                git,
+                &mut trees,
+                &mut dest,
+                &dest_shape,
+                &to,
+                &dest_shape,
+                &to,
+                key,
+                &at,
+                &now,
+            );
+            note_move(&mut dest, &from);
+            scopes[di] = dest;
+            scopes.remove(si);
+            (di - usize::from(di > si), "fold")
+        }
+        // A PURE RENAME: the destination has no record, so the source's record IS the destination's
+        // record, re-shaped onto the derived scope's id, kind, paths and excludes.
+        None => {
+            let mut moved = audit::carry(&dest_derived, &source);
+            let key = hashed_at_key(&moved);
+            let dest_shape = moved.clone();
+            match carry_one(
+                git,
+                &mut trees,
+                &mut moved,
+                &source,
+                &from,
+                &dest_shape,
+                &to,
+                key,
+                &at,
+                &now,
+            ) {
+                Carried::Restamped => restamped += 1,
+                Carried::Anchored => anchored += 1,
+                Carried::Nothing => {}
+            }
+            let mut rounds: Vec<Json> = moved
+                .get("rounds")
+                .as_array()
+                .map(<[Json]>::to_vec)
+                .unwrap_or_default();
+            for r in &mut rounds {
+                match carry_one(
+                    git,
+                    &mut trees,
+                    r,
+                    &source,
+                    &from,
+                    &dest_shape,
+                    &to,
+                    "audited_at",
+                    &at,
+                    &now,
+                ) {
+                    Carried::Restamped => restamped += 1,
+                    Carried::Anchored => anchored += 1,
+                    Carried::Nothing => {}
+                }
+                note_move(r, &from);
+                carried += 1;
+            }
+            if !rounds.is_empty() {
+                if let Some(o) = moved.as_object_mut() {
+                    o.insert("rounds", Json::Array(rounds));
+                }
+            }
+            note_move(&mut moved, &from);
+            scopes[si] = moved;
+            (si, "rename")
+        }
+    };
+
+    audit::reorder_scope(&mut scopes[target]);
+    let status = audit::status_of(
+        &scopes[target],
+        audit::tree_hash(&scopes[target], &now).as_deref(),
+    );
+
+    let mut out = doc.clone();
+    if let Some(d) = out.as_object_mut() {
+        d.insert("scopes", Json::Array(scopes));
+    }
+    if let Err(e) = audit::save(register, &out) {
+        return die(e);
+    }
+    println!(
+        "moved {from} -> {to} ({kind}): {carried} round(s) carried, {restamped} record(s) \
+         re-stamped at {}; {to} reads {status}",
+        &at[..8.min(at.len())]
+    );
+    if anchored > 0 {
+        println!(
+            "  {anchored} record(s) kept the digest they earned and now name the paths it is over \
+             (hashed_as {from}) -- the bytes are not the bytes that were read"
+        );
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------------------------
 // --check, shared with the registered gate
 // ---------------------------------------------------------------------------------------------
 
@@ -1060,7 +1517,11 @@ fn stamped_hash(
         .entry(at.to_string())
         .or_insert_with(|| git.files_at(at));
     match files {
-        Ok(files) => Ok(audit::tree_hash(sc, files)),
+        // UNDER THE PATHS THE RECORD'S DIGEST IS ACTUALLY OVER. For every record that has not been
+        // through `ledger move` those are the scope's own paths and this reads exactly as it always
+        // did; for a round carried across a rename it is the path the round read, so the rule still
+        // recomputes the round's claim against the tree the round named. See [`audit::hashed_scope`].
+        Ok(files) => Ok(audit::tree_hash(audit::hashed_scope(sc, rec), files)),
         Err(e) => Err(e.clone()),
     }
 }
@@ -1322,5 +1783,504 @@ fn block(items: &[String], heading: &str, prefix: &str) {
     println!("audit ledger: {} {heading}", items.len());
     for i in items {
         println!("{prefix}{i}");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// move — the proof
+//
+// Every claim `move` makes is a claim about a GIT TREE: which blobs a scope owned at which commit,
+// and whether those blobs are the ones in front of us now. So these run against a throwaway
+// repository with a real history rather than a hand-written register — a synthetic fixture could
+// not tell a measured re-stamp from a forged one, which is the only distinction that matters here.
+// ---------------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod move_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct Scratch {
+        root: PathBuf,
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    impl Scratch {
+        fn git(&self) -> Git {
+            Git::new(&self.root)
+        }
+
+        fn run(&self, args: &[&str]) -> String {
+            self.git()
+                .run(args)
+                .unwrap_or_else(|e| panic!("git {args:?}: {e}"))
+        }
+
+        fn write(&self, rel: &str, body: &str) {
+            let p = self.root.join(rel);
+            std::fs::create_dir_all(p.parent().expect("a file has a parent directory"))
+                .expect("the scratch directory is creatable");
+            std::fs::write(&p, body).expect("the scratch file is writable");
+        }
+
+        /// A crate with production code and nothing else — the shape `derive_scopes` turns into
+        /// exactly one `crates/<name>/src` scope.
+        fn crate_at(&self, name: &str, body: &str) {
+            self.write(
+                &format!("crates/{name}/Cargo.toml"),
+                &format!("[package]\nname = \"{name}\"\nversion = \"0.0.0\"\n"),
+            );
+            self.write(&format!("crates/{name}/src/lib.rs"), body);
+        }
+
+        fn commit(&self, msg: &str) -> String {
+            self.run(&["add", "-A"]);
+            self.run(&["commit", "-qm", msg]);
+            self.git().head().expect("HEAD resolves")
+        }
+
+        fn register(&self) -> PathBuf {
+            self.root.join(audit::REGISTER_REL)
+        }
+
+        fn raw(&self) -> String {
+            std::fs::read_to_string(self.register()).expect("the register is readable")
+        }
+
+        fn ledger(&self) -> Json {
+            audit::load(&self.register()).expect("the register parses")
+        }
+
+        fn scope(&self, id: &str) -> Option<Json> {
+            self.ledger()
+                .get("scopes")
+                .as_array()?
+                .iter()
+                .find(|s| s.get("id").as_str() == Some(id))
+                .cloned()
+        }
+
+        fn status(&self, id: &str) -> &'static str {
+            let all = self.git().files_at("HEAD").expect("HEAD lists");
+            let sc = self
+                .scope(id)
+                .unwrap_or_else(|| panic!("{id} is in the register"));
+            audit::status_of(&sc, audit::tree_hash(&sc, &all).as_deref())
+        }
+
+        fn xtask(&self, args: &[&str]) -> i32 {
+            let owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+            super::main(&self.root, &owned)
+        }
+
+        /// One zero round, through the real `record` verb, so the register these tests move is the
+        /// register `record` actually writes.
+        fn read_by(&self, id: &str, round: i64, auditor: &str) {
+            assert_eq!(
+                self.xtask(&[
+                    "record",
+                    "--scope",
+                    id,
+                    "--round",
+                    &round.to_string(),
+                    "--result",
+                    "zero",
+                    "--report",
+                    "the module admits nothing unmetered",
+                    "--auditor",
+                    auditor,
+                ]),
+                0,
+                "`record` accepts a zero round on {id}"
+            );
+        }
+
+        fn check(&self) -> crate::audit_cmd::CheckFindings {
+            super::check(&self.git(), &self.register()).expect("the register can be judged")
+        }
+    }
+
+    fn scratch(name: &str) -> Scratch {
+        let root =
+            std::env::temp_dir().join(format!("xtask-ledger-move-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("the scratch repository directory is creatable");
+        let s = Scratch { root };
+        let hooks = s.root.join("nohooks");
+        std::fs::create_dir_all(&hooks).expect("the empty hooks directory is creatable");
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "audit@selftest"],
+            vec!["config", "user.name", "audit"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec![
+                "config",
+                "core.hooksPath",
+                hooks.to_str().expect("utf-8 path"),
+            ],
+        ] {
+            s.run(&args);
+        }
+        s
+    }
+
+    fn rounds(sc: &Json) -> Vec<Json> {
+        sc.get("rounds")
+            .as_array()
+            .map(<[Json]>::to_vec)
+            .unwrap_or_default()
+    }
+
+    /// A FOLD CARRIES `rounds[]` AND NOTHING ELSE, so a pre-`rounds` record — a verdict the
+    /// register keeps only at the top level — would vanish into a fold without this. The committed
+    /// register has none today; that is exactly why the guard has to be proven here rather than by
+    /// a scope that happens to exist.
+    #[test]
+    fn a_verdict_with_no_rounds_list_becomes_the_round_it_always_was() {
+        let legacy = crate::json_lite::parse(
+            r#"{"id": "crates/old/src", "round": 3, "result": "findings", "auditor": "alice",
+                "audited_at": "c0", "tree_hash": "aaaa", "counts": {"HIGH": 1},
+                "report": "a path admits an unmetered call"}"#,
+        )
+        .expect("the fixture parses");
+        let promoted = super::round_from_record(&legacy).expect("the top-level verdict is a round");
+        for key in audit::RECORD_KEYS {
+            assert_eq!(
+                promoted.get(key),
+                legacy.get(key),
+                "`{key}` is what made it a record, so it is what makes it a round"
+            );
+        }
+
+        // A scope that ALREADY has rounds is not doubled, and a scope that reached no verdict has
+        // nothing to promote -- either would be inventing evidence rather than carrying it.
+        let with_rounds = crate::json_lite::parse(
+            r#"{"result": "zero", "audited_at": "c0", "tree_hash": "aaaa",
+                "rounds": [{"round": 1, "result": "zero", "auditor": "alice"}]}"#,
+        )
+        .expect("the fixture parses");
+        assert!(super::round_from_record(&with_rounds).is_none());
+        let never_read =
+            crate::json_lite::parse(r#"{"result": "unaudited"}"#).expect("the fixture parses");
+        assert!(super::round_from_record(&never_read).is_none());
+    }
+
+    /// THE LAUNDERING, AND THE REPAIR, IN ONE TEST — because a tool whose reason for existing is
+    /// undocumented is a tool the next reader deletes.
+    ///
+    /// `git mv crates/plugin-sdk crates/busbar-plugin-sdk` changes NOT ONE BYTE of code. `sync`
+    /// matches records to scopes BY ID and an id is a directory path, so the audited record is
+    /// dropped and a bare `unaudited` one is derived for the new path: two auditors' readings, gone,
+    /// on a rename. The upcoming crate collapse does this 33 times.
+    #[test]
+    fn sync_launders_a_rename_into_unaudited_and_move_is_the_repair() {
+        let s = scratch("laundering");
+        s.crate_at("plugin-sdk", "pub fn admit() {}\n");
+        s.commit("base");
+        assert_eq!(s.xtask(&["sync", "--write"]), 0);
+        s.read_by("crates/plugin-sdk/src", 1, "alice");
+        s.read_by("crates/plugin-sdk/src", 2, "bob");
+        assert_eq!(
+            s.status("crates/plugin-sdk/src"),
+            "clean",
+            "two auditors read this tree and both found nothing"
+        );
+
+        s.run(&["mv", "crates/plugin-sdk", "crates/busbar-plugin-sdk"]);
+        s.commit("rename only -- no code changed");
+        let audited = s.raw();
+
+        // --- THE BUG ---
+        assert_eq!(s.xtask(&["sync", "--write"]), 0);
+        assert!(
+            s.scope("crates/plugin-sdk/src").is_none(),
+            "sync drops the audited record along with the old path"
+        );
+        let fresh = s
+            .scope("crates/busbar-plugin-sdk/src")
+            .expect("and derives a bare record for the new path");
+        assert_eq!(
+            fresh.get("result").as_str(),
+            Some("unaudited"),
+            "THE LAUNDERING: a rename that changed no code turned two readings into `unaudited`"
+        );
+        assert!(
+            fresh.as_object().and_then(|o| o.get("rounds")).is_none(),
+            "and took both rounds with it"
+        );
+        assert_eq!(s.status("crates/busbar-plugin-sdk/src"), "unaudited");
+
+        // --- THE SAME RENAME THROUGH `move` ---
+        std::fs::write(s.register(), &audited).expect("the register is restorable");
+        assert_eq!(
+            s.xtask(&[
+                "move",
+                "crates/plugin-sdk/src",
+                "crates/busbar-plugin-sdk/src"
+            ]),
+            0
+        );
+        assert!(
+            s.scope("crates/plugin-sdk/src").is_none(),
+            "the record does not stay behind on a path that no longer exists"
+        );
+        assert_eq!(
+            s.status("crates/busbar-plugin-sdk/src"),
+            "clean",
+            "the audit evidence followed the code; the gate is green because it was READ, not \
+             because the record went missing"
+        );
+    }
+
+    /// A PURE RENAME CARRIES EVERY ROUND AND EVERY PRESERVED KEY, and the two keys that do change
+    /// change because they were MEASURED against the new tree, not copied.
+    #[test]
+    fn a_pure_rename_carries_every_round_and_every_preserved_key() {
+        let s = scratch("rename");
+        s.crate_at("plugin-sdk", "pub fn admit() {}\n");
+        s.write("crates/plugin-sdk/src/tests/mod.rs", "#[test]\nfn t() {}\n");
+        // `qa/` is an instrument scope, and the register lives in it. Tracking it up front keeps
+        // the derived list stable across the two syncs below, so the fixed-point assertion at the
+        // end is about `move`'s output and not about a directory sync itself created.
+        s.write("qa/.keep", "");
+        s.commit("base");
+        assert_eq!(s.xtask(&["sync", "--write"]), 0);
+        s.read_by("crates/plugin-sdk/src", 1, "alice");
+        s.read_by("crates/plugin-sdk/src", 2, "bob");
+        let before = s
+            .scope("crates/plugin-sdk/src")
+            .expect("the audited record");
+
+        s.run(&["mv", "crates/plugin-sdk", "crates/busbar-plugin-sdk"]);
+        let at = s.commit("rename only");
+        // A crate rename moves EVERY scope the crate implies, one `move` each -- `sync` prints the
+        // `+`/`-` pairs that name them.
+        for (old, new) in [
+            ("crates/plugin-sdk/src", "crates/busbar-plugin-sdk/src"),
+            (
+                "crates/plugin-sdk/src/tests",
+                "crates/busbar-plugin-sdk/src/tests",
+            ),
+        ] {
+            assert_eq!(s.xtask(&["move", old, new]), 0, "move {old} -> {new}");
+        }
+        let after = s
+            .scope("crates/busbar-plugin-sdk/src")
+            .expect("the record followed the code");
+
+        // The record IS the same record.
+        for key in ["round", "result", "counts", "report", "auditor", "fixed_at"] {
+            assert_eq!(
+                after.get(key),
+                before.get(key),
+                "`{key}` is part of what a record IS and must cross a rename untouched"
+            );
+        }
+        // EVERY round, in order, with its identity intact.
+        let (was, now) = (rounds(&before), rounds(&after));
+        assert_eq!(was.len(), 2, "two readings went in");
+        assert_eq!(now.len(), was.len(), "two readings came out");
+        for (w, n) in was.iter().zip(&now) {
+            for key in ["round", "result", "auditor", "counts", "report"] {
+                assert_eq!(n.get(key), w.get(key), "round `{key}` survives the rename");
+            }
+            assert_eq!(
+                n.get("moved_from").as_array().map(<[Json]>::to_vec),
+                Some(vec![Json::Str("crates/plugin-sdk/src".to_string())]),
+                "and says where it was read"
+            );
+        }
+
+        // The two keys that DO change are measurements of the tree in front of us.
+        let all = s.git().files_at(&at).expect("the rename commit lists");
+        assert_eq!(
+            after.get("tree_hash").as_str(),
+            audit::tree_hash(&after, &all).as_deref(),
+            "the re-stamped hash is the hash of the renamed scope at the rename commit"
+        );
+        assert_eq!(after.get("audited_at").as_str(), Some(at.as_str()));
+        assert_ne!(
+            after.get("tree_hash").as_str(),
+            before.get("tree_hash").as_str(),
+            "and it is a DIFFERENT number, because the path is part of the digest"
+        );
+        for n in &now {
+            assert_eq!(n.get("tree_hash").as_str(), after.get("tree_hash").as_str());
+        }
+        assert_eq!(s.status("crates/busbar-plugin-sdk/src"), "clean");
+
+        // AND THE ANTI-FORGERY RULE IS STILL SATISFIED. A carry-across that left every round
+        // reading "stamped against a tree it did not read" would be a different kind of loss.
+        assert!(
+            s.check().stamped.is_empty(),
+            "every carried record still recomputes to the hash it carries: {:?}",
+            s.check().stamped
+        );
+
+        // MOVE'S OUTPUT IS A FIXED POINT OF SYNC. The 33 collapse steps end in a `sync --write`,
+        // and a `move` whose keys `sync` reshuffles -- or whose `hashed_as` `sync` drops -- would
+        // quietly un-do itself one command later. This is the assertion that says it does not.
+        let settled = s.raw();
+        assert_eq!(s.xtask(&["sync", "--write"]), 0);
+        assert_eq!(
+            s.raw(),
+            settled,
+            "`sync --write` after a `move` must be a byte-for-byte no-op"
+        );
+    }
+
+    /// A FOLD MERGES, IT DOES NOT REPLACE. The destination's rounds and the source's rounds are
+    /// evidence about the same directory once the code lands in it, and the count coming out must
+    /// be the SUM — losing an audit round is the whole failure this command exists to prevent.
+    #[test]
+    fn a_fold_merges_both_round_lists_rather_than_replacing_either() {
+        let s = scratch("fold");
+        s.crate_at("plugin-sdk", "pub fn admit() {}\n");
+        s.crate_at("busbar-plugin-sdk", "pub fn route() {}\n");
+        s.commit("base");
+        assert_eq!(s.xtask(&["sync", "--write"]), 0);
+        s.read_by("crates/plugin-sdk/src", 1, "alice");
+        s.read_by("crates/plugin-sdk/src", 2, "bob");
+        s.read_by("crates/busbar-plugin-sdk/src", 7, "carol");
+        let source = s.scope("crates/plugin-sdk/src").expect("the source record");
+        let dest_before = s
+            .scope("crates/busbar-plugin-sdk/src")
+            .expect("the destination record");
+        assert_eq!(rounds(&source).len(), 2);
+        assert_eq!(rounds(&dest_before).len(), 1);
+
+        s.run(&[
+            "mv",
+            "crates/plugin-sdk/src/lib.rs",
+            "crates/busbar-plugin-sdk/src/sdk.rs",
+        ]);
+        s.run(&["rm", "-q", "-r", "crates/plugin-sdk"]);
+        s.commit("fold plugin-sdk into busbar-plugin-sdk");
+
+        assert_eq!(
+            s.xtask(&[
+                "move",
+                "crates/plugin-sdk/src",
+                "crates/busbar-plugin-sdk/src"
+            ]),
+            0
+        );
+        assert!(s.scope("crates/plugin-sdk/src").is_none());
+        let dest = s
+            .scope("crates/busbar-plugin-sdk/src")
+            .expect("the destination record");
+        let merged = rounds(&dest);
+        assert_eq!(
+            merged.len(),
+            rounds(&source).len() + rounds(&dest_before).len(),
+            "the merged list is the SUM of both lists, not one of them"
+        );
+        // The destination's own reading is untouched and still first.
+        assert_eq!(merged[0], rounds(&dest_before)[0]);
+        // The incoming readings name where they came from and keep the digest they earned.
+        for (i, r) in merged[1..].iter().enumerate() {
+            assert_eq!(
+                r.get("moved_from").as_array().map(<[Json]>::to_vec),
+                Some(vec![Json::Str("crates/plugin-sdk/src".to_string())]),
+                "the provenance note names the source scope id"
+            );
+            assert_eq!(
+                r.get("tree_hash").as_str(),
+                rounds(&source)[i].get("tree_hash").as_str(),
+                "a round the fold cannot prove describes the merged tree keeps its own hash"
+            );
+            assert_eq!(
+                r.get("hashed_as").get("id").as_str(),
+                Some("crates/plugin-sdk/src"),
+                "and names the paths that hash is over, so the rule can still recompute it"
+            );
+            assert_eq!(r.get("auditor"), rounds(&source)[i].get("auditor"));
+        }
+        assert!(
+            s.check().stamped.is_empty(),
+            "every merged round still recomputes to the hash it carries: {:?}",
+            s.check().stamped
+        );
+        assert_eq!(
+            s.status("crates/busbar-plugin-sdk/src"),
+            "stale",
+            "the destination absorbed code nobody read AS PART OF IT, so it owes a fresh reading \
+             -- a fold must not re-bless the destination"
+        );
+    }
+
+    /// MOVING TO A SCOPE THE TREE DOES NOT IMPLY IS REFUSED, and the refusal says why: it is the
+    /// same laundering pointed the other way. The register is not touched.
+    #[test]
+    fn a_destination_the_tree_does_not_imply_is_refused_with_the_reason() {
+        let derived = ["crates/busbar-plugin-sdk/src"];
+        let recorded = ["crates/plugin-sdk/src"];
+
+        let why = super::move_refusal(
+            &derived,
+            &recorded,
+            "crates/plugin-sdk/src",
+            "crates/nowhere/src",
+        )
+        .expect("a destination that is on no disk is refused");
+        assert!(
+            why.contains("is not a scope this tree implies"),
+            "the refusal names the rule: {why}"
+        );
+        assert!(
+            why.contains("would drop it"),
+            "and says what goes wrong if it did not refuse: {why}"
+        );
+
+        // The other three ways a move is not a move, each with its own sentence.
+        assert!(super::move_refusal(&derived, &recorded, "a", "a")
+            .expect("a no-op move is refused")
+            .contains("both the source and the destination"));
+        assert!(super::move_refusal(
+            &["crates/plugin-sdk/src", "crates/busbar-plugin-sdk/src"],
+            &recorded,
+            "crates/plugin-sdk/src",
+            "crates/busbar-plugin-sdk/src",
+        )
+        .expect("a source still on disk is refused")
+        .contains("STILL a scope this tree implies"));
+        assert!(super::move_refusal(
+            &derived,
+            &[],
+            "crates/plugin-sdk/src",
+            "crates/busbar-plugin-sdk/src",
+        )
+        .expect("a source with no record is refused")
+        .contains("no scope"));
+        assert_eq!(
+            super::move_refusal(
+                &derived,
+                &recorded,
+                "crates/plugin-sdk/src",
+                "crates/busbar-plugin-sdk/src",
+            ),
+            None,
+            "and a move that IS a move is not refused"
+        );
+
+        // And the command itself refuses, exits 2, and writes nothing.
+        let s = scratch("refusal");
+        s.crate_at("plugin-sdk", "pub fn admit() {}\n");
+        s.crate_at("busbar-plugin-sdk", "pub fn route() {}\n");
+        s.commit("base");
+        assert_eq!(s.xtask(&["sync", "--write"]), 0);
+        s.read_by("crates/plugin-sdk/src", 1, "alice");
+        let untouched = s.raw();
+        assert_eq!(
+            s.xtask(&["move", "crates/plugin-sdk/src", "crates/nowhere/src"]),
+            2,
+            "a destination that is on no disk is a refusal, not a write"
+        );
+        assert_eq!(s.raw(), untouched, "and the register is byte-identical");
     }
 }

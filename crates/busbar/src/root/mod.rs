@@ -28,6 +28,10 @@
 //! - [`adapters`] — the seams where two units name the same object at two widths, plus the boot
 //!   assertion that the two hand-kept metric label banks still agree.
 //! - [`policy`] — the values the units take from configuration rather than from a `Default`.
+//! - [`cli`] — the flag surface: everything busbar answers on the command line and exits,
+//!   plus the config/providers path scanners the serving half reads through the SAME rule.
+//!   It sits under the root because the binary crate's audit scopes are `src/root` and
+//!   `src/main.rs` and nothing else; a module at `src/cli.rs` would be in no scope at all.
 //! - [`units_voice`] — one plane, switched over: a live voice session as a sequence of ordinary
 //!   units. The handshake that opens it, the per-frame turns the pump dispatches, the hold that is
 //!   the session's metering lease, and four seams to the half of the plane that owns sockets.
@@ -58,6 +62,7 @@
 pub mod a2a_kernel_rider;
 pub mod adapters;
 pub mod auth_bindings;
+pub mod cli;
 pub mod durability;
 pub mod gauntlet_install;
 pub mod gauntlet_kernel;

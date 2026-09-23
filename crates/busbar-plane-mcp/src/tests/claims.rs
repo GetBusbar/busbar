@@ -19,10 +19,10 @@ use busbar_contract::grammar::Selector;
 /// different strings.
 #[test]
 fn the_default_mount_is_the_codecs_own() {
-    assert_eq!(DEFAULT_MOUNT, busbar_mcp_codec::codec::PATH_MCP);
+    assert_eq!(DEFAULT_MOUNT, crate::codec::PATH_MCP);
     assert_eq!(
         DEFAULT_METADATA,
-        busbar_mcp_codec::codec::protected_resource_metadata_path(DEFAULT_MOUNT)
+        crate::codec::protected_resource_metadata_path(DEFAULT_MOUNT)
     );
 }
 
@@ -37,7 +37,7 @@ fn the_default_mount_is_the_codecs_own() {
 /// cause is worse than no note at all.
 #[test]
 fn the_mount_is_still_configured() {
-    let moved = busbar_mcp_codec::codec::protected_resource_metadata_path("/elsewhere");
+    let moved = crate::codec::protected_resource_metadata_path("/elsewhere");
     assert_ne!(moved, DEFAULT_METADATA);
     assert!(moved.ends_with("/elsewhere"));
 }
@@ -47,14 +47,12 @@ fn the_mount_is_still_configured() {
 fn the_plane_key_is_the_codecs_own() {
     assert_eq!(
         <crate::McpPlane as busbar_contract::plane::PlaneMeta>::KEY,
-        busbar_mcp_codec::PLANE_KEY
+        crate::PLANE_KEY
     );
-    // And the protocol declaration names the same thing, so the two halves of the codec agree
-    // with the plane and with each other.
-    assert_eq!(
-        busbar_mcp_codec::PROTO_DECL.name,
-        busbar_mcp_codec::PLANE_KEY
-    );
+    // The other half of this agreement — that the engine's `ProtocolDecl` registers under the same
+    // key — is asserted where that declaration lives, in `busbar-mcp`'s
+    // `src/codec/tests/mcp_tests.rs::the_declaration_registers_under_the_planes_key`. A pure kind
+    // may not name the registry row, so the assertion moved rather than being dropped.
 }
 
 /// Every claim names one of the three declared transports and nothing else.

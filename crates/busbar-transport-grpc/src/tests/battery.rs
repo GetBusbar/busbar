@@ -57,7 +57,8 @@ impl busbar_contract::ConfigView for CapCfg {
         None
     }
     fn get_int(&self, k: &str) -> Option<i64> {
-        self.1.filter(|_| k == crate::transport::MESSAGE_MAX_BYTES_KEY)
+        self.1
+            .filter(|_| k == crate::transport::MESSAGE_MAX_BYTES_KEY)
     }
     fn get_bool(&self, _k: &str) -> Option<bool> {
         None
@@ -505,7 +506,11 @@ async fn k_writers_on_one_call_do_not_corrupt_messages() {
         handles.push(tokio::spawn(async move {
             let line = format!("msg-{i:02}");
             client_t
-                .write(&client_conn, StreamId(1), ScratchBytes::new(line.as_bytes()))
+                .write(
+                    &client_conn,
+                    StreamId(1),
+                    ScratchBytes::new(line.as_bytes()),
+                )
                 .await
                 .unwrap();
         }));

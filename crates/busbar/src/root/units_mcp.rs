@@ -1373,6 +1373,10 @@ pub fn evidence(ended: &Ended<'_>) -> Evidence {
 /// `at` carries the unit's two pinned clocks, so a request that straddled a window boundary posts in
 /// the window it was admitted in rather than the one it happened to finish in.
 ///
+/// `card` carries the dated rate-card history the unit was admitted under and the instant it
+/// arrived at, which is what the posting's provenance stamp is RESOLVED from rather than asserted —
+/// the same value, resolved by the same method, that [`audit_inputs`] stamps the record with.
+///
 /// # Errors
 ///
 /// The journal could not make the record durable. The books have already moved: value was delivered,
@@ -1381,6 +1385,7 @@ pub fn settle(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
     at: Clocks,
+    card: Provenance<'_>,
     token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
     posted: busbar_contract::caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_contract::caps::DurabilityLost> {
@@ -1396,7 +1401,11 @@ pub fn settle(
         // step's, and that is the step a durability loss here is attributed to.
         step: busbar_contract::caps::StepName::Meter,
         stamp: crate::root::durability::PostingStamp {
-            rate_card_version: 0,
+            // The card in force when this unit ARRIVED, resolved through the dated history (#79)
+            // rather than asserted. A literal zero here was `HistorySeq::OPENING` — a real entry
+            // number, and a false one on every deployment that has ever changed a price: it
+            // stamped each posting as though the opening card had priced it.
+            rate_card_version: card.rate_card_version(),
             wall: at.wall,
             mono: at.mono,
         },
@@ -1423,6 +1432,87 @@ pub struct Clocks {
     pub wall: u64,
     /// The node's monotonic reading at arrival.
     pub mono: u64,
+}
+
+/// **THE DATED RATE-CARD HISTORY ONE UNIT WAS ADMITTED UNDER, AND THE INSTANT IT ARRIVED AT.**
+///
+/// One borrowed value and not two loose arguments, for the reason [`Ended`] is one: the
+/// settlement's provenance stamp and the audit record's are two READERS of ONE fact. A posting
+/// that names one entry beside a row that names another is a provenance no reader downstream can
+/// reconcile, and the only way to make that unrepresentable is to have one place resolve it —
+/// [`Provenance::rate_card_version`], which both call and neither restates.
+///
+/// **It is REPORTING provenance and never a pricing input (#79).** Nothing reads this to compute
+/// money; the money view resolves the card itself, off the posting's own instant
+/// (`busbar_kernel_ledger::cost::price`). That is #79's whole point — the stamp is a report, and a
+/// report that became an input would freeze the past against correction.
+///
+/// The history is PINNED rather than read live, for the reason
+/// [`crate::root::kernel::PinnedHistory`] gives: a unit prices its whole life against the snapshot
+/// it was admitted under, so an entry appended while this request is in flight cannot restate what
+/// it already arrived under.
+#[derive(Clone, Copy, Debug)]
+pub struct Provenance<'h> {
+    /// The snapshot of the dated history this unit was admitted under.
+    ///
+    /// `None` is a deployment with NO rate card at all — billing off (#42), nothing metered,
+    /// nothing priced, and no entry there is for a stamp to name.
+    pub history: Option<&'h crate::root::kernel::PinnedHistory>,
+    /// **THE ARRIVAL INSTANT ON THE MILLISECOND SCALE** — the resolution key #79 names, and a
+    /// THIRD reading of the one arrival [`Clocks`] already carries two of.
+    ///
+    /// Three readings because they are on three scales and answer three questions.
+    /// [`Clocks::wall`] is whole SECONDS: it dates the posting and picks the budget window, both
+    /// second-scale APIs. [`Clocks::mono`] is the monotonic counter that ORDERS the posting. This
+    /// one is MILLISECONDS, because that is the scale the dated history's `effective_from` is
+    /// written on (`crate::root::kernel::CardRepricer` stamps an entry from
+    /// `busbar_kernel::store::now_ms`), and a comparison between two instants only means
+    /// what it says when both are on one scale. Resolving the history at `wall` instead would
+    /// compare seconds against milliseconds: every unit would land before every entry but the
+    /// from-zero opening one, and the stamp would report the opening card forever — the same lie a
+    /// hardcoded zero tells, with a lookup in front of it.
+    ///
+    /// Pinned by the root from the SAME arrival [`Clocks`] is pinned from, never read here: a unit
+    /// does not read clocks, and one that derived this field from `wall` by multiplying would be
+    /// manufacturing millisecond precision the second-scale reading never had.
+    pub arrived_ms: u64,
+}
+
+impl Provenance<'_> {
+    /// **THE RATE-CARD ENTRY THIS UNIT'S POSTING AND RECORD NAME AS THEIR PROVENANCE** (#44/#79).
+    ///
+    /// **The resolution rule is #79's, and it is the arrival instant against the dated history:**
+    /// the highest-seq entry this unit's pinned snapshot can see whose interval covers
+    /// [`Provenance::arrived_ms`]. NOT the head of the history — the head is the newest card ever
+    /// authored, and stamping that would say a unit served three months ago was priced by a card
+    /// published yesterday. NOT a version carried in from anywhere either: resolving off the
+    /// instant is what makes the history recoverable BACKWARD, so a back-dated correction reprices
+    /// its window and the stamp follows, rather than pinning the record to a card the correction
+    /// superseded.
+    ///
+    /// `HistorySeq::OPENING` where no history is pinned, and that is not the hardcoded zero this
+    /// replaced: no card is a deployment with billing off (#42), where nothing was priced and
+    /// there is no other entry a stamp could honestly name. Where a card DOES exist the opening
+    /// entry is effective from instant zero and covers every instant, so this resolves to a real
+    /// entry for every unit that has one.
+    ///
+    /// Off the hot path: one reverse scan of a handful of entries, once per unit at its exit,
+    /// never on the per-token loop #71's perf invariant governs.
+    #[must_use]
+    pub fn rate_card_version(&self) -> u64 {
+        self.history
+            // The seq is taken INSIDE the closure and the card is dropped there. A `HistoryView`
+            // borrows the snapshot it was spelled out of, so carrying the pair out would be
+            // carrying a borrow of a temporary — and the card is not wanted here in any case:
+            // this resolves WHICH entry, and never what it charges (#79).
+            .and_then(|pinned| {
+                pinned
+                    .view()
+                    .card_at(self.arrived_ms)
+                    .map(|(seq, _)| seq.get())
+            })
+            .unwrap_or_else(|| busbar_kernel_ledger::cost::HistorySeq::OPENING.get())
+    }
 }
 
 /// The monotonic clock one node's MCP postings are ordered by.
@@ -1458,13 +1548,21 @@ impl Mono {
 /// cannot both be true of one unit.
 ///
 /// The clocks are the unit's pinned pair, exactly as the settlement's are: a record stamped at the
-/// exit and a posting stamped at arrival are two accounts of one moment.
+/// exit and a posting stamped at arrival are two accounts of one moment. `card` is the unit's own
+/// [`Provenance`], resolved by the same method [`settle`] stamps the posting through, so the row
+/// and the posting cannot name two different rate-card entries for one unit.
+///
+/// `unit` is the KEY THE LOOP GAVE THIS UNIT, and it is a parameter rather than a field of
+/// [`Ended`] because it is not a figure the money is decided from — it is what says WHICH call the
+/// row is about, which is the one thing a record is for.
 #[must_use]
 pub fn audit_inputs(
     ended: &Ended<'_>,
+    unit: busbar_contract::ids::UnitKey,
     outcome: busbar_contract::caps::Outcome,
     origin: busbar_contract::caps::Origin,
     at: Clocks,
+    card: Provenance<'_>,
 ) -> AuditInputs {
     let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
         ended.shape,
@@ -1478,7 +1576,10 @@ pub fn audit_inputs(
             None => busbar_kernel_audit::Subject::Arrival,
         },
         what: busbar_kernel_audit::What {
-            unit_key: busbar_contract::ids::UnitKey::new(0),
+            // THE UNIT'S OWN KEY, which the loop hands this step. A literal zero filed every unit
+            // of this plane under one key, so the record that is supposed to identify which call
+            // was made identified none of them and every MCP row collided with every other.
+            unit_key: unit,
             op_class: record_op_class(ended.shape.op),
             destination: ended
                 .resource
@@ -1505,7 +1606,10 @@ pub fn audit_inputs(
             tier_bp: 0,
             fee_count,
             currency: String::new(),
-            rate_card_version: 0,
+            // The same resolution the settlement stamps, through the same method, so the record
+            // and the posting cannot name two different cards for one unit (#44: the version is
+            // VISIBLE on the audit report; #79: it is never the pricing input).
+            rate_card_version: card.rate_card_version(),
             bucket_chain_ref: String::new(),
         },
         controls: busbar_kernel_audit::Controls::default(),

@@ -918,9 +918,10 @@ async fn tasks_update_refuses_a_batch_that_would_cross_the_answer_ceiling_over_t
         "taskId": task.id,
         "inputResponses": { "one-key-too-many": "no" },
     });
-    let response = crate::mcp::method::dispatch(&ctx, "tasks/update", Some(&params), Some(1.into()))
-        .await
-        .expect("tasks/update is in the method table");
+    let response =
+        crate::mcp::method::dispatch(&ctx, "tasks/update", Some(&params), Some(1.into()))
+            .await
+            .expect("tasks/update is in the method table");
     let status = response.status().as_u16();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -930,9 +931,7 @@ async fn tasks_update_refuses_a_batch_that_would_cross_the_answer_ceiling_over_t
     assert_eq!(status, 400, "{body}");
     assert_eq!(body["error"]["code"], -32602, "{body}");
     assert!(
-        task.detailed()
-            .get("result")
-            .is_none(),
+        task.detailed().get("result").is_none(),
         "a refused update must not be confused with a completed task"
     );
 
@@ -943,14 +942,10 @@ async fn tasks_update_refuses_a_batch_that_would_cross_the_answer_ceiling_over_t
         "taskId": task.id,
         "inputResponses": { "k0": "updated-over-the-wire" },
     });
-    let response = crate::mcp::method::dispatch(
-        &ctx,
-        "tasks/update",
-        Some(&repeat_params),
-        Some(2.into()),
-    )
-    .await
-    .expect("tasks/update is in the method table");
+    let response =
+        crate::mcp::method::dispatch(&ctx, "tasks/update", Some(&repeat_params), Some(2.into()))
+            .await
+            .expect("tasks/update is in the method table");
     assert_eq!(
         response.status().as_u16(),
         200,

@@ -172,6 +172,10 @@ fn durable_host_route_settles_through_breaker_settle() {
         let state = HostState {
             app: &app,
             scope: &disp,
+            // The breaker slots attribute nothing to a plane, so they need no emitter. See
+            // `HostState::emitter` — only the slots that must ATTRIBUTE what they are handed
+            // (`metrics_emit`) refuse a `None`.
+            emitter: None,
         };
         // Mint a handle exactly like a real dispatch guard would: without an open `HostGeneration`
         // this handle is BORN DEAD — `recover`'s liveness check would refuse it before `breaker_admit`
@@ -232,6 +236,8 @@ fn task_admit_bears_the_probe_in_the_durable_scope_and_settles() {
         let state = HostState {
             app: &app,
             scope: durable.arena(),
+            // The breaker slots attribute nothing to a plane. See `HostState::emitter`.
+            emitter: None,
         };
         // Mint like a real dispatch guard would (see the twin comment above): no open `HostGeneration`
         // ⇒ a born-dead handle `recover` would refuse.
@@ -289,6 +295,8 @@ fn task_admit_releases_the_probe_when_the_durable_scope_drops_unsettled() {
         let state = HostState {
             app: &app,
             scope: durable.arena(),
+            // The breaker slots attribute nothing to a plane. See `HostState::emitter`.
+            emitter: None,
         };
         // Mint like a real dispatch guard would (see the twin comments above).
         let generation = HostGeneration::open();

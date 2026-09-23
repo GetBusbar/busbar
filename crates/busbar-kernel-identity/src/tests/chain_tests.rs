@@ -434,3 +434,95 @@ fn revocation_gates_new_units_only() {
         ChainVerdict::Identified { .. }
     ));
 }
+
+/// A REVOCATION IS A STATEMENT ABOUT A CREDENTIAL THE CHAIN RESOLVED TO SOMEBODY.
+///
+/// Applied to whatever string arrived, it answers two questions nobody asked. On an OPEN front door
+/// — no boxed module, no keys arm — nothing authenticated the candidate at all, so a header value
+/// that happens to collide with an unrelated revoked credential must not turn the anonymous admit
+/// into a denial. That is a deployment with no auth configured refusing traffic because of a list
+/// that was never consulted for it.
+#[test]
+fn an_open_door_is_not_revoked_by_a_colliding_string() {
+    struct AllRevoked;
+    impl crate::chain::RevocationView for AllRevoked {
+        fn is_revoked(&self, _credential: &str) -> bool {
+            true
+        }
+    }
+    // The open front door: no boxed modules and no keys arm.
+    let c = chain(Vec::new(), false);
+    assert_eq!(
+        c.run_chain_cached(Some("some-header-value"), None, None, 1000, None),
+        ChainVerdict::Open,
+        "the fixture must really be the open door, or the assertion below proves nothing"
+    );
+    assert_eq!(
+        c.run_chain_for_new_unit(
+            Some("some-header-value"),
+            None,
+            None,
+            1000,
+            None,
+            Some(&AllRevoked)
+        ),
+        ChainVerdict::Open,
+        "an open door admits anonymously; a revocation list has no identity here to withdraw"
+    );
+}
+
+/// And a walk that DENIED is not asked either. The revocation set is never consulted for a string
+/// nothing identified — consulting it would tell an unauthenticated caller which of two refusals
+/// they earned, which is a probe for "was this ever a real credential", answered before anything
+/// authenticated. The counter is the oracle: it must not move on a denying walk, and it must move
+/// on an identifying one.
+#[test]
+fn revocation_is_asked_only_where_the_chain_identified() {
+    struct CountingRevocations(std::sync::atomic::AtomicUsize);
+    impl crate::chain::RevocationView for CountingRevocations {
+        fn is_revoked(&self, _credential: &str) -> bool {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            true
+        }
+    }
+
+    // A chain that denies: one module that passes on everything, so the walk ends `Denied`.
+    let denying = chain(
+        vec![entry("a", Box::new(Canned::new("a", AuthOutcome::Pass)))],
+        false,
+    );
+    let asked = CountingRevocations(std::sync::atomic::AtomicUsize::new(0));
+    assert_eq!(
+        denying.run_chain_for_new_unit(Some("cred"), None, None, 1000, None, Some(&asked)),
+        ChainVerdict::Denied
+    );
+    assert_eq!(
+        asked.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a denied walk authenticated nobody; the revocation set must not be consulted for it"
+    );
+
+    // The same question on a chain that identifies: here the gate is exactly what it is for, and a
+    // revoked credential is taken away.
+    let identifying = chain(
+        vec![entry(
+            "a",
+            Box::new(Canned::new(
+                "a",
+                AuthOutcome::Identify(Principal::from_id("alice")),
+            )),
+        )],
+        false,
+    );
+    let asked = CountingRevocations(std::sync::atomic::AtomicUsize::new(0));
+    assert_eq!(
+        identifying.run_chain_for_new_unit(Some("cred"), None, None, 1000, None, Some(&asked)),
+        ChainVerdict::Denied,
+        "an identified credential on the revocation list is still withdrawn"
+    );
+    assert_eq!(
+        asked.0.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "an identification is exactly the verdict the gate exists for"
+    );
+}

@@ -73,8 +73,7 @@ async fn an_oversized_token_response_is_refused_not_buffered() {
     let policy = SsrfPolicy {
         allow_private: true,
     };
-    let result =
-        crate::mcp::upstream::exchange(&pool, &req, policy, Duration::from_secs(10)).await;
+    let result = crate::mcp::upstream::exchange(&pool, &req, policy, Duration::from_secs(10)).await;
     let err = result.expect_err("an over-cap body must never be parsed into a usable token");
     assert!(
         err.contains("cap") || err.contains("truncat"),
@@ -98,8 +97,7 @@ async fn a_small_malformed_body_is_refused_as_unparseable_not_as_oversized() {
     let policy = SsrfPolicy {
         allow_private: true,
     };
-    let result =
-        crate::mcp::upstream::exchange(&pool, &req, policy, Duration::from_secs(10)).await;
+    let result = crate::mcp::upstream::exchange(&pool, &req, policy, Duration::from_secs(10)).await;
     let err = result.expect_err("a non-JSON body must not be parsed as a token");
     assert!(
         err.contains("not JSON"),
@@ -122,7 +120,6 @@ async fn a_small_legitimate_response_still_mints_the_token() {
     let policy = SsrfPolicy {
         allow_private: true,
     };
-    let result =
-        crate::mcp::upstream::exchange(&pool, &req, policy, Duration::from_secs(10)).await;
+    let result = crate::mcp::upstream::exchange(&pool, &req, policy, Duration::from_secs(10)).await;
     assert_eq!(result, Ok("the-issued-token".to_string()));
 }

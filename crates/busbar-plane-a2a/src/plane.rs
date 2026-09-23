@@ -12,7 +12,7 @@
 //! so every draft below hands the loop a body the kernel does not have to re-walk. The plane once
 //! handed back an empty table because the arena could not allocate one; it can, and this does.
 
-use busbar_contract::bounded::{ScratchBytes, BoundedVec, FactValue, Facts, Ir, Span};
+use busbar_contract::bounded::{BoundedVec, FactValue, Facts, Ir, ScratchBytes, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};

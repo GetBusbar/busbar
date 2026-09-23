@@ -79,9 +79,26 @@ resolve_bin() {
     git -C "$checkout" fetch --depth 1 origin "$RELEASE_REF" >&2 2>/dev/null || git -C "$checkout" fetch origin >&2
     git -C "$checkout" checkout --force "$RELEASE_REF" >&2
   fi
-  ( cd "$checkout" && cargo build --release -p "$CRATE" --bin "$BINNAME" >&2 )
-  built="$checkout/target/release/$BINNAME"
-  [ -x "$built" ] || { echo "oracle: build produced no $BINNAME under $checkout/target/release" >&2; exit 1; }
+  # ASK CARGO WHERE IT PUT THE BINARY; never assume `<checkout>/target/release`. That assumption is
+  # wrong whenever the caller has a target directory of its own — `CARGO_TARGET_DIR` in the
+  # environment (a `cargo test` run launched under one exports it straight through to the test
+  # process, which is how this shim is reached), `CARGO_BUILD_TARGET_DIR`, or a `[build] target-dir`
+  # in any `.cargo/config.toml` above the checkout (the checkout lives UNDER this repo, so this
+  # repo's own config is one of them). In every one of those cases cargo built the engine perfectly
+  # and wrote it somewhere else, and the old hard-coded path turned that into
+  # "build produced no busbar-oracle" — a green build reported as a missing judge.
+  #
+  # `--message-format=json-render-diagnostics` keeps human diagnostics on stderr exactly as before
+  # and puts one `compiler-artifact` JSON line per artifact on stdout; the `--bin` target's line
+  # carries `"executable":"<path>"` (other artifacts carry `"executable":null`, which has no quotes
+  # and so cannot match). Cargo emits the artifact line on a FRESH build too, so the path is
+  # available whether or not anything recompiled.
+  local artifacts
+  artifacts="$( cd "$checkout" && cargo build --release -p "$CRATE" --bin "$BINNAME" --message-format=json-render-diagnostics )"
+  built="$(printf '%s\n' "$artifacts" | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)"
+  # Fallback for an engine/cargo that emitted no artifact line at all: the historical path.
+  [ -n "$built" ] || built="$checkout/target/release/$BINNAME"
+  [ -x "$built" ] || { echo "oracle: build produced no $BINNAME (cargo reported ${built:-no executable}; checkout $checkout)" >&2; exit 1; }
   printf '%s\n' "$built"
 }
 RUST_BIN="$(resolve_bin)"
@@ -105,12 +122,16 @@ while [ \$# -gt 0 ]; do case "\$1" in
   *) shift;;
 esac; done
 [ -n "\$BIN" ] && [ -n "\$OUT" ] || { echo "record.sh(shim): need --bin and --out" >&2; exit 2; }
-WORK="\$(cd "\$(dirname "\$OUT")" && pwd)"   # native writes <WORK>/candidate == --out
+# --out is passed through as --out-dir, so the recording lands where the caller asked rather than at
+# <work>/candidate. HarnessOracle happens to name its --out "candidate", so the two used to agree by
+# luck; any other caller silently got an empty --out and read it as a recording of nothing.
+mkdir -p "\$OUT"; OUT="\$(cd "\$OUT" && pwd)"; WORK="\$(cd "\$(dirname "\$OUT")" && pwd)"
 exec "$RUST_BIN" record --native \\
   --busbar-repo "\${BUSBAR_ORACLE_PRODUCT_ROOT:-$here}" \\
   --candidate-bin "\$BIN" \\
   --oracle-data "\${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" \\
   --work-dir "\$WORK" \\
+  --out-dir "\$OUT" \\
   --family "\$PLANE" \${FILTER:+--filter "\$FILTER"}
 SHIM
 chmod +x "$shim_dir/record.sh"
@@ -193,18 +214,34 @@ case "$sub" in
       *) shift;;
     esac; done
     [ -n "$BIN" ] && [ -n "$OUT" ] || { echo "oracle record: need --bin and --out" >&2; exit 2; }
-    mkdir -p "$OUT"; WORK="$(cd "$(dirname "$OUT")" && pwd)"   # native writes <WORK>/candidate == --out
-    [ "$(basename "$OUT")" = candidate ] || echo "oracle record: note — native recorder writes <work>/candidate; --out basename '$(basename "$OUT")' is honored as that dir" >&2
+    # --out IS HONOURED, BY BEING PASSED. This used to send only --work-dir and let the recorder
+    # write <work>/candidate, then PRINT that the --out basename "is honored as that dir". It was
+    # not: measured, `--out /tmp/x/money` wrote the recording to /tmp/x/candidate, left /tmp/x/money
+    # empty, and exited 0 saying "recorded 1 cell(s)". A caller that then read its own --out found an
+    # empty directory and reported "0 cells recorded" — which is how a working recorder reads as a
+    # broken one, and is the reported shape of "--filter records nothing". The engine has taken
+    # --out-dir for exactly this since the native cutover; this just stops discarding it.
+    mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"; WORK="$(cd "$(dirname "$OUT")" && pwd)"
     exec "$RUST_BIN" record --native --busbar-repo "$ROOT" --candidate-bin "$BIN" \
-      --oracle-data "$DATA" --work-dir "$WORK" --family "$PLANE" ${FILTER:+--filter "$FILTER"} ;;
+      --oracle-data "$DATA" --work-dir "$WORK" --out-dir "$OUT" --family "$PLANE" ${FILTER:+--filter "$FILTER"} ;;
 
   replay)
     # OLD: replay --golden G --candidate C --out R  →  the in-process Rust differ (the judge).
-    # A Python-recorded golden vs a Rust-recorded candidate is a harness change by design, so the
-    # differ's same-revision guard is told to compare across it (--allow-harness-skew). Re-recording
-    # the golden with the Rust engine (oracle-rerecord workflow) makes the revisions agree and drops
-    # this flag — see the Phase C cutover checklist.
-    exec "$RUST_BIN" diff "$@" --cells "$DATA/cells.json" --allow-harness-skew ;;
+    #
+    # `--allow-harness-skew` IS NO LONGER INJECTED HERE, AND THAT IS THE POINT. It used to be
+    # appended to EVERY `./bin/oracle replay`, which meant the differ's same-revision guard — the
+    # one thing standing between "these two recordings are comparable" and "these two recordings
+    # are not" — could not fire on any run this shim served, including every DONE run. A guard the
+    # wrapper disables invisibly is a guard nobody can be shown failing.
+    #
+    # It is OPT-IN now: a caller that genuinely compares across a harness change passes the flag
+    # itself, at the call site, where a reader can see it and ask why. The two that do are the
+    # workflows diffing a Rust-recorded candidate against the COMMITTED, Python-recorded 1.5.5
+    # golden (ci.yml and oracle-proof.yml); they now say so in their own lines. The DONE oracle
+    # records BOTH sides with this engine, so its revisions agree and it needs no flag — which is
+    # exactly the run the guard should have been armed on all along. Re-recording the committed
+    # golden with the Rust engine (oracle-rerecord workflow) retires the two explicit uses too.
+    exec "$RUST_BIN" diff "$@" --cells "$DATA/cells.json" ;;
 
   *)
     # diff / normalize / merge / renormalize / harness-rev / selftest / … pass through unchanged.

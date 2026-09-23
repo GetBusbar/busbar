@@ -34,15 +34,21 @@
 //! its own (that lives in busbar-core, which this crate may not depend on), so the reserved member
 //! is typed as the list of names a plane names its hooks by, exactly as `busbar-plane-a2a`'s own
 //! `CONFIG_SCHEMA` declares its `hooks` member. `upstream_credentials` reuses
-//! `busbar_api::auth::UpstreamCreds` verbatim — the same type `PoolCfg` already names for its own
-//! per-section override — rather than a second `own`/`passthrough` enum.
+//! [`busbar_contract::config::UpstreamCreds`] verbatim — the same type `PoolCfg` already names for
+//! its own per-section override — rather than a second `own`/`passthrough` enum.
+//!
+//! That type used to live in the legacy plugin-facing crate, and naming it was the ONLY reason this
+//! plane depended on that crate — the only one of the five that did. The dependency was not free:
+//! it reached banned source through `sha2 -> cpufeatures -> libc`, which the transitive source
+//! denylist forbids any pure plugin kind, and which went unreported for as long as this crate was
+//! in no kind list. The type moved to the contract beside `ModelCfg`, so both reserved shapes now
+//! arrive from the one crate a plugin may name, and the edge is deleted rather than waived.
 
 use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use busbar_api::UpstreamCreds;
-use busbar_contract::config::ModelCfg;
+use busbar_contract::config::{ModelCfg, UpstreamCreds};
 
 /// The `decisions:` section, typed.
 ///

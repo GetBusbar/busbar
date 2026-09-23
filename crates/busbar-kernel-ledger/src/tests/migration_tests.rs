@@ -13,8 +13,8 @@ use crate::checkpoint::{CheckpointSecret, SignError, Signature};
 use crate::identity::residual;
 use crate::legacy::{LegacyHead, LegacyMigrationSource};
 use crate::migration::{
-    migrate, opening_totals, LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows,
-    MigrationError, MigrationMarker, MigrationRecords, NodeLocalRecords, Outcome,
+    meter_pool_scope, migrate, opening_totals, LegacyFamily, LegacyFigure, LegacyFigures,
+    LegacyLedgerRows, MigrationError, MigrationMarker, MigrationRecords, NodeLocalRecords, Outcome,
     OPENING_CHECKPOINT_SEQ,
 };
 use crate::totals::{BucketScope, CapDimension, Totals, TotalsKey, WindowStart};
@@ -209,7 +209,7 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
             totals,
             "team-a",
             CapDimension::Class("input".into()),
-            BucketScope::Pool("meter:gpt-4/openai".into()),
+            meter_pool_scope("gpt-4", "openai"),
             86_400,
         )
         .settled,
@@ -220,7 +220,7 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
             totals,
             "team-a",
             CapDimension::Class("input".into()),
-            BucketScope::Pool("meter:gpt-4/azure".into()),
+            meter_pool_scope("gpt-4", "azure"),
             86_400,
         )
         .settled,
@@ -368,6 +368,66 @@ fn two_rows_for_one_balance_sum() {
     let totals = opening_totals(&figures).expect("two figures fold");
     assert_eq!(totals.len(), 1);
     assert_eq!(totals.values().next().expect("one balance").settled, 125);
+}
+
+/// B01 — TWO PROVIDERS WHOSE COMPOSITE KEYS COLLIDE UNDER A BARE DELIMITER KEEP SEPARATE BALANCES.
+///
+/// The metering pool joins two components that are both free text read off the previous release's
+/// rows. Joined on a slash — `format!("meter:{lane}/{provider}")` — the lane `gpt/4` with provider
+/// `openai` and the lane `gpt` with provider `4/openai` both spell `meter:gpt/4/openai`. They are
+/// two different rows charged to two different providers, and one key means ONE balance holding
+/// their SUM: two customers' money in one bucket, opened as a single wrong number with nothing left
+/// to compare it against. Length-framing each component fixes the boundary with a count the rows
+/// cannot write, so the two stay two.
+///
+/// Asserted on the AMOUNTS, not merely on key inequality: the defect is arithmetic, and a test that
+/// only compared strings would still pass a framing that separated the keys but merged the figures.
+#[test]
+fn two_providers_that_collide_across_a_bare_delimiter_keep_their_own_opening_balances() {
+    // `"gpt/4" + "openai"` and `"gpt" + "4/openai"` — one string under the old join, two rows here.
+    let figures = vec![
+        meter_figure("team-a", 86_400, "gpt/4", "openai", "input", 4_000),
+        meter_figure("team-a", 86_400, "gpt", "4/openai", "input", 25),
+    ];
+    let totals = opening_totals(&figures).expect("two figures open");
+
+    assert_eq!(
+        totals.len(),
+        2,
+        "two metering rows for two different (lane, provider) pairs are two balances, not one \
+         holding their sum — a bare `/` join spells both as `meter:gpt/4/openai`"
+    );
+
+    let first = figures_for(
+        &totals,
+        "team-a",
+        CapDimension::Class("input".into()),
+        meter_pool_scope("gpt/4", "openai"),
+        86_400,
+    );
+    let second = figures_for(
+        &totals,
+        "team-a",
+        CapDimension::Class("input".into()),
+        meter_pool_scope("gpt", "4/openai"),
+        86_400,
+    );
+
+    assert_eq!(
+        first.settled, 4_000,
+        "the `gpt/4` lane's provider opens at its OWN amount, not at the merged 4_025"
+    );
+    assert_eq!(
+        second.settled, 25,
+        "and so does the `4/openai` provider on the `gpt` lane"
+    );
+
+    // The framing itself: the two keys are distinct, and neither is the merged spelling.
+    assert_ne!(
+        meter_pool_scope("gpt/4", "openai"),
+        meter_pool_scope("gpt", "4/openai"),
+        "a delimiter inside a component must not be able to move the boundary onto its neighbour"
+    );
 }
 
 /// The opening entry per bucket, at the card version the migration was told to name.

@@ -13,10 +13,10 @@
 //! `metric_name_reads_every_exposition_line_shape` (a pure-function test, no `TestApp`/router) names
 //! no plane and stays in `src/tests/alarm_silence_tests.rs`.
 
-use busbar_kernel::test_support::warn_capture::WarnCapture;
-use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use axum::body::Body;
 use axum::http::Request;
+use busbar_kernel::test_support::warn_capture::WarnCapture;
+use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use std::sync::Arc;
 use tower::ServiceExt as _;
 

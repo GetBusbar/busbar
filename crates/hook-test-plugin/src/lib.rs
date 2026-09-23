@@ -69,6 +69,14 @@ struct HookConfig {
     /// able to reach it.
     #[serde(default)]
     panic_decide: bool,
+    /// PANIC inside `transform` — the rewrite-path twin of `panic_decide`, and the fixture a plane
+    /// needs to establish what a panicking `prompt: rw` hook ACTUALLY produces at its apply site.
+    /// The answer is not a torn-down task: the SDK's export boundary catches it (STATUS_PANIC), the
+    /// engine's `ffi_guard` maps it to a transport error, and `DlopenPolicy` turns that into
+    /// `TransformOutcome::Failed` — so it is the operator's `on_error` that decides, and the
+    /// plane's `spawn_blocking` join never sees a `JoinError`.
+    #[serde(default)]
+    panic_transform: bool,
     /// Report from `decide` that the hook COULD NOT ANSWER (`HookReply::Failed`) — the shape a gate
     /// takes when its own dependency is down. Distinct from an abstain, and the engine must resolve
     /// the caller's `on_error` chain for it rather than letting the request proceed.
@@ -93,6 +101,7 @@ struct TestGate {
     empty_management: bool,
     nack_configure: bool,
     panic_decide: bool,
+    panic_transform: bool,
     fail_decide: Option<String>,
     fail_transform: Option<String>,
     /// A monotonically incrementing decide count, surfaced via `status` — proves the control-plane
@@ -177,6 +186,10 @@ impl HookHandler for TestGate {
     }
 
     fn transform(&self, payload: &serde_json::Value) -> serde_json::Value {
+        // A panicking REWRITE gate, the `panic_decide` twin: proves a `prompt: rw` hook's panic is
+        // caught at the boundary and reaches the engine as a hook FAILURE the operator's `on_error`
+        // disposes of — never an unwind that crosses the ABI, and never a plane-side join failure.
+        assert!(!self.panic_transform, "test gate panic_transform");
         // A rw gate that also screens: reject on the token, else rewrite the body to a fixed marker
         // (proves the rewrite arm rides the ABI and is applied only under the rw grant).
         if self.should_reject(payload) {
@@ -274,6 +287,7 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
         empty_management: c.empty_management,
         nack_configure: c.nack_configure,
         panic_decide: c.panic_decide,
+        panic_transform: c.panic_transform,
         fail_decide: c.fail_decide,
         fail_transform: c.fail_transform,
         decides: std::sync::atomic::AtomicU64::new(0),

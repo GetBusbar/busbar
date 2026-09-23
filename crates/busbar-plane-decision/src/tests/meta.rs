@@ -7,14 +7,6 @@ fn key_matches_the_plugin_key() {
 }
 
 #[test]
-fn key_matches_registry_decl_key() {
-    assert_eq!(
-        <DecisionPlane as PlaneMeta>::KEY,
-        crate::registry::PLANE_DECL.key
-    );
-}
-
-#[test]
 fn one_meter_class_declared_for_billable_decisions() {
     let classes = <DecisionPlane as PlaneMeta>::METER_CLASSES;
     assert_eq!(classes.len(), 1);

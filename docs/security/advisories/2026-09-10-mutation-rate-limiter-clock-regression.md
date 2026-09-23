@@ -79,6 +79,21 @@ the clamp to `crates/busbar-core/src/admin/rate.rs`), flow through `qa` to `main
 the previous supported minor line. A GitHub Security Advisory and CVE request are due once an
 owner sets disclosure timing — do not open one from this document alone.
 
+## Addendum 2026-09-22 — the fix is now at the shipping path
+
+The "Affected versions" measurement above is preserved as written, because it is a dated statement
+about branches as they stood on 2026-09-10. Two things have changed since, and an operator reading
+this today needs both:
+
+- **The crate layout moved.** `crates/busbar/src/admin/rate.rs` and `crates/busbar-core/src/admin/rate.rs`
+  no longer exist; `busbar-core` was deleted (#19/#37) and `crates/busbar-unit-verbs` was absorbed
+  per #36. The single surviving copy of this code is **`crates/busbar-core-admin/src/rate.rs`**.
+- **The clamp is present there.** `crates/busbar-core-admin/src/rate.rs:258` carries the monotone
+  `latest_window` high-water mark this advisory prescribes ("The clamp. `max` (rather than an
+  assignment) is what makes `latest_window` monotone"). The remediation step that named
+  `crates/busbar-core/src/admin/rate.rs` as the port target is therefore satisfied at the new path;
+  the backport obligation to any still-supported 1.5.x line is unchanged.
+
 ## Credit
 
 Internal audit.

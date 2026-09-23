@@ -73,7 +73,10 @@ fn client_cert_subject_and_stream_name_stay_case_sensitive() {
 
 #[test]
 fn ports_still_compare_as_numbers() {
-    assert!(transport_overlaps(&Selector::Port(443), &Selector::Port(443)));
+    assert!(transport_overlaps(
+        &Selector::Port(443),
+        &Selector::Port(443)
+    ));
     assert!(!transport_overlaps(
         &Selector::Port(443),
         &Selector::Port(8443)

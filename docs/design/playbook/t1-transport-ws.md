@@ -86,9 +86,10 @@ HTTP egress engine builds (never an ambient `builder()`) (`:115-130`); `split_me
 `WebSocketStream<S>` to the neutral `(Vec<u8>-sink, Vec<u8>-stream)` the pump consumes
 (`:192-239`).
 
-**The guard order is load-bearing** (`:152-186`): `net_guard::resolve_and_pin_async`
-(`net_guard.rs:753`, one resolution, every answer judged, survivor pinned) **FIRST** → TCP to
-`pinned.socket_addr()` (`net_guard.rs:516`) → TLS with SNI = URL host → WS handshake over the
+**The guard order is load-bearing** (`:152-186`): `net_guard::resolve_and_pin`, driven through
+`net_guard::SystemResolver` (the ONE judge, `busbar-kernel-egress/src/trust/net.rs::resolve_and_pin`
+— one resolution, every answer judged, survivor pinned) **FIRST** → TCP to
+`pinned.socket_addr()` (`trust/net.rs::PinnedTarget::socket_addr`) → TLS with SNI = URL host → WS handshake over the
 already-guarded stream via `tokio_tungstenite::client_async` (`:174`, `:180`). The
 `tokio-tungstenite` `connect` feature (which would re-resolve the name) is deliberately OFF
 (`Cargo.toml:122-126`, module header `:13-22`), so this is the **only door** and no socket opens
@@ -266,13 +267,13 @@ each mid-stream → leaked upstream WS sockets + reader/writer tasks, unbounded.
 
 **R3 — [HIGH] SSRF/guard invariants of the dialer are the whole security surface — attack the
 recogniser and the "guard-first" ordering.** `split_ws_url` is a hand-written recogniser
-(`egress/duplex_ws.rs:73-109`); the safety proof is that `resolve_and_pin_async` runs before any
+(`egress/duplex_ws.rs:73-109`); the safety proof is that `resolve_and_pin` runs before any
 socket opens and the `tokio-tungstenite` `connect` feature is OFF (no second resolution). Attack
 surface: (a) a URL that parses to a different host than the one SNI/pin uses (IPv6-bracket / port /
 userinfo edge cases, `:87-104`); (b) any code path that reaches `client_async` without the pin
 (regression if the `connect` feature is ever re-enabled, `Cargo.toml:122`); (c) `ws://` plaintext
 admitted when `policy.allow_plaintext`/`allow_private` is looser than intended
-(`net_guard.rs:309-340`) — a plaintext provider leg leaks the credential to anyone on-path. The
+(`trust/net.rs::judge_scheme`) — a plaintext provider leg leaks the credential to anyone on-path. The
 guard is the reason a socket exists at all (`DialError::Guard` header, `:38-40`); byte-identity of
 this ordering is the money-and-secrets invariant.
 

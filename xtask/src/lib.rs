@@ -28,6 +28,11 @@
 //!   each, replacing the idioms the shell re-implemented per script.
 //! * [`parity`] — run the legacy script and the Rust gate over the same tree and require identical
 //!   rows, before any Python or bash is deleted.
+//! * [`loc`] — **THE** line counter, and the one reader here that PARSES Rust rather than reading
+//!   it as text. The rule above is about not naming the types this crate audits, so that a verdict
+//!   cannot move when a product type moves; a grammar is not a type. What text-reading bought in
+//!   its place was three instruments giving three different answers to "how big is this tree",
+//!   each wrong at a different lexical case. Every ceiling expressed in lines now reads this one.
 
 pub mod audit;
 pub mod audit_cmd;
@@ -42,6 +47,7 @@ pub mod gates;
 pub mod gitp;
 pub mod json_lite;
 pub mod ledger;
+pub mod loc;
 pub mod manifest;
 pub mod parity;
 pub mod planes;

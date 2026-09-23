@@ -1017,10 +1017,19 @@ impl MeterCounts {
     }
 }
 
-/// The upsert key every metering cell is aggregated under: `(key_id, bucket, model, provider)`, the
-/// store's own metering key. Named so the accumulator and its flush read as one type, not a raw tuple
-/// repeated at every call site.
-pub type MeterKey = (String, u64, String, String);
+/// The upsert key every metering cell is aggregated under:
+/// `(key_id, bucket, model, provider, priced_from_ms)`, the store's own metering key. Named so the
+/// accumulator and its flush read as one type, not a raw tuple repeated at every call site.
+///
+/// THE FIFTH MEMBER IS WHAT SPLITS A DAY. A bucket is a UTC day, so before it the read had no
+/// instant between midnight and midnight to resolve the dated rate-card history at, and a card
+/// published at noon either repriced the whole day or none of it (DECISION #79). The
+/// `effective_from` of the entry in force AT ACCRUAL joins the key, so a card edit opens a second
+/// cell and each half of the day prices against the card it was actually earned under. It is a
+/// timestamp and not a version precisely so a back-dated correction can still reach it. Cardinality
+/// grows by the number of card edits in a day and by nothing else — a deployment that never edits a
+/// price has one value here forever and the key is arithmetically the previous release's.
+pub type MeterKey = (String, u64, String, String, u64);
 
 /// The cap on how many distinct [`MeterKey`] cells may sit unflushed in `pending_metering` at once.
 ///
@@ -1078,11 +1087,17 @@ pub fn accrue_pending(
     // FULL, and this is a new cell. Coalesce into the per-bucket overflow sentinel rather than drop
     // billable usage or grow without bound. The sentinel itself, once present, is an existing cell and
     // takes the early-return above, so the map is bounded at MAX_PENDING_METERING + (distinct buckets).
+    // The sentinel keeps the cell's BUCKET and its PRICE INSTANT and collapses only the attribution
+    // the map can no longer hold. Collapsing the instant too would coalesce two price eras into one
+    // cell and the read would have to pick a card for a sum earned under two — which is the one
+    // thing the fifth key member exists to prevent, and a degraded-mode row is not licence to
+    // misprice.
     let sentinel: MeterKey = (
         METERING_OVERFLOW_KEY_ID.to_string(),
         key.1,
         METERING_OVERFLOW_LABEL.to_string(),
         METERING_OVERFLOW_LABEL.to_string(),
+        key.4,
     );
     pending.entry(sentinel).or_default().merge(add);
     metrics::counter!(crate::metrics::METERING_PENDING_COALESCED_TOTAL).increment(1);

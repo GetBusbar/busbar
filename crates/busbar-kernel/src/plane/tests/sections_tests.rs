@@ -121,7 +121,9 @@ fn an_unknown_name_is_not_a_cross_plane_reference() {
 #[test]
 fn a_section_read_is_scoped_to_its_own_plane() {
     let s = sections();
-    let alpha = s.section("alpha").expect("the alpha section holds an entry");
+    let alpha = s
+        .section("alpha")
+        .expect("the alpha section holds an entry");
     assert_eq!(alpha.len(), 1);
     assert!(alpha.contains_key("fast"));
     assert!(!alpha.contains_key("filesystem"));
@@ -139,11 +141,15 @@ fn iteration_covers_every_plane_and_attributes_each_entry() {
     seen.sort();
     assert_eq!(
         seen,
-        vec![("alpha", "fast"), ("beta", "filesystem"), ("gamma", "planner"),]
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
+        vec![
+            ("alpha", "fast"),
+            ("beta", "filesystem"),
+            ("gamma", "planner"),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
     );
     let planes: std::collections::BTreeSet<&'static str> = s.iter().map(|(p, _, _)| p).collect();
     assert_eq!(

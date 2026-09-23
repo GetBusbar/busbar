@@ -7,19 +7,17 @@
 # operations. Voice is ONE dialect inside this plane; the plane is streaming.
 #
 # WHY IT DELEGATES. Every byte of every dialect this plane speaks is already read and written by the
-# duplex codecs in `busbar-voice-codec`, adapted onto the contract plane trait in `busbar-plane-voice`.
-# No wire format is written twice: this crate is the STREAMING identity (its own registry key, its own
-# capability key) over that proven adapter, so the reframe (the plane is streaming; voice is a dialect)
-# costs one crate and zero re-implemented codecs. If a byte differs between what this plane produces and
-# what the underlying adapter produces, the adapter is the answer and this crate has the bug.
+# duplex codecs in `busbar-voice-codec`, which this crate adapts onto the contract plane trait itself.
+# No wire format is written twice: this crate is the ONE streaming plane (its own registry key, its own
+# capability key) over those codecs. `busbar-plane-voice` was the second adapter over the same codecs and
+# is DELETED into this one (#18/#83 — one crate per plane, and the plane is streaming).
 #
 # WHAT THIS CRATE IS NOT. There is no governance here, no breaker, no hook seat and no metering
 # arithmetic — those are units, on the far side of the kernel from a plane. The metering method returns
 # LOCATORS (where the per-turn quantities are), never a price. The routing method returns a plan, never
 # a connection. Nothing here opens a socket, reads a file or reads a clock other than the one the
-# context hands it: the plane's entire transitive closure is `busbar-contract` + `busbar-plane-voice` +
-# `busbar-voice-codec` (default features only — no runtime, no async, no `hyper`/`tokio`/`net`), the
-# same pure closure the voice plane keeps.
+# context hands it: the plane's entire transitive closure is `busbar-contract` + `busbar-voice-codec`
+# (default features only — no runtime, no async, no `hyper`/`tokio`/`net`).
 [package]
 name = "busbar-plane-streaming"
 version = "1.6.0"
@@ -27,7 +25,7 @@ publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 # One pinned number, set to what CI verifies — the same rationale every other member states.
 rust-version = "1.97"
-description = "The streaming plane for busbar: the plugin contract's plane and session-plane kinds for duplex/live sessions (openai-realtime, gemini-live, twilio, one-shot), with the live realtime voice dialect as one dialect among them — implemented as a thin identity over the busbar-plane-voice duplex adapter."
+description = "The streaming plane for busbar: the plugin contract's plane and session-plane kinds for duplex/live sessions (openai-realtime, gemini-live, twilio, one-shot), with the live realtime voice dialect as one dialect among them — implemented as a thin adapter over the busbar-voice-codec duplex codecs."
 license = "Apache-2.0"
 
 [lib]

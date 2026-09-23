@@ -3,7 +3,7 @@
 #
 # WHY THIS FILE EXISTS.
 #
-# `option_env!("BUSBAR_RELEASE_PUBKEY")` (crates/plugin-sign) is a COMPILE-time read that resolves
+# `option_env!("BUSBAR_RELEASE_PUBKEY")` (crates/plugin-loader/src/sign.rs) is a COMPILE-time read that resolves
 # to `None` when the variable is absent from the compiler's environment. There is no build error,
 # no warning, and no runtime complaint. The binary compiles, links, passes every test, uploads,
 # and is downloaded -- and the first person to learn anything is wrong is an operator installing a

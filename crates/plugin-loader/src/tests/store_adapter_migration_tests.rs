@@ -26,7 +26,7 @@ use busbar_api::{
     StoreResult, UsageLedger, VirtualKey,
 };
 use busbar_kernel_ledger::migration::{
-    migrate, LegacyFamily, MigrationRecords, Outcome, OPENING_CHECKPOINT_SEQ,
+    meter_pool_scope, migrate, LegacyFamily, MigrationRecords, Outcome, OPENING_CHECKPOINT_SEQ,
 };
 use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey};
 use std::sync::{Arc, Mutex};
@@ -323,6 +323,7 @@ fn metering_row(key_id: &str, model: &str, provider: &str) -> MeteringRow {
         billable_requests: 290,
         key_group_at_use: String::new(),
         pricing_version: "v1".to_string(),
+        priced_from_ms: 0,
     }
 }
 
@@ -455,7 +456,7 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
     // The metering rows: the same day, one balance per lane and provider, and the cache-write
     // column is its own dimension rather than being folded into the input one.
     for provider in ["openai", "azure"] {
-        let pool = BucketScope::Pool(format!("meter:gpt-4/{provider}"));
+        let pool = meter_pool_scope("gpt-4", provider);
         assert_eq!(
             opened(
                 totals,
@@ -836,6 +837,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
             billable_requests: 20,
             key_group_at_use: String::new(),
             pricing_version: "v1".to_string(),
+            priced_from_ms: 0,
         })
         .expect("the published wire takes a metering delta");
 
@@ -868,7 +870,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
             &opening.checkpoint.totals,
             "vk_sqlite",
             CapDimension::Class("input".into()),
-            BucketScope::Pool("meter:gpt-4/openai".into())
+            meter_pool_scope("gpt-4", "openai")
         )
         .settled,
         1_234

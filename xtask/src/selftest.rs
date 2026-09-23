@@ -36,6 +36,14 @@
 //!   dependency's feature ON. Must be RED on `libc`, proving the phantom-edge filter does not ALSO
 //!   swallow a genuinely-activated optional dependency.
 //!
+//! The `via-only`/`via-bypass` pair is driven a SECOND time against an EDGE EXEMPTION
+//! (`[[rules.source-denylist.edge_exemptions]]` in `qa/construction.toml`) rather than a per-crate
+//! waiver — the broader exception shape, keyed on `(dep, via)` for the whole tree — because the
+//! thing that has to be true of it is that it is NO BROADER than the `via` it names. Same two
+//! fixtures, same two answers: covered when every route goes through `via`, still RED when one
+//! route does not. An exemption that answered green on `via-bypass` would have disarmed the `libc`
+//! ban everywhere at once, silently.
+//!
 //! Each fixture is its own tiny standalone Cargo workspace (`[workspace]` with no members other
 //! than itself, or itself plus a local `mid` path-dependency) so `cargo metadata --manifest-path`
 //! resolves it without touching the real workspace's Cargo.lock.
@@ -172,8 +180,10 @@ pub fn run() -> bool {
         &mut fails,
     );
     check_via_multi(&mut fails);
+    check_edge_exemption_is_narrow(&mut fails);
     check_vacuous_config_is_red(&mut fails);
     check_stale_waiver_is_red(&mut fails);
+    check_stale_edge_exemption_is_red(&mut fails);
 
     if fails.is_empty() {
         println!("\nxtask denylist --selftest: ALL GREEN");
@@ -485,5 +495,146 @@ fn check_stale_waiver_is_red(fails: &mut Vec<String>) {
         println!(
             "  RED    stale-waiver check: 0 hits plus a stale waiver is a RED run, not an OK one"
         );
+    }
+}
+
+/// THE EXEMPTION MUST BE NO BROADER THAN THE EDGE IT NAMES, and that is the control that matters.
+///
+/// An [`denylist::EdgeExemption`] is keyed on `(dep, via)` for the WHOLE tree, so one entry that
+/// was too broad would not redden one crate — it would disarm the `libc` ban in every pure kind at
+/// once, and the report would look exactly like a clean tree. Both directions are proven here over
+/// the same two fixtures the per-crate `via` narrowing uses, and with NO allow-list entry at all,
+/// so nothing but the exemption can be doing the work:
+///
+///   * `via-only` reaches `libc` ONLY through `xtask-fixture-via-mid` — the exemption covers it.
+///   * `via-bypass` has that route AND a direct dependency on `libc` — the SAME exemption must
+///     leave it RED. A bypassing route is not forgiven alongside the covered one.
+fn check_edge_exemption_is_narrow(fails: &mut Vec<String>) {
+    let root = workspace_root();
+    let banned = denylist::load_banned_lists(&root);
+    let fragments = denylist::load_test_fragments_pub(&root);
+    let exempt = || vec![("libc", "xtask-fixture-via-mid")];
+
+    for (fixture, crate_name, expect_red) in [
+        ("via-only", "xtask-fixture-via-only", false),
+        ("via-bypass", "xtask-fixture-via-bypass", true),
+    ] {
+        let dir = fixtures_dir().join(fixture);
+        let manifest = dir.join("Cargo.toml");
+        if !manifest.exists() {
+            fails.push(format!(
+                "edge-exemption/{fixture}: fixture manifest missing at {}",
+                manifest.display()
+            ));
+            continue;
+        }
+        let pc = PureCrate {
+            name: crate_name.to_string(),
+            dir: dir.clone(),
+            kind: "plane".to_string(),
+            report_name: crate_name.to_string(),
+        };
+        let hits = denylist::run_on_with_edges(
+            &manifest,
+            vec![pc],
+            &banned,
+            &fragments,
+            Vec::new(),
+            exempt(),
+        );
+        let red = hits.iter().any(|h| h.offender == "libc");
+        match (expect_red, red) {
+            (false, false) => println!(
+                "  GREEN  edge-exemption/{fixture}: `libc` covered by the (dep = libc, via = \
+                 xtask-fixture-via-mid) EDGE exemption alone, with no allow-list entry"
+            ),
+            (true, true) => println!(
+                "  RED    edge-exemption/{fixture}: `libc` stays red under the SAME edge exemption \
+                 (a direct path bypasses `via`) — the exemption is narrow, as expected"
+            ),
+            (false, true) => fails.push(format!(
+                "edge-exemption/{fixture}: expected 0 `libc` hits under the edge exemption, got: {}",
+                hits.iter()
+                    .map(|h| h.offender.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            (true, false) => fails.push(
+                "edge-exemption/via-bypass: the edge exemption forgave a route that does NOT go \
+                 through `via` — an exemption that broad disarms the libc ban for every pure kind \
+                 at once"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+/// AN EXEMPTION CAN ITSELF BE WRONG, AND THE FLOOR IS CHECKED BOTH WAYS FOR IT TOO.
+///
+/// The allow-list's middle rule — an entry that matches no hit is RED — exists because an exception
+/// nobody has to defend is read by the next reviewer as a live, reviewed fact about the tree. An
+/// edge exemption is the STRONGER claim of the two: it speaks for every pure kind at once and
+/// suppresses findings in crates nobody had to name. So it gets the same floor, not a weaker one,
+/// and this proves both arms of it.
+///
+/// Driven over [`denylist::stale_edge_exemptions`] against a synthetic hit list rather than the
+/// committed `qa/construction.toml`, for the same reason [`check_stale_waiver_is_red`] is: the case
+/// asserts the RULE, and must not move on the day a real exemption is added or retired.
+fn check_stale_edge_exemption_is_red(fails: &mut Vec<String>) {
+    let hits = vec![denylist::Hit {
+        crate_name: "xtask-fixture-dirty-dep".to_string(),
+        offender: "libc".to_string(),
+        via: "xtask-fixture-dirty-dep -> sha2 -> cpufeatures -> libc".to_string(),
+    }];
+
+    // An exemption whose edge IS in the report is doing its job and must not be reported.
+    let live = [denylist::EdgeExemption::for_selftest("libc", "cpufeatures")];
+    let stale = denylist::stale_edge_exemptions(&live, &hits);
+    if stale.is_empty() {
+        println!(
+            "  GREEN  stale-exemption check: an exemption whose edge IS in the hit list is NOT \
+             reported"
+        );
+    } else {
+        fails.push(format!(
+            "stale-exemption check: an exemption covering an edge that IS in the report was called \
+             stale ({stale:?}) — the check would red every working exemption"
+        ));
+    }
+
+    // SAME OFFENDER, WRONG EDGE. `getrandom -> libc` is not how this hit reaches `libc`, so an
+    // exemption naming it rules on nothing here. Matching on the offender alone would let an
+    // exemption for an edge nobody takes ride along on some OTHER edge's hit, which is the exact
+    // shape of exception this floor exists to refuse.
+    let wrong_edge = [denylist::EdgeExemption::for_selftest("libc", "getrandom")];
+    let stale = denylist::stale_edge_exemptions(&wrong_edge, &hits);
+    if stale.len() == 1 && stale[0].contains("getrandom") && stale[0].contains("libc") {
+        println!(
+            "  RED    stale-exemption check: an exemption for an edge no hit takes is reported, \
+             naming the dep and the via"
+        );
+    } else {
+        fails.push(format!(
+            "stale-exemption check: an exemption for `libc` via an edge nothing takes produced \
+             {stale:?} — expected exactly one row naming libc and getrandom"
+        ));
+    }
+
+    // And an exemption for an offender that is not in the tree at all.
+    let gone = [denylist::EdgeExemption::for_selftest(
+        "async-std",
+        "cpufeatures",
+    )];
+    let stale = denylist::stale_edge_exemptions(&gone, &hits);
+    if stale.len() == 1 && stale[0].contains("async-std") {
+        println!(
+            "  RED    stale-exemption check: an exemption for an offender that is not in the tree \
+             is reported"
+        );
+    } else {
+        fails.push(format!(
+            "stale-exemption check: an exemption for an absent offender produced {stale:?} — \
+             expected exactly one row naming async-std"
+        ));
     }
 }

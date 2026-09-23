@@ -64,13 +64,13 @@ use super::sanitize;
 ///
 /// Exposed as a slice so `server/discover` advertises exactly what dispatch accepts: two lists that
 /// can disagree is a client told it may call something it may not. The LIST lives in
-/// `busbar-mcp-codec` and this is a re-export, because a THIRD reader — `busbar-plane-mcp`, which
+/// `busbar-plane-mcp` and this is a re-export, because a THIRD reader — this crate's own cells, which
 /// carries a row per method and may not name this crate — has to be able to see it; a method this
 /// server dispatches and the plane does not carry arrives as an unsupported operation. Nothing
 /// about the list changed crossing the seam, including that `subscriptions/listen` is on it (SEP-2575
 /// made it a METHOD rather than a route, which is why `super::envelope::legacy_verb` can go on
 /// answering `405` without that being a statement that busbar cannot notify a client).
-pub(crate) use busbar_mcp_codec::codec::IMPLEMENTED_METHODS;
+pub(crate) use busbar_plane_mcp::codec::IMPLEMENTED_METHODS;
 
 /// `resultType` on every result this server returns: `complete`, never `input_required`.
 ///
@@ -1271,7 +1271,7 @@ async fn tools_call_via_gauntlet(
 /// [`CallLog::open`] seeds the record's `tool` field with the caller's OWN, unvalidated name —
 /// right, for an ordinary bad name: a refusal that matched no registration still has to say what
 /// was asked for. Wrong for an UNBOUNDED one, because that field is written verbatim into
-/// `McpCallRecord` (`busbar_mcp_codec::record::McpCallRecord::tool`), a DURABLE, HASH-CHAINED row
+/// `McpCallRecord` (`crate::record::McpCallRecord::tool`), a DURABLE, HASH-CHAINED row
 /// the instant any terminal fires — refusal included — and the row then participates in chain
 /// verification forever. Bounding the field on some later terminal is not enough: whatever `open`
 /// was called with is already the value every terminal after it writes. So the ordering IS the fix
@@ -1713,13 +1713,13 @@ async fn tools_call(
                 (!sid.is_empty()).then_some(sid.as_str()),
             )
         })
-        .await
-        // A join panic is FAIL-SAFE on the transform path (the gate already admitted the request):
-        // proceed with the original arguments, unchanged.
-        .unwrap_or(busbar_kernel::plane_host::TransformVerdict::Proceed {
-            applied: false,
-            args_json: Vec::new(),
-        });
+        .await;
+        // A LEG THAT DID NOT JOIN REFUSES THE CALL, and says so. The rule is `tap_join_verdict`'s,
+        // stated there: the arm this replaces proceeded on the premise that "the gate already
+        // admitted the request", which conflates the admission gate (may this caller call?) with
+        // this one (may THESE BYTES be relayed?) — and the bytes it would relay are the caller's own
+        // untrusted `params.arguments`.
+        let verdict = tap_join_verdict(verdict, &selected.server, &selected.namespaced);
         match verdict {
             busbar_kernel::plane_host::TransformVerdict::Reject {
                 status,
@@ -2453,6 +2453,94 @@ pub(super) fn committed_arguments(args_json: &[u8]) -> Result<serde_json::Value,
     Ok(value)
 }
 
+/// THE SUBJECT the rewrite leg's join-failure diagnostic and its refusal name in the `hook` field.
+///
+/// A join failure is the SEAM failing to answer, not a hook declining, so no single hook name is
+/// knowable at this site — the plane holds no resolved chain (the Seam-B inversion puts the chain
+/// behind the host, re-selected by `(plane_key, container)`). The operator is therefore told WHICH
+/// CONTROL went unanswered — this plus the `server` whose chain it is and the `tool` it was called
+/// on — rather than being handed a blank where a name belongs.
+const TAP_CHAIN: &str = "<the server's prompt: rw chain>";
+
+/// THE REWRITE (`prompt: rw`) VERDICT WHEN THE HOST LEG DID NOT JOIN — the plane's own rule for
+/// "the seam never answered at all", its own function for the same reason [`committed_arguments`]
+/// is: the plane cannot make the host seam misbehave, and the rule the plane owns is what it does
+/// when it does.
+///
+/// # Why this REFUSES
+///
+/// The arm this replaces proceeded with the original arguments, on the premise — stated in its own
+/// comment — that "the gate already admitted the request". That premise conflates TWO gates. The
+/// admission gate one block up decided WHETHER THE CALLER MAY CALL; this `prompt: rw` chain decides
+/// WHETHER THESE BYTES MAY BE RELAYED. The second gate not having run is not made safe by the first
+/// one having run.
+///
+/// And the bytes decide it. What a proceed here forwards is `params.arguments` off the caller's own
+/// `tools/call` — **the caller's UNTRUSTED input**, the exact bytes a screening hook is attached to
+/// read. Proceeding relays attacker-influenced arguments to an upstream MCP server, over the
+/// credential busbar leases on the caller's behalf, with the chain's verdict UNKNOWN — and unknown
+/// is not allow. The hooks on this path are not observers: the same chain that rewrites can also
+/// REJECT (`TransformVerdict::Reject`, the arm directly below this one, proven on real traffic by
+/// `hook_tap_tests::a_rewrite_gate_can_reject_on_the_arguments_it_screens` — a token inside
+/// `arguments` refuses with 451 and the upstream is never reached).
+///
+/// # Why it is not the seam's own fail-safe arms with a different answer
+///
+/// `transform_over_over` is fail-safe by design: a hook that errors, times out or abstains — or a
+/// runtime that will not start — proceeds with the original payload. Every one of those is the SEAM
+/// HAVING RUN and the operator's own `on_error` disposition having been applied to the result (a
+/// `Failed` call becomes a `Reject` when the operator declared the hook load-bearing; see
+/// `hooks::RewriteOnError`). **A join failure is the seam NOT having run**, so `on_error` is never
+/// consulted, and an operator who wrote `on_error: reject` silently gets the opposite of what they
+/// wrote. That inversion is the defect. The refusal is therefore minted as the seam's own "a
+/// required gate could not complete" verdict — the same `503` + content-free message every other
+/// firing site renders for that condition — and travels the `Reject` route this plane already
+/// implements, audited `rejected` like any other hook refusal.
+///
+/// It also makes the two legs of one seam agree: the admission gate's join, one block up in this
+/// same function, already refuses (`GateOutcome::Reject`, 403) on exactly this condition.
+///
+/// # What can actually arrive here
+///
+/// A PANICKING HOOK DOES NOT. A `kind: hook` cdylib's panic is caught three times before it could
+/// reach a join — the SDK's mandatory export-boundary `catch_unwind`, the engine's `ffi_guard`
+/// inside `transport_call`, and `DlopenPolicy::call`'s own belt-and-braces guard — and arrives as
+/// `TransformOutcome::Failed`, which the operator's `on_error` disposes of and the seam logs.
+/// Pinned by `hook_tap_tests::a_hook_that_panics_is_the_seams_own_failed_verdict_never_a_join_failure`.
+/// What reaches this arm is a panic in busbar's OWN glue on the blocking thread, or a blocking task
+/// cancelled at runtime shutdown — a busbar bug or a shutdown, and on either of those refusing an
+/// unscreened call is the answer. So this is a GUARD on the host seam, the same standing the `Err`
+/// arm of [`committed_arguments`] has, not a hole reachable through today's hooks.
+pub(super) fn tap_join_verdict(
+    joined: Result<busbar_kernel::plane_host::TransformVerdict, tokio::task::JoinError>,
+    server: &str,
+    tool: &str,
+) -> busbar_kernel::plane_host::TransformVerdict {
+    match joined {
+        Ok(verdict) => verdict,
+        Err(e) => {
+            // NEVER SILENT. This was the one disposition on this seam that left no trace at all:
+            // `transform_over_over` logs its own `Failed` arm and the gate leg logs its refusal, so
+            // a join failure was the only way a `prompt: rw` hook could stop answering with no line
+            // naming anything.
+            tracing::error!(
+                server = %server,
+                tool = %tool,
+                hook = TAP_CHAIN,
+                error = %e,
+                "the mcp tools/call rewrite (prompt: rw) leg did not join; the chain's verdict is \
+                 UNKNOWN, so the call is REFUSED rather than dispatched carrying the caller's \
+                 unscreened arguments"
+            );
+            busbar_kernel::plane_host::TransformVerdict::Reject {
+                status: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                message: busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
+                hook: TAP_CHAIN.to_string(),
+            }
+        }
+    }
+}
+
 /// CHARGE one round on the caller's own budget plane, then meter it.
 ///
 /// The two halves are the LLM path's two halves, called the same way for the same reason: `try_admit`
@@ -2616,21 +2704,21 @@ fn refuse_catalogue(
 /// a refusal by policy is: the request was well formed, the method exists, and the server declined.
 /// `-32602` would say the arguments were wrong and `-32601` would say the method was missing, and
 /// both would send an operator debugging the wrong thing.
-pub(super) const CODE_REFUSED: i64 = busbar_mcp_codec::codec::CODE_REFUSED;
+pub(super) const CODE_REFUSED: i64 = busbar_plane_mcp::codec::CODE_REFUSED;
 
 /// `MissingRequiredClientCapability` — the MCP-band sibling of `-32020` (header mismatch) and
 /// `-32022` (unsupported protocol version). Emitted on ONE arm only; see the comment at its single
 /// call site in `refuse_ask` for why this is one arm rather than a class.
-const CODE_MISSING_CLIENT_CAPABILITY: i64 = busbar_mcp_codec::codec::CODE_MISSING_CLIENT_CAPABILITY;
+const CODE_MISSING_CLIENT_CAPABILITY: i64 = busbar_plane_mcp::codec::CODE_MISSING_CLIENT_CAPABILITY;
 /// JSON-RPC standard: the params were structurally wrong.
-const CODE_INVALID_PARAMS: i64 = busbar_mcp_codec::codec::CODE_INVALID_PARAMS;
+const CODE_INVALID_PARAMS: i64 = busbar_plane_mcp::codec::CODE_INVALID_PARAMS;
 
 /// THE TRIPPED-UPSTREAM ERROR — the owner-agreed rendering for a tripped MCP upstream. In the
 /// implementation-defined `-32000..-32099` band beside busbar's other extensions, because every
 /// reserved code is wrong for a specific reason: `-32603` says busbar broke (it did not), `-32601`
 /// says the tool does not exist (it does), `-32602` blames the caller. The call NEVER HAPPENED, so
 /// this is a JSON-RPC error and never an `isError` tool result — see `refuse_upstream_unavailable`.
-const CODE_UPSTREAM_UNAVAILABLE: i64 = busbar_mcp_codec::codec::CODE_UPSTREAM_UNAVAILABLE;
+const CODE_UPSTREAM_UNAVAILABLE: i64 = busbar_plane_mcp::codec::CODE_UPSTREAM_UNAVAILABLE;
 
 /// The call-log reason token for a breaker refusal. `refused` is exact here: the call did not go
 /// out, which is precisely what that disposition documents.

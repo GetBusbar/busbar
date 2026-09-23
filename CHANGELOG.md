@@ -128,6 +128,16 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
   [the diagnostics reference](docs/diagnostics.md), which says what each one means and what to do.
+- **A service-account key file that cannot be read no longer echoes the credential into the error.**
+  `auth: jwt-bearer` tells a pasted service-account JSON from a path to one by a single leading
+  `{`, so an operator who pastes the key BODY — or whose `env:`/`file:` reference resolves to key
+  material rather than to a filename — reaches the file read holding the RS256 signing key. 1.5.5
+  interpolated that argument into the failure, so the key was published to `busbar --validate`'s
+  report, to the admin config dry-run's response, and to the panic a boot or a config apply raises
+  on the same path. The message now names the io failure only. Nothing else about the refusal
+  moves: same exit code, same surrounding `config validation failed:` frame, and the lane and the
+  secret's configured source are still named by the caller, so a misconfiguration is exactly as
+  diagnosable as before.
 - **Two A2A verbs that were answered for free are now metered.** `GetExtendedAgentCard` on
   `POST /a2a` and `ListTasks` reached a handler, did the work and left no ledger row: the card verb
   reads the caller's whole catalogue and builds a document, and `ListTasks` scans every task the
@@ -410,9 +420,15 @@ identically, and every 1.5.5 key and minted secret carries over.
   booked row. 1.5.5 derived every row's spend at read time from the current cost model, so a `PUT
   /config/settings` rate-card edit re-priced every past row with no restart and no boundary; that
   blanket repricing is now available only as an explicit, signed correction naming its own window,
-  never as a side effect of publishing a new card. **Migration:** `GET /admin/usage` itself still
-  derives spend from the current card at read time and does not yet resolve through the dated
-  history; to correct what a past window was charged, post a signed correction through the new
+  never as a side effect of publishing a new card. `GET /admin/usage` resolves each metering row
+  through that history at the row's own instant, so publishing a card no longer moves what an
+  earlier window reports, and a card edit inside a UTC day splits that day's row at the edit with
+  each half keeping the card it was earned under. **Migration:** two figures you may have compared
+  can now differ. The key and group budget reads (`GET /admin/keys/{id}/usage`,
+  `GET /admin/groups/{group}/usage`) still derive spend from the CURRENT card, because the
+  enforcement ledger they read carries no price instant yet — so after a rate-card edit they and
+  `/admin/usage` can report different money for the same consumption until that lands. To correct
+  what a past window was charged, post a signed correction through the new
   `POST /api/v1/admin/ledger/amend-rate-history` verb rather than editing the live card. See [the
   1.6.0 migration guide](docs/migration-1.6.md).
 

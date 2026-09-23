@@ -194,7 +194,11 @@ fn the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on() {
     }
     assert_eq!(
         namers,
-        BTreeSet::from(["busbar-kernel/src/slice.rs".to_string()]),
+        // The rule's own module is `busbar-contract/src/slice.rs` since b544c8bbf moved the slice
+        // ABI types out of the kernel (#38, to break the core-absorption cycle). The PROPERTY is
+        // unchanged and is what this pin is about: exactly ONE file — the module that defines
+        // `overdraft()` — names the verdict it returns.
+        BTreeSet::from(["busbar-contract/src/slice.rs".to_string()]),
         "only the rule's own module may name the ceiling verdict"
     );
 

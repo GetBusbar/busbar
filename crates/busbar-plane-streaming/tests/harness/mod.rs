@@ -1,12 +1,12 @@
 //! The smallest thing that can call the streaming plane.
 //!
-//! The same minimum-size harness `busbar-plane-voice` and `busbar-plane-llm` build for their own tests:
+//! The same minimum-size harness `busbar-plane-llm` and every other plane crate builds for its tests:
 //! an arena, a clock, a configuration view, a transport view and a label set, plus the kernel-built
 //! values (a unit, a verified destination) handed through a seal. Nothing here is shipped — it is the
 //! test binary's own scaffolding, the same way every plane crate carries one.
 
 use busbar_contract::bounded::{
-    PlaneAlloc, PlaneAllocBudget, ScratchBytes, Facts, Ir, Labels, SlabBytes, Span,
+    Facts, Ir, Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, SlabBytes, Span,
 };
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
@@ -21,7 +21,9 @@ pub struct LeakPlaneAlloc;
 
 impl PlaneAlloc for LeakPlaneAlloc {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
-        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+        Ok(ScratchBytes::new(Box::leak(
+            src.to_vec().into_boxed_slice(),
+        )))
     }
 
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {

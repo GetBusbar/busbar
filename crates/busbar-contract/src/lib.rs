@@ -24,6 +24,7 @@ pub(crate) mod json_grammar;
 pub mod kinds;
 pub mod plane;
 pub mod plugin;
+pub mod redacted;
 // The money-path durable record SHAPES (DECISIONS #83: contract = shapes, ledger = semantics;
 // DECISIONS #84: nothing on the plugin path may link a crate holding semantics). The module is a
 // module-path-ONLY, byte-identical relocation of the store contract that used to sit in
@@ -35,6 +36,7 @@ pub mod plugin;
 #[allow(missing_docs)]
 pub mod records;
 pub mod scratch;
+pub mod signal;
 pub mod slice;
 pub mod spans;
 pub mod surface;
@@ -93,7 +95,9 @@ pub use plane::{
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
+pub use redacted::{constant_time_eq, Redacted};
 pub use scratch::{Scratch, ScratchRefused};
+pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{
     check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
     TransportConfigView, TransportMeta, TRANSPORT_ABI,

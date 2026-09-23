@@ -15,7 +15,7 @@ use futures::{SinkExt, StreamExt};
 use crate::egress::duplex_ws::{self, DialError};
 use crate::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
 use crate::ingress::duplex_ws as ws_ingress;
-use crate::net_guard::{GuardPolicy, GuardRefusal};
+use crate::net_guard::{AddressRefusal, GuardPolicy};
 use crate::transport::{Transport, UpstreamWireKind};
 
 /// A trivial ECHO plane bound to the acceptor: no protocol, no wire vocabulary — it echoes each frame
@@ -532,7 +532,7 @@ async fn dial_refuses_unpinned_and_guard_failing_targets() {
     assert!(
         matches!(
             err,
-            Some(DialError::Guard(GuardRefusal::InternalAddress { .. }))
+            Some(DialError::Guard(AddressRefusal::InternalAddress { .. }))
         ),
         "loopback under the default policy must be refused internal, got {err:?}"
     );
@@ -544,7 +544,9 @@ async fn dial_refuses_unpinned_and_guard_failing_targets() {
     assert!(
         matches!(
             err,
-            Some(DialError::Guard(GuardRefusal::CloudMetadataAddress { .. }))
+            Some(DialError::Guard(
+                AddressRefusal::CloudMetadataAddress { .. }
+            ))
         ),
         "the metadata address must be refused unconditionally, got {err:?}"
     );

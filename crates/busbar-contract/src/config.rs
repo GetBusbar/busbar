@@ -79,3 +79,34 @@ pub struct ModelCfg {
 pub fn neg1() -> i64 {
     -1
 }
+
+/// `upstream_credentials:` — the OTHER reserved member every model-serving section carries next to
+/// [`ModelCfg`], and it arrived here for the same reason and by the same route. It lived in
+/// `busbar-api`, which meant the one pure plane that reused it (`busbar-plane-decision`, the jev
+/// decision plane) had to name `busbar-api` in its manifest — the only pure plane that did — and
+/// that edge dragged `sha2 -> cpufeatures -> libc` into a plane's dependency closure, which the
+/// transitive source denylist bans outright. The type itself needs none of that: two unit variants
+/// and two serde derives. It moved here verbatim — same name, same variants, same order, same serde
+/// attributes, so no config key and no wire byte changed — and `busbar-api` re-exports it at its
+/// historical `busbar_api::UpstreamCreds` path so every kernel-side caller keeps compiling
+/// unchanged, exactly as `busbar-kernel` re-exports [`ModelCfg`]. The value this buys is measured,
+/// not asserted: `cargo xtask gate denylist` names the offending path in full.
+/// The UPSTREAM-credential mode (`upstream_credentials:`) — whose credential reaches the provider.
+/// DISTINCT from authentication (which auth module, if any, ran at the front door — that's the
+/// `auth.chain`): `Own` (default) signs the upstream call with busbar's configured lane key;
+/// `Passthrough` forwards the CALLER's credential upstream. A proto writer uses THIS to resolve an
+/// otherwise-ambiguous credential scheme to the single native header the caller's real client
+/// produces. (Split out of the old `AuthMode`, now its own config key — `AuthMode` is gone.)
+// `Serialize` is additive and is what lets a config section carrying this field be projected back
+// to a raw definition document — the base half of the config overlay's per-entry MERGE
+// (`NamedMapSection::entry_as_document`). A section whose entry cannot round-trip to a document
+// cannot be patched per field, only replaced wholesale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamCreds {
+    /// Sign the upstream call with this deployment's OWN configured lane credential. The default.
+    #[default]
+    Own,
+    /// Forward the CALLER's credential upstream unchanged.
+    Passthrough,
+}

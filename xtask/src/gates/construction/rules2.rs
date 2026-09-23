@@ -56,7 +56,6 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
     let c = cfg.rule("loc-ceilings")?;
     let kernel_crate = need_str(c, "kernel_crate", "loc-ceilings")?;
     let kernel_ceiling = need_int(c, "kernel_ceiling", "loc-ceilings")?;
-    let caps_crate = need_str(c, "caps_crate", "loc-ceilings")?;
     let contract_crate = need_str(c, "contract_crate", "loc-ceilings")?;
     let caps_contract_ceiling = need_int(c, "caps_contract_ceiling", "loc-ceilings")?;
     let unit_glob = need_str(c, "unit_crate_glob", "loc-ceilings")?;
@@ -66,18 +65,35 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
     let union_ceiling = need_int(c, "union_ceiling", "loc-ceilings")?;
     let teller_file_names = c.list_of("teller_files");
 
-    // SURFACE lines only, per the owner's counting decision: non-blank, non-comment lines under
-    // src/, excluding `#[cfg(test)]` module bodies and `src/tests/**`.
-    let loc = |rel: &str| -> i64 {
-        tree.files
-            .get(rel)
-            .map(|ls| {
-                ls.iter()
-                    .filter(|l| !l.intest && !l.code.trim().is_empty())
-                    .count() as i64
-            })
-            .unwrap_or(0)
-    };
+    // ── THE ONE COUNTER ───────────────────────────────────────────────────────────────────────
+    // This used to count the lines itself, off `tree`'s own test classification, and that made it
+    // the SECOND instrument in the tree answering "how many lines is this crate" — the first being
+    // `scripts/loc-surface.py`, which answered differently. Both were wrong, differently: the
+    // script billed nested `src/<module>/tests/**` as production surface, and `tree`'s scanner only
+    // enters a test scope for `#[cfg(test)] mod`, so a `#[cfg(test)] fn` or `#[cfg(test)] impl`
+    // body spent kernel budget. `cargo xtask loc` parses the file and takes the item span from the
+    // AST; this reads its per-file `code` figure and decides nothing about counting itself.
+    let measured = crate::loc::measure_worktree_cached(cx)
+        .map_err(|e| format!("loc-ceilings: cargo xtask loc could not measure the tree: {e}"))?;
+    let per_file = measured.file_code_map();
+    let loc = |rel: &str| -> i64 { per_file.get(rel).copied().unwrap_or(0) };
+    // A FILE THAT WOULD NOT PARSE COUNTS AS ZERO, AND ZERO IS THE DIRECTION A CEILING FORGIVES.
+    // Scoped to the crates THIS rule measures, so an unrelated crate's half-written file is not
+    // this rule's refusal; within them it is, because a ceiling honoured by a file nobody could
+    // read is not honoured.
+    let unreadable: Vec<String> = [kernel_crate, contract_crate]
+        .iter()
+        .flat_map(|c| measured.errors_for(c))
+        .map(|e| format!("{} ({})", e.path, e.error))
+        .collect();
+    if !unreadable.is_empty() {
+        return Err(format!(
+            "loc-ceilings: {} file(s) in the crates this rule measures could not be parsed, so \
+             their lines counted as ZERO — the direction a ceiling forgives: {}",
+            unreadable.len(),
+            unreadable.join("; ")
+        ));
+    }
     let crate_total = |name: &str| -> i64 { tree.crate_files(name).iter().map(|r| loc(r)).sum() };
 
     let unit_dirs = dirs_for_globs(cx, &[format!("crates/{unit_glob}")]);
@@ -195,17 +211,21 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
         ));
     }
 
-    let caps = crate_total(caps_crate);
-    let contract = crate_total(contract_crate);
-    let caps_contract = caps + contract;
+    // ONE CRATE, NOT TWO. `caps_crate = "busbar-caps"` was read here until 2026-09-22 and the
+    // crate has not been in this workspace since 2c9eddecf folded it into busbar-contract (#37/#38,
+    // now `crates/busbar-contract/src/caps/`). `crate_total` returned 0 for it, so the row printed
+    // `busbar-caps 0 + busbar-contract 6837 = 6837`: a term that could only ever be zero, summed
+    // into a total that read like it had two measured halves. The key is struck in the ceilings
+    // file rather than repointed, because the caps lines are already inside `contract_crate` and
+    // naming that crate twice would double-count it. THE ROW ID AND THE CEILING ARE UNCHANGED —
+    // `loc-ceilings:caps-contract` is what `ceilings.rs` pins to `caps_contract_ceiling` — so the
+    // measurement, the ratchet and this row's standing red all survive the rename of its subject.
+    let caps_contract = crate_total(contract_crate);
     rows.push(plain(
         "loc-ceilings:caps-contract",
         caps_contract <= caps_contract_ceiling,
-        format!("{caps_crate} + {contract_crate} together stay within their LOC ceiling"),
-        format!(
-            "{caps_crate} {caps} + {contract_crate} {contract} = {caps_contract} (ceiling \
-             {caps_contract_ceiling})"
-        ),
+        format!("{contract_crate} (busbar-caps folded in, #37/#38) stays within its LOC ceiling"),
+        format!("{contract_crate} {caps_contract} (ceiling {caps_contract_ceiling})"),
         caps_contract,
         caps_contract_ceiling,
         vec![],
@@ -234,7 +254,14 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
             .collect(),
     ));
 
-    let has_verbs = unit_crates.iter().any(|c| c == verbs_crate);
+    // ASKED OF THE SCANNED TREE, NOT OF A DIRECTORY GLOB, and the difference is whether this row
+    // can go red at all. `unit_crates` comes from `dirs_for_globs`, which reads the FILESYSTEM;
+    // `crates/busbar-unit-verbs` went with the W2.c unit fold, so the glob missed it, `has_verbs`
+    // was false, the row reported a vacuous 0 against its ceiling and PASSED — and no self-test
+    // plant could change that, because an overlay cannot put a directory on disk. A row no plant
+    // can red is not a gate. The tree IS overlay-aware, and "did we measure any file of this
+    // crate" is the same question the note wanted to ask.
+    let has_verbs = !tree.crate_files(verbs_crate).is_empty();
     let verbs_total = if has_verbs {
         crate_total(verbs_crate)
     } else {
@@ -259,9 +286,9 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
     rows.push(plain(
         "loc-ceilings:union",
         union_total <= union_ceiling,
-        "the kernel + caps/contract + unit-* union stays within its LOC ceiling",
+        "the kernel + contract + unit-* union stays within its LOC ceiling",
         format!(
-            "kernel {kernel_total} + caps/contract {caps_contract} + unit-* {unit_total} = \
+            "kernel {kernel_total} + contract {caps_contract} + unit-* {unit_total} = \
              {union_total} (ceiling {union_ceiling}); a call-graph-reachable unit file counts once \
              here AND once in its own crate's unit-total, so this sum over-counts rather than \
              hides an overage"
@@ -658,12 +685,28 @@ pub fn no_default_bodies(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         if missing.is_empty() {
             String::new()
         } else {
-            format!("; trait(s) not found yet: {}", py_list(&missing))
+            format!(
+                "; trait(s) NOT FOUND in any declaring file, so they were not scanned at all: {} \
+                 — a trait this rule cannot find is a trait it cannot judge, and a ceiling of 0 \
+                 met by scanning nothing is the passing answer to every ban. Point the rule's \
+                 `file`/`plane_file`/`transport_file` at the trait's real home, or strike the \
+                 trait from `traits` in the same commit that deletes it",
+                py_list(&missing)
+            )
         }
     );
+    // A MISSING TRAIT IS A FAILURE, NOT A FOOTNOTE. This used to be `current <= max_defaulted`
+    // alone, with the missing set mentioned only in a detail string that a green run never prints.
+    // Measured 2026-09-22: with `transport_file` naming `crates/busbar-contract/src/transport.rs`
+    // (the value this file carried until a197ad2f5 moved the trait into `transport/mod.rs`), a
+    // default body planted on `Transport` scored `PASS ... 0 defaulted kind-trait method(s)
+    // (ceiling 0): none; trait(s) not found yet: ['Transport']`. The identical plant on `Store`,
+    // whose declaring file the rule still named correctly, scored FAIL. The only difference was
+    // whether the configured path still existed, and the rule already KNEW — it said so in the
+    // detail and passed anyway.
     Ok(vec![plain(
         "no-default-bodies",
-        current <= max_defaulted,
+        current <= max_defaulted && missing.is_empty(),
         "every kind-trait method is bodiless; implementing the trait is the only way to answer it",
         detail,
         current,

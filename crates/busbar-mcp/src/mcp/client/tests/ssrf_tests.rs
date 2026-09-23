@@ -300,3 +300,33 @@ impl UnwrapErrMsg for Result<(), SsrfRefusal> {
         );
     }
 }
+
+/// POSITIVE CONTROL (call site 2/5: `busbar-mcp/src/mcp/client/ssrf.rs`, the dispatch guard).
+///
+/// Names go through `precheck` (the structural arm, which is where the metadata list is read) under
+/// the PERMISSIVE stance, because the metadata arm is unconditional. Addresses go through
+/// `check_addresses` (the answered-address arm) under the default stance.
+#[test]
+fn planted_blocked_targets_are_refused_by_the_dispatch_guard() {
+    for name in [
+        "metadata.platformequinix.com",
+        "metadata.tencentyun.com",
+        "instance-data",
+        "instance-data.ec2.internal",
+    ] {
+        let url = format!("https://{name}/latest/meta-data/");
+        let err = precheck(&url, private_ok())
+            .expect_err("the dispatch guard must refuse this planted metadata name");
+        assert!(
+            matches!(err, SsrfRefusal::MetadataHostName(_)),
+            "{name} must be refused as a metadata NAME, got {err:?}"
+        );
+        println!("mcp::client::ssrf::precheck      REFUSED  {url}  -> {err:?}");
+    }
+    for addr in ["169.254.169.254:443", "100.64.1.1:443"] {
+        let sa: SocketAddr = addr.parse().expect("planted socket addr");
+        let err = check_addresses("upstream.test", &[sa], public())
+            .expect_err("the dispatch guard must refuse this planted address");
+        println!("mcp::client::ssrf::check_address REFUSED  {addr}  -> {err:?}");
+    }
+}

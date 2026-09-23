@@ -1387,6 +1387,7 @@ elif [ -d "$STORE_SQLITE_SRC" ]; then
   note "store-sqlite-plugin/tests/e2e.rs already covers the hermetic in-process dlopen ABI path."
   note "This phase builds the plugin cdylib from the sibling checkout and drives it through busbar's"
   note "real end-to-end HTTP + restart-durability story, the same as every other store backend here."
+  # package-selector: busbar-store-sqlite-plugin -- scripts/release-check.sh -- the `--manifest-path` above points at the sibling store-sqlite checkout, so the selector is resolved against that workspace and never against this one
   cargo build --release --manifest-path "${STORE_SQLITE_SRC}/Cargo.toml" -p busbar-store-sqlite-plugin
   SQLITE_LIB="${STORE_SQLITE_SRC}/target/release/${LIBPREFIX}busbar_store_sqlite_plugin.${LIBEXT}"
   [ -f "$SQLITE_LIB" ] || { echo "missing built cdylib: $SQLITE_LIB" >&2; exit 1; }

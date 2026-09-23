@@ -610,6 +610,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
             &seam,
             &who,
             arrived,
+            None,
             &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal),
             posted,
         )
@@ -996,6 +997,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         &crate::root::durability::SharedBook::over(std::sync::Arc::clone(&book)),
         &who,
         Arrived::at(EPOCH * 1_000, 0),
+        None,
         &busbar_contract::caps::Grant::<busbar_contract::caps::DurableWrite>::mint(&seal),
         posted,
     )
@@ -2696,5 +2698,87 @@ async fn both_legs_price_against_the_same_root_card_pin() {
         field(&shipped, "ledger_spend_cents"),
         field(&looped, "ledger_spend_cents"),
         "the two legs priced the same unit to different money against one card pin"
+    );
+}
+
+/// THE PROVENANCE STAMP NAMES THE CARD IN FORCE WHEN THE UNIT ARRIVED (#79), not the newest card
+/// ever published and not a literal.
+///
+/// This stamp used to be a hardcoded `0`, and `0` is not a neutral placeholder: it is
+/// `HistorySeq::OPENING`, a REAL entry number. So every posting this plane made claimed the opening
+/// card had priced it — and `units_llm` is the one `units_*` module that is live on the serving
+/// path, so this was a confident wrong answer on shipped traffic, which is worse than none.
+///
+/// THE CANARY IS THE POINT. Three dated entries over one history and three arrivals, one in each
+/// window. Two of the three expected values are NON-ZERO, so the pre-fix code — which answered `0`
+/// for every unit — fails this test on those two. A test whose expectations were all `0` would have
+/// passed against the bug it was written for.
+///
+/// It also pins the MILLISECOND binding: `effective_from` is written on the millisecond scale
+/// (`root/kernel.rs:435`), so a resolution handed the seconds reading matches only the from-zero
+/// opening entry and reports it forever. The `_at_seconds` assertion below is that hazard made
+/// visible — it is the bug wearing a different hat, and it would pass a "reads a history" review.
+#[test]
+fn the_llm_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
+    // Dated on the MILLISECOND scale the history is written on. The first is effective from instant
+    // zero however it is dated — one entry has to cover every instant, or an early arrival falls in
+    // a hole and is reported as OPENING for a different reason.
+    const SECOND_CARD_MS: u64 = 1_700_000_500_000;
+    const THIRD_CARD_MS: u64 = 1_700_000_900_000;
+
+    let holder = crate::root::kernel::RootHistory::default();
+    holder.apply(busbar_kernel_ledger::cost::RateCard::absent(3), 1_000);
+    holder.apply(
+        busbar_kernel_ledger::cost::RateCard::absent(11),
+        SECOND_CARD_MS,
+    );
+    holder.apply(
+        busbar_kernel_ledger::cost::RateCard::absent(29),
+        THIRD_CARD_MS,
+    );
+    let pinned = holder.pin().expect("three applies put entries in place");
+    assert_eq!(
+        pinned.seq().get(),
+        2,
+        "the snapshot's head is the third entry — the figure a stamp must NOT be for a unit that \
+         arrived before it, and the one a `read the head` implementation would answer every time"
+    );
+
+    let stamped_ms = |ms: u64| card_in_force(Some(&pinned), ms);
+
+    assert_eq!(
+        stamped_ms(1_700_000_100_000),
+        0,
+        "a unit that arrived before the second card was published is priced by the opening entry"
+    );
+    assert_eq!(
+        stamped_ms(1_700_000_600_000),
+        1,
+        "a unit that arrived in the second card's window names the SECOND entry — not the third, \
+         which had not been published when it arrived (#79: publishing never reprices backwards)"
+    );
+    assert_eq!(
+        stamped_ms(1_700_001_000_000),
+        2,
+        "a unit that arrived after the third card names the third entry"
+    );
+
+    // NO HISTORY PINNED — a build with no root ledger. The opening entry is the only one that
+    // covers every instant by construction, so it is the honest fallback rather than a silent hole.
+    assert_eq!(
+        card_in_force(None, 1_700_000_600_000),
+        0,
+        "no pinned history falls back to the opening entry"
+    );
+
+    // THE SECONDS/MILLISECONDS HAZARD, made visible. Handed the SECONDS reading of the same instant
+    // that resolves to entry 1 above, every arrival collapses onto the opening entry — the original
+    // bug with a lookup in front of it. `Arrived::ms()` is what the settle path passes, and this is
+    // why.
+    assert_eq!(
+        stamped_ms(1_700_000_600),
+        0,
+        "a seconds-valued instant matches only the from-zero opening entry — which is why the \
+         settle path resolves at `Arrived::ms()` and never at `Arrived::secs()`"
     );
 }

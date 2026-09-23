@@ -624,7 +624,7 @@ pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSp
     // are spelled verbatim so the seam's `path_params` carry the names the handlers read.
     vec![
         PlaneRouteSpec {
-            path: format!("{mount}{}", busbar_a2a_codec::ROUTE_MESSAGE_SEND),
+            path: format!("{mount}{}", busbar_plane_a2a::ROUTE_MESSAGE_SEND),
             method: RouteMethod::Post,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
@@ -632,7 +632,7 @@ pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSp
             }),
         },
         PlaneRouteSpec {
-            path: format!("{mount}{}", busbar_a2a_codec::ROUTE_MESSAGE_STREAM),
+            path: format!("{mount}{}", busbar_plane_a2a::ROUTE_MESSAGE_STREAM),
             method: RouteMethod::Post,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
@@ -640,7 +640,7 @@ pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSp
             }),
         },
         PlaneRouteSpec {
-            path: format!("{mount}{}", busbar_a2a_codec::ROUTE_TASKS),
+            path: format!("{mount}{}", busbar_plane_a2a::ROUTE_TASKS),
             method: RouteMethod::Get,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
@@ -651,7 +651,7 @@ pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSp
         // methods for one path; two templates differing only in the capture NAME would be one
         // pattern registered twice, which is a startup panic rather than a route.
         PlaneRouteSpec {
-            path: format!("{mount}{}", busbar_a2a_codec::ROUTE_TASK),
+            path: format!("{mount}{}", busbar_plane_a2a::ROUTE_TASK),
             method: RouteMethod::Get,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
@@ -659,7 +659,7 @@ pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSp
             }),
         },
         PlaneRouteSpec {
-            path: format!("{mount}{}", busbar_a2a_codec::ROUTE_TASK),
+            path: format!("{mount}{}", busbar_plane_a2a::ROUTE_TASK),
             method: RouteMethod::Post,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
@@ -667,7 +667,7 @@ pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSp
             }),
         },
         PlaneRouteSpec {
-            path: format!("{mount}{}", busbar_a2a_codec::ROUTE_PUSH_CONFIGS),
+            path: format!("{mount}{}", busbar_plane_a2a::ROUTE_PUSH_CONFIGS),
             method: RouteMethod::Post,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
@@ -675,7 +675,7 @@ pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSp
             }),
         },
         PlaneRouteSpec {
-            path: format!("{mount}{}", busbar_a2a_codec::ROUTE_PUSH_CONFIGS),
+            path: format!("{mount}{}", busbar_plane_a2a::ROUTE_PUSH_CONFIGS),
             method: RouteMethod::Get,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
@@ -683,7 +683,7 @@ pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSp
             }),
         },
         PlaneRouteSpec {
-            path: format!("{mount}{}", busbar_a2a_codec::ROUTE_PUSH_CONFIG),
+            path: format!("{mount}{}", busbar_plane_a2a::ROUTE_PUSH_CONFIG),
             method: RouteMethod::Get,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
@@ -691,7 +691,7 @@ pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSp
             }),
         },
         PlaneRouteSpec {
-            path: format!("{mount}{}", busbar_a2a_codec::ROUTE_PUSH_CONFIG),
+            path: format!("{mount}{}", busbar_plane_a2a::ROUTE_PUSH_CONFIG),
             method: RouteMethod::Delete,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
@@ -699,7 +699,7 @@ pub(super) fn a2a_rest_routes() -> Vec<busbar_kernel::plane_routes::PlaneRouteSp
             }),
         },
         PlaneRouteSpec {
-            path: format!("{mount}{}", busbar_a2a_codec::ROUTE_EXTENDED_AGENT_CARD),
+            path: format!("{mount}{}", busbar_plane_a2a::ROUTE_EXTENDED_AGENT_CARD),
             method: RouteMethod::Get,
             auth: RouteAuth::Key,
             handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {

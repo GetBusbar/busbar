@@ -356,7 +356,6 @@ fn clamp_frame_index(data: &serde_json::Value) -> usize {
         .min(MAX_TOOL_FRAME_INDEX) as usize
 }
 
-
 /// Normalize Cohere v2's native `tool_choice` (a top-level enum STRING) into the IR's tool-choice
 /// union so a forced directive survives the cross-protocol seam instead of degrading to `auto`.
 /// Cohere v2 models only `REQUIRED` (must call some tool) and `NONE` (no tool); it has no

@@ -412,7 +412,7 @@ jobs:
       #         drains and exits, expecting a supervisor to respawn it, so CI plays that role here).
       - name: Build busbar (from the sibling checkout) with the ephemeral release key embedded
         working-directory: busbarAI
-        # option_env!("BUSBAR_RELEASE_PUBKEY") is compile-time (crates/plugin-sign); with the key
+        # option_env!("BUSBAR_RELEASE_PUBKEY") is compile-time (crates/plugin-loader/src/sign.rs); with the key
         # set, this binary VERIFIES first-party signatures — no allow_unsigned anywhere below.
         run: |
           touch crates/plugin-loader/src/sign.rs

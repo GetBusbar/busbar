@@ -44,7 +44,15 @@
 //! the same consumption, and folding them into one balance would open the books at double what was
 //! actually consumed. So each family seals at its own scope — the window family at the bucket's
 //! scope, the metering family in a pool named for the lane and the provider — and the two prefixes
-//! are what makes a collision impossible rather than unlikely.
+//! are what makes a collision ACROSS THE FAMILIES impossible rather than unlikely.
+//!
+//! The prefix settles the families and nothing else. Inside the metering family the pool joins two
+//! caller-controlled components, and a prefix says nothing about where one of them ends: joined on a
+//! bare slash, `("gpt/4", "openai")` and `("gpt", "4/openai")` both spell `meter:gpt/4/openai`, so two
+//! providers' opening figures land in one balance and add. That is the same error one level down —
+//! two customers' money in one bucket — and it is closed the same way it is closed everywhere else
+//! in this tree: each component is LENGTH-FRAMED, so the boundary is fixed by a count the rows
+//! cannot write. See `meter_pool_scope`, which is the single source of truth for that key.
 //!
 //! ## An empty store is not a failure
 //!
@@ -104,6 +112,43 @@ pub struct LegacyFigure {
     pub amount: i128,
 }
 
+/// ONE COMPONENT OF A COMPOSITE POOL KEY, FRAMED SO ITS BOUNDARY CANNOT BE FORGED.
+///
+/// The component's byte length goes down first in decimal, then a colon, then exactly that many
+/// bytes. A reader takes the digits up to the colon as a count and consumes precisely that count, so
+/// every boundary is fixed by a number the caller does not write; a decimal length can itself contain
+/// no colon, so there is nothing left for a caller's own bytes to move.
+///
+/// This is the SAME framing, for the same reason, as the admin crate's `verbs::rotate_replay_key`
+/// (`crates/busbar-core-admin/src/verbs.rs:91`), which joins two caller-controlled halves of a
+/// replay key. That helper could not be called from here for two independent reasons: it is
+/// `pub(crate)` to `busbar-core-admin`, and `busbar-core-admin` depends on this crate
+/// (`busbar-core-admin → busbar-api → busbar-kernel-ledger`), so an edge back would be a cycle Cargo
+/// refuses outright. What is shared is the VOCABULARY, deliberately spelled the same way rather than
+/// as a second length-framing dialect — a tree with two spellings of "length-prefixed" is a tree
+/// where the next composite key picks the wrong one.
+///
+/// The lengths are BYTE lengths, not character counts: the key is compared as bytes, and a count of
+/// characters would put the boundary somewhere other than where a reader would find it.
+fn length_framed(component: &str) -> String {
+    format!("{}:{component}", component.len())
+}
+
+/// THE POOL SCOPE A METERING ROW LANDS ON, given its lane and its provider.
+///
+/// The single source of truth for the metering pool key: [`LegacyFigure::key`] builds its metering
+/// scope through this, and any consumer that needs to look a migrated metering balance back up must
+/// build the same scope here rather than re-spelling the framed key by hand — a hand-spelled copy is
+/// how the producer and the reader come to disagree about which balance is which.
+#[must_use]
+pub fn meter_pool_scope(lane: &str, provider: &str) -> BucketScope {
+    BucketScope::Pool(format!(
+        "meter:{}{}",
+        length_framed(lane),
+        length_framed(provider)
+    ))
+}
+
 impl LegacyFigure {
     /// The balance this figure opens.
     ///
@@ -111,13 +156,20 @@ impl LegacyFigure {
     /// happens to be empty would otherwise land on the same key as a window row for the same lane,
     /// and the two would silently add — which is the one arithmetic error a migration cannot be
     /// allowed to make, because there is nothing left to compare the result against.
+    ///
+    /// The prefix settles the two FAMILIES, and nothing more. Inside the metering family the key
+    /// joins two caller-controlled components — the lane and the provider, both free text read off
+    /// the previous release's rows — and a bare delimiter between them is not a key: joined on a
+    /// slash, `("gpt/4", "openai")` and `("gpt", "4/openai")` both spell `meter:gpt/4/openai` and land
+    /// on ONE balance, silently adding two providers' opening figures together. That is two
+    /// customers' money in one bucket, and it is the one arithmetic error a migration cannot be
+    /// allowed to make. So each component is LENGTH-FRAMED (see [`length_framed`]), which no
+    /// arrangement of delimiters inside a component's own text can imitate.
     pub fn key(&self) -> TotalsKey {
         let scope = match (self.family, self.lane.as_str()) {
             (LegacyFamily::Window, "") => BucketScope::All,
             (LegacyFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}")),
-            (LegacyFamily::Meter, lane) => {
-                BucketScope::Pool(format!("meter:{lane}/{}", self.provider))
-            }
+            (LegacyFamily::Meter, lane) => meter_pool_scope(lane, &self.provider),
         };
         TotalsKey::new(
             BucketId::new(self.bucket.clone()),

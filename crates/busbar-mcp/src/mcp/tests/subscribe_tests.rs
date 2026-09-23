@@ -396,7 +396,11 @@ async fn duplicate_uris_dedup_rather_than_consuming_the_cap_once_per_copy() {
     for _ in 0..50 {
         requested.push("docs://r0".to_string());
     }
-    assert_eq!(requested.len(), 114, "the raw request really does exceed the cap in length");
+    assert_eq!(
+        requested.len(),
+        114,
+        "the raw request really does exceed the cap in length"
+    );
 
     let response = listen(
         &url,

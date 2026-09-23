@@ -50,27 +50,43 @@ const BYTES_PER_TOKEN: u32 = 4;
 ///
 /// The aggregate token class is deliberately ABSENT. It is declared by the kernel, not by a plane,
 /// and the registry refuses it from one.
+/// The class keys the metering step reports under.
+///
+/// EXPORTED BECAUSE THE CLASS LABEL IS WHAT SELECTS A UNIT PRICE, and a second spelling of one is a
+/// count emitted under a class no card can name — silently unpriced, or a boot refusal under
+/// #77(5), and in neither case anything that points at the line that misspelled it. Declaring the
+/// class here and RE-SPELLING it at the emit site is two strings that agree today; a const is one
+/// value the compiler checks. The sibling planes (`busbar-plane-a2a`, `-mcp`, `-streaming`) all
+/// carry theirs this way.
+pub const CLASS_TOKENS_IN: MeterClassId = MeterClassId::new("tokens_in");
+/// See [`CLASS_TOKENS_IN`].
+pub const CLASS_TOKENS_OUT: MeterClassId = MeterClassId::new("tokens_out");
+/// See [`CLASS_TOKENS_IN`].
+pub const CLASS_CACHE_READ: MeterClassId = MeterClassId::new("cache_read");
+/// See [`CLASS_TOKENS_IN`].
+pub const CLASS_CACHE_WRITE: MeterClassId = MeterClassId::new("cache_write");
+
 const METER_CLASSES: &[MeterClassDecl] = &[
     MeterClassDecl {
-        key: MeterClassId::new("tokens_in"),
+        key: CLASS_TOKENS_IN,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Input,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("tokens_out"),
+        key: CLASS_TOKENS_OUT,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Response,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("cache_read"),
+        key: CLASS_CACHE_READ,
         family: TOKEN_FAMILY,
         direction: ClassDirection::CacheRead,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("cache_write"),
+        key: CLASS_CACHE_WRITE,
         family: TOKEN_FAMILY,
         direction: ClassDirection::CacheWrite,
         default_divisor: BYTES_PER_TOKEN,

@@ -49,10 +49,10 @@ use base64::Engine as _;
 use super::sse;
 use busbar_kernel::ingress::protocol::CoreRefusal;
 
-/// The single MCP protocol revision busbar implements — MOVED to `busbar-mcp-codec` with the rest
+/// The single MCP protocol revision busbar implements — MOVED to `busbar-plane-mcp` with the rest
 /// of the protocol vocabulary and re-exported here, so `busbar_mcp::mcp::envelope::PROTOCOL_VERSION`
 /// resolves unchanged and there is one revision string rather than two that agree today.
-pub use busbar_mcp_codec::codec::PROTOCOL_VERSION;
+pub use busbar_plane_mcp::codec::PROTOCOL_VERSION;
 
 /// Every revision busbar will accept, echoed to a client that asked for one we do not implement so
 /// it can pick a mutually supported one and retry. Exactly one entry today; the shape is plural
@@ -83,10 +83,10 @@ pub(crate) const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[PROTOCOL_VERSION];
 /// schema is unambiguous — `JSONRPCRequest.params` requires `_meta`, and that `RequestMetaObject`
 /// requires this key — and the mistake is worth a comment because both placements read naturally
 /// and only one of them is a request any client will send.
-/// Defined in `busbar-mcp-codec` and read here BY IDENTITY, because a third reader —
+/// Defined in `busbar-plane-mcp` and read here BY IDENTITY, because a third reader —
 /// `busbar-plane-mcp`, which may not name this crate — states it as a correlation fact key. This
 /// path and this value are exactly what they always were.
-pub(crate) const META_PROTOCOL_VERSION: &str = busbar_mcp_codec::codec::META_PROTOCOL_VERSION;
+pub(crate) const META_PROTOCOL_VERSION: &str = busbar_plane_mcp::codec::META_PROTOCOL_VERSION;
 
 /// The `_meta` key carrying the client's capabilities for THIS request.
 ///
@@ -99,9 +99,9 @@ pub(crate) const META_PROTOCOL_VERSION: &str = busbar_mcp_codec::codec::META_PRO
 /// server that fills the gap in has decided on the client's behalf what the client can do. The
 /// schema makes it required for exactly that reason, and both this repository's own battery
 /// (`SRV.META.MISSING-CAPABILITIES`) and the official suite read the omission as `-32602`.
-/// Defined in `busbar-mcp-codec` and read here BY IDENTITY, for the reason
+/// Defined in `busbar-plane-mcp` and read here BY IDENTITY, for the reason
 /// [`META_PROTOCOL_VERSION`] states.
-pub(crate) const META_CLIENT_CAPABILITIES: &str = busbar_mcp_codec::codec::META_CLIENT_CAPABILITIES;
+pub(crate) const META_CLIENT_CAPABILITIES: &str = busbar_plane_mcp::codec::META_CLIENT_CAPABILITIES;
 
 /// The header mirroring the body's `method`. REQUIRED on every request.
 pub(crate) const H_MCP_METHOD: &str = "mcp-method";
@@ -119,12 +119,12 @@ pub(super) mod code {
     // `busbar_kernel::ingress::jsonrpc` — the one reader that decides what an invalid envelope is. Copying
     // them back here would recreate the second opinion this module was just moved off.
 
-    // Every code below is DEFINED in `busbar-mcp-codec` and read here BY IDENTITY. `busbar-plane-mcp`
+    // Every code below is DEFINED in `busbar-plane-mcp` and read here BY IDENTITY. That crate
     // publishes the set of codes it may write and may not name this crate, so a code spelled on both
     // sides is a code the two sides can come to disagree about; the compiler holds the equality now.
 
     /// JSON-RPC standard: the method is not implemented. MCP pairs it with `404`, not `200`.
-    pub(super) const METHOD_NOT_FOUND: i64 = busbar_mcp_codec::codec::CODE_METHOD_NOT_FOUND;
+    pub(super) const METHOD_NOT_FOUND: i64 = busbar_plane_mcp::codec::CODE_METHOD_NOT_FOUND;
     /// JSON-RPC standard: the params were structurally wrong. What a missing or incomplete
     /// `params._meta` is, and what this revision requires for it — `400`, never `200`.
     ///
@@ -132,13 +132,13 @@ pub(super) mod code {
     /// `params`, so its absence is the ordinary "invalid params" the base protocol already has a
     /// code for. Reaching for `-32020` here (as this module once did) borrowed the HEADER
     /// vocabulary for a body defect.
-    pub(in crate::mcp) const INVALID_PARAMS: i64 = busbar_mcp_codec::codec::CODE_INVALID_PARAMS;
+    pub(in crate::mcp) const INVALID_PARAMS: i64 = busbar_plane_mcp::codec::CODE_INVALID_PARAMS;
     /// MCP `HeaderMismatchError`: an HTTP header disagreed with the body. Always `400`.
-    pub(in crate::mcp) const HEADER_MISMATCH: i64 = busbar_mcp_codec::codec::CODE_HEADER_MISMATCH;
+    pub(in crate::mcp) const HEADER_MISMATCH: i64 = busbar_plane_mcp::codec::CODE_HEADER_MISMATCH;
     /// MCP `UnsupportedProtocolVersionError`: carries `data.requested` and `data.supported`. Always
     /// `400`.
     pub(super) const UNSUPPORTED_PROTOCOL_VERSION: i64 =
-        busbar_mcp_codec::codec::CODE_UNSUPPORTED_PROTOCOL_VERSION;
+        busbar_plane_mcp::codec::CODE_UNSUPPORTED_PROTOCOL_VERSION;
 }
 
 /// THIS PROTOCOL'S WORDS FOR A REFUSAL CORE DECIDED.
@@ -658,7 +658,7 @@ fn request_log(
 
 /// Which `params` member `Mcp-Name` mirrors for `method`, or `None` when the header is not required.
 ///
-/// READ FROM THREE DIRECTIONS, and that is why the RULE itself lives in `busbar-mcp-codec` and this
+/// READ FROM THREE DIRECTIONS, and that is why the RULE itself lives in `busbar-plane-mcp` and this
 /// is a re-export: the ingress validates the mirror, `crate::mcp::client::verb`'s builder asks which
 /// member to mirror into the `Mcp-Name` it SENDS, and `busbar-plane-mcp` derives its own per-method
 /// name pointers from it while being unable to name this crate at all. The client side carried its
@@ -666,7 +666,7 @@ fn request_log(
 /// so a `tasks/get` went out over streamable HTTP with no `Mcp-Name`, which busbar's own front door
 /// answers `-32020` to. The divergence was invisible on stdio, which has no headers. One definition
 /// is what makes a third such copy unrepresentable; this path resolves what it always did.
-pub(crate) use busbar_mcp_codec::codec::name_source_of;
+pub(crate) use busbar_plane_mcp::codec::name_source_of;
 
 /// Decode a header value that may carry the `=?base64?…?=` sentinel.
 ///

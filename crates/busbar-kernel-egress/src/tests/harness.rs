@@ -30,9 +30,9 @@ use busbar_contract::transport::wire::TransportError;
 use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::{
-    AdmitFacts, ScratchBytes, AuditFacts, ContentFacts, CredentialLocator, Ctx, DestinationFacts,
-    EgressBody, Frame, Ingress, Ir, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress, Refusal,
-    RoutePlan, ScopeFacts, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle, Unit,
+    AdmitFacts, AuditFacts, ContentFacts, CredentialLocator, Ctx, DestinationFacts, EgressBody,
+    Frame, Ingress, Ir, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress, Refusal, RoutePlan,
+    ScopeFacts, ScratchBytes, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle, Unit,
     UnitEnd, UsageLocators, VerifiedDestination,
 };
 use busbar_kernel_breaker::classify::{
@@ -1226,7 +1226,9 @@ impl busbar_contract::PlaneAlloc for LeakPlaneAlloc {
         &'a self,
         src: &[u8],
     ) -> Result<ScratchBytes<'a>, busbar_contract::PlaneAllocBudget> {
-        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+        Ok(ScratchBytes::new(Box::leak(
+            src.to_vec().into_boxed_slice(),
+        )))
     }
 
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, busbar_contract::PlaneAllocBudget> {

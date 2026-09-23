@@ -594,8 +594,10 @@ pub(crate) async fn get_admin_auth(State(handle): State<Arc<AppHandle>>) -> Resp
 
 /// `GET /api/v1/admin/usage` — the fleet METERING read: current UTC-day bucket, raw token split
 /// per (model, provider) and per key + derived spend_micros (see the service/contract docs).
-/// `?window=<bucket-start-epoch>` selects a PAST UTC-day bucket (default: current). The response
-/// is ALWAYS one bucket — the pinned shape (see the contract doc).
+/// `?window=<bucket-start-epoch>` selects a PAST UTC-day bucket (default: current).
+/// `?as_of=<history-seq>` selects a SNAPSHOT of the dated rate-card history to price against
+/// (default: the history as it stands); a seq above the head is refused, never clamped. The
+/// response is ALWAYS one bucket — the pinned shape (see the contract doc).
 pub(crate) async fn get_usage(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -611,7 +613,24 @@ pub(crate) async fn get_usage(
             }
         },
     };
-    respond(StatusCode::OK, service(&handle).get_usage(window).await)
+    // `?as_of=<seq>` names a SNAPSHOT of the dated rate-card history; the service validates it
+    // against the head and refuses a snapshot that does not exist. Shape only here — which seqs
+    // exist is not a transport question.
+    let as_of = match q.get("as_of") {
+        None => None,
+        Some(v) => match v.parse::<u64>() {
+            Ok(s) => Some(s),
+            Err(_) => {
+                return err_json(&AdminError::Validation(
+                    "invalid `as_of`: expected a rate-card history sequence number".into(),
+                ))
+            }
+        },
+    };
+    respond(
+        StatusCode::OK,
+        service(&handle).get_usage(window, as_of).await,
+    )
 }
 
 /// `GET /api/v1/admin/config` — the effective running config snapshot (redacted; no secrets;
@@ -4376,11 +4395,27 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ),
         (
             "/usage",
-            &[(
-                "window",
-                "A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate; bill from the raw token split, never store spend_micros as a ledger charge",
-                false,
-            )],
+            &[
+                (
+                    "window",
+                    "A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate; bill from the raw token split, never store spend_micros as a ledger charge",
+                    false,
+                ),
+            // OWED: the `as_of` query parameter this endpoint now accepts is NOT listed here yet,
+            // and it must be. `openapi.json` is GENERATED from this table and the committed copy is
+            // byte-checked against it (`openapi_json_matches_committed_file`), so adding the row
+            // without regenerating hands the next reader a red test — and the regeneration cannot
+            // run today: the `openapi-schema` feature build is broken at HEAD for an unrelated
+            // reason (`PlaneDecl.openapi_schemas` is missing from busbar-llm / -mcp / -a2a). The row
+            // to add, once that compiles again, is:
+            //
+            //   ("as_of", "A rate-card history sequence number to price against (default: the \
+            //    history as it stands). Each row is priced at the card in force at the row's own \
+            //    instant UNDER THIS SNAPSHOT, so an invoice cut at a snapshot is re-derived by \
+            //    asking for it again. A seq above the head is refused, never clamped to it. \
+            //    Distinct from the `as_of` FIELD in the response, which is the instant the read \
+            //    was taken", false),
+            ],
         ),
         (
             "/pools",

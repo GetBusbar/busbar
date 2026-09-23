@@ -28,9 +28,9 @@ fn upstream_credentials_accepts_own_and_passthrough() {
         assert_eq!(
             section.upstream_credentials,
             Some(if expect_passthrough {
-                busbar_api::UpstreamCreds::Passthrough
+                busbar_contract::config::UpstreamCreds::Passthrough
             } else {
-                busbar_api::UpstreamCreds::Own
+                busbar_contract::config::UpstreamCreds::Own
             })
         );
     }

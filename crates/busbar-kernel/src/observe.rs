@@ -75,6 +75,154 @@ pub(crate) fn admits_metric_name(name: &str) -> bool {
     crate::hooks::wire::valid_metric_name(name) && !name.starts_with(RESERVED_PREFIX)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE CARDINALITY BUDGET — the second question both lanes ask, after the name.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Distinct SERIES NAMES one plugin may register, for the life of the process.
+///
+/// A name check bounds what a series may be CALLED; it does not bound how MANY there are. A plugin
+/// emitting `req_0_total`, `req_1_total`, … passes every charset rule ever written and still grows
+/// the recorder's registry without limit — and a Prometheus registry never shrinks, so by the time
+/// an operator notices, the memory is already gone and a restart is the only remedy. That is a
+/// resource exhaustion reachable from an untrusted plugin, which is the class the dep-wall and the
+/// capability-ABI exist to close everywhere else.
+///
+/// 64 is [`crate::hooks::wire::MAX_HOOK_METRICS`]'s number, deliberately: that is the per-reply cap a
+/// hook has lived inside since 1.5.0, so it is a bound a real plugin has already been shown to fit.
+pub(crate) const MAX_SERIES_PER_PLUGIN: usize = 64;
+
+/// Distinct LABEL SETS one plugin may register under ONE series name.
+///
+/// The multiplicative half of the same problem: a bounded set of names with an unbounded set of
+/// label values is the classic Prometheus cardinality explosion, and a plugin that labels by
+/// request id gets there in one busy minute. 32 distinct dimensions of one series is generous for
+/// the per-strategy / per-model breakdowns the label vocabulary exists for.
+pub(crate) const MAX_LABEL_SETS_PER_SERIES: usize = 32;
+
+/// One plugin's registered series and, per series, the label sets seen under it.
+#[derive(Default)]
+struct Budget {
+    series: std::collections::HashMap<String, std::collections::HashSet<u64>>,
+}
+
+/// The host's cardinality ledger, keyed by the plugin the HOST attributed the sample to.
+///
+/// Process-global and never pruned on its own, and that is bounded by construction: plugins come
+/// from the signed plugin directory, each holds at most
+/// [`MAX_SERIES_PER_PLUGIN`] × [`MAX_LABEL_SETS_PER_SERIES`] eight-byte fingerprints, and the whole
+/// structure is a few hundred kilobytes at the ceiling. (A `prune` on config reload, the shape
+/// `hooks::scrape::prune_absent` already has, is OWED for the case of an operator churning plugin
+/// NAMES across reloads — the ledger would retain a dead plugin's budget for the process lifetime.)
+static LEDGER: std::sync::RwLock<Option<std::collections::HashMap<String, Budget>>> =
+    std::sync::RwLock::new(None);
+
+/// Fingerprint one label set, so the budget can count DISTINCT sets without keeping their bytes.
+///
+/// Takes BYTES, not a parsed map, because the two lanes present labels differently and only one of
+/// them presents them in a form the host understands: the cold lane hands over a validated
+/// `BTreeMap` (see [`fingerprint_pairs`]), while the hot lane hands over an opaque packed blob the
+/// ABI explicitly says the host does not interpret. Bounding cardinality does not require
+/// understanding the labels — only telling two label sets apart — so the hot lane gets its budget
+/// enforced BEFORE its label encoding is designed, rather than after the first explosion.
+///
+/// `DefaultHasher` is right here and its instability across Rust releases is not a defect: nothing
+/// persists a fingerprint, compares one across processes, or makes a decision from its value. A
+/// collision costs one label set its own budget slot, never a refusal of a set that should pass.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
+/// Fingerprint a validated label map — the cold lane's form. Sorted already (`BTreeMap`), so the
+/// canonical rendering below is order-stable and two identical label sets fingerprint identically
+/// however the plugin ordered them on the wire.
+fn fingerprint_pairs(labels: Option<&std::collections::BTreeMap<String, String>>) -> u64 {
+    let Some(labels) = labels else {
+        return fingerprint(&[]);
+    };
+    let mut canonical = String::new();
+    for (k, v) in labels {
+        canonical.push_str(k);
+        canonical.push('\u{1}');
+        canonical.push_str(v);
+        canonical.push('\u{2}');
+    }
+    fingerprint(canonical.as_bytes())
+}
+
+/// **THE SECOND QUESTION, asked identically by both ABI lanes.** May `plugin` register a sample
+/// under `series` with this label set?
+///
+/// `true` for a BOUNDED emitter, forever: a label set already inside the budget is admitted every
+/// time it is seen, so a plugin that reports the same shape on every call never runs out. `false`
+/// the moment a NEW series or a NEW label set would take it past a ceiling — and it stays `false`
+/// for that new shape, rather than evicting an established one, because evicting would make a
+/// well-behaved series flap in and out of the exposition to make room for a misbehaving one.
+///
+/// REFUSAL, not silent truncation. The hot lane returns the refusal to the plane as a status; the
+/// cold lane cannot (the plugin has already answered), so [`fold_metrics`] says so in the operator's
+/// log instead. Either way the operator learns that telemetry is being dropped, which is the thing a
+/// silent cap never tells them.
+pub(crate) fn admits_cardinality(plugin: &str, series: &str, label_fingerprint: u64) -> bool {
+    let mut guard = LEDGER.write().unwrap_or_else(|e| e.into_inner());
+    let ledger = guard.get_or_insert_with(std::collections::HashMap::new);
+    // `entry` costs a `String` per call even when the plugin is already known. That is the honest
+    // price of the borrow checker here — a `get_mut`-then-`insert` pair that avoided it is the
+    // `map_entry` anti-pattern, and the two-branch version that satisfies both does not borrow-check
+    // — and it is affordable: this runs on a telemetry fold, never on the request path.
+    let budget = ledger.entry(plugin.to_string()).or_default();
+    match budget.series.get_mut(series) {
+        Some(sets) => {
+            if sets.contains(&label_fingerprint) {
+                return true;
+            }
+            if sets.len() >= MAX_LABEL_SETS_PER_SERIES {
+                return false;
+            }
+            sets.insert(label_fingerprint);
+            true
+        }
+        None => {
+            if budget.series.len() >= MAX_SERIES_PER_PLUGIN {
+                return false;
+            }
+            budget.series.insert(
+                series.to_string(),
+                std::iter::once(label_fingerprint).collect(),
+            );
+            true
+        }
+    }
+}
+
+/// Forget one plugin's budget.
+///
+/// `#[cfg(test)]` because nothing in production calls it YET, and an `allow(dead_code)` on a
+/// production function is a claim that something will use it later, which nothing checks. What is
+/// owed is the PRUNE named in [`LEDGER`]'s doc — the shape `hooks::scrape::prune_absent` already
+/// has, run on config reload so a plugin removed or renamed stops holding a ceiling for the life of
+/// the process. When that lands, this loses its attribute and gains a caller.
+///
+/// Until then it is what this module's own tests use to stay independent of one another: the ledger
+/// is process-global by design, so a test that did not clear its plugin's budget would inherit
+/// whatever a neighbour spent.
+#[cfg(test)]
+pub(crate) fn forget_cardinality(plugin: &str) {
+    let mut guard = LEDGER.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(ledger) = guard.as_mut() {
+        ledger.remove(plugin);
+    }
+}
+
+/// The hot lane's entry to the budget: an OPAQUE packed label blob, fingerprinted without being
+/// interpreted. See [`fingerprint`] for why that is enough.
+pub(crate) fn admits_cardinality_opaque(plugin: &str, series: &str, labels: &[u8]) -> bool {
+    admits_cardinality(plugin, series, fingerprint(labels))
+}
+
 /// The kernel's observer: validates what a plugin reported, bounds it, and folds it into THIS
 /// process's recorder and diagnostics path.
 ///
@@ -143,6 +291,16 @@ fn fold_metrics(plugin: &str, raw: &[serde_json::Value]) {
             // predicate is what keeps the two ABI lanes answering the same question.)
             continue;
         }
+        // THE SECOND QUESTION (see `admits_cardinality`). A name check bounds what a series may be
+        // CALLED; only this bounds how many there are, and a Prometheus registry never shrinks.
+        if !admits_cardinality(plugin, &m.name, fingerprint_pairs(m.labels.as_ref())) {
+            // The plugin has already answered, so there is no status to refuse it with — say so in
+            // the operator's log instead, ONCE per plugin, because the whole failure mode is a
+            // plugin emitting without limit and a per-sample line would be the same flood in
+            // another channel.
+            warn_cardinality_once(plugin, &m.name);
+            continue;
+        }
         let labels = labels_for(plugin, &m);
         match m.kind.as_str() {
             "counter" => {
@@ -167,6 +325,30 @@ fn fold_metrics(plugin: &str, raw: &[serde_json::Value]) {
             _ => {}
         }
     }
+}
+
+/// Plugins already warned about exceeding their cardinality budget — the latch behind
+/// [`warn_cardinality_once`].
+static WARNED: std::sync::RwLock<Option<std::collections::HashSet<String>>> =
+    std::sync::RwLock::new(None);
+
+/// Tell the operator ONCE per plugin that its telemetry is being refused, and name the series that
+/// tripped it so they have somewhere to start. Latched because the condition that triggers it is,
+/// by definition, a plugin emitting without limit.
+fn warn_cardinality_once(plugin: &str, series: &str) {
+    let mut guard = WARNED.write().unwrap_or_else(|e| e.into_inner());
+    let warned = guard.get_or_insert_with(std::collections::HashSet::new);
+    if !warned.insert(plugin.to_string()) {
+        return;
+    }
+    tracing::warn!(
+        plugin = %plugin,
+        series = %series,
+        max_series = MAX_SERIES_PER_PLUGIN,
+        max_label_sets = MAX_LABEL_SETS_PER_SERIES,
+        "plugin exceeded its metric cardinality budget; further new series or label sets from it \
+         are refused (established ones keep reporting)"
+    );
 }
 
 /// The label set for one folded sample: the host's provenance label first, then the plugin's own.
@@ -278,8 +460,8 @@ fn clamp_level(
     claimed: busbar_plugin::cold::observe::DiagLevel,
     severity: crate::diagnostics::Severity,
 ) -> busbar_plugin::cold::observe::DiagLevel {
-    use busbar_plugin::cold::observe::DiagLevel;
     use crate::diagnostics::Severity;
+    use busbar_plugin::cold::observe::DiagLevel;
     match severity {
         Severity::BenignRecurring => DiagLevel::Debug,
         Severity::Actionable | Severity::Fatal => claimed,

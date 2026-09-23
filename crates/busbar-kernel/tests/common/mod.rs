@@ -98,6 +98,10 @@ pub struct TestUnits {
     pub challenge: bool,
     /// The lanes the verified set carried when it reached the approve step.
     pub approved_lanes: Mutex<Vec<busbar_contract::caps::LaneId>>,
+    /// The principal each POLICY SEAT was handed, in the order the seats were asked. A challenge
+    /// round has no established identity and still has to present one to the seats that decide
+    /// ABOUT a principal, so this is what says WHICH one it presented.
+    pub seated_principals: Mutex<Vec<PrincipalId>>,
     /// The capped-`concurrent` groups this door names on its yes, as the root would have interned
     /// them. Empty is the door that names none, which is every case that predates the slip.
     pub groups: Vec<&'static str>,
@@ -118,6 +122,7 @@ impl Default for TestUnits {
             refused_door: AtomicBool::new(false),
             admitted_door: AtomicBool::new(false),
             approved_lanes: Mutex::new(Vec::new()),
+            seated_principals: Mutex::new(Vec::new()),
             groups: Vec::new(),
             capped: None,
         }
@@ -171,6 +176,11 @@ impl TestUnits {
     /// The destination set as the approve step received it — what the verify step actually sealed.
     pub fn approved_lanes(&self) -> Vec<busbar_contract::caps::LaneId> {
         self.approved_lanes.lock().unwrap().clone()
+    }
+
+    /// The principal the approve and admit seats were handed, in that order.
+    pub fn seated_principals(&self) -> Vec<PrincipalId> {
+        self.seated_principals.lock().unwrap().clone()
     }
 
     fn note(&self, step: StepName) {
@@ -380,9 +390,13 @@ impl Units for TestUnits {
         &self,
         token: &Pass<Approve>,
         _ctx: &UnitCtx,
-        _principal: &PrincipalId,
+        principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
+        self.seated_principals
+            .lock()
+            .unwrap()
+            .push(principal.clone());
         self.approved_lanes
             .lock()
             .unwrap()
@@ -406,6 +420,10 @@ impl Units for TestUnits {
         leases: &busbar_kernel::slice::GroupLeaseSlip,
     ) -> Decision<Admit> {
         self.note(StepName::Admit);
+        self.seated_principals
+            .lock()
+            .unwrap()
+            .push(principal.clone());
         match self.refusal(StepName::Admit) {
             Some(refusal) => Decision::refuse(token, refusal),
             None => {

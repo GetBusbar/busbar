@@ -37,7 +37,9 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+mod claims;
 mod conn;
+mod meta;
 mod transport;
 
 pub use conn::StaticConfig;

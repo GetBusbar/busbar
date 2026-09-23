@@ -82,7 +82,7 @@ fn the_two_lists_do_not_overlap() {
 #[test]
 fn every_dispatched_method_is_carried() {
     let mut seen = 0usize;
-    for method in busbar_mcp_codec::codec::IMPLEMENTED_METHODS {
+    for method in crate::codec::IMPLEMENTED_METHODS {
         if method.contains('/') {
             assert!(
                 row_for(method).is_some(),
@@ -115,7 +115,7 @@ fn the_name_pointers_are_the_codecs_own() {
                 .expect("a pointer has a last segment")
         });
         assert_eq!(
-            busbar_mcp_codec::codec::name_source_of(row.method),
+            crate::codec::name_source_of(row.method),
             member,
             "the codec and this plane disagree about where {}'s subject is",
             row.method

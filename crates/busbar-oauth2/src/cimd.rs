@@ -106,9 +106,9 @@ impl CimdFetch for GuardedFetch {
             // THE GUARD: structural name refusals, EXACTLY ONE resolution, every answered address
             // judged, then the pin. All of it core's, including the ordering that keeps the
             // cloud-metadata arm ahead of everything a knob could say.
-            let pin = net_guard::resolve_and_pin_async(&host, port, https, policy)
-                .await
-                .map_err(|e| e.to_string())?;
+            let pin =
+                net_guard::resolve_and_pin(&host, port, https, &net_guard::SystemResolver, policy)
+                    .map_err(|e| e.to_string())?;
 
             // THE PINNED ENGINE CLIENT (`EngineSpec::pinned`): the pin IS the resolver — the
             // socket goes to the address the guard judged while the `Host` header, TLS SNI and

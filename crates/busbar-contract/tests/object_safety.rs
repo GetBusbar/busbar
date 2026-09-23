@@ -9,7 +9,9 @@
 //! no-default-bodies rule the same way a reviewer would: the fixture below names every method,
 //! because leaving one out does not compile.
 
-use busbar_contract::bounded::{PlaneAlloc, PlaneAllocBudget, ScratchBytes, Facts, Ir, Labels, Span};
+use busbar_contract::bounded::{
+    Facts, Ir, Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, Span,
+};
 use busbar_contract::dest::{
     AuthDecoration, DestinationFacts, EgressBody, RoutePlan, TransportKeyHandle,
     VerifiedDestination,
@@ -396,7 +398,9 @@ impl Transport for FixtureTransport {
         body: &[u8],
         arena: &'a dyn PlaneAlloc,
     ) -> Result<ScratchBytes<'a>, Encode> {
-        arena.alloc_bytes(body).map_err(|_| Encode::ScratchExhausted)
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| Encode::ScratchExhausted)
     }
 
     fn adopt<'a>(
@@ -615,7 +619,9 @@ struct LeakPlaneAlloc;
 
 impl PlaneAlloc for LeakPlaneAlloc {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
-        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+        Ok(ScratchBytes::new(Box::leak(
+            src.to_vec().into_boxed_slice(),
+        )))
     }
 
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {

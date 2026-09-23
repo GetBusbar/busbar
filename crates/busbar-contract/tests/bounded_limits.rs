@@ -373,7 +373,9 @@ static PLANE_ALLOC: LeakPlaneAlloc = LeakPlaneAlloc;
 
 impl PlaneAlloc for LeakPlaneAlloc {
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
-        Ok(ScratchBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+        Ok(ScratchBytes::new(Box::leak(
+            src.to_vec().into_boxed_slice(),
+        )))
     }
 
     fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {

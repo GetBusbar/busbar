@@ -150,7 +150,7 @@ impl Document {
     }
 
     /// EVERY table in the document, in declaration order, each under its full dotted path (the
-    /// root table's path is the empty string). [`Document::descendants`] cannot answer this: its
+    /// root table's path is the empty string). [`Document::children`] cannot answer this: its
     /// prefix is `"<path>."`, so an empty `path` asks for tables whose name starts with a dot and
     /// finds none. A rule about the SHAPE of a ceilings file — every integer in it, wherever it
     /// sits — needs the whole document rather than one subtree of it.

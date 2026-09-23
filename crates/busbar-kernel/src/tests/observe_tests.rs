@@ -149,6 +149,100 @@ fn the_fold_validates_through_the_one_hook_validator() {
     assert_eq!(kept[0].name, "good_total");
 }
 
+/// **THE CARDINALITY BUDGET ON THE COLD LANE — bounded emitter admitted, unbounded refused.**
+///
+/// The cold lane's validator caps labels at 8 PER ENTRY and entries at 64 PER REPLY, and neither
+/// bounds what accumulates across replies: a sink reporting a fresh series name on every delivery
+/// passes both caps every time and still grows the registry without limit. This is the bound that
+/// was missing, and it is the same one the hot lane asks.
+#[test]
+fn the_cold_lane_bounds_series_cardinality() {
+    const PLUGIN: &str = "cold-cardinality-plugin";
+    forget_cardinality(PLUGIN);
+    // A bounded emitter: the same series, forever.
+    for _ in 0..(MAX_SERIES_PER_PLUGIN * 4) {
+        assert!(admits_cardinality(PLUGIN, "steady_total", 0));
+    }
+    // An unbounded one: a new name every time. One slot is spent, so the ceiling admits N-1 more.
+    let mut admitted = 1usize;
+    for i in 0..(MAX_SERIES_PER_PLUGIN * 2) {
+        if admits_cardinality(PLUGIN, &format!("churn_{i}_total"), 0) {
+            admitted += 1;
+        }
+    }
+    assert_eq!(admitted, MAX_SERIES_PER_PLUGIN);
+    // The established series survives the flood — a misbehaving shape must not evict a good one.
+    assert!(admits_cardinality(PLUGIN, "steady_total", 0));
+}
+
+/// The LABEL half on the cold lane. Here the labels ARE interpreted (a validated `BTreeMap`), so
+/// the fingerprint is taken over the canonical rendering — and two identical label sets fingerprint
+/// identically however the plugin ordered them on the wire.
+#[test]
+fn the_cold_lane_bounds_label_set_cardinality() {
+    const PLUGIN: &str = "cold-label-plugin";
+    forget_cardinality(PLUGIN);
+    let mut admitted = 0usize;
+    for i in 0..(MAX_LABEL_SETS_PER_SERIES * 3) {
+        let labels: std::collections::BTreeMap<String, String> =
+            [("request_id".to_string(), i.to_string())]
+                .into_iter()
+                .collect();
+        if admits_cardinality(PLUGIN, "one_series_total", fingerprint_pairs(Some(&labels))) {
+            admitted += 1;
+        }
+    }
+    assert_eq!(
+        admitted, MAX_LABEL_SETS_PER_SERIES,
+        "labelling by request id must hit a ceiling, not explode the registry"
+    );
+}
+
+/// THE FINGERPRINT IS ORDER-STABLE. Two plugins that report the same dimensions in different wire
+/// order must spend ONE budget slot, not two — otherwise a well-behaved sink burns its ceiling on
+/// what is really one series.
+#[test]
+fn an_identical_label_set_fingerprints_identically() {
+    let a: std::collections::BTreeMap<String, String> = [
+        ("model".to_string(), "m".to_string()),
+        ("strategy".to_string(), "dedupe".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let b: std::collections::BTreeMap<String, String> = [
+        ("strategy".to_string(), "dedupe".to_string()),
+        ("model".to_string(), "m".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(fingerprint_pairs(Some(&a)), fingerprint_pairs(Some(&b)));
+    // And a DIFFERENT set does not collide with it (not a guarantee of the hash, but a guard
+    // against a fingerprint that ignores its input).
+    let c: std::collections::BTreeMap<String, String> =
+        [("model".to_string(), "other".to_string())]
+            .into_iter()
+            .collect();
+    assert_ne!(fingerprint_pairs(Some(&a)), fingerprint_pairs(Some(&c)));
+    // No labels is its own set, distinct from any labelled one.
+    assert_ne!(fingerprint_pairs(None), fingerprint_pairs(Some(&a)));
+}
+
+/// THE BUDGET IS PER PLUGIN. One noisy sink must not be able to spend another's ceiling — otherwise
+/// a single misbehaving plugin silences every other plugin's telemetry, which is a denial of service
+/// against the operator's own observability.
+#[test]
+fn one_plugins_flood_does_not_spend_anothers_budget() {
+    const NOISY: &str = "noisy-plugin";
+    const QUIET: &str = "quiet-plugin";
+    forget_cardinality(NOISY);
+    forget_cardinality(QUIET);
+    for i in 0..(MAX_SERIES_PER_PLUGIN * 2) {
+        admits_cardinality(NOISY, &format!("n_{i}_total"), 0);
+    }
+    assert!(!admits_cardinality(NOISY, "one_more_total", 0));
+    assert!(admits_cardinality(QUIET, "polite_total", 0));
+}
+
 /// THE HOOK FREEZE. A hook may now put samples on the envelope — the wire is uniform — but the host
 /// does NOT fold them, because doing so would give hook metrics a second path with a different
 /// freshness and a different exposition, and the hook kind's behaviour is frozen for 1.6.0.

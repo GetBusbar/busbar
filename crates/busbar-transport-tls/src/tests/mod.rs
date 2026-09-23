@@ -4,12 +4,20 @@
 //! opaque key handle's slot).
 
 use super::*;
+// The `Transport` surface, its meta and its claim forms moved to the kind's own `transport.rs`,
+// `meta.rs` and `claims.rs` (`PLUGIN-TREE.md` §3), so `use super::*` no longer carries them.
 use busbar_contract::plugin::KernelSeal;
+use busbar_contract::transport::wire::{CloseReason, Listener};
 use busbar_contract::ConfigView;
+use busbar_contract::{
+    Plugin, ScratchBytes, StreamId, Transport, TransportConfigView, TransportKeyHandle,
+    TransportMeta,
+};
 use futures::StreamExt;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::sync::Arc as StdArc;
+use tokio_rustls::TlsConnector;
 
 /// New file per the mutation-hardening pass on this crate: `src/tests/mutation_hardening.rs`.
 mod mutation_hardening;
@@ -307,7 +315,11 @@ async fn half_close_and_cancel_mid_frame() {
         let _ = futures::poll!(fut.as_mut());
     }
     client2
-        .write(&client_conn2, StreamId(0), ScratchBytes::new(b"still alive"))
+        .write(
+            &client_conn2,
+            StreamId(0),
+            ScratchBytes::new(b"still alive"),
+        )
         .await
         .unwrap();
     let mut frames2 = server2.frames(server_conn2);
@@ -387,7 +399,9 @@ async fn a_truncated_stream_reports_differently_from_an_orderly_close() {
     tokio::io::AsyncWriteExt::write_all(&mut attacker, b"last word before the cut")
         .await
         .unwrap();
-    tokio::io::AsyncWriteExt::flush(&mut attacker).await.unwrap();
+    tokio::io::AsyncWriteExt::flush(&mut attacker)
+        .await
+        .unwrap();
     let server_conn = accept_fut.await.unwrap();
 
     let mut server_frames = server.frames(server_conn);
@@ -1605,7 +1619,11 @@ async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() 
 
     // The pump ends, which is what the flag exists for.
     client
-        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after refusal"))
+        .write(
+            &client_conn,
+            StreamId(0),
+            ScratchBytes::new(b"after refusal"),
+        )
         .await
         .ok();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
@@ -1767,7 +1785,11 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
 
     // The peer keeps writing, as a peer that has not yet read the refusal will.
     client
-        .write(&client_conn, StreamId(0), ScratchBytes::new(b"after refusal"))
+        .write(
+            &client_conn,
+            StreamId(0),
+            ScratchBytes::new(b"after refusal"),
+        )
         .await
         .unwrap();
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())

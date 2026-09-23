@@ -591,29 +591,28 @@ impl Rig {
 
         // The oracle's own multi-dialect mock: a byte-deterministic upstream with fixed usage, and
         // a control file the rig flips to take it down without busbar ever seeing a control header.
-        // `mock-upstream.py` used to live in-tree; it now ships inside the pinned oracle tool that
-        // `bin/oracle` installs, so this resolves it the same way the shim does rather than
-        // assuming a path that moved.
-        let mock_py = oracle_tool_dir().join("mock-upstream.py");
-        assert!(
-            mock_py.exists(),
-            "the oracle's mock upstream is missing at {mock_py:?} (resolved from the pinned \
-             oracle tool's directory)"
-        );
+        // It is the `mock` SUBCOMMAND of the pinned native engine, spawned through the shim so the
+        // engine is resolved in exactly one place. Its argv is the argv the retired
+        // `mock-upstream.py` took (`<port> [marker] [control-file]`) and it BLOCKS until killed, so
+        // the rig's spawn/kill contract is unchanged. The shim `exec`s the engine, so the `Child`
+        // here IS the mock process and `kill()` reaches it.
+        let shim = oracle_shim();
         let mock_log = std::fs::File::create(dir.join("mock.log")).unwrap();
-        let mock = Command::new("python3")
-            .arg(&mock_py)
+        let mock = Command::new("bash")
+            .arg(&shim)
+            .arg("mock")
             .arg(PORTS.mock.to_string())
             .arg("oracle-marker")
             .arg(&control)
             .stdout(mock_log.try_clone().unwrap())
             .stderr(mock_log)
             .spawn()
-            .expect("python3 is needed to run the oracle's mock upstream");
+            .expect("the oracle shim must be spawnable to run the mock upstream");
         // Ready means ANSWERING, not merely bound: the readiness route is served by the same
         // handler every later request goes through, so a mock that has a socket but has not reached
-        // its serve loop is not yet mistaken for one that has. The budget is generous because a
-        // python interpreter starting on a saturated machine is slow, not broken.
+        // its serve loop is not yet mistaken for one that has. The budget is generous because the
+        // shim re-verifies the engine before exec'ing it, which is slow on a saturated machine
+        // rather than broken.
         wait_until(Duration::from_secs(60), || {
             get(PORTS.mock, "/", None).status == 200
         })
@@ -811,84 +810,45 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The installed package directory of the pinned oracle tool, resolved the same way `bin/oracle`
-/// resolves `BUSBAR_ORACLE_TOOL_DIR` for its own drivers: prefer the environment variable if the
-/// caller already ran the shim and exported it, otherwise run the shim once (installing the
-/// pinned tool if it is not there yet) and read the directory back out of its own venv. This is
-/// never allowed to fall back to skipping — an oracle tool that cannot be resolved or installed is
-/// a test failure that names the missing tool, not a quietly-skipped assertion.
-fn oracle_tool_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("BUSBAR_ORACLE_TOOL_DIR") {
-        let dir = PathBuf::from(dir);
-        assert!(
-            dir.is_dir(),
-            "BUSBAR_ORACLE_TOOL_DIR={dir:?} is set but is not a directory"
-        );
-        return dir;
-    }
-
+/// The oracle shim, warmed so the pinned ENGINE is built and verified before anything depends on
+/// it. Returns the shim's path; the caller spawns leaf tools through it.
+///
+/// PHASE C: the oracle is the native Rust `busbar-oracle` engine (`testing/shadow-oracle/oracle-rust.pin`),
+/// not the old Python package. `bin/oracle` obtains that engine — a prebuilt binary, a local
+/// busbar-release checkout, or a `cargo build --release` of the pinned ref — and forwards any
+/// unrecognised subcommand straight to it, so the shim stays the ONE place that knows how the judge
+/// is resolved. This used to reach into `target/oracle/tool/<tag>/.venv` for a python that installed
+/// the Python package; the cutover stopped creating it, and a test that hunts for a retired
+/// interpreter is testing the previous release.
+///
+/// `--help` is enough to make the shim obtain (or verify) the engine before exiting; it never runs
+/// the mock or anything stateful. This is never allowed to fall back to skipping — an oracle that
+/// cannot be resolved or built is a test failure that names it, not a quietly-skipped assertion.
+fn oracle_shim() -> PathBuf {
     let root = repo_root();
     let shim = root.join("bin/oracle");
     assert!(
         shim.exists(),
-        "the oracle shim is missing at {shim:?}; it is what installs and locates the pinned \
-         mock upstream, and there is no other supported way to find it"
+        "the oracle shim is missing at {shim:?}; it is what obtains and locates the pinned \
+         engine, and there is no other supported way to find it"
     );
 
-    // `--help` is enough to make the shim install (or verify) the pinned tool into
-    // `target/oracle/tool/<tag>` before exiting; it never runs the mock or anything stateful.
     let help = Command::new("bash")
         .arg(&shim)
         .arg("--help")
         .output()
         .unwrap_or_else(|e| {
-            panic!("could not run {shim:?} --help to install the pinned oracle tool: {e}")
+            panic!("could not run {shim:?} --help to obtain the pinned oracle engine: {e}")
         });
     assert!(
         help.status.success(),
-        "{shim:?} --help failed while installing/verifying the pinned oracle tool \
+        "{shim:?} --help failed while obtaining/verifying the pinned oracle engine \
          (status {:?}); stdout:\n{}\nstderr:\n{}",
         help.status.code(),
         String::from_utf8_lossy(&help.stdout),
         String::from_utf8_lossy(&help.stderr)
     );
-
-    let tool_root = root.join("target/oracle/tool");
-    let pin = std::fs::read_to_string(root.join("testing/shadow-oracle/oracle.pin"))
-        .expect("testing/shadow-oracle/oracle.pin should exist and be readable");
-    let tag = pin
-        .lines()
-        .find_map(|l| l.strip_prefix("tag="))
-        .unwrap_or_else(|| panic!("testing/shadow-oracle/oracle.pin has no `tag=` line"));
-    let venv_python = tool_root.join(tag).join(".venv/bin/python");
-    assert!(
-        venv_python.exists(),
-        "the pinned oracle tool's venv python is missing at {venv_python:?} after running \
-         {shim:?} --help; the pinned oracle tool did not install where bin/oracle says it \
-         should"
-    );
-
-    let out = Command::new(&venv_python)
-        .arg("-c")
-        .arg("import busbar_oracle, os; print(os.path.dirname(busbar_oracle.__file__))")
-        .output()
-        .unwrap_or_else(|e| {
-            panic!(
-                "could not run {venv_python:?} to locate the installed busbar_oracle package: {e}"
-            )
-        });
-    assert!(
-        out.status.success(),
-        "{venv_python:?} -c 'import busbar_oracle' failed (status {:?}); stderr:\n{}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    assert!(
-        !dir.is_empty(),
-        "{venv_python:?} printed no busbar_oracle package directory"
-    );
-    PathBuf::from(dir)
+    shim
 }
 
 /// The oracle's configuration, narrowed to the one dialect this cell needs: the same auth chain,

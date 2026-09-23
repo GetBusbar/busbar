@@ -906,3 +906,26 @@ fn a_registry_level_filter_gates_the_otlp_layer() {
         "a registry-level filter suppresses the callsite for every layer beneath it"
     );
 }
+
+/// POSITIVE CONTROL (call site 5/5: `observability.rs`, the webhook / OTLP guard).
+///
+/// The same three planted targets every other call site is driven with. This guard is the one that
+/// used to keep its OWN two-name `METADATA_HOSTS`; it now reads `net_guard::METADATA_HOSTS`, so the
+/// four names it had never heard of are refused here too.
+#[test]
+fn planted_blocked_targets_are_refused_by_the_telemetry_guard() {
+    for target in [
+        "http://169.254.169.254/v1/traces",
+        "https://metadata.platformequinix.com/v1/traces",
+        "http://100.64.1.1/v1/traces",
+        "https://metadata.tencentyun.com/v1/traces",
+        "https://instance-data.ec2.internal/v1/traces",
+    ] {
+        let u = url::Url::parse(target).expect("planted URL parses");
+        assert!(
+            host_is_internal(&u),
+            "observability guard did NOT refuse planted target {target}"
+        );
+        println!("observability::host_is_internal  REFUSED  {target}");
+    }
+}

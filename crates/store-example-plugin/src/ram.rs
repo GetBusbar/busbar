@@ -51,14 +51,14 @@ fn now() -> u64 {
 }
 
 /// The example plugin's in-process store: keys by id, token ledgers by `(bucket_id, window_start)`,
-/// metering rows by `(key_id, bucket, model, provider)`. Every map is BOUNDED (see
+/// metering rows by `(key_id, bucket, model, provider, priced_from_ms)`. Every map is BOUNDED (see
 /// `MAX_RETENTION_SECS`); the whole thing dies with the process, which is the point of the
 /// `durable_path` mode next door.
 #[derive(Default)]
 pub(crate) struct RamStore {
     keys: RwLock<HashMap<String, VirtualKey>>,
     usage: RwLock<HashMap<(String, u64), UsageLedger>>,
-    metering: RwLock<HashMap<(String, u64, String, String), MeteringRow>>,
+    metering: RwLock<HashMap<(String, u64, String, String, u64), MeteringRow>>,
     keys_sweep_ticker: AtomicU64,
     usage_sweep_ticker: AtomicU64,
     metering_sweep_ticker: AtomicU64,
@@ -214,11 +214,14 @@ impl Store for RamStore {
     fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
         let mut m = metering_write(&self.metering);
         let e = m
+            // `priced_from_ms` is part of the key: a card edit inside the UTC day opens a SECOND
+            // row for that day so each half keeps the card it was earned under (DECISION #79).
             .entry((
                 d.key_id.clone(),
                 d.bucket,
                 d.model.clone(),
                 d.provider.clone(),
+                d.priced_from_ms,
             ))
             .or_insert_with(|| MeteringRow {
                 key_id: d.key_id.clone(),
@@ -232,6 +235,7 @@ impl Store for RamStore {
                 billable_requests: 0,
                 key_group_at_use: d.key_group_at_use.clone(),
                 pricing_version: d.pricing_version.clone(),
+                priced_from_ms: d.priced_from_ms,
             });
         e.tokens_input = e.tokens_input.saturating_add(d.tokens_input);
         e.tokens_output = e.tokens_output.saturating_add(d.tokens_output);
@@ -241,7 +245,7 @@ impl Store for RamStore {
         e.billable_requests = e.billable_requests.saturating_add(d.billable_requests);
         if Self::tick(&self.metering_sweep_ticker) {
             let n = now();
-            m.retain(|(_, bucket, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
+            m.retain(|(_, bucket, _, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
         }
         Ok(())
     }
@@ -249,7 +253,7 @@ impl Store for RamStore {
     fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
         Ok(metering_read(&self.metering)
             .iter()
-            .filter(|((_, b, _, _), _)| *b == bucket)
+            .filter(|((_, b, _, _, _), _)| *b == bucket)
             .map(|(_, row)| row.clone())
             .collect())
     }
@@ -274,5 +278,5 @@ guard!(keys_write, write, RwLockWriteGuard, HashMap<String, VirtualKey>);
 guard!(keys_read, read, RwLockReadGuard, HashMap<String, VirtualKey>);
 guard!(usage_write, write, RwLockWriteGuard, HashMap<(String, u64), UsageLedger>);
 guard!(usage_read, read, RwLockReadGuard, HashMap<(String, u64), UsageLedger>);
-guard!(metering_write, write, RwLockWriteGuard, HashMap<(String, u64, String, String), MeteringRow>);
-guard!(metering_read, read, RwLockReadGuard, HashMap<(String, u64, String, String), MeteringRow>);
+guard!(metering_write, write, RwLockWriteGuard, HashMap<(String, u64, String, String, u64), MeteringRow>);
+guard!(metering_read, read, RwLockReadGuard, HashMap<(String, u64, String, String, u64), MeteringRow>);

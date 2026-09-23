@@ -173,7 +173,7 @@ fn the_two_vocabularies_agree_slot_for_slot() {
 fn every_local_verb_of_the_codec_is_carried() {
     let plane = A2aPlane::EMPTY;
     let mut seen = 0usize;
-    for method in busbar_a2a_codec::LOCAL_VERB_METHODS {
+    for method in busbar_plane_a2a::LOCAL_VERB_METHODS {
         assert!(
             decode(&plane, &request("1", method)).is_ok(),
             "the codec answers {method} and this plane does not carry it"

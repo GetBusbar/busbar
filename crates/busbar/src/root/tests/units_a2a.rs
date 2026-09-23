@@ -1034,6 +1034,62 @@ fn draft(op: OpClassId) -> A2aDraft {
     }
 }
 
+/// THE MASKED CREDENTIAL IN `Debug`. A derived `Debug` on [`A2aDraft`] prints
+/// `credential: Some("<the caller's live bearer token>")` verbatim into any `{:?}` of the draft or
+/// of anything holding it. The transport masks the credential out of the frame precisely so it
+/// stops travelling with the request; rendering it here puts it straight back into a log line.
+///
+/// The secret is a planted marker and its ABSENCE is what is asserted — the test never has to print
+/// a real credential to fail informatively. A `String` and an `Option<String>` both render their
+/// text under a derived impl, so a regression to `#[derive(Debug)]` fails the first assertion.
+///
+/// REACHABILITY, STATED HONESTLY: nothing formats an `A2aDraft` today, and this whole file is off
+/// the serving path — `units_a2a::scope_policy` is its only production caller. This is a latent
+/// defect closed before the file is wired, not a live leak.
+#[test]
+fn draft_debug_redacts_the_credential_and_anything_carrying_it() {
+    const SECRET: &str = "a-distinctive-a2a-secret-2e94fb";
+    let mut d = draft(ops::OP_MESSAGE_SEND);
+    d.credential = Some(SECRET.to_string());
+    // An audience that happens to carry the same bytes is redacted too: the test is what the bytes
+    // ARE, not which field they sit in.
+    d.expected_aud = Some(format!("https://agent.example/{SECRET}"));
+
+    let rendered = format!("{d:?}");
+    assert!(
+        !rendered.contains(SECRET),
+        "Debug must never carry the presented credential — not in the field, not in anything else \
+         holding the same bytes. Got: {rendered}"
+    );
+    assert!(
+        rendered.matches("<redacted>").count() >= 2,
+        "the credential and the audience carrying it must both be redacted, got: {rendered}"
+    );
+    // The non-secret shape survives, or the redaction has cost the operator the diagnosis.
+    assert!(rendered.contains("A2aDraft"), "got: {rendered}");
+    assert!(rendered.contains("request_bytes"), "got: {rendered}");
+    assert!(
+        rendered.contains("127.0.0.1:1"),
+        "the arrival is not a secret, got: {rendered}"
+    );
+
+    // AND THE REDACTION NEVER MANUFACTURES A CREDENTIAL OUT OF AN ABSENT ONE. With nothing
+    // presented there is nothing to hide, and an ordinary audience prints as itself.
+    let mut none = draft(ops::OP_MESSAGE_SEND);
+    none.credential = None;
+    none.expected_aud = Some("https://agent.example/aud".to_string());
+    let rendered = format!("{none:?}");
+    assert!(rendered.contains("credential: None"), "got: {rendered}");
+    assert!(
+        !rendered.contains("<redacted>"),
+        "nothing was presented, so nothing is redacted, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("https://agent.example/aud"),
+        "got: {rendered}"
+    );
+}
+
 /// The fixture draft, addressing a NAMED agent rather than the default `"probe"` — the seam the
 /// approve-step grant tests hook into to hold the operation fixed and vary only which agent is
 /// addressed.
@@ -1929,8 +1985,11 @@ fn a_key_reaches_the_agent_it_was_granted_and_no_other() {
     let who = PrincipalId::new("vk_agent");
     let chain = deployment.resolve(&who, Some("a2a-team"));
 
-    let wrong_agent =
-        deployment.calling_draft_at(chain.as_ref(), 1_700_000_000, draft_for(ops::OP_MESSAGE_SEND, "b"));
+    let wrong_agent = deployment.calling_draft_at(
+        chain.as_ref(),
+        1_700_000_000,
+        draft_for(ops::OP_MESSAGE_SEND, "b"),
+    );
     assert_eq!(
         ask_for_scope(&wrong_agent, &who)
             .expect_err("granted \"a\" only, addressing \"b\"")
@@ -1939,8 +1998,11 @@ fn a_key_reaches_the_agent_it_was_granted_and_no_other() {
         "a key granted one agent must not reach a different one"
     );
 
-    let granted_agent =
-        deployment.calling_draft_at(chain.as_ref(), 1_700_000_000, draft_for(ops::OP_MESSAGE_SEND, "a"));
+    let granted_agent = deployment.calling_draft_at(
+        chain.as_ref(),
+        1_700_000_000,
+        draft_for(ops::OP_MESSAGE_SEND, "a"),
+    );
     let facts = ask_for_scope(&granted_agent, &who).expect("granted \"a\", addressing \"a\"");
     assert_eq!(
         facts.resources.as_slice(),
@@ -2009,7 +2071,10 @@ fn a_grant_under_another_kind_does_not_reach_this_plane() {
 #[test]
 fn an_unkeyed_caller_is_refused_on_a_credentialed_address() {
     let deployment = deployment(one_call_at_a_time("a2a-team"));
-    assert!(deployment.key.is_none(), "the fixture default: no key resolved");
+    assert!(
+        deployment.key.is_none(),
+        "the fixture default: no key resolved"
+    );
     let who = PrincipalId::new("vk_agent");
     let chain = deployment.resolve(&who, Some("a2a-team"));
     let unit = deployment.calling(chain.as_ref());

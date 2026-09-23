@@ -1,6 +1,6 @@
 # no-deferral.waivers — the committed allowlist for `cargo xtask gate no-deferral`.
 #
-# FORMAT:  <MATCHER><whitespace><reason> [retires: <TRACKER-ID>]
+# FORMAT:  <MATCHER><TAB><reason> [owner: <role>] [retires: <TRACKER-ID>]
 #   MATCHER is an EXACT `path:line`. A matcher without a trailing `:<digits>` is REFUSED at load —
 #   see "ONE GLOB USED TO STAND HERE" below. A marker (file:line) is WAIVED when a row equals it.
 #   Every row must end in `[retires: <ID>]` naming the row of docs/design/1.6.0-TRACKER.md that
@@ -12,6 +12,31 @@
 # no-deferral-strict-done (what scripts/verify-1.6.0-done.sh runs) additionally FAILS if ANY row below is not a
 # */hot/* row: the hot/* foundation fixtures are the ONE permanent exemption; the voice skeleton rows
 # are TRACKED 1.6.0 debt that MUST be gone before 1.6.0 is done.
+#
+# ── WHY THIS FILE WAS REGENERATED, 2026-09-22 ────────────────────────────────────────────────────
+# The previous revision DID NOT DESCRIBE THIS TREE, and both halves of the gate said so at once:
+#
+#     52 waiver rows      39 pointed at a line holding NO marker        (`:stale-waiver` RED)
+#     52 real markers     38 of them were waived by nothing at all      (`:unwaived`     RED)
+#
+# Not one of the 44 `host.rs` rows matched a marker: the rows named lines 855–1217, the markers were
+# at 997–1359 — the first off by +142, the last by +142, with the drift NOT constant across the file
+# (decl.rs had not moved at all). The record described that as "a mechanical +1 line-number resync of
+# 44 rows … verified: 44 rows". It was not +1, it was not verified, and a "+1 resync" cannot be
+# mechanical when one of the two files did not move. **A waiver file that describes a different tree
+# excuses nothing and hides everything** — the 38 real markers it failed to name were, for as long as
+# it stood, undeclared deferrals in shipped source with no reason and no owner.
+#
+# REGENERATE, NEVER HAND-PATCH. The line numbers below were not typed; they came out of the gate:
+#
+#     cp scripts/no-deferral.waivers /tmp/w.bak
+#     grep '^#' scripts/no-deferral.waivers > scripts/no-deferral.waivers   # rows removed, header kept
+#     cargo xtask gate no-deferral        # `:unwaived` now enumerates EVERY real marker, in order
+#     cp /tmp/w.bak scripts/no-deferral.waivers                             # restore, then re-emit rows
+#
+# With zero rows loaded every marker is un-waived, so the gate's own `:unwaived` line IS the marker
+# census. That is the only source a row's line number may come from. Reading them off the file by eye
+# is what produced the revision this one replaces.
 #
 # ── ONE GLOB USED TO STAND HERE, AND IT WAIVED WHATEVER APPEARED ─────────────────────────────────
 # The single row `crates/busbar-plugin/src/hot/*` covered all 52 markers, never expired, and matched
@@ -25,68 +50,111 @@
 # gate's stale-waiver check then reports exactly which exemptions no longer describe the tree,
 # instead of a glob absorbing the change in silence.
 #
-# ── PERMANENT-UNTIL-H5: the plane-ABI foundation compile-surface fixtures ──────────────────────────
-# `mod stub` / PlaneHostVtable::STUB / PlaneDecl::STUB. ADDITIVE and UNUSED — nothing in the engine
-# calls them (hot/mod.rs); a STUB vtable slot panics BY DESIGN. They type-check that every extern
-# "C-unwind" ABI fn-pointer slot has a real, well-typed signature. Their real hosts are the
-# protocols-as-plugins effort (docs/design/1.6.0-protocols-as-plugins.md), tracked as H5.
+# ── WHAT THESE 52 ROWS ARE, STATED SO IT CANNOT BE MISREAD AS A SKIP ─────────────────────────────
+# `mod stub` / `PlaneHostVtable::STUB` / `PlaneDecl::STUB` are a COMPILE-SURFACE PROOF, not a
+# postponed capability. Each fn has the exact fn-pointer signature of its vtable slot, so the module
+# type-checks that every `extern "C-unwind"` slot in the ABI has a real, well-typed signature; a STUB
+# slot panics BY DESIGN because nothing is ever meant to dispatch through it. Measured: the only
+# consumers of either constant in the whole tree are this crate's own tests —
+#   crates/busbar-plugin/src/hot/tests/host_tests.rs:77,128,138,145,157,222
+#   crates/busbar-plugin/src/hot/tests/decl_tests.rs:29
+# A fixture whose callers are the tests that check its types is not a deferral, and these rows do not
+# claim a future release will fix it. They are exempt because the thing they mark is FINISHED.
+#
+# ── THE THING THAT *IS* OPEN, AND IT IS 1.6.0 WORK: H6 ───────────────────────────────────────────
+# The previous revision retired all 52 rows against H5, whose text read "Out of 1.6.0 scope; the work
+# lands with docs/design/1.6.0-protocols-as-plugins.md" — a DECISIONS #15 banned phrase pointing at a
+# file that has never existed in this repository (`git cat-file -e HEAD:docs/design/1.6.0-protocols-as-plugins.md`
+# fails; the same non-existent file is cited four more times in 1.6.0-duplex-plane-and-realtime.md).
+# 52 markers were waived, in banned words, against a document that is not there.
+#
+# **AND THAT IS THE WORSE HALF OF THE DEFECT, NOT THE LESSER ONE.** The 39 bad line-anchors were loud:
+# the gate reported them by name every run. An unreachable EXIT CONDITION is silent. A waiver whose
+# retirement test cannot be evaluated never retires — it is permanent by accident rather than by
+# decision, and it looks identical to a healthy row while it happens. Every row below now retires
+# against H5, whose condition is a COMMAND THAT RUNS AGAINST THIS TREE:
+#
+#     grep -rn "PlaneHostVtable::STUB\|PlaneDecl::STUB" crates/     # empty => H5 is done
+#
+# and H5 in turn names H6, whose condition is also a command:
+#
+#     grep -rln "PlaneHostVtable" crates/busbar-plane-*             # non-empty => H6 is done
+#
+# Neither names a document. A retirement condition that cannot be run is not a condition.
+#
+# That framing also hid a real 1.6.0 row. BUSBAR-1.6.0.md §11a makes *"`PlaneHost` (+ cost carrier) has
+# REAL production riders (dogfooded, step 2) — no '0-caller ABI'"* a **CUT GATE** for 1.6.0, and the tree
+# does not meet it. **State the gap precisely, because the obvious reading is wrong and this file made
+# that mistake once already:** the HOST IS BUILT. `build_plane_host_vtable()`
+# (crates/busbar-kernel/src/plane_host/vtable.rs:36) wires 44 of 44 slots to real implementations across
+# 13,054 lines in crates/busbar-kernel/src/plane_host/ — including cost_reserve/cost_settle at
+# vtable.rs:121-122 over cost_host.rs (224 lines). The 52 markers below are NOT that host and never were.
+# What is missing is a RIDER: `grep -rln "PlaneHostVtable" crates/busbar-plane-* crates/busbar-{llm,mcp,a2a,voice}`
+# returns ZERO — every installed plane rides the neutral Rust seam (EngineHost), not the C-ABI vtable.
+# So the FIXTURES are finished (H5) and the DOGFOODING is owed (H6). Splitting them is what lets these
+# rows be permanent without that permanence quietly covering an open cut gate.
+#
+# Rows tagged `HOT:` mark a slot a plane already exercises through the NEUTRAL seam — cost_reserve and
+# cost_settle, ported at crates/busbar-voice/src/runtime/metering.rs:350,389. Their fixture is still just
+# a fixture and the waiver stands unchanged; the tag exists so nobody reads "waived" as "unridden", which
+# is exactly backwards for those two.
 #
 # ── busbar-voice: the SKELETON / "dev-only until DoD" markers are CLEARED ───────────────────────────
 # The voice plane's IR + both dialect codecs + T2 runtime + both topologies are implemented (behind the
 # "runtime" feature) and the plane is installed at boot behind `plane-voice`; the stale SKELETON /
 # "dev-only until DoD" marker prose in busbar-voice src has been reworded to truthful current-state, so
 # no waiver rows remain for it. (Any residual "dev-only until DoD" prose outside busbar-voice src — e.g.
-# the config-schema tracking note or the composition-root feature comment — is separate work.)
+# the config-schema tracking note or the composition-root feature comment — is its own row, not this one's.)
 
-crates/busbar-plugin/src/hot/decl.rs:227	class-B label on the STUB doc comment that names the slots above; it documents the fixture, it is not a deferred capability [retires: H5]
-crates/busbar-plugin/src/hot/decl.rs:239	class-A STUB slot `PlaneDecl::config_validate`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/decl.rs:246	class-A STUB slot `PlaneDecl::build`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/decl.rs:250	class-A STUB slot `PlaneDecl::hydrate`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/decl.rs:254	class-A STUB slot `PlaneDecl::start`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/decl.rs:263	class-A STUB slot `PlaneDecl::admin_routes`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/decl.rs:272	class-A STUB slot `PlaneDecl::openapi`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/decl.rs:279	class-A STUB slot `PlaneDecl::dispatch`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:855	class-A STUB slot `PlaneHost::govern_admit`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:859	class-A STUB slot `PlaneHost::meter_charge`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:863	class-A STUB slot `PlaneHost::breaker_admit`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:873	class-A STUB slot `PlaneHost::govern_admit_reason`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:881	class-A STUB slot `PlaneHost::breaker_admit_reason`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:889	class-A STUB slot `PlaneHost::breaker_settle`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:897	class-A STUB slot `PlaneHost::verify_lookup`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:906	class-A STUB slot `PlaneHost::verify_store`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:913	class-A STUB slot `PlaneHost::verify_decide`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:920	class-A STUB slot `PlaneHost::approval_redeem_q`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:928	class-A STUB slot `PlaneHost::egress_open`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:938	class-A STUB slot `PlaneHost::egress_poll`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:947	class-A STUB slot `PlaneHost::egress_write`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:951	class-A STUB slot `PlaneHost::egress_close`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:961	class-A STUB slot `PlaneHost::journal_append`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:971	class-A STUB slot `PlaneHost::journal_read`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:979	class-A STUB slot `PlaneHost::nested_dispatch`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:986	class-A STUB slot `PlaneHost::workhandle_open`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:993	class-A STUB slot `PlaneHost::workhandle_resume`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:997	class-A STUB slot `PlaneHost::drift_quarantine`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1001	class-A STUB slot `PlaneHost::approval_redeem`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1008	class-A STUB slot `PlaneHost::metrics_emit`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1012	class-A STUB slot `PlaneHost::clock_now`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1020	class-A STUB slot `PlaneHost::auth_resolve`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1027	class-A STUB slot `PlaneHost::trust_evaluate`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1035	class-A STUB slot `PlaneHost::entitlement_check`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1042	class-A STUB slot `PlaneHost::gate_scan`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1052	class-A STUB slot `PlaneHost::pipe_read`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1061	class-A STUB slot `PlaneHost::pipe_write`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1072	class-A STUB slot `PlaneHost::egress_fault`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1080	class-A STUB slot `PlaneHost::journal_register`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1091	class-A STUB slot `PlaneHost::journal_append_scoped`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1105	class-A STUB slot `PlaneHost::journal_read_scoped`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1113	class-A STUB slot `PlaneHost::journal_restore`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1125	class-A STUB slot `PlaneHost::journal_seed`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1134	class-A STUB slot `PlaneHost::journal_forget`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1143	class-A STUB slot `PlaneHost::journal_compact`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1153	class-A STUB slot `PlaneHost::journal_verify_scoped`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1162	class-A STUB slot `PlaneHost::subkey_sign`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1174	class-A STUB slot `PlaneHost::guard_url`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1182	class-A STUB slot `PlaneHost::identity_admit`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1195	class-A STUB slot `PlaneHost::gate_decide`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1206	class-A STUB slot `PlaneHost::cost_reserve`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
-crates/busbar-plugin/src/hot/host.rs:1217	class-A STUB slot `PlaneHost::cost_settle`: an unused extern "C-unwind" vtable slot that panics by design, never dispatched [retires: H5]
+crates/busbar-plugin/src/hot/decl.rs:227	class-B the `PlaneDecl::STUB` label on the stub module's doc comment: it DOCUMENTS the fixture below it; the marker is the word `PlaneDecl::STUB` in prose, not a capability anyone can call. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/decl.rs:239	class-A STUB fn-pointer slot `PlaneDecl::config_validate`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/decl.rs:246	class-A STUB fn-pointer slot `PlaneDecl::build`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/decl.rs:250	class-A STUB fn-pointer slot `PlaneDecl::hydrate`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/decl.rs:254	class-A STUB fn-pointer slot `PlaneDecl::start`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/decl.rs:263	class-A STUB fn-pointer slot `PlaneDecl::admin_routes`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/decl.rs:272	class-A STUB fn-pointer slot `PlaneDecl::openapi`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/decl.rs:279	class-A STUB fn-pointer slot `PlaneDecl::dispatch`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:997	class-A STUB fn-pointer slot `PlaneHost::govern_admit`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. HOT: this slot has a REAL host (plane_host/vtable.rs:121-122 -> cost_host.rs) and a production caller through the neutral seam (busbar-voice/src/runtime/metering.rs:350,389). Only the FIXTURE is waived here. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1001	class-A STUB fn-pointer slot `PlaneHost::meter_charge`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. HOT: this slot has a REAL host (plane_host/vtable.rs:121-122 -> cost_host.rs) and a production caller through the neutral seam (busbar-voice/src/runtime/metering.rs:350,389). Only the FIXTURE is waived here. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1005	class-A STUB fn-pointer slot `PlaneHost::breaker_admit`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1015	class-A STUB fn-pointer slot `PlaneHost::govern_admit_reason`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1023	class-A STUB fn-pointer slot `PlaneHost::breaker_admit_reason`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1031	class-A STUB fn-pointer slot `PlaneHost::breaker_settle`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1039	class-A STUB fn-pointer slot `PlaneHost::verify_lookup`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1048	class-A STUB fn-pointer slot `PlaneHost::verify_store`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1055	class-A STUB fn-pointer slot `PlaneHost::verify_decide`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1062	class-A STUB fn-pointer slot `PlaneHost::approval_redeem_q`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1070	class-A STUB fn-pointer slot `PlaneHost::egress_open`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. HOT: a plane already names this slot plane-side, so its real host is H6 work, not fixture upkeep. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1080	class-A STUB fn-pointer slot `PlaneHost::egress_poll`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. HOT: a plane already names this slot plane-side, so its real host is H6 work, not fixture upkeep. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1089	class-A STUB fn-pointer slot `PlaneHost::egress_write`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. HOT: a plane already names this slot plane-side, so its real host is H6 work, not fixture upkeep. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1093	class-A STUB fn-pointer slot `PlaneHost::egress_close`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. HOT: a plane already names this slot plane-side, so its real host is H6 work, not fixture upkeep. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1103	class-A STUB fn-pointer slot `PlaneHost::journal_append`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1113	class-A STUB fn-pointer slot `PlaneHost::journal_read`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1121	class-A STUB fn-pointer slot `PlaneHost::nested_dispatch`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1128	class-A STUB fn-pointer slot `PlaneHost::workhandle_open`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1135	class-A STUB fn-pointer slot `PlaneHost::workhandle_resume`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1139	class-A STUB fn-pointer slot `PlaneHost::drift_quarantine`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1143	class-A STUB fn-pointer slot `PlaneHost::approval_redeem`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1150	class-A STUB fn-pointer slot `PlaneHost::metrics_emit`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1154	class-A STUB fn-pointer slot `PlaneHost::clock_now`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1162	class-A STUB fn-pointer slot `PlaneHost::auth_resolve`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1169	class-A STUB fn-pointer slot `PlaneHost::trust_evaluate`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1177	class-A STUB fn-pointer slot `PlaneHost::entitlement_check`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1184	class-A STUB fn-pointer slot `PlaneHost::gate_scan`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1194	class-A STUB fn-pointer slot `PlaneHost::pipe_read`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1203	class-A STUB fn-pointer slot `PlaneHost::pipe_write`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1214	class-A STUB fn-pointer slot `PlaneHost::egress_fault`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. HOT: a plane already names this slot plane-side, so its real host is H6 work, not fixture upkeep. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1222	class-A STUB fn-pointer slot `PlaneHost::journal_register`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1233	class-A STUB fn-pointer slot `PlaneHost::journal_append_scoped`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1247	class-A STUB fn-pointer slot `PlaneHost::journal_read_scoped`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1255	class-A STUB fn-pointer slot `PlaneHost::journal_restore`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1267	class-A STUB fn-pointer slot `PlaneHost::journal_seed`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1276	class-A STUB fn-pointer slot `PlaneHost::journal_forget`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1285	class-A STUB fn-pointer slot `PlaneHost::journal_compact`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1295	class-A STUB fn-pointer slot `PlaneHost::journal_verify_scoped`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1304	class-A STUB fn-pointer slot `PlaneHost::subkey_sign`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1316	class-A STUB fn-pointer slot `PlaneHost::guard_url`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1324	class-A STUB fn-pointer slot `PlaneHost::identity_admit`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1337	class-A STUB fn-pointer slot `PlaneHost::gate_decide`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1348	class-A STUB fn-pointer slot `PlaneHost::cost_reserve`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. HOT: a plane already names this slot plane-side, so its real host is H6 work, not fixture upkeep. [owner: architect] [retires: H5]
+crates/busbar-plugin/src/hot/host.rs:1359	class-A STUB fn-pointer slot `PlaneHost::cost_settle`: an extern "C-unwind" vtable slot that panics by design and is reached from NOTHING but this crate's own ABI-signature tests. HOT: a plane already names this slot plane-side, so its real host is H6 work, not fixture upkeep. [owner: architect] [retires: H5]

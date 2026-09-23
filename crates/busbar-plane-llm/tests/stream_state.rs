@@ -17,7 +17,7 @@ use busbar_contract::ids::LaneId;
 use busbar_contract::plane::{Plane, PlaneSessionState, Progress};
 use busbar_contract::unit::FinishClass;
 use busbar_contract::wire::FrameCursor;
-use busbar_plane_llm::codec::LlmSessionState;
+use busbar_plane_llm::plane::LlmSessionState;
 use busbar_plane_llm::{LlmPlane, Upstream};
 
 /// One configured upstream, speaking the dialect whose stream carries state between frames.

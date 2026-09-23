@@ -600,6 +600,7 @@ oidc_pack_plugin() {
   local dir="$1"
   [ -d "$OIDC_SRC" ] || return 1
   mkdir -p "$dir"
+  # package-selector: busbar-auth-oidc-plugin -- scripts/release-check-1.5.2.sh -- auth-oidc is a sibling checkout ($OIDC_SRC); the `--manifest-path` above resolves this selector against that workspace, and the caller loud-skips when the checkout is absent
   cargo build --release --manifest-path "${OIDC_SRC}/Cargo.toml" -p busbar-auth-oidc-plugin >/dev/null 2>&1
   local lib="${OIDC_SRC}/target/release/${LIBPREFIX}busbar_auth_oidc_plugin.${LIBEXT}"
   [ -f "$lib" ] || { echo "  auth-oidc cdylib not built at $lib" >&2; return 1; }

@@ -7,7 +7,7 @@
 //!
 //! ## The coupling this gate mechanises
 //!
-//! `crates/busbar-substrate/src/plane_host/mod.rs` declares the universal host seam `EngineHost` as
+//! `crates/busbar-kernel/src/plane_host/mod.rs` declares the universal host seam `EngineHost` as
 //! the SUM of ~13 capability-slice supertraits (`BreakerHost`, `LanePoolHost`, `MeteringHost`,
 //! `ClockHost`, `TelemetryHost`, `JournalHost`, `MountHost`, `RegistryHost`, `HookConfigHost`,
 //! `BudgetHost`, `IdentityHost`, `AdmissionHost`, `CompletionHost`). Every plane holds an
@@ -58,7 +58,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// The host-seam trait definition file. Its slice supertraits + `EngineHost` are the universe scanned.
-const HOST_TRAIT_FILE: &str = "crates/busbar-substrate/src/plane_host/mod.rs";
+const HOST_TRAIT_FILE: &str = "crates/busbar-kernel/src/plane_host/mod.rs";
 
 /// The capability-slice supertraits of `EngineHost`, plus `EngineHost` itself (its provided
 /// `run_gauntlet`). A slice added/removed on the universal sum is ONE edit here — and the enumeration

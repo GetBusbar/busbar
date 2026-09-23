@@ -24,9 +24,7 @@ mod auth;
 pub mod durable;
 mod hooks;
 pub mod operation;
-mod redacted;
 mod secret;
-mod signal;
 mod store;
 pub mod usage_migration;
 
@@ -43,7 +41,13 @@ pub use hooks::{
     PromptProjection, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     TransformOutcome,
 };
-pub use redacted::Redacted;
+// `Redacted` and the signal catalog LEFT THIS CRATE (DECISIONS #84) and are re-exported, not
+// defined, here. Both are SHAPES in the #83(d) sense — a redacting/zeroizing secret wrapper
+// whose `Debug` every implementation must agree prints nothing, and a wire/config key catalog
+// every implementation must spell identically — so they belong in the ONE contract crate
+// (#38). These lines keep `busbar_api::Redacted`, `busbar_api::Signal`, `busbar_api::SignalBag`
+// and `busbar_api::SignalValue` resolving for every caller that already spells them that way.
+pub use busbar_contract::redacted::Redacted;
 pub use secret::{
     resolve_builtin, resolve_builtin_string, SecretError, SecretErrorKind, SecretModule,
     SecretResolve, SecretResult,
@@ -51,7 +55,7 @@ pub use secret::{
 // The config secret-reference type, re-exported from its own leaf crate so a plane crate names
 // `busbar_api::SecretRef` without a separate path dep.
 pub use busbar_secret_ref::SecretRef;
-pub use signal::{Signal, SignalBag, SignalValue};
+pub use busbar_contract::signal::{Signal, SignalBag, SignalValue};
 pub use store::{
     register_scope_kind, AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow,
     ModelTokens, ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneRequestCtx, PlaneSelector,

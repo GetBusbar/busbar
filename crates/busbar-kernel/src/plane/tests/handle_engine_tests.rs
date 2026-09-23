@@ -1208,3 +1208,123 @@ fn a_submit_whose_genesis_append_fails_leaves_no_durable_row() {
         .expect("rehydrate");
     assert_eq!(counts.active, 0, "a boot resumes no orphan");
 }
+
+/// D10 — A MUTATION WHOSE EVENT APPEND FAILS TAKES ITS ROW WRITE BACK.
+///
+/// `apply_mutation_to_slot` upserts the durable row and THEN appends the chain event. The two are not
+/// one transaction. With a bare `?` on the append the caller was told the mutation failed while the
+/// durable row had already advanced — one write ahead of a chain that never recorded the transition.
+/// The next boot's `rehydrate` reads that row and resolves the handle to a state NO EVENT JUSTIFIES:
+/// here, a handle the store calls terminal that nothing ever terminated.
+///
+/// The doc comment claimed the slot was untouched on failure. That was true of the in-memory slot and
+/// false of the store, which is the whole defect. Both halves are asserted: the store row does not
+/// advance, and the boot that reads it back resumes the handle at the state its chain explains.
+#[test]
+fn a_mutation_whose_event_append_fails_does_not_leave_the_durable_row_ahead_of_the_chain() {
+    let store = Arc::new(MemStore::default());
+    let engine = DurableHandleEngine::new();
+    engine.set_sink(store.clone() as Arc<dyn PlaneStore>);
+
+    // A handle that landed cleanly: row and genesis event both durable, cursor 0, ACTIVE.
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "h1".into(),
+            owner: "alice".into(),
+            updated_at: 1,
+            terminal: false,
+            cursor: 0,
+        },
+        1,
+    );
+    let durable_before = store.rows.lock().unwrap().clone();
+    assert_eq!(durable_before.len(), 1, "the submit left exactly one row");
+    assert_eq!(durable_before[0].disposition, PlaneDisposition::Active);
+
+    // From here the chain cannot be written to. The mutation still has a row to upsert first.
+    store
+        .append_fails
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let outcome = engine.mutate("h1", |row, _pos| {
+        let row = row.downcast_ref::<DemoRow>().unwrap();
+        let mut next = row.clone();
+        next.cursor = 99;
+        next.terminal = true; // the transition the chain is supposed to justify
+        next.updated_at = 2;
+        let record = next.record();
+        let meta = next.meta();
+        Ok(Some(Mutation {
+            row: Some(next.arc()),
+            meta: Some(meta),
+            row_record: Some(record.clone()),
+            event: Some(SealedEvent {
+                record,
+                tail_hash: "h-terminal".to_string(),
+            }),
+        }))
+    });
+
+    assert!(
+        matches!(outcome, Err(HandleEngineError::Store(_))),
+        "the caller is told the mutation did not land"
+    );
+
+    // THE DURABLE ROW DID NOT ADVANCE. Without the rollback it reads cursor 99 / Terminal.
+    let durable_after = store.rows.lock().unwrap().clone();
+    assert_eq!(durable_after.len(), 1, "still one row for one handle");
+    let persisted = DemoRow::from_body(&durable_after[0].body).expect("the row decodes");
+    assert_eq!(
+        persisted.cursor, 0,
+        "the durable row must not survive one write ahead of a chain that never recorded the move"
+    );
+    assert!(
+        !persisted.terminal,
+        "nothing terminated this handle: no event says so, so no durable row may say so either"
+    );
+    assert_eq!(
+        durable_after[0].disposition,
+        PlaneDisposition::Active,
+        "the row's disposition was rolled back with the rest of it"
+    );
+
+    // The in-memory slot was never touched either — the half the old comment got right.
+    let live = engine.meta("h1").expect("the handle is still live");
+    assert!(!live.terminal, "the live handle still answers ACTIVE");
+    assert_eq!(live.cursor, 0, "and at the cursor its chain explains");
+
+    // THE PROOF A RESTART WOULD GIVE: rehydrate lands on an EXPLICABLE state. A store row left at
+    // cursor 99 / Terminal would resume (or drop) the handle at a state its chain never justified.
+    let engine2 = DurableHandleEngine::new();
+    let mut resumed: Vec<DemoRow> = Vec::new();
+    let counts = engine2
+        .rehydrate(store.as_ref(), "demo", |_store, body| {
+            let Some(row) = DemoRow::from_body(body) else {
+                return Ok(RehydrateOutcome::Unreadable);
+            };
+            if row.terminal {
+                return Ok(RehydrateOutcome::Terminal);
+            }
+            let meta = row.meta();
+            resumed.push(row.clone());
+            Ok(RehydrateOutcome::Active {
+                id: row.id.clone(),
+                pos: ChainPosition::genesis(),
+                row: row.arc(),
+                meta,
+                event_unreadable: 0,
+            })
+        })
+        .expect("rehydrate");
+
+    assert_eq!(
+        counts.terminal, 0,
+        "the boot must not find a terminal handle that no event ever terminated"
+    );
+    assert_eq!(counts.active, 1, "the handle resumes, as its chain says");
+    assert_eq!(
+        resumed[0].cursor, 0,
+        "and it resumes at the state the chain explains, not at one nothing justifies"
+    );
+}

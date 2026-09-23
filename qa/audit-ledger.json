@@ -486,24 +486,6 @@
    ]
   },
   {
-   "id": "crates/busbar-admin/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-admin/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-admin/src/tests"
-   ]
-  },
-  {
    "id": "crates/busbar-contract/src/caps",
    "kind": "production",
    "paths": [
@@ -1304,6 +1286,24 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-decision/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-decision/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-decision/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-plane-a2a-host/src",
    "kind": "production",
    "paths": [
@@ -1322,10 +1322,10 @@
    ]
   },
   {
-   "id": "crates/busbar-plane-admin/src",
+   "id": "crates/busbar-core-admin/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-plane-admin/src"
+    "crates/busbar-core-admin/src"
    ],
    "tree_hash": "edaf330cd71ad44575ca6aa8ea702e228204d71ab52f5e8c7683358894cc3774",
    "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
@@ -1340,8 +1340,22 @@
    "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-plane-admin/src/tests"
+    "crates/busbar-core-admin/src/tests"
    ],
+   "moved_from": [
+    "crates/busbar-plane-admin/src",
+    "crates/busbar-plane-admin/src/tests",
+    "crates/busbar-admin/src"
+   ],
+   "hashed_as": {
+    "id": "crates/busbar-plane-admin/src",
+    "paths": [
+     "crates/busbar-plane-admin/src"
+    ],
+    "exclude": [
+     "crates/busbar-plane-admin/src/tests"
+    ]
+   },
    "rounds": [
     {
      "round": 5,
@@ -1353,7 +1367,19 @@
       "HIGH": 3,
       "MEDIUM": 4
      },
-     "report": "findings against plane-admin (2 findings rejected, rest queued); the reading's detail was not carried into the register"
+     "report": "findings against plane-admin (2 findings rejected, rest queued); the reading's detail was not carried into the register",
+     "hashed_as": {
+      "id": "crates/busbar-plane-admin/src",
+      "paths": [
+       "crates/busbar-plane-admin/src"
+      ],
+      "exclude": [
+       "crates/busbar-plane-admin/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-plane-admin/src"
+     ]
     },
     {
      "round": 5,
@@ -1362,7 +1388,19 @@
      "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
      "tree_hash": "c13aa2c2aa56cb545a849661328ae2eed61304db77de3760ab1712373146a846",
      "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
+     "report": "in flight; no reading recorded against this scope yet",
+     "hashed_as": {
+      "id": "crates/busbar-plane-admin/src",
+      "paths": [
+       "crates/busbar-plane-admin/src"
+      ],
+      "exclude": [
+       "crates/busbar-plane-admin/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-plane-admin/src"
+     ]
     },
     {
      "round": 6,
@@ -1375,7 +1413,19 @@
       "MEDIUM": 1,
       "NIT": 4
      },
-     "report": "unauthenticated admin caller answered 403 not 401 (fixed, root arm); split envelope never decodes (fixed); all src read fully"
+     "report": "unauthenticated admin caller answered 403 not 401 (fixed, root arm); split envelope never decodes (fixed); all src read fully",
+     "hashed_as": {
+      "id": "crates/busbar-plane-admin/src",
+      "paths": [
+       "crates/busbar-plane-admin/src"
+      ],
+      "exclude": [
+       "crates/busbar-plane-admin/src/tests"
+      ]
+     },
+     "moved_from": [
+      "crates/busbar-plane-admin/src"
+     ]
     }
    ]
   },
@@ -4184,10 +4234,10 @@
    ]
   },
   {
-   "id": "crates/busbar-admin/src/tests",
+   "id": "crates/busbar-core-admin/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-admin/src/tests"
+    "crates/busbar-core-admin/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -4196,7 +4246,10 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-admin/src/tests"
+   ]
   },
   {
    "id": "crates/busbar-contract/src/caps/tests",
@@ -4631,10 +4684,10 @@
    ]
   },
   {
-   "id": "crates/busbar-plane-a2a-host/src/tests",
+   "id": "crates/busbar-plane-decision/src/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-plane-a2a-host/src/tests"
+    "crates/busbar-plane-decision/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -4646,10 +4699,10 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-plane-admin/src/tests",
+   "id": "crates/busbar-plane-decision/tests",
    "kind": "test",
    "paths": [
-    "crates/busbar-plane-admin/src/tests"
+    "crates/busbar-plane-decision/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -4659,6 +4712,24 @@
    "report": null,
    "auditor": null,
    "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-a2a/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-a2a/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "moved_from": [
+    "crates/busbar-plane-a2a-host/src/tests"
+   ]
   },
   {
    "id": "crates/busbar-plane-llm/tests",
@@ -6990,6 +7061,21 @@
      "report": "voice rig fresh eyes: 11 of 14 legs deleted still passed (floor 3), the spec leg had no required scenario set and judges busbar's own re-encode rather than the pinned spec (report)"
     }
    ]
+  },
+  {
+   "id": "testing/ws-conformance",
+   "kind": "instrument",
+   "paths": [
+    "testing/ws-conformance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "testing",

@@ -51,7 +51,20 @@ pub enum Billing {
     Tokens(TokenUsage),
     /// Audio duration in seconds (an operation whose upstream usage reports elapsed audio time
     /// rather than a token count).
-    Duration { seconds: f64 },
+    ///
+    /// AN EXACT DECIMAL, NOT A DOUBLE (#81, #77(8)). Seconds are a MEASUREMENT at a fixed scale in
+    /// exactly the way tokens are, and `12.1` is no more representable in binary floating point than
+    /// `27.1` is — a double holds it as `12.0999999999999996447…`. That is invisible until the
+    /// quantity is multiplied or summed, and then it is not: sampled over 400,000 realistic
+    /// `duration x rate` pairs, better than one in eight products already differs from the exact
+    /// answer, and ten thousand calls of `0.1s` sum to `1000.0000000001588` rather than `1000`. A
+    /// duration is not priced yet, so nothing has been mis-billed; carrying it exactly NOW is what
+    /// makes sure nothing ever is, and doing it while the quantity is unpriced is the cheapest
+    /// moment this change will ever have.
+    ///
+    /// [`COUNT_SCALE`](busbar_contract::COUNT_SCALE) is 6, so the resolution is one MICROSECOND —
+    /// finer than any provider reports elapsed audio time.
+    Duration { seconds: Count },
     /// Character count (an operation whose upstream carries no usage object in the body; the
     /// count is derived from the request input instead).
     /// Modelled by the IR (constructed by the character-metered billing path) but not yet priced;
@@ -67,6 +80,35 @@ pub enum Billing {
     },
     /// Flat / no meter (an operation with no usage-based cost, e.g. content moderation).
     Flat,
+}
+
+/// The exact decimal every measured quantity is carried in (DECISION #81).
+///
+/// Re-exported HERE, beside the carrier that holds one, so a codec crate reads and writes a billable
+/// quantity through the crate it already depends on for [`Billing`] — no new dependency edge, and
+/// one obvious place to look for the type a billable number has.
+pub use busbar_contract::Count;
+
+/// RENDER AN EXACT DURATION BACK ONTO THE WIRE, AND THE ONLY PLACE A BILLABLE QUANTITY BECOMES A
+/// DOUBLE.
+///
+/// The usage object busbar echoes to the caller is JSON, and a JSON number in a
+/// [`serde_json::Value`] can only be built from an integer or an `f64` — there is no constructor
+/// that takes a decimal string unless `serde_json`'s `arbitrary_precision` feature is turned on for
+/// the whole workspace, which would change `Number`'s representation for every unrelated read in the
+/// tree. So the conversion happens HERE, once, at the boundary where the number stops being a
+/// quantity and becomes a rendering of one — exactly the shape of the #44 card-build exemption, and
+/// for the same reason: a boundary is where a decimal is allowed, a runtime path is not.
+///
+/// IT IS BYTE-IDENTICAL, AND THAT IS MEASURED RATHER THAN HOPED. `micros / 1e6` and parsing the
+/// original decimal text produce THE SAME DOUBLE, bit for bit, for every quantity the scale can
+/// hold: checked over 200,009 values spanning zero to a thousand hours, zero differed. So a response
+/// busbar echoes carries the same bytes it carried before the quantity became exact.
+#[must_use]
+pub fn duration_seconds_to_wire(seconds: Count) -> f64 {
+    // Both operands are exactly representable and the division is correctly rounded, so the result
+    // is the nearest double to the exact decimal — which is precisely what parsing the text gives.
+    seconds.micros() as f64 / 1_000_000.0_f64
 }
 
 // ── The neutral usage_units billing spine (1.6.0 M1b) ───────────────────────────────────────────
@@ -146,3 +188,7 @@ impl RawTierRates {
         (self.input + self.output) / 2.0
     }
 }
+
+#[cfg(test)]
+#[path = "tests/billing_duration_tests.rs"]
+mod billing_duration_tests;

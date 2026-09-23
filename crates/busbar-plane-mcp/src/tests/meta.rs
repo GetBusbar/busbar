@@ -10,7 +10,7 @@ use busbar_contract::plane::PlaneMeta;
 /// The registry key is the codec's own.
 #[test]
 fn the_key_is_the_codecs_own() {
-    assert_eq!(McpPlane::KEY, busbar_mcp_codec::PLANE_KEY);
+    assert_eq!(McpPlane::KEY, crate::PLANE_KEY);
 }
 
 /// The design's plane table gives this protocol exactly these two classes.

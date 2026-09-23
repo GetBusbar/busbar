@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # THE COMPILE FENCE for the config-mutation transaction guard.
 #
-# `crates/busbar-core/src/admin/v1/json/tests/txn_fence.rs` is a NEGATIVE test: a transaction body that
+# `crates/busbar-kernel/src/config/tests/txn_fence.rs` is a NEGATIVE test: a transaction body that
 # tries to reach a blocking store call (`store.list_keys()`, `txn.store()`) or to `.await` inside the
 # section. It must FAIL to compile. This script builds it and inverts the verdict: a clean build is a
 # FAILED fence, because it would mean `Txn` had grown a way to touch the store from the async thread
@@ -17,10 +17,16 @@ echo "== txn compile fence (this build MUST fail) =="
 # The fence is a rustc cfg, not a cargo feature: a feature whose only effect is to break the build
 # would make `--all-features` red for no defect. `cargo rustc` scopes the flag to the one crate
 # that carries the fence, so nothing else in the graph is rebuilt under it.
-out=$(cargo rustc -p busbar-core --lib -- --cfg txn_fence_red 2>&1) && status=0 || status=$?
+#
+# THE PACKAGE NAME IS LOAD-BEARING IN THE DANGEROUS DIRECTION, because this gate's PASS condition is
+# a build FAILURE. It read `-p busbar-core` after the W4.a absorption (673ecdaaa) deleted that crate,
+# and `cargo rustc` on a package that does not exist fails too -- which is this script's green. The
+# only thing standing between that and a fence reported as holding over a crate that was never
+# compiled is the expected-error check below, which is why that check is not optional politeness.
+out=$(cargo rustc -p busbar-kernel --lib -- --cfg txn_fence_red 2>&1) && status=0 || status=$?
 
 if [ "$status" -eq 0 ]; then
-  echo "  FENCE BREACHED: crates/busbar-core/src/admin/v1/json/tests/txn_fence.rs COMPILED."
+  echo "  FENCE BREACHED: crates/busbar-kernel/src/config/tests/txn_fence.rs COMPILED."
   echo "  A transaction body must not be able to name a store, reach one through Txn, or .await."
   exit 1
 fi

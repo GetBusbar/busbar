@@ -167,7 +167,11 @@ fn clear_zeroizes_rather_than_merely_truncating() {
 
     slab.clear();
 
-    assert_eq!(slab.used(), 0, "clear() must empty the slab's logical length");
+    assert_eq!(
+        slab.used(),
+        0,
+        "clear() must empty the slab's logical length"
+    );
     assert_eq!(
         slab.remaining(),
         64,

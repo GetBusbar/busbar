@@ -60,7 +60,9 @@ fn terminal_usage(events: &[IrStreamEvent]) -> &crate::ir::IrUsage {
             IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("the terminal frame must emit a MessageDelta carrying usage: {events:?}"))
+        .unwrap_or_else(|| {
+            panic!("the terminal frame must emit a MessageDelta carrying usage: {events:?}")
+        })
 }
 
 // ── the capture loaders ─────────────────────────────────────────────────────────────────────────
@@ -421,7 +423,9 @@ fn responses_recorded_body_carries_the_cache_write_member() {
          the member the writer emits and the reader must read back: {body}"
     );
 
-    let ir = ResponsesReader.read_response(&body).expect("responses parses");
+    let ir = ResponsesReader
+        .read_response(&body)
+        .expect("responses parses");
     assert_eq!(
         ir.usage.cache_creation_input_tokens,
         Some(0),
@@ -453,7 +457,9 @@ fn responses_cache_write_tokens_price_at_the_cache_write_tier() {
         json!(2),
     );
 
-    let ir = ResponsesReader.read_response(&body).expect("responses parses");
+    let ir = ResponsesReader
+        .read_response(&body)
+        .expect("responses parses");
     assert_eq!(
         ir.usage.cache_creation_input_tokens,
         Some(6),
@@ -675,7 +681,9 @@ fn the_billed_netting_does_not_touch_a_dialect_without_billed_units() {
         "/usage/input_tokens_details/cached_tokens",
         json!(2),
     );
-    let ir = ResponsesReader.read_response(&body).expect("responses parses");
+    let ir = ResponsesReader
+        .read_response(&body)
+        .expect("responses parses");
     assert_eq!(
         ir.usage.detail.billed_input_tokens, None,
         "no dialect but Cohere populates the billed bucket: {ir:?}"
