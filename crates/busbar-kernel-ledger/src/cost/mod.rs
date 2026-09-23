@@ -73,7 +73,7 @@ pub use project::{
     micros_of, minor_of,
 };
 pub use rate::{
-    nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
+    nano_rate, nanos_sum, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
     CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
 };
 pub use view::{

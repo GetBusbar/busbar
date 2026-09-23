@@ -3347,6 +3347,16 @@ drain   = "none: ARCHITECTURE.md grants the kernel -> kernel class. What this ro
 
 [[dep]]
 from    = "busbar-kernel"
+to      = "busbar-kernel-ledger"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md — kernel workflow crates form the loop; #36 group structure permits intra-tier edges (ARCHITECTURE_ALLOWED kernel -> kernel). Both crates are kernel-tier, so this edge crosses no kind boundary. BUSBAR-1.6.0.md #81 names the price multiply's homes — kernel-ledger/src/cost/posting.rs, cost/rate.rs:435, kernel-budget/src/price.rs:113-118 — and this edge is what lets the fourth site stop being one."
+why     = "busbar-kernel names busbar-kernel-ledger: declared normal in the shipped graph, 1 declaration(s) at this commit. THE ONE MONEY ARITHMETIC: src/cost.rs carried a second copy of the decimal-to-rate conversion and a third copy of the reserved-four multiply-and-sum, and both had drifted from the ledger's. The rate copy tested only finiteness where the ledger also clamps a value too large for a u64, so a config typo with too many zeros priced as 0 in the book and u64::MAX nanos/token here — a request JUDGED at one rate and BILLED at another. The summation copy had no overflow guard at all where the ledger's and the budget unit's both saturate, so a total one past the u128 ceiling wrapped to ONE nano-unit: an astronomical bill deriving as nearly free and clearing every budget cap. The duplicates are gone rather than patched, because two copies of a money rule that must agree forever is the defect, not the guard that is missing from one of them; this edge is what makes the one surviving judge reachable from here."
+drain   = "none: ARCHITECTURE.md grants the kernel -> kernel class. What this row holds is the NUMBER — draining the edge would mean re-forking the money arithmetic, which is the defect it was added to close."
+
+[[dep]]
+from    = "busbar-kernel"
 to      = "busbar-plugin"
 half    = "shipped"
 count   = "1"

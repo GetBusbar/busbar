@@ -765,3 +765,303 @@ fn price_discount_is_single_divide_not_sum_of_per_component_floors() {
         "top-level lines must sum to the single-divide total"
     );
 }
+
+// -------------------------------------------------------------------------------------------
+// MONEY: THE RESERVED-FOUR SUMMATION AND THE RATE PROJECTION IT IS SUMMED AT.
+//
+// Both of these guard a DELEGATION rather than a local guard. The arithmetic used to live here
+// as a second copy of the ledger's, and a second copy of a money rule is how a request comes to
+// be judged at one figure and billed at another. These tests are what makes the copy coming
+// back a red build rather than a silent divergence.
+// -------------------------------------------------------------------------------------------
+
+/// All four reserved units present at the largest count a `u64` holds.
+fn maxed_units() -> BTreeMap<String, u64> {
+    RESERVED_UNITS
+        .iter()
+        .map(|u| ((*u).to_string(), u64::MAX))
+        .collect()
+}
+
+/// The rate card at the largest nano rate a `u64` holds.
+const MAX_RATE: RateNanos = RateNanos {
+    input: u64::MAX,
+    output: u64::MAX,
+    cache_read: u64::MAX,
+    cache_write: u64::MAX,
+};
+
+#[test]
+fn reserved_nanos_saturates_on_four_maximal_products_rather_than_wrapping() {
+    // ONE product of a u64 count and a u64 rate fits a u128 with a whole bit to spare —
+    // (2^64-1)^2 is 2^128 - 2^65 + 1 — and that is the true sentence the old comment made. Their
+    // SUM is what it was silent about: four of them reach ~2^130 against a 2^128 ceiling. A plain
+    // `+` panics on overflow in a debug build and WRAPS in a release one, and a wrapped total
+    // lands back near zero — an astronomical ledger deriving as very nearly free and clearing
+    // every budget cap on the way past. Pinning at the top is the only reading that cannot
+    // under-bill.
+    assert_eq!(
+        MAX_RATE.reserved_nanos(&maxed_units()),
+        u128::MAX,
+        "four maximal reserved products must SATURATE, never wrap"
+    );
+}
+
+#[test]
+fn from_raw_clamps_a_finite_but_overflowing_rate_to_zero_not_to_u64_max() {
+    // 1e300 micro-units per token is a config typo with too many zeros, not a price. Times a
+    // thousand it is 1e303: finite, positive, and hugely past `u64::MAX`, so a finiteness test
+    // alone lets it through and the float-to-integer cast SATURATES — turning a typo into the
+    // largest rate expressible, an astronomical OVERCHARGE, which is the exact opposite of the
+    // defence the clamp was there to provide. The ledger's projection refuses it to zero: a rate
+    // nobody can price is priced at nothing, and config validation is what is supposed to have
+    // caught it one layer earlier.
+    let raw = busbar_substrate_values::billing::RawTierRates {
+        input: 1e300,
+        output: f64::INFINITY,
+        cache_read: -1.0,
+        cache_write: f64::NAN,
+    };
+    let got = RateNanos::from_raw(&raw);
+    assert_eq!(
+        got.input, 0,
+        "a finite-but-overflowing rate must clamp to 0, not saturate to u64::MAX"
+    );
+    assert_eq!(got.output, 0, "an infinite rate clamps to 0");
+    assert_eq!(got.cache_read, 0, "a negative rate clamps to 0");
+    assert_eq!(got.cache_write, 0, "a NaN rate clamps to 0");
+}
+
+#[test]
+fn reserved_nanos_is_byte_identical_to_the_unguarded_sum_wherever_that_sum_has_an_answer() {
+    // THE EQUIVALENCE THE DELEGATION OWES. The reference below is the arithmetic this function
+    // USED to carry, spelled out with checked operations: multiply in u128, add in u128, no
+    // saturation anywhere. Where it does not overflow it is exact, so every input for which it
+    // returns an answer is an input on which the delegating implementation must return the SAME
+    // answer, bit for bit — that is what "customer-visible behaviour is unchanged" means here.
+    // Where it overflows it had no answer to give (it panicked or wrapped), and the delegating
+    // implementation pins at the top instead. The two clauses together are a full
+    // characterisation, not a spot check.
+    fn unguarded_reference(rate: &RateNanos, units: &BTreeMap<String, u64>) -> Option<u128> {
+        RESERVED_UNITS.iter().try_fold(0u128, |acc, u| {
+            let n = units.get(*u).copied().unwrap_or(0);
+            let product = (n as u128).checked_mul(rate.reserved_rate(u) as u128)?;
+            acc.checked_add(product)
+        })
+    }
+
+    // A deterministic generator, so a failure is reproducible by seed rather than by luck.
+    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+
+    // The boundary values a money path actually meets, crossed with themselves: nothing, one,
+    // an ordinary request, a large batch, the 32-bit and 64-bit ceilings, and the ceiling of the
+    // legacy store wire (#81: an ABI-2 store tops out near 9.2e12 whole units).
+    let edges: [u64; 10] = [
+        0,
+        1,
+        2,
+        1_000,
+        1_000_000,
+        9_200_000_000_000,
+        u32::MAX as u64,
+        u64::MAX / 4,
+        u64::MAX - 1,
+        u64::MAX,
+    ];
+
+    let mut agreed_ordinary = 0usize;
+    let mut saturated = 0usize;
+
+    let mut check = |rate: RateNanos, units: &BTreeMap<String, u64>| {
+        let got = rate.reserved_nanos(units);
+        match unguarded_reference(&rate, units) {
+            Some(want) => {
+                assert_eq!(
+                    got, want,
+                    "delegation changed an ORDINARY answer: rate={rate:?} units={units:?}"
+                );
+                agreed_ordinary += 1;
+            }
+            None => {
+                assert_eq!(
+                    got,
+                    u128::MAX,
+                    "an input past the accumulator must pin at the top: \
+                     rate={rate:?} units={units:?}"
+                );
+                saturated += 1;
+            }
+        }
+    };
+
+    // Every (count, rate) pair drawn from the boundary set, applied to all four reserved units
+    // at once and to each one alone.
+    for &n in &edges {
+        for &r in &edges {
+            let rate = RateNanos {
+                input: r,
+                output: r,
+                cache_read: r,
+                cache_write: r,
+            };
+            let all: BTreeMap<String, u64> = RESERVED_UNITS
+                .iter()
+                .map(|u| ((*u).to_string(), n))
+                .collect();
+            check(rate, &all);
+
+            for u in RESERVED_UNITS {
+                let mut one = BTreeMap::new();
+                one.insert(u.to_string(), n);
+                check(rate, &one);
+            }
+        }
+    }
+
+    // Then ten thousand ordinary cards and reports: counts and rates in the range a real
+    // deployment produces, where the sum has an exact answer and the two implementations must
+    // return it identically.
+    for _ in 0..10_000 {
+        let rate = RateNanos {
+            input: next() % 100_000_000,
+            output: next() % 100_000_000,
+            cache_read: next() % 100_000_000,
+            cache_write: next() % 100_000_000,
+        };
+        let units: BTreeMap<String, u64> = RESERVED_UNITS
+            .iter()
+            .map(|u| ((*u).to_string(), next() % 10_000_000_000))
+            .collect();
+        check(rate, &units);
+    }
+
+    // And ten thousand adversarial ones, drawn from the whole u64 range so the saturating clause
+    // is exercised as hard as the ordinary one.
+    for _ in 0..10_000 {
+        let rate = RateNanos {
+            input: next(),
+            output: next(),
+            cache_read: next(),
+            cache_write: next(),
+        };
+        let units: BTreeMap<String, u64> = RESERVED_UNITS
+            .iter()
+            .map(|u| ((*u).to_string(), next()))
+            .collect();
+        check(rate, &units);
+    }
+
+    // A filter matching nothing is indistinguishable from a filter matching and passing, and so
+    // is a loop that compared nothing. Both arms must have actually run, in bulk. The ten thousand
+    // ordinary cards alone guarantee the first figure; the boundary sweep and the in-range tail of
+    // the adversarial draw carry it the rest of the way.
+    println!(
+        "reserved_nanos equivalence: {agreed_ordinary} ordinary inputs agreed exactly, \
+         {saturated} inputs past the accumulator pinned at the top"
+    );
+    assert!(
+        agreed_ordinary > 15_000,
+        "expected the ordinary-input agreement arm to run in bulk, ran {agreed_ordinary}"
+    );
+    assert!(
+        saturated > 100,
+        "expected the saturating arm to be exercised, ran {saturated}"
+    );
+}
+
+#[test]
+fn from_raw_is_byte_identical_to_the_unclamped_projection_for_every_in_range_rate() {
+    // The mirror equivalence for the rate projection. The reference is the conversion this
+    // function used to carry: multiply by a thousand, round half away from zero (#44 — card-build
+    // quantization is half-away-from-zero, and `f64::round` IS that rule), cast. It is exact for
+    // every value that fits a u64, and the delegation must agree with it on all of them; the
+    // values it does NOT have an answer for are precisely the ones the missing clamp used to turn
+    // into u64::MAX.
+    fn unclamped_reference(utok: f64) -> Option<u64> {
+        let v = (utok * 1000.0).round();
+        (v.is_finite() && v > 0.0 && v <= u64::MAX as f64).then_some(v as u64)
+    }
+
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+
+    let mut agreed = 0usize;
+    for i in 0..10_000 {
+        // Real rate cards are small decimals of micro-units per token; sweep that range densely
+        // and a few decades either side of it.
+        let utok = match i % 4 {
+            0 => (next() % 1_000_000) as f64 / 1000.0,
+            1 => (next() % 1_000) as f64,
+            2 => (next() % 1_000_000_000) as f64 / 1_000_000.0,
+            _ => (next() % 100) as f64 / 7.0,
+        };
+        let raw = busbar_substrate_values::billing::RawTierRates {
+            input: utok,
+            output: utok,
+            cache_read: utok,
+            cache_write: utok,
+        };
+        if let Some(want) = unclamped_reference(utok) {
+            assert_eq!(
+                RateNanos::from_raw(&raw).input,
+                want,
+                "delegation changed an ORDINARY rate projection: utok={utok}"
+            );
+            agreed += 1;
+        }
+    }
+    println!("from_raw equivalence: {agreed} in-range rate projections agreed exactly");
+    assert!(
+        agreed > 7_000,
+        "expected the in-range agreement arm to run in bulk, ran {agreed}"
+    );
+}
+
+#[test]
+fn reserved_nanos_does_not_wrap_an_astronomical_bill_down_to_nearly_free() {
+    // THE RELEASE-BUILD CONSEQUENCE, in exact numbers. A debug build panics on the overflowing
+    // add, which is loud. A release build WRAPS, which is silent, and silence is the dangerous
+    // half: the total lands back near zero and an enormous ledger derives as very nearly free,
+    // clearing every budget cap on the way past.
+    //
+    // Two products chosen to straddle the ceiling by exactly one:
+    //   input      u64::MAX  x  u64::MAX  =  2^128 - 2^65 + 1
+    //   output        2^33   x     2^32   =           2^65
+    //   true total                        =  2^128 + 1
+    // which a wrapping `+` reports as ONE nano-unit. Saturation reports the top instead, and an
+    // over-the-top figure is the only reading of an over-the-top bill that cannot under-bill.
+    let rate = RateNanos {
+        input: u64::MAX,
+        output: 1u64 << 32,
+        cache_read: 0,
+        cache_write: 0,
+    };
+    let mut units = BTreeMap::new();
+    units.insert(UNIT_INPUT.to_string(), u64::MAX);
+    units.insert(UNIT_OUTPUT.to_string(), 1u64 << 33);
+
+    // The true sum is 2^128 + 1, one past the accumulator.
+    let product_input = (u64::MAX as u128) * (u64::MAX as u128);
+    assert_eq!(
+        product_input,
+        (1u128 << 127) + ((1u128 << 127) - (1u128 << 65) + 1),
+        "the single product is 2^128 - 2^65 + 1, which does fit"
+    );
+
+    assert_eq!(
+        rate.reserved_nanos(&units),
+        u128::MAX,
+        "a total one past the ceiling must pin at the top, NOT wrap to 1"
+    );
+}

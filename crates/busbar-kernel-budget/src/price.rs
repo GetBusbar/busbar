@@ -99,23 +99,22 @@ impl RateNanos {
         }
     }
 
-    /// The nano-unit cost of a unit map's reserved four at this rate: four multiply-adds in u128.
+    /// The nano-unit cost of a unit map's reserved four at this rate.
     ///
-    /// One product cannot overflow the accumulator — a u64 count times a u64 nano rate is inside a
-    /// u128 by a whole bit — but their SUM can, and four maximal products are past the top of it.
-    /// So the running total saturates. A plain add panics on overflow in a debug build and wraps in
-    /// a release one, and a wrapped total lands back near zero: an over-the-top ledger deriving as
-    /// nearly free and escaping every budget cap. Pinning at the maximum instead gives an
-    /// astronomically over-cap figure, which is what the caller above then pins into cents. This is
-    /// the same saturation posture the cross-model sum and the cent projection already take, applied
-    /// one level lower so no layer of the money fold is the exception.
+    /// THE ARITHMETIC IS [`busbar_kernel_ledger::cost::nanos_sum`]'S, on the same terms the rate
+    /// projection above already reads [`busbar_kernel_ledger::cost::nano_rate`]: what is left here
+    /// is which rate each reserved key prices at, and the multiply, the sum and the saturation at
+    /// both steps belong to the one fold. This function's own copy of that fold was correct, which
+    /// is exactly what made it dangerous to keep — a THIRD copy in the kernel's cost projection had
+    /// no overflow guard at all, and two right copies are no evidence about a third. One
+    /// implementation is the only arrangement in which there is nothing left to drift.
     #[inline]
     pub fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
-        RESERVED_UNITS.iter().fold(0u128, |acc, u| {
-            let n = units.get(*u).copied().unwrap_or(0);
-            let amount = u128::from(n).saturating_mul(u128::from(self.reserved_rate(u)));
-            acc.saturating_add(amount)
-        })
+        busbar_kernel_ledger::cost::nanos_sum(
+            RESERVED_UNITS
+                .iter()
+                .map(|u| (units.get(*u).copied().unwrap_or(0), self.reserved_rate(u))),
+        )
     }
 }
 

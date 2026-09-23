@@ -46,6 +46,42 @@ pub fn nano_rate(micro_per_unit: f64) -> u64 {
     }
 }
 
+/// Fold quantity-and-rate pairs into one nano-unit total: multiply each pair, sum the products,
+/// and SATURATE at both steps.
+///
+/// THE ONLY MULTIPLY-AND-SUM ON THE MONEY PATH, now. It used to be three: this crate's own lane
+/// fold, the admission unit's reserved-four fold, and a third in the kernel's cost projection that
+/// nobody had counted — and the third one guarded nothing. Two copies of a rounding rule drift
+/// (which is the incident [`nano_rate`] narrates); three copies of an OVERFLOW rule had already
+/// drifted, because the two written down saturated and the one nobody had written down did not.
+///
+/// BOTH OPERATIONS ARE GUARDED, AND THE SECOND IS THE ONE THAT MATTERS. A single product cannot
+/// overflow the accumulator — a `u64` quantity times a `u64` rate is inside a `u128` by a whole bit
+/// — and a comment that says only that is TRUE AND BESIDE THE POINT, which is exactly how the
+/// unguarded copy read and exactly why it survived review. It is the SUM that overflows: four
+/// maximal products reach about 2^130 against a 2^128 ceiling. A plain `+` panics on overflow in a
+/// debug build and WRAPS in a release one, and the wrap is the dangerous half because it is silent
+/// — a total one past the ceiling wraps to ONE nano-unit, so an astronomical ledger derives as very
+/// nearly free and clears every budget cap on the way past. Pinning at the top is the only reading
+/// of an over-the-top bill that cannot UNDER-bill, and it is what the caller above then pins into
+/// cents.
+///
+/// Below the ceiling this is ordinary exact integer arithmetic: saturation changes no answer that
+/// the unguarded sum was able to give, so every bill a deployment actually produces is unmoved.
+///
+/// #81 keeps this integer: no `f32`/`f64` touches a quantity or a rate here. The only decimal on
+/// the money path is the one [`nano_rate`] converts, once, at card-build time.
+pub fn nanos_sum<I>(pairs: I) -> u128
+where
+    I: IntoIterator<Item = (u64, u64)>,
+{
+    pairs
+        .into_iter()
+        .fold(0u128, |acc, (quantity, nanos_per_unit)| {
+            acc.saturating_add(u128::from(quantity).saturating_mul(u128::from(nanos_per_unit)))
+        })
+}
+
 /// The uncached-input meter class, as a card entry is keyed.
 pub const CLASS_INPUT: &str = "input";
 /// The response meter class.
@@ -427,14 +463,14 @@ impl LaneRates<'_> {
 
     /// The nano-unit cost of a whole usage report at this lane's rates: one multiply-add per line.
     ///
-    /// A quantity times a rate cannot overflow the wide accumulator, and the running sum saturates
-    /// rather than wrapping, so an adversarially large report pins at the top instead of landing
-    /// back near zero — which is to say, instead of billing as free.
+    /// The arithmetic is [`nanos_sum`]'s rather than a copy of it — this lane view's job is to say
+    /// which rate each line prices at, and the multiply, the sum and the saturation at both steps
+    /// belong to the one fold every money path shares.
     pub fn nanos(&self, lines: &[UsageLine]) -> u128 {
-        lines.iter().fold(0u128, |acc, l| {
-            let amount = u128::from(l.quantity)
-                .saturating_mul(u128::from(self.nanos_per_unit(l.class.as_str())));
-            acc.saturating_add(amount)
-        })
+        nanos_sum(
+            lines
+                .iter()
+                .map(|l| (l.quantity, self.nanos_per_unit(l.class.as_str()))),
+        )
     }
 }
