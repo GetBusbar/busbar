@@ -456,7 +456,7 @@ are IN this file — nothing outside it does.
 | 13 | **Marketing = vision; docs = truth.** A vision↔truth delta is a decision (agree/disagree → new row here), not an auto-fix. Owner updates marketing to fact-based AFTER code lands. | (process) |
 | 14 | **THE AUTHORITATIVE DOC IS THIS FILE, `docs/design/BUSBAR-1.6.0.md`, AND NOTHING ELSE.** The two files this row used to name alongside it — `VISION-1.6.0.md` and `1.6.0-plane-extraction-LOCKED.md`, together with `DECISIONS.md`, `1.6.0-PLAN.md` and `1.6.0-plane-abi-taxonomy.md` — were absorbed VERBATIM into Parts 1/3/2/5/4 and DELETED in `49ab4aca2`. They are Parts, not files: a citation to any of those five filenames is a BROKEN citation and must be repointed at the Part that holds it, never chased. Authority is the order in this file's header: Part 1 > Part 3 > Part 2 > Part 5. Every other design doc is reconciled to this file or deleted. No stale line may survive for an agent to resurrect — including a pointer to a file that no longer exists. | doc-reconciliation pass; no live sentence in `docs/design/` names a deleted predecessor as authoritative |
 | 15 | **Banned words:** defer / 1.6.x / later / "out of scope for 1.6.0". 1.6.0-or-bust. Feature-need changes come to owner with a real case; agent-laziness = fix the root. | (process) |
-| 16 | **Worst-case ship date: Wed 2026-10-08 17:00 PDT.** Moves only on a named MAJOR EVENT (Commit-C non-decomposable + divergence cascade; systemic HIGH reopening money path; fleet outage). | Part 5 "Dates" (this file) — same floor, restated there; drift between the two is the gate |
+| 16 | ~~**Worst-case ship date: Wed 2026-10-08 17:00 PDT.**~~ **VOID — owner ruling 10 (2026-09-23): *"forget a date, i want a plan for DONE"*. Three mutually inconsistent dates survived in this file (2026-10-08 twice, 2026-09-25 once); all three are void. The plan is ordered by dependency.** Moves only on a named MAJOR EVENT (Commit-C non-decomposable + divergence cascade; systemic HIGH reopening money path; fleet outage). | Part 5 "Dates" (this file) — same floor, restated there; drift between the two is the gate |
 | 17 | **One feature per plane, no `root-*`.** The per-plane compile knob is exactly `plane-<x>` (pull the plane crate + enable core's plane edge). END STATE default = `["auth-admin-tokens","hook-ranking","plane-llm","plane-mcp","plane-a2a","plane-streaming","plane-decision"]`. The whole `root-*` family is gone (`teller-waist` is unconditional; the tower dep folds where used). The collapse runs inside the switch-over cutover cleanup — never as a standalone edit (dropping `root-llm` before `teller-waist` is unconditional would unwire the llm unit-plane path). | build (both distributions) green + target default line |
 | 18 | **The fourth plane is STREAMING, not voice.** Voice is ONE capability/dialect inside the streaming plane; streaming can carry more than voice. No `voice` as a plane/kind/crate/feature name: the streaming plane's crate is `busbar-plane-streaming`, feature `plane-streaming`; ALL logic (dialects incl. voice, codecs, modes) lives in that one plane crate — no `busbar-streaming-codec` crate (#6/#39). The rename is byte-identical (naming/packaging, not behavior). | grep: no `voice` as a plane/kind/crate/feature name; the streaming plane is `streaming` |
 | 19 | **busbar-core and busbar-voice are DELETED in 1.6.0 — the deletion is the release.** #1 requires core to name zero planes; #12 makes the internal re-architecture the release. busbar-core dissolves per #36/#37 into `busbar-kernel` (loop) + the 8 `busbar-kernel-<name>` workflow crates + `busbar-core-{admin,oauth2,substrate}`; the fat plane crates collapse to ONE `busbar-plane-<x>` each (codecs/dialects fold IN, #39); busbar-voice is deleted (voice = a streaming dialect, #18). Byte-identical LOC move, oracle-proven; ~30-crate in-tree end state (#39). Executed as a parallel wave fan-out. | kind-isolation-ship:legacy-drain = 0; ~30-crate in-tree end state; shadow-oracle byte-green on every money move |
@@ -962,7 +962,7 @@ dependency order, not a stop-the-world sequence.
 
 ## Dates
 - **Owner-need target:** throw everything, no quality drop, no defer.
-- **Honest worst-case floor: Wed 2026-10-08 17:00 PDT** (never slips silently; moves only on a named
+- ~~**Honest worst-case floor: Wed 2026-10-08 17:00 PDT**~~ **VOID — owner ruling 10. (was: never slips silently; moves only on a named
   MAJOR EVENT, #16).
 
 ## DONE = DEV-GREEN (the definition every wave drives to)
@@ -1404,6 +1404,30 @@ in the default `pull_request` types.
 ---
 
 # PART 7 — THE MAP TO DONE
+
+> **SUPERSEDED 2026-09-23. CURRENT STATE NOW LIVES IN `1.6.0-TODO.md`, WHICH IS MEASURED.**
+>
+> A ten-slice sweep over all 3,915 tracked files checked 118 structural claims in this document and
+> found **61 wrong** — 44 stale because the code moved ahead, 17 false because the claim was never
+> true. The concentration is here: Part 7 is 2,508 lines, 64% of this file, and it is a SNAPSHOT.
+> A blueprint that carries a photograph of the building site goes stale every time anyone lays a
+> brick, which is exactly what happened.
+>
+> **The architecture (Parts 0-6) says what 1.6.0 IS. The todo says where the code stands against
+> it, and it is re-measurable by running the gates.** Nothing below this line is authoritative.
+> Where it disagrees with `1.6.0-TODO.md`, the todo wins; where it disagrees with Parts 0-6, the
+> architecture wins.
+>
+> Known-stale here, corrected in the todo: 22 groups (it is 23) · 12 construction FAIL rows (16) ·
+> 57 crates (49) · plugin closure of 6 (5) · `ceiling-rose` stale base (resolves fine, 10 raises
+> not 123) · 817 remote branches (the collapse landed; origin has 4) · `consolidated/1.6.0` and
+> `integration/1.6.0-dev-green` (neither ref exists) · "`METER_CLASSES` is read by nothing" (it is
+> read on three production paths — Law 6 holds) · the whole section on the money book sitting in
+> every plugin's closure (fixed; the shapes moved to `busbar-contract`).
+>
+> **ARCHITECT'S PROPOSAL, OWNER'S CALL:** delete Part 7 outright once its load-bearing content is
+> migrated into Parts 0-6. That is the owner's own rule — *"you dont blueprint a building and put
+> 20 asterisks for new rooms, you update the blueprint"* — and 64% of this document is asterisks.
 
 **This Part is a MAP, not a log.** It says where the tree is, what is left, and what only the owner
 can decide. Everything below is state and goes stale — unlike Parts 1–6. **When an item is done,
