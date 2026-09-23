@@ -526,7 +526,7 @@ one thing.
   their only production implementor is `busbar-core`. The work order marks `plane_host/` (8,277
   lines) **deleted, not moved**: "once planes speak `busbar-contract`'s `Plane` trait to
   `busbar-kernel`, there is no host to shim" (`1.6.0-composition-root-plan.md:585`,
-  quoted at `wave-d-work-order.md:46`). It is the one module in `busbar-core` with `unsafe` — 245
+  quoted at `1.6.0-wave-d-work-order.md:46`). It is the one module in `busbar-core` with `unsafe` — 245
   occurrences.
 - The **44-slot hot ABI** goes with it: `build_plane_host_vtable`
   (`busbar-core/src/plane_host/vtable.rs:36`) is the only builder.
@@ -549,12 +549,12 @@ one thing.
 **Survives:** K1–K5 (the five kernel traits), C1–C16 (the whole `busbar-contract` wall), the seven
 transports on `Transport`, `busbar-contract-transport`'s three handles, the `busbar-unit-*` ports
 (37 traits, subject to the merges below), the WAL/journal/ledger seams D1–D9, the config seam G1–G12
-(relocated to the binary, not deleted — `wave-d-work-order.md:45`), the secret-ref seam R1–R9, the
+(relocated to the binary, not deleted — `1.6.0-wave-d-work-order.md:45`), the secret-ref seam R1–R9, the
 five cold plugin kinds P1–P6 (the *manifest windows* are a parity obligation and outlive core), and
 the composition root X1–X5.
 
 **Named gaps in the D33 plan — seams with no destination:** `admin/restart.rs`
-(`wave-d-work-order.md:44`), `metrics.rs` (`:55`), `observability.rs` (`:57`), `export/` (`:59`),
+(`1.6.0-wave-d-work-order.md:44`), `metrics.rs` (`:55`), `observability.rs` (`:57`), `export/` (`:59`),
 `oauth_as/` (`:101`), `telemetry.rs` (`:86`). Six seams that D33 currently deletes without a home.
 
 ### 3.3 The target shape after D33 — one seam, one owner unit
@@ -579,7 +579,7 @@ object owned by the binary, with `--migrate-config` as a fourth off-node verb (i
 belongs beside `busbar operator keygen`). The four rebuild paths already run the identical five-step
 merge (G1, G3, G5, G6); making that a single function with three entry verbs removes the class of
 bug where one path forgets `merge_into`. Owner unit: **`crates/busbar` (the binary)**, per
-`wave-d-work-order.md:45`. The 122 frozen types move with it, unchanged. Respects §4.7 (the
+`1.6.0-wave-d-work-order.md:45`. The 122 frozen types move with it, unchanged. Respects §4.7 (the
 dual-controlled key list, `config-stability-gate`), §4.8 (every boot/reload seals a `Policy`), §1.3
 (config schemas are open vocabulary). Proved by: `config-stability-gate --check` staying green
 across the move (it reads a git ref, so a relocation that changed a wire key is red by
