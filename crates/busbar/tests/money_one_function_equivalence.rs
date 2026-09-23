@@ -126,47 +126,103 @@ fn ledger_card(rates: [f64; 4], fee: i64) -> RateCard {
     )
 }
 
-/// **`v1/service.rs:109 derive_spend_micros_row`, REPRODUCED.** The admin crate's private flat
-/// pricer, copied here verbatim because the test cannot reach a private item. It is three lines and
-/// they are the whole of it: project the row's four tier fields onto the name-keyed map, resolve the
-/// alias, call `CostModel::derive_spend_micros`. A change to the original that this copy does not
-/// track would show up as this file's numbers ceasing to match the endpoint's.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE ADMIN READ — CALLED, NEVER REPRODUCED.
+//
+// These three used to be COPIES of `busbar-core-admin`'s private `derive_spend_micros_row`,
+// `derive_spend_micros_row_at_card` and `row_priced_at_ms`, carried here because the test could
+// not reach a private item. The copy is the thing this file exists to disprove: it drifted — the
+// real dated pricer grew `cost.resolve_model_alias(model)` and the copy never did, invisible
+// because every fixture below serves one unaliased lane — and neutering ALL THREE real pricers to
+// `Default::default()` reddened eight tests in `busbar-core-admin` and left every case in this
+// file byte-identical, including `d1`'s "the endpoint agrees with the function".
+//
+// So the admin crate now exposes them through its existing `test-support` feature, as the
+// `#[cfg]`-gated `v1::service::read_path_money` — a `pub use` and deliberately not a wrapper,
+// because a wrapper restates each signature and a restated signature is the same copy in a smaller
+// place. What is left HERE is the ARGUMENT SHAPING only: a metering row's four tier fields, which
+// is what the endpoint hands its pricers. No arithmetic, no alias resolution, no instant rule —
+// those are the endpoint's, reached by name, and a change to any of them reaches this file as a
+// compile error rather than as two numbers that quietly stopped meaning the same thing.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+use busbar_core_admin::v1::service::read_path_money as admin;
+
+/// One metering row in the shape `GET /api/v1/admin/usage` aggregates before it prices: the four
+/// reserved tier counts under the row's OWN JSON-contract field names, plus the request count.
+/// `spend_micros` is the field the pricers WRITE, so it starts at zero here and is never read.
+fn admin_row(
+    counts: &[(&'static str, u64)],
+    requests: u64,
+) -> busbar_kernel::admin::v1::contract::UsageBreakdown {
+    let at = |unit: &str| {
+        counts
+            .iter()
+            .find(|(k, _)| *k == unit)
+            .map(|(_, v)| *v)
+            .unwrap_or(0)
+    };
+    busbar_kernel::admin::v1::contract::UsageBreakdown {
+        tokens_input: at(INPUT),
+        tokens_output: at(OUTPUT),
+        tokens_cache_read: at(CACHE_READ),
+        // The row's field name for the cache-WRITE tier; the endpoint maps it onto `cache_write`.
+        tokens_cache_creation: at(CACHE_WRITE),
+        requests,
+        spend_micros: 0,
+    }
+}
+
+/// The alias seam the admin read resolves a row's CONFIGURED model name through before it looks up
+/// a rate. `CostModel::resolve_model_alias` is the identity today and these fixtures configure no
+/// alias, so it moves no figure here — but the call is the endpoint's own, so the day the seam
+/// stops being the identity this proof moves with it instead of silently disagreeing.
+fn alias_seam() -> busbar_kernel::cost::CostModel {
+    kernel_cost_model(None, 0)
+}
+
+/// `GET /admin/usage`'s FLAT derivation — `v1/service.rs:109 derive_spend_micros_row`, CALLED.
 fn admin_row_flat(
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     counts: &[(&'static str, u64)],
     requests: u64,
 ) -> i64 {
-    let units: BTreeMap<String, u64> = counts
-        .iter()
-        .filter(|(_, v)| *v != 0)
-        .map(|(k, v)| ((*k).to_string(), *v))
-        .collect();
-    let resolved = cost.resolve_model_alias(model);
-    cost.derive_spend_micros([(resolved, &units)].into_iter(), requests, true)
+    admin::derive_spend_micros_row(cost, model, &admin_row(counts, requests))
 }
 
-/// **`v1/service.rs:216 derive_spend_micros_row_at_card`, REPRODUCED**, for the same reason.
+/// `GET /admin/usage`'s DATED derivation (#79) — `v1/service.rs`'s
+/// `derive_spend_micros_row_at_card`, CALLED, alias seam and all.
+///
+/// That function now prices through `busbar_kernel_ledger::cost::price_in_view` — THE ONE
+/// FUNCTION — and so it resolves the card ITSELF, from a history view and the row's instant,
+/// because #79 belongs in one place and that place is `HistoryView::card_at`. "Price this row at
+/// THIS card" is therefore spelled here as what it has always meant: price it against a history
+/// whose only entry is that card, in force from instant zero. Every instant resolves to the same
+/// entry in a one-entry history, so no figure below moves — the spelling changed, not the
+/// arithmetic.
 fn admin_row_at_card(
     card: &RateCard,
+    cost: &busbar_kernel::cost::CostModel,
     model: &str,
     counts: &[(&'static str, u64)],
     requests: u64,
 ) -> i64 {
-    let lines = usage_lines(
-        &counts
-            .iter()
-            .copied()
-            .filter(|(_, q)| *q != 0)
-            .collect::<Vec<_>>(),
-    );
-    ledger_cost::derive_spend_micros(card, [(model, &lines[..])].into_iter(), requests, true)
+    let only = History::opening(card.clone(), 0);
+    admin::derive_spend_micros_row_at_card(
+        &only.current(),
+        0,
+        card,
+        cost,
+        model,
+        &admin_row(counts, requests),
+    )
 }
 
-/// **`v1/service.rs:201 row_priced_at_ms`, REPRODUCED.** The instant `GET /admin/usage` resolves a
-/// metering row at: the later of the UTC-day bucket's start and the row's own price era.
+/// The instant `GET /admin/usage` resolves a metering row at — `v1/service.rs:201
+/// row_priced_at_ms`, CALLED.
 fn admin_row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
-    bucket_start_secs.saturating_mul(1_000).max(priced_from_ms)
+    admin::row_priced_at_ms(bucket_start_secs, priced_from_ms)
 }
 
 /// One row of the printed table.
@@ -225,7 +281,7 @@ fn d1_a_rate_card_edit_splits_the_tree_into_two_answers() {
         .iter()
         .map(|arrived| {
             let (_seq, card) = view.card_at(*arrived).expect("both instants are covered");
-            admin_row_at_card(card, LANE, &counts, 1)
+            admin_row_at_card(card, &alias_seam(), LANE, &counts, 1)
         })
         .sum();
 
@@ -427,11 +483,13 @@ fn d3_the_two_copies_of_reserved_nanos_disagree_at_the_top_of_the_range() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// D4 — A PRESENT CARD SILENT ABOUT A LANE. #42 says REFUSE; every derivation in the tree says 0.
+// D4 — A PRESENT CARD SILENT ABOUT A LANE. #42 says REFUSE. The one function refuses; the BUDGET
+// DOOR now blocks (it decides admission, so it must not admit what it cannot price); the two READ
+// projections still say 0, and that residual is what M-16 still holds open.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn d4_an_unpriced_lane_bills_as_free_on_every_read_and_refuses_only_in_the_one_function() {
+fn d4_an_unpriced_lane_blocks_at_the_door_refuses_in_the_one_function_and_still_reads_free() {
     rule("D4  a present card that does not name the lane (#42)");
 
     let card = ledger_card([3.0, 16.0, 0.0, 0.0], 2);
@@ -477,11 +535,22 @@ fn d4_an_unpriced_lane_bills_as_free_on_every_read_and_refuses_only_in_the_one_f
         format!("{:?}", one.as_ref().err()),
     );
 
-    // Nineteen million micro-units of real consumption, and every derivation in the tree charges
-    // the flat fee and nothing else.
+    // Nineteen million micro-units of real consumption. The two READ projections still charge the
+    // flat fee and nothing else — M-16, unchanged here, and PARKed because moving them moves the
+    // row count and the spend figure on `GET /admin/usage`.
     assert_eq!(ledger_micros, 20_000, "the fee alone");
     assert_eq!(kernel_micros, 20_000, "the fee alone");
-    assert_eq!(door_cents, 2, "the fee alone");
+    // THE DOOR NO LONGER ADMITS WHAT IT CANNOT PRICE. `Pricer::derive_spend_cents` gates admission
+    // against a `budget:` cap, so an unpriced model deriving as FREE ran uncapped on spend — #42's
+    // silent 0 on the one path where the answer decides whether the request happens at all. It now
+    // pins at the top, which is the fail-closed value this function already uses for its overflow
+    // arm: an astronomically over-cap spend that blocks rather than one that admits.
+    assert_eq!(
+        door_cents,
+        i64::MAX,
+        "#42: a present card silent about the lane must not price it at the flat fee on the \
+         ADMISSION path — it blocks"
+    );
     assert!(
         matches!(one, Err(ledger_cost::MoneyError::LaneUnpriced { .. })),
         "#42: rate_card PRESENT and the class is not priced ⇒ REFUSE, never a silent 0"
@@ -747,7 +816,7 @@ fn d9_a_sub_day_back_dated_correction_is_a_no_op_for_the_admin_read() {
     // ── WHAT THE ADMIN READ DOES.
     let admin_instant = admin_row_priced_at_ms(bucket_start_secs, priced_from_ms);
     let (_seq, admin_card) = view.card_at(admin_instant).expect("covered");
-    let admin_figure = admin_row_at_card(admin_card, LANE, &counts, 0);
+    let admin_figure = admin_row_at_card(admin_card, &alias_seam(), LANE, &counts, 0);
 
     // ── WHAT #79 SAYS: the posting's OWN instant.
     let one = ledger_cost::price_ledger(
@@ -807,7 +876,7 @@ fn e_every_implementation_agrees_on_the_case_they_were_all_written_for() {
         ledger_cost::derive_spend_micros(&card, [(LANE, &lines[..])].into_iter(), requests, true);
     let kernel_micros = kernel.derive_spend_micros([(LANE, &units)].into_iter(), requests, true);
     let admin_flat = admin_row_flat(&kernel, LANE, &counts, requests);
-    let admin_dated = admin_row_at_card(&card, LANE, &counts, requests);
+    let admin_dated = admin_row_at_card(&card, &kernel, LANE, &counts, requests);
     let usage = {
         let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
         let token = busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal);

@@ -3078,3 +3078,349 @@ mod usage_as_of {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE BANK AUDITOR'S ONE QUESTION — ONE RECORDED USAGE, DRIVEN THROUGH EVERY SURFACE THAT
+// REPORTS OR ENFORCES IT.
+//
+// "Show me that the number you billed is the number your own books say." A deployment that
+// answers that question five ways has not answered it. This module records ONE consumption and
+// asks every surface what it cost, in one unit, so the answers can be compared as integers
+// rather than as prose.
+//
+// The governing lines, each quoted where it is applied below:
+//   #79 `docs/design/BUSBAR-1.6.0.md:423` — rate cards are a DATED HISTORY; a posting prices at
+//        the card in force at its own `arrived_ms`.
+//   #42 `:367` — a card PRESENT and silent about a hit class is a REFUSAL; a silent zero is right
+//        ONLY when the card is ABSENT.
+//   #81 `:425` — counts are exact fixed-point decimals at scale 6; no `f32`/`f64` on any money path.
+//   #71 `:409` — pricing is read-time, in the kernel.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod one_recorded_usage_every_surface {
+    use super::*;
+    use busbar_kernel_ledger::cost::{
+        self as ledger_cost, Author, CardEntryDraft, CurrencyCode, History, LedgerEntry, RateCard,
+        TierRates,
+    };
+
+    /// The one lane the recorded usage was served on — a metering row's `model`, a card entry's
+    /// lane, and a `LedgerEntry`'s `lane`, spelled once so no surface can be reading another name.
+    const LANE: &str = "m-openai-chat";
+    const PROVIDER: &str = "openai-chat";
+    const KEY: &str = "vk_auditor";
+    /// One thousand input tokens per posting, so a rate of N micro-units per token reads back as
+    /// exactly `N * 1_000` micro-units and the two cards separate arithmetically.
+    const TOKENS: u64 = 1_000;
+    const DAY: u64 = busbar_kernel::governance::METERING_BUCKET_SECS;
+
+    /// THE CARD THE FIRST POSTING WAS EARNED UNDER — 27 micro-units per input token.
+    const RATE_EARNED: f64 = 27.0;
+    /// THE CARD IN FORCE NOW — 12 micro-units per input token. Every flat surface prices the whole
+    /// window at this one, whatever the postings were actually earned under.
+    const RATE_CURRENT: f64 = 12.0;
+
+    /// A COMPLETE one-lane card at `micro_per_token` micro-units per input token, no flat fee.
+    ///
+    /// No fee, deliberately: a flat fee is a second pricing dimension (#44) and this fixture is
+    /// about the FIRST one. A fee here would add the same constant to every surface and hide the
+    /// size of the disagreement rather than expose it.
+    fn card(micro_per_token: f64) -> RateCard {
+        RateCard::from_config(
+            Some([(
+                LANE,
+                TierRates {
+                    input: micro_per_token,
+                    ..Default::default()
+                },
+            )]),
+            0,
+        )
+    }
+
+    /// The cost model every FLAT surface prices through: the card in force NOW, and only that one.
+    /// This is what the composition root hands `GET /groups/{g}/usage`, `GET /keys/{id}/usage` and
+    /// the budget gate.
+    fn current_cost() -> busbar_kernel::cost::CostModel {
+        let rates = std::collections::BTreeMap::from([(
+            LANE.to_string(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: RATE_CURRENT,
+                output_utok: 0.0,
+                cache_read_utok: 0.0,
+                cache_write_utok: 0.0,
+            },
+        )]);
+        busbar_kernel::cost::CostModel::resolve_parts(
+            Some(&rates),
+            0,
+            &std::collections::BTreeMap::new(),
+        )
+    }
+
+    /// The dated history: the earned card from instant zero, the current card from `edit_ms`.
+    fn history(edit_ms: u64) -> History {
+        let mut history = History::opening(card(RATE_EARNED), 0);
+        history.append(CardEntryDraft {
+            effective_from: edit_ms,
+            effective_until: None,
+            card: card(RATE_CURRENT),
+            appended_at: edit_ms,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        history
+    }
+
+    /// THE RECORDED USAGE, as the METERING book holds it: two rows in one UTC day, one per price
+    /// era, because a card edit inside a day opens a second row at the edit.
+    fn metering(bucket: u64, edit_ms: u64) -> Arc<busbar_kernel::governance::GovState> {
+        let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+        for priced_from_ms in [0, edit_ms] {
+            busbar_api::Store::add_metering(
+                store.as_ref(),
+                &busbar_api::MeteringDelta {
+                    key_id: KEY.to_string(),
+                    bucket,
+                    model: LANE.to_string(),
+                    provider: PROVIDER.to_string(),
+                    tokens_input: TOKENS,
+                    tokens_output: 0,
+                    tokens_cache_read: 0,
+                    tokens_cache_write: 0,
+                    requests: 1,
+                    billable_requests: 1,
+                    key_group_at_use: String::new(),
+                    pricing_version: String::new(),
+                    priced_from_ms,
+                },
+            )
+            .expect("the memory store accepts a metering delta");
+        }
+        Arc::new(
+            busbar_kernel::governance::GovState::new(store, None).expect("governance builds"),
+        )
+    }
+
+    /// THE SAME RECORDED USAGE, as the ENFORCEMENT book holds it: one cell per (bucket, window),
+    /// carrying the summed counts and NO INSTANT AT ALL. That absence is the finding, not an
+    /// omission in this fixture — see the module note on `UsageLedger` below.
+    fn enforcement(now: u64) -> Arc<busbar_kernel::governance::GovState> {
+        let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+        let ledger = busbar_contract::records::UsageLedger {
+            requests: 2,
+            billable_requests: 2,
+            models: vec![busbar_contract::records::ModelTokens {
+                model: LANE.to_string(),
+                usage_units: std::collections::BTreeMap::from([(
+                    busbar_api::UNIT_INPUT.to_string(),
+                    TOKENS * 2,
+                )]),
+            }],
+        };
+        for window in [
+            busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_TOTAL, now),
+            busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_DAY, now),
+        ] {
+            busbar_contract::records::RecordStore::put_usage(store.as_ref(), KEY, window, &ledger)
+                .expect("the memory store accepts a usage ledger");
+        }
+        Arc::new(
+            busbar_kernel::governance::GovState::new(store, None).expect("governance builds"),
+        )
+    }
+
+    /// The recorded usage as the ONE FUNCTION's input: one [`LedgerEntry`] per posting, each
+    /// carrying the instant it arrived (#79's resolution key).
+    fn one_function_slice(bucket: u64, edit_ms: u64) -> Vec<LedgerEntry> {
+        [bucket.saturating_mul(1_000), edit_ms]
+            .into_iter()
+            .map(|arrived_ms| {
+                LedgerEntry::new(LANE, arrived_ms).with_whole(busbar_api::UNIT_INPUT, TOKENS)
+            })
+            .collect()
+    }
+
+    /// One cent is ten thousand micro-units. Stated once so a cents surface and a micro surface
+    /// can be compared as one integer rather than by eye.
+    const MICROS_PER_CENT: i64 = 10_000;
+
+    fn row(label: &str, figure: impl std::fmt::Display) {
+        eprintln!("  {label:<56} {figure:>18}");
+    }
+
+    /// **THE AUDITOR'S QUESTION, ASKED.** One recorded usage; every surface that reports or
+    /// enforces it; one unit.
+    #[tokio::test]
+    async fn one_recorded_usage_is_one_number_on_every_surface() {
+        let now = busbar_kernel::store::now();
+        let bucket = busbar_kernel::governance::metering_bucket(now) - DAY;
+        // The card edit lands INSIDE the recorded day, which is the case every flat surface gets
+        // wrong: half the day was earned under one card and half under another.
+        let edit_ms = bucket.saturating_add(DAY / 2).saturating_mul(1_000);
+
+        let hist = history(edit_ms);
+        let cost = current_cost();
+
+        // ── SURFACE 5: THE ONE FUNCTION — money = f(ledger_slice, card_history) (#79).
+        let one = ledger_cost::price_ledger(
+            &one_function_slice(bucket, edit_ms),
+            &hist,
+            CurrencyCode::USD,
+        )
+        .expect("both postings are priced by the card in force at their own instant");
+        let one_micros = i64::try_from(one.micros()).expect("the figure fits");
+
+        // ── SURFACE 1: GET /api/v1/admin/usage — the METERING book, through the real service.
+        let admin = {
+            let app = crate::new_test_app()
+                .governance(metering(bucket, edit_ms))
+                .cost(current_cost())
+                .build();
+            AdminService::new(app)
+                .with_rate_history(super::dated_rate_card_history::source(history(edit_ms)))
+                .get_usage(Some(bucket), None)
+                .await
+                .expect("usage read")
+                .total
+                .spend_micros
+        };
+
+        // ── SURFACES 2/3/4: the ENFORCEMENT book. Each is the real call the handler makes.
+        let gov = enforcement(now);
+        //    GET /api/v1/admin/groups/{name}/usage — service_operations.rs:371.
+        let group_cents = gov
+            .derived_bucket_usage(
+                &cost,
+                KEY,
+                busbar_kernel::governance::WINDOW_DAY,
+                true,
+                now,
+            )
+            .expect("the group bucket reads")
+            .spend_cents;
+        //    GET /api/v1/admin/keys/{id}/usage — keys.rs:1783, via `usage_for` -> WINDOW_TOTAL.
+        let key_cents = gov
+            .derived_bucket_usage(
+                &cost,
+                KEY,
+                busbar_kernel::governance::WINDOW_TOTAL,
+                true,
+                now,
+            )
+            .expect("the key bucket reads")
+            .spend_cents;
+        //    THE BUDGET GATE — governance/state.rs:1970, the figure `try_admit` compares to a cap.
+        let gate_cents = cost.derive_spend_cents(
+            [(
+                LANE,
+                &std::collections::BTreeMap::from([(
+                    busbar_api::UNIT_INPUT.to_string(),
+                    TOKENS * 2,
+                )]),
+            )]
+            .into_iter(),
+            2,
+            true,
+        );
+        //    THE HOOK SEAM / budget_state — governance/state.rs:1691, the same fold in micro-units.
+        let hook_micros = cost.derive_spend_micros(
+            [(
+                LANE,
+                &std::collections::BTreeMap::from([(
+                    busbar_api::UNIT_INPUT.to_string(),
+                    TOKENS * 2,
+                )]),
+            )]
+            .into_iter(),
+            2,
+            true,
+        );
+
+        eprintln!("\n── ONE RECORDED USAGE: 2 x {TOKENS} input tokens on `{LANE}`, one posting");
+        eprintln!("   under a {RATE_EARNED} card and one under a {RATE_CURRENT} card ────────────");
+        row("THE ONE FUNCTION   price(ledger, history)  [micro]", one_micros);
+        row("GET /admin/usage                           [micro]", admin);
+        row("GET /groups/{g}/usage                      [cents]", group_cents);
+        row("GET /keys/{id}/usage                       [cents]", key_cents);
+        row("the budget gate  try_admit                 [cents]", gate_cents);
+        row("the hook seam    budget_state              [micro]", hook_micros);
+        eprintln!("   ─── the same five, in ONE unit (micro-units) ───");
+        row("THE ONE FUNCTION", one_micros);
+        row("GET /admin/usage", admin);
+        row("GET /groups/{g}/usage", group_cents * MICROS_PER_CENT);
+        row("GET /keys/{id}/usage", key_cents * MICROS_PER_CENT);
+        row("the budget gate", gate_cents * MICROS_PER_CENT);
+        row("the hook seam", hook_micros);
+
+        // ── HALF ONE: THE DATED BOOK. PROVEN, AND PROVEN BY CONSTRUCTION ────────────────────
+        //
+        // `GET /admin/usage` prices through `busbar_kernel_ledger::cost::price_in_view` — it IS
+        // the one function, not a second implementation that happens to agree. Before that it
+        // carried its own call to the LEGACY projection `cost::derive_spend_micros`; the two
+        // agreed on every input either answered, and that agreement was the hazard rather than
+        // the reassurance (#71 `:409` — pricing is read-time and in the kernel; not in two).
+        assert_eq!(
+            i128::from(admin),
+            one.micros(),
+            "the dated admin read and the one function are the same function"
+        );
+        assert_eq!(
+            one_micros, 39_000,
+            "one posting at the {RATE_EARNED} card it was earned under ({}) plus one at the \
+             {RATE_CURRENT} card in force now ({}) — #79 `BUSBAR-1.6.0.md:423`",
+            (RATE_EARNED as i64) * (TOKENS as i64),
+            (RATE_CURRENT as i64) * (TOKENS as i64),
+        );
+
+        // ── HALF TWO: THE ENFORCEMENT BOOK. PARKED, AND PINNED SO IT CANNOT DRIFT ───────────
+        //
+        // THE ROOT CAUSE IS NOT ARITHMETIC. `LedgerEntry.arrived_ms` is #79's resolution key and
+        // it is REQUIRED — the one function cannot price a row that does not carry the instant it
+        // arrived. `MeteringRow` carries it (`busbar-contract/src/records.rs:885`, field
+        // `priced_from_ms`), which is why half one above can adopt the one function at all.
+        // `UsageLedger`/`ModelTokens` (`records.rs:678`/`:645`) carry NO INSTANT AT ALL: a cell is
+        // keyed by (bucket, window) and holds `usage_units: BTreeMap<String, u64>` and nothing
+        // else. So every surface that reads THAT book prices the whole window at whatever card is
+        // configured at the moment of the read, and no amount of rewriting its arithmetic can
+        // change that — adopting #79 there needs an instant COLUMN, which is a persisted-format
+        // change and a money-byte change, and both are the owner's under #10 (`:328`) and #59
+        // (`:391`).
+        //
+        // These three figures are therefore pinned, not asserted-as-correct. They are what a
+        // 1.5.5 customer observes today and they are recorded in the shadow oracle
+        // (`billing|group-usage|*`, `billing|key-usage|*`, `llm|*|over_budget*`). Moving one is
+        // moving a golden, which no agent may do.
+        let flat_micros = i64::from(RATE_CURRENT as i64) * (TOKENS as i64) * 2;
+        assert_eq!(
+            hook_micros, flat_micros,
+            "the enforcement fold prices both postings at the card in force NOW"
+        );
+        assert_eq!(flat_micros, 24_000);
+        for (surface, cents) in [
+            ("GET /groups/{g}/usage", group_cents),
+            ("GET /keys/{id}/usage", key_cents),
+            ("the budget gate", gate_cents),
+        ] {
+            assert_eq!(
+                cents, 2,
+                "{surface} reads the enforcement book, which carries no instant, and then \
+                 projects to WHOLE MINOR UNITS — so {flat_micros} micro-units is served as 2 \
+                 cents and the remaining 4000 is dropped by the projection on top of the 15000 \
+                 dropped by pricing flat. PARKED."
+            );
+        }
+
+        // ── THE AUDITOR'S QUESTION, AS A NUMBER ────────────────────────────────────────────
+        //
+        // The gap between the book and the bill, pinned exactly. This is the figure the report
+        // carries to the owner: 19,000 of 39,000 micro-units — 48.7% of this slice's bill — is
+        // the distance between what the ledger says and what three of the five surfaces answer.
+        let served = i64::from(group_cents) * MICROS_PER_CENT;
+        assert_eq!(
+            one_micros - served,
+            19_000,
+            "the dated book says {one_micros}; the enforcement surfaces say {served}"
+        );
+    }
+}
