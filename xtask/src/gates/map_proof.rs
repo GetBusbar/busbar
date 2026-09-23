@@ -1745,17 +1745,38 @@ impl MapProofGate {
             c.orphans.len(),
             listing(&unbound, 6)
         );
-        rows.push(if orphans.is_empty() {
+        // THE ROW USED TO BE DECIDED BY `orphans` ALONE.
+        //
+        // `unbound_figures` was computed, formatted into the detail, and never judged — so the
+        // headline this row exists to report (two thirds of the corpus's printed figures have no
+        // command behind them) could not turn it red. The count appeared only inside a `format!`,
+        // which reads exactly like a measurement and asserts nothing.
+        //
+        // NO CEILING IS PINNED HERE ON PURPOSE. A ceiling set to today's count is the
+        // `BACKWARDS = 33` trap one directory over: the rule then passes forever at whatever
+        // number happened to be true the day somebody wrote it down. A figure printed in bold with
+        // no command that produces it is unverified, and the honest verdict is that the row is red
+        // until every one of them is bound or struck.
+        let bound_fail = !orphans.is_empty() || !unbound.is_empty();
+        rows.push(if !bound_fail {
             Row::pass(
                 ROW_BOUND,
-                "every `# ->` in the corpus is attached to a command",
+                "every printed figure is produced by a command, and every `# ->` has one above it",
                 bound_detail,
             )
         } else {
+            let mut why: Vec<String> = Vec::new();
+            if !orphans.is_empty() {
+                why.push(format!("{} orphan arrow(s)", orphans.len()));
+            }
+            if !unbound.is_empty() {
+                why.push(format!("{} unbound figure(s)", unbound.len()));
+            }
             Row::fail(
                 ROW_BOUND,
-                "a `# ->` expectation is printed with no command behind it",
-                format!("{} — {bound_detail}", listing(&orphans, 6)),
+                "printed figures have no command that produces them — a bold number nobody can \
+                 re-derive is a claim, not a measurement",
+                format!("{} — {bound_detail}", why.join(", ")),
             )
         });
 
