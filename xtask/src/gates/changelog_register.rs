@@ -109,6 +109,14 @@ impl Gate for ChangelogRegisterGate {
         "changelog-register"
     }
 
+    /// Two register paths are two different trees to this gate, whatever it is called.
+    fn baseline_key(&self) -> Option<String> {
+        Some(format!(
+            "changelog-register:register={}:changelog={}:version={:?}",
+            self.register, self.changelog, self.require_version
+        ))
+    }
+
     fn owed(&self) -> Vec<String> {
         let mut owed = vec![
             ROW_REGISTER.to_string(),

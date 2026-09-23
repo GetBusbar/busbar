@@ -529,6 +529,11 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
             gates::Expect::Green => "GREEN",
             gates::Expect::Red { .. } => "RED",
             gates::Expect::Skipped => "SKIPPED",
+            // NOT A COLOUR. `INERT` is a plant that changed nothing; `IMPOSSIBLE` is a row that was
+            // already red before the plant. Neither is ever a proof, and printing either of them as
+            // RED is how one of them went unread for months.
+            gates::Expect::Inert { .. } => "INERT",
+            gates::Expect::Impossible { .. } => "IMPOSS",
         };
         println!("  {got:<7} {}", case.name);
     }

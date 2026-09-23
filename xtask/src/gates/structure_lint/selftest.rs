@@ -36,6 +36,12 @@ fn tree_case<'a>(
 }
 
 /// A table plant: the same proof, over a table this tree could not otherwise produce.
+///
+/// THE PLANT IS THE GATE, NOT THE TREE, so the overlay is empty and the proof is stated the way
+/// `prove_red_by_configuration` states it: the SHIPPED gate — the one the registry builds, reading
+/// the real tables — must be GREEN on the covered rows, and the twin holding the broken table must
+/// be RED. It used to be `prove_rows_red` with an empty overlay, which ran ONE gate over ONE tree
+/// and could not tell a table rule that fired from a row that was red before the case arrived.
 fn table_case<'a>(
     cx: &'a Ctx,
     name: &str,
@@ -49,10 +55,14 @@ fn table_case<'a>(
     let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
     let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
     crate::gates::CasePlan::new(move || {
+        let shipped = StructureLintGate::new();
         let planted = StructureLintGate::with_tables(tables);
         let covers: Vec<&str> = covers.iter().map(String::as_str).collect();
         let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
-        prove_rows_red(cx, &planted, name, &covers, Overlay::new(), &naming).take()
+        crate::gates::prove_red_by_configuration(
+            cx, &shipped, &planted, name, &covers, &naming,
+        )
+        .take()
     })
 }
 

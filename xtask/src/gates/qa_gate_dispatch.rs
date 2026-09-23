@@ -410,6 +410,15 @@ impl Gate for QaGateDispatchGate {
         "qa-gate-dispatch"
     }
 
+    /// The branch, the default ref and the remote are all inputs to the verdict and none of them is
+    /// in the name.
+    fn baseline_key(&self) -> Option<String> {
+        Some(format!(
+            "qa-gate-dispatch:branch={:?}:default_ref={}:remote={:?}",
+            self.branch, self.default_ref, self.remote
+        ))
+    }
+
     fn owed(&self) -> Vec<String> {
         vec![
             ROW_WORKFLOW.to_string(),
@@ -540,13 +549,18 @@ impl Gate for QaGateDispatchGate {
             "refs/heads/no-such-ref-for-the-qa-gate-dispatch-selftest",
             None,
         );
+        // THE PLANT IS THE CONFIGURATION, NOT THE TREE — nothing in the working copy can make a
+        // ref unreadable to real `git`, so the empty overlay here is not a plant that forgot to
+        // plant, it is a case whose subject is the gate's own build. `prove_red` refuses an empty
+        // overlay for exactly the reason this case is exempt from it: see
+        // `prove_red_by_configuration`.
         report.push(crate::gates::CasePlan::new(move || {
-            prove_red(
+            crate::gates::prove_red_by_configuration(
                 cx,
+                self,
                 &unreadable_default,
                 "on main an unreadable default branch is a failure, never a pass",
                 &[ROW_DEFAULT_BRANCH],
-                Overlay::new(),
                 &["could not read", "Unknown is not green"],
             )
             .take()

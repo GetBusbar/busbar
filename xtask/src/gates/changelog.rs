@@ -168,6 +168,15 @@ impl Gate for ChangelogGate {
         "changelog"
     }
 
+    /// Every field this gate carries reads a different file, or judges it against a different
+    /// version or a different day, so none of them may share a baseline with another.
+    fn baseline_key(&self) -> Option<String> {
+        Some(format!(
+            "changelog:file={}:dated={}:version={:?}:today={}",
+            self.file, self.require_dated_top, self.require_version, self.today
+        ))
+    }
+
     fn owed(&self) -> Vec<String> {
         let mut owed = vec![
             ROW_SHAPE.to_string(),

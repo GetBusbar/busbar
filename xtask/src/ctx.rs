@@ -68,6 +68,17 @@ impl Overlay {
             .insert(rel.as_ref().to_path_buf(), Change::Absent);
     }
 
+    /// WITHDRAW EVERY CLAIM ABOUT `rel`: the gate reads whatever the real tree has there.
+    ///
+    /// NOT THE SAME AS [`Overlay::remove`], and the difference is the whole point. `remove` asserts
+    /// the path is ABSENT — a claim `crate::gates::prove_red` now refuses when the tree has not got
+    /// the path anyway, because removing nothing is not a plant. This one un-says an earlier `set`,
+    /// which is what a builder that lays down a fixture and then wants one file of it missing
+    /// actually means when the file was never in the tree to begin with.
+    pub fn unset(&mut self, rel: impl AsRef<Path>) {
+        self.files.remove(rel.as_ref());
+    }
+
     /// The path stays in every walk and every read of it fails with `why`.
     pub fn unreadable(&mut self, rel: impl AsRef<Path>, why: impl Into<String>) {
         self.files
@@ -83,9 +94,63 @@ impl Overlay {
         self.files.keys()
     }
 
+    /// EVERY CLAIM THIS OVERLAY MAKES, path and change together.
+    ///
+    /// [`Overlay::paths`] answers "which files does this plant touch"; a reader that must decide
+    /// whether the plant CHANGES anything needs the other half. `crate::gates::prove_red` is that
+    /// reader: a `Change::Absent` over a path the tree has not got removes nothing, and a plant
+    /// that removes nothing proves nothing.
+    pub fn changes(&self) -> impl Iterator<Item = (&PathBuf, &Change)> {
+        self.files.iter()
+    }
+
     /// A derived input this overlay stands in for, by its key.
     pub fn command(&self, key: &str) -> Option<&String> {
         self.commands.get(key)
+    }
+
+    /// Whether this overlay stands in for any derived input. A canned `cargo metadata` is a real
+    /// change to what the gate reads even when not one file is touched.
+    pub fn has_commands(&self) -> bool {
+        !self.commands.is_empty()
+    }
+
+    /// An overlay that claims nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.commands.is_empty()
+    }
+
+    /// A STABLE STRING FOR "THIS EXACT OVERLAY", for keying a cache on the tree a gate will read.
+    ///
+    /// It is the claims themselves rather than a hash of them: an overlay is a handful of entries,
+    /// a collision here would mis-attribute one plant's baseline to another, and a digest buys
+    /// nothing a `BTreeMap`'s own ordering has not already given.
+    pub fn fingerprint(&self) -> String {
+        let mut out = String::new();
+        for (path, change) in &self.files {
+            out.push_str(&path.to_string_lossy());
+            match change {
+                Change::Content(c) => {
+                    out.push_str("\u{1}content:");
+                    out.push_str(&c.len().to_string());
+                    out.push(':');
+                    out.push_str(c);
+                }
+                Change::Absent => out.push_str("\u{1}absent"),
+                Change::Unreadable(why) => {
+                    out.push_str("\u{1}unreadable:");
+                    out.push_str(why);
+                }
+            }
+            out.push('\u{2}');
+        }
+        for (key, stdout) in &self.commands {
+            out.push_str(key);
+            out.push('\u{1}');
+            out.push_str(stdout);
+            out.push('\u{2}');
+        }
+        out
     }
 }
 

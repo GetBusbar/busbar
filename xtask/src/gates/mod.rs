@@ -65,8 +65,9 @@ pub mod tracing;
 pub mod unconstructed;
 pub mod workspace_deps;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::ctx::{Ctx, Overlay};
@@ -736,6 +737,25 @@ fn selftest_budget(gate: &str) -> f64 {
 pub trait Gate: Sync {
     fn name(&self) -> &'static str;
 
+    /// A STABLE NAME FOR "THIS GATE, WITH THIS CONFIGURATION" — the cache key under which
+    /// [`prove_red`] remembers the UNPLANTED baseline it must compare every plant against.
+    ///
+    /// WHY THE BASELINE IS CACHED AT ALL. `prove_red` runs the gate twice: once clean, once
+    /// planted, because a red that predates the plant is not the plant's red. The clean half is
+    /// identical for every case in a gate's battery, and the two `kind-isolation` batteries take
+    /// three figures of seconds each — paying for it once per case would double the dearest leg of
+    /// the release to re-measure the same answer a hundred times.
+    ///
+    /// WHY IT IS A GATE'S OWN ANSWER AND NOT ITS `name`. Most gates are unit structs and their name
+    /// says everything. Six carry configuration, and for them the name is NOT the whole identity:
+    /// `KindIsolationGate`'s `write` arm and its `check` arm are both called `kind-isolation`, and
+    /// serving one's baseline to the other would be exactly the mis-attribution this whole
+    /// mechanism exists to stop. A gate whose configuration cannot be written down returns `None`,
+    /// which means "measure my baseline fresh every time" — slower and always right.
+    fn baseline_key(&self) -> Option<String> {
+        Some(self.name().to_string())
+    }
+
     /// Every ledger row id this gate can emit. THE OWED SET. Non-empty by construction: a gate
     /// that owes nothing has nothing anybody reconciles.
     fn owed(&self) -> Vec<String>;
@@ -944,6 +964,34 @@ pub enum Expect {
     /// The plant had nothing to plant (the rule's subject is absent from this tree). Visible in the
     /// report and counted — never silently green.
     Skipped,
+    /// THE PLANT CHANGED NOTHING. Every claim the overlay makes is a claim the tree already
+    /// satisfies — most often `Overlay::remove` over a path that is ALREADY ABSENT, which removes
+    /// nothing at all. The gate then reads the same tree it would have read unplanted, so whatever
+    /// the run reports is about the tree and not about the plant.
+    ///
+    /// It is its own outcome because "the plant did nothing" and "the rule did nothing" are two
+    /// different findings and only one of them is about the gate.
+    ///
+    /// `scored` is WHAT THE OLD SINGLE-RUN HARNESS MADE OF IT — the planted run, read exactly as it
+    /// was read before the baseline existed. It costs nothing (that run happened either way) and it
+    /// is the whole audit trail: a case reported INERT whose `scored` is `Red` is a case that was
+    /// PASSING, vacuously, for as long as it has existed.
+    Inert {
+        why: Vec<String>,
+        scored: Box<Expect>,
+    },
+    /// THE PROOF IS IMPOSSIBLE ON THIS TREE: the rows this case covers were ALREADY RED before the
+    /// plant went in, so no red the planted run produces can be attributed to the plant.
+    ///
+    /// Never success, and never the same thing as a failed proof. A failed proof says the rule did
+    /// not fire; this says the question could not be asked — the row has lost its own
+    /// falsifiability and cannot get it back until its standing red is cleared.
+    ///
+    /// `scored` is the same audit trail [`Expect::Inert`] carries, for the same reason.
+    Impossible {
+        baseline: Vec<String>,
+        scored: Box<Expect>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -979,8 +1027,36 @@ impl Case {
                  is unproven here rather than passing",
                 self.name
             )),
+            (_, Expect::Inert { why, scored }) => Some(format!(
+                "{}: THE PLANT CHANGED NOTHING — {why:?}. A run over an unchanged tree cannot \
+                 attribute anything it reports to a plant that planted nothing, so this case \
+                 proves nothing whichever colour it came back. {}",
+                self.name,
+                scored_note(scored)
+            )),
+            (_, Expect::Impossible { baseline, scored }) => Some(format!(
+                "{}: THE PROOF IS IMPOSSIBLE — the rows this case covers were ALREADY RED on the \
+                 unplanted tree ({baseline:?}), so the planted run's red is not the plant's. The \
+                 row has lost its own falsifiability: clear its standing red and this case can be \
+                 asked again. Weakening this rule to make the case pass restores nothing but the \
+                 green. {}",
+                self.name,
+                scored_note(scored)
+            )),
             (want, got) => Some(format!("{}: expected {want:?}, got {got:?}", self.name)),
         }
+    }
+}
+
+/// WHAT THE SINGLE-RUN HARNESS MADE OF A CASE THAT PROVES NOTHING — the sentence that says whether
+/// this finding is a proof that just broke or a pass that was never a proof.
+fn scored_note(scored: &Expect) -> String {
+    match scored {
+        Expect::Red { .. } => "THE SINGLE-RUN HARNESS SCORED THIS A PASS: the planted run went RED              naming what the case asked for, and the case has therefore been reporting a proof it              never had."
+            .to_string(),
+        other => format!(
+            "The single-run harness scored it {other:?} too, so this case was already failing —              what is new is the reason."
+        ),
     }
 }
 
@@ -1814,8 +1890,9 @@ fn narrowed_got(verdict: &Verdict, covers: &[&str]) -> Expect {
     Expect::Red { naming: evidence }
 }
 
-/// Plant an overlay, run the gate THROUGH `execute`, and require RED naming every string in
-/// `naming`. The only way a gate's selftest touches its gate.
+/// A PROOF IS A TRANSITION, NOT A COLOUR. Plant an overlay, run the gate THROUGH `execute` TWICE —
+/// once clean, once planted — and require the covered rows to go GREEN -> RED naming every string
+/// in `naming`. The only way a gate's selftest touches its gate.
 ///
 /// THE RED IS READ OFF THE COVERED ROWS ONLY. It used to be enough that the gate went red and
 /// that something anywhere in its report said the word: over a gate with thirty-six rows, on a tree
@@ -1824,6 +1901,24 @@ fn narrowed_got(verdict: &Verdict, covers: &[&str]) -> Expect {
 /// xtask selftest` still green. Now every id in `covers` must itself be red, which makes this
 /// function and [`prove_rows_red`] the same proof; the latter survives as the name that says so at
 /// the call site.
+///
+/// AND THE RED MUST BE THE PLANT'S. This ran the planted tree AND NOTHING ELSE for as long as it
+/// existed, which made it unable to tell a rule that fired from a row that was already red when the
+/// case arrived. Two cases in `kind-isolation` proved it: each planted `Overlay::remove` over a
+/// `Cargo.toml` THAT IS NOT IN THE TREE — a literal no-op — against `kind-isolation:registry`,
+/// which is standing RED naming `dead-kind grammar` and `alias-retired busbar-plane-voice`, the
+/// exact two tokens the cases assert. Both passed. Both had planted nothing and proved nothing, and
+/// the instrument reported success, for months.
+///
+/// So there are FOUR outcomes now and only one of them is a proof:
+///
+/// * **GREEN -> RED naming the offender** — the proof. The plant moved the row and the row said why.
+/// * **GREEN -> GREEN** — a failed proof. The rule did not fire on a violation it is meant to catch.
+/// * **[`Expect::Inert`]** — the plant changed nothing about the tree the gate reads, so the run is
+///   not evidence about anything. Caught BEFORE the runs, by reading the overlay against the tree.
+/// * **[`Expect::Impossible`]** — the covered rows were already RED unplanted. The question cannot
+///   be asked on this tree at all, which is a finding about the row rather than about the rule, and
+///   is reported as its own outcome so nobody can mistake it for either of the other three.
 pub fn prove_red<'a>(
     cx: &Ctx,
     gate: &'a dyn Gate,
@@ -1837,16 +1932,210 @@ pub fn prove_red<'a>(
     let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
     let cx = cx.clone();
     CasePlan::new(move || {
-        let planted = cx.with_overlay(plant.build());
-        let verdict = execute(gate, &planted);
-        let got = narrowed_got(&verdict, &refs(&covers));
+        let expected = Expect::Red { naming };
+        let overlay = plant.build();
+        let ids = refs(&covers);
+
+        // THE THREE MEASUREMENTS, IN THE ORDER THEY COST. The plant is read against the tree for
+        // free; the baseline is one run per gate however many cases there are; the planted run is
+        // the one this function always made. Nothing here is a run the old shape did not pay for
+        // except the shared baseline.
+        let dead = inert_plant(&cx, &overlay);
+        let before = narrowed_got(&baseline_verdict(gate, &cx), &ids);
+        let scored = narrowed_got(&execute(gate, &cx.with_overlay(overlay)), &ids);
+
+        // 1. THE PLANT MUST BITE. A run over an unchanged tree is not evidence about a plant.
+        if let Err(why) = dead {
+            return Case {
+                name,
+                covers,
+                expected,
+                got: Expect::Inert {
+                    why,
+                    scored: Box::new(scored),
+                },
+            };
+        }
+
+        // 2. THE BASELINE MUST BE GREEN ON THE ROWS THIS CASE IS ABOUT. A row that is already red
+        //    cannot be proven red-able BY ANYTHING, and saying so is the finding.
+        if let Expect::Red { naming: baseline } = before {
+            return Case {
+                name,
+                covers,
+                expected,
+                got: Expect::Impossible {
+                    baseline,
+                    scored: Box::new(scored),
+                },
+            };
+        }
+
+        // 3. AND ONLY THEN IS THE PLANTED RUN THE PLANT'S. GREEN -> RED is the proof; GREEN ->
+        //    GREEN is a rule that did not fire on a violation it is meant to catch.
         Case {
             name,
             covers,
-            expected: Expect::Red { naming },
-            got,
+            expected,
+            got: scored,
         }
     })
+}
+
+/// THE OTHER PLANT: THE GATE'S OWN CONFIGURATION, over a tree nobody touched.
+///
+/// A handful of rules have a subject an overlay cannot reach. `structure-lint`'s table rules judge
+/// a table that is SOURCE, not tree; `qa-gate-dispatch`'s default-branch arm judges a ref that has
+/// to be unreadable to real `git`. For those the violation is planted by BUILDING THE GATE
+/// DIFFERENTLY, and the overlay is empty because there is nothing in the tree to change.
+///
+/// [`prove_red`] must refuse an empty overlay — a case that plants nothing and runs one gate is
+/// the vacuous shape this whole mechanism exists to catch — so these cases say what they are
+/// instead. THE PROOF IS THE SAME PROOF: the gate AS THE TREE SHIPS IT must be GREEN on the covered
+/// rows, the mis-configured twin must be RED, and one tree with two configurations is a transition
+/// exactly as one configuration with two trees is.
+pub fn prove_red_by_configuration<'a>(
+    cx: &Ctx,
+    shipped: &'a dyn Gate,
+    planted: &'a dyn Gate,
+    name: impl Into<String>,
+    covers: &[&str],
+    naming: &[&str],
+) -> CasePlan<'a> {
+    let name = name.into();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
+    let cx = cx.clone();
+    CasePlan::new(move || {
+        let expected = Expect::Red { naming };
+        let ids = refs(&covers);
+        let scored = narrowed_got(&execute(planted, &cx), &ids);
+
+        // THE CONFIGURATION MUST ACTUALLY DIFFER. Two identical gates over one tree are one run
+        // written twice, which is the empty-overlay vacuity wearing a different hat. A gate that
+        // cannot write its own configuration down answers `None`, and two `None`s are taken at
+        // their word rather than assumed equal.
+        if let (Some(a), Some(b)) = (shipped.baseline_key(), planted.baseline_key()) {
+            if a == b {
+                return Case {
+                    name,
+                    covers,
+                    expected,
+                    got: Expect::Inert {
+                        why: vec![format!(
+                            "both halves of this case are the SAME configuration of `{}` over the \
+                             same tree ({a}), so there is no change for the row to answer",
+                            shipped.name()
+                        )],
+                        scored: Box::new(scored),
+                    },
+                };
+            }
+        }
+
+        if let Expect::Red { naming: baseline } =
+            narrowed_got(&baseline_verdict(shipped, &cx), &ids)
+        {
+            return Case {
+                name,
+                covers,
+                expected,
+                got: Expect::Impossible {
+                    baseline,
+                    scored: Box::new(scored),
+                },
+            };
+        }
+
+        Case {
+            name,
+            covers,
+            expected,
+            got: scored,
+        }
+    })
+}
+
+/// WHAT THIS PLANT ACTUALLY CHANGES ABOUT THE TREE THE GATE WILL READ — `Ok` if anything, and the
+/// reasons it changes NOTHING otherwise.
+///
+/// The overlay is compared against the context the gate would otherwise have read, which is the
+/// only place the question can be answered: an `Overlay` on its own knows what it claims and not
+/// whether the tree already agreed.
+///
+/// A `Change::Absent` over a path the tree has not got is refused ON ITS OWN, even beside claims
+/// that do bite, because it is never anything but a mistake: it is a plant whose author believed
+/// they were deleting something. That is the exact shape of both no-ops found in `kind-isolation`,
+/// and `Edit::Delete` has refused it at the other door since it was written — this closes the door
+/// `Overlay::remove` left open.
+fn inert_plant(cx: &Ctx, overlay: &crate::ctx::Overlay) -> Result<(), Vec<String>> {
+    use crate::ctx::Change;
+
+    if overlay.is_empty() {
+        return Err(vec![
+            "the plant is an EMPTY overlay: it claims nothing about any path and cans no derived \
+             input, so the planted run and the clean run are the same run"
+                .to_string(),
+        ]);
+    }
+
+    let mut phantom = Vec::new();
+    let mut dead = Vec::new();
+    let mut bites = overlay.has_commands();
+    for (path, change) in overlay.changes() {
+        let rel = path.to_string_lossy().replace('\\', "/");
+        match change {
+            Change::Absent if !cx.exists(path) => phantom.push(format!(
+                "{rel}: the plant REMOVES A PATH THAT IS ALREADY ABSENT, so it removes nothing — \
+                 whatever the run reports, it is not about this plant"
+            )),
+            Change::Content(want) if cx.read(path).ok().as_ref() == Some(want) => dead.push(
+                format!("{rel}: the plant writes back the bytes the tree already has"),
+            ),
+            _ => bites = true,
+        }
+    }
+
+    if !phantom.is_empty() {
+        return Err(phantom);
+    }
+    if !bites {
+        return Err(dead);
+    }
+    Ok(())
+}
+
+/// ONE BASELINE, HANDED OUT UNDER THE MAP'S LOCK AND FILLED OUTSIDE IT. The `OnceLock` is what
+/// makes eighteen workers arriving at once take ONE unplanted run between them: the first fills it
+/// and the rest wait on that answer instead of measuring the same tree seventeen more times.
+type BaselineCell = Arc<OnceLock<Arc<Verdict>>>;
+
+/// THE GATE'S VERDICT OVER THE UNPLANTED TREE, measured once per gate-and-context rather than once
+/// per case. See [`Gate::baseline_key`] for why it is keyed the way it is, and why a gate that
+/// cannot name its own configuration pays for a fresh run instead of risking a wrong one.
+fn baseline_verdict(gate: &dyn Gate, cx: &Ctx) -> Arc<Verdict> {
+    static BASELINES: Mutex<Option<BTreeMap<String, BaselineCell>>> = Mutex::new(None);
+
+    let Some(gate_key) = gate.baseline_key() else {
+        return Arc::new(execute(gate, cx));
+    };
+    let key = format!(
+        "{gate_key}\u{3}{}\u{3}{}",
+        cx.root().to_string_lossy(),
+        cx.overlay().map(|o| o.fingerprint()).unwrap_or_default()
+    );
+
+    // The map is held only long enough to hand back the cell. The RUN happens outside the lock, or
+    // the first case into a battery would hold every other gate's baseline hostage to its own.
+    let cell = {
+        let mut guard = BASELINES.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .get_or_insert_with(BTreeMap::new)
+            .entry(key)
+            .or_insert_with(|| Arc::new(OnceLock::new()))
+            .clone()
+    };
+    cell.get_or_init(|| Arc::new(execute(gate, cx))).clone()
 }
 
 /// The `&str` view of an owned `covers` list, for the readers that were written against `&[&str]`.
@@ -2423,6 +2712,295 @@ pub fn print_rows_tsv(rows: &[Row]) {
     }
 }
 
+/// THE FALSIFICATION OF THE FALSIFIER — the three outcomes `prove_red` must be able to produce on
+/// demand, each driven over a gate built to be steered into it.
+///
+/// WHY THIS MODULE EXISTS. `prove_red` ran the gate ONCE, with the plant, and never established
+/// that the rows it covers were green before it. A row that was already red for an unrelated reason
+/// therefore scored a PASS with the plant having done nothing at all, and two cases in
+/// `kind-isolation` were living proof: each removed a `Cargo.toml` that is not in the tree, against
+/// `kind-isolation:registry`, which is standing red naming the very tokens they assert.
+///
+/// An instrument that cannot produce a NO is not a check — and that is as true of this one as of
+/// anything it measures. So the three NOs are produced here, on purpose, every `cargo test`.
+#[cfg(test)]
+mod falsification_tests {
+    use super::*;
+    use crate::ledger::Row;
+
+    /// A gate with TWO rows and a steering wheel: one row is GREEN until a marker is planted, the
+    /// other is RED whatever the tree says. Between them they reach every outcome `prove_red` has.
+    struct ProbeGate;
+
+    /// GREEN on the unplanted tree, RED when the marker is there. The row a proof is possible about.
+    const PROBE_GREENABLE: &str = "probe:greenable";
+    /// RED ALWAYS. The row that has lost its own falsifiability — `kind-isolation:registry` in
+    /// miniature.
+    const PROBE_STUCK: &str = "probe:stuck";
+    /// Not in the tree, and never written: the gate reads its ABSENCE, and a test that wrote it
+    /// would be a plant left behind.
+    const PROBE_MARKER: &str = "qa/zz-falsification-marker.txt";
+    /// Also not in the tree. Planting `Overlay::remove` here removes nothing.
+    const PROBE_PHANTOM: &str = "crates/zz-not-a-crate/Cargo.toml";
+
+    impl Gate for ProbeGate {
+        fn name(&self) -> &'static str {
+            "probe"
+        }
+        fn owed(&self) -> Vec<String> {
+            vec![PROBE_GREENABLE.to_string(), PROBE_STUCK.to_string()]
+        }
+        fn run(&self, cx: &Ctx) -> Verdict {
+            let greenable = if cx.exists(PROBE_MARKER) {
+                Row::fail(
+                    PROBE_GREENABLE,
+                    "the greenable row",
+                    "planted-marker: the marker is in the tree",
+                )
+            } else {
+                Row::pass(PROBE_GREENABLE, "the greenable row", "no marker")
+            };
+            Verdict::of(vec![
+                greenable,
+                Row::fail(
+                    PROBE_STUCK,
+                    "the stuck row",
+                    "standing-red: this row is red on every tree there is",
+                ),
+            ])
+        }
+        fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
+            Report::new()
+        }
+    }
+
+    fn took(plan: CasePlan<'_>) -> Case {
+        plan.take()
+    }
+
+    /// OUTCOME ONE: a genuine plant on a green row IS a proof. GREEN -> RED, naming the offender.
+    #[test]
+    fn a_genuine_plant_on_a_green_row_proves_the_row_red_able() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let gate = ProbeGate;
+        let mut ov = Overlay::new();
+        ov.set(PROBE_MARKER, "planted\n");
+        let case = took(prove_red(
+            &cx,
+            &gate,
+            "the marker turns the greenable row red",
+            &[PROBE_GREENABLE],
+            ov,
+            &["planted-marker"],
+        ));
+        assert!(
+            matches!(case.got, Expect::Red { .. }),
+            "a real plant on a green row must come back RED, got {:?}",
+            case.got
+        );
+        assert_eq!(
+            case.failure(),
+            None,
+            "GREEN -> RED naming the offender is the proof and must pass"
+        );
+    }
+
+    /// OUTCOME TWO, THE SHAPE THAT WAS BROKEN: a NO-OP plant on a green row must FAIL.
+    ///
+    /// `Overlay::remove` over a path that is already absent removes nothing. It used to be a shrug
+    /// — the map simply recorded `Absent` for a path that was absent anyway — and the run that
+    /// followed was a run over the untouched tree.
+    #[test]
+    fn a_no_op_removal_is_refused_before_the_gate_is_ever_run() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        assert!(
+            !cx.exists(PROBE_PHANTOM),
+            "this test's whole point is that {PROBE_PHANTOM} is not in the tree"
+        );
+        let gate = ProbeGate;
+        let mut ov = Overlay::new();
+        ov.remove(PROBE_PHANTOM);
+        let case = took(prove_red(
+            &cx,
+            &gate,
+            "removing a crate that is not there",
+            &[PROBE_GREENABLE],
+            ov,
+            &["planted-marker"],
+        ));
+        let Expect::Inert { scored, .. } = &case.got else {
+            panic!(
+                "a plant that removes an absent path changed nothing and must be reported INERT, \
+                 got {:?}",
+                case.got
+            );
+        };
+        assert!(
+            matches!(**scored, Expect::Green),
+            "THE CONTRAST THIS CASE EXISTS FOR: the single-run harness saw GREEN and failed the \
+             case for the WRONG reason — 'the rule did not fire' — when the truth is that nothing \
+             was ever planted for it to fire on: {scored:?}"
+        );
+        let why = case.failure().expect("an inert plant is never a pass");
+        assert!(
+            why.contains("ALREADY ABSENT"),
+            "the finding must name what the plant failed to remove: {why}"
+        );
+    }
+
+    /// The other no-op: an overlay that writes back the bytes the tree already has.
+    #[test]
+    fn a_plant_that_writes_the_bytes_the_tree_already_has_is_refused() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let gate = ProbeGate;
+        let same = cx
+            .read("Cargo.toml")
+            .expect("the workspace manifest is readable");
+        let mut ov = Overlay::new();
+        ov.set("Cargo.toml", same);
+        let case = took(prove_red(
+            &cx,
+            &gate,
+            "planting the file the tree already had",
+            &[PROBE_GREENABLE],
+            ov,
+            &["planted-marker"],
+        ));
+        assert!(
+            matches!(case.got, Expect::Inert { .. }),
+            "writing back identical bytes changes nothing, got {:?}",
+            case.got
+        );
+    }
+
+    /// OUTCOME THREE: any plant on an ALREADY-RED row is IMPOSSIBLE, never success — and the case
+    /// says, in the same breath, that the single-run harness scored it a PASS.
+    ///
+    /// THIS IS THE REGRESSION ITSELF. The plant is real, the row goes red, the red names the token
+    /// the case asked for — and none of it is the plant's doing, because the row was red before the
+    /// plant existed.
+    #[test]
+    fn a_plant_against_a_row_that_is_already_red_reports_impossible_not_success() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let gate = ProbeGate;
+        let mut ov = Overlay::new();
+        ov.set(PROBE_MARKER, "planted\n");
+        let case = took(prove_red(
+            &cx,
+            &gate,
+            "proving the stuck row red-able",
+            &[PROBE_STUCK],
+            ov,
+            &["standing-red"],
+        ));
+        let Expect::Impossible { baseline, scored } = &case.got else {
+            panic!(
+                "a row that is red before the plant cannot be proven red-able and must say so, \
+                 got {:?}",
+                case.got
+            );
+        };
+        assert!(
+            baseline.iter().any(|b| b.contains("standing-red")),
+            "the finding must quote the red that was already there: {baseline:?}"
+        );
+        assert!(
+            matches!(**scored, Expect::Red { .. }),
+            "the single-run harness scored this a PASS, and the case must record that it did: \
+             {scored:?}"
+        );
+        let why = case.failure().expect("an impossible proof is never a pass");
+        assert!(
+            why.contains("ALREADY RED") && why.contains("SCORED THIS A PASS"),
+            "the finding must name both halves — the standing red and the pass it was handing \
+             out: {why}"
+        );
+    }
+
+    /// AND THE FOURTH: a real plant that the rule simply does not catch is still a failed proof.
+    /// GREEN -> GREEN was always a failure and must stay one; the new rule adds outcomes, it does
+    /// not trade one away.
+    #[test]
+    fn a_real_plant_the_rule_ignores_is_still_a_failed_proof() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let gate = ProbeGate;
+        let mut ov = Overlay::new();
+        // A real edit to a real file that `ProbeGate` does not read at all.
+        ov.set("README.md", "a real change this gate has no rule about\n");
+        let case = took(prove_red(
+            &cx,
+            &gate,
+            "a plant the rule does not look at",
+            &[PROBE_GREENABLE],
+            ov,
+            &["planted-marker"],
+        ));
+        assert!(
+            matches!(case.got, Expect::Green),
+            "the rule did not fire, so the case is GREEN and fails, got {:?}",
+            case.got
+        );
+        assert!(
+            case.failure().is_some(),
+            "GREEN -> GREEN proves the rule did not fire and is never a pass"
+        );
+    }
+
+    /// THE BASELINE IS MEASURED ONCE PER GATE, not once per case — the property the whole
+    /// mechanism's affordability rests on, asserted rather than assumed.
+    #[test]
+    fn the_baseline_is_shared_across_the_cases_of_one_gate() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static RUNS: AtomicUsize = AtomicUsize::new(0);
+        struct CountingGate;
+        impl Gate for CountingGate {
+            fn name(&self) -> &'static str {
+                "counting"
+            }
+            fn owed(&self) -> Vec<String> {
+                vec!["counting:row".to_string()]
+            }
+            fn run(&self, cx: &Ctx) -> Verdict {
+                if cx.overlay().is_none() {
+                    RUNS.fetch_add(1, Ordering::SeqCst);
+                }
+                let row = if cx.exists(PROBE_MARKER) {
+                    Row::fail("counting:row", "counting", "planted-marker")
+                } else {
+                    Row::pass("counting:row", "counting", "no marker")
+                };
+                Verdict::of(vec![row])
+            }
+            fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
+                Report::new()
+            }
+        }
+
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let gate = CountingGate;
+        for i in 0..4 {
+            let mut ov = Overlay::new();
+            ov.set(PROBE_MARKER, format!("planted {i}\n"));
+            let case = took(prove_red(
+                &cx,
+                &gate,
+                format!("case {i}"),
+                &["counting:row"],
+                ov,
+                &["planted-marker"],
+            ));
+            assert_eq!(case.failure(), None, "case {i} is a plain proof");
+        }
+        assert_eq!(
+            RUNS.load(Ordering::SeqCst),
+            1,
+            "four cases over one gate and one context must share ONE unplanted run: a baseline \
+             paid per case would double the dearest batteries in the registry"
+        );
+    }
+}
+
 #[cfg(test)]
 mod parallel_tests {
     use super::*;
@@ -2443,19 +3021,30 @@ mod parallel_tests {
             vec![ECHO_ROW.to_string()]
         }
         fn run(&self, cx: &Ctx) -> Verdict {
-            let seen = cx
-                .read(ECHO_PATH)
-                .unwrap_or_else(|_| "<absent>".to_string());
+            let seen = cx.read(ECHO_PATH).ok();
             // Long enough for a racing case to overwrite a shared plant, if plants were shared.
             std::thread::sleep(Duration::from_millis(40));
-            let again = cx
-                .read(ECHO_PATH)
-                .unwrap_or_else(|_| "<absent>".to_string());
-            Verdict::of(vec![Row::fail(
-                ECHO_ROW.to_string(),
-                "echo".to_string(),
-                format!("{seen}|{again}"),
-            )])
+            let again = cx.read(ECHO_PATH).ok();
+            // GREEN ON THE UNPLANTED TREE, and only then red on what a case planted. It reported
+            // the path unconditionally as FAIL once, which made its own baseline permanently red —
+            // the exact shape `prove_red` now refuses, in the harness's own fixture.
+            let row = match (seen, again) {
+                (None, None) => Row::pass(
+                    ECHO_ROW.to_string(),
+                    "echo".to_string(),
+                    "nothing is planted at the echo path".to_string(),
+                ),
+                (seen, again) => Row::fail(
+                    ECHO_ROW.to_string(),
+                    "echo".to_string(),
+                    format!(
+                        "{}|{}",
+                        seen.unwrap_or_else(|| "<absent>".to_string()),
+                        again.unwrap_or_else(|| "<absent>".to_string())
+                    ),
+                ),
+            };
+            Verdict::of(vec![row])
         }
         fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
             Report::new()

@@ -4767,6 +4767,12 @@ impl Gate for KindIsolationGate {
         }
     }
 
+    /// `write` DOES NOT SHOW IN THE NAME and it changes both the owed set and the verdict, so the
+    /// baseline cache must be told about it or one arm would be handed the other's clean run.
+    fn baseline_key(&self) -> Option<String> {
+        Some(format!("{}:write={}", self.name(), self.write))
+    }
+
     fn owed(&self) -> Vec<String> {
         // IN WRITE MODE THE GATE OWES ONE ROW AND EMITS ONE ROW. `--write` is not a verdict about
         // the tree, it is an edit to the ledger, and reconciling it against the ordinary owed set
@@ -5795,30 +5801,48 @@ impl Gate for KindIsolationGate {
         // neighbours. Eight arms had no plant of their own. These are those eight.
 
         // A KIND NOBODY INSTANTIATES IS A DEAD ROW IN THE TABLE.
+        //
+        // THE SUBJECT IS `timing`, AND IT USED TO BE `grammar`, WHICH PROVED NOTHING. The plant was
+        // `Overlay::remove("crates/busbar-grammar/Cargo.toml")` — a path that has not been in this
+        // tree for as long as the case has existed, so it removed nothing — against a row that is
+        // STANDING RED naming `dead-kind KINDS \`grammar\``, the exact two tokens the case
+        // asserts. A no-op plant, a red that predates it, and a green case: the rule could have
+        // been deleted outright with this case still passing. `prove_red` refuses both halves now.
+        //
+        // `timing` is the kind to plant because its matcher is `=busbar-timing`, one crate and no
+        // other, so removing that manifest takes the whole kind out of `live` — which is what the
+        // rule reads. A kind with a prefix matcher would need every crate of it removed at once.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-grammar/Cargo.toml");
+        ov.remove("crates/busbar-timing/Cargo.toml");
         report.push(prove_rows_red(
             cx,
             self,
             "a kind in the table that no crate is any more",
             &[ROW_REGISTRY],
             ov,
-            &["dead-kind", "grammar"],
+            &["dead-kind", "timing"],
         ));
 
         // The pending-kind ratchet had exactly one subject, `dialect`, and a dialect is not a kind
         // (DECISIONS #4). PENDING_KINDS is empty now, so there is no pending kind to plant as arrived.
 
         // THE RENAME ALIAS EXPIRES WITH THE CRATE IT TRANSLATES.
+        //
+        // THE SUBJECT IS `busbar-voice-codec`, AND IT USED TO BE `busbar-plane-voice`, the twin of
+        // the no-op above and for the same reason: `crates/busbar-plane-voice/Cargo.toml` is not in
+        // the tree, so removing it removed nothing, and `:registry` is standing red naming
+        // `alias-retired busbar-plane-voice` already. `PLANE_ALIASES` has two entries; this is the
+        // one whose crate is still here, so removing it is a violation the tree did not already
+        // have.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-plane-voice/Cargo.toml");
+        ov.remove("crates/busbar-voice-codec/Cargo.toml");
         report.push(prove_rows_red(
             cx,
             self,
             "a plane alias that outlived the crate it translates",
             &[ROW_REGISTRY],
             ov,
-            &["alias-retired", "busbar-plane-voice"],
+            &["alias-retired", "busbar-voice-codec"],
         ));
 
         // THE SECOND KIND VOCABULARY, GONE. `qa/construction.toml`'s `[gate.plugin_kinds]` renamed

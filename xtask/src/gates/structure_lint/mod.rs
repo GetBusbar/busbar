@@ -370,6 +370,16 @@ impl Gate for StructureLintGate {
         "structure-lint"
     }
 
+    /// A GATE DRIVEN OVER A HAND-BROKEN TABLE HAS NO WRITEABLE IDENTITY. `Tables` is a whole
+    /// derived structure and two broken ones are two different gates wearing one name, so the
+    /// cache is refused rather than guessed at: these cases pay for their own baseline run.
+    fn baseline_key(&self) -> Option<String> {
+        match self.tables {
+            None => Some("structure-lint".to_string()),
+            Some(_) => None,
+        }
+    }
+
     fn owed(&self) -> Vec<String> {
         OWED.iter().map(|s| (*s).to_string()).collect()
     }
