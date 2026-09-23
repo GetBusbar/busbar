@@ -215,11 +215,31 @@ fn read_and_validate_settings_schema(path: &str) -> Result<String, String> {
 /// Local `#/$defs/<Name>` / `#/definitions/<Name>` pointers only — an
 /// external or fragment-shaped `$ref` is left unresolved (its siblings are still merged) since
 /// there is nothing local to look up.
+///
+/// CARRIES ITS OWN DEPTH CAP, and needs one. `scan`'s `MAX_SCAN_DEPTH` counts the levels SCAN
+/// descends, and this function recurses into ITSELF — once through `$ref`, once per `allOf` member
+/// — without ever passing back through `scan`, so a chain living entirely inside a resolve advances
+/// that counter not at all. The `resolving` set is not the backstop either: it catches a `$ref` that
+/// closes a CYCLE and says nothing about a chain that is merely very long, so a non-cyclic
+/// 200-link `allOf` chain walks straight past it. This runs on operator-supplied input at pack time,
+/// and uncapped the end of that chain is a stack overflow or an unbounded re-resolve that never
+/// returns — an abort or a hang with no diagnostic, the one answer a validator must never give.
 fn resolve_effective(
     schema: &serde_json::Value,
     defs: &serde_json::Map<String, serde_json::Value>,
     resolving: &mut HashSet<String>,
+    depth: u32,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    // Same ceiling as `MAX_SCAN_DEPTH`, and the same one `busbar_contract::json_grammar` holds for
+    // wire JSON: deeper than this is not a schema anyone wrote by hand, it is the recursion.
+    const MAX_RESOLVE_DEPTH: u32 = 64;
+    if depth > MAX_RESOLVE_DEPTH {
+        return Err(format!(
+            "settings_schema nests deeper than {MAX_RESOLVE_DEPTH} levels while resolving \
+             $ref/allOf — a self-referencing $defs entry is the usual cause; the schema cannot be \
+             validated"
+        ));
+    }
     let Some(obj) = schema.as_object() else {
         return Ok(serde_json::Map::new());
     };
@@ -235,7 +255,7 @@ fn resolve_effective(
             let target = defs
                 .get(name)
                 .ok_or_else(|| format!("settings_schema has a dangling $ref: '{r}'"))?;
-            let base = resolve_effective(target, defs, resolving)?;
+            let base = resolve_effective(target, defs, resolving, depth + 1)?;
             resolving.remove(name);
             merged = base;
             for (k, v) in obj {
@@ -247,7 +267,7 @@ fn resolve_effective(
     }
     if let Some(all_of) = merged.get("allOf").and_then(|v| v.as_array()).cloned() {
         for sub in &all_of {
-            let sub_eff = resolve_effective(sub, defs, resolving)?;
+            let sub_eff = resolve_effective(sub, defs, resolving, depth + 1)?;
             if let Some(sub_props) = sub_eff.get("properties").and_then(|v| v.as_object()) {
                 let props = merged
                     .entry("properties")
@@ -325,7 +345,7 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
                  $defs entry is the usual cause; the schema cannot be validated"
             ));
         }
-        let eff = resolve_effective(schema, defs, resolving)?;
+        let eff = resolve_effective(schema, defs, resolving, depth)?;
         if eff.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true)) {
             if at != Position::RootProperty {
                 return Err(
@@ -347,7 +367,7 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         }
         if let Some(props) = eff.get("properties").and_then(|p| p.as_object()) {
             for (name, prop_schema) in props {
-                let prop_eff = resolve_effective(prop_schema, defs, resolving)?;
+                let prop_eff = resolve_effective(prop_schema, defs, resolving, depth)?;
                 let marked =
                     prop_eff.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true));
                 if !marked {

@@ -119,6 +119,28 @@ named next.
   can influence; the full detail still goes to the operator's journal, where it was always meant to
   be. Refusal status codes are unchanged.
 
+- **A blank secret resolved, and a mis-encoded one was reported as unset.** The built-in `env:` and
+  `file:` secret resolvers tested a credential only for emptiness, so a variable holding three
+  spaces — or a file containing only whitespace — resolved and was sent upstream as a bearer token;
+  nothing downstream recovered, because the string path trims carriage returns and newlines and
+  nothing else. Separately, `std::env::var` reports an absent variable and a variable whose value is
+  not valid UTF-8 through the same error, and both were rendered "is unset": an operator chasing
+  that message would set a variable that was already set. A blank credential is now refused
+  fail-closed on both sources, and a set-but-mis-encoded variable is named as an encoding problem
+  rather than a missing one. A `file:` source that is not a regular file — a directory, a socket, a
+  fifo that would otherwise block until a writer appeared — is refused by name instead of surfacing
+  a bare errno. Real credentials are unaffected and are never trimmed: surrounding whitespace,
+  trailing newlines and non-UTF-8 binary secrets resolve byte-for-byte as before, and a `file:`
+  secret mounted as a symlink (how Kubernetes projects one) still resolves.
+
+- **A plugin's settings schema could hang the packaging tool.** `busbar-plugin-pack`'s `$ref`/`allOf`
+  resolver had a cycle guard and no depth bound, and the walk that calls it advances its own depth
+  counter only between levels, never inside a resolve. A non-cyclic chain — 200 `$defs` entries each
+  referring to the next — closes no cycle, so nothing stopped it: pack-time validation of an
+  operator-supplied schema recursed until it exhausted the stack or stopped returning at all. The
+  resolver now carries its own 64-level bound and refuses such a schema with a diagnostic naming the
+  cause. Schemas of ordinary depth are unaffected.
+
 ### Improvements
 
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a

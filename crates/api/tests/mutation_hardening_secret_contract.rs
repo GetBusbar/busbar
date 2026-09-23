@@ -273,13 +273,25 @@ fn resolve_builtin_string_trims_trailing_newlines() {
     std::env::remove_var(&var);
 }
 
+/// A value that is non-empty bytes but carries no content is fail-closed on the string path.
+///
+/// The REFUSAL NOW COMES EARLIER than it used to: `resolve_builtin`'s own blank-value guard catches
+/// a whitespace-only value before `resolve_builtin_string` ever gets to trim it, so the message is
+/// the blank-value one rather than "empty after trimming". The assertion is on the outcome the test
+/// is actually about — refused, fail-closed, naming the source — not on which of the two layers
+/// said so. `resolve_builtin_string`'s own trim-to-empty check stays as defense in depth: it also
+/// guards bytes that did not come from a built-in.
 #[test]
 fn resolve_builtin_string_empty_after_trim_is_fail_closed() {
     let var = unique("STR_EMPTY_AFTER_TRIM");
-    // Non-empty bytes (so the raw resolve_builtin succeeds) that trim to nothing.
+    // Non-empty bytes that carry no content.
     std::env::set_var(&var, "\n\r\n");
     let err = busbar_api::resolve_builtin_string(&SecretRef::env(&var)).unwrap_err();
-    assert!(err.contains("empty"), "{err}");
+    assert!(
+        err.contains("empty") || err.contains("BLANK"),
+        "a value with no content must be refused fail-closed: {err}"
+    );
+    assert!(err.contains(&var), "the error must name the source: {err}");
     std::env::remove_var(&var);
 }
 
@@ -299,4 +311,173 @@ fn resolve_builtin_string_propagates_the_underlying_resolve_error() {
     let err =
         busbar_api::resolve_builtin_string(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
     assert!(err.contains("cannot resolve"), "{err}");
+}
+
+// ── operator-supplied input: blank credentials, mis-encoded variables, non-file paths ───────────
+
+/// A BLANK-but-present env value is not a credential. `!v.is_empty()` accepts `"   "` — three
+/// spaces are "non-empty" by that test and nothing downstream recovers: `resolve_builtin_string`
+/// trims only `['\r', '\n']`, so a whitespace-only value survives the string path too and is handed
+/// to an upstream as a bearer token. The fail-closed posture that refuses an EMPTY secret has to
+/// refuse this one for the same reason.
+#[test]
+fn resolve_builtin_env_whitespace_only_value_is_fail_closed() {
+    for blank in ["   ", "\t", "\n\n", " \t\r\n "] {
+        let var = unique("ENV_BLANK");
+        std::env::set_var(&var, blank);
+        let err = busbar_api::resolve_builtin(&SecretRef::env(&var))
+            .expect_err(&format!("whitespace-only value {blank:?} must be refused"));
+        assert!(err.contains(&var), "the error must name the source: {err}");
+        assert!(
+            !err.contains("is unset"),
+            "a SET-but-blank variable is not 'unset' — that diagnosis sends an operator to set a \
+             variable that is already set: {err}"
+        );
+        std::env::remove_var(&var);
+    }
+}
+
+/// NEGATIVE CONTROL for the blank-value guard: a legitimate credential must still resolve, and its
+/// bytes must come back EXACTLY as stored. The guard rejects values that are entirely whitespace —
+/// it must not start trimming real secrets, because a trailing newline is part of the byte string
+/// for a PEM chain and `resolve_builtin` is the RAW-bytes path.
+#[test]
+fn resolve_builtin_env_surrounding_whitespace_is_preserved_not_trimmed() {
+    let var = unique("ENV_PADDED");
+    std::env::set_var(&var, "  s3cr3t-value\n");
+    let got = busbar_api::resolve_builtin(&SecretRef::env(&var)).unwrap();
+    assert_eq!(
+        got, b"  s3cr3t-value\n",
+        "a real credential resolves byte-for-byte; the blank guard must not trim it"
+    );
+    std::env::remove_var(&var);
+}
+
+/// A variable that IS SET but holds bytes that are not valid UTF-8 must not be reported as "unset".
+///
+/// `std::env::var` returns `Err` for BOTH `NotPresent` and `NotUnicode`, and a catch-all `Err(_)`
+/// arm collapses them into one message. That is a wrong diagnosis, not merely a missing one: an
+/// operator told their variable is "unset" will set it again — the one action that cannot fix a
+/// variable whose value is already there and mis-encoded.
+#[cfg(unix)]
+#[test]
+fn resolve_builtin_env_mis_encoded_value_is_not_reported_as_unset() {
+    use std::os::unix::ffi::OsStrExt;
+    let var = unique("ENV_NOT_UNICODE");
+    // Lone 0xFF: valid in an OsString, never valid UTF-8.
+    std::env::set_var(&var, std::ffi::OsStr::from_bytes(&[0x73, 0xff, 0x74]));
+    let err = busbar_api::resolve_builtin(&SecretRef::env(&var))
+        .expect_err("a mis-encoded variable cannot resolve to a usable secret");
+    assert!(err.contains(&var), "the error must name the source: {err}");
+    assert!(
+        !err.contains("is unset"),
+        "a SET but mis-encoded variable is NOT unset — telling an operator to set it again sends \
+         them at the wrong fix: {err}"
+    );
+    assert!(
+        err.contains("UTF-8") || err.contains("encod"),
+        "the error must say what is actually wrong (the encoding), not just that it failed: {err}"
+    );
+    std::env::remove_var(&var);
+}
+
+/// NEGATIVE CONTROL for the mis-encoding diagnosis: a genuinely absent variable must STILL report
+/// "unset". Splitting the two arms is only a fix if each one keeps its own correct answer — a
+/// change that relabelled every failure as an encoding problem would pass the red arm above.
+#[test]
+fn resolve_builtin_env_genuinely_unset_still_reports_unset() {
+    let var = unique("ENV_STILL_UNSET");
+    std::env::remove_var(&var);
+    let err = busbar_api::resolve_builtin(&SecretRef::env(&var)).unwrap_err();
+    assert!(err.contains("unset"), "a truly absent variable is unset: {err}");
+    assert!(err.contains(&var), "{err}");
+}
+
+/// A path-shaped secret source that is not a regular file is refused, and the refusal says WHICH
+/// problem it is. A directory `open()`s successfully on Unix and fails only at read time with a
+/// generic errno; a fifo blocks until a writer appears. Neither is a credential, and "cannot
+/// resolve: <errno>" does not tell an operator that they pointed at a directory.
+#[test]
+fn resolve_builtin_file_directory_is_refused_as_not_a_regular_file() {
+    let dir = temp_path("FILE_IS_DIR");
+    std::fs::create_dir_all(&dir).unwrap();
+    let err = busbar_api::resolve_builtin(&SecretRef::file(dir.to_str().unwrap()))
+        .expect_err("a directory is not a secret file");
+    assert!(
+        err.contains("regular file"),
+        "the refusal must name the real problem — that the path is not a regular file: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// NEGATIVE CONTROL for the `is_file` guard, and the one that matters operationally: a SYMLINK to a
+/// regular file must still resolve. Kubernetes projects every secret as a symlink into a `..data/`
+/// directory and Docker swarm does much the same, so an `is_file` check written against
+/// `symlink_metadata` (which does NOT follow the link) would refuse the single most common real
+/// deployment of a `file:` secret. `Path::is_file` follows links; this pins that it stays that way.
+#[cfg(unix)]
+#[test]
+fn resolve_builtin_file_symlink_to_a_regular_file_still_resolves() {
+    let target = temp_path("FILE_SYMLINK_TARGET");
+    std::fs::write(&target, b"symlinked-secret").unwrap();
+    let link = temp_path("FILE_SYMLINK_LINK");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let got = busbar_api::resolve_builtin(&SecretRef::file(link.to_str().unwrap()))
+        .expect("a symlink to a regular file is how Kubernetes mounts a secret");
+    assert_eq!(got, b"symlinked-secret");
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_file(&target);
+}
+
+/// NEGATIVE CONTROL: the `is_file` guard must not swallow the MISSING-file diagnosis. A path that
+/// does not exist is a different operator error from a path that exists and is a directory, and
+/// both must stay distinguishable.
+#[test]
+fn resolve_builtin_file_missing_path_still_reports_cannot_resolve() {
+    let path = temp_path("FILE_STILL_MISSING"); // never created
+    let err = busbar_api::resolve_builtin(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("cannot resolve"), "{err}");
+    assert!(
+        !err.contains("regular file"),
+        "a missing path is absent, not a wrong-file-type problem: {err}"
+    );
+}
+
+/// The SAME blank-credential rule on the `file:` side. `resolve_builtin`'s file branch tests only
+/// `!bytes.is_empty()`, so a file holding three spaces resolves as a credential on the RAW-bytes
+/// path — fixing this for `env:` alone would be half a fix of one defect, which is the shape of
+/// hole this release keeps finding.
+#[test]
+fn resolve_builtin_file_whitespace_only_content_is_fail_closed() {
+    for blank in [b"   ".to_vec(), b"\n\r\n".to_vec(), b"\t \n".to_vec()] {
+        let path = temp_path("FILE_BLANK");
+        std::fs::write(&path, &blank).unwrap();
+        let err = busbar_api::resolve_builtin(&SecretRef::file(path.to_str().unwrap()))
+            .expect_err(&format!("whitespace-only file content {blank:?} must be refused"));
+        assert!(
+            err.contains("BLANK") || err.contains("blank"),
+            "a present-but-blank file is not a credential: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// NEGATIVE CONTROL for the file blank guard, both arms that could break a real secret:
+/// a credential with surrounding whitespace resolves byte-for-byte (a PEM chain's trailing newline
+/// is part of the secret), and a BINARY secret that is not UTF-8 at all still resolves — the guard
+/// must test for all-whitespace bytes, not "decodes as a blank string".
+#[test]
+fn resolve_builtin_file_real_content_still_resolves_including_binary() {
+    let padded = temp_path("FILE_PADDED");
+    std::fs::write(&padded, b"  pem-body\n").unwrap();
+    let got = busbar_api::resolve_builtin(&SecretRef::file(padded.to_str().unwrap())).unwrap();
+    assert_eq!(got, b"  pem-body\n", "a real credential is never trimmed");
+    let _ = std::fs::remove_file(&padded);
+
+    let binary = temp_path("FILE_BINARY");
+    std::fs::write(&binary, [0x00u8, 0xFF, 0x10, 0x80]).unwrap();
+    let got = busbar_api::resolve_builtin(&SecretRef::file(binary.to_str().unwrap()))
+        .expect("a binary (non-UTF-8) secret is legitimate on the raw-bytes path");
+    assert_eq!(got, vec![0x00u8, 0xFF, 0x10, 0x80]);
+    let _ = std::fs::remove_file(&binary);
 }

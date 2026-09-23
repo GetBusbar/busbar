@@ -881,3 +881,60 @@ fn unmarked_secret_looking_field_name_is_rejected() {
     });
     validate_secret_fields(&renamed).unwrap();
 }
+
+/// The `$ref`/`allOf` resolver carries its OWN depth cap, and needs to.
+///
+/// `scan`'s `MAX_SCAN_DEPTH` counts the levels IT descends, and this resolver recurses into itself
+/// — once through `$ref`, once per `allOf` member — without ever passing back through `scan`, so a
+/// chain that lives entirely inside the resolve step advances that counter not at all. The
+/// `resolving` set is not the backstop either: it catches a `$ref` that closes a cycle, and says
+/// nothing about a chain that is merely very long. What is left is operator-supplied input at pack
+/// time recursing as deep as it likes, and the failure at the end of that is a stack overflow — an
+/// abort with no diagnostic, which is the one answer a validator must never give.
+#[test]
+fn the_ref_resolver_caps_its_own_depth() {
+    // A NON-cyclic `allOf` chain, longer than the cap: `L0 -> L1 -> … -> L200`. Every link resolves,
+    // nothing repeats, so neither the cycle guard nor `scan`'s counter has anything to say about it.
+    const LINKS: usize = 200;
+    let mut defs = serde_json::Map::new();
+    for i in 0..LINKS {
+        let body = if i + 1 == LINKS {
+            serde_json::json!({"type": "object", "properties": {"leaf": {"type": "string"}}})
+        } else {
+            serde_json::json!({"allOf": [{"$ref": format!("#/$defs/L{}", i + 1)}]})
+        };
+        defs.insert(format!("L{i}"), body);
+    }
+    let deep = serde_json::json!({
+        "$schema": SCHEMA_2020_12,
+        "$ref": "#/$defs/L0",
+        "$defs": serde_json::Value::Object(defs),
+    });
+    let err = validate_secret_fields(&deep)
+        .expect_err("a chain past the cap must be refused, not resolved");
+    assert!(
+        err.contains("while resolving"),
+        "the RESOLVER's own cap must be what stops this — `scan`'s counter never advances inside a \
+         resolve chain, so a refusal from there would mean the test is not exercising this cap at \
+         all; got: {err}"
+    );
+
+    // NEGATIVE CONTROL: a chain WELL inside the cap still validates — the cap bounds the
+    // pathological case, it is not a new limit on schemas people actually write. Without this arm
+    // a resolver that refused EVERY chain would pass the red arm above.
+    let mut defs = serde_json::Map::new();
+    for i in 0..8 {
+        let body = if i == 7 {
+            serde_json::json!({"type": "object", "properties": {"leaf": {"type": "string"}}})
+        } else {
+            serde_json::json!({"allOf": [{"$ref": format!("#/$defs/S{}", i + 1)}]})
+        };
+        defs.insert(format!("S{i}"), body);
+    }
+    let shallow = serde_json::json!({
+        "$schema": SCHEMA_2020_12,
+        "$ref": "#/$defs/S0",
+        "$defs": serde_json::Value::Object(defs),
+    });
+    validate_secret_fields(&shallow).expect("an ordinary nested schema still validates");
+}
