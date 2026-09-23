@@ -12,6 +12,7 @@ use crate::gates::construction::model::{
     self, need_int, need_str, plain, py_dict, py_list, sorted_unique, use_line_rx, word, CRow, Cfg,
     VACUOUS,
 };
+use crate::gates::construction::teller_paths::{expanded_paths, judge, summary, Allowance};
 use crate::gates::construction::tree::{fnmatch, Fnc, Line, Tree};
 use crate::ledger::Status;
 use crate::rx::{self, Regex};
@@ -866,238 +867,37 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     Ok(rows)
 }
 
-// ── 9. teller-step-order ─────────────────────────────────────────────────────────────────────────
+// ── 9. teller-step-order ───────────────────────────────────────────────────────────────────────
 
-/// Whether `pos` in `bytes` is immediately preceded (modulo whitespace) by `=>` — i.e. whether the
-/// call starting there is a match arm's WHOLE tail expression rather than a statement in a block.
-fn preceded_by_fat_arrow(bytes: &[u8], pos: usize) -> bool {
-    let mut i = pos;
-    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
-        i -= 1;
-    }
-    i >= 2 && bytes[i - 2] == b'=' && bytes[i - 1] == b'>'
-}
-
-/// Walk `entry`'s body in source order, splicing in the bodies of the file's own helper functions
-/// where they are called, and return the ordered list of step names met.
+/// The declared omissions, read from `[[rules.teller-step-order.arm_may_omit]]`.
 ///
-/// A step only counts when it is dispatched off one of `step_receivers` (the door driver's own
-/// `units` handle, spelled either `units` directly or `self.0` inside the [`Blocking`] leg that
-/// wraps it) — NOT any method of that name on some unrelated type. `HoldCell::admit`, for example,
-/// textually collides with the `Units::admit` step but is called as `run.cell.admit(...)`, off a
-/// receiver this scan never treats as a step site.
-///
-/// `dispatch_methods` names trait-object indirections the walker must follow by METHOD call, not
-/// just by bare call: [`RouteAwait::route_leg`] is invoked as `route.route_leg(...)`, and the actual
-/// `Units::route` step it forwards to (`self.0.route(...)`, inside the one local impl of that trait)
-/// is otherwise invisible to a scanner that only recurses into bare-call sites.
-fn expanded_calls(
-    tree: &Tree,
-    rel: &str,
-    entry: &str,
-    steps: &[String],
-    step_receivers: &[String],
-    dispatch_methods: &[String],
-    depth: usize,
-) -> Result<Vec<String>, String> {
-    let local: BTreeMap<&str, &Fnc> = tree
-        .fns
-        .get(rel)
-        .into_iter()
-        .flat_map(|v| v.iter())
-        .filter(|f| !f.intest)
-        .map(|f| (f.name.as_str(), f))
-        .collect();
-    let step_rx = Regex::new(&format!(
-        r"(?<![A-Za-z0-9_])(?:{})\.({})\s*\(",
-        step_receivers
-            .iter()
-            .map(|r| rx::escape(r))
-            .collect::<Vec<_>>()
-            .join("|"),
-        steps
-            .iter()
-            .map(|s| rx::escape(s))
-            .collect::<Vec<_>>()
-            .join("|")
-    ))?;
-    let call_rx = Regex::new(r"(?<![A-Za-z0-9_.:])([a-z_][a-z0-9_]*)\s*\(")?;
-    // The door driver writes its step chain as `units\n    .arrival(...)\n    .into_result(...)`
-    // (see `open_to_door`) — the receiver and the step live on DIFFERENT lines, so `step_rx` above
-    // (which only matches a receiver and a step on the SAME line) never sees them. These two
-    // patterns recover that: a step opening a line right after a line that is bare `units` (or
-    // `self.0`) still counts, because the earlier line is exactly what the chain read as the
-    // receiver.
-    let step_leading_rx = Regex::new(&format!(
-        r"^\s*\.({})\s*\(",
-        steps
-            .iter()
-            .map(|s| rx::escape(s))
-            .collect::<Vec<_>>()
-            .join("|")
-    ))?;
-    let receiver_tail_rx = Regex::new(&format!(
-        r"(?<![A-Za-z0-9_])(?:{})\s*$",
-        step_receivers
-            .iter()
-            .map(|r| rx::escape(r))
-            .collect::<Vec<_>>()
-            .join("|")
-    ))?;
-    // Method calls to a locally-defined function, but ONLY the ones named in `dispatch_methods` —
-    // widening this to every `.foo(` in the file would let the walker splice in the body of any
-    // same-named method on any receiver, which is exactly the kind of textual collision the step
-    // scan itself has to refuse.
-    let method_rx = (!dispatch_methods.is_empty())
-        .then(|| {
-            Regex::new(&format!(
-                r"\.({})\s*\(",
-                dispatch_methods
-                    .iter()
-                    .map(|m| rx::escape(m))
-                    .collect::<Vec<_>>()
-                    .join("|")
-            ))
-        })
-        .transpose()?;
-    let mut seen: Vec<String> = Vec::new();
-
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    fn walk(
-        tree: &Tree,
-        rel: &str,
-        local: &BTreeMap<&str, &Fnc>,
-        step_rx: &Regex,
-        step_leading_rx: &Regex,
-        receiver_tail_rx: &Regex,
-        call_rx: &Regex,
-        method_rx: &Option<Regex>,
-        depth: usize,
-        name: &str,
-        d: usize,
-        stack: &[String],
-        seen: &mut Vec<String>,
-    ) {
-        let Some(f) = local.get(name) else { return };
-        if d > depth || stack.iter().any(|s| s == name) {
-            return;
+/// Each entry is a branch arm and the steps that arm may legitimately not run, WITH ITS REASON.
+/// This is the half of the per-path rule that keeps it a rule: a path is never excused because it
+/// was a branch, only because somebody wrote down which arm skips what and why.
+fn arm_allowances(cfg: &Cfg) -> Result<Vec<Allowance>, String> {
+    let mut out = Vec::new();
+    for t in cfg
+        .doc
+        .array_of_tables("rules.teller-step-order.arm_may_omit")
+    {
+        let function = need_str(t, "function", "teller-step-order.arm_may_omit")?.to_string();
+        let arm = need_str(t, "arm", "teller-step-order.arm_may_omit")?.to_string();
+        let why = need_str(t, "why", "teller-step-order.arm_may_omit")?.to_string();
+        let steps = t.list_of("steps");
+        if steps.is_empty() {
+            return Err(format!(
+                "[[rules.teller-step-order.arm_may_omit]] for `{function}`'s `{arm}` arm names no \
+                 `steps`; an omission licence that omits nothing is a licence nobody can read"
+            ));
         }
-        let lines = &tree.files[rel];
-        // Whether the PREVIOUS line's code was bare `units` (or `self.0`) — the chain-continuation
-        // state `step_leading_rx` reads. Reset every function, since a receiver bared at the end of
-        // one function's last line means nothing to the next function's first.
-        let mut receiver_pending = false;
-        for l in &lines[f.body_start - 1..f.end] {
-            let bytes = l.code_bytes();
-            // (offset, kind, name) — sorted exactly as Python sorts the tuple, so `call` precedes
-            // `step` at the same column.
-            let mut events: Vec<(usize, &'static str, String)> = step_rx
-                .find_iter(bytes)
-                .iter()
-                .filter_map(|m| m.str_of(bytes, 1).map(|n| (m.start, "step", n)))
-                .collect();
-            if receiver_pending {
-                if let Some(m) = step_leading_rx.search(bytes) {
-                    if let Some(n) = m.str_of(bytes, 1) {
-                        events.push((m.start, "step", n));
-                    }
-                }
-            }
-            events.extend(call_rx.find_iter(bytes).iter().filter_map(|m| {
-                let n = m.str_of(bytes, 1)?;
-                // A bare call that IS a match arm's whole tail expression (`Pattern => callee(...),`)
-                // is a short-circuit out of the function, not the continuation the rest of the body's
-                // textual order stands in for — see `run_unit_async`'s `Some(outcome) =>
-                // terminal(...)` next to its `None => { … under_hold(...).await … }` sibling: the
-                // walker's source-order splice cannot tell these are MUTUALLY EXCLUSIVE, so without
-                // this it reads the short-circuit arm's callee as running before the sibling arm's,
-                // even though at most one of them ever does. Skipping it here, rather than reading it
-                // as "runs before route/meter", is what keeps a real early-exit's own step (this one's
-                // `audit`, reached the same way every admitted unit's is: through `terminal`) from
-                // being misread as a canonical-order violation.
-                (local.contains_key(n.as_str())
-                    && n != name
-                    && !preceded_by_fat_arrow(bytes, m.start))
-                .then_some((m.start, "call", n))
-            }));
-            if let Some(mrx) = method_rx {
-                events.extend(mrx.find_iter(bytes).iter().filter_map(|m| {
-                    let n = m.str_of(bytes, 1)?;
-                    (local.contains_key(n.as_str()) && n != name).then_some((m.start, "call", n))
-                }));
-            }
-            events.sort();
-            for (_pos, kind, nm) in events {
-                if kind == "step" {
-                    seen.push(nm);
-                } else {
-                    let mut next = stack.to_vec();
-                    next.push(name.to_string());
-                    walk(
-                        tree,
-                        rel,
-                        local,
-                        step_rx,
-                        step_leading_rx,
-                        receiver_tail_rx,
-                        call_rx,
-                        method_rx,
-                        depth,
-                        &nm,
-                        d + 1,
-                        &next,
-                        seen,
-                    );
-                }
-            }
-            receiver_pending = receiver_tail_rx.is_match(bytes);
-        }
+        out.push(Allowance {
+            function,
+            arm,
+            steps,
+            why,
+        });
     }
-
-    walk(
-        tree,
-        rel,
-        &local,
-        &step_rx,
-        &step_leading_rx,
-        &receiver_tail_rx,
-        &call_rx,
-        &method_rx,
-        depth,
-        entry,
-        0,
-        &[],
-        &mut seen,
-    );
-    Ok(seen)
-}
-
-/// Every step that occurs more than once, as a finding string — a step is money-sacred precisely
-/// because it must run exactly once; a duplicate is a real defect `in_order` cannot see on its own,
-/// since it only reads FIRST occurrences and a repeat elsewhere never moves one of those.
-fn duplicate_findings(seen: &[String], steps: &[String], who: &str) -> Vec<String> {
-    steps
-        .iter()
-        .filter_map(|s| {
-            let n = seen.iter().filter(|x| *x == s).count();
-            (n > 1).then(|| format!("`{who}` calls step `{s}` {n} times; it must run exactly once"))
-        })
-        .collect()
-}
-
-/// True when every step occurs and their FIRST occurrences are in order.
-fn in_order(seen: &[String], steps: &[String]) -> bool {
-    let mut firsts = Vec::new();
-    for s in steps {
-        match seen.iter().position(|x| x == s) {
-            None => return false,
-            Some(i) => firsts.push(i),
-        }
-    }
-    let mut sorted = firsts.clone();
-    sorted.sort_unstable();
-    firsts == sorted
+    Ok(out)
 }
 
 pub fn teller_step_order(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
@@ -1117,6 +917,7 @@ pub fn teller_step_order(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         );
     }
     let dispatch_methods = c.list_of("dispatch_methods");
+    let allow = arm_allowances(cfg)?;
     let title = "the Teller loop calls the nine steps once each, in the canonical order";
 
     if !tree.fns.contains_key(rel) {
@@ -1140,24 +941,18 @@ pub fn teller_step_order(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             "expected exactly one `fn {loop_function}` in {rel}, found {loops}"
         ));
     }
-    let run_seen = expanded_calls(
+    let run_paths = expanded_paths(
         tree,
         rel,
         loop_function,
         &steps,
         &step_receivers,
         &dispatch_methods,
+        &allow,
         4,
     )?;
-    if !in_order(&run_seen, &steps) {
-        findings.push(format!(
-            "`{loop_function}` (expanded through its helpers) calls the steps as {}; the canonical \
-             order is {}",
-            py_list(&run_seen),
-            py_list(&steps)
-        ));
-    }
-    findings.extend(duplicate_findings(&run_seen, &steps, loop_function));
+    findings.extend(judge(loop_function, &run_paths, &steps, &allow));
+
     let door_at = steps.iter().position(|s| s == door_step).ok_or_else(|| {
         format!("[rules.teller-step-order] door_step `{door_step}` is not a step")
     })?;
@@ -1170,31 +965,42 @@ pub fn teller_step_order(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     if let Some(cs) = closing_step {
         allowed.push(cs.to_string());
     }
-    let open_seen = expanded_calls(
+    let open_paths = expanded_paths(
         tree,
         rel,
         opener_function,
         &steps,
         &step_receivers,
         &dispatch_methods,
+        &allow,
         4,
     )?;
-    if open_seen.is_empty() {
-        findings.push(format!("`{opener_function}` calls no step at all in {rel}"));
-    } else if !in_order(&open_seen, &allowed) || open_seen.iter().any(|s| !allowed.contains(s)) {
-        findings.push(format!(
-            "`{opener_function}` (expanded) calls {}; a session opener runs exactly the steps up \
-             to the door, in order: {}",
-            py_list(&open_seen),
-            py_list(&allowed)
-        ));
+    findings.extend(judge(opener_function, &open_paths, &allowed, &allow));
+
+    // A LICENCE NOBODY USES IS A LICENCE THAT OUTLIVED ITS ARM. `Authenticated::Challenge` is the
+    // reason `verify` may be absent from a path; delete that arm and the declaration would sit here
+    // quietly widening the rule for whatever arm happened to match next. So an entry neither walk
+    // ever reached is a finding, not a comment.
+    for (i, a) in allow.iter().enumerate() {
+        if !run_paths.hits.contains(&i) && !open_paths.hits.contains(&i) {
+            findings.push(format!(
+                "[[rules.teller-step-order.arm_may_omit]] licenses {} to omit {}, and no arm the \
+                 walk reached matches it — the declaration is stale",
+                a.names(),
+                py_list(&a.steps)
+            ));
+        }
     }
-    findings.extend(duplicate_findings(&open_seen, &allowed, opener_function));
+
     let current = findings.len() as i64;
     let detail = format!(
         "{current} order finding(s) in {rel} (ceiling {max_findings}): {}",
         if findings.is_empty() {
-            format!("`{loop_function}` runs {}", run_seen.join(" \u{2192} "))
+            format!(
+                "{}; {}",
+                summary(loop_function, &run_paths),
+                summary(opener_function, &open_paths)
+            )
         } else {
             findings.join("; ")
         }

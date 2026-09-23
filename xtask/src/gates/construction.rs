@@ -44,6 +44,7 @@ pub mod model;
 pub mod rules;
 pub mod rules2;
 pub mod selftest;
+pub mod teller_paths;
 pub mod tree;
 
 use std::collections::BTreeMap;
