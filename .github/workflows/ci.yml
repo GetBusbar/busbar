@@ -1876,13 +1876,20 @@ jobs:
         # never sees it because `cargo build --workspace` has already produced every cdylib by the
         # time its tests run. A per-package test run has to say so itself. ~30 s, and the alternative
         # -- a second `cargo build --workspace` per row -- is a full codegen for the same artifacts.
+        #
+        # busbar-plugin-example-plane is the kind:plane member of that list, and it is the one whose
+        # absence is most expensive: `crates/busbar-kernel/tests/plane_abi_rider.rs` is the ONLY proof
+        # that the 1.6.0 plane ABI has a real rider (BUSBAR-1.6.0 §11a, "no 0-caller ABI"), and a
+        # missing artifact would make all seven of its tests pass vacuously. They panic under CI rather
+        # than skip for exactly that reason; this line is what keeps them from having to.
         run: |
           cargo build --locked \
             -p busbar-store-example-plugin \
             -p busbar-hook-test-plugin \
             -p busbar-auth-static-plugin \
             -p busbar-secret-example-plugin \
-            -p busbar-export-example-plugin
+            -p busbar-export-example-plugin \
+            -p busbar-plugin-example-plane
       - name: Tests — ${{ matrix.name }}
         # The OWNING crates' suites, with the feature on. Compiling the `#[cfg]`-ed code proves it is
         # valid Rust; running the suite is what proves it does anything.

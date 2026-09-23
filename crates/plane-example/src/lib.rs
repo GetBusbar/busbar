@@ -11,8 +11,50 @@
 //! Like the other in-tree example plugin fixtures, this crate names NO other plane: its whole
 //! behaviour is in this file. It is a REAL, loadable plane — every slot is wired (no
 //! `unimplemented!()`), every FFI body runs inside a `catch_unwind`, and every out-param is written
-//! only on the `Ok` path — but its "work" is deliberately trivial (it counts the work items it is
-//! handed) because its job is to prove the ABI round-trips a plane, not to serve a protocol.
+//! only on the `Ok` path.
+//!
+//! ## IT RIDES THE HOST VTABLE — THAT IS THE WHOLE POINT
+//!
+//! This plane is deliberately trivial in what it *computes* and deliberately NOT trivial in what it
+//! *crosses*: every dispatch makes FIVE real inbound calls back through the
+//! [`PlaneHostVtable`](busbar_plugin::hot::PlaneHostVtable) it was handed at `build`, and a sixth at
+//! `start`. It is the tree's proof that the plane ABI is crossed in both directions by a real
+//! dropped-in artifact rather than exercised host-to-itself.
+//!
+//! **Every one of those calls is REQUIRED, not opportunistic.** An absent slot, a fail-closed return
+//! or a denied decision makes [`dispatch`] answer [`StatusClass::Refused`] — so a host that does not
+//! actually grant the capability cannot get an `Ok` out of this plane. That is what makes a test over
+//! this fixture able to FAIL when the seam is not really crossed: handing it
+//! [`PlaneHostVtable::EMPTY`](busbar_plugin::hot::PlaneHostVtable::EMPTY) refuses, and nulling ONE
+//! slot of an otherwise-real host refuses naming that slot. A plane that merely *mentioned* the
+//! vtable would pass either way, which is the failure mode this fixture exists to make impossible.
+//!
+//! The six crossings, in the order the lifecycle makes them:
+//!
+//! | hop | slot | why this plane needs it |
+//! | --- | --- | --- |
+//! | `build` | (the AIRLOCK, not a slot) | `PlaneHostVtable::check` — the preamble/size handshake |
+//! | `start` | `clock_now` | the plane takes NO ambient clock; its start instant is the host's |
+//! | `dispatch` | `clock_now` | the work item's arrival instant, likewise the host's |
+//! | `dispatch` | `govern_admit` | admission is the HOST's decision; a `Deny` refuses the item |
+//! | `dispatch` | `meter_charge` | the one-shot raw-count fact (see the money note below) |
+//! | `dispatch` | `cost_reserve` | open the metering LEASE for the item |
+//! | `dispatch` | `cost_settle` | settle the lease and read back exhaustion |
+//!
+//! ## MONEY: THIS PLANE IS PRICING-BLIND, AND EVERY NANODOLLAR IT HANDS OVER IS LITERALLY ZERO
+//!
+//! DECISIONS #43/#71: a plane COUNTS, it never VALUES. #77(3): a price is NEVER stored. So:
+//!
+//! * The only money fact this plane produces is a RAW COUNT — the number of inbound bytes the work
+//!   item carried — emitted through `meter_charge` as [`UsageComponent::Bytes`] with
+//!   `unit_cost_micros` set to **0**. It reads no rate card, holds no rate, and performs no
+//!   multiplication whose result is money.
+//! * `cost_reserve`/`cost_settle` take ALREADY-PRICED nanodollars. A pricing-blind plane has no
+//!   priced figure to put in them, so it passes **0** for the reserve, the flat fee and every
+//!   settlement, and declares the lease UNCAPPED (`cap_present = false`). The lease is opened and
+//!   settled because the LIFECYCLE is the plane's obligation; the AMOUNT is not the plane's to know.
+//! * There is no `f32`/`f64` anywhere in this file, on a money path or off one (#77(8)/#81). Every
+//!   count is a `u64` and every crossing is an integer.
 //!
 //! ## Both-ways by construction
 //!
@@ -24,9 +66,13 @@
 //! proof over the ABI.
 
 use busbar_plugin::hot::decl::{BuildCtx, IngressCarrier, OpaqueHandle};
-use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass};
+use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
+use busbar_plugin::hot::pod::{
+    AdmissionId, CostLeaseId, CostSettleOut, Decision, Facts, MeterOutcome, OpaqueState, RawStatus,
+    StatusClass, Usage, UsageComponent,
+};
 use busbar_plugin::hot::{PlaneDecl, WorkItem};
-use busbar_plugin::{write_out, AbiPreamble};
+use busbar_plugin::{host_slot, write_out, AbiPreamble};
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::os::raw::c_void;
@@ -38,14 +84,41 @@ const SECTION_KEY: &[u8] = b"example";
 const SCOPE: &[u8] = b"example";
 const LABEL: &[u8] = b"Example Plane";
 
+/// The neutral pool name this plane admits against. A pool is the HOST's routing/limit bucket; the
+/// plane names its own section key so an operator's limits land where they expect. Borrowed by the
+/// [`Facts`] handed to `govern_admit`, so it must outlive the call — a `'static` does.
+const ADMIT_POOL: &[u8] = b"example";
+
 /// The parsed-config handle `config_validate` produces. Trivial (the example accepts any config), but
 /// a REAL heap allocation so the `free` round-trip is exercised, not skipped.
 struct ParsedConfig;
 
-/// The built plane's live state: it counts the work items it has dispatched, proving `dispatch`
-/// actually recovered the handle `build` produced and ran real state across the seam.
+/// The built plane's live state.
+///
+/// It holds the INBOUND CAPABILITY SEAM the host handed over at `build` — the
+/// [`PlaneHostVtable`] pointer, the honoured size
+/// [`PlaneHostVtable::check`](busbar_plugin::hot::PlaneHostVtable::check) attested for it, and the
+/// opaque [`HostCtx`] every host call threads back — plus the counters that prove the crossings
+/// happened. Stashing the seam at `build` and calling it at `start`/`dispatch` is exactly what a real
+/// plane does; it is also what makes "did the vtable actually get crossed?" a question this fixture's
+/// return status can answer.
 struct PlaneState {
+    /// The host's capability vtable. Valid for the life of the built plane (the `build` contract).
+    host: *const PlaneHostVtable,
+    /// The honoured size `PlaneHostVtable::check` returned. EVERY slot is read through it via
+    /// [`host_slot!`], so a host built against an OLDER airlock minor (a shorter table) reads a
+    /// trailing slot it never wrote as ABSENT rather than as a fn-pointer from past its allocation.
+    host_size: u32,
+    /// The opaque host context threaded as the first argument of every host call. Never dereferenced
+    /// by the plane; handed back so the host recovers its own state.
+    host_ctx: HostCtx,
+    /// How many work items this plane has dispatched (each one having made its full host round trip).
     dispatched: AtomicU64,
+    /// The host clock reading `start` took, in Unix nanoseconds. The plane takes no ambient clock.
+    started_at_nanos: AtomicU64,
+    /// The running RAW COUNT this plane has reported through `meter_charge`: inbound bytes. A COUNT,
+    /// never a value — see the module's money note.
+    metered_units: AtomicU64,
 }
 
 /// NEVER-PANICS free for a [`ParsedConfig`] handle (the catch-guarded shape a real plane's `free`
@@ -93,8 +166,15 @@ extern "C-unwind" fn config_validate(
 }
 
 /// `build` — construct the plane from a [`BuildCtx`] (secrets pre-resolved), producing the opaque
-/// plane handle core keeps and never downcasts. The example ignores the config/refs; it only proves
-/// the handle round-trips.
+/// plane handle core keeps and never downcasts.
+///
+/// THIS IS THE PLANE'S HALF OF THE AIRLOCK. The loader checked the plane's `PlaneDecl` preamble
+/// before it called anything here; this is the symmetric check in the other direction — the plane
+/// [`check`](busbar_plugin::hot::PlaneHostVtable::check)s the HOST's table before it will hold a
+/// pointer it later CALLS THROUGH. A null host, a host whose magic/MAJOR does not match this build,
+/// or a host whose attested size is under the frozen header or over this build's struct is
+/// [`StatusClass::Refused`] — the plane does not build at all. Fail-closed both ways is the contract:
+/// a wrong POD field is bad data, a wrong vtable slot is a fn-pointer this side then calls.
 extern "C-unwind" fn build(
     ctx: *const BuildCtx,
     out_handle: *mut MaybeUninit<OpaqueHandle>,
@@ -103,9 +183,40 @@ extern "C-unwind" fn build(
         if ctx.is_null() {
             return StatusClass::Refused;
         }
+        // Read the ctx's own attested size WITHOUT forming a `&BuildCtx` over a possibly-shorter
+        // peer allocation, exactly as the loader reads a decl's.
+        // SAFETY: a non-null `ctx` addresses at least the leading prefix of a `BuildCtx` (the ABI
+        // build contract); `addr_of!` computes an address only and `read_unaligned` assumes no
+        // alignment the peer did not promise.
+        let advertised: u32 =
+            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*ctx).size)) };
+        // SAFETY (both reads): `field_present` inside the macro proves the attested size reaches
+        // through each field before it is projected; see `read_sized_field!`'s own contract.
+        let host = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, host);
+        let host_ctx = busbar_plugin::read_sized_field!(ctx, advertised, BuildCtx, host_ctx);
+        let (Some(host), Some(host_ctx)) = (host, host_ctx) else {
+            // A ctx too short to carry the capability seam cannot build a plane that rides it.
+            return StatusClass::Refused;
+        };
+        if host.is_null() {
+            return StatusClass::Refused;
+        }
+        // THE AIRLOCK, plane side. `check` reads the frozen preamble + attested size by address and
+        // never forms a `&PlaneHostVtable`, so a host allocation shorter than this build's struct is
+        // refused rather than read past.
+        // SAFETY: `host` is non-null and, per the `build` contract, addresses at least the leading
+        // prefix of a live `PlaneHostVtable` that outlives the built plane.
+        let Ok(host_size) = (unsafe { PlaneHostVtable::check(host) }) else {
+            return StatusClass::Refused;
+        };
         let handle = OpaqueState {
             ptr: Box::into_raw(Box::new(PlaneState {
+                host,
+                host_size,
+                host_ctx,
                 dispatched: AtomicU64::new(0),
+                started_at_nanos: AtomicU64::new(0),
+                metered_units: AtomicU64::new(0),
             })) as *mut c_void,
             free: Some(free_state),
         };
@@ -130,34 +241,137 @@ extern "C-unwind" fn hydrate(state: *mut c_void) -> RawStatus {
     RawStatus::of(class)
 }
 
-/// `start` — nothing to begin (the example has no live ingress); idempotent Ok.
+/// `start` — begin accepting work, stamping the start instant FROM THE HOST CLOCK.
+///
+/// The first real crossing of the lifecycle: a plane takes no ambient clock (that is what the
+/// `clock_now` slot is for), so an absent slot or the slot's fail-closed `0` reading REFUSES the
+/// start rather than inventing a time. Idempotent — a second `start` simply re-stamps.
 extern "C-unwind" fn start(state: *mut c_void) -> RawStatus {
     let class = catch_unwind(AssertUnwindSafe(|| {
         if state.is_null() {
-            StatusClass::Refused
-        } else {
-            StatusClass::Ok
+            return StatusClass::Refused;
         }
+        // SAFETY: `state` is the live `PlaneState` `build` produced (ABI lifecycle discipline); it is
+        // mutated only through its atomics.
+        let st = unsafe { &*(state as *const PlaneState) };
+        // SAFETY: `st.host`/`st.host_size` are exactly what `PlaneHostVtable::check` validated at
+        // build, over a table the host guarantees outlives the built plane.
+        let Some(clock_now) = host_slot!(st.host, st.host_size, clock_now) else {
+            return StatusClass::Refused;
+        };
+        let now_nanos = clock_now(st.host_ctx);
+        if now_nanos == 0 {
+            // `0` is the slot's documented fail-closed reading, never a wild value — and never a
+            // real Unix nanosecond. Treat it as "the host did not answer".
+            return StatusClass::Refused;
+        }
+        st.started_at_nanos.store(now_nanos, Ordering::Relaxed);
+        StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault);
     RawStatus::of(class)
 }
 
-/// `dispatch` — THE ingress entry point. Recovers the built [`PlaneState`], touches the work item's
-/// inbound (proving the borrowed range crossed the seam), counts it, and returns `Ok`.
+/// `dispatch` — THE ingress entry point, and THE cross-ABI round trip.
+///
+/// Recovers the built [`PlaneState`], then makes FIVE REQUIRED calls back through the host vtable:
+/// `clock_now` → `govern_admit` → `meter_charge` → `cost_reserve` → `cost_settle`. Any absent slot,
+/// any fail-closed reading, any `Deny`/`Rejected`/non-`Ok` and any exhausted lease answers
+/// [`StatusClass::Refused`]; only a full round trip answers `Ok`. See the module docs for the money
+/// posture — every nanodollar this fn hands the host is a literal `0`.
 extern "C-unwind" fn dispatch(state: *mut c_void, work: *const WorkItem) -> RawStatus {
     let class = catch_unwind(AssertUnwindSafe(|| {
         if state.is_null() || work.is_null() {
             return StatusClass::Refused;
         }
         // SAFETY: `state` is a live `PlaneState` `build` produced; `work` is a live `WorkItem` for the
-        // call (ABI dispatch discipline). Neither is mutated through a shared ref except the atomic.
+        // call (ABI dispatch discipline). Neither is mutated through a shared ref except the atomics.
         let st = unsafe { &*(state as *const PlaneState) };
         let w = unsafe { &*work };
-        // Touch the inbound so a dropped `(ptr,len)` would be observable, not silently ignored.
-        let inbound_len = w.inbound.len;
-        let _ = inbound_len;
+        let host = st.host;
+        let host_size = st.host_size;
+        let ctx = st.host_ctx;
+
+        // THE RAW COUNT this item consumed: the inbound byte length. Touching `inbound.len` also
+        // proves the borrowed `(ptr,len)` crossed the seam intact rather than being silently dropped.
+        // A COUNT, in the unit the plane declares — never a value, never multiplied by a rate.
+        let units: u64 = w.inbound.len as u64;
+
+        // ── 1. CLOCK — the item's arrival instant, from the host. ────────────────────────────────
+        // SAFETY (this and every `host_slot!` below): `host`/`host_size` are exactly what
+        // `PlaneHostVtable::check` validated at build, over a table that outlives the built plane;
+        // `host_slot!` reads each slot only when the attested size proves the host WROTE it.
+        let Some(clock_now) = host_slot!(host, host_size, clock_now) else {
+            return StatusClass::Refused;
+        };
+        if clock_now(ctx) == 0 {
+            return StatusClass::Refused; // the slot's fail-closed reading
+        }
+
+        // ── 2. ADMIT — admission is the HOST's decision, never the plane's. ───────────────────────
+        let Some(govern_admit) = host_slot!(host, host_size, govern_admit) else {
+            return StatusClass::Refused;
+        };
+        // `tokens = budget_remaining = 0` makes the POD's own pre-chain gate a no-op, so the host's
+        // real limit chain is the sole decider — the same Facts shape core's own admit wrapper builds.
+        let facts = Facts::new(0, 0, 0, 0, 0, ADMIT_POOL);
+        let facts_ptr: *const Facts = &*facts;
+        if govern_admit(ctx, facts_ptr) == Decision::Deny {
+            return StatusClass::Refused;
+        }
+
+        // ── 3. METER — the one-shot RAW-COUNT fact. `unit_cost_micros` is 0 BECAUSE THIS PLANE DOES
+        //    NOT PRICE (#43/#71): it reports how much was consumed, the host decides what that is
+        //    worth, and the worth is a read-time view the plane never sees and never stores (#77(3)).
+        //    `AdmissionId::NONE` = no resolved attribution; the host synthesizes one. ───────────────
+        let Some(meter_charge) = host_slot!(host, host_size, meter_charge) else {
+            return StatusClass::Refused;
+        };
+        let usage = Usage::charge(UsageComponent::Bytes, units, 0, AdmissionId::NONE);
+        let usage_ptr: *const Usage = &*usage;
+        if meter_charge(ctx, usage_ptr) != MeterOutcome::Charged {
+            return StatusClass::Refused;
+        }
+
+        // ── 4. RESERVE — open the item's metering lease. A pricing-blind plane has no priced figure
+        //    to reserve, so the reserve, the flat fee and the cap are all `0` and the lease is
+        //    declared UNCAPPED (`cap_present = false`, which is never exhausted). Opening the lease is
+        //    the plane's LIFECYCLE obligation; sizing it is the host's money obligation. ────────────
+        let Some(cost_reserve) = host_slot!(host, host_size, cost_reserve) else {
+            return StatusClass::Refused;
+        };
+        let mut lease_slot = MaybeUninit::<CostLeaseId>::uninit();
+        let lease_out: *mut MaybeUninit<CostLeaseId> = &mut lease_slot;
+        if cost_reserve(ctx, 0, 0, 0, false, lease_out) != StatusClass::Ok {
+            return StatusClass::Refused; // init-only-on-Ok: `lease_slot` stays unread
+        }
+        // SAFETY: init-only-on-Ok — the host wrote `lease_slot` before returning `Ok`.
+        let lease = unsafe { lease_slot.assume_init() };
+        if lease.is_none() {
+            return StatusClass::Refused; // the reserved NONE sentinel is not a lease
+        }
+
+        // ── 5. SETTLE — settle the lease and read back exhaustion. `settle_nanos` is `0` for the
+        //    same reason the reserve was: the plane has no priced increment. `breakdown` is absent
+        //    (null/0) — there is no itemization of a figure the plane never computed. ──────────────
+        let Some(cost_settle) = host_slot!(host, host_size, cost_settle) else {
+            return StatusClass::Refused;
+        };
+        let mut settle_slot = MaybeUninit::<CostSettleOut>::uninit();
+        let settle_out: *mut MaybeUninit<CostSettleOut> = &mut settle_slot;
+        if cost_settle(ctx, lease, 0, core::ptr::null(), 0, settle_out) != StatusClass::Ok {
+            return StatusClass::Refused; // init-only-on-Ok: `settle_slot` stays unread
+        }
+        // SAFETY: init-only-on-Ok — the host wrote `settle_slot` before returning `Ok`.
+        let settled = unsafe { settle_slot.assume_init() };
+        if settled.exhausted != 0 {
+            // A dry lease means the carrier must hard-close — the one thing post-hoc metering
+            // structurally cannot do, and the reason this plane settles before it answers.
+            return StatusClass::Refused;
+        }
+
         st.dispatched.fetch_add(1, Ordering::Relaxed);
+        st.metered_units.fetch_add(units, Ordering::Relaxed);
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault);
