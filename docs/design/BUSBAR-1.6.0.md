@@ -135,7 +135,38 @@ appears (7). Full text in Part 1.
 
 ## What "done" means
 
-Dev-green on **one SHA**, with nothing outstanding, deferred or niggling:
+> **OWNER RULING 2026-09-23.** *"So what done is, is THAT. Not some script, not anything else."*
+> *"How you personally prove THAT is on you. A `verify-1.6.0-done.sh`, sure — that's YOU, I don't care."*
+>
+> **DONE IS THE BLOCKQUOTE AT THE TOP OF PART 0.** Nothing else is the definition. No script, gate,
+> ratchet, group count or checklist is the acceptance criterion — every one of them is an
+> INSTRUMENT the architect built to prove the statement, and an instrument that disagrees with the
+> statement is a broken instrument, not a new requirement.
+>
+> This inverts what had drifted into place. The 22-group script had become the thing being chased,
+> which is how a naming ratchet ended up costing more than the re-architecture it was supposed to
+> witness. The script serves the statement; it does not define it.
+
+**The statement decomposes into exactly four falsifiable claims.** These are what the architect must
+prove, and each one names the failure that would refute it:
+
+| # | Claim (from the ratified statement) | Refuted by |
+|---|---|---|
+| **C1** | Core is a thin engine that knows nothing about any specific protocol. | Core naming any plane type; or adding a dialect to a plane requiring ANY change to a core file. |
+| **C2** | Every plugin can be compiled in OR dropped in over the same contract and same loading path, and talks to core only over the ABI. | Any of the 7 kinds lacking a both-ways proof; any lateral plugin-to-plugin edge; any kind whose two folds differ. |
+| **C3** | LLM-only 1.6.0 is byte-identical to published 1.5.5. | One unexplained cell in the oracle diff against the real 1.5.5 binary. |
+| **C4** | Money is a view: `money = f(ledger, ratecard)`, nothing stores a dollar. | Any stored price; any float; any money finding that cannot name ledger-or-ratecard as the wrong one. |
+
+**C1's test is the sharp one and it is nearly free to run:** add a dialect, and `git diff --stat` must
+show zero files changed under core. That single command falsifies or confirms the entire premise of
+the release, which is more than the 22-group script can say.
+
+The instruments below exist to serve those four claims. Where an instrument is red on something that
+bears on none of them, it is reporting a defect in itself.
+
+### The instruments (evidence, not definition)
+
+Dev-green on **one SHA**, with nothing outstanding or niggling:
 
 1. `scripts/verify-1.6.0-done.sh` exits 0 across its **22** groups — full run, never `--fast`
    (exit 3 is PROVISIONAL, not spendable), every bless/repoint env var empty.
