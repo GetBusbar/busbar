@@ -27,12 +27,23 @@
 //! work may be a long-running task that reached down into L2 tools, and a limit enforced after it
 //! has already cost the operator the thing the limit was for.
 
-// PARTLY UNMOUNTED. `Attribution::receiving` is on the hot path (`ingress::invoke` bills the
-// presenting key through it). `Attribution::delegating`, `Direction::Delegating` and `Admission`
-// are the delegating direction's half: nothing delegates outward yet, and `Admission` is this
-// plane's own window arithmetic, which the ingress does not use because it meters through the
-// shared governance ledger rather than a second one.
-#![cfg_attr(not(test), allow(dead_code))]
+// WHAT IS LIVE HERE AND WHAT IS NOT, RE-MEASURED 2026-09-22. The note that stood here said
+// "nothing delegates outward yet" and justified a MODULE-WIDE `allow(dead_code)` with it. Both
+// halves were wrong: the delegating arm is on the live path, and a module-wide silencer over a file
+// whose dead part is three items is a silencer that would absorb the fourth.
+//
+// LIVE, BOTH ARMS. `Attribution::receiving` is constructed at `receive.rs:1930` and
+// `Attribution::delegating` at `:1943` — the same function, the same request — and the result is
+// read at `:2030` (`hop.target_agent_id`) and `:2088` (`hop.billed_key_id`). `Direction` is live
+// with the constructors that set it. They carry "whose budget this bills", which is defs 5/6 under
+// #43/#71, so they are kernel-side and they MOVE (1.6.0-engine-split-plan.md s6.1 step A7).
+//
+// DEAD, AND ONLY THIS. `Admission`, `Admission::status` and `admit` have no caller anywhere outside
+// `tests/meter_tests.rs`: this is the plane's OWN window arithmetic, which the ingress does not use
+// because it meters through the shared governance ledger (`busbar-kernel-budget::decide`) rather
+// than a second one. Their disposition is an OWNER RULING (that plan's s9.2, Wave D3) — neither
+// moved nor deleted here. The silencer now sits on those three items and nowhere else, so this file
+// is a SPLIT and not one verdict, and the next dead item in it is reported rather than absorbed.
 
 /// Which direction a metered A2A event belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +131,7 @@ impl Attribution {
 }
 
 /// The admission answer for one task, before any backend runs.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Admission {
     /// Admitted; charge it.
@@ -128,6 +140,7 @@ pub enum Admission {
     OverLimit { retry_after_secs: u64 },
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl Admission {
     pub fn status(&self) -> Option<u16> {
         match self {
@@ -141,6 +154,7 @@ impl Admission {
 ///
 /// Reaching the limit is over it: an operator who wrote the number they consider unacceptable did
 /// not mean "one more than this".
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn admit(used: u64, limit: Option<u64>, window_remaining_secs: u64) -> Admission {
     match limit {
         None => Admission::Admit,
