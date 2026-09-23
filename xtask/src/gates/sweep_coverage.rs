@@ -82,6 +82,30 @@ pub const ROW_PHANTOMS: &str = "sweep-coverage:no-phantoms";
 pub const ROW_LEGAL: &str = "sweep-coverage:verdicts-legal";
 pub const ROW_DISJOINT: &str = "sweep-coverage:disjoint";
 
+/// THE PRIOR SWEEP, GUARDED RATHER THAN QUOTED.
+///
+/// `docs/design/1.6.0-file-verdicts.md` is a real per-file sweep: every tracked `.rs` file given a
+/// verdict from a closed vocabulary, reachability established by two independent oracles that had
+/// to agree, and its zeros controlled. It is NOT the seven-item checklist — it answers reachability
+/// and duplication, not money, auth, instrument blindness or config wiring — so it does not make a
+/// file swept. But it is earned work, and a document like it rots silently: every `.rs` file added
+/// after it ran is absent from it and nothing says so.
+///
+/// This row says so. It goes red when a tracked `.rs` file carries no verdict there, which is the
+/// difference between a finished sweep and a sweep that finished once.
+pub const ROW_REACHABILITY: &str = "sweep-coverage:reachability-axis";
+
+/// The prior sweep's document and its closed verdict vocabulary.
+pub const PRIOR_SWEEP: &str = "docs/design/1.6.0-file-verdicts.md";
+pub const PRIOR_VERDICTS: &[&str] = &[
+    "LIVE",
+    "TEST",
+    "TOOLING",
+    "ORPHAN",
+    "HALF-MIGRATED",
+    "DUPLICATE",
+];
+
 /// One parsed verdict line.
 #[derive(Debug, Clone)]
 pub struct Claim {
@@ -334,6 +358,50 @@ impl SweepCoverageGate {
             )
         });
 
+        // --- reachability axis -------------------------------------------------------------
+        let rs: BTreeSet<String> = match cx.git_lines(&["ls-files", "*.rs"]) {
+            Ok(v) => v.into_iter().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect(),
+            Err(_) => BTreeSet::new(),
+        };
+        let prior = cx.read(PRIOR_SWEEP).unwrap_or_default();
+        let mut verdicted: BTreeSet<String> = BTreeSet::new();
+        for line in prior.lines() {
+            let line = line.trim();
+            if !line.starts_with('|') {
+                continue;
+            }
+            let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+            if cells.len() < 4 {
+                continue;
+            }
+            let path = cells[1].trim_matches('`').trim();
+            let verdict = cells[2].trim_matches('*').trim();
+            if rs.contains(path) && PRIOR_VERDICTS.contains(&verdict) {
+                verdicted.insert(path.to_string());
+            }
+        }
+        let missing: Vec<String> = rs.difference(&verdicted).cloned().collect();
+        rows.push(if missing.is_empty() {
+            Row::pass(
+                ROW_REACHABILITY,
+                "every tracked .rs file carries a reachability verdict in the prior sweep",
+                format!("{} of {} file(s)", verdicted.len(), rs.len()),
+            )
+        } else {
+            Row::fail(
+                ROW_REACHABILITY,
+                "tracked .rs files are absent from the reachability sweep — a sweep that finished \
+                 once is not a sweep that is finished",
+                format!(
+                    "{} of {} verdicted in {PRIOR_SWEEP}; {} absent: {}",
+                    verdicted.len(),
+                    rs.len(),
+                    missing.len(),
+                    listing(&missing, 10)
+                ),
+            )
+        });
+
         rows
     }
 }
@@ -350,6 +418,7 @@ impl Gate for SweepCoverageGate {
             ROW_PHANTOMS.to_string(),
             ROW_LEGAL.to_string(),
             ROW_DISJOINT.to_string(),
+            ROW_REACHABILITY.to_string(),
         ]
     }
 
