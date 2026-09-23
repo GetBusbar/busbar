@@ -11,7 +11,8 @@ mod sealed {
     pub trait KindSeal {}
 }
 
-/// The closed set of plugin kinds.
+/// The closed set of plugin kinds — SEVEN of them: plane, transport, auth, store, secret, hook,
+/// export.
 ///
 /// This is structure, not vocabulary, so it is closed: the open-vocabulary section of the design
 /// allows a plugin to invent claims, classes and schemes, but never a new kind of plugin. A new
@@ -22,10 +23,10 @@ pub enum Kind {
     Plane,
     /// Moves bytes. In-tree only, inside the trusted computing base.
     Transport,
-    /// Turns an arriving credential into facts about a principal.
+    /// Turns an arriving credential into facts about a principal, and decorates an outbound one
+    /// with an upstream's own scheme. ONE kind, two operations: direction is a property of the
+    /// leg — `(transport, auth, direction)` — never a kind of its own.
     Auth,
-    /// Decorates an outbound request with an upstream's own scheme.
-    EgressAuth,
     /// The durable store behind the journal.
     Store,
     /// Resolves, signs, seals and unseals key material.
@@ -43,13 +44,13 @@ impl Kind {
         K::KIND
     }
 
-    // The PURE kinds — plane, hook, and the pure static and egress-auth schemes — are the ones the
-    // core-to-plugin section scopes its source denylist to; the input/output kinds (store, secret,
-    // export, and the network-backed auth plugins) own their input and output by definition and are
-    // bounded by their signature, a deadline and an access journal entry instead. That partition was
-    // also spelled here as a predicate no caller in the workspace ever asked, and the rule it stated
-    // is enforced by `source-denylist:*` in the construction gate, over the crates rather than over
-    // this enum. One statement of it, in the place that acts on it.
+    // The PURE kinds — plane, hook, and the auth plugins that do no I/O of their own — are the ones
+    // the core-to-plugin section scopes its source denylist to; the input/output kinds (store,
+    // secret, export, and the network-backed auth plugins) own their input and output by definition
+    // and are bounded by their signature, a deadline and an access journal entry instead. That
+    // partition was also spelled here as a predicate no caller in the workspace ever asked, and the
+    // rule it stated is enforced by `source-denylist:*` in the construction gate, over the crates
+    // rather than over this enum. One statement of it, in the place that acts on it.
 }
 
 impl fmt::Display for Kind {
@@ -58,7 +59,6 @@ impl fmt::Display for Kind {
             Self::Plane => "plane",
             Self::Transport => "transport",
             Self::Auth => "auth",
-            Self::EgressAuth => "egress-auth",
             Self::Store => "store",
             Self::Secret => "secret",
             Self::Hook => "hook",
@@ -101,11 +101,8 @@ pub mod markers {
         /// Marker for the transport kind.
         TransportKind => Transport);
     marker!(
-        /// Marker for the ingress auth kind.
+        /// Marker for the auth kind, inbound and outbound alike.
         AuthKind => Auth);
-    marker!(
-        /// Marker for the egress auth-scheme kind.
-        EgressAuthKind => EgressAuth);
     marker!(
         /// Marker for the store kind.
         StoreKind => Store);

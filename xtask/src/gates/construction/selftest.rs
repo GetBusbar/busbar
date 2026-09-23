@@ -95,18 +95,26 @@ fn refs(v: &[String]) -> Vec<&str> {
     v.iter().map(String::as_str).collect()
 }
 
-fn kind_crates(cx: &Ctx, kinds: &[String]) -> Vec<String> {
-    let Ok(cfg) = ConstructionGate::cfg(cx) else {
-        return Vec::new();
-    };
-    let mut out: Vec<String> = kinds
-        .iter()
-        .flat_map(|k| dirs_for_globs(cx, &cfg.kind_globs(k)))
-        .map(|d| crate_name_of_dir(&d))
-        .collect();
+/// The crates of these kinds, or a refusal naming the kind key that does not resolve.
+///
+/// THE ERROR IS THE POINT. This used to swallow both failures — an unparseable ceilings file and
+/// an unknown kind key — into an empty list, and an empty list here plants NOTHING, covers NO row
+/// ids, and leaves the case claiming a proof it never ran. That is how the `pure_auth`/`egress_auth`
+/// spellings survived: the self-test asked for two kinds that do not exist, planted a kernel
+/// dependency into no crate at all, and reported the plugin-kind case green.
+fn kind_crates(cx: &Ctx, kinds: &[String]) -> Result<Vec<String>, String> {
+    let cfg = ConstructionGate::cfg(cx)?;
+    let mut out: Vec<String> = Vec::new();
+    for k in kinds {
+        out.extend(
+            dirs_for_globs(cx, &cfg.kind_globs(k)?)
+                .iter()
+                .map(|d| crate_name_of_dir(d)),
+        );
+    }
     out.sort();
     out.dedup();
-    out
+    Ok(out)
 }
 
 fn strings(items: &[&str]) -> Vec<String> {
@@ -879,16 +887,23 @@ fn rose_plants(cx: &Ctx) -> Vec<(String, String, String)> {
 /// The plugin kinds: the manifest allow-list, the source denylist and the unsafe attributes.
 fn kind_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
-    let manifest_kinds = strings(&[
-        "plane",
-        "store",
-        "pure_auth",
-        "hook",
-        "export",
-        "secret",
-        "egress_auth",
-    ]);
-    let crates = kind_crates(cx, &manifest_kinds);
+    // THE SIX KEYS `manifest_allowlist` READS, AND `auth` IS ONE OF THEM. `pure_auth` and
+    // `egress_auth` stood here, and neither is a key of `[gate.plugin_kinds]`, so this case planted
+    // a `busbar-kernel` dependency into ZERO crates for the auth kind and proved nothing about the
+    // one kind it thereby exempted. `crates/auth-admin-tokens` and `crates/auth-static-plugin` are
+    // planted into now, and their `manifest-allowlist:` rows must go RED under the plant or this
+    // case fails.
+    let manifest_kinds = strings(&["plane", "store", "auth", "hook", "export", "secret"]);
+    let crates = match kind_crates(cx, &manifest_kinds) {
+        Ok(c) => c,
+        Err(e) => {
+            r.note_infra_failure(format!(
+                "the plugin-kind scopes would not resolve, so no manifest-allowlist plant is \
+                 real: {e}"
+            ));
+            return r;
+        }
+    };
     let mut ov = on(base);
     for c in &crates {
         let rel = format!("crates/{c}/Cargo.toml");
@@ -918,7 +933,15 @@ fn kind_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a>
                 .unwrap_or_default()
         })
         .unwrap_or_default();
-    let pure = kind_crates(cx, &denylist_kinds);
+    let pure = match kind_crates(cx, &denylist_kinds) {
+        Ok(c) => c,
+        Err(e) => {
+            r.note_infra_failure(format!(
+                "the source-denylist scopes would not resolve, so no purity plant is real: {e}"
+            ));
+            return r;
+        }
+    };
     let mut ov = on(base);
     for c in &pure {
         ov.set(
@@ -948,7 +971,17 @@ fn kind_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a>
         // BY DESIGN, and asking `prove_red` for it would fail the case for the rule working. So
         // the ratcheted crates are proven the other way round, in the green case below: the same
         // plant, the tracked rows, and the claim that tolerating them is what the ratchet is for.
-        let (held, tracked) = ConstructionGate::unsafe_split(cx, &cfg, kinds_key, missing_key);
+        let (held, tracked) = match ConstructionGate::unsafe_split(cx, &cfg, kinds_key, missing_key)
+        {
+            Ok(split) => split,
+            Err(e) => {
+                r.note_infra_failure(format!(
+                    "the `{rid}` scopes would not resolve, so no unsafe-attribute plant is \
+                     real: {e}"
+                ));
+                return r;
+            }
+        };
         let here: Vec<String> = held.iter().chain(tracked.iter()).cloned().collect();
         let mut ov = on(base);
         for c in &here {

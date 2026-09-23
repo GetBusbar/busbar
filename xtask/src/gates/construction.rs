@@ -133,8 +133,15 @@ impl ConstructionGate {
         let mut ids = vec!["duplicate-dispatch".to_string()];
         if let Ok(cfg) = ConstructionGate::cfg(cx) {
             for (kinds_key, missing_key, prefix) in UNSAFE_HALVES {
-                let (_, tracked) = ConstructionGate::unsafe_split(cx, &cfg, kinds_key, missing_key);
-                ids.extend(tracked.iter().map(|c| format!("{prefix}:{c}")));
+                // A refusal here DROPS the exemption rather than granting it: this list is what
+                // makes a tracked row REPORT instead of GATE, so an unresolvable scope leaves
+                // every row gating. `Self::ids` asks the same question and has an error channel
+                // to say so in; this one fails closed and stays quiet.
+                if let Ok((_, tracked)) =
+                    ConstructionGate::unsafe_split(cx, &cfg, kinds_key, missing_key)
+                {
+                    ids.extend(tracked.iter().map(|c| format!("{prefix}:{c}")));
+                }
             }
         }
         ids
@@ -146,25 +153,29 @@ impl ConstructionGate {
     /// from the crate directories on disk. Nothing here is a list maintained beside the rule, so
     /// closing a debt by deleting a name from the ceilings file moves that crate back under the
     /// rule and back under the self-test's RED proof in the same edit.
+    ///
+    /// # Errors
+    /// When the rule table is absent, or when it is scoped by a kind key
+    /// `[gate.plugin_kinds]` does not declare — see [`Cfg::kind_globs`].
     pub fn unsafe_split(
         cx: &Ctx,
         cfg: &Cfg,
         kinds_key: &str,
         missing_key: &str,
-    ) -> (Vec<String>, Vec<String>) {
-        let Ok(rule) = cfg.rule("forbid-unsafe") else {
-            return (Vec::new(), Vec::new());
-        };
+    ) -> Result<(Vec<String>, Vec<String>), String> {
+        let rule = cfg.rule("forbid-unsafe")?;
         let tracked_names = rule.list_of(missing_key);
-        let mut here: Vec<String> = rule
-            .list_of(kinds_key)
-            .iter()
-            .flat_map(|k| dirs_for_globs(cx, &cfg.kind_globs(k)))
-            .map(|d| crate_name_of_dir(&d))
-            .collect();
+        let mut here: Vec<String> = Vec::new();
+        for k in rule.list_of(kinds_key) {
+            here.extend(
+                dirs_for_globs(cx, &cfg.kind_globs(&k)?)
+                    .iter()
+                    .map(|d| crate_name_of_dir(d)),
+            );
+        }
         here.sort();
         here.dedup();
-        here.into_iter().partition(|c| !tracked_names.contains(c))
+        Ok(here.into_iter().partition(|c| !tracked_names.contains(c)))
     }
 
     fn ids(cx: &Ctx) -> Result<Vec<String>, String> {
@@ -234,27 +245,29 @@ impl ConstructionGate {
             ids.push(format!("legacy-reach:{key}"));
         }
 
-        let crates_of = |kinds: &[String]| -> Vec<String> {
-            kinds
-                .iter()
-                .flat_map(|k| dirs_for_globs(cx, &cfg.kind_globs(k)))
-                .map(|d| crate_name_of_dir(&d))
-                .collect()
+        let crates_of = |kinds: &[String]| -> Result<Vec<String>, String> {
+            let mut out = Vec::new();
+            for k in kinds {
+                out.extend(
+                    dirs_for_globs(cx, &cfg.kind_globs(k)?)
+                        .iter()
+                        .map(|d| crate_name_of_dir(d)),
+                );
+            }
+            Ok(out)
         };
 
-        let manifest_kinds: Vec<String> = [
-            "plane",
-            "store",
-            "pure_auth",
-            "hook",
-            "export",
-            "secret",
-            "egress_auth",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        let manifest_crates = crates_of(&manifest_kinds);
+        // THE SAME SEVEN-COLLAPSED-TO-SIX KEYS `manifest_allowlist` ITSELF READS, and they must
+        // stay the same keys: this is the rule's COMPLETENESS ORACLE, the list that decides which
+        // `manifest-allowlist:<crate>` rows a run is OWED. It carried `pure_auth`/`egress_auth`
+        // too, so the oracle expected exactly the rows the buggy rule produced and the two auth
+        // crates were missing from both sides at once. Checker and checked shared the bug, which
+        // is the one arrangement in which a reconciliation proves nothing.
+        let manifest_kinds: Vec<String> = ["plane", "store", "auth", "hook", "export", "secret"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let manifest_crates = crates_of(&manifest_kinds)?;
         if manifest_crates.is_empty() {
             ids.push("manifest-allowlist".to_string());
         } else {
@@ -265,7 +278,7 @@ impl ConstructionGate {
             );
         }
 
-        let denylist_crates = crates_of(&cfg.rule("source-denylist")?.list_of("kinds"));
+        let denylist_crates = crates_of(&cfg.rule("source-denylist")?.list_of("kinds"))?;
         if denylist_crates.is_empty() {
             ids.push("source-denylist".to_string());
         } else {
@@ -281,7 +294,7 @@ impl ConstructionGate {
             ("forbid_kinds", "forbid-unsafe"),
             ("deny_kinds", "forbid-unsafe-deny"),
         ] {
-            let here = crates_of(&unsafe_rule.list_of(kinds_key));
+            let here = crates_of(&unsafe_rule.list_of(kinds_key))?;
             if here.is_empty() {
                 ids.push(prefix.to_string());
             } else {

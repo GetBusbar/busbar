@@ -4,7 +4,7 @@
 //! fixture per kind. That is what the assertions below are: each one only compiles if the trait
 //! can be used behind a pointer, which is how the registry holds every plugin.
 //!
-//! Two of the kinds get a full implementation as well. That proves something the assertions cannot
+//! Some of the kinds get a full implementation as well. That proves something the assertions cannot
 //! — that the signatures are actually implementable, lifetimes and all — and it proves the
 //! no-default-bodies rule the same way a reviewer would: the fixture below names every method,
 //! because leaving one out does not compile.
@@ -23,9 +23,9 @@ use busbar_contract::ids::{
 };
 use busbar_contract::kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
-    CredentialFacts, CredentialLocator, EgressAuthScheme, Export, ExportItem, Head, Hook,
-    HookFacts, HookKindDecl, HookView, KeyMaterial, OnFailure, PlaneFacts, Seat, Secret,
-    SecretError, SecretRef, SecretValue, Signer, Store, StoreError,
+    CredentialFacts, CredentialLocator, Export, ExportItem, Head, Hook, HookFacts, HookKindDecl,
+    HookView, KeyMaterial, OnFailure, PlaneFacts, Seat, Secret, SecretError, SecretRef,
+    SecretValue, Signer, Store, StoreError,
 };
 use busbar_contract::plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
@@ -47,7 +47,6 @@ const _PLANE: Option<&dyn Plane> = None;
 const _SESSION_PLANE: Option<&dyn SessionPlane> = None;
 const _TRANSPORT: Option<&dyn Transport> = None;
 const _AUTH: Option<&dyn AuthScheme> = None;
-const _EGRESS_AUTH: Option<&dyn EgressAuthScheme> = None;
 const _STORE: Option<&dyn Store> = None;
 const _SECRET: Option<&dyn Secret> = None;
 const _HOOK: Option<&dyn Hook> = None;
@@ -605,147 +604,4 @@ fn the_remaining_kinds_shapes_are_constructible() {
     };
     let _ = Ack::Durable;
     let _: Option<AuthDecoration<'static>> = None;
-}
-
-// ── an egress-auth scheme, implemented in full ────────────────────────────────────────────────
-
-/// An arena that answers every request by leaking a fresh allocation.
-///
-/// A test fixture, not a design: the real arena hands out borrows of a fixed buffer it owns, which
-/// needs interior mutability this crate forbids. Leaking gives the same borrow with no unsafe code,
-/// and the whole point here is only that a scheme CAN build a decoration out of arena bytes — which
-/// is the thing an unbound lifetime made impossible to express at all.
-struct LeakPlaneAlloc;
-
-impl PlaneAlloc for LeakPlaneAlloc {
-    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ScratchBytes<'a>, PlaneAllocBudget> {
-        Ok(ScratchBytes::new(Box::leak(
-            src.to_vec().into_boxed_slice(),
-        )))
-    }
-
-    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, PlaneAllocBudget> {
-        Ok(Box::leak(src.to_string().into_boxed_str()))
-    }
-
-    fn alloc_spans<'a>(
-        &'a self,
-        src: &[(&'a str, Span)],
-    ) -> Result<&'a [(&'a str, Span)], PlaneAllocBudget> {
-        Ok(Box::leak(src.to_vec().into_boxed_slice()))
-    }
-
-    fn remaining(&self) -> usize {
-        usize::MAX
-    }
-}
-
-/// Nothing signs here; the scheme under test builds its decoration out of the arena instead.
-struct NoSigner;
-
-impl Signer for NoSigner {
-    fn sign(
-        &self,
-        _key: &str,
-        _bytes: &[u8],
-    ) -> Result<Vec<u8>, busbar_contract::kinds::SignFailed> {
-        Err(busbar_contract::kinds::SignFailed::Unavailable)
-    }
-}
-
-/// A multi-round scheme: the second round decorates with bytes it allocated for this unit.
-struct FixtureEgressAuth;
-
-impl Plugin for FixtureEgressAuth {
-    fn key(&self) -> &'static str {
-        "fixture-egress-auth"
-    }
-    fn kind(&self) -> Kind {
-        Kind::EgressAuth
-    }
-    fn abi(&self) -> AbiVersion {
-        AbiVersion(1)
-    }
-}
-
-impl EgressAuthScheme for FixtureEgressAuth {
-    fn decorate<'u>(
-        &self,
-        _cfg: &dyn ConfigView,
-        _body: &EgressBody<'u>,
-        _signer: &dyn Signer,
-    ) -> AuthDecoration<'u> {
-        AuthDecoration::Handshake {
-            max_frames: 2,
-            max_bytes: 1024,
-        }
-    }
-
-    fn continue_handshake<'u>(
-        &self,
-        _state: &ChallengeState,
-        _frame: &Frame,
-        ctx: &Ctx<'u>,
-        _signer: &dyn Signer,
-    ) -> AuthDecoration<'u> {
-        let signature = ctx
-            .arena()
-            .alloc_bytes(b"round-two")
-            .expect("the fixture arena always has room");
-        AuthDecoration::Decorate {
-            envelope_fields: busbar_contract::kinds::EnvelopeFields::new(),
-            body_signature: Some(signature),
-            slots: busbar_contract::BoundedVec::new(),
-        }
-    }
-}
-
-/// The second round of a handshake can hand back a decoration built out of the unit's arena.
-///
-/// This is a compile-time claim before it is a runtime one. With the lifetime appearing only in
-/// the return type, the only `AuthDecoration<'u>` a scheme could produce was one borrowing nothing
-/// — every real multi-round scheme was unrepresentable, so no such scheme could ever be written.
-#[test]
-fn a_continued_handshake_can_decorate_with_arena_bytes() {
-    let arena = LeakPlaneAlloc;
-    let config = EmptyConfig;
-    let stack = OneShotStack;
-    let labels = Labels::new();
-    let ctx = Ctx::new(
-        Clock {
-            unix_secs: 0,
-            monotonic_nanos: 0,
-        },
-        &config,
-        None,
-        &stack,
-        &labels,
-        &arena,
-    );
-
-    let frame = Frame {
-        direction: busbar_contract::Direction::Inbound,
-        stream: StreamId(1),
-        bytes: busbar_contract::bounded::SlabBytes::new(std::sync::Arc::from(&b"challenge"[..])),
-        meta: busbar_contract::wire::FrameMeta {
-            bytes: 9,
-            transport_units: None,
-            status: None,
-            status_code: None,
-            retry_after_secs: None,
-        },
-    };
-
-    let scheme: &dyn EgressAuthScheme = &FixtureEgressAuth;
-    let out = scheme.continue_handshake(&ChallengeState(vec![1]), &frame, &ctx, &NoSigner);
-
-    let AuthDecoration::Decorate { body_signature, .. } = out else {
-        panic!("the second round terminates the exchange, it does not re-open it");
-    };
-    assert_eq!(
-        body_signature
-            .expect("the round signed something")
-            .as_slice(),
-        b"round-two"
-    );
 }

@@ -7,14 +7,12 @@
 //! for what a failure means, rather than repeating it per method.
 
 use crate::bounded::{BoundedVec, Facts, IrPatch, ScratchBytes, MAX_KEYS, MAX_RECORD_BYTES};
-use crate::dest::{
-    AuthDecoration, CandidateSet, EgressBody, Permutation, VerifiedDestination, VetoCode,
-};
+use crate::dest::{CandidateSet, Permutation, VerifiedDestination, VetoCode};
 use crate::grammar::ArrivalLocation;
 use crate::ids::{LaneId, PrincipalId, RecordSchemaId, SchemeAlt, SessionId};
 use crate::plugin::{KernelSeal, Plugin};
-use crate::unit::{Clock, ConfigView, Step, Unit};
-use crate::wire::{ArrivalRecord, Frame};
+use crate::unit::{Clock, Step, Unit};
+use crate::wire::ArrivalRecord;
 use core::fmt;
 
 // ── shared fact shapes ───────────────────────────────────────────────────────────────────────
@@ -187,12 +185,12 @@ pub trait AuthScheme: Plugin + Send + Sync + 'static {
     fn refresh(&self, clock: Clock) -> KeyMaterial;
 }
 
-// ── egress auth ──────────────────────────────────────────────────────────────────────────────
+// ── the auth kind's outbound-sign operation ──────────────────────────────────────────────────
 
-/// What signs on an egress-auth scheme's behalf.
+/// What signs on the auth kind's behalf when it decorates an outbound request.
 ///
-/// The scheme asks for a signature; it never holds the key. Only the auth, egress-auth and
-/// transport-key units can expose a secret, and this handle is the egress-auth unit's own.
+/// The caller asks for a signature; it never holds the key. Only the auth and transport-key units
+/// can expose a secret, and this handle is the outbound-sign unit's own.
 pub trait Signer: Send + Sync {
     /// Sign these bytes with the named key. Errors when the key cannot be resolved or the
     /// signature cannot be made.
@@ -215,36 +213,6 @@ impl fmt::Display for SignFailed {
 }
 
 impl std::error::Error for SignFailed {}
-
-/// Decorates an outbound request with an upstream's own scheme.
-///
-/// Pure: it computes a decoration and returns it. The egress-auth unit is what applies it, checks
-/// the envelope still equals the verified destination, and re-runs the lane cross-check on the
-/// decorated bytes.
-pub trait EgressAuthScheme: Plugin + Send + Sync + 'static {
-    /// Decorate a request.
-    fn decorate<'u>(
-        &self,
-        cfg: &dyn ConfigView,
-        body: &EgressBody<'u>,
-        signer: &dyn Signer,
-    ) -> AuthDecoration<'u>;
-
-    /// Continue a multi-round exchange with the upstream's challenge.
-    ///
-    /// The context is what the unit's lifetime is bound to, and it is here for the same reason
-    /// `decorate` takes a body: without an argument carrying it, the only decoration a second
-    /// round could return was one that borrowed nothing, so a scheme that wanted to answer a
-    /// challenge with bytes it had built could not be written at all. The arena the context
-    /// carries is where those bytes come from.
-    fn continue_handshake<'u>(
-        &self,
-        state: &ChallengeState,
-        frame: &Frame,
-        ctx: &crate::unit::Ctx<'u>,
-        signer: &dyn Signer,
-    ) -> AuthDecoration<'u>;
-}
 
 // ── store ────────────────────────────────────────────────────────────────────────────────────
 

@@ -46,8 +46,8 @@ fn scoped_files(tree: &Tree, globs: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn kind_crate_dirs(cx: &Ctx, cfg: &Cfg, kind: &str) -> Vec<String> {
-    dirs_for_globs(cx, &cfg.kind_globs(kind))
+fn kind_crate_dirs(cx: &Ctx, cfg: &Cfg, kind: &str) -> Result<Vec<String>, String> {
+    Ok(dirs_for_globs(cx, &cfg.kind_globs(kind)?))
 }
 
 // ── 14. loc-ceilings ─────────────────────────────────────────────────────────────────────────────
@@ -304,15 +304,14 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
 
 pub fn manifest_allowlist(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("manifest-allowlist")?;
-    let kinds = [
-        "plane",
-        "store",
-        "pure_auth",
-        "hook",
-        "export",
-        "secret",
-        "egress_auth",
-    ];
+    // THE KEYS OF `[gate.plugin_kinds]`, SPELLED THE WAY THAT FILE SPELLS THEM. `pure_auth` and
+    // `egress_auth` stood here until 2026-09-22 and neither is a key: DECISIONS #3 collapsed the
+    // split into ONE `auth` kind, because direction is a property of the leg — this transport,
+    // this auth, this direction — and never a kind. Both stale spellings resolved to zero crates,
+    // so `crates/auth-admin-tokens` and `crates/auth-static-plugin` were scanned by nothing and
+    // this rule printed twelve green rows where fourteen were owed. `Cfg::kind_globs` now refuses
+    // a key the config does not declare, so the next such typo is a RED instead of a silence.
+    let kinds = ["plane", "store", "auth", "hook", "export", "secret"];
     let unit_names: BTreeSet<String> = match cfg.rule("loc-ceilings") {
         Ok(lc) => dirs_for_globs(
             cx,
@@ -328,11 +327,11 @@ pub fn manifest_allowlist(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>,
     };
     let mut plane_names: BTreeSet<String> = cfg.plane_crates()?.into_iter().collect();
     plane_names.extend(
-        kind_crate_dirs(cx, cfg, "plane")
+        kind_crate_dirs(cx, cfg, "plane")?
             .iter()
             .map(|d| crate_name_of_dir(d)),
     );
-    let transport_names: BTreeSet<String> = kind_crate_dirs(cx, cfg, "transport")
+    let transport_names: BTreeSet<String> = kind_crate_dirs(cx, cfg, "transport")?
         .iter()
         .map(|d| crate_name_of_dir(d))
         .collect();
@@ -350,7 +349,7 @@ pub fn manifest_allowlist(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>,
     let mut rows = Vec::new();
     let mut seen_dirs: Vec<(&str, String)> = Vec::new();
     for kind in kinds {
-        for d in kind_crate_dirs(cx, cfg, kind) {
+        for d in kind_crate_dirs(cx, cfg, kind)? {
             seen_dirs.push((kind, d));
         }
     }
@@ -455,7 +454,7 @@ pub fn source_denylist(
     let mut rows = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     for kind in c.list_of("kinds") {
-        for d in kind_crate_dirs(cx, cfg, &kind) {
+        for d in kind_crate_dirs(cx, cfg, &kind)? {
             seen.push((kind.clone(), d));
         }
     }
@@ -1037,7 +1036,7 @@ pub fn forbid_unsafe(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Stri
         let known_missing = c.list_of(missing_key);
         let mut seen = Vec::new();
         for kind in c.list_of(kinds_key) {
-            seen.extend(kind_crate_dirs(cx, cfg, &kind));
+            seen.extend(kind_crate_dirs(cx, cfg, &kind)?);
         }
         let mut out = Vec::new();
         for d in seen {

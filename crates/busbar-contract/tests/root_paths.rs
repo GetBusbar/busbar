@@ -7,19 +7,23 @@
 //! is reachable only through its module is a name the list does not claim, and a plugin author
 //! reading the list would conclude the type does not exist — so the seven names below were
 //! effectively invisible even though every one of them is required to implement a shipped kind:
-//! an egress-auth scheme cannot be written without `Signer`, `SignFailed` and `EnvelopeFields`, a
-//! gate hook cannot build a patch without `IrEdit`, and neither can handle a full bounded
-//! collection without `Overflow` or a full fact map without `FactsExhausted`.
+//! the auth kind's outbound-sign operation cannot be written without `Signer`, `SignFailed` and
+//! `EnvelopeFields`, a gate hook cannot build a patch without `IrEdit`, and neither can handle a
+//! full bounded collection without `Overflow` or a full fact map without `FactsExhausted`.
 //!
 //! Nothing below names a module path. That is the whole assertion.
 
 use busbar_contract::{
-    AbiVersion, AuthDecoration, BoundedVec, ConfigView, EgressAuthScheme, EgressBody,
-    EnvelopeFields, FactValue, Facts, FactsExhausted, FrameStream, IrEdit, IrPatch, Kind, Overflow,
-    Plugin, ScratchBytes, SignFailed, Signer, MAX_KEYS,
+    AbiVersion, AuthDecoration, BoundedVec, ConfigView, EgressBody, EnvelopeFields, FactValue,
+    Facts, FactsExhausted, FrameStream, IrEdit, IrPatch, Kind, Overflow, Plugin, ScratchBytes,
+    SignFailed, Signer, MAX_KEYS,
 };
 
-/// An egress-auth scheme written entirely against the crate root.
+/// An auth plugin whose outbound-sign operation is written entirely against the crate root.
+///
+/// ONE auth kind (DECISIONS #3): outbound-sign is an OPERATION here, not a second `Kind` variant
+/// and not a second trait. What this file asserts is unchanged — every name the operation needs
+/// resolves at the crate root — and it is asserted without a kind that does not exist.
 struct RootScheme;
 
 impl Plugin for RootScheme {
@@ -27,14 +31,16 @@ impl Plugin for RootScheme {
         "root-scheme"
     }
     fn kind(&self) -> Kind {
-        Kind::EgressAuth
+        Kind::Auth
     }
     fn abi(&self) -> AbiVersion {
         AbiVersion(1)
     }
 }
 
-impl EgressAuthScheme for RootScheme {
+impl RootScheme {
+    /// The outbound-sign operation, written out so every name it needs is exercised at a root
+    /// path rather than merely re-exported.
     fn decorate<'u>(
         &self,
         _cfg: &dyn ConfigView,
@@ -54,6 +60,7 @@ impl EgressAuthScheme for RootScheme {
         }
     }
 
+    /// The second round of the same operation, for the same reason.
     fn continue_handshake<'u>(
         &self,
         _state: &busbar_contract::ChallengeState,
@@ -104,9 +111,30 @@ fn a_patch_and_both_full_answers_are_reachable_from_the_crate_root() {
 }
 
 /// The scheme above exists, and so does the transport's frame stream, at root paths.
+///
+/// Both operations are NAMED here, not merely defined: an operation nothing refers to is dead
+/// code, and a root-path claim about a body the compiler never type-checks against a caller is no
+/// claim at all. The two bindings spell each signature out in root names a second time, so the
+/// coercion itself is the assertion.
 #[test]
 fn the_scheme_and_the_frame_stream_are_root_names() {
-    let scheme: &dyn EgressAuthScheme = &RootScheme;
+    let scheme: &dyn Plugin = &RootScheme;
     assert_eq!(scheme.key(), "root-scheme");
+    assert_eq!(scheme.kind(), Kind::Auth);
+
+    let _decorate: for<'u> fn(
+        &RootScheme,
+        &dyn ConfigView,
+        &EgressBody<'u>,
+        &dyn Signer,
+    ) -> AuthDecoration<'u> = RootScheme::decorate;
+    let _again: for<'u> fn(
+        &RootScheme,
+        &busbar_contract::ChallengeState,
+        &busbar_contract::Frame,
+        &busbar_contract::Ctx<'u>,
+        &dyn Signer,
+    ) -> AuthDecoration<'u> = RootScheme::continue_handshake;
+
     let _: Option<FrameStream> = None;
 }

@@ -1003,8 +1003,14 @@ way to answer it."""
 file = "crates/busbar-contract/src/kinds.rs"
 plane_file = "crates/busbar-contract/src/plane.rs"
 transport_file = "crates/busbar-contract/src/transport/mod.rs"
+# ONE auth kind, ONE auth trait (DECISIONS #3, owner 2026-09-22). `EgressAuthScheme` stood here
+# until the `Kind::EgressAuth` variant, the `EgressAuthKind` marker and the trait itself were struck
+# from busbar-contract: outbound-sign is an OPERATION of the auth kind and direction is a property
+# of the leg, so there is no second kind trait for this rule to scan. The rule's own refusal is what
+# requires the strike to land in the same commit as the deletion — a trait it cannot find is a trait
+# it cannot judge, and a ceiling of 0 met by scanning nothing is the passing answer to every ban.
 traits = [
-  "AuthScheme", "EgressAuthScheme", "Store", "Secret", "Hook", "Export", "Anchor",
+  "AuthScheme", "Store", "Secret", "Hook", "Export", "Anchor",
   "Plane", "SessionPlane", "Transport",
 ]
 max_defaulted = 0
