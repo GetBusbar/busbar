@@ -262,7 +262,7 @@ built     = "crates/plugin-loader/src/registry.rs"
 symbol    = "open_export"
 construct = [".open_export("]
 scope     = ["crates"]
-why       = "The kind: export plugin open has zero callers anywhere in the tree, not even a test, so an export plugin cannot be loaded by any node. Described in docs/design/SEAMS.md:337 and never in a file a machine reads."
+why       = "The kind: export plugin open has zero callers anywhere in the tree, not even a test, so an export plugin cannot be loaded by any node. Described in docs/design/1.6.0-MAP.md section 6 and never in a file a machine reads."
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that gives open_export a production caller, or delete the kind if export is not shipping in 1.6.0."
 
