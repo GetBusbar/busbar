@@ -1487,15 +1487,74 @@ which is the row that can name the home the call belongs in, so one site is neve
 # above, which records exactly that. So `crates/busbar-*-codec/src/*` kept matching the two codec
 # crates that survive (llm, voice) and never went red when the other two folded into the very crates
 # these globs were supposed to reach: the mcp and a2a codec halves have been unscanned since the
-# fold. `busbar-voice` likewise carries its plane in `src/runtime/` and `src/topology/`. Each glob
-# now names its crate's whole `src`, which is what this rule's own `why` asks for ("a plane crate,
-# the pure codec half it shed") and the same width `crates/busbar-plane-*/src/*` already uses for a
-# plane crate.
+# fold. So the MCP and A2A globs now name their crate's whole `src`, which is what this rule's own
+# `why` asks for ("a plane crate, the pure codec half it shed") and the same width
+# `crates/busbar-plane-*/src/*` already uses for a plane crate. Both isolate to ZERO findings: that
+# widening restores coverage the fold silently took away, and costs nothing.
 #
-# MEASURED BEFORE AND AFTER ON THIS TREE, AND THE DIFFERENCE IS THE FINDING: 1 -> 113 money symbols.
-# A rule asserting that a plane names no price was green over three of its four planes. Under
-# #43/#71 a plane is pricing-blind, so every one of those is a real hit and NOT ONE of them is
-# allowlisted here; the row stays red at 113 until they are neutralised.
+# ── VOICE IS NOT MCP OR A2A. ITS GLOB WAS RE-SCOPED AGAIN, 2026-09-22 ───────────────────────────
+#
+# The same repoint handed `busbar-voice` its whole `src` in the same sentence, and THAT half was
+# wrong. Not because the old `crates/busbar-voice/src/unit/*` was any better -- it never resolved
+# either, and putting it back would restore the exact green-over-nothing this rule had just stopped
+# printing -- but because voice's two in-scope halves ARE ALREADY SCANNED by the two wildcard globs
+# above, and the half the widening actually added is not in scope at all:
+#
+#   * THE PLANE is `busbar-plane-streaming`, NOT `busbar-voice`. #18: the fourth plane is
+#     STREAMING and `voice` is one dialect inside it. `qa/kind-isolation.toml` says it outright --
+#     "`busbar-voice` is the retiring 1.5.x streams crate and `busbar-plane-streaming` is the plane
+#     it [became]" -- `[gate.plugin_kinds].plane` above lists `crates/busbar-plane-streaming` as the
+#     plane KIND, and `plane_crates` at the top of this file files `busbar-voice` under "LEGACY
+#     ENGINE crates" with its own warning that "a reader must not take either as the plane kind".
+#     `crates/busbar-plane-*/src/*` has always reached it.
+#   * THE PURE CODEC HALF IT SHED is `busbar-voice-codec`, AND THAT CRATE STILL EXISTS. Unlike
+#     `busbar-mcp-codec` and `busbar-a2a-codec` it was never folded back in, so the argument three
+#     paragraphs up does not transfer: `crates/busbar-*-codec/src/*` has been matching it the whole
+#     time. Its own crate doc states the split in this rule's exact words -- "`busbar-voice` held
+#     two things behind one name: these codecs ... and the runtime that carries them over a live
+#     socket."
+#   * THE PLANE'S OWN UNIT MODULES do not exist here. `crates/busbar-voice/src` has no `unit/`
+#     directory and never had one, which is why the original glob could not have matched.
+#
+# So what `crates/busbar-voice/src/*` added over those two globs was ONLY the ENGINE half -- the
+# axum mount, the tokio session pump, the D2 metering lease, the telephony/WebRTC dial, and a
+# conformance-harness BINARY. An engine is none of the three things the `why` scopes.
+#
+# MEASURED WITH ALL 113 COUNTED BY FILE, not sampled off the detail line -- which prints only the
+# first 8 IN PATH ORDER, so `busbar-llm` and `src/bin/` are all a sample can ever show and the
+# distribution reads as "it is nearly all the test binary". It is not:
+#
+#      44  crates/busbar-voice/src/runtime/metering.rs                   the D2 reserve/settle lease
+#      36  crates/busbar-voice/src/bin/voice-conform.rs                  the conformance harness bin
+#      14  crates/busbar-voice/src/runtime/voice_d2_billing_oracle.rs    a pinned billing oracle
+#       6  crates/busbar-voice/src/mount.rs                              the axum mount
+#       5  crates/busbar-voice/src/runtime/mod.rs
+#       4  crates/busbar-voice/src/topology/mod.rs                       telephony / WebRTC
+#       3  crates/busbar-voice/src/runtime/session.rs
+#       1  crates/busbar-llm/src/unit/meter.rs                           `priced_from_ms` -- REAL
+#
+# The binary is 36 of 113, not the bulk. 112 of the 113 are the engine half, and the symbols are
+# `cap_nanos` / `settled_nanos` / `fee_nanos` / `estimate_nanos` / `reserved_nanos` -- NANODOLLARS,
+# as `metering.rs`'s own header says ("a reserve-then-settle lease over ALREADY-PRICED
+# nanodollars"), not the time-sense `_nanos` this rule's `allowed_vocabulary` excuses. They are real
+# money and real DEBT -- but they are not THIS row's debt. `plane-pricing-blindness` (DECISION #87,
+# `qa/plane-pricing-blindness.toml`) is the gate built to burn exactly them down, with a per-file
+# ledger and a human-supplied reachability claim on every row; its own worked example row is
+# `crates/busbar-voice/src/runtime/metering.rs`. Counting them a second time under a `max_hits = 0`
+# with no burndown would not fix one of them. It would only bury the one finding this row can still
+# see under 112 it cannot act on.
+#
+# ZERO of the 113 were in `crates/busbar-voice-codec/src` or `crates/busbar-plane-streaming/src`.
+# Voice's plane and its codec are clean TODAY, and after this re-scope they are still SCANNED, so
+# they cannot stop being clean quietly. PROVEN with a positive control in BOTH directions, each
+# plant grepped back before the verdict was read: a `per_request_fee` planted in
+# `crates/busbar-voice-codec/src/ir/usage.rs` is CAUGHT (1 -> 2), and the same symbol planted in
+# `crates/busbar-voice/src/bin/voice-conform.rs` is NOT (1). Both plants were reverted.
+#
+# WHAT SURVIVES IS STILL RED, WHICH IS THE POINT. `crates/busbar-llm/src/unit/meter.rs:490`
+# `priced_from_ms` is a plane-side unit module naming a price -- the field the parked
+# two-money-reads recommendation proposes, landing on the plane side of the #43 line. It is NOT
+# allowlisted and this row stays RED at 1.
 #
 # `busbar-llm` IS DELIBERATELY LEFT AT `src/unit/*`. That glob RESOLVES — it is not a dead name, and
 # widening it to `crates/busbar-llm/src/*` would pull `src/engine/` into scope in the same edit that
@@ -1507,7 +1566,6 @@ scope_globs = [
   "crates/busbar-llm/src/unit/*",
   "crates/busbar-mcp/src/*",
   "crates/busbar-a2a/src/*",
-  "crates/busbar-voice/src/*",
 ]
 # Each is matched as a whole word (an entry starting with `_` as a suffix), and judged against the
 # WHOLE identifier it lands in, so the vocabulary below can excuse a word rather than a substring.
@@ -1594,32 +1652,100 @@ fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
 # from a genuine regression. (qa/kind-isolation.toml still names `busbar-admin` in 8 rows from the
 # same miss -- out of scope for this key, reported separately.)
 #
-# NOT ADDED, and flagged for owner review rather than silently covered: `busbar` (the composition
-# root)'s crates/busbar/src/root/units_admin/mod.rs:1118,1149,1155,1247 read `per_request_fee` too
-# (line numbers refreshed 2026-09-22; they read 762,793,799,891 when first recorded and the file has
-# since grown -- the sites are the same ones), but git-trace to 54dbbdfcc ("build D38
-# amend_rate_history money-path admin verb (additive)") and 5e0336a85 -- new code, not a move, and
-# `git log -S per_request_fee -- crates/busbar/src/root/units_admin/mod.rs` lists those two commits
-# and nothing else. It parses an operator's JSON payload into `per_request_fee: Option<i64>` and
-# hands it straight to `busbar_kernel_ledger::cost::RateCard::from_micro_rates_in(...)` without
-# deriving anything itself, which reads like the same "root wiring hands the cost unit its input"
-# shape this rule already allows for the entry-verb side (`rules.one-pricing-site.allowed.
-# root-wiring`) -- but this rule's fee-fields check is crate-scoped with no path-level allowance, and
-# the money-sacred instruction for this branch is: only widen for code that GENUINELY moved. D38 is
-# new, so these 4 sites STAY RED, and the repoint above deliberately does not reach them.
+# ADJUDICATED 2026-09-22 AGAINST THE LAWS, AND THE VERDICT REVERSED: `busbar` (the composition
+# root)'s crates/busbar/src/root/units_admin/mod.rs:1118,1149,1155,1247 read `per_request_fee`, and
+# THE SCOPE OF THIS CHECK WAS THE DEFECT, not those four sites. The reads are granted below, by
+# PATH and with a COUNT, and `max_fee_readers` STAYS 0 -- the ceiling did not move.
 #
-# RE-CONFIRMED 2026-09-22 UNDER THE GOVERNING DESIGN, which makes these 4 a real defect and not a
-# missing waiver. BUSBAR-1.6.0.md "MONEY -- the enforcement book must stop storing a price": there
-# is to be exactly ONE money function `price(ledger_slice, card_history) -> Money`, called by the
-# admin reads AND by the budget gate, and the census found `f` implemented ~20 times across 5
-# crates. `one-pricing-site` is the gate that enforces precisely that. So this row is not noise to
-# be quieted -- it is TELLING THE TRUTH that the fee is handled at a site outside the card's own
-# crates. The 4 belong to the money-function consolidation to DELETE, not to an allowlist to
-# absorb; widening `fee_reader_crates` to cover `busbar` would launder a live finding into a
-# pre-existing exception. Ceiling therefore stays 0: repointing the dead name restores 5 of the 9,
-# and the row is CORRECTLY still red on the remaining 4.
+# THE CONFLICT THAT FORCED THE ADJUDICATION. This rule's OWN `why` opens "the composition root's
+# meter and admission wiring is what calls it"; `[rules.one-pricing-site.allowed.root-wiring]` below
+# grants `crates/busbar/src/root/` in so many words; and the sibling `plane-no-money`'s `why` says
+# "Only busbar-kernel-ledger's cost module ... AND THE COMPOSITION ROOT'S METER/ADMISSION WIRING may
+# name a price." Three sentences in this file permitted the root; one crate list forbade it. They
+# cannot both be right, and the crate list is the one with no argument behind it -- it was never
+# written as a ruling about the root, it is simply the only shape a crate list can take, because a
+# crate list cannot say "this one reviewed file". The entry-verb half of this same rule had path
+# homes from birth; the fee half never did, and that asymmetry -- not a decision -- is what kept the
+# root out.
+#
+# WHAT THE FOUR SITES ARE, each read and judged on its own:
+#   :1118  `obj.get("per_request_fee")` -> `Option<i64>`. PARSES the operator's JSON wire field.
+#          The spelling is the operator's, fixed by #47 ("1.5.5's flat top-level `rate_card`/
+#          `per_request_fee` load as the `pools` (llm) plane's reserved keys, byte-identical"). No
+#          arithmetic, no card read, integer -- there is no f64 anywhere on the fee's own path.
+#   :1149  `entries.is_empty() && per_request_fee.is_none()` -- a SHAPE REFUSAL. An amendment that
+#          moves no figure is refused before anything is appended. Tests PRESENCE, uses no value.
+#   :1155  `per_request_fee.unwrap_or(0)` handed as the third argument to
+#          `RateCard::from_micro_rates_in`. THE RELAY the card crate itself asks for, in its own
+#          words at `crates/busbar-kernel-ledger/src/cost/rate.rs` (`from_config`'s doc): "the two
+#          configured figures a card is made of ... are read by their owner and handed straight
+#          over; what is DONE with them is this crate's ... and the composition root's binding is a
+#          relay with no arithmetic in it." The clamp (`.max(0)`) and the absent/present branch are
+#          the card crate's, exactly as that doc requires. `unwrap_or(0)` is a default, not a
+#          derivation, and it is the card crate's own convention -- `absent_in`/`from_config` take a
+#          bare `i64` with no `Option`, so "no fee named" is 0 everywhere, not just here.
+#   :1247  the STRING LITERAL `"per_request_fee"` in `canonical_amend_payload`'s fixed key list.
+#          It reads no fee at all: it names the JSON key so the operator's detached ed25519
+#          signature COVERS the fee. Deleting it to quiet a grep would take the fee outside the
+#          signed payload -- a security regression bought with a green row.
+#
+# NONE of the four stores a price (#77(3)), writes a price into a durable book, computes money in
+# binary floating point (#77(8)/#81), or prices against any card at all -- they never price. What
+# they append is a CARD, into the dated history, which is the machinery #79 exists to describe.
+#
+# THE DECISION THAT DECIDES IT IS #79, AND IT NAMES THIS FILE. "A back-dated correction ... DOES
+# reprice exactly the window `[effective_from, effective_until)` -- that is the sanctioned repair
+# path ... it is an APPEND and a signed admin act, never an edit. Engine already exists and is
+# reachable: `crates/busbar/src/root/kernel.rs:262` (`effective_from`), `:291` (window recompute),
+# `root/units_admin/mod.rs:679` (signed back-dated entry)." CHECKED, not paraphrased: #79 was locked
+# by 5caf5fea7 on 2026-09-22, FIVE DAYS AFTER D38 landed (54dbbdfcc, 2026-09-17), and
+# `git show 5caf5fea7:crates/busbar/src/root/units_admin/mod.rs | sed -n 679p` is the doc line of
+# `amend_rate_history_effect` -- the very function these four sites live in. A locked decision
+# examined this code, five days after it was written, and named its path as the sanctioned engine.
+# Part 2's own preamble: "a decision here is LAW and states the CURRENT truth ... Only Part 1 (the
+# Laws) and Part 3 outrank this Part." A gate note does not.
+#
+# THE OLD NOTE'S ARGUMENT, AND WHY IT DOES NOT REACH. It cited "MONEY -- the enforcement book must
+# stop storing a price": one money function `price(ledger_slice, card_history) -> Money`, `f`
+# implemented ~20 times across 5 crates. That section is about the READ that turns COUNTS into
+# MONEY. `amend_rate_history_effect` is not an implementation of `f` -- it takes no ledger slice,
+# returns no `Money`, and performs no multiplication. It AUTHORS `card_history`, which is `f`'s
+# second ARGUMENT. Consolidating `f` does not delete the verb that appends to the card history; the
+# consolidated `f` cannot be written without one, because the same section requires "each posting
+# prices against the card in force at its own `arrived_ms` (#79)". Counting the card's author as one
+# of the ~20 pricing sites is a category error, and it is what kept this row red.
+#
+# AND PART 1, WHICH OUTRANKS EVERYTHING ELSE IN THIS FILE, DECIDES THE REMEDY: "The purity gates ...
+# are servants of the vision, not the vision ... A gate that reds on that is SCOPED WRONG, and the
+# fix is the gate's scope, not the code." Law 6 puts pricing in core -- "Core captures the
+# quantities and prices them against the rate card the user registered" -- and #43 makes the card
+# core-owned ("rate_card + fees are CORE-owned; plugins are PRICING-BLIND"). The composition root IS
+# core. #42 governs the READ (card presence is the switch) and says nothing against authoring a
+# card; #43/#71 make pricing a read-time view, and this file computes no view.
+#
+# WHY NOT `fee_reader_crates = [..., "busbar"]`. Because the old note is RIGHT about that much: a
+# crate grant would launder the whole root -- `main.rs`, every `units_*.rs`, `money_book` -- in one
+# unargued stroke, and it would contradict the root's own written discipline at
+# `crates/busbar/src/root/kernel.rs` (`card_from_config`): "the flat figure crosses as a NEUTRAL
+# minor-unit value; the cost unit's constructor is the one that reads it AS the per-request fee ...
+# so no plane and no root file spells a fee -- the read lives where the card lives." That discipline
+# is real and it still holds for every root file but this one. THE ONE EXCEPTION IS FORCED BY THE
+# WIRE: an admin verb that accepts a correction must spell the operator's own field name to parse
+# it and must spell it again to sign it (#47 fixes the spelling; the signature makes it
+# load-bearing). So the grant is exactly one file, with the count it was reviewed at, and a fifth
+# read in that same file is RED again.
 fee_reader_crates = ["busbar-kernel-ledger", "busbar-kernel", "busbar-core-admin"]
 max_fee_readers = 0
+
+# The reviewed fee homes: a PATH, the COUNT it was reviewed at, and the reason. The count is half
+# the grant -- a read above it is reported exactly like a read with no home at all -- and a home
+# that falls to ZERO reads is reported too, because a grant that describes nothing is the dead name
+# this file has been bitten by five times already: it stops applying in silence, and the next real
+# read at that path inherits a waiver nobody reviewed.
+[rules.one-pricing-site.fee_allowed.amend-rate-history]
+path = "crates/busbar/src/root/units_admin/mod.rs"
+max = 4
+because = "#79 names this file as the engine of the signed back-dated correction and was locked five days after the code landed; the verb parses the operator's own `per_request_fee` wire field (#47 fixes that spelling), covers it with the operator's ed25519 signature, and relays it unchanged to `RateCard::from_micro_rates_in` -- it appends a CARD to the dated history and never derives, stores or computes a price"
 
 [rules.one-pricing-site.allowed.cost-unit]
 path = "crates/busbar-kernel-ledger/src/cost/"
