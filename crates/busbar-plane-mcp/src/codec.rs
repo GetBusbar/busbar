@@ -288,9 +288,12 @@ impl McpNotification {
     }
 
     /// Read a notification that has ALREADY been established as a JSON-RPC notification envelope by
-    /// `busbar_substrate_values::ingress::jsonrpc`. `None` means "a notification this protocol does not carry",
-    /// which is the correct answer to give and the correct thing to do nothing about: section 4.1
-    /// forbids replying, so an unknown notification is dropped rather than refused.
+    /// the engine's JSON-RPC ingress step. That step is named by SHAPE and not by crate, because a
+    /// doc comment is a name the `kind-isolation:matrix` scanner counts exactly like a `use`, and
+    /// #40(a) admits one dependency here and no other. `None` means "a notification this protocol
+    /// does not carry", which is the correct answer to give and the correct thing to do nothing
+    /// about: section 4.1 forbids replying, so an unknown notification is dropped rather than
+    /// refused.
     pub fn read(method: &str, params: Option<&serde_json::Value>) -> Option<Self> {
         match method {
             METHOD_NOTIFY_TOOLS_LIST_CHANGED => Some(McpNotification::ToolsListChanged),

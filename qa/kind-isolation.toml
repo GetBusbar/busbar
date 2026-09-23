@@ -418,9 +418,9 @@ drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement;
 [[edge]]
 from = "legacy"
 to = "contract"
-cite = "ARCHITECTURE.md 1.2 — busbar-contract is the face every kind is written against, and ARCHITECTURE_ALLOWED grants ("legacy","contract") outright. Unlike every other `legacy -> *` row in this table the number here is NOT the size of the retirement: it is the retiring crate reading the neutral face instead of restating it, which is the direction the drain is supposed to move in."
+cite = "ARCHITECTURE.md 1.2 — busbar-contract is the face every kind is written against, and ARCHITECTURE_ALLOWED grants the legacy -> contract class outright. Unlike every other `legacy -> *` row in this table the number here is NOT the size of the retirement: it is the retiring crate reading the neutral face instead of restating it, which is the direction the drain is supposed to move in."
 why = "crates of kind legacy naming contract vocabulary: contract package names in any spelling, the kind-qualified id (contract-<id>), and — where contract is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "none while the retiring 1.5.x crates stand. The hits fall to zero when the crate does, and they RISE on purpose as a drain repoints an engine off its own restatement and onto the contract — so a raise here is read together with the matching fall in that crate’s plane/transport cells, never alone."
+drain = "none while the retiring 1.5.x crates stand. The hits fall to zero when the crate does, and they RISE on purpose as a drain repoints an engine off its own restatement and onto the contract — so a raise here is read together with the matching fall in that crate's plane/transport cells, never alone."
 
 [[edge]]
 from = "legacy"
@@ -1073,7 +1073,7 @@ count = "11"
 [[cell]]
 crate = "busbar-a2a"
 kind = "plane"
-count = "3167"
+count = "3177"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1223,7 +1223,7 @@ count = "3047"
 [[cell]]
 crate = "busbar-kernel"
 kind = "transport"
-count = "2212"
+count = "4"
 
 [[cell]]
 crate = "busbar-kernel-audit"
