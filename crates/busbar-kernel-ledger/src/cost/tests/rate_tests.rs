@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::cost::{
-    nano_rate, price, Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass,
+    nano_rate, price, Author, CardEntryDraft, History, HistorySeq, LaneClass,
     Posting, RateCard, STANDARD_TIER_BP,
 };
 
@@ -118,7 +118,7 @@ fn nano_rate_refuses_the_one_value_past_the_ceiling_that_the_max_cast_admits() {
 fn card_carries_integer_rates_per_class() {
     let c = card4("quad", [1.0, 2.0, 0.5, 4.0], 0);
     let r = c
-        .lane_rates("quad", CurrencyCode::USD)
+        .lane_rates("quad")
         .expect("the lane is priced");
     assert_eq!(
         (
@@ -143,7 +143,7 @@ fn lane_lookup_has_exactly_three_outcomes() {
         "with no card there is nothing to be missing from"
     );
     let view = none
-        .lane_rates("anything", CurrencyCode::USD)
+        .lane_rates("anything")
         .expect("a zero-rate view");
     assert_eq!(view.nanos_per_unit(INPUT), 0);
 
@@ -151,7 +151,7 @@ fn lane_lookup_has_exactly_three_outcomes() {
     assert!(present.pricing_enabled());
     assert!(!present.lane_unpriced("known"));
     assert!(present.lane_unpriced("mystery"));
-    assert!(present.lane_rates("mystery", CurrencyCode::USD).is_none());
+    assert!(present.lane_rates("mystery").is_none());
 }
 
 /// A negative configured fee clamps to nothing at resolve. No request may bill a negative amount,
@@ -159,8 +159,14 @@ fn lane_lookup_has_exactly_three_outcomes() {
 #[test]
 fn negative_per_request_fee_clamps_to_zero() {
     let c = RateCard::absent(-5);
-    assert_eq!(c.per_request_fee(CurrencyCode::USD), 0);
-    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD), 0);
+    assert_eq!(c.fee(), 0);
+    assert_eq!(c.fee_unit_price_nanos(), 0);
+    // A fee CONFIGURED at nothing is a PRICED nothing — #77(5)'s explicit zero row. Since #66 a
+    // card carries exactly one fee and every constructor sets it, so there is no longer a silence
+    // this could be confused with: the absent key that used to be readable as zero is gone.
+    let mut set = RateCard::absent(9);
+    set.set_fee(-1);
+    assert_eq!(set.fee(), 0, "`set_fee` clamps through the same gate");
 }
 
 /// The fee's unit price is its cents lifted to nano-units — an exact multiple of ten million,
@@ -169,11 +175,8 @@ fn negative_per_request_fee_clamps_to_zero() {
 #[test]
 fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
     let c = RateCard::absent(3);
-    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD), 30_000_000);
-    assert_eq!(
-        c.fee_unit_price_nanos(CurrencyCode::USD) % crate::cost::NANOS_PER_CENT,
-        0
-    );
+    assert_eq!(c.fee_unit_price_nanos(), 30_000_000);
+    assert_eq!(c.fee_unit_price_nanos() % crate::cost::NANOS_PER_CENT, 0);
 }
 
 /// **AN EDIT PRICES WHAT HAPPENS AFTER IT, NOT WHAT HAPPENED BEFORE IT.**
@@ -208,8 +211,8 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
     let after = Posting::from_usage("m", &report, 0, STANDARD_TIER_BP, 5_000, 5_000);
 
     let view = history.current();
-    let earlier = price(&view, &before, CurrencyCode::USD).expect("entry zero covers it");
-    let later = price(&view, &after, CurrencyCode::USD).expect("entry one covers it");
+    let earlier = price(&view, &before).expect("entry zero covers it");
+    let later = price(&view, &after).expect("entry one covers it");
     assert_eq!(earlier.card_seq, HistorySeq(0));
     assert_eq!(
         earlier.minor(),
@@ -227,7 +230,7 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
     // invoice cut against it reproducible.
     let at_zero = history.snapshot(HistorySeq(0));
     assert_eq!(
-        price(&at_zero, &after, CurrencyCode::USD)
+        price(&at_zero, &after)
             .expect("entry zero is open-ended")
             .minor(),
         1000,

@@ -2,13 +2,17 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The rate card: the one place a decimal from config becomes an integer rate, and the cell that
-//! holds one price per currency, natively.
+//! holds one price.
+//!
+//! **THE PRICES ARE UNITLESS** (#66 `BUSBAR-1.6.0.md:528`). A cell holds ONE integer, not one per
+//! denomination, because there is no denomination here to hold one per: money in this tree is
+//! abstract cost and the scale it truncates at is [`crate::cost::NANOS_PER_CENT`], fixed for every
+//! card and every reading of one. What a figure is DISPLAYED as is the dashboard's, downstream of
+//! this crate and invisible to it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use busbar_contract::caps::UsageLine;
-
-use crate::cost::currency::CurrencyCode;
 
 /// Convert one configured rate — micro-units per unit of quantity — into the integer nano-unit
 /// rate all later arithmetic uses.
@@ -25,9 +29,9 @@ use crate::cost::currency::CurrencyCode;
 /// generated rates and every boundary value stays where it was: it is now a guard against the second
 /// copy coming back rather than a check that two copies match.
 ///
-/// THE CURRENCY DOES NOT ENTER HERE, and that is the design. A rate is quoted per currency and each
-/// quotation is a configured decimal of its own; this function turns one decimal into one integer
-/// and knows nothing about which currency it belongs to. A currency-dependent conversion here would
+/// NO DENOMINATION ENTERS HERE, and that is the design (#66). A rate is a configured decimal and
+/// this function turns it into the one integer all later arithmetic uses; there is no second scale
+/// it could be quantised at and nothing to choose between. A denomination-dependent conversion would
 /// be a cross-rate by another name.
 ///
 /// Multiply by a thousand and round to nearest, half away from zero, exactly once. A value that is
@@ -160,55 +164,49 @@ impl LaneClass {
     }
 }
 
-/// One (lane, class) cell of a card, priced in every currency the card names.
+/// One (lane, class) cell of a card: ONE configured integer rate, or a silence.
 ///
-/// NO PIVOT. Each currency's rate is a first-class configured integer, never a conversion of
-/// another. A card that priced one currency and derived the rest would have to hold an exchange rate
-/// somewhere, and an exchange rate is a number that changes without anybody editing the card — which
-/// is the exact hazard the dated history exists to remove.
+/// NO SECOND AXIS. A cell holds one price because a figure in this tree is a unitless abstract cost
+/// (#66) — there is no denomination to price it a second time in, and therefore no cross-rate, no
+/// exchange table, and no number that could change without somebody editing the card. That absence
+/// is the point: an exchange rate is exactly the number the dated history exists to make impossible.
+///
+/// `None` is NOT zero and must never be read as zero: it is a cell that was never priced, and the
+/// answer is a refusal (`class_priced` says so; see [`LaneRates::class_priced`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CellPrices(BTreeMap<CurrencyCode, u64>);
+pub struct CellPrices(Option<u64>);
 
 impl CellPrices {
-    /// A cell priced in one currency.
-    pub fn single(currency: CurrencyCode, nanos_per_unit: u64) -> Self {
-        let mut prices = BTreeMap::new();
-        prices.insert(currency, nanos_per_unit);
-        CellPrices(prices)
+    /// A priced cell.
+    pub fn single(nanos_per_unit: u64) -> Self {
+        CellPrices(Some(nanos_per_unit))
     }
 
-    /// Add or replace one currency's rate.
-    pub fn set(&mut self, currency: CurrencyCode, nanos_per_unit: u64) {
-        self.0.insert(currency, nanos_per_unit);
+    /// Set or replace this cell's rate.
+    pub fn set(&mut self, nanos_per_unit: u64) {
+        self.0 = Some(nanos_per_unit);
     }
 
-    /// This cell's rate in one currency, if the cell names it. `None` is NOT zero and must never be
-    /// read as zero: it is a currency this cell was never priced in, and the answer is a refusal.
-    pub fn nanos_per_unit(&self, currency: CurrencyCode) -> Option<u64> {
-        self.0.get(&currency).copied()
-    }
-
-    /// Every currency this cell names.
-    pub fn currencies(&self) -> impl Iterator<Item = CurrencyCode> + '_ {
-        self.0.keys().copied()
+    /// This cell's rate, if it has one. `None` is NOT zero — see the type's doc.
+    pub fn nanos_per_unit(&self) -> Option<u64> {
+        self.0
     }
 }
 
-/// The resolved rate card: integer nano-unit prices per (lane, class, currency), plus the flat
-/// per-request fee in each currency's minor units.
+/// The resolved rate card: integer nano-unit prices per (lane, class), plus the flat per-request
+/// fee in minor units.
 ///
 /// Pricing is all-or-nothing. With no card every class prices at zero and only the flat fee counts.
 /// With a card, the card is authoritative: a lane it does not name prices at nothing AND is
 /// reported as unpriced, so an unknown lane fails closed instead of quietly serving for free.
 ///
-/// The prices are keyed lane-first, then class, then currency, rather than by a composite. That is a
-/// lookup shape, not a storage preference: a composite key has to be BUILT before it can be looked
-/// up, and building one out of two borrowed strings means two heap allocations per lookup, thrown
-/// away immediately, on the hot path of every priced line. Nested, every step is asked with the
-/// borrowed text — or, for the currency, the three-byte `Copy` code — the caller already holds, and
-/// none of them allocates. The nesting also removes the need to carry the set of priced lanes
-/// alongside the prices: the lanes ARE the outer keys, so the two can no longer disagree about which
-/// lanes the card names.
+/// The prices are keyed lane-first, then class, rather than by a composite. That is a lookup shape,
+/// not a storage preference: a composite key has to be BUILT before it can be looked up, and
+/// building one out of two borrowed strings means two heap allocations per lookup, thrown away
+/// immediately, on the hot path of every priced line. Nested, every step is asked with the borrowed
+/// text the caller already holds, and none of them allocates. The nesting also removes the need to
+/// carry the set of priced lanes alongside the prices: the lanes ARE the outer keys, so the two can
+/// no longer disagree about which lanes the card names.
 ///
 /// A card has no version field. Which card this is, is the number of the history entry that holds
 /// it, and that number belongs to the history rather than to the card — a card carrying its own name
@@ -217,42 +215,27 @@ impl CellPrices {
 pub struct RateCard {
     present: bool,
     prices: BTreeMap<String, BTreeMap<String, CellPrices>>,
-    fees: BTreeMap<CurrencyCode, i64>,
-    currencies: BTreeSet<CurrencyCode>,
+    fee: i64,
 }
 
 impl RateCard {
     /// A card that is not there: every class prices at zero, the flat fee still posts.
     ///
     /// This is the deployment with no pricing configured at all. Nothing is "unpriced" here,
-    /// because there is no card to be missing from — attribution only. The fee is in the given
-    /// currency's minor units, and that currency is the one currency such a card names.
-    pub fn absent_in(currency: CurrencyCode, per_request_fee: i64) -> Self {
-        let mut fees = BTreeMap::new();
-        // A negative configured fee is clamped here, once: no request may ever bill a negative
-        // amount, which would credit a budget back toward headroom.
-        fees.insert(currency, per_request_fee.max(0));
+    /// because there is no card to be missing from — attribution only. The fee is in minor units.
+    pub fn absent(per_request_fee: i64) -> Self {
         RateCard {
             present: false,
             prices: BTreeMap::new(),
-            fees,
-            currencies: BTreeSet::from([currency]),
+            // A negative configured fee is clamped here, once: no request may ever bill a negative
+            // amount, which would credit a budget back toward headroom.
+            fee: per_request_fee.max(0),
         }
     }
 
-    /// A card that is not there, priced in the currency a 1.5.5 deployment's figures are in.
-    ///
-    /// The one-currency spelling exists because a 1.5.5 card has no currency at all and the
-    /// migration reads it as a card naming exactly [`CurrencyCode::USD`], whose minor unit is the
-    /// cent every 1.5.5 figure was already projected through.
-    pub fn absent(per_request_fee: i64) -> Self {
-        RateCard::absent_in(CurrencyCode::USD, per_request_fee)
-    }
-
-    /// Resolve a card from configured micro-unit rates in ONE currency. Each rate converts to
-    /// nano-units once, here, and never again.
-    pub fn from_micro_rates_in(
-        currency: CurrencyCode,
+    /// Resolve a card from configured micro-unit rates. Each rate converts to nano-units once,
+    /// here, and never again.
+    pub fn from_micro_rates(
         entries: impl IntoIterator<Item = (LaneClass, f64)>,
         per_request_fee: i64,
     ) -> Self {
@@ -263,24 +246,13 @@ impl RateCard {
                 .or_default()
                 .entry(cell.class)
                 .or_default()
-                .set(currency, nano_rate(micro));
+                .set(nano_rate(micro));
         }
-        let mut fees = BTreeMap::new();
-        fees.insert(currency, per_request_fee.max(0));
         RateCard {
             present: true,
             prices,
-            fees,
-            currencies: BTreeSet::from([currency]),
+            fee: per_request_fee.max(0),
         }
-    }
-
-    /// The one-currency spelling, in the currency a 1.5.5 deployment's figures are in.
-    pub fn from_micro_rates(
-        entries: impl IntoIterator<Item = (LaneClass, f64)>,
-        per_request_fee: i64,
-    ) -> Self {
-        RateCard::from_micro_rates_in(CurrencyCode::USD, entries, per_request_fee)
     }
 
     /// **THE CARD A DEPLOYMENT CONFIGURED**, built here and nowhere else.
@@ -306,25 +278,8 @@ impl RateCard {
         lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
         per_request_fee: i64,
     ) -> Self {
-        RateCard::from_config_in(CurrencyCode::USD, lanes, per_request_fee)
-    }
-
-    /// [`RateCard::from_config`], in a named currency.
-    ///
-    /// The currency-carrying spelling is the real one and [`RateCard::from_config`] is it at
-    /// [`CurrencyCode::USD`] — the currency a 1.5.5 deployment's uncurrencied figures are read as.
-    /// The composition root calls THIS one, with the currency its node declares, so that the card is
-    /// built in the same currency the lookup will be asked for. A card built in one currency and
-    /// read in another is not a conversion and must never become one: it is
-    /// [`crate::cost::Unpriceable::CurrencyNotPriced`], and the point of naming the currency at the
-    /// constructor is that the mismatch is impossible rather than merely refused.
-    pub fn from_config_in<'a>(
-        currency: CurrencyCode,
-        lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
-        per_request_fee: i64,
-    ) -> Self {
         let Some(lanes) = lanes else {
-            return RateCard::absent_in(currency, per_request_fee);
+            return RateCard::absent(per_request_fee);
         };
         let entries = lanes.into_iter().flat_map(|(lane, tiers)| {
             tiers
@@ -332,28 +287,26 @@ impl RateCard {
                 .into_iter()
                 .map(move |(class, micro)| (LaneClass::new(lane, class), micro))
         });
-        RateCard::from_micro_rates_in(currency, entries, per_request_fee)
+        RateCard::from_micro_rates(entries, per_request_fee)
     }
 
-    /// Add one currency's rate to one cell, and record the currency on the card.
+    /// Set one cell's rate.
     ///
-    /// This is how a multi-currency card is built: each currency's number is configured and set,
-    /// never derived. There is no arm here that reads another currency's rate.
-    pub fn set_rate(&mut self, cell: LaneClass, currency: CurrencyCode, micro_per_unit: f64) {
+    /// The number is configured and set, never derived: there is no arm here that reads another
+    /// cell's rate, and no second denomination a rate could be derived through (#66).
+    pub fn set_rate(&mut self, cell: LaneClass, micro_per_unit: f64) {
         self.present = true;
-        self.currencies.insert(currency);
         self.prices
             .entry(cell.lane)
             .or_default()
             .entry(cell.class)
             .or_default()
-            .set(currency, nano_rate(micro_per_unit));
+            .set(nano_rate(micro_per_unit));
     }
 
-    /// Set the flat per-request fee in one currency's minor units, clamped at zero.
-    pub fn set_fee(&mut self, currency: CurrencyCode, per_request_fee: i64) {
-        self.currencies.insert(currency);
-        self.fees.insert(currency, per_request_fee.max(0));
+    /// Set the flat per-request fee in minor units, clamped at zero.
+    pub fn set_fee(&mut self, per_request_fee: i64) {
+        self.fee = per_request_fee.max(0);
     }
 
     /// Whether a card is configured at all (token pricing active).
@@ -361,28 +314,24 @@ impl RateCard {
         self.present
     }
 
-    /// Every currency this card names, in code order.
-    pub fn currencies(&self) -> impl Iterator<Item = CurrencyCode> + '_ {
-        self.currencies.iter().copied()
-    }
-
-    /// Whether this card prices in a currency at all.
+    /// **THE FLAT PER-REQUEST FEE**, in MINOR units, clamped at resolve so it is never negative.
     ///
-    /// A currency it does not name is a REFUSAL, not a conversion and not a zero. There is nothing
-    /// in this crate that could turn one currency into another, and this predicate is what says so
-    /// at the boundary.
-    pub fn prices_currency(&self, currency: CurrencyCode) -> bool {
-        self.currencies.contains(&currency)
-    }
-
-    /// **THE FLAT PER-REQUEST FEE**, in the given currency's MINOR units, clamped at resolve so it is
-    /// never negative. Zero for a currency the card does not name a fee in.
+    /// ALWAYS A FIGURE, NEVER A SILENCE — and that is a structural guarantee rather than a
+    /// convention. The fee used to be read out of a per-currency map that a caller could leave a
+    /// hole in: a card could name a currency for its RATES (`set_rate`) and stay silent about the
+    /// fee in it (`set_fee` never called), pass every guard, and then have the missing entry read
+    /// as zero. That is silent under-billing — fail-open, the one outcome this module refuses
+    /// everywhere else (#42 `BUSBAR-1.6.0.md:367`: *"a hit class not priced ⇒ REFUSE (money-sacred,
+    /// never a silent 0)"*). #66 removed the second axis, so the hole is GONE rather than guarded:
+    /// every constructor takes the fee by value, `set_fee` replaces it, and there is no key that
+    /// could be absent. A fee CONFIGURED at nothing is #77(5)'s (`:420`) explicit zero row —
+    /// legitimately free, and distinguishable from a silence because a silence can no longer exist.
     ///
-    /// One spelling. The configuration calls it `per_request_fee`, and so does this: the card used
-    /// to spell it `per_request_fee_cents` and the admission unit `price_per_request_cents`, three
-    /// names for one number, each of which had to be kept in step with the other two by hand.
-    pub fn per_request_fee(&self, currency: CurrencyCode) -> i64 {
-        self.fees.get(&currency).copied().unwrap_or(0)
+    /// THE SPELLING THAT DEFAULTED IS STILL GONE. `per_request_fee(&self)` used to answer
+    /// `unwrap_or(0)` out of that map; this answers the number the card was built with, and the
+    /// clamp is the only thing between config and it.
+    pub fn fee(&self) -> i64 {
+        self.fee
     }
 
     /// The flat fee as the unit price of its own usage line: minor units lifted to nano-units.
@@ -390,10 +339,13 @@ impl RateCard {
     /// An exact multiple of one minor unit, which is the property that makes summing the fee in
     /// before the single truncation give the same answer as truncating the usage first and adding
     /// the fee afterwards.
-    pub fn fee_unit_price_nanos(&self, currency: CurrencyCode) -> u128 {
-        u128::try_from(self.per_request_fee(currency))
+    pub fn fee_unit_price_nanos(&self) -> u128 {
+        // The clamp at every constructor and at `set_fee` is what makes this arm dead: a fee held
+        // here is already `>= 0`, so the conversion cannot fail and the `0` is a belt-and-braces
+        // reading of a negative that cannot arrive.
+        u128::try_from(self.fee)
             .unwrap_or(0)
-            .saturating_mul(currency.nanos_per_minor())
+            .saturating_mul(crate::cost::NANOS_PER_CENT)
     }
 
     /// Whether a request on this lane must be refused because a card is present and has no entry
@@ -402,72 +354,56 @@ impl RateCard {
         self.present && !self.prices.contains_key(lane)
     }
 
-    /// The rates for one lane, in one currency. Three outcomes, and they are the whole of the
-    /// pricing posture:
+    /// The rates for one lane. Three outcomes, and they are the whole of the pricing posture:
     ///
     /// - no card: a zero-rate view, so every class prices at nothing;
-    /// - card present and the lane is named: that lane's rates, read in the asked-for currency;
+    /// - card present and the lane is named: that lane's rates;
     /// - card present and the lane is unknown: nothing at all, so the caller fails closed.
-    ///
-    /// The currency is carried into the view rather than resolved here, so the lane step is one map
-    /// lookup and the currency step happens per line inside the cell that was going to be read
-    /// anyway.
-    pub fn lane_rates(&self, lane: &str, currency: CurrencyCode) -> Option<LaneRates<'_>> {
+    pub fn lane_rates(&self, lane: &str) -> Option<LaneRates<'_>> {
         if !self.present {
-            return Some(LaneRates {
-                classes: None,
-                currency,
-            });
+            return Some(LaneRates { classes: None });
         }
-        self.prices.get(lane).map(|classes| LaneRates {
-            classes: Some(classes),
-            currency,
-        })
+        self.prices
+            .get(lane)
+            .map(|classes| LaneRates {
+                classes: Some(classes),
+            })
     }
 }
 
-/// One lane's view of the card, in one currency. Built only by [`RateCard::lane_rates`], so the
-/// three outcomes above are the only ways to reach a price.
+/// One lane's view of the card. Built only by [`RateCard::lane_rates`], so the three outcomes above
+/// are the only ways to reach a price.
 ///
 /// The lane lookup has already happened by the time this exists: the view borrows that lane's class
-/// table directly, so pricing a report is one map lookup per line — plus the cell's currency step,
-/// which is a lookup on a three-byte `Copy` key — and no allocation at all. `None` is the no-card
-/// deployment, where every class prices at zero and none of them is unpriced.
+/// table directly, so pricing a report is one map lookup per line and no allocation at all. `None`
+/// is the no-card deployment, where every class prices at zero and none of them is unpriced.
 #[derive(Debug, Clone, Copy)]
 pub struct LaneRates<'a> {
     classes: Option<&'a BTreeMap<String, CellPrices>>,
-    currency: CurrencyCode,
 }
 
 impl LaneRates<'_> {
-    /// The currency this view reads.
-    pub fn currency(&self) -> CurrencyCode {
-        self.currency
-    }
-
-    /// The nano-unit rate for one meter class on this lane. Zero when there is no card at all, zero
-    /// for a class this lane's card entry does not name, and zero for a class that is named but
-    /// carries no rate in THIS currency — the last of which is reported separately, because a
-    /// currency the cell is silent about is a refusal at the card level and never a free line.
+    /// The nano-unit rate for one meter class on this lane. Zero when there is no card at all, and
+    /// zero for a class this lane's card entry does not name — the latter reported separately,
+    /// because a class the card is silent about is a refusal and never a free line.
     pub fn nanos_per_unit(&self, class: &str) -> u64 {
         match self.classes {
             None => 0,
             Some(classes) => classes
                 .get(class)
-                .and_then(|cell| cell.nanos_per_unit(self.currency))
+                .and_then(CellPrices::nanos_per_unit)
                 .unwrap_or(0),
         }
     }
 
-    /// Whether this class is priced by name IN THIS CURRENCY. With no card nothing is unpriced —
-    /// every class is attribution only, and flagging them all would report a deployment-wide
-    /// condition per line.
+    /// Whether this class is priced by name. With no card nothing is unpriced — every class is
+    /// attribution only, and flagging them all would report a deployment-wide condition per line.
     pub fn class_priced(&self, class: &str) -> bool {
         match self.classes {
             None => true,
             Some(classes) => classes
                 .get(class)
-                .is_some_and(|cell| cell.nanos_per_unit(self.currency).is_some()),
+                .is_some_and(|cell| cell.nanos_per_unit().is_some()),
         }
     }
 

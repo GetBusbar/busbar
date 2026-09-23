@@ -39,7 +39,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::cost::{CurrencyCode, HistorySeq, HistoryView};
+use crate::cost::{HistorySeq, HistoryView};
 use busbar_contract::caps::MeterClassId;
 
 use crate::recompute::{price_line, Divergence, Posting};
@@ -298,7 +298,7 @@ impl Book {
 /// What one balance came to on a statement, re-derived from the quantities.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StatementRow {
-    /// The money, in nano-units of the statement's currency, summed over the balance's lines.
+    /// The money, in nano-units, summed over the balance's lines.
     pub priced_nanos: i128,
     /// The request fees the balance's lines carry between them.
     pub fee_count: u64,
@@ -308,9 +308,9 @@ pub struct StatementRow {
 
 /// A line a statement could not price, and why.
 ///
-/// It is listed rather than dropped and rather than counted as zero: a hole in the history, an
-/// unpriced currency and an unpriced lane are all refusals, and a statement that silently omitted
-/// them would read as a smaller bill rather than as an incomplete one.
+/// It is listed rather than dropped and rather than counted as zero: a hole in the history and an
+/// unpriced lane are both refusals, and a statement that silently omitted them would read as a
+/// smaller bill rather than as an incomplete one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unpriced {
     /// Which node wrote the line.
@@ -330,8 +330,6 @@ pub struct Unpriced {
 pub struct Statement {
     /// The history snapshot the figures were derived against.
     pub history_seq: HistorySeq,
-    /// The currency they are in. Two currencies never sum, so a statement names exactly one.
-    pub currency: CurrencyCode,
     /// The window it covers.
     pub window: WindowStart,
     /// The balances, in key order.
@@ -366,19 +364,18 @@ impl Statement {
 /// The tier is the line's own: a tier is a property of the chain a request was admitted through,
 /// and an amendment to the price of a token is not a re-decision about which chain admitted it.
 ///
-/// `lines` comes last because the first three arguments are the statement's identity — which
-/// history, which window, which currency — and the lines are what that identity is applied to.
+/// `lines` comes last because the first two arguments are the statement's identity — which
+/// history and which window — and the lines are what that identity is applied to.
 /// Only lines in `window` are counted; lines in another window belong on another statement.
 pub fn totals_as_of<'a>(
     view: &HistoryView<'_>,
     window: WindowStart,
-    currency: CurrencyCode,
     lines: impl IntoIterator<Item = &'a Posting>,
 ) -> Statement {
     let mut rows: BTreeMap<TotalsKey, StatementRow> = BTreeMap::new();
     let mut unpriceable = Vec::new();
     for line in lines {
-        if line.window_start != window || line.currency != currency {
+        if line.window_start != window {
             continue;
         }
         match price_line(line, view, line.tier_bp) {
@@ -399,7 +396,6 @@ pub fn totals_as_of<'a>(
     }
     Statement {
         history_seq: view.seq(),
-        currency,
         window,
         rows,
         unpriceable,

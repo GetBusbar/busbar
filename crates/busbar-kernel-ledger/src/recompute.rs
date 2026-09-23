@@ -7,7 +7,7 @@
 //!
 //! A line carries QUANTITIES and the instant they happened. It also carries the number of the
 //! history head it was settled under, the entry that head resolved to at that instant, and the
-//! currency the bucket is denominated in. It carries a price as well — and that price is a CACHE.
+//! bucket it belongs to. It carries a price as well — and that price is a CACHE.
 //! It is re-derivable from the quantities and the history at any moment, it is kept only so that a
 //! read does not have to walk a day of lines, and where it disagrees with the lookup the lookup is
 //! right.
@@ -57,7 +57,7 @@
 use std::collections::BTreeMap;
 
 use crate::cost::{
-    price, CurrencyCode, History, HistorySeq, HistoryView, Posting as CostPosting, Priced,
+    price, History, HistorySeq, HistoryView, Posting as CostPosting, Priced,
     Quantity, Unpriceable,
 };
 use busbar_contract::caps::MeterClassId;
@@ -207,8 +207,6 @@ pub struct Posting {
     pub tier_bp: u32,
     /// The instant it happened, in wall-clock milliseconds. The scale the history resolves at.
     pub arrived_ms: u64,
-    /// The currency the bucket is denominated in. Two currencies never sum.
-    pub currency: CurrencyCode,
     /// The cached lookup, and the two history numbers it is current as of. Derived, correctable,
     /// and never the record.
     pub cached: DerivedPrice,
@@ -264,13 +262,6 @@ pub enum Divergence {
         /// Which snapshot.
         seq: HistorySeq,
     },
-    /// The card in force does not name the line's currency. NEVER converted from another.
-    CurrencyNotPriced {
-        /// The entry that was in force.
-        card_seq: HistorySeq,
-        /// The currency the line is denominated in.
-        currency: CurrencyCode,
-    },
     /// The card in force names no rate for the line's lane.
     LaneUnpriced {
         /// The entry that was in force.
@@ -317,10 +308,6 @@ impl std::fmt::Display for Divergence {
             Divergence::HistoryMissing { seq } => {
                 write!(f, "no history snapshot at {seq} to reprice against")
             }
-            Divergence::CurrencyNotPriced { card_seq, currency } => write!(
-                f,
-                "the card at history entry {card_seq} does not price {currency}"
-            ),
             Divergence::LaneUnpriced { card_seq, lane } => write!(
                 f,
                 "the card at history entry {card_seq} names no rate for lane {lane}"
@@ -550,7 +537,7 @@ pub fn price_line(
         estimated: false,
         cached: None,
     };
-    price(view, &cost, posting.currency)
+    price(view, &cost)
 }
 
 /// Name a refusal from the lookup in the recompute's own vocabulary.
@@ -560,9 +547,6 @@ pub fn price_line(
 pub fn divergence_of(why: Unpriceable) -> Divergence {
     match why {
         Unpriceable::NoCardInForce { at } => Divergence::NoCardInForce { at },
-        Unpriceable::CurrencyNotPriced { card_seq, currency } => {
-            Divergence::CurrencyNotPriced { card_seq, currency }
-        }
         Unpriceable::LaneUnpriced { card_seq, lane } => Divergence::LaneUnpriced { card_seq, lane },
     }
 }
@@ -667,19 +651,6 @@ pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
         }),
         verdict,
     }
-}
-
-/// Apply a tier in basis points to a pre-tier amount.
-///
-/// Integer arithmetic, multiply before divide, so a tier of 9,999 basis points on a small amount
-/// does not round to nothing through a division that happened first. The multiply saturates, so a
-/// figure at the ceiling stays at the ceiling rather than wrapping through it.
-///
-/// One multiply and ONE divide, over the summed pre-tier amount — never a sum of per-line floors,
-/// which undercharges: two lines of five nano-units at half price are two floors of two, which is
-/// four, where the single divide over ten is five.
-pub fn apply_tier(pre_tier: i128, tier_bp: u32) -> i128 {
-    pre_tier.saturating_mul(i128::from(tier_bp)) / i128::from(BASIS_POINTS)
 }
 
 /// Recompute every line after `watermark`, correcting stale caches in place, and advance the

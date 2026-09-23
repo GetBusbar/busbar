@@ -6,8 +6,8 @@
 //! Those are two different things and this file keeps them apart. A [`Posting`] is WHAT HAPPENED:
 //! quantities per meter class, the lane they were served on, the flat-fee count, the tier and the
 //! instant. There is no money in it anywhere. A [`Priced`] is what a lookup ANSWERED: the same
-//! quantities against the card in force at that instant, in one currency. It is derived, it is
-//! reproducible, and it is never stored as truth.
+//! quantities against the card in force at that instant. It is derived, it is reproducible, and it
+//! is never stored as truth.
 //!
 //! A posting may carry a [`CachedPrice`] — the figure the node computed at settlement, kept so a
 //! read is cheap and a recompute has something to compare against. It is not authoritative and
@@ -16,7 +16,6 @@
 
 use busbar_contract::caps::Usage;
 
-use crate::cost::currency::CurrencyCode;
 use crate::cost::history::{HistorySeq, HistoryView};
 use crate::cost::rate::RateCard;
 
@@ -59,8 +58,6 @@ pub struct CachedPrice {
     pub history_seq: HistorySeq,
     /// The entry `card_at(arrived_ms)` resolved to under that snapshot.
     pub card_seq: HistorySeq,
-    /// The currency the figure is in.
-    pub currency: CurrencyCode,
     /// The summed line amounts, in nano-units, before the tier.
     pub pre_tier_nanos: u128,
     /// That sum through the tier multiplier.
@@ -129,12 +126,8 @@ impl Posting {
     /// invariant stated as code rather than as a comment: a posting whose cache has been corrupted
     /// answers exactly what the quantities and the history say, because the cache is not on the
     /// path at all.
-    pub fn priced_nanos(
-        &self,
-        view: &HistoryView<'_>,
-        currency: CurrencyCode,
-    ) -> Result<u128, Unpriceable> {
-        price(view, self, currency).map(|p| p.priced_nanos)
+    pub fn priced_nanos(&self, view: &HistoryView<'_>) -> Result<u128, Unpriceable> {
+        price(view, self).map(|p| p.priced_nanos)
     }
 
     /// Whether the cache disagrees with a lookup. A posting with no cache never disagrees — there is
@@ -146,8 +139,7 @@ impl Posting {
         match self.cached {
             None => false,
             Some(c) => {
-                c.currency != priced.currency
-                    || c.card_seq != priced.card_seq
+                c.card_seq != priced.card_seq
                     || c.pre_tier_nanos != priced.pre_tier_nanos
                     || c.priced_nanos != priced.priced_nanos
             }
@@ -171,7 +163,7 @@ pub struct PricedLine {
     pub unpriced: bool,
 }
 
-/// What a lookup answered: the quantities of one posting against one card, in one currency.
+/// What a lookup answered: the quantities of one posting against one card.
 ///
 /// Derived, never stored as truth. Two lookups over the same posting against the same snapshot are
 /// the same answer forever, which is what makes an invoice reproducible.
@@ -179,8 +171,6 @@ pub struct PricedLine {
 pub struct Priced {
     /// The history entry the instant resolved to.
     pub card_seq: HistorySeq,
-    /// The currency the figures are in.
-    pub currency: CurrencyCode,
     /// Every priced line, in the order the posting carried them, with the fee line last.
     pub lines: Vec<PricedLine>,
     /// The sum over every line, including the fee line, in nano-units, before the tier.
@@ -199,10 +189,10 @@ pub struct Priced {
 }
 
 impl Priced {
-    /// The answer in whole minor units of its own currency — one truncation over the summed
-    /// nano-units, floored at zero.
+    /// The answer in whole minor units — one truncation over the summed nano-units, floored at
+    /// zero, at the one scale (#66).
     pub fn minor(&self) -> i64 {
-        crate::cost::project::minor_of(self.priced_nanos, self.currency)
+        crate::cost::project::minor_of(self.priced_nanos)
     }
 
     /// The answer in micro-units — one truncation over the summed nano-units, NOT floored.
@@ -210,7 +200,9 @@ impl Priced {
         crate::cost::project::micros_of(self.priced_nanos)
     }
 
-    /// Every class the card was present for but silent about.
+    /// Every class the card was present for but silent about. The flat fee is never among them:
+    /// a card carries exactly one fee and every constructor sets it, so a fee can be an explicit
+    /// zero (#77(5) `BUSBAR-1.6.0.md:420`) but never a silence.
     pub fn unpriced_classes(&self) -> Vec<&str> {
         self.lines
             .iter()
@@ -224,7 +216,6 @@ impl Priced {
         CachedPrice {
             history_seq,
             card_seq: self.card_seq,
-            currency: self.currency,
             pre_tier_nanos: self.pre_tier_nanos,
             priced_nanos: self.priced_nanos,
         }
@@ -240,14 +231,6 @@ pub enum Unpriceable {
         /// The instant that fell in the hole.
         at: u64,
     },
-    /// The card in force does not name this currency. NEVER converted from another: there is no
-    /// cross-rate in this crate and this variant is what stands where one would have gone.
-    CurrencyNotPriced {
-        /// The entry that was in force.
-        card_seq: HistorySeq,
-        /// The currency that was asked for.
-        currency: CurrencyCode,
-    },
     /// A present card names no entry for the lane — the fail-closed rule, reached through
     /// [`price_fail_closed`].
     LaneUnpriced {
@@ -258,35 +241,127 @@ pub enum Unpriceable {
     },
 }
 
-/// Apply the tier multiplier: once, over the summed pre-tier amount, with a single divide.
+/// **THE TIER ARITHMETIC — the one implementation in the tree.**
 ///
+/// Apply the tier multiplier once, over the summed pre-tier amount, with a single divide.
 /// A sum of per-line floors is the wrong answer and undercharges: two lines of five nano-units at
 /// half price are two floors of two, which is four, where the single divide over ten is five.
+///
+/// # It rounds HALF-TO-EVEN, because it is a per-N-units division term
+///
+/// `× tier_bp / 10_000` is a division by N, and #44 (`BUSBAR-1.6.0.md:372`) rules that *"only a
+/// 'per-N-units' division term uses banker's (half-to-even) rounding"*. #81 (`:428`) restates it
+/// after the exact-count ruling — *"a per-N-units division term still uses banker's rounding (#44),
+/// because a DIVISION can genuinely be inexact where a MEASUREMENT cannot"* — so the rule survives
+/// the amendment that changed everything around it. Half-away-from-zero is the OTHER rule in #44,
+/// and it is reserved for card-build quantisation ([`crate::cost::nano_rate`]); it is not this
+/// term's rule and applying it here would be reading the wrong half of the row.
+///
+/// This used to truncate toward zero, which is not rounding — it is a discount the operator never
+/// configured, taken in one direction, forever. Fifteen nano-units at 5,000 bp is `7.5`: truncation
+/// billed `7`, half-to-even bills `8`. Five nano-units at 5,000 bp is `2.5`: both give `2`, and
+/// that agreement is luck, not policy.
+///
+/// # The divide comes FIRST, so the saturation cannot under-bill
+///
+/// The previous implementation was `pre.saturating_mul(bp) / 10_000`, and the saturation it added
+/// for safety was the defect: pinning the PRODUCT at `u128::MAX` and then dividing by ten thousand
+/// yields a figure ten thousand times too small. It fired at the NEUTRAL tier, which is the tier
+/// every posting this node writes actually carries — `apply_tier(u128::MAX, 10_000)` returned
+/// `34028236692093846346337460743176821` where `×1` must return `u128::MAX` itself,
+/// `340282366920938463463374607431768211455`. A guard that under-bills by four orders of magnitude
+/// at the identity multiplier is worse than no guard, because no guard at least panics in debug.
+///
+/// So the exact quotient is taken apart instead. With `pre = q·N + r`, the value
+/// `pre·bp / N` is exactly `q·bp + (r·bp)/N`, and `r·bp` is bounded by `N × u32::MAX` — nowhere
+/// near a `u128`. Only `q·bp` can genuinely exceed the type, and when it does the true answer
+/// really is past the ceiling, which is the one case where pinning there is the honest reading.
+/// Below the ceiling this is exact integer arithmetic and saturation changes no answer.
 pub fn apply_tier(pre_tier_amount: u128, tier_bp: u32) -> u128 {
-    pre_tier_amount.saturating_mul(u128::from(tier_bp)) / u128::from(STANDARD_TIER_BP)
+    checked_apply_tier(pre_tier_amount, tier_bp).unwrap_or(u128::MAX)
+}
+
+/// [`apply_tier`]'s arithmetic, refusing instead of pinning: `None` exactly when the true tiered
+/// amount does not fit a `u128`.
+///
+/// The exact-money reader (`price_exact`) refuses an overflow rather than billing a ceiling, and it
+/// must not carry a second copy of the tier rule to do it. This is the same computation with the
+/// same rounding; only the last step differs, which is the only thing the two callers disagree
+/// about.
+pub fn checked_apply_tier(pre_tier_amount: u128, tier_bp: u32) -> Option<u128> {
+    let n = u128::from(STANDARD_TIER_BP);
+    let bp = u128::from(tier_bp);
+
+    // `pre = q·N + r`. Splitting before the multiply is what keeps the product inside the type:
+    // `r < N`, so `r·bp` is at most ten thousand times a `u32` and cannot overflow, and `q·bp` is
+    // the only term big enough to leave the `u128` — and if it does, so does the answer.
+    let (q, r) = (pre_tier_amount / n, pre_tier_amount % n);
+    let tail = r * bp;
+    let whole = q.checked_mul(bp)?.checked_add(tail / n)?;
+    let remainder = tail % n;
+
+    // HALF-TO-EVEN over the exact remainder (#44 `:372`, #81 `:428`). Compared as `remainder × 2`
+    // against `N` rather than as `remainder` against `N / 2`, so the tie is the exact half and not
+    // a half that a divide has already rounded. `remainder < N = 10_000`, so the doubling is safe.
+    let round_up = match (remainder * 2).cmp(&n) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        // Exactly one half: go to the EVEN neighbour. Over many postings that is the property that
+        // makes the rounding cost nothing on average, which is the whole reason #44 names it.
+        std::cmp::Ordering::Equal => whole % 2 == 1,
+    };
+    if round_up {
+        whole.checked_add(1)
+    } else {
+        Some(whole)
+    }
+}
+
+/// [`apply_tier`] over a SIGNED amount — the same arithmetic, on a column that can hold a reversal.
+///
+/// A reversal is a negative amount (`totals.rs` says why the books are signed), and a tier applies
+/// to it exactly as it applies to a charge. The sign is taken off, the one arithmetic runs on the
+/// magnitude, and the sign goes back on: half-to-even is symmetric about zero, so `2.5` bills `2`
+/// and `-2.5` reverses `-2`, and a customer cannot be moved by choosing which side of the ledger a
+/// correction is written on.
+///
+/// It is a sign adapter and NOT a second implementation: there is no arithmetic decision in it. The
+/// tree used to carry a genuine second one — `recompute::apply_tier`, `i128 → i128`, re-exported as
+/// `busbar_kernel_ledger::apply_tier` beside this crate's `cost::apply_tier`, so a caller writing
+/// `use busbar_kernel_ledger::apply_tier` and one writing `use busbar_kernel_ledger::cost::apply_tier`
+/// got different functions. They agreed, which is what made deleting one of them the fix and a test
+/// that they still agree the wrong fix: the day either was corrected, the recompute that exists to
+/// DETECT a tier divergence would have become the divergence, on every posting in the book at once.
+pub fn apply_tier_signed(pre_tier_amount: i128, tier_bp: u32) -> i128 {
+    let magnitude = apply_tier(pre_tier_amount.unsigned_abs(), tier_bp);
+    if pre_tier_amount.is_negative() {
+        // The two halves do NOT narrow to the same bound. `i128::MIN` has no positive twin, so a
+        // reversal reaches one nano-unit further than a charge can, and narrowing through
+        // `i128::MAX` and negating would lose that one unit at the floor — on the reversal of the
+        // largest charge the type can hold, which is the worst place to lose one.
+        i128::try_from(magnitude).map_or(i128::MIN, |v| -v)
+    } else {
+        i128::try_from(magnitude).unwrap_or(i128::MAX)
+    }
 }
 
 /// **THE LOOKUP** — the whole of layer two, and the only place money is computed.
 ///
 /// Resolve the card in force at the posting's instant under this snapshot, then price the
-/// quantities against it in the asked-for currency. The order is fixed and is the whole of the law:
+/// quantities against it. The order is fixed and is the whole of the law:
 /// each quantity prices at amount times the card's integer rate; the flat fee joins as its own line
 /// at the fee's minor units lifted to nano-units; those line amounts sum to the pre-tier amount; the
 /// tier multiplier applies once to that sum. Nothing is truncated until a projection asks.
 ///
 /// It reads no clock, no store and no configuration. The view is a borrowed slice, so an auditor
 /// holding the postings and the history re-derives every invoice by hand.
-pub fn price(
-    view: &HistoryView<'_>,
-    posting: &Posting,
-    currency: CurrencyCode,
-) -> Result<Priced, Unpriceable> {
+pub fn price(view: &HistoryView<'_>, posting: &Posting) -> Result<Priced, Unpriceable> {
     let (card_seq, card) = view
         .card_at(posting.arrived_ms)
         .ok_or(Unpriceable::NoCardInForce {
             at: posting.arrived_ms,
         })?;
-    price_at_card(card_seq, card, posting, currency)
+    price_at_card(card_seq, card, posting)
 }
 
 /// The lookup with the resolution already done — the same arithmetic, reached by a caller that
@@ -299,12 +374,8 @@ pub fn price_at_card(
     card_seq: HistorySeq,
     card: &RateCard,
     posting: &Posting,
-    currency: CurrencyCode,
 ) -> Result<Priced, Unpriceable> {
-    if !card.prices_currency(currency) {
-        return Err(Unpriceable::CurrencyNotPriced { card_seq, currency });
-    }
-    let rates = card.lane_rates(&posting.lane, currency);
+    let rates = card.lane_rates(&posting.lane);
     let mut lines: Vec<PricedLine> = Vec::with_capacity(posting.quantities.len() + 1);
 
     for quantity in &posting.quantities {
@@ -325,9 +396,13 @@ pub fn price_at_card(
     }
 
     // The fee is a usage line, not a scalar bolted onto the total. Its unit price is an exact
-    // multiple of one minor unit of its currency, which is why summing it in before the single
-    // truncation gives the same answer as truncating the quantities first and adding the fee after.
-    let fee_unit_price_nanos = card.fee_unit_price_nanos(currency);
+    // multiple of one minor unit, which is why summing it in before the single truncation gives the
+    // same answer as truncating the quantities first and adding the fee after.
+    //
+    // A card carries exactly ONE fee and every constructor sets it, so this line is never a silent
+    // zero read out of a map that does not hold the key: a fee of nothing is a fee the operator
+    // configured at nothing (#77(5) `BUSBAR-1.6.0.md:420`), which is legitimately free.
+    let fee_unit_price_nanos = card.fee_unit_price_nanos();
     lines.push(PricedLine {
         class: FEE_CLASS.to_string(),
         quantity: posting.fee_count,
@@ -342,7 +417,6 @@ pub fn price_at_card(
 
     Ok(Priced {
         card_seq,
-        currency,
         lines,
         pre_tier_nanos,
         priced_nanos: apply_tier(pre_tier_nanos, posting.tier_bp),
@@ -353,19 +427,20 @@ pub fn price_at_card(
     })
 }
 
-/// The settlement posture: [`price`], and a lane a present card is silent about is a REFUSAL.
+/// The settlement posture: [`price`], and a lane a present card is silent about is a REFUSAL rather
+/// than a figure of nothing.
 ///
 /// A policy wrapper and nothing else — it performs no arithmetic of its own and cannot disagree with
 /// [`price`] about a figure, because it either returns that call's answer or returns an error. The
 /// two postures exist because reads and settlement want different things from the same lookup: a
 /// read reports an unpriced lane per row so an operator can see it, and a settlement that refuses
-/// unpriced usage fails closed rather than serving for free.
+/// unpriced usage fails closed rather than serving for free. Neither posture is ever a SILENT
+/// nothing: the read says it on the line, and settlement says it here.
 pub fn price_fail_closed(
     view: &HistoryView<'_>,
     posting: &Posting,
-    currency: CurrencyCode,
 ) -> Result<Priced, Unpriceable> {
-    let priced = price(view, posting, currency)?;
+    let priced = price(view, posting)?;
     if priced.lane_unpriced {
         return Err(Unpriceable::LaneUnpriced {
             card_seq: priced.card_seq,

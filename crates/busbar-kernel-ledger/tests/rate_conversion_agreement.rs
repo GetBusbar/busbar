@@ -34,7 +34,7 @@
 //! second-copy tripwire it was always meant to be.
 
 use busbar_kernel_budget::RateNanos;
-use busbar_kernel_ledger::cost::{minor_of, nano_rate, CurrencyCode, LaneClass, RateCard};
+use busbar_kernel_ledger::cost::{minor_of, nano_rate, LaneClass, RateCard, NANOS_PER_CENT};
 
 /// The admission unit's conversion, asked for one rate.
 ///
@@ -194,55 +194,49 @@ fn every_boundary_value_converts_to_its_named_integer_and_both_readers_agree() {
     }
 }
 
-/// **THE CURRENCY AXIS.** The decimal-to-integer conversion does not depend on the currency, and a
-/// card proves it: the same configured decimal, set as a rate in a two-decimal currency and in a
-/// zero-decimal one, holds the SAME integer in every cell.
+/// **THE CARD HOLDS THE INTEGER THE CONVERSION GAVE IT, AND NOTHING RESCALES IT.** The same
+/// configured decimal, set through the constructor and through `set_rate`, is the SAME integer in
+/// the cell either way.
 ///
-/// This is the assertion that stands where a cross-rate would have gone. A conversion that knew
-/// about currencies would have to scale one against another somewhere, and the moment it did, a
-/// rate in yen would be a rate in dollars times a number nobody configured. The currency enters
-/// ONCE, at the projection, through `nanos_per_minor` — never at the rate.
+/// This is the assertion that stands where a cross-rate would have gone. #66 removed the axis a
+/// cross-rate needed: there is no second denomination for a rate to be scaled against, so a rate
+/// on a card can only ever be the integer somebody configured. The projection (`minor_of`) divides
+/// by ONE constant, `NANOS_PER_CENT`, which nothing can name and therefore nothing can move.
 #[test]
-fn the_conversion_is_the_same_integer_in_every_currency() {
-    let jpy = CurrencyCode::new("JPY").expect("a three-letter code");
-    let bhd = CurrencyCode::new("BHD").expect("a three-letter code");
+fn the_conversion_is_the_integer_the_card_holds() {
     let mut seq = Seq(0x1234_5678_9ABC_DEF0);
     for case in 0..10_000u32 {
         let micro = seq.below(10_000_000_000) as f64 / 1_000_000.0;
         let expected = nano_rate(micro);
 
-        let mut card = RateCard::from_micro_rates([(LaneClass::new("lane", "input"), micro)], 0);
-        card.set_rate(LaneClass::new("lane", "input"), jpy, micro);
-        card.set_rate(LaneClass::new("lane", "input"), bhd, micro);
+        let built = RateCard::from_micro_rates([(LaneClass::new("lane", "input"), micro)], 0);
+        let mut set = RateCard::from_micro_rates([(LaneClass::new("lane", "other"), 0.0)], 0);
+        set.set_rate(LaneClass::new("lane", "input"), micro);
 
-        for currency in [CurrencyCode::USD, jpy, bhd] {
-            let rates = card
-                .lane_rates("lane", currency)
-                .expect("the lane is priced");
+        for card in [&built, &set] {
+            let rates = card.lane_rates("lane").expect("the lane is priced");
             assert_eq!(
                 rates.nanos_per_unit("input"),
                 expected,
-                "case {case}: the rate moved with the currency at {micro} micro-units per unit"
+                "case {case}: the rate moved at {micro} micro-units per unit"
             );
         }
-        // And the admission unit's projection, which knows nothing of currencies at all, still
-        // gives that same integer.
+        // And the admission unit's projection, which is the same one function, still gives that
+        // same integer.
         assert_eq!(admission_nano_rate(micro), expected, "case {case}");
     }
 }
 
-/// The currency changes the PROJECTION and only the projection. One nano-unit total, three
-/// currencies: the answers differ by exactly the ratio of the divisors and by nothing else.
+/// **THE PROJECTION HAS ONE DIVISOR AND IT IS A CONSTANT.** One nano-unit total, one answer —
+/// there is no argument, table or label that could produce a second.
 #[test]
-fn the_currency_enters_at_the_projection_and_nowhere_else() {
-    let jpy = CurrencyCode::new("JPY").expect("a three-letter code");
-    let bhd = CurrencyCode::new("BHD").expect("a three-letter code");
-    assert_eq!(CurrencyCode::USD.nanos_per_minor(), 10_000_000);
-    assert_eq!(jpy.nanos_per_minor(), 1_000_000_000);
-    assert_eq!(bhd.nanos_per_minor(), 1_000_000);
-
+fn the_projection_divides_by_the_one_constant() {
+    assert_eq!(NANOS_PER_CENT, 10_000_000);
     let nanos = 3_500_000_000u128;
-    assert_eq!(minor_of(nanos, CurrencyCode::USD), 350);
-    assert_eq!(minor_of(nanos, jpy), 3);
-    assert_eq!(minor_of(nanos, bhd), 3_500);
+    assert_eq!(minor_of(nanos), 350);
+    assert_eq!(
+        minor_of(nanos),
+        i64::try_from(nanos / NANOS_PER_CENT).expect("fits"),
+        "the projection is the constant and nothing else"
+    );
 }

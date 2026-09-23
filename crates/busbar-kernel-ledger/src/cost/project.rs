@@ -10,108 +10,99 @@
 
 use busbar_contract::caps::UsageLine;
 
-use crate::cost::currency::CurrencyCode;
 use crate::cost::rate::RateCard;
-use crate::cost::{MICROS_PER_CENT, NANOS_PER_MICRO};
+use crate::cost::{MICROS_PER_CENT, NANOS_PER_CENT, NANOS_PER_MICRO};
 
-/// **A nano-unit total in whole MINOR units of its currency**: one truncating divide, then floored
-/// at zero.
+/// **A nano-unit total in whole MINOR units**: one truncating divide, then floored at zero.
 ///
-/// The divisor is the currency's and only the currency's — ten million for a dollar, a billion for a
-/// yen, a million for a dinar. This is the one place that divide happens, so a figure cannot be
-/// truncated at two scales by two readers.
+/// The divisor is [`crate::cost::NANOS_PER_CENT`] and only that — **THE ONE SCALE** (#66
+/// `BUSBAR-1.6.0.md:528`: money is unitless abstract cost). There is no second divisor a reader
+/// could pick, so a figure cannot be truncated at two scales by two readers, and no request body,
+/// config key or label can move it.
 ///
 /// The divide truncates toward zero and never rounds up — a fractional minor unit the quantities did
 /// not reach is dropped, deterministically. The conversion to the signed display type SATURATES
 /// rather than casting: a ledger large enough to pass the top of the range would, on a wrapping
 /// cast, land negative, and the floor below would then turn it into zero — an over-the-top spend
 /// billing as free and escaping every cap. Pinning at the top blocks instead.
-pub fn minor_of(nanos: u128, currency: CurrencyCode) -> i64 {
-    let minor = i64::try_from(nanos / currency.nanos_per_minor()).unwrap_or(i64::MAX);
+pub fn minor_of(nanos: u128) -> i64 {
+    let minor = i64::try_from(nanos / NANOS_PER_CENT).unwrap_or(i64::MAX);
     minor.max(0)
 }
 
-/// A nano-unit total in whole cents — [`minor_of`] at the currency a 1.5.5 deployment's figures are
-/// in, which is the spelling every 1.5.5 caller used.
+/// A nano-unit total in whole cents — the 1.5.5 spelling of [`minor_of`], which is the same
+/// function at the same divisor and is kept because that is the name every 1.5.5 caller used.
 pub fn cents_of(nanos: u128) -> i64 {
-    minor_of(nanos, CurrencyCode::USD)
+    minor_of(nanos)
 }
 
 /// A nano-unit total in micro-units: the same single truncating divide, at the finer scale, with
 /// NO floor at zero. The two projections differ here on purpose and the difference is load-bearing
 /// for the ledger endpoint, so it is asserted rather than assumed.
-///
-/// A micro-unit is a millionth of the MAJOR unit whatever the currency, so no currency enters here:
-/// the finer projection is a scale of the accumulator, not of the minor unit.
 pub fn micros_of(nanos: u128) -> i64 {
     i64::try_from(nanos / NANOS_PER_MICRO).unwrap_or(i64::MAX)
 }
 
-/// Derive what a ledger view costs, in the currency's minor units, against one card: a few
-/// multiply-adds over the lanes the bucket actually used, plus — when asked for — the flat fee times
-/// the billable request count.
+/// Derive what a ledger view costs, in minor units, against one card: a few multiply-adds over the
+/// lanes the bucket actually used, plus — when asked for — the flat fee times the billable request
+/// count.
 ///
 /// Quantities are the truth and the amount is always derived, never stored as truth on this path.
-/// A lane a present card does not name derives at nothing.
+/// A lane a present card does not name derives at nothing. THAT IS NOT SILENT, and it is not decided
+/// here: this is a PROJECTION with no channel to refuse in, so the refusal lives where the lane's
+/// has always lived — [`RateCard::lane_unpriced`] asks the question, and
+/// [`crate::cost::price_fail_closed`] / [`crate::cost::price_exact`] are the postures that answer
+/// it by refusing rather than serving for free (#42 `BUSBAR-1.6.0.md:367`).
 ///
 /// The nano-units accumulate across every lane FIRST and divide to minor units ONCE. Two lanes each
 /// contributing half a cent make a whole cent; a per-lane floor would drop both to nothing and
 /// undercharge every bucket that used more than one lane.
 pub fn derive_spend_minor<'a>(
     card: &RateCard,
-    currency: CurrencyCode,
     lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
     fee_requests: u64,
     include_request_fee: bool,
 ) -> i64 {
-    let nanos = sum_nanos(card, currency, lanes);
-    let mut minor = i64::try_from(nanos / currency.nanos_per_minor()).unwrap_or(i64::MAX);
+    let nanos = sum_nanos(card, lanes);
+    let mut minor = i64::try_from(nanos / NANOS_PER_CENT).unwrap_or(i64::MAX);
     if include_request_fee {
         let fee = card
-            .per_request_fee(currency)
+            .fee()
             .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
         minor = minor.saturating_add(fee);
     }
     minor.max(0)
 }
 
-/// [`derive_spend_minor`] at the currency a 1.5.5 deployment's figures are in.
+/// The 1.5.5 spelling of [`derive_spend_minor`] — the same function, kept under the name every
+/// 1.5.5 caller used.
 pub fn derive_spend_cents<'a>(
     card: &RateCard,
     lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
     fee_requests: u64,
     include_request_fee: bool,
 ) -> i64 {
-    derive_spend_minor(
-        card,
-        CurrencyCode::USD,
-        lanes,
-        fee_requests,
-        include_request_fee,
-    )
+    derive_spend_minor(card, lanes, fee_requests, include_request_fee)
 }
 
 /// As [`derive_spend_minor`] but in micro-units, for the finer projections. No floor at zero here.
 ///
-/// The fee is lifted from minor units to micro-units by the currency's own scale: a minor unit is
-/// `nanos_per_minor` nano-units and a micro-unit is a thousand, so the lift is the ratio of the two.
-/// For a dollar that ratio is ten thousand — [`crate::cost::MICROS_PER_CENT`] — which is the number the
-/// 1.5.5 projection used, so a USD deployment's figures are unchanged to the byte.
-pub fn derive_spend_micros_in<'a>(
+/// The fee is lifted from minor units to micro-units by the one scale: a minor unit is
+/// [`crate::cost::NANOS_PER_CENT`] nano-units and a micro-unit is a thousand, so the lift is the
+/// ratio of the two — ten thousand, [`crate::cost::MICROS_PER_CENT`], which is the number the 1.5.5
+/// projection used, so a deployment's figures are unchanged to the byte.
+pub fn derive_spend_micros<'a>(
     card: &RateCard,
-    currency: CurrencyCode,
     lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
     fee_requests: u64,
     include_request_fee: bool,
 ) -> i64 {
-    let nanos = sum_nanos(card, currency, lanes);
+    let nanos = sum_nanos(card, lanes);
     let micros = i64::try_from(nanos / NANOS_PER_MICRO).unwrap_or(i64::MAX);
     if include_request_fee {
-        let micros_per_minor =
-            i64::try_from(currency.nanos_per_minor() / NANOS_PER_MICRO).unwrap_or(MICROS_PER_CENT);
         let fee_micros = card
-            .per_request_fee(currency)
-            .saturating_mul(micros_per_minor)
+            .fee()
+            .saturating_mul(MICROS_PER_CENT)
             .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
         micros.saturating_add(fee_micros)
     } else {
@@ -119,32 +110,15 @@ pub fn derive_spend_micros_in<'a>(
     }
 }
 
-/// [`derive_spend_micros_in`] at the currency a 1.5.5 deployment's figures are in.
-pub fn derive_spend_micros<'a>(
-    card: &RateCard,
-    lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
-    fee_requests: u64,
-    include_request_fee: bool,
-) -> i64 {
-    derive_spend_micros_in(
-        card,
-        CurrencyCode::USD,
-        lanes,
-        fee_requests,
-        include_request_fee,
-    )
-}
-
 /// The shared accumulation both derivations run: sum nano-units over every (lane, lines) pair,
 /// skipping any lane the present card does not name.
 fn sum_nanos<'a>(
     card: &RateCard,
-    currency: CurrencyCode,
     lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
 ) -> u128 {
     let mut nanos: u128 = 0;
     for (lane, lines) in lanes {
-        if let Some(rates) = card.lane_rates(lane, currency) {
+        if let Some(rates) = card.lane_rates(lane) {
             nanos = nanos.saturating_add(rates.nanos(lines));
         }
     }

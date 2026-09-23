@@ -34,8 +34,12 @@
 //!    to apply a card change at.
 //! 2. **No card at all is billing OFF** — every line prices at nothing and the entry contributes
 //!    zero (#42). This is the one and only circumstance in which a silent zero is the right answer.
-//! 3. **A card present but silent is a REFUSAL** (#42). An unnamed lane, an unnamed class, an
-//!    unnamed currency: each refuses. Money-sacred means never inventing a zero.
+//! 3. **A card present but silent is a REFUSAL** (#42). An unnamed lane, an unnamed class: each
+//!    refuses. Money-sacred means never inventing a zero. The FLAT FEE used to be a third member of
+//!    that list — it read its figure out of a per-denomination map with `unwrap_or(0)`, so a card
+//!    that priced its rates in one denomination and was never given a fee in it billed every flat
+//!    fee at nothing, here, in silence. #66 removed the denomination axis, so the map is a single
+//!    field and the hole it could carry no longer exists to be guarded.
 //! 4. **Multiply and add, exactly** — a count at scale 6 times a rate in nano-units per whole unit
 //!    accumulates at scale 15, in `i128`, CHECKED. Nothing here saturates: a saturated total is a
 //!    wrong total wearing a right total's clothes.
@@ -64,10 +68,9 @@ use std::collections::BTreeMap;
 
 use busbar_contract::count::Count;
 
-use crate::cost::currency::CurrencyCode;
 use crate::cost::history::{History, HistorySeq, HistoryView};
-use crate::cost::posting::STANDARD_TIER_BP;
-use crate::cost::NANOS_PER_MICRO;
+use crate::cost::posting::{checked_apply_tier, STANDARD_TIER_BP};
+use crate::cost::{NANOS_PER_CENT, NANOS_PER_MICRO};
 
 /// The scale every [`Money`] figure is held at: six decimal places, i.e. micro-units (#81).
 ///
@@ -90,9 +93,9 @@ const EXACT_PER_MONEY: i128 = 1_000_000_000;
 
 /// **A MONEY AMOUNT**: an `i128` mantissa at a fixed scale of six (#81).
 ///
-/// `0.034510` is held as `34_510`. There is no currency in the type and no symbol on it (#66): the
-/// currency is an argument to the lookup and a card that does not name it refuses rather than
-/// converting.
+/// `0.034510` is held as `34_510`. There is no currency in the type, no symbol on it, and no
+/// currency ARGUMENT to the lookup that produced it (#66): what a figure is displayed as belongs to
+/// the dashboard, downstream of this crate and invisible to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Money(i128);
 
@@ -110,14 +113,14 @@ impl Money {
         self.0
     }
 
-    /// The amount in whole MINOR units of a currency, truncated toward zero.
+    /// The amount in whole MINOR units, truncated toward zero.
     ///
-    /// The divisor is the currency's and only the currency's, read from the one place a currency's
-    /// scale is decided. This is the projection `spend_cents` has always been, for a deployment
-    /// whose figures are in the currency 1.5.5 had.
-    pub fn minor(self, currency: CurrencyCode) -> i128 {
-        let micros_per_minor = i128::try_from(currency.nanos_per_minor() / NANOS_PER_MICRO)
-            .expect("a currency's minor scale fits an i128");
+    /// The divisor is [`crate::cost::NANOS_PER_CENT`] over [`crate::cost::NANOS_PER_MICRO`] — THE
+    /// ONE SCALE (#66), with no second divisor a reader could pick. This is the projection
+    /// `spend_cents` has always been.
+    pub fn minor(self) -> i128 {
+        let micros_per_minor = i128::try_from(NANOS_PER_CENT / NANOS_PER_MICRO)
+            .expect("the one minor scale fits an i128");
         self.0 / micros_per_minor
     }
 
@@ -233,14 +236,6 @@ pub enum MoneyError {
         /// The instant that fell in the hole.
         at: u64,
     },
-    /// The card in force does not name this currency. NEVER converted from another — there is no
-    /// cross-rate anywhere in this crate and this variant is what stands where one would have gone.
-    CurrencyNotPriced {
-        /// The entry that was in force.
-        card_seq: HistorySeq,
-        /// The currency that was asked for.
-        currency: CurrencyCode,
-    },
     /// A present card names no entry for the lane. Fail-closed: a lane the operator forgot bills at
     /// a refusal, never for free.
     LaneUnpriced {
@@ -272,12 +267,6 @@ impl std::fmt::Display for MoneyError {
             MoneyError::NoCardInForce { at } => {
                 write!(f, "no rate-card entry covers the instant {at}")
             }
-            MoneyError::CurrencyNotPriced { card_seq, currency } => write!(
-                f,
-                "rate-card entry {} does not price in {}",
-                card_seq.get(),
-                currency.as_str()
-            ),
             MoneyError::LaneUnpriced { card_seq, lane } => write!(
                 f,
                 "rate-card entry {} names no price for lane `{lane}`",
@@ -309,12 +298,8 @@ impl std::error::Error for MoneyError {}
 ///
 /// It reads no clock, no store and no configuration. Hand an auditor the slice and the history and
 /// they re-derive the figure by hand.
-pub fn price(
-    ledger: &[LedgerEntry],
-    history: &History,
-    currency: CurrencyCode,
-) -> Result<Money, MoneyError> {
-    price_in_view(ledger, &history.current(), currency)
+pub fn price(ledger: &[LedgerEntry], history: &History) -> Result<Money, MoneyError> {
+    price_in_view(ledger, &history.current())
 }
 
 /// [`price`] against a PINNED snapshot of the history.
@@ -322,12 +307,8 @@ pub fn price(
 /// Pinned rather than re-read per entry: a card appended while a read is in flight must not price
 /// half of one response's rows against one history and half against another. It is also the
 /// reproducibility primitive — an invoice cut at a snapshot re-derives forever from that snapshot.
-pub fn price_in_view(
-    ledger: &[LedgerEntry],
-    view: &HistoryView<'_>,
-    currency: CurrencyCode,
-) -> Result<Money, MoneyError> {
-    let exact = price_exact(ledger, view, currency)?;
+pub fn price_in_view(ledger: &[LedgerEntry], view: &HistoryView<'_>) -> Result<Money, MoneyError> {
+    let exact = price_exact(ledger, view)?;
     // THE ONE TRUNCATION, and it is the last thing that happens. Toward zero, matching the
     // projection every 1.5.5 figure was already read through.
     Ok(Money(exact / EXACT_PER_MONEY))
@@ -338,11 +319,7 @@ pub fn price_in_view(
 /// For a caller that must know whether the projection dropped anything — a reconciliation, a
 /// property test, an auditor. `price_exact(..) % 1_000_000_000 == 0` is the statement "this figure
 /// is exact at scale six", and it is a statement the truncated form cannot make about itself.
-pub fn price_exact(
-    ledger: &[LedgerEntry],
-    view: &HistoryView<'_>,
-    currency: CurrencyCode,
-) -> Result<i128, MoneyError> {
+pub fn price_exact(ledger: &[LedgerEntry], view: &HistoryView<'_>) -> Result<i128, MoneyError> {
     // Accumulated PER TIER, because the tier multiplier is one divide over a tier's summed pre-tier
     // amount and never a sum of per-line floors (#44). A slice at one tier — which is every slice
     // this tree produces — has one bucket and one divide.
@@ -359,23 +336,19 @@ pub fn price_exact(
         // is "unpriced" because there is no card to be missing from, and the flat fee still posts —
         // which is what such a deployment is actually billed.
         if !card.pricing_enabled() {
-            let fee = fee_term(card, currency, entry.fee_count)?;
+            let fee = fee_term(card, entry.fee_count)?;
             add_into(&mut pre_tier, entry.tier_bp, fee)?;
             continue;
         }
 
-        if !card.prices_currency(currency) {
-            return Err(MoneyError::CurrencyNotPriced { card_seq, currency });
-        }
-
         // A present card that names no entry for the lane REFUSES. `lane_rates` answers `None` for
         // exactly that case on a present card.
-        let rates =
-            card.lane_rates(&entry.lane, currency)
-                .ok_or_else(|| MoneyError::LaneUnpriced {
-                    card_seq,
-                    lane: entry.lane.clone(),
-                })?;
+        let rates = card
+            .lane_rates(&entry.lane)
+            .ok_or_else(|| MoneyError::LaneUnpriced {
+                card_seq,
+                lane: entry.lane.clone(),
+            })?;
 
         let mut amount: i128 = 0;
         for (class, count) in &entry.counts {
@@ -397,24 +370,30 @@ pub fn price_exact(
             amount = amount.checked_add(line).ok_or(MoneyError::Overflow)?;
         }
 
-        let fee = fee_term(card, currency, entry.fee_count)?;
+        // THE FEE TERM, beside the class's. A card carries exactly one fee and every constructor
+        // sets it, so there is no absent key here to read as a price: a fee of nothing is the
+        // EXPLICIT zero row #77(5) reserves for genuinely free.
+        let fee = fee_term(card, entry.fee_count)?;
         amount = amount.checked_add(fee).ok_or(MoneyError::Overflow)?;
         add_into(&mut pre_tier, entry.tier_bp, amount)?;
     }
 
     let mut total: i128 = 0;
     for (tier_bp, amount) in pre_tier {
-        let tiered = if tier_bp == STANDARD_TIER_BP {
-            // ×1 exactly. Spelled as its own arm so the standard tier cannot round: a multiply and
-            // a divide by the same number is the identity on paper and a truncation in code if the
-            // multiply overflows first.
-            amount
-        } else {
-            amount
-                .checked_mul(i128::from(tier_bp))
-                .ok_or(MoneyError::Overflow)?
-                / i128::from(STANDARD_TIER_BP)
-        };
+        // THE ONE TIER ARITHMETIC, in its refusing form. This used to be a second copy of the
+        // rule — its own `checked_mul` and its own divide, with a `tier_bp == STANDARD_TIER_BP`
+        // arm bolted on because a multiply-then-divide by the same number overflows before it
+        // cancels. The copy is gone and the special arm with it: `checked_apply_tier` splits the
+        // dividend before it multiplies, so ×1 is exact at every magnitude with no arm to write.
+        //
+        // The magnitude goes through the shared function and the sign is re-applied here rather
+        // than in it, because `checked_` is this file's policy and `apply_tier_signed`'s is
+        // saturating — the ARITHMETIC is shared, the OVERFLOW POLICY is the caller's, which is the
+        // only thing `price_exact` and the posting reader ever disagreed about.
+        let tiered_magnitude =
+            checked_apply_tier(amount.unsigned_abs(), tier_bp).ok_or(MoneyError::Overflow)?;
+        let narrowed = i128::try_from(tiered_magnitude).map_err(|_| MoneyError::Overflow)?;
+        let tiered = if amount.is_negative() { -narrowed } else { narrowed };
         total = total.checked_add(tiered).ok_or(MoneyError::Overflow)?;
     }
     Ok(total)
@@ -426,14 +405,21 @@ pub fn price_exact(
 /// NEVER ROUNDED and never divided (#44) — a fee is one pricing dimension. Its unit price is an
 /// exact multiple of one minor unit, which is the property that makes summing it in before the
 /// single projection give the same answer as projecting the usage first and adding the fee after.
-fn fee_term(
-    card: &crate::cost::rate::RateCard,
-    currency: CurrencyCode,
-    fee_count: Count,
-) -> Result<i128, MoneyError> {
-    let fee_minor = i128::from(card.per_request_fee(currency));
-    let nanos_per_minor =
-        i128::try_from(currency.nanos_per_minor()).map_err(|_| MoneyError::Overflow)?;
+///
+/// **AND NEVER A SILENT NOTHING.** This term used to read `per_request_fee(currency)`, which
+/// answered `unwrap_or(0)` out of a map the currency need not be in: a card that named the currency
+/// for its RATES and no fee in it passed every guard and then billed every flat fee at zero, here,
+/// in the one function money is computed in. #66 deleted the currency axis, so the fee is ONE
+/// field that every constructor sets and the absent key is gone rather than guarded — a fee of
+/// nothing can now only be a fee an operator CONFIGURED at nothing, which is #77(5)'s explicit
+/// zero row and legitimately free.
+///
+/// It is the same term whether the card is present or absent, because an absent card still posts
+/// its flat fee (#42 `BUSBAR-1.6.0.md:367`: *"rate_card ABSENT ⇒ NOT billed"* for the TOKENS; the
+/// fee is what such a deployment is actually billed).
+fn fee_term(card: &crate::cost::rate::RateCard, fee_count: Count) -> Result<i128, MoneyError> {
+    let fee_minor = i128::from(card.fee());
+    let nanos_per_minor = i128::try_from(NANOS_PER_CENT).map_err(|_| MoneyError::Overflow)?;
     let unit_price_nanos = fee_minor
         .checked_mul(nanos_per_minor)
         .ok_or(MoneyError::Overflow)?;

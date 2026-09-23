@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::cost::{
-    price, price_fail_closed, Author, CachedPrice, CardEntryDraft, CurrencyCode, History,
+    price, price_fail_closed, Author, CachedPrice, CardEntryDraft, History,
     HistorySeq, LaneClass, Posting, RateCard, Unpriceable, STANDARD_TIER_BP,
 };
 
@@ -93,9 +93,7 @@ fn appending_assigns_the_next_seq_and_rewrites_nothing() {
     assert_eq!(
         price(
             &at_zero,
-            &posting_at("m", 100, &[(INPUT, 1_000)]),
-            CurrencyCode::USD
-        )
+            &posting_at("m", 100, &[(INPUT, 1_000)]))
         .expect("entry zero is open-ended")
         .pre_tier_nanos,
         1_000_000,
@@ -112,7 +110,7 @@ fn an_empty_history_has_no_head_and_prices_nothing() {
     assert!(history.is_empty());
     let posting = posting_at("m", 1_000, &[(INPUT, 1)]);
     assert_eq!(
-        price(&history.current(), &posting, CurrencyCode::USD),
+        price(&history.current(), &posting),
         Err(Unpriceable::NoCardInForce { at: 1_000 })
     );
 }
@@ -164,8 +162,8 @@ fn a_snapshot_answers_the_same_way_forever() {
         "a snapshot cannot see the future"
     );
 
-    let older = price(&at_one, &posting, CurrencyCode::USD).expect("covered");
-    let newer = price(&at_two, &posting, CurrencyCode::USD).expect("covered");
+    let older = price(&at_one, &posting).expect("covered");
+    let newer = price(&at_two, &posting).expect("covered");
     assert_eq!(
         (older.card_seq, older.pre_tier_nanos),
         (HistorySeq(1), 2_000_000)
@@ -177,7 +175,7 @@ fn a_snapshot_answers_the_same_way_forever() {
 
     // Asked again, byte for byte the same.
     assert_eq!(
-        price(&at_one, &posting, CurrencyCode::USD).expect("covered"),
+        price(&at_one, &posting).expect("covered"),
         older
     );
 }
@@ -202,7 +200,7 @@ fn an_instant_no_entry_covers_is_a_refusal() {
 
     let posting = posting_at("m", 99, &[(INPUT, 1_000_000)]);
     assert_eq!(
-        price(&view, &posting, CurrencyCode::USD),
+        price(&view, &posting),
         Err(Unpriceable::NoCardInForce { at: 99 })
     );
 }
@@ -266,12 +264,12 @@ fn a_corrupted_cache_never_becomes_the_bill() {
     let mut posting =
         Posting::from_usage("m", &usage(&[(INPUT, 1_000)]), 0, STANDARD_TIER_BP, 0, 0);
 
-    let honest = price(&view, &posting, CurrencyCode::USD).expect("covered");
+    let honest = price(&view, &posting).expect("covered");
     assert_eq!(honest.priced_nanos, 2_000_000);
     posting.cached = Some(honest.as_cache(HistorySeq(0)));
     assert!(!posting.cache_diverges(&honest));
     assert_eq!(
-        posting.priced_nanos(&view, CurrencyCode::USD),
+        posting.priced_nanos(&view),
         Ok(2_000_000)
     );
 
@@ -279,17 +277,16 @@ fn a_corrupted_cache_never_becomes_the_bill() {
     posting.cached = Some(CachedPrice {
         history_seq: HistorySeq(0),
         card_seq: HistorySeq(0),
-        currency: CurrencyCode::USD,
         pre_tier_nanos: 200_000_000,
         priced_nanos: 200_000_000,
     });
-    let after = price(&view, &posting, CurrencyCode::USD).expect("covered");
+    let after = price(&view, &posting).expect("covered");
     assert_eq!(
         after, honest,
         "the lookup answers the quantities and the history, whatever the cache says"
     );
     assert_eq!(
-        posting.priced_nanos(&view, CurrencyCode::USD),
+        posting.priced_nanos(&view),
         Ok(2_000_000),
         "the figure a reader must use did not move"
     );
@@ -311,7 +308,7 @@ fn the_fail_closed_posture_refuses_an_unpriced_lane_without_a_second_arithmetic(
     let view = history.current();
     let posting = posting_at("mystery", 0, &[(INPUT, 1_000_000)]);
 
-    let read = price(&view, &posting, CurrencyCode::USD).expect("a read reports it");
+    let read = price(&view, &posting).expect("a read reports it");
     assert!(read.lane_unpriced);
     assert_eq!(
         read.pre_tier_nanos, 0,
@@ -319,7 +316,7 @@ fn the_fail_closed_posture_refuses_an_unpriced_lane_without_a_second_arithmetic(
     );
 
     assert_eq!(
-        price_fail_closed(&view, &posting, CurrencyCode::USD),
+        price_fail_closed(&view, &posting),
         Err(Unpriceable::LaneUnpriced {
             card_seq: HistorySeq(0),
             lane: "mystery".to_string(),
@@ -328,8 +325,8 @@ fn the_fail_closed_posture_refuses_an_unpriced_lane_without_a_second_arithmetic(
     // A lane the card DOES name passes both postures with the same answer.
     let known = posting_at("known", 0, &[(INPUT, 1_000_000)]);
     assert_eq!(
-        price_fail_closed(&view, &known, CurrencyCode::USD),
-        price(&view, &known, CurrencyCode::USD)
+        price_fail_closed(&view, &known),
+        price(&view, &known)
     );
 }
 

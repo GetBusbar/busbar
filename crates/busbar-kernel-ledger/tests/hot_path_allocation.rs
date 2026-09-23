@@ -12,7 +12,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use busbar_kernel_ledger::cost::{CurrencyCode, LaneClass, RateCard};
+use busbar_kernel_ledger::cost::{LaneClass, RateCard};
 
 thread_local! {
     /// Allocations made on THIS thread. Thread-local on purpose: the harness runs cases in
@@ -84,19 +84,12 @@ fn four_class_card() -> RateCard {
 fn a_rate_lookup_allocates_nothing() {
     let card = four_class_card();
     let view = card
-        .lane_rates("lane", CurrencyCode::USD)
+        .lane_rates("lane")
         .expect("the lane is priced");
     // A warm-up pass, so nothing lazy is counted against the loop.
     assert_eq!(view.nanos_per_unit("input"), 1_000);
     assert!(view.class_priced("output"));
     assert!(!card.lane_unpriced("lane"));
-
-    // A view onto a currency the card names no rate in. Reaching one costs a lookup and no more,
-    // which is the property the currency level was added under.
-    let unnamed = CurrencyCode::new("JPY").expect("a three-letter code");
-    let jpy_view = card
-        .lane_rates("lane", unnamed)
-        .expect("the lane is named; the currency is what is missing");
 
     let before = allocations();
     let mut total = 0u64;
@@ -104,9 +97,7 @@ fn a_rate_lookup_allocates_nothing() {
         total += view.nanos_per_unit("input");
         // A class the lane does not name: the miss must not allocate either.
         total += view.nanos_per_unit("a-class-this-lane-does-not-name");
-        // A currency the priced cell does not name: the miss is a lookup on a three-byte key.
-        total += jpy_view.nanos_per_unit("input");
-        assert!(!jpy_view.class_priced("input"));
+        assert!(!view.class_priced("a-class-this-lane-does-not-name"));
         assert!(view.class_priced("output"));
         assert!(!card.lane_unpriced("lane"));
     }
@@ -124,16 +115,16 @@ fn a_rate_lookup_allocates_nothing() {
 #[test]
 fn resolving_a_lane_allocates_nothing() {
     let card = four_class_card();
-    assert!(card.lane_rates("lane", CurrencyCode::USD).is_some());
-    assert!(card.lane_rates("mystery", CurrencyCode::USD).is_none());
+    assert!(card.lane_rates("lane").is_some());
+    assert!(card.lane_rates("mystery").is_none());
 
     let before = allocations();
     let mut hits = 0u32;
     for _ in 0..1_000 {
-        if card.lane_rates("lane", CurrencyCode::USD).is_some() {
+        if card.lane_rates("lane").is_some() {
             hits += 1;
         }
-        assert!(card.lane_rates("mystery", CurrencyCode::USD).is_none());
+        assert!(card.lane_rates("mystery").is_none());
     }
     assert_eq!(hits, 1_000);
     assert_eq!(allocations() - before, 0, "the lane step allocates nothing");

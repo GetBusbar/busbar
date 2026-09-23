@@ -59,7 +59,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::cost::{CurrencyCode, HistorySeq, HistoryView};
+use crate::cost::{HistorySeq, HistoryView};
 use busbar_contract::caps::{Grant, Hold, Posted, Usage, WriteMoney};
 
 use crate::legacy::{LegacyPosting, LegacyRows};
@@ -378,8 +378,6 @@ pub struct Repricing {
     pub key: TotalsKey,
     /// Which window.
     pub window: WindowStart,
-    /// The currency both figures are in. Two currencies never sum, so one entry names exactly one.
-    pub currency: CurrencyCode,
     /// The history head BEFORE the amendment.
     pub from_seq: HistorySeq,
     /// The history head AFTER it.
@@ -432,7 +430,7 @@ pub fn adjusting_entries<'a>(
 ) -> Vec<Repricing> {
     // Grouped in key order, because the entries are journalled and signed and a batch whose order
     // depended on a hash map's iteration would verify on the node that made it and nowhere else.
-    let mut groups: BTreeMap<(TotalsKey, WindowStart, CurrencyCode), Repricing> = BTreeMap::new();
+    let mut groups: BTreeMap<(TotalsKey, WindowStart), Repricing> = BTreeMap::new();
     for line in lines {
         let (Ok(old), Ok(new)) = (
             price_line(line, before, line.tier_bp),
@@ -447,11 +445,10 @@ pub fn adjusting_entries<'a>(
             continue;
         }
         let entry = groups
-            .entry((line.key.clone(), line.window_start, line.currency))
+            .entry((line.key.clone(), line.window_start))
             .or_insert_with(|| Repricing {
                 key: line.key.clone(),
                 window: line.window_start,
-                currency: line.currency,
                 from_seq: before.seq(),
                 to_seq: after.seq(),
                 old_card_seq: old.card_seq,

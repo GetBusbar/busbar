@@ -12,7 +12,7 @@ use busbar_contract::count::Count;
 
 use crate::cost::{
     derive_spend_cents, derive_spend_micros, price_exact, price_in_view, price_ledger, Author,
-    CardEntryDraft, CurrencyCode, History, LaneClass, LedgerEntry, Money, MoneyError, RateCard,
+    CardEntryDraft, History, LaneClass, LedgerEntry, Money, MoneyError, RateCard,
     STANDARD_TIER_BP,
 };
 
@@ -84,7 +84,7 @@ fn known_ledger() -> Vec<LedgerEntry> {
 
 #[test]
 fn a_known_ledger_times_a_known_card_history_is_a_known_figure() {
-    let figure = price_ledger(&known_ledger(), &known_history(), CurrencyCode::USD)
+    let figure = price_ledger(&known_ledger(), &known_history())
         .expect("every line of the known slice is priced by the card in force at its own instant");
 
     // Derived by hand, and the arithmetic is small enough to check without a machine.
@@ -107,7 +107,7 @@ fn a_known_ledger_times_a_known_card_history_is_a_known_figure() {
     assert_eq!(figure.micros(), 34_550, "money = f(ledger, card history)");
     assert_eq!(figure.to_decimal_string(), "0.034550");
     // And in the whole minor units a 1.5.5 deployment's figures were read in: 3 (3.4550 truncates).
-    assert_eq!(figure.minor(CurrencyCode::USD), 3);
+    assert_eq!(figure.minor(), 3);
 }
 
 #[test]
@@ -115,7 +115,6 @@ fn the_known_figure_is_exact_at_scale_six() {
     let exact = price_exact(
         &known_ledger(),
         &known_history().current(),
-        CurrencyCode::USD,
     )
     .expect("the known slice prices");
     // Nothing was dropped by the single projection: the scale-15 accumulator is a whole number of
@@ -133,8 +132,8 @@ fn publishing_a_card_leaves_every_prior_posting_byte_identical() {
     let before = History::opening(card_a(), 0);
     let row_one = &known_ledger()[..1];
 
-    let priced_before = price_ledger(row_one, &before, CurrencyCode::USD).expect("prices");
-    let priced_after = price_ledger(row_one, &known_history(), CurrencyCode::USD).expect("prices");
+    let priced_before = price_ledger(row_one, &before).expect("prices");
+    let priced_after = price_ledger(row_one, &known_history()).expect("prices");
 
     assert_eq!(
         priced_before, priced_after,
@@ -149,11 +148,11 @@ fn pricing_flat_at_the_newest_card_is_a_different_and_wrong_figure() {
     // `busbar_bucket_spend_cents` gauge price flat at whatever card is configured at the moment of
     // the read. Against this history that is card B for BOTH rows.
     let flat = History::opening(card_b(), 0);
-    let flat_figure = price_ledger(&known_ledger(), &flat, CurrencyCode::USD).expect("prices");
+    let flat_figure = price_ledger(&known_ledger(), &flat).expect("prices");
 
     assert_eq!(flat_figure.micros(), 22_220, "both rows at card B");
     assert_eq!(
-        price_ledger(&known_ledger(), &known_history(), CurrencyCode::USD)
+        price_ledger(&known_ledger(), &known_history())
             .expect("prices")
             .micros(),
         34_550,
@@ -185,7 +184,7 @@ fn a_back_dated_correction_reprices_exactly_its_window_and_nothing_outside_it() 
         },
     });
 
-    let figure = price_ledger(&known_ledger(), &history, CurrencyCode::USD).expect("prices");
+    let figure = price_ledger(&known_ledger(), &history).expect("prices");
     // Row one doubles on tokens (6,000 + 880 + 20,000 = 26,880); row two is untouched at 11,110.
     assert_eq!(figure.micros(), 26_880 + 11_110);
 }
@@ -199,7 +198,7 @@ fn a_present_card_silent_about_the_lane_refuses() {
     let history = History::opening(card_a(), 0);
     let slice = vec![LedgerEntry::new("a-model-nobody-priced", 0).with_whole(OUTPUT, 1_000)];
     assert!(matches!(
-        price_ledger(&slice, &history, CurrencyCode::USD),
+        price_ledger(&slice, &history),
         Err(MoneyError::LaneUnpriced { .. })
     ));
 }
@@ -212,7 +211,7 @@ fn a_present_card_silent_about_a_hit_class_refuses() {
     let history = History::opening(card_a(), 0);
     let slice = vec![LedgerEntry::new(LANE, 0).with_whole(CACHE_READ, 1_000_000)];
     assert!(matches!(
-        price_ledger(&slice, &history, CurrencyCode::USD),
+        price_ledger(&slice, &history),
         Err(MoneyError::ClassUnpriced { .. })
     ));
 }
@@ -234,7 +233,7 @@ fn an_open_meter_class_the_card_prices_is_charged_not_dropped() {
         .with_whole("hops", 1_000)];
     // 100 × 2 + 1000 × 5 = 5,200 micro-units.
     assert_eq!(
-        price_ledger(&slice, &history, CurrencyCode::USD)
+        price_ledger(&slice, &history)
             .expect("both classes are priced")
             .micros(),
         5_200
@@ -250,7 +249,7 @@ fn no_card_at_all_is_billing_off_and_the_flat_fee_still_posts() {
         .with_whole(OUTPUT, 1_000_000)
         .with_fee_count(3)];
     assert_eq!(
-        price_ledger(&slice, &history, CurrencyCode::USD)
+        price_ledger(&slice, &history)
             .expect("an absent card prices everything at nothing")
             .micros(),
         60_000,
@@ -270,20 +269,30 @@ fn a_hole_in_the_history_refuses_rather_than_costing_nothing() {
     });
     let slice = vec![LedgerEntry::new(LANE, 0).with_whole(OUTPUT, 1_000)];
     assert!(matches!(
-        price_ledger(&slice, &history, CurrencyCode::USD),
+        price_ledger(&slice, &history),
         Err(MoneyError::NoCardInForce { at: 0 })
     ));
 }
 
+/// **THE ONE FUNCTION TAKES NO DENOMINATION, SO NO READ CAN ASK FOR A SECOND SCALE.**
+///
+/// This stands where `a_currency_the_card_does_not_name_refuses_rather_than_converting` stood. That
+/// case proved a cross-rate could not be invented; #66 (`BUSBAR-1.6.0.md:528`) removes the axis a
+/// cross-rate needed, so the same slice against the same history is ONE figure, forever, with no
+/// argument that could move it. Priced twice to say so.
 #[test]
-fn a_currency_the_card_does_not_name_refuses_rather_than_converting() {
+fn the_same_slice_against_the_same_history_is_one_figure_with_no_scale_to_choose() {
     let history = History::opening(card_a(), 0);
     let slice = vec![LedgerEntry::new(LANE, 0).with_whole(OUTPUT, 1_000)];
-    let jpy = CurrencyCode::new("JPY").expect("a three-letter code");
-    assert!(matches!(
-        price_ledger(&slice, &history, jpy),
-        Err(MoneyError::CurrencyNotPriced { .. })
-    ));
+    let once = price_ledger(&slice, &history).expect("the card prices the lane");
+    let twice = price_ledger(&slice, &history).expect("the card prices the lane");
+    assert_eq!(once, twice);
+    assert!(!once.is_zero(), "a real figure, not two zeros agreeing");
+    // The minor projection has one divisor and it is the constant, not a parameter.
+    assert_eq!(
+        once.minor(),
+        once.micros() / i128::try_from(crate::cost::MICROS_PER_CENT).expect("fits")
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -306,7 +315,7 @@ fn it_equals_the_legacy_micro_derivation_on_a_single_entry_history() {
             e.with_whole(*class, *q)
         })
         .with_fee_count(3)];
-    let one = price_in_view(&slice, &history.current(), CurrencyCode::USD).expect("prices");
+    let one = price_in_view(&slice, &history.current()).expect("prices");
 
     assert_eq!(
         i128::from(legacy),
@@ -329,9 +338,9 @@ fn it_equals_the_legacy_cent_derivation_on_a_single_entry_history() {
             e.with_whole(*class, *q)
         })
         .with_fee_count(3)];
-    let one = price_in_view(&slice, &history.current(), CurrencyCode::USD).expect("prices");
+    let one = price_in_view(&slice, &history.current()).expect("prices");
 
-    assert_eq!(i128::from(legacy), one.minor(CurrencyCode::USD));
+    assert_eq!(i128::from(legacy), one.minor());
 }
 
 #[test]
@@ -340,7 +349,7 @@ fn it_equals_the_posting_lookup_on_the_same_quantities() {
     let history = History::opening(card, 0);
     let usage = super::usage(&[(INPUT, 1_000), (OUTPUT, 250), (CACHE_READ, 7_000)]);
     let posting = crate::cost::Posting::from_usage(LANE, &usage, 3, STANDARD_TIER_BP, 0, 0);
-    let lookup = crate::cost::price(&history.current(), &posting, CurrencyCode::USD)
+    let lookup = crate::cost::price(&history.current(), &posting)
         .expect("the lookup prices");
 
     let slice = vec![LedgerEntry::new(LANE, 0)
@@ -348,7 +357,7 @@ fn it_equals_the_posting_lookup_on_the_same_quantities() {
         .with_whole(OUTPUT, 250)
         .with_whole(CACHE_READ, 7_000)
         .with_fee_count(3)];
-    let one = price_in_view(&slice, &history.current(), CurrencyCode::USD).expect("prices");
+    let one = price_in_view(&slice, &history.current()).expect("prices");
 
     assert_eq!(i128::from(lookup.micros()), one.micros());
 }
@@ -370,8 +379,8 @@ fn a_total_does_not_depend_on_the_order_the_rows_arrived_in() {
     reversed.reverse();
 
     assert_eq!(
-        price_exact(&forward, &history.current(), CurrencyCode::USD),
-        price_exact(&reversed, &history.current(), CurrencyCode::USD),
+        price_exact(&forward, &history.current()),
+        price_exact(&reversed, &history.current()),
     );
 }
 
@@ -391,7 +400,7 @@ fn a_fraction_of_a_micro_unit_is_kept_across_lines_not_floored_per_line() {
         .with_whole(INPUT, 1)
         .with_whole(OUTPUT, 1)];
     assert_eq!(
-        price_ledger(&slice, &history, CurrencyCode::USD)
+        price_ledger(&slice, &history)
             .expect("prices")
             .micros(),
         1
@@ -408,14 +417,14 @@ fn a_seconds_reading_where_milliseconds_belong_resolves_to_the_wrong_card() {
     let secs = vec![LedgerEntry::new(LANE, 2_000).with_whole(OUTPUT, 1_000)];
 
     assert_eq!(
-        price_ledger(&ms, &history, CurrencyCode::USD)
+        price_ledger(&ms, &history)
             .expect("prices")
             .micros(),
         4_000,
         "card B, correctly"
     );
     assert_eq!(
-        price_ledger(&secs, &history, CurrencyCode::USD)
+        price_ledger(&secs, &history)
             .expect("prices")
             .micros(),
         16_000,
@@ -432,7 +441,7 @@ fn an_overflowing_total_refuses_rather_than_saturating() {
     let huge = Count::from_micros(i128::MAX / 2);
     let slice = vec![LedgerEntry::new(LANE, 0).with_count(OUTPUT, huge)];
     assert_eq!(
-        price_ledger(&slice, &history, CurrencyCode::USD),
+        price_ledger(&slice, &history),
         Err(MoneyError::Overflow),
         "a saturated total is a wrong total that looks like a right one"
     );
