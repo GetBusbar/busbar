@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! Tests for `usage_count.rs`. Lifted out of the implementation file so its line count
 //! measures implementation and nothing else; still a direct child module, so the `use
 //! super::…` below reaches the private items it always did.

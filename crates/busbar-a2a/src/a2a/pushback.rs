@@ -590,5 +590,5 @@ pub(crate) fn token_live(state: TaskState) -> bool {
 }
 
 #[cfg(test)]
-#[path = "tests/pushback_tests.rs"]
+#[path = "tests/pushback_limiter_tests.rs"]
 mod tests;
