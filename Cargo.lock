@@ -352,6 +352,7 @@ dependencies = [
  "busbar-mcp",
  "busbar-oauth2",
  "busbar-plane-a2a",
+ "busbar-plane-decision",
  "busbar-plane-llm",
  "busbar-plane-mcp",
  "busbar-plane-streaming",

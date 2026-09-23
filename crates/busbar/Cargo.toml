@@ -115,6 +115,21 @@ busbar-plane-llm = { path = "../busbar-plane-llm" }
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 busbar-plane-streaming = { path = "../busbar-plane-streaming" }
+# THE DECISION PLANE (jev), #48's fifth — and the one plane crate that is BOTH halves at once. Its
+# four siblings above are PURE planes whose registry declaration is carried by a separate impure
+# host crate (`busbar-llm`/`busbar-mcp`/`busbar-a2a`/`busbar-voice`, the optional protocol crates
+# declared further up); jev has no host, by the signed design, so this single crate is the plane AND
+# the section. That is why this line is OPTIONAL when the four above are not: it follows the
+# convention of the thing it is — the crate whose `PLANE_DECL` is installed — and `plane-decision`
+# below is the ONE switch for the plane and its crate edge together, exactly as `plane-a2a` and
+# `plane-voice` are. `--no-default-features` therefore still installs no plane at all, which is the
+# property the strong-form deletion test is written about.
+#
+# The declaration itself is NOT in this crate and cannot be: a pure plane's manifest may name
+# `busbar-contract` and nothing else (DECISIONS #40), and `PlaneDecl` is a `busbar-kernel` type. The
+# composition root writes it, in `src/root/plane_decision.rs`, which is the one place entitled to
+# name a kernel type and a plane in the same file.
+busbar-plane-decision = { path = "../busbar-plane-decision", optional = true }
 # The seven transports. Composition is an edge that does not exist as a Cargo dependency — a
 # transport may not name the layer beneath it — so the root supplies each composing transport its
 # lower layer as a constructor argument, which is why every one of them is named here.
@@ -174,7 +189,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # SAME default set the monolithic crate had; `root-admin`, `root-mcp`, `root-a2a`, `root-voice` and
 # `root-llm` are the additions, and all five are paths rather than surfaces — the operations, their
 # bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a", "root-voice", "root-llm"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "plane-decision", "root-admin", "root-mcp", "root-a2a", "root-voice", "root-llm"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -201,6 +216,20 @@ plane-a2a = ["dep:busbar-a2a", "busbar-kernel/plane-a2a", "busbar-core-admin/pla
 # rule it strips `busbar-voice?/openapi-schema`, leaving voice byte-for-byte removable. Compiling the
 # runtime here gives the `build_runtime` body; the skeleton build leaves `build_runtime: None`.
 plane-voice = ["dep:busbar-voice", "dep:busbar-transport-ws", "busbar-voice?/runtime", "busbar-kernel/plane-voice"]
+# THE DECISION PLANE (jev), #48's fifth, DEFAULT ON. The analogue of `plane-a2a` above: one switch
+# for the plane and the crate edge that carries it, never two. It forwards to NO kernel feature, and
+# that is the whole difference between this plane and its four siblings — `busbar-kernel` holds no
+# `decisions:` grammar, no decision runtime and no decision seam to gate, because this plane is
+# post-1.5.5 and nothing of it was ever built into the engine. What the switch turns on is a
+# declaration and a dependency edge; what it turns off is both, so the plane is strong-form
+# deletable on the day it lands rather than as a later cleanup.
+#
+# It carries no config key, no environment variable and no boot line. The declaration claims no
+# path, binds no audience and builds no runtime slot (see `src/root/plane_decision.rs`), so a
+# deployment cannot tell from the wire or from the logs which way it was built — which is what keeps
+# the neutrality cells answering the same on both legs, and is why this ships on rather than waiting
+# for a golden it could never move.
+plane-decision = ["dep:busbar-plane-decision"]
 # THE VOICE PLANE, SERVED THROUGH THE COMPOSITION ROOT rather than through the previous release's
 # path, DEFAULT ON. `main()` seals the composition and mounts the voice plane's units at boot.
 # Default-off was the ordering, not the destination — the root is BUILT before any plane is SWITCHED
