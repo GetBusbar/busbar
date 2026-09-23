@@ -537,7 +537,7 @@ fn compose_voice_governed_calls() {
 ///
 /// WHY NOTHING IS BOUND HERE, AND WHERE THAT ENDS. This boot does not call `listen_all`, and it is
 /// not an oversight: `serve_listener` below binds the data and admin addresses over its own
-/// `busbar_core_transport::prepare` path, so a second bind here would refuse the address and take
+/// `busbar_core_connsec::prepare` path, so a second bind here would refuse the address and take
 /// the node down. What this function does is everything up to the bind — resolve, journal, register
 /// — so the commit that moves serving onto the root's transports is a change of who accepts, not a
 /// change of where the key comes from. Until then, this is a second resolution of the same
@@ -1684,7 +1684,7 @@ fn serve_thread_per_core(
     // declares itself TLS-capable, so this can only fail on unresolvable/unparsable material —
     // exactly the boot failure `build_server_config` always reported here.
     if tls_cfg.is_some() {
-        let _ = busbar_core_transport::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
+        let _ = busbar_core_connsec::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
             .unwrap_or_else(|e| die(format!("TLS configuration error for '{addr}': {e}")));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -1865,7 +1865,7 @@ async fn serve_listener(
             // (`transport_capable = true`); `prepare` still fails closed rather than silently
             // downgrading to plaintext if the material cannot be resolved/parsed (DECISIONS #40).
             let security =
-                busbar_core_transport::prepare(label, Some(&tls), &secret_resolver, true)
+                busbar_core_connsec::prepare(label, Some(&tls), &secret_resolver, true)
                     .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();
             if log_at_info {

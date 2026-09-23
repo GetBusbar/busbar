@@ -48,7 +48,7 @@ busbar-core-admin = { path = "../busbar-core-admin", default-features = false }
 # wrap (identity for a plaintext binding, rustls-backed for a TLS one) the composition root hands
 # to `busbar_kernel::tls::serve`. A mandatory sibling, like `busbar-admin`/`busbar-oauth2` above —
 # never a plugin, always linked.
-busbar-core-transport = { path = "../busbar-core-transport" }
+busbar-core-connsec = { path = "../busbar-core-connsec" }
 # `amend_rate_history` decodes the correction body and digests the operator's free-text reason
 # into the fixed-width `reason_hash` the dated rate-card history seals (the same SHA-256 the substrate
 # signs with). These are the composition root's, used only by the admin verb's effect half.

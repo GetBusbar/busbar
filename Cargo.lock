@@ -338,7 +338,7 @@ dependencies = [
  "busbar-api",
  "busbar-contract",
  "busbar-core-admin",
- "busbar-core-transport",
+ "busbar-core-connsec",
  "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
@@ -513,7 +513,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-core-transport"
+name = "busbar-core-connsec"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",

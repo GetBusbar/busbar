@@ -643,7 +643,8 @@ contract_crate = "busbar-contract"
 # (DECISIONS #38, fold busbar-contract-transport into busbar-contract) both dissolve into this
 # crate's src tree; busbar-caps is now empty (0). Pinned at today's measurement. See the declared
 # raise above.
-# RAISED AGAIN 5230 -> 5238: busbar-core-transport (DECISIONS #40) added the opaque
+# RAISED AGAIN 5230 -> 5238: busbar-core-connsec (DECISIONS #40; then named busbar-core-transport,
+# renamed by OWNER RULING R2 under #37) added the opaque
 # `ConnectionSecurity` transport face to busbar-contract's src tree (~8 lines). busbar-caps stays
 # empty (0). Pinned at today's measurement. See the declared raise above.
 # ── HELD 2026-09-22 at 5652, AND RED: busbar-caps 0 + busbar-contract 6659 = 6659. ─────────────

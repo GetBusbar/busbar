@@ -1,6 +1,7 @@
-# busbar-core-transport — the core-side connection-security seam (DECISIONS #40).
+# busbar-core-connsec — the core-side connection-security seam (DECISIONS #40).
 #
-# A trusted, compiled-in, CLEANLINESS crate, same category as `busbar-admin` / `busbar-oauth2`:
+# A trusted, compiled-in, CLEANLINESS crate, same category as `busbar-core-admin` /
+# `busbar-core-oauth2` (DECISIONS #37's core tier):
 # a mandatory sibling of `busbar-kernel`, never a plugin, and off the hot path (it runs once per
 # listener at boot, never per request/connection byte). One-way dependency on `busbar-kernel` (it
 # reads `busbar_kernel::config::sections::TlsCfg` and resolves key material through
@@ -13,8 +14,18 @@
 # (`busbar_kernel::tls`) is handed only that opaque wrap — it names no rustls/cert type of its own
 # once this crate exists. A future connection-security variant (mTLS with a different verifier
 # shape, a PQ hybrid signature scheme, ...) is a change to THIS crate alone.
+#
+# THE NAME. This crate was `busbar-core-transport` until OWNER RULING R2 (2026-09-22, "AGREED"),
+# which applied DECISIONS #37's rule -- "no `busbar-core-<kind>` ever" -- to it: `transport` is one
+# of the seven plugin kinds (#3), so `busbar-core-transport` was the banned form no matter what the
+# remainder was meant to describe. It carried an `ACCEPTED_NAMES` waiver in the kind-isolation gate
+# arguing the point; #37's text does not sanction one, and the waiver is deleted with the rename.
+# `connsec` is taken from the TYPE this crate builds -- `ConnectionSecurity` -- not from the kind it
+# serves, so it names no plugin kind and no transport instance, and needs no waiver. `busbar-core-tls`
+# was rejected for the opposite reason: `tls` is a transport-instance noun and would read as a lie the
+# day a non-TLS connection-security variant lands, which the paragraph above already anticipates.
 [package]
-name = "busbar-core-transport"
+name = "busbar-core-connsec"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
@@ -23,7 +34,7 @@ description = "The core-side connection-security seam (DECISIONS #40): builds th
 license = "Apache-2.0"
 
 [lib]
-name = "busbar_core_transport"
+name = "busbar_core_connsec"
 path = "src/lib.rs"
 
 [dependencies]

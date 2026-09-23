@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `busbar-core-transport` — the core-side connection-security seam (DECISIONS #40).
+//! `busbar-core-connsec` — the core-side connection-security seam (DECISIONS #40).
 //!
 //! A trusted, compiled-in `core`-kind sibling of `busbar-kernel` (the same category as
-//! `busbar-admin` / `busbar-oauth2`): never a plugin, always linked, off the hot path. It owns the
+//! `busbar-core-admin` / `busbar-core-oauth2`): never a plugin, always linked, off the hot path. It owns the
 //! WHOLE connection-security prep for one binding — read the operator's `tls:` config, pull the
 //! resolved key material through the secret kind (`busbar_kernel::config::secret::SecretResolver`,
 //! the one seam every other TLS-material reader in this tree already goes through), and build an

@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "crates/busbar",
-    "crates/busbar-core-transport",
+    "crates/busbar-core-connsec",
     "crates/busbar-core-admin",
     "crates/busbar-oauth2",
     "crates/busbar-timing",

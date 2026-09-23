@@ -28,7 +28,7 @@ fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut p = std::env::temp_dir();
     let uniq = format!(
-        "busbar-core-transport-test-{tag}-{}-{n}.pem",
+        "busbar-core-connsec-test-{tag}-{}-{n}.pem",
         std::process::id(),
     );
     p.push(uniq);
@@ -128,8 +128,8 @@ fn malformed_cert_errors_clearly() {
 #[test]
 fn bad_cert_path_errors_clearly() {
     let tls = TlsCfg {
-        cert: SecretRef::file("/nonexistent/busbar-core-transport/does-not-exist-cert.pem"),
-        key: SecretRef::file("/nonexistent/busbar-core-transport/does-not-exist-key.pem"),
+        cert: SecretRef::file("/nonexistent/busbar-core-connsec/does-not-exist-cert.pem"),
+        key: SecretRef::file("/nonexistent/busbar-core-connsec/does-not-exist-key.pem"),
         client_ca: None,
     };
     let err = build_server_config(&tls, &SecretResolver::builtins_only())
@@ -166,8 +166,8 @@ async fn prepare_fails_closed_when_transport_is_incapable() {
 #[tokio::test]
 async fn prepare_fails_closed_on_missing_cert() {
     let tls = TlsCfg {
-        cert: SecretRef::file("/nonexistent/busbar-core-transport/does-not-exist-cert.pem"),
-        key: SecretRef::file("/nonexistent/busbar-core-transport/does-not-exist-key.pem"),
+        cert: SecretRef::file("/nonexistent/busbar-core-connsec/does-not-exist-cert.pem"),
+        key: SecretRef::file("/nonexistent/busbar-core-connsec/does-not-exist-key.pem"),
         client_ca: None,
     };
     let resolver = SecretResolver::builtins_only();

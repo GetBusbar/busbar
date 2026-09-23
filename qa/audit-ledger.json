@@ -761,10 +761,10 @@
    ]
   },
   {
-   "id": "crates/busbar-core-transport/src",
+   "id": "crates/busbar-core-connsec/src",
    "kind": "production",
    "paths": [
-    "crates/busbar-core-transport/src"
+    "crates/busbar-core-connsec/src"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -775,7 +775,7 @@
    "auditor": null,
    "fixed_at": null,
    "exclude": [
-    "crates/busbar-core-transport/src/tests"
+    "crates/busbar-core-connsec/src/tests"
    ]
   },
   {

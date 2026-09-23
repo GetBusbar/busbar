@@ -486,7 +486,7 @@ impl<T: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin> RawIo f
 /// This is deliberately rustls-free, matching the ABI-face rule that already keeps rustls (and
 /// every other concrete crypto/cert type) out of this crate (DECISIONS #38/#39): a plugin manifest
 /// — and a transport, which is in-tree but still only ever named through this trait here — never
-/// names `rustls::ServerConfig` or any key byte. `busbar-core-transport` is the one crate that
+/// names `rustls::ServerConfig` or any key byte. `busbar-core-connsec` is the one crate that
 /// builds a concrete implementation (an identity no-op for a plaintext binding, a rustls-backed one
 /// for a TLS binding); everything on this side of the seam sees only `wrap`.
 ///

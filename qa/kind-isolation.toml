@@ -3515,40 +3515,41 @@ cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants this pair. Measured de
 why     = "busbar-voice names busbar-substrate-values: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "delete the busbar-substrate-values dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
-# busbar-core-transport is the core-side connection-security seam carved out of busbar-kernel
+# busbar-core-connsec is the core-side connection-security seam carved out of busbar-kernel
 # (DECISIONS #40). It is `core` kind (its name resolves through the busbar-core- prefix; the
-# `transport` remainder is the kind word for what its opaque ConnectionSecurity wrap is FOR, waived
-# by an ACCEPTED_NAMES sentence), and it reaches only the core kind's neutral spine — contract and
-# kernel, both granted PENDING_EDGES classes.
+# `connsec` remainder is the ConnectionSecurity TYPE it builds, not a kind word, so it needs no
+# ACCEPTED_NAMES waiver -- the one it used to carry under its old name `busbar-core-connsec` was
+# deleted with that name by OWNER RULING R2, #37 "no busbar-core-<kind> ever"), and it reaches only
+# the core kind's neutral spine -- contract and kernel, both granted PENDING_EDGES classes.
 [[dep]]
-from    = "busbar-core-transport"
+from    = "busbar-core-connsec"
 to      = "busbar-contract"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 — core -> contract is a granted PENDING_EDGES class (the core kind's neutral spine names the ABI contract directly; here the opaque busbar_contract::transport::wire::ConnectionSecurity wrap, DECISIONS #40)."
-why     = "busbar-core-transport names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar-core-connsec names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-core-transport"
+from    = "busbar-core-connsec"
 to      = "busbar-kernel"
 half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 — core -> kernel is a granted PENDING_EDGES class (the core kind's neutral spine may name the loop; here it reads busbar_kernel's TlsCfg config shape and resolves key material through its SecretResolver seam, DECISIONS #40)."
-why     = "busbar-core-transport names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+why     = "busbar-core-connsec names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-core-transport"
+to      = "busbar-core-connsec"
 half    = "shipped"
 count   = "1"
 verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.1 / 3.1 — no clause grants root -> core. The composition root names every axis, but the granted root classes are enumerated and `core` is not among them: the edge is real and shipped (the binary composes the connection-security seam at boot), and this row holds the number rather than passing it in silence."
-why     = "busbar names busbar-core-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-core-transport dependency from busbar's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+why     = "busbar names busbar-core-connsec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-core-connsec dependency from busbar's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-admin"

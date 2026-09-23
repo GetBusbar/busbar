@@ -286,7 +286,7 @@ static KINDS: &[KindDef] = &[
         matchers: &["=busbar-kernel", "busbar-kernel-"],
     },
     // THE COMPILED-IN SCAFFOLDING AROUND THE LOOP — `busbar-core-admin`, `busbar-core-oauth2`,
-    // `busbar-core-substrate` (DECISIONS #37's core-3), plus `busbar-core-transport`. A `core` crate
+    // `busbar-core-substrate` (DECISIONS #37's core-3), plus `busbar-core-connsec`. A `core` crate
     // is NEUTRAL on exactly the terms `kernel` and `caps` are: it may carry no plane and no
     // transport instance in its name, and it reaches only the neutral spine ([`PENDING_EDGES`]), so
     // an edge to a plane, a dialect, a transport or a unit is a NEW class and is refused like any
@@ -298,8 +298,17 @@ static KINDS: &[KindDef] = &[
     //
     // A PREFIX, not a list of exact names: an exact matcher yields an EMPTY remainder, which would
     // mean `busbar-core-mcp` was never read for a plane instance at all — the kind would be a hole
-    // the shape of every name it accepted. The prefix costs one reviewed accepted-name entry
-    // (`busbar-core-transport`, below) and buys the name rule over every future member.
+    // the shape of every name it accepted. The prefix now costs NOTHING: it buys the name rule over
+    // every future member and no core crate is waived past it.
+    //
+    // It used to cost one `ACCEPTED_NAMES` entry, for `busbar-core-transport` — a reviewed sentence
+    // arguing that its `transport` remainder was the kind WORD (what the opaque `ConnectionSecurity`
+    // wrap is FOR) rather than a transport INSTANCE. OWNER RULING R2 (2026-09-22, "AGREED") refused
+    // that distinction: #37 says "no `busbar-core-<kind>` ever", transport is one of the seven kinds
+    // (#3), and the ban is on the FORM, so no remainder-reading rescues it. The crate is renamed
+    // `busbar-core-connsec` — named for the `ConnectionSecurity` type it builds, which is not a kind
+    // word — and the waiver is deleted with it. A waiver that argues a rule does not mean what it
+    // says is the thing the rule exists to stop.
     KindDef {
         kind: "core",
         family: Family::Neutral,
@@ -486,10 +495,15 @@ const CONSTRUCTION_KIND_KEYS: &[(&str, &str)] = &[
     ("abi", "contract"),
 ];
 
-/// The two crate names whose remainder trips a naming rule for a reason the owner has read.
+/// The crate names whose remainder trips a naming rule for a reason the owner has read.
 ///
 /// Every one is a REVIEWED sentence, not a shrug, and every one EXPIRES: a waiver whose crate is
 /// gone is RED, so the list cannot become a set of holes nobody re-reads.
+///
+/// It was TWO until OWNER RULING R2 (2026-09-22): `busbar-core-transport`'s entry is deleted, not
+/// re-worded, because the crate it waived no longer exists — #37 bans the FORM `busbar-core-<kind>`
+/// and the fix was the rename to `busbar-core-connsec`, not a better sentence. The one survivor is
+/// a `busbar-unit-*` crate, which #36 retires on its own schedule.
 const ACCEPTED_NAMES: &[(&str, &str)] = &[
     (
         "busbar-unit-transport-key",
@@ -497,16 +511,6 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
          unit's keys are for, never a transport instance — no transport is named, and the crate \
          depends on busbar-contract (contract-transport folded into it) as every unit on that path \
          does.",
-    ),
-    (
-        "busbar-core-transport",
-        "the core-side CONNECTION-SECURITY seam, carved out of busbar-kernel (DECISIONS #40). \
-         `transport` here is the kind word describing what its opaque `ConnectionSecurity` wrap is \
-         FOR — the TLS/identity build a transport applies blind — never a transport instance: no \
-         transport is named, the crate implements no `Transport` face, and it runs once per \
-         listener at boot rather than per connection byte. It is `core` kind on the same terms as \
-         kernel and caps (a compiled-in cleanliness sibling, one-way dep on the neutral spine), \
-         and reaches only busbar-contract and busbar-kernel.",
     ),
 ];
 

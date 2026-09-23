@@ -18,13 +18,13 @@ use tokio::sync::oneshot;
 
 use crate::config::TlsCfg;
 
-// The production `rustls::ServerConfig` BUILD moved to `busbar-core-transport` (DECISIONS #40) —
+// The production `rustls::ServerConfig` BUILD moved to `busbar-core-connsec` (DECISIONS #40) —
 // this crate no longer names a rustls type for that job at all (see `tls.rs`'s module doc). This
 // crate's OWN tests still need a real `ConnectionSecurity` to hand `super::serve`, so the small
 // helpers below are a TEST-ONLY fixture: they are not a second production copy of
-// `busbar_core_transport::build_server_config` (that function is `busbar-core-transport`'s own,
+// `busbar_core_connsec::build_server_config` (that function is `busbar-core-connsec`'s own,
 // tested there) — a cross-crate dev-dependency back-edge to reuse it directly was tried and
-// reverted: `busbar-core-transport` normal-depends on this crate with `default-features = false`,
+// reverted: `busbar-core-connsec` normal-depends on this crate with `default-features = false`,
 // which does not unify with this crate's own (default-feature) test build and Cargo links TWO
 // distinct compiled instances of `busbar_kernel`, breaking every type shared between them (a
 // well-known dev-dependency-cycle pitfall, not something worth carrying for a handful of tests).
@@ -48,7 +48,7 @@ impl busbar_contract::transport::wire::ConnectionSecurity for TestTlsSecurity {
 }
 
 /// TEST-ONLY: build a `rustls::ServerConfig` from a `TlsCfg`, exactly like
-/// `busbar_core_transport::build_server_config` (the production function this fixture stands in
+/// `busbar_core_connsec::build_server_config` (the production function this fixture stands in
 /// for) — client-cert verifier installed when `client_ca` is set, `http/1.1`-only ALPN otherwise.
 fn test_build_server_config(
     tls: &TlsCfg,
@@ -214,7 +214,7 @@ fn gen_ca_and_leaf(cn_sans: Vec<String>) -> (String, String, String) {
 /// Boot a busbar TLS listener from a `TlsCfg` on an ephemeral port. Returns the bound address and
 /// a shutdown sender (drop or send to stop + drain). Mirrors `main`'s TLS branch (DECISIONS #40):
 /// install the crypto provider, build the `ConnectionSecurity` wrap (the test fixture above stands
-/// in for `busbar_core_transport::prepare`), then hand the opaque wrap to `tls::serve`.
+/// in for `busbar_core_connsec::prepare`), then hand the opaque wrap to `tls::serve`.
 async fn spawn_tls_server(tls: &TlsCfg) -> (SocketAddr, oneshot::Sender<()>) {
     super::install_crypto_provider();
     let config =
@@ -392,11 +392,11 @@ async fn plain_http_still_works_without_tls() {
 }
 
 /// TEST 4b — fail-fast: a bad cert path produces a clear, file-named error from
-/// `busbar_core_transport::build_server_config` (which `main` turns into `die`). MOVED to
-/// `busbar-core-transport`'s own test suite (DECISIONS #40): that crate now owns the function and
+/// `busbar_core_connsec::build_server_config` (which `main` turns into `die`). MOVED to
+/// `busbar-core-connsec`'s own test suite (DECISIONS #40): that crate now owns the function and
 /// its exact error-message format, so its error-path coverage belongs there, not a second copy
 /// here pointed at this file's test-only fixture (whose error strings intentionally do not try to
-/// match production's byte-for-byte). See `busbar_core_transport::tests::prepare_fails_closed_on_missing_cert`.
+/// match production's byte-for-byte). See `busbar_core_connsec::tests::prepare_fails_closed_on_missing_cert`.
 
 /// TEST 5 - REGRESSION (slow-loris BODY): the inbound body-read timeout trips on a stalled
 /// request body. Before the fix, only the header-read phase was bounded; a client that finished
