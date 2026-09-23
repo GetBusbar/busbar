@@ -227,11 +227,21 @@ case "$sub" in
 
   replay)
     # OLD: replay --golden G --candidate C --out R  →  the in-process Rust differ (the judge).
-    # A Python-recorded golden vs a Rust-recorded candidate is a harness change by design, so the
-    # differ's same-revision guard is told to compare across it (--allow-harness-skew). Re-recording
-    # the golden with the Rust engine (oracle-rerecord workflow) makes the revisions agree and drops
-    # this flag — see the Phase C cutover checklist.
-    exec "$RUST_BIN" diff "$@" --cells "$DATA/cells.json" --allow-harness-skew ;;
+    #
+    # `--allow-harness-skew` IS NO LONGER INJECTED HERE, AND THAT IS THE POINT. It used to be
+    # appended to EVERY `./bin/oracle replay`, which meant the differ's same-revision guard — the
+    # one thing standing between "these two recordings are comparable" and "these two recordings
+    # are not" — could not fire on any run this shim served, including every DONE run. A guard the
+    # wrapper disables invisibly is a guard nobody can be shown failing.
+    #
+    # It is OPT-IN now: a caller that genuinely compares across a harness change passes the flag
+    # itself, at the call site, where a reader can see it and ask why. The two that do are the
+    # workflows diffing a Rust-recorded candidate against the COMMITTED, Python-recorded 1.5.5
+    # golden (ci.yml and oracle-proof.yml); they now say so in their own lines. The DONE oracle
+    # records BOTH sides with this engine, so its revisions agree and it needs no flag — which is
+    # exactly the run the guard should have been armed on all along. Re-recording the committed
+    # golden with the Rust engine (oracle-rerecord workflow) retires the two explicit uses too.
+    exec "$RUST_BIN" diff "$@" --cells "$DATA/cells.json" ;;
 
   *)
     # diff / normalize / merge / renormalize / harness-rev / selftest / … pass through unchanged.

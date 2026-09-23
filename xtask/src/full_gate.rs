@@ -224,31 +224,142 @@ pub enum Excuse {
     ReleaseScript(&'static str, &'static str),
 }
 
+/// WHAT A COMMENT LOOKS LIKE IN THE FILE AN EXCUSE POINTS AT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Comments {
+    /// `//` to end of line and `/* … */`, with string literals preserved.
+    Rust,
+    /// `#` at the start of a word, outside a quoted run, to end of line.
+    Shell,
+}
+
+/// One shell line with its comment removed, quoting respected.
+///
+/// A `#` opens a comment only when it starts a WORD — which is what keeps `$#`, `${#v}` and a
+/// `#` inside `'…'`/`"…"` out of it. `verify-1.6.0-done.sh` labels every step with a quoted
+/// string, so a stripper that cut at the first `#` anywhere would blank the half of the line that
+/// carries the invocation and revoke an excuse that was never false.
+fn strip_shell_comment(line: &str) -> String {
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    let mut at_word_start = true;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(open) => {
+                out.push(c);
+                if c == '\\' && open == '"' {
+                    if let Some(n) = chars.next() {
+                        out.push(n);
+                    }
+                    continue;
+                }
+                if c == open {
+                    quote = None;
+                }
+                at_word_start = false;
+            }
+            None => {
+                if c == '#' && at_word_start {
+                    break;
+                }
+                if c == '\'' || c == '"' {
+                    quote = Some(c);
+                }
+                out.push(c);
+                at_word_start = c.is_whitespace();
+            }
+        }
+    }
+    out
+}
+
+/// THE HALF OF A FILE SOMETHING ACTUALLY RUNS — comments blanked, line structure preserved.
+///
+/// This is the same rule [`discovery::script_gates`] and [`discovery::cargo_invocations`] have
+/// always applied to `ci.yml`, and whose absence here was the defect: `full-gate --selftest`
+/// prints `[ok] the echo, comment and name: lines quoting cargo commands are NOT discovered`
+/// three hundred lines from a check that accepted exactly such a line as proof. The two halves of
+/// one file disagreed about whether a comment is evidence.
+fn executed_lines(text: &str, style: Comments) -> String {
+    match style {
+        Comments::Rust => {
+            let mut in_block = false;
+            text.lines()
+                .map(|l| crate::scan::strip_comment_line(l, &mut in_block))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        Comments::Shell => text
+            .lines()
+            .map(strip_shell_comment)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
 impl Excuse {
     /// The claim, checked. `Err` carries the sentence a reader needs to act on it.
+    ///
+    /// **THE SEARCH IS OVER EXECUTED LINES, NOT OVER TEXT.** This used to be a bare
+    /// `text.contains(needle)` and the anti-vacuity mechanism was therefore itself vacuous:
+    ///
+    /// * comment out the one real call site in `xtask/tests/hot_path_gates.rs`, leaving nothing
+    ///   but the spelling, and `full-gate --selftest` still printed *"each of the 10
+    ///   registered-but-not-in-ci entries still names a place this tree runs the gate"*;
+    /// * delete BOTH real invocations of `no-deferral-strict-done` from `verify-1.6.0-done.sh`
+    ///   and the excuse held anyway — on the strength of the script's own header comment, which
+    ///   is in the shipped tree and needed no plant at all.
+    ///
+    /// Four gates — `denylist`, `plane-pricing-blindness`, `hot-path-perf`, `hot-path-alloc` — are
+    /// run by NEITHER `ci.yml` NOR `verify-1.6.0-done.sh`, so for them this string IS the
+    /// coverage. A name that cannot be wrong is what this mechanism was built to end, and a name
+    /// checked by a grep a comment satisfies is the same defect wearing the fix.
     pub fn holds(&self, cx: &Ctx) -> Result<(), String> {
         let (where_, needle) = match self {
             Excuse::XtaskTest(needle) => ("xtask/tests", *needle),
             Excuse::ReleaseScript(path, needle) => (*path, *needle),
         };
-        let found = match self {
-            Excuse::XtaskTest(_) => cx
-                .walk(
-                    &crate::ctx::WalkSpec::new(["xtask/tests"])
-                        .ext("rs")
-                        .min_files(1),
+        // `in_text` is kept ALONGSIDE the verdict so the refusal can tell the two failures apart.
+        // "the call site is gone" and "the call site is now a comment" want different edits, and a
+        // gap and a failure must never be the same output.
+        let (found, in_text) = match self {
+            Excuse::XtaskTest(_) => {
+                let files = cx
+                    .walk(
+                        &crate::ctx::WalkSpec::new(["xtask/tests"])
+                            .ext("rs")
+                            .min_files(1),
+                    )
+                    .map_err(|e| format!("{e}"))?;
+                (
+                    files
+                        .iter()
+                        .any(|f| executed_lines(&f.text, Comments::Rust).contains(needle)),
+                    files.iter().any(|f| f.text.contains(needle)),
                 )
-                .map_err(|e| format!("{e}"))?
-                .iter()
-                .any(|f| f.text.contains(needle)),
-            Excuse::ReleaseScript(path, _) => cx.read(path)?.contains(needle),
+            }
+            Excuse::ReleaseScript(path, _) => {
+                let text = cx.read(path)?;
+                (
+                    executed_lines(&text, Comments::Shell).contains(needle),
+                    text.contains(needle),
+                )
+            }
         };
-        if found {
-            Ok(())
-        } else {
-            Err(format!(
-                "the excuse says it runs there, and `{needle}` appears nowhere in {where_}"
-            ))
+        match (found, in_text) {
+            (true, _) => Ok(()),
+            (false, true) => Err(format!(
+                "the excuse says it runs there, and `{needle}` appears in {where_} ONLY INSIDE A \
+                 COMMENT. A gate named in a comment is documentation, not an invocation — the same \
+                 rule this file's ci.yml discovery has always applied to an `echo`, a `#` line and \
+                 a step `name:`. Restore the call site, or strike the entry and let the gate be \
+                 reported"
+            )),
+            (false, false) => Err(format!(
+                "the excuse says it runs there, and `{needle}` appears on no executed line in \
+                 {where_} (comments stripped)"
+            )),
         }
     }
 }
@@ -416,9 +527,18 @@ pub struct Partition {
 /// 1. **Any invocation carrying `--selftest` ALWAYS runs**, whatever its script's classification. A
 ///    gate's self-test is the part that proves the gate can still fail, and it is hermetic by
 ///    construction — a gate skipped for needing a release artifact still owes its self-test here.
-/// 2. `release-order-lint.py` always runs; it is locally runnable and named in the skip table only
-///    so a prefix match does not swallow it.
-/// 3. Otherwise the bare script path is looked up in the skip table.
+/// 2. Otherwise the bare script path is looked up in the skip table.
+///
+/// THERE WAS A RULE 2, AND IT WAS DEAD CODE FOR A YEAR OF COMMITS. It read "`release-order-lint.py`
+/// always runs; it is locally runnable and named in the skip table only so a prefix match does not
+/// swallow it", and it short-circuited the table for that one path. 378572b3f deleted the script on
+/// 2026-09-07 and said so in its own message — "full-gate's SKIP_REASON loses its entry AND THE
+/// SPECIAL CASE THAT ENTRY NEEDED ... keeping either would leave a waiver that excuses nothing" —
+/// but only the shell runner's copy went; the entry came back when 446d771f3 lifted SKIP_REASON
+/// into `qa/full-gate.toml`, and this arm came with it. `ci.yml` names the script exactly once, in
+/// a `#` comment that `strip_prose` blanks, so `discovered` has not contained it since; the arm and
+/// its register row are struck together, 2026-09-22, and the work is now `cargo xtask gate
+/// release-order`, which CI invokes as a gate in its own right.
 pub fn partition(discovered: &[String], skips: &[Skip]) -> Partition {
     let mut run = Vec::new();
     let mut skip = Vec::new();
@@ -428,10 +548,6 @@ pub fn partition(discovered: &[String], skips: &[Skip]) -> Partition {
             continue;
         }
         let script = bare_script(inv);
-        if script == "scripts/release-order-lint.py" {
-            run.push(inv.clone());
-            continue;
-        }
         match skips.iter().find(|s| s.script == script) {
             Some(s) => skip.push((inv.clone(), s.reason.clone())),
             None => run.push(inv.clone()),
@@ -762,9 +878,11 @@ fn selftest(
     );
 
     // The invocations discovery MUST find, read from the register — one per shape the pattern has
-    // to keep. The list is data for the same reason the skips are: four of the eight name oracle
-    // harness scripts, and this crate does not name a file under `testing/shadow-oracle/` that is
-    // not on the segregation gate's data allowlist.
+    // to keep. The list is data for the same reason the skips are: it names paths under `testing/`,
+    // and this crate does not name a file under `testing/shadow-oracle/` that is not on the
+    // segregation gate's data allowlist. (It said "four of the eight name oracle harness scripts"
+    // until 2026-09-22; the list holds six entries and the oracle harness left this tree in
+    // c73ae4f66, so the sentence counted two things that were both already untrue.)
     for must in must_find {
         ok(
             discovered
@@ -966,4 +1084,261 @@ fn selftest(
         "\nfull-gate selftest: discovery, floors, skip-reasons and registry equality all hold"
     );
     0
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE EXCUSE MECHANISM, PUT TO ITSELF
+// ---------------------------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctx::{Overlay, WalkSpec};
+
+    fn tree() -> Ctx {
+        Ctx::workspace().expect("a workspace context")
+    }
+
+    fn excuse_for(gate: &str) -> Excuse {
+        REGISTRY_NOT_IN_CI
+            .iter()
+            .find(|(n, _, _)| *n == gate)
+            .map(|(_, _, e)| *e)
+            .unwrap_or_else(|| panic!("{gate} is not in REGISTRY_NOT_IN_CI"))
+    }
+
+    fn needle_of(e: &Excuse) -> &'static str {
+        match e {
+            Excuse::XtaskTest(n) => n,
+            Excuse::ReleaseScript(_, n) => n,
+        }
+    }
+
+    /// THE CONTROL. Every excuse on the register still holds over the tree as it stands — which is
+    /// what makes the two plants below evidence rather than noise. If this one fails, the plants
+    /// prove nothing, because a needle that is already absent would "not hold" for the wrong reason.
+    #[test]
+    fn every_registered_excuse_holds_on_this_tree() {
+        let cx = tree();
+        let bad: Vec<String> = REGISTRY_NOT_IN_CI
+            .iter()
+            .filter_map(|(n, _, e)| e.holds(&cx).err().map(|w| format!("{n}: {w}")))
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "an excuse on the register no longer names a place this tree runs the gate:\n{bad:#?}"
+        );
+    }
+
+    /// PLANT A — RUST. Comment out the one real call site, leave the SPELLING behind. This is the
+    /// exact shape the instrument audit measured passing: `full-gate --selftest` printed
+    /// `[ok] each of the 10 registered-but-not-in-ci entries still names a place this tree runs the
+    /// gate` over a test that had been reduced to `assert!(true)`.
+    #[test]
+    fn a_rust_call_site_that_is_only_a_comment_does_not_hold() {
+        let cx = tree();
+        let excuse = excuse_for("hot-path-perf");
+        let needle = needle_of(&excuse);
+        assert!(
+            excuse.holds(&cx).is_ok(),
+            "the control failed BEFORE the plant, so the plant would prove nothing: {:?}",
+            excuse.holds(&cx)
+        );
+
+        let files = cx
+            .walk(&WalkSpec::new(["xtask/tests"]).ext("rs").min_files(1))
+            .expect("xtask/tests");
+        let mut ov = Overlay::new();
+        let (mut commented_out, mut survives_as_text) = (0usize, 0usize);
+        for f in &files {
+            if !f.text.contains(needle) {
+                continue;
+            }
+            let mut out = String::new();
+            for line in f.text.lines() {
+                if line.contains(needle) {
+                    commented_out += 1;
+                    out.push_str(&format!(
+                        "    // PLANTED: the real call is gone; only the SPELLING {} remains.\n",
+                        line.trim()
+                    ));
+                } else {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            survives_as_text += out.matches(needle).count();
+            ov.set(&f.rel, out);
+        }
+
+        // THE PLANT LANDED, PROVEN BEFORE THE VERDICT IS BELIEVED. A plant that silently failed to
+        // plant is indistinguishable from an instrument that cannot see; and a plant that DELETED
+        // the needle rather than commenting it out would make the assertion below pass for a
+        // reason that has nothing to do with comments.
+        assert!(
+            commented_out >= 1,
+            "the needle {needle:?} sits on no line under xtask/tests — nothing was planted"
+        );
+        assert!(
+            survives_as_text >= commented_out,
+            "the plant DELETED the needle instead of commenting it out; \
+             {survives_as_text} occurrence(s) survive, {commented_out} line(s) were commented"
+        );
+
+        let why = excuse
+            .holds(&cx.with_overlay(ov))
+            .expect_err("a needle surviving only inside a `//` comment still satisfied the excuse");
+        assert!(
+            why.contains("ONLY INSIDE A COMMENT"),
+            "the refusal does not say WHY: {why}"
+        );
+    }
+
+    /// PLANT B — SHELL, and the audit needed no plant at all for the second half of it: the needle
+    /// `cargo xtask gate no-deferral-strict-done` survives inside `verify-1.6.0-done.sh`'s own
+    /// header comment on line 30. Deleting both real invocations left the excuse holding.
+    #[test]
+    fn a_shell_call_site_that_is_only_a_comment_does_not_hold() {
+        let cx = tree();
+        let excuse = excuse_for("no-deferral-strict-done");
+        let (path, needle) = match excuse {
+            Excuse::ReleaseScript(p, n) => (p, n),
+            Excuse::XtaskTest(_) => panic!("no-deferral-strict-done is a release-script excuse"),
+        };
+        assert!(
+            excuse.holds(&cx).is_ok(),
+            "the control failed BEFORE the plant: {:?}",
+            excuse.holds(&cx)
+        );
+
+        let text = cx.read(path).expect(path);
+        let mut out = String::new();
+        let (mut deleted, mut left_in_comments) = (0usize, 0usize);
+        for line in text.lines() {
+            let is_comment = line.trim_start().starts_with('#');
+            if line.contains(needle) {
+                if is_comment {
+                    left_in_comments += 1;
+                } else {
+                    deleted += 1;
+                    continue;
+                }
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        assert!(
+            deleted >= 1,
+            "the needle {needle:?} is on no executed line of {path} — nothing was planted"
+        );
+        if left_in_comments == 0 {
+            // The shipped header comment is what made this real; if it ever goes, the plant states
+            // the condition itself rather than quietly becoming a different test.
+            out.push_str(&format!(
+                "#   no-deferral      {needle} (nothing deferred).\n"
+            ));
+            left_in_comments = 1;
+        }
+        assert!(left_in_comments >= 1);
+        assert!(
+            out.contains(needle),
+            "read-back: the needle must SURVIVE in the planted text, in a comment"
+        );
+
+        let mut ov = Overlay::new();
+        ov.set(path, out);
+        let why = excuse
+            .holds(&cx.with_overlay(ov))
+            .expect_err("a needle surviving only inside a `#` comment still satisfied the excuse");
+        assert!(
+            why.contains("ONLY INSIDE A COMMENT"),
+            "the refusal does not say WHY: {why}"
+        );
+    }
+
+    /// THE OTHER DIRECTION — the stripper must not over-reach. A real call site that happens to
+    /// carry a trailing comment is still a real call site, in both languages. Without this, a
+    /// tighter grep would read as a fix while quietly revoking excuses that were never false.
+    #[test]
+    fn a_trailing_comment_on_an_executed_line_still_holds() {
+        let cx = tree();
+
+        let rust = excuse_for("hot-path-alloc");
+        let rust_needle = needle_of(&rust);
+        let files = cx
+            .walk(&WalkSpec::new(["xtask/tests"]).ext("rs").min_files(1))
+            .expect("xtask/tests");
+        let mut ov = Overlay::new();
+        let mut touched = 0usize;
+        for f in &files {
+            if !f.text.contains(rust_needle) {
+                continue;
+            }
+            let mut out = String::new();
+            for line in f.text.lines() {
+                if line.contains(rust_needle) {
+                    touched += 1;
+                    out.push_str(line);
+                    out.push_str(" // still executed, and the needle is before this comment\n");
+                } else {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            ov.set(&f.rel, out);
+        }
+        assert!(touched >= 1, "nothing was planted for the Rust half");
+
+        let shell = excuse_for("reachability");
+        let (path, shell_needle) = match shell {
+            Excuse::ReleaseScript(p, n) => (p, n),
+            Excuse::XtaskTest(_) => panic!("reachability is a release-script excuse"),
+        };
+        let text = cx.read(path).expect(path);
+        let mut out = String::new();
+        let mut shell_touched = 0usize;
+        for line in text.lines() {
+            if line.contains(shell_needle) && !line.trim_start().starts_with('#') {
+                shell_touched += 1;
+                out.push_str(line);
+                out.push_str("   # still executed\n");
+            } else {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        assert!(shell_touched >= 1, "nothing was planted for the shell half");
+        ov.set(path, out);
+
+        let planted = cx.with_overlay(ov);
+        assert!(
+            rust.holds(&planted).is_ok(),
+            "a Rust call site with a trailing comment stopped counting: {:?}",
+            rust.holds(&planted)
+        );
+        assert!(
+            shell.holds(&planted).is_ok(),
+            "a shell call site with a trailing comment stopped counting: {:?}",
+            shell.holds(&planted)
+        );
+    }
+
+    /// A `#` inside a quoted run is not a comment. `verify-1.6.0-done.sh` labels its steps with
+    /// quoted strings, and a stripper that cut at the first `#` anywhere would blank the half of
+    /// the line that carries the invocation.
+    #[test]
+    fn a_hash_inside_quotes_is_not_a_shell_comment() {
+        assert_eq!(
+            strip_shell_comment(
+                "step \"no-deferral #84\" cargo xtask gate no-deferral-strict-done"
+            ),
+            "step \"no-deferral #84\" cargo xtask gate no-deferral-strict-done"
+        );
+        assert_eq!(strip_shell_comment("#   cargo xtask gate x"), "");
+        assert_eq!(
+            strip_shell_comment("run_it    # cargo xtask gate x"),
+            "run_it    "
+        );
+        // `$#` and `${#v}` are parameter expansions, not comments.
+        assert_eq!(strip_shell_comment("echo $# ${#v}"), "echo $# ${#v}");
+    }
 }

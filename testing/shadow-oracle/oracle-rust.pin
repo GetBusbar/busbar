@@ -50,8 +50,26 @@
 # NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same shape as the
 # previous three pins; re-pin to the integration/merge commit when that branch lands.
 #
+# 2026-09-22: moved to the commit that makes `replay-selftest` mean what its label says. Two halves.
+# (1) `owed_ratchet_check` opened the golden with `unwrap_or_default()`, so an ABSENT golden yielded
+# an empty owed set and the containment check over it was vacuously true — measured at 7e00b54,
+# `--golden /tmp/no-such-dir` printed the byte-identical PASS and rc 0 the real 916-cell recording
+# prints. The BASELINE half of the very same function had refused its own empty input since the
+# port; the asymmetry inside one function was the bug. Both halves refuse now, and a golden ledger
+# with rows but zero PASS rows is refused too. (2) The step is labelled "the differ can see a diff"
+# by scripts/verify-1.6.0-done.sh and it never invoked the differ at all — it was a set-containment
+# check over owed-baseline.txt. It now builds its own synthetic recording pair and runs the real
+# differ over it in five legs: the plant is proven ON DISK before any verdict is believed, a clean
+# pair must NOT be reported, the planted divergence MUST be (and the untouched cell must stay PASS),
+# the same-revision guard must REFUSE a candidate under another harness_rev, and
+# `--allow-harness-skew` must be the thing that turns that refusal off. Red-before-green both ways:
+# a `compare()` short-circuited to report nothing reds legs 3 and 5, and a plant made not to plant
+# reds leg 1 and STOPS — a plant that silently fails to plant is indistinguishable from a gate that
+# cannot see. NOTE: still a feature branch head (`fix/oracle-recorder-residual-gaps`), the same
+# shape as the previous four pins; re-pin to the integration/merge commit when that branch lands.
+#
 # To move the pin: set release_ref to the new busbar-release commit and re-run.
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=7e00b54
+release_ref=ab88903
 crate=busbar-release-oracle
 bin=busbar-oracle
