@@ -40,7 +40,13 @@
 #   isomorphism      the crates/busbar/tests/plane_isomorphism.rs gate is present and green.
 #   parity           testing/shadow-oracle: this build vs the PUBLISHED 1.5.5 binary, 0 divergences
 #                    across every recorded cell family (wire, admin, boot, CLI, config, billing,
-#                    failover, plugins); golden gaps are named, never passes.
+#                    failover, plugins); golden gaps are named, never passes. Both ENDS of that
+#                    comparison are pinned by digest and the group REFUSES rather than reports when
+#                    either is unproven: the subject is the artefact the release build itself names
+#                    (never a relative path something else can occupy), the recording must carry
+#                    that artefact's sha256, the golden must carry a sha256 this repository commits
+#                    for 1.5.5, and the verdict is read out of the report — so a run that compared
+#                    the wrong binary, or compared nothing at all, is a refusal and not a zero.
 #   design           cargo xtask gate design-bindings --strict: every ARCHITECTURE.md Appendix B
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
@@ -379,6 +385,185 @@ assert_skip_boot_leg_empty() {
   return 0
 }
 
+# ── PARITY'S SUBJECT — THE CANDIDATE MUST BE THE BINARY THIS RUN BUILT, OR THE RUN REFUSES ───────
+# PARITY is the only group in this file that compares this tree with something it did not write: the
+# binary published with the previous release. That is what makes its answer unmanufacturable by the
+# work being measured, and it is exactly why its SUBJECT has to be pinned as hard as its baseline.
+#
+# IT WAS NOT, in two independent ways, and each one produces a confident number about the wrong file.
+#
+#   1. THE SUBJECT WAS A HARD-CODED RELATIVE PATH. `record --bin target/release/busbar` sat one line
+#      under `cargo build -p busbar --release --locked`, and those two name the same file only when
+#      cargo's output directory is `./target`. CARGO_TARGET_DIR or CARGO_BUILD_TARGET_DIR in the
+#      environment, or a `[build] target-dir` in any .cargo/config.toml above this checkout, sends
+#      the build elsewhere while the recorder still opens the relative path. If anything has left a
+#      binary — or a symlink to one — at that path, the recorder takes THAT as the subject, and the
+#      divergence count it reports reads as a statement about this tree. It cannot fail loudly,
+#      because the path exists and is executable, which was the whole test it had to pass. That is
+#      not a broken instrument; it is a worse thing, an instrument that answers about a subject
+#      nobody asked about, confidently.
+#      The repair is not a better relative path. It is to stop guessing. Under
+#      `--message-format=json-render-diagnostics` cargo prints `"executable":"<path>"` for the bin
+#      target, on a no-op build as well as a fresh one, so the artefact of THIS invocation in THIS
+#      tree is a fact the build itself states. `bin/oracle` already resolves the JUDGE that way; this
+#      resolves the SUBJECT the same way, and the two-path hole closes by construction.
+#
+#   2. NOTHING READ WHAT WAS ACTUALLY RECORDED. The recorder stamps the binary it executed into the
+#      recording's own meta.json as `binary_sha256`, and no caller ever compared it with anything.
+#      So even a correct `--bin` argument proved nothing about the bytes behind it.
+#      `assert_recorded_subject` digests the resolved artefact BEFORE the record and requires the
+#      recording to name that same digest AFTER — closing the hole from the far side, independently
+#      of how the path was chosen, and putting the subject's identity in the run's own output.
+#
+# THE BASELINE GETS THE SAME TREATMENT. The golden is re-recorded only when its recording directory
+# is empty, so a run that finds one already there trusts it sight unseen — which is every re-run on
+# a machine that has done this once. `assert_golden_is_pinned` requires that recording's
+# `binary_sha256` to be a digest this repository COMMITS for the baseline release in
+# testing/shadow-oracle/golden-digests.tsv. A baseline nobody can identify is not an external
+# baseline. It is load-bearing rather than decorative: the cached baseline binary a re-record would
+# read from is not always present on the machine, and when it is gone the committed digest is the
+# only thing left that says what the reused recording is.
+#
+# AND THE VERDICT IS READ FROM THE REPORT, NOT FROM THE EXIT CODE. The differ's rc is the verdict
+# ONLY under `--strict`; without it the run prints its rows and exits 0 whatever they say. Measured
+# on this corpus: the same recording pair exits 0 with eight unaccepted divergences, and — the worse
+# half — exits 0 having compared ZERO cells when the id filter selects nothing, writing a report
+# whose `diverging` is 0 because its `owed` is 0. A run that measured nothing and a run that found
+# nothing are the same zero to any caller reading the exit status. `--strict` is passed below, and
+# `assert_parity_verdict` re-derives both facts from the report itself so the claim does not rest on
+# one flag in one pinned engine.
+#
+# The baseline release is a constant here, not an override: a variable an operator can set is one
+# more way to choose what this group compares against.
+PARITY_BASELINE_VERSION=1.5.5
+
+sha256_of() {  # $1 = file ; prints the lowercase hex digest
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else echo "neither shasum nor sha256sum is on PATH — the subject cannot be identified" >&2; return 1; fi
+}
+
+# Read one dotted field out of a JSON file. A refusal that cannot be EVALUATED is a refusal that did
+# not fire, so a missing python3 returns non-zero (refuse) rather than empty (accept).
+json_field() {  # $1 = json file ; $2 = dotted path
+  command -v python3 >/dev/null 2>&1 || { echo "python3 is not on PATH, so this refusal cannot be evaluated — refusing rather than passing" >&2; return 2; }
+  python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception as e:
+    sys.stderr.write("unreadable JSON %s: %s\n" % (sys.argv[1], e)); sys.exit(2)
+for k in sys.argv[2].split("."):
+    if not isinstance(d, dict) or k not in d:
+        sys.stderr.write("missing field %s in %s\n" % (sys.argv[2], sys.argv[1])); sys.exit(3)
+    d = d[k]
+print(d)
+' "$1" "$2"
+}
+
+# The path the build named must be a real, executable, NON-SYMLINK file. The symlink arm is not
+# tidiness: a stray link at the recorder's path is exactly how a foreign build got in front of this
+# instrument on this checkout, and it is the one shape that satisfies `-x` while pointing at another
+# tree entirely.
+assert_candidate_bin_sane() {  # $1 = candidate path
+  local p="${1:-}"
+  if [ -z "$p" ]; then
+    echo "the release build named no executable artefact — there is no subject to record"; return 1
+  fi
+  if [ -L "$p" ]; then
+    echo "the candidate path is a SYMLINK: $p -> $(readlink "$p")"
+    echo "a link here records whatever tree it points at and reports the answer as this one's — refusing"
+    return 1
+  fi
+  if [ ! -f "$p" ]; then echo "the candidate binary is not a regular file: $p"; return 1; fi
+  if [ ! -x "$p" ]; then echo "the candidate binary is not executable: $p"; return 1; fi
+  return 0
+}
+
+# The recording must name the binary we digested a moment ago. This is the check that would have
+# caught the foreign build even with the old hard-coded path in place.
+assert_recorded_subject() {  # $1 = recording dir ; $2 = expected sha256 ; $3 = what it is
+  local dir="${1:-}" want="${2:-}" what="${3:-the recording}" got
+  if [ -z "$want" ]; then
+    echo "no expected digest was computed for $what — refusing rather than accepting any subject"; return 1
+  fi
+  if ! got="$(json_field "$dir/meta.json" binary_sha256 2>/dev/null)"; then
+    echo "$what at $dir does not state which binary it executed (meta.json / binary_sha256 unreadable)"
+    echo "a recording that cannot name its subject is not evidence about one — refusing"
+    return 1
+  fi
+  if [ "$got" != "$want" ]; then
+    echo "$what recorded a DIFFERENT binary than the one this run built:"
+    echo "  built    sha256 $want"
+    echo "  recorded sha256 $got   ($dir/meta.json)"
+    echo "every number in the report would be about that other file — refusing"
+    return 1
+  fi
+  return 0
+}
+
+# The golden must be the published artefact, and must prove it by a digest this repository commits.
+assert_golden_is_pinned() {  # $1 = golden recording dir ; $2 = the committed digest table ; $3 = version
+  local dir="${1:-}" tsv="${2:-}" ver="${3:-}" got
+  if ! got="$(json_field "$dir/meta.json" binary_sha256 2>/dev/null)"; then
+    echo "the golden recording at $dir does not name the binary it was taken from — refusing"; return 1
+  fi
+  if [ ! -f "$tsv" ]; then
+    echo "no committed digest table at $tsv — nothing pins the baseline, so nothing makes it external"; return 1
+  fi
+  if ! awk -F'\t' -v d="$got" -v v="$ver" '$1==v && $3==d { found=1 } END { exit found ? 0 : 1 }' "$tsv"; then
+    echo "the golden was recorded from a binary this repository does not pin for $ver: $got"
+    echo "$tsv carries no row for that digest, so the baseline is whatever this machine happened to"
+    echo "hold rather than the published artefact — refusing"
+    return 1
+  fi
+  echo "golden binary sha256 $got is pinned in $tsv for $ver"
+  return 0
+}
+
+# The verdict, taken from the report the differ wrote rather than from its exit status, and printed
+# with the scope attached so a green can never be read as more than it is.
+assert_parity_verdict() {  # $1 = report dir
+  local rep="${1:-}" owed diverging accepted unbaselined scope
+  if ! owed="$(json_field "$rep/report.json" totals.owed 2>/dev/null)"; then
+    echo "no readable report at $rep/report.json — the replay left no verdict to read, so there is none"; return 1
+  fi
+  diverging="$(json_field "$rep/report.json" totals.diverging 2>/dev/null)" || return 1
+  accepted="$(json_field "$rep/report.json" totals.accepted 2>/dev/null)" || return 1
+  unbaselined="$(json_field "$rep/report.json" totals.unbaselined 2>/dev/null)" || return 1
+  scope="$(json_field "$rep/report.json" totals.cells_in_scope 2>/dev/null)" || return 1
+  case "$owed"      in ''|*[!0-9]*) echo "totals.owed is not a count ('$owed')"; return 1 ;; esac
+  case "$diverging" in ''|*[!0-9]*) echo "totals.diverging is not a count ('$diverging')"; return 1 ;; esac
+  echo "compared $owed owed cell(s) of a $scope-cell corpus: $diverging diverging, $accepted accepted, $unbaselined unbaselined"
+  if [ "$owed" -eq 0 ]; then
+    echo "the replay compared ZERO cells. A run that measured nothing and a run that found nothing"
+    echo "print the same zero; this one measured nothing — refusing"
+    return 1
+  fi
+  if [ "$diverging" -ne 0 ]; then
+    echo "$diverging unaccepted divergence(s) over $owed owed cell(s) — see $rep/diverging.txt"
+    return 1
+  fi
+  return 0
+}
+
+# Build the subject and make the BUILD say where it put it. `step` is fail-soft by design, so the
+# record must not be reachable from a build that failed: this returns non-zero and the group takes
+# its refusal branch instead of recording whatever happens to be lying at a relative path.
+parity_build_and_resolve() {  # prints the artefact path on stdout; diagnostics on stderr
+  local out path
+  if ! out="$(cargo build -p busbar --release --locked --message-format=json-render-diagnostics 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    return 1
+  fi
+  path="$(printf '%s\n' "$out" | sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' | tail -1)"
+  if [ -z "$path" ]; then
+    echo "the release build succeeded but reported no executable artefact for -p busbar" >&2
+    return 1
+  fi
+  printf '%s\n' "$path"
+}
+
 # ── --selftest: the DONE gate's own refusals, proven RED before any group runs ────────────────────
 # This script's whole claim is "the tree was measured against something outside itself". Every
 # variable named in assert_bless_env_empty defeats that claim in a different way, and two of them
@@ -416,6 +601,53 @@ if [ "$SELFTEST" -eq 1 ]; then
   else
     printf '  [ok]     SKIP_BOOT_LEG set -> the DONE run is REFUSED\n'
   fi
+  # ── PARITY'S SUBJECT AND VERDICT REFUSALS, each planted and required to go RED ────────────────
+  # The bless/repoint loop above proves this run cannot be pointed at a baseline the operator chose.
+  # These prove the other half: that it cannot be pointed at a SUBJECT nobody chose, and that it
+  # cannot report a zero it did not earn. Every fixture is a file in a temp dir — no build, no
+  # network, seconds — and every refusal is driven through the REAL function the group calls, not a
+  # restatement of its rule.
+  st_expect() {  # $1 = accept|refuse ; $2 = label ; rest = the command under test
+    local want="$1" label="$2"; shift 2
+    if "$@" >/dev/null 2>&1; then
+      if [ "$want" = accept ]; then printf '  [ok]     %s\n' "$label"
+      else printf '  [FAILED] %s — ACCEPTED, and this must be refused\n' "$label"; st_fail=1; fi
+    else
+      if [ "$want" = refuse ]; then printf '  [ok]     %s -> REFUSED\n' "$label"
+      else printf '  [FAILED] %s — REFUSED, and this must be accepted (the guard fires on a clean case)\n' "$label"; st_fail=1; fi
+    fi
+  }
+  st_tmp="$(mktemp -d "${TMPDIR:-/tmp}/done-parity-selftest.XXXXXX")"
+  printf '#!/bin/sh\nexit 0\n' > "$st_tmp/busbar"; chmod +x "$st_tmp/busbar"
+  st_sha="$(sha256_of "$st_tmp/busbar")"
+  st_other=0000000000000000000000000000000000000000000000000000000000000000
+  ln -s "$st_tmp/busbar" "$st_tmp/busbar-link"
+  printf 'not a binary\n' > "$st_tmp/not-exec"
+  mkdir -p "$st_tmp/rec-good" "$st_tmp/rec-wrong" "$st_tmp/rec-bare"
+  printf '{"binary_sha256":"%s","recorded":3}\n' "$st_sha"   > "$st_tmp/rec-good/meta.json"
+  printf '{"binary_sha256":"%s","recorded":3}\n' "$st_other" > "$st_tmp/rec-wrong/meta.json"
+  printf '# version\tasset\tsha256\n%s\tbusbar-selftest\t%s\n' "$PARITY_BASELINE_VERSION" "$st_sha" > "$st_tmp/digests.tsv"
+  mkdir -p "$st_tmp/rep-green" "$st_tmp/rep-diverging" "$st_tmp/rep-nothing"
+  printf '{"totals":{"owed":913,"diverging":0,"accepted":289,"unbaselined":1405,"cells_in_scope":2318}}\n' > "$st_tmp/rep-green/report.json"
+  printf '{"totals":{"owed":913,"diverging":8,"accepted":289,"unbaselined":1405,"cells_in_scope":2318}}\n' > "$st_tmp/rep-diverging/report.json"
+  printf '{"totals":{"owed":0,"diverging":0,"accepted":0,"unbaselined":0,"cells_in_scope":0}}\n'           > "$st_tmp/rep-nothing/report.json"
+  st_expect accept "a real, unlinked, executable artefact is the subject"        assert_candidate_bin_sane "$st_tmp/busbar"
+  st_expect refuse "a SYMLINK standing where the candidate binary should be"     assert_candidate_bin_sane "$st_tmp/busbar-link"
+  st_expect refuse "a candidate path that does not exist"                        assert_candidate_bin_sane "$st_tmp/absent"
+  st_expect refuse "a build that named no artefact at all"                       assert_candidate_bin_sane ""
+  st_expect refuse "a candidate that is not executable"                          assert_candidate_bin_sane "$st_tmp/not-exec"
+  st_expect accept "a recording that names the binary this run built"            assert_recorded_subject "$st_tmp/rec-good"  "$st_sha" "fixture"
+  st_expect refuse "a recording that names a DIFFERENT binary"                   assert_recorded_subject "$st_tmp/rec-wrong" "$st_sha" "fixture"
+  st_expect refuse "a recording that names no binary at all"                     assert_recorded_subject "$st_tmp/rec-bare"  "$st_sha" "fixture"
+  st_expect refuse "a subject with no digest to compare against"                 assert_recorded_subject "$st_tmp/rec-good"  ""        "fixture"
+  st_expect accept "a golden whose digest this repository commits"               assert_golden_is_pinned "$st_tmp/rec-good"  "$st_tmp/digests.tsv" "$PARITY_BASELINE_VERSION"
+  st_expect refuse "a golden whose digest this repository does not commit"       assert_golden_is_pinned "$st_tmp/rec-wrong" "$st_tmp/digests.tsv" "$PARITY_BASELINE_VERSION"
+  st_expect refuse "a golden checked against a digest table that is not there"   assert_golden_is_pinned "$st_tmp/rec-good"  "$st_tmp/no-such.tsv" "$PARITY_BASELINE_VERSION"
+  st_expect accept "a report with cells compared and none diverging"             assert_parity_verdict "$st_tmp/rep-green"
+  st_expect refuse "a report carrying unaccepted divergences"                    assert_parity_verdict "$st_tmp/rep-diverging"
+  st_expect refuse "a report that compared ZERO cells (the zero that is not one)" assert_parity_verdict "$st_tmp/rep-nothing"
+  st_expect refuse "no report at all"                                            assert_parity_verdict "$st_tmp/rep-missing"
+  rm -rf "$st_tmp"
   _st_fails=$((_st_fails + st_fail))
   if [ "$_st_fails" -eq 0 ]; then
     printf '\nverify-1.6.0-done selftest: GREEN (verdict proofs + every bless/repoint variable refused)\n'
@@ -722,19 +954,66 @@ elif [ -x bin/oracle ]; then
   ORACLE_DIR="${SHADOW_ORACLE_DIR:-target/oracle}"
   GOLDEN="${SHADOW_ORACLE_GOLDEN:-$ORACLE_DIR/recordings/golden}"
   CAND="$ORACLE_DIR/recordings/candidate"
+  REPORT="$ORACLE_DIR/reports/latest"
   if [ ! -s "$GOLDEN/ledger.tsv" ]; then
-    step "record the golden (1.5.5)" ./bin/oracle record --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out "$GOLDEN"
+    step "record the golden ($PARITY_BASELINE_VERSION)" ./bin/oracle record --bin "$HOME/.cache/busbar-oracle/$PARITY_BASELINE_VERSION/busbar" --plane all --out "$GOLDEN"
   fi
+  # WHICHEVER ARM PRODUCED IT — recorded just now, or found already sitting in target/ from some
+  # earlier run — the golden has to BE the published artefact and has to prove it by digest against
+  # the table this repository commits. The reuse arm is the common one and was the unchecked one.
+  step "the golden is the published $PARITY_BASELINE_VERSION binary, by committed digest" \
+    assert_golden_is_pinned "$GOLDEN" testing/shadow-oracle/golden-digests.tsv "$PARITY_BASELINE_VERSION"
   rm -rf "$CAND"
-  # BUILD THE THING THE ORACLE IS ABOUT TO DIFF. The candidate recording is taken from
-  # target/release/busbar, and nothing else in this run puts a binary there: cargo xtask full-gate names the
-  # release build CI-only on purpose (a release build on a laptop re-measures the laptop), so on a
-  # tree that has never been release-built the record step below either dies on a missing path or —
-  # worse — records a STALE binary from some earlier checkout and calls the resulting zero
-  # divergences a parity proof of HEAD. This step makes the candidate HEAD's by construction.
-  step "cargo build -p busbar --release --locked" cargo build -p busbar --release --locked
-  step "record the candidate (target/release/busbar)" ./bin/oracle record --bin target/release/busbar --plane all --out "$CAND"
-  step "replay: candidate vs golden" ./bin/oracle replay --golden "$GOLDEN" --candidate "$CAND" --out "$ORACLE_DIR/reports/latest"
+  # THE SUBJECT. Build it, and take its path FROM THE BUILD rather than from a literal — see the
+  # note on assert_candidate_bin_sane above for what the literal cost.
+  PARITY_BIN=""; PARITY_SHA=""; PARITY_SUBJECT_OK=0
+  if PARITY_BIN="$(parity_build_and_resolve 2>/tmp/done-parity-build.$$)"; then
+    printf '  \033[32m[ok]\033[0m   cargo build -p busbar --release --locked\n'
+    printf '          artefact: %s\n' "$PARITY_BIN"
+  else
+    printf '  \033[31m[RED]\033[0m  cargo build -p busbar --release --locked\n'
+    sed 's/^/          /' /tmp/done-parity-build.$$ | tail -4
+    CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="release build failed (parity)"
+    PARITY_BIN=""
+  fi
+  rm -f /tmp/done-parity-build.$$
+  if [ -n "$PARITY_BIN" ]; then
+    if assert_candidate_bin_sane "$PARITY_BIN" >/tmp/done-parity-bin.$$ 2>&1; then
+      PARITY_SHA="$(sha256_of "$PARITY_BIN" 2>/dev/null)" || PARITY_SHA=""
+      if [ -n "$PARITY_SHA" ]; then
+        printf '  \033[32m[ok]\033[0m   the candidate is a real, unlinked artefact of this build\n'
+        printf '          candidate sha256 %s\n' "$PARITY_SHA"
+        PARITY_SUBJECT_OK=1
+      else
+        printf '  \033[31m[RED]\033[0m  the candidate could not be digested — its identity cannot be carried into the report\n'
+        CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="candidate not digestible (parity)"
+      fi
+    else
+      printf '  \033[31m[RED]\033[0m  the candidate binary is not an artefact this run can prove it built\n'
+      sed 's/^/          /' /tmp/done-parity-bin.$$
+      CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="candidate binary refused (parity)"
+    fi
+    rm -f /tmp/done-parity-bin.$$
+  fi
+  if [ "$PARITY_SUBJECT_OK" -eq 1 ]; then
+    step "record the candidate (the artefact cargo named)" ./bin/oracle record --bin "$PARITY_BIN" --plane all --out "$CAND"
+    step "the recording names the binary this run built" \
+      assert_recorded_subject "$CAND" "$PARITY_SHA" "the candidate recording"
+    # `--strict` IS WHAT MAKES THE EXIT CODE THE VERDICT. Without it the differ prints its rows and
+    # exits 0 whatever they say — including when the selection matched nothing and it compared no
+    # cells at all. The sibling keep-proof workflow has passed it since it was written; this group,
+    # the one whose whole claim is the comparison, did not.
+    step "replay: candidate vs golden (strict)" \
+      ./bin/oracle replay --golden "$GOLDEN" --candidate "$CAND" --out "$REPORT" --strict
+    # ...and the same two facts re-derived from the report the differ wrote, so the claim does not
+    # rest on one flag in one pinned engine. This also prints the scope: a green here is a statement
+    # about the OWED cells only, never about the whole corpus.
+    step "the report's own numbers: cells were compared, and none diverged" \
+      assert_parity_verdict "$REPORT"
+  else
+    absent_step "the parity recording and its verdict" \
+      "a candidate binary this run can prove it built — nothing was recorded, so nothing is proven; the release build above is where to start"
+  fi
 else
   absent_step "shadow oracle" "bin/oracle"
 fi
@@ -927,6 +1206,16 @@ if [ -f qa/teller-steps.json ]; then
   if [ ! -x testing/shadow-oracle/rigs-ledger.sh ]; then
     absent_step "the rig suites the matrix cites RUN and pass" \
       "testing/shadow-oracle/rigs-ledger.sh — the plane-rigs bridge that folds the MCP / A2A / voice rigs into one ledger. Restore it (git show fa15cd661:testing/shadow-oracle/rigs-ledger.sh); it is NOT coming from busbar-release, which ruled it out of the oracle port by name (PORT-REMAINING.md:67)."
+  elif [ -L target/release/busbar ]; then
+    # THE SAME WRONG-SUBJECT HAZARD THE PARITY GROUP NOW REFUSES, on the one path this arm still
+    # takes literally. `-x` follows a symlink, so the guard below passes on a link into another
+    # checkout's target dir and the rigs go on to judge THAT binary while this file's banner says
+    # this tree was measured. A link here has been left behind by a neighbouring build on this very
+    # checkout, so this is a refusal that has already had to fire once.
+    step "rigs-ledger --selftest (the ledger's own vacuity guards still fire)" \
+      bash testing/shadow-oracle/rigs-ledger.sh --selftest
+    absent_step "the rig suites the matrix cites RUN and pass" \
+      "an unlinked target/release/busbar — the path is a SYMLINK to $(readlink target/release/busbar), so the rigs would judge whatever tree that points at and this file would report the answer as this one's. Remove the link and build here: cargo build --release -p busbar"
   elif [ ! -x target/release/busbar ]; then
     step "rigs-ledger --selftest (the ledger's own vacuity guards still fire)" \
       bash testing/shadow-oracle/rigs-ledger.sh --selftest
