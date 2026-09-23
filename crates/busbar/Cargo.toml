@@ -335,6 +335,15 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.
 busbar-kernel = { path = "../busbar-kernel", features = ["test-support"] }
+# THE EQUIVALENCE PROOF CALLS THE ADMIN READ RATHER THAN REPRODUCING IT.
+# `tests/money_one_function_equivalence.rs` runs every implementation of `money = f(ledger, card)`
+# side by side, and `GET /api/v1/admin/usage` is one of them. Its three derivations are crate-private
+# to busbar-core-admin, so the proof used to carry COPIES — and the copies drifted (the dated one
+# grew `resolve_model_alias`; the copy did not, and nothing reddened). The admin crate's existing
+# `test-support` feature exposes them through `v1::service::read_path_money`, so the proof now calls
+# the shipped arithmetic. `default-features = false` mirrors the normal edge above exactly, so this
+# dev edge turns on the one feature and nothing else.
+busbar-core-admin = { path = "../busbar-core-admin", default-features = false, features = ["test-support"] }
 # The integration suite under tests/ (black-box: boots the binary / reads generated inventories).
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }

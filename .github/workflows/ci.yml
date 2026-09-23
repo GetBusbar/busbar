@@ -862,11 +862,32 @@ jobs:
           # The A2A/MCP/LLM plane crates are honest test targets, and `cargo test --workspace`
           # activates their `test-support` suites through feature unification, so one workspace run
           # collects the full superset — excluding the two plane crates drops ~1123 tests, matching
-          # their test-support counts, which confirms those suites do run here. EXPECTED is the count
-          # that run produces on the linux runner (5723 at the last measured commit); MIN carries slack
-          # below it. RAISE both as the suite grows; lower only when a diff explains the drop.
-          UNIX_MIN_TESTS: "5650"
-          UNIX_EXPECTED_TESTS: "5723"
+          # their test-support counts, which confirms those suites do run here.
+          #
+          # ── RE-MEASURED 2026-09-23. THE PAIR BELOW WAS READING 43% LOW ────────────────────────
+          # These were written 5650/5723 on 2026-08-31 and never raised while the suite grew ~73%.
+          # An instrument that reads 43% under the thing it measures is not a floor: 4,262 tests
+          # could stop being collected with this job still green, and the `::warning::` tripwire
+          # below (which fires only when total < EXPECTED) sat 4,189 under the current total, so it
+          # could not fire either. This is a REPAIR of a broken instrument, not a ratchet move —
+          # the numbers go UP, to what the suite actually is.
+          #
+          # THE DERIVATION, reproducible (docs/design/1.6.0-test-vacuity.md §8):
+          #   cargo test --workspace --locked --no-run --message-format=json   -> 192 test binaries
+          #   each binary: --list --format terse                               -> 9,888 collected
+          #   each binary: --list --ignored --format terse                     ->     7 ignored
+          #   cargo test --workspace --locked --doc -- --list                  ->    33 doc-tests
+          #   => 9,888 - 7 + 33 = 9,914 lines `test result: … N passed` sums to.
+          # Measured at 22b2a5be0 on macOS/aarch64 at default features; the linux runner collects
+          # the same set plus whatever is linux-only, so this is a lower bound for this job.
+          #
+          # EXPECTED is that measured figure. MIN keeps ~2% slack under it, the same proportion the
+          # previous pair carried, so ordinary consolidation does not red a required check.
+          # The two instruments added to the step below are what stop this pair going stale again:
+          # a DERIVED collected-vs-ran check that needs no constant, and a staleness guard that
+          # FAILS this job when the suite has grown more than 10% past EXPECTED.
+          UNIX_MIN_TESTS: "9700"
+          UNIX_EXPECTED_TESTS: "9914"
           # THE PER-TEST-BINARY HANG CEILING for the watchdog below. This is a HANG guard (a hung
           # test runs unbounded), NOT a per-test timeout knob to tune a flake away with — when it
           # fires, the step fails and names the tests that never finished.
@@ -938,7 +959,63 @@ jobs:
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/unix-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
+
+          # ── THE DERIVED COUNT: what libtest says it collected, asked of libtest ────────────────
+          # The constant floor above cannot be replaced by a derivation, and the reason is worth
+          # stating: erasure moves every figure derived from the same run TOGETHER. A cfg gate that
+          # erases a suite lowers what is collected and what ran by the same amount, so a floor
+          # derived from this run is blind to exactly the failure the floor exists for. The
+          # constant stays.
+          #
+          # What a derivation CAN do is (1) catch the failures a constant cannot, and (2) stop the
+          # constant going stale — which is how it came to sit at 5,650 against a 9,888-test suite.
+          #
+          #   (1) COLLECTED vs RAN. Every test binary cargo just built, from cargo's own artifact
+          #       stream, then each binary's own `--list`. This needs no hand-typed number at all:
+          #       a binary that died before reporting, a harness that skipped a suite, a filter
+          #       that matched nothing, a `#[ignore]` added without a runner — every one of them
+          #       shows up as ran < (collected - ignored), whatever the total happens to be.
+          #   (2) STALENESS. If what libtest collects has grown more than 10% past the recorded
+          #       EXPECTED, this step FAILS and says to raise both constants. A floor nobody raises
+          #       stops being a floor, and that is not a thing anybody notices on their own.
+          #
+          # The build here is entirely cached — `cargo test` above already compiled every one of
+          # these binaries — so this costs one re-resolve and 192 `--list` invocations.
+          cargo test --workspace --locked --no-run --message-format=json \
+            > "$RUNNER_TEMP/unix-norun.json" 2>/dev/null || true
+          python3 - "$RUNNER_TEMP/unix-norun.json" > "$RUNNER_TEMP/unix-bins.txt" <<'PYCENSUS'
+          import json, sys
+          bins = set()
+          for line in open(sys.argv[1]):
+              line = line.strip()
+              if not line.startswith("{"):
+                  continue
+              try:
+                  art = json.loads(line)
+              except ValueError:
+                  continue
+              # A TEST binary, as cargo itself labels it: `profile.test` is the flag cargo sets on the
+              # artifact it intends to run under `cargo test`. `target.test` is a different field and is
+              # true for the plain `busbar`/`xtask` bins too, which run no tests.
+              if art.get("reason") == "compiler-artifact" and art.get("profile", {}).get("test") \
+                      and art.get("executable"):
+                  bins.add(art["executable"])
+          print("\n".join(sorted(bins)))
+          PYCENSUS
+          binaries=$(wc -l < "$RUNNER_TEMP/unix-bins.txt" | tr -d ' ')
+          collected=0
+          ignored=0
+          while read -r testbin; do
+            [ -x "$testbin" ] || continue
+            c=$("$testbin" --list --format terse 2>/dev/null | grep -c ': test$' || true)
+            g=$("$testbin" --list --ignored --format terse 2>/dev/null | grep -c ': test$' || true)
+            collected=$(( collected + c ))
+            ignored=$(( ignored + g ))
+          done < "$RUNNER_TEMP/unix-bins.txt"
+          runnable=$(( collected - ignored ))
+
           echo "unix: ${total} tests passed across the workspace (floor: ${UNIX_MIN_TESTS}, expected: ${UNIX_EXPECTED_TESTS})"
+          echo "unix: libtest collected ${collected} across ${binaries} binaries, ${ignored} ignored -> ${runnable} runnable (+ doc-tests)"
 
           if [ "$rc" -ne 0 ]; then
             echo "::error::cargo test --workspace FAILED on unix (exit ${rc})."
@@ -956,6 +1033,33 @@ jobs:
             echo "::error::A workspace whose suites compiled to nothing still prints 'test result: ok' and exits 0."
             echo "::error::This is NOT a pass. Either a suite stopped being built/collected, or a cfg gate erased one."
             echo "::error::If the drop is intended, LOWER the UNIX_MIN_TESTS floor in this job deliberately."
+            exit 1
+          fi
+          # A CENSUS THAT FOUND NOTHING IS NOT A CENSUS. Zero test binaries after a workspace run
+          # that just reported ${total} passes means the instrument below is blind, and a blind
+          # instrument prints green for the same reason a clean one does.
+          if [ "${binaries:-0}" -lt 1 ]; then
+            echo "::error::the test-binary census found ${binaries:-0} binaries after the workspace run."
+            echo "::error::`cargo test --no-run --message-format=json` produced no artifact this step could list,"
+            echo "::error::so the collected-vs-ran and staleness checks below cannot see anything. Fix the census."
+            exit 1
+          fi
+          # THE DERIVED CHECK — no constant in it. `total` carries the doc-tests too, so it is
+          # normally ABOVE `runnable`; below it means a binary libtest built did not report.
+          if [ "$runnable" -gt 0 ] && [ "$total" -lt "$runnable" ]; then
+            echo "::error::unix ran ${total} tests but libtest collected ${runnable} runnable ones across ${binaries} binaries."
+            echo "::error::A test binary that libtest built and did not report is not a pass — it is a suite"
+            echo "::error::that stopped running: a harness that skipped, a filter that matched nothing, or an"
+            echo "::error::#[ignore] added with no job to run it."
+            exit 1
+          fi
+          # THE STALENESS GUARD — the one thing that keeps the two hand-typed numbers above honest.
+          stale_ceiling=$(( UNIX_EXPECTED_TESTS + UNIX_EXPECTED_TESTS / 10 ))
+          if [ "$collected" -gt "$stale_ceiling" ]; then
+            echo "::error::UNIX_EXPECTED_TESTS is ${UNIX_EXPECTED_TESTS}, and libtest now collects ${collected}."
+            echo "::error::That is more than 10% of drift, and a floor that far under the suite defends nothing:"
+            echo "::error::this pair sat at 5650/5723 against a 9,888-test suite for three weeks."
+            echo "::error::RAISE UNIX_MIN_TESTS and UNIX_EXPECTED_TESTS in this job to the count printed above."
             exit 1
           fi
 
@@ -2421,10 +2525,28 @@ jobs:
       # RECOMPUTED for the post-plane-extraction topology (see the unix `check` job for the full
       # rationale): the A2A/MCP/LLM `test-support` suites run under `cargo test --workspace` here too
       # (feature unification), so windows collects the same superset MINUS the cfg(unix)-only tests.
-      # EXPECTED is the count the windows runner produced at the last measured commit (5686); MIN keeps
-      # generous slack below it. RAISE both as the suite grows; lower only when a diff explains the drop.
-      WINDOWS_MIN_TESTS: "5620"
-      WINDOWS_EXPECTED_TESTS: "5686"
+      #
+      # ── RE-MEASURED 2026-09-23, and stated honestly about HOW ────────────────────────────────
+      # The pair below was 5620/5686, written 2026-08-31 and never raised while the suite grew ~73%.
+      # Like the unix pair it was reading ~43% under the thing it measures, which is not a floor.
+      # Raising it is a REPAIR of a broken instrument, not a ratchet move.
+      #
+      # The unix pair was MEASURED (9,888 collected + 33 doc-tests - 7 ignored = 9,914; the
+      # derivation is in that job and in docs/design/1.6.0-test-vacuity.md §8). This pair is a
+      # PROJECTION off it, because nobody here has a windows runner to list binaries on: the
+      # previous pair recorded windows at 0.9935 of unix EXPECTED and 0.9947 of unix MIN, and the
+      # only structural difference is the cfg(unix)-only set, which has not changed shape. So
+      # EXPECTED is 9,914 x 0.9935 rounded DOWN to a round number. MIN keeps a MUCH wider band than
+      # the unix job's -- ~5.6% rather than ~2% -- because the figure it sits under was projected
+      # rather than listed, and because the cfg(unix)-only set is the one part of the difference
+      # nobody here can count: 24 cfg(unix) sites in the tree sit next to a test or a test module,
+      # and some of them gate a whole integration file. A floor at 9,300 still catches the erasure
+      # of any block of ~550 tests; the one it replaced caught nothing at all.
+      #
+      # A `::notice::` on the first green run prints the number this runner ACTUALLY produces —
+      # replace both with it and delete this paragraph.
+      WINDOWS_MIN_TESTS: "9300"
+      WINDOWS_EXPECTED_TESTS: "9850"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in

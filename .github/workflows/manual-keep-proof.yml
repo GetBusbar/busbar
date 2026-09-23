@@ -431,9 +431,14 @@ jobs:
           path: counts
       - name: Sum the shards and floor the total
         env:
-          # ci.yml's UNIX_MIN_TESTS at the time this file was written. Same suite, same floor; raise
-          # both together or the two gates start disagreeing about what the suite is.
-          KEEP_MIN_TESTS: "5650"
+          # ci.yml's UNIX_MIN_TESTS. Same suite, same floor; raise both together or the two gates
+          # start disagreeing about what the suite is.
+          #
+          # RAISED 2026-09-23 in lock-step with ci.yml, from 5650 — which had gone 43% stale against
+          # a measured 9,888-test suite (derivation: docs/design/1.6.0-test-vacuity.md §8, and the
+          # unix `check` job's own comment). Repairing an instrument that reads low is not a ratchet
+          # move; the number goes UP, to what the suite is.
+          KEEP_MIN_TESTS: "9700"
           SHARDS_RESULT: ${{ needs.tests.result }}
         run: |
           set -euo pipefail
