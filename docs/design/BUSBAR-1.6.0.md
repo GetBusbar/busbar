@@ -81,6 +81,37 @@ rest mean exactly what they meant before this collapse. Cite a row; never re-lit
 > So money is never wrong — if a number looks wrong, either the ledger is wrong or the ratecard is
 > wrong, and every finding has to name which.
 
+### How core talks to a plane and to a transport — OWNER-RATIFIED 2026-09-23
+
+> This is the WHOLE contract. Core needs to know nothing else about how either one works.
+>
+> **A plane.** Core knows it has N plugins of kind `plane`. It asks each one for its **config verb**
+> and hands that plane the matching config section. That is all. Core does not know what the plane
+> does with it. **If two planes claim the same verb, boot fails with an error** — ambiguity is never
+> resolved by picking a winner.
+>
+> **A transport.** Core knows it has N plugins of kind `transport`. A plane says *"get me http"*.
+> Core asks every transport *"who deals with http?"* and each transport answers with what it owns.
+> That is all. **Core never knows what `http`, `https` or `grpc` mean** — those strings are data
+> passing through it from a plane to a transport. If two transports claim the same scheme, boot
+> fails with an error.
+>
+> **The single rule underneath both:** core holds NO list of instances. For every kind it knows only
+> how many plugins it has and what kind each is; it asks each plugin what it claims, and it refuses
+> at boot when two plugins claim the same thing.
+>
+> **WHERE AN INSTANCE NAME IS STILL ALLOWED — and this is the sharp line.** There are two
+> distributions: `core` alone, into which you drop the plugins you want; and `default`, which is core
+> plus the standard plugins compiled in, with more dropped in later. A build has to know which
+> plugins it ships with. So a **Cargo manifest, a feature name, a build script, and the composition
+> root's dependency list MAY name planes and transports** — that is packaging stating what is in the
+> box. **No `.rs` file in a core crate may.** A plane or transport instance name in core Rust source
+> is a violation regardless of how it is spelled: a field, a const, a match arm, a string literal, a
+> function parameter, or a type.
+>
+> That is why `plane-purity` scans `src/` and never `Cargo.toml` — the gate already encodes this
+> rule. What is wrong with it is its denominator, not its judgement.
+
 ### The same thing again, in the document's own vocabulary
 
 
