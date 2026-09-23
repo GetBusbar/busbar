@@ -1480,6 +1480,9 @@ pub struct CheckFindings {
     pub stamped: Vec<String>,
     /// Records whose `audited_at` is reachable from neither HEAD nor any `refs/audit-pins/*`.
     pub unreachable: Vec<String>,
+    /// Scope paths that own no tracked file — an address in the register pointing at nothing in the
+    /// tree. See [`crate::audit::phantom_paths`].
+    pub phantom: Vec<String>,
     pub owed: Vec<String>,
     pub scopes: usize,
     pub clean_pct: f64,
@@ -1494,6 +1497,7 @@ impl CheckFindings {
             || !self.opens.is_empty()
             || !self.stamped.is_empty()
             || !self.unreachable.is_empty()
+            || !self.phantom.is_empty()
             || !self.owed.is_empty()
     }
 }
@@ -1548,6 +1552,22 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
         .collect();
 
     f.problems = audit::register_problems(&doc);
+
+    // A SCOPE ADDRESSED AT NOTHING. Checked here, with the rest of the questions about whether the
+    // instrument can be believed, and before any reading of a result means anything: a scope whose
+    // paths own no tracked file has a tree hash over an empty set, and every judgement downstream
+    // of that hash is a judgement about nothing that reads exactly like a clean one.
+    for r in &rows {
+        for path in audit::phantom_paths(&r.scope, &all) {
+            f.phantom.push(format!(
+                "{}  path `{path}` owns no tracked file — the register claims a reading of a \
+                 directory that is not in this tree. If it was renamed, re-point it at its real \
+                 target in a reviewed diff that says whether the audit still applies to the moved \
+                 code; if it was folded away, strike the scope.",
+                r.id
+            ));
+        }
+    }
 
     // ONE `ls-tree` PER COMMIT, not one per record. 150 scopes carrying 236 rounds name a couple of
     // dozen distinct commits between them, and re-resolving each one per round is the difference
@@ -1761,6 +1781,18 @@ fn cmd_check(git: &Git, register: &std::path::Path) -> i32 {
     block(
         &f.owed,
         "scope(s) whose HIGH/MEDIUM findings are stamped fixed with no confirming round:",
+        "  ",
+    );
+    block(
+        &f.phantom,
+        "scope path(s) that own no tracked file (the register is addressed at nothing):",
+        "  ",
+    );
+    // PRINTED, not merely counted. This finding already turned `--check` red through
+    // `CheckFindings::red()` and then said nothing about why, which is a red nobody can act on.
+    block(
+        &f.unreachable,
+        "record(s) naming a commit this repository can no longer reach:",
         "  ",
     );
 

@@ -30,7 +30,7 @@
 use crate::audit::{self, Git};
 use crate::audit_cmd::{self, CheckFindings};
 use crate::ctx::{Ctx, Edit, Overlay};
-use crate::gates::{prove_green, prove_rows_green, prove_rows_red, Gate, Report};
+use crate::gates::{prove_rows_green, prove_rows_red, Gate, Report};
 use crate::json_lite::{self, Json};
 use crate::ledger::{Row, Verdict};
 
@@ -53,6 +53,20 @@ pub const ROW_STAMPED: &str = "audit-ledger:hash-matches-commit";
 /// history of nothing.
 pub const ROW_REACHABLE: &str = "audit-ledger:audited-at-reachable";
 pub const ROW_OWED: &str = "audit-ledger:fix-owes-confirmation";
+/// EVERY SCOPE IS ADDRESSED AT SOMETHING THAT IS HERE.
+///
+/// The register's one claim is "this much of the tree has been read". A scope whose paths own no
+/// tracked file has been read of NOTHING, its tree hash is over an empty set, and every rule about
+/// it — is it covered, does its hash match, is its result a result — answers yes, because zero is
+/// the passing answer to every question. Twenty-four of this register's hundred and seventy scope
+/// paths were exactly that when this row landed, most of them crates the 57 → 35 fold has since
+/// merged away, and the gate printed GREEN over all of them: audited, clean, some of them at round
+/// 8.
+///
+/// The row does not repair them, on purpose. A few are renames whose real target is still in the
+/// tree under another name, and re-pointing one asks whether the audit that was taken still applies
+/// to the code that moved. That is a judgement, and it belongs in a diff that makes it out loud.
+pub const ROW_PHANTOM: &str = "audit-ledger:scope-paths-exist";
 
 pub struct AuditLedgerGate;
 
@@ -110,6 +124,13 @@ pub fn rows_from(f: &CheckFindings) -> Vec<Row> {
             "a HIGH/MEDIUM finding is stamped fixed with no confirming round",
             format!("{} scope(s)", f.scopes),
         ),
+        row(
+            &f.phantom,
+            ROW_PHANTOM,
+            "every scope is addressed at a path that owns tracked files",
+            "a scope is addressed at a path that owns no tracked file",
+            format!("{} scope(s)", f.scopes),
+        ),
     ]
 }
 
@@ -126,6 +147,7 @@ impl Gate for AuditLedgerGate {
             ROW_STAMPED.to_string(),
             ROW_REACHABLE.to_string(),
             ROW_OWED.to_string(),
+            ROW_PHANTOM.to_string(),
         ]
     }
 
@@ -171,17 +193,33 @@ impl Gate for AuditLedgerGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
-        report.push(prove_green(
+        // THE BASELINE, NARROWED TO THE ROWS IT ACTUALLY NAMES — and it is narrowed BECAUSE ONE
+        // OF THE ROWS IS GENUINELY RED, not in order to make it green.
+        //
+        // `audit-ledger:scope-paths-exist` reds on the committed register today: twenty-four of its
+        // hundred and seventy scope paths own no tracked file, and it says so, loudly, every time
+        // the gate runs. That red is the correct answer and it stays — `cargo xtask gate
+        // audit-ledger` is RED on this tree and is meant to be until somebody decides, scope by
+        // scope, which phantoms are renames to re-point and which are folds to strike.
+        //
+        // What this case is for is different: it is the statement that the OTHER rules have nothing
+        // to say about the register as committed, so that a plant below going red is known to be
+        // the plant and not the baseline. It was written with a row list and then asked with a
+        // WHOLE-VERDICT `prove_green`, which meant the list was decoration; asked the way it is
+        // written, it proves exactly and only what it claims.
+        report.push(prove_rows_green(
             cx,
             self,
-            "the committed register is sound under every rule the gate owns",
+            "every rule about how the register is WRITTEN passes on the committed register",
             &[
                 ROW_MISSING,
                 ROW_READABLE,
                 ROW_INVALID,
                 ROW_STAMPED,
+                ROW_REACHABLE,
                 ROW_OWED,
             ],
+            Overlay::new(),
         ));
 
         let doc = match cx
@@ -234,6 +272,24 @@ impl Gate for AuditLedgerGate {
                 ROW_READABLE,
                 "must BE the last round",
                 |d: &mut Json| set_first(d, "auditor", Json::Str("somebody else".to_string())),
+            ),
+            // THE SCOPE ADDRESSED AT NOTHING. Planted by re-pointing a REAL scope — one carrying a
+            // full clean record — at a directory this tree does not have, which is exactly the
+            // shape the twenty-four live ones have: an audited, hashed, round-N record over an
+            // empty set of files.
+            (
+                "a scope addressed at a path that owns no tracked file",
+                ROW_PHANTOM,
+                "owns no tracked file",
+                |d: &mut Json| {
+                    set_first(
+                        d,
+                        "paths",
+                        Json::Array(vec![Json::Str(
+                            "crates/planted-scope-not-in-this-tree/src".to_string(),
+                        )]),
+                    )
+                },
             ),
         ];
 

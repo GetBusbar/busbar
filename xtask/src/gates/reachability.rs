@@ -147,6 +147,26 @@ pub const ROW_SCAN_FLOOR: &str = "reachability:scan-floor";
 pub const ROW_ROSTER: &str = "reachability:roster";
 pub const ROW_STALE: &str = "reachability:stale-declaration";
 pub const ROW_ROOT_MODULE: &str = "reachability:root-module";
+/// THE CITED EVIDENCE IS READ, AND NOT MERELY NAMED.
+///
+/// Three of this gate's failure details end with the sentence "the site-by-site evidence is written
+/// up in `qa/reachability-evidence.md`". For as long as that sentence has existed, those three
+/// `format!` strings were the file's ONLY appearance anywhere in this tree. Nothing opened it.
+/// Nothing checked it was there. Nothing noticed when a module it writes up was folded away, and
+/// nothing noticed when a new module went dormant that it says nothing about. A file we write and
+/// never read is evidence of nothing, and a citation nobody checks is a citation that can be wrong
+/// for a year without anyone learning that it is.
+///
+/// This row reads it, in BOTH directions, because only one of them expires on its own:
+///
+/// * **FORWARD** — every module this run reports dormant or unreached is written up there. A red
+///   row that sends its reader to a document which does not discuss its subject is a dead end with
+///   a footnote. Forward is what makes the evidence keep up with the gate.
+/// * **BACKWARD** — every module the evidence writes up is still in the tree. Evidence about a file
+///   somebody deleted is an archive, and an archive that reads as current is worse than no document
+///   at all: it is the fold already done, described as still owed. Backward is what makes the
+///   evidence expire.
+pub const ROW_EVIDENCE: &str = "reachability:evidence";
 
 #[must_use]
 pub fn row_registered(plane: &str) -> String {
@@ -982,6 +1002,108 @@ struct Finding {
     root_reach: Result<String, String>,
 }
 
+/// Every backtick-quoted `…/…` path on one line. The evidence's section headings name their subject
+/// that way (`## 1. `crates/busbar/src/root/units_a2a.rs` — 1 784 lines, UNIT PATH DORMANT`), so
+/// this is how the document says which file a section is about without a second index to drift.
+fn backticked_paths(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(open) = rest.find('`') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('`') else { break };
+        let inner = &after[..close];
+        if inner.contains('/') && !inner.contains(char::is_whitespace) {
+            out.push(inner.to_string());
+        }
+        rest = &after[close + 1..];
+    }
+    out
+}
+
+/// [`ROW_EVIDENCE`] — the document the failure details cite, read forward and backward.
+fn evidence_row(
+    cx: &Ctx,
+    findings: &BTreeMap<&str, Finding>,
+    undeclared_root_modules: &[&String],
+) -> Row {
+    let text = match cx.read(EVIDENCE) {
+        Ok(t) => t,
+        Err(e) => {
+            return Row::fail(
+                ROW_EVIDENCE,
+                "the evidence document this gate cites by name cannot be read",
+                format!(
+                    "{EVIDENCE}: {e} — three of this gate's failure details send their reader to \
+                     that path. A citation to a document that is not there is worse than no \
+                     citation: it reads like the work was done. Restore it, or strike the sentence \
+                     from the three details in the same diff."
+                ),
+            );
+        }
+    };
+
+    let mut problems: Vec<String> = Vec::new();
+
+    // FORWARD — everything the three citing details are about.
+    let mut owed: Vec<String> = Vec::new();
+    for p in ROSTER {
+        // The two unit-path details are the ones that carry the citation.
+        if findings.get(p.key).is_some_and(|f| f.unit_path.is_err()) {
+            owed.push(format!("{ROOT_DIR}/{}.rs", p.module));
+        }
+    }
+    for stem in undeclared_root_modules {
+        owed.push(format!("{ROOT_DIR}/{stem}.rs"));
+    }
+    owed.sort();
+    owed.dedup();
+    for m in &owed {
+        if !text.contains(m.as_str()) {
+            problems.push(format!(
+                "this run reports `{m}` dormant or unreached and sends the reader to {EVIDENCE}, \
+                 which does not write it up"
+            ));
+        }
+    }
+
+    // BACKWARD — everything the document is about is still here.
+    let mut written_up = 0usize;
+    for (i, line) in text.lines().enumerate() {
+        if !line.starts_with("## ") {
+            continue;
+        }
+        for path in backticked_paths(line) {
+            written_up += 1;
+            if !cx.exists(&path) {
+                problems.push(format!(
+                    "{EVIDENCE}:{} writes up `{path}`, which is not in the tree — strike the \
+                     section in the commit that folded it, or the document describes work as owed \
+                     that is already done",
+                    i + 1
+                ));
+            }
+        }
+    }
+
+    if problems.is_empty() {
+        Row::pass(
+            ROW_EVIDENCE,
+            "the cited evidence covers every module this run names, and nothing it has lost",
+            format!(
+                "{EVIDENCE}: {} module(s) written up, {} module(s) cited by this run",
+                written_up,
+                owed.len()
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_EVIDENCE,
+            "the cited evidence and the tree disagree about what is dormant",
+            format!("{} problem(s): {}", problems.len(), problems.join(" | ")),
+        )
+    }
+}
+
 fn all_rows_did_not_run(why: &str) -> Verdict {
     let mut rows = vec![Row::fail(
         ROW_SCAN_FLOOR,
@@ -997,7 +1119,7 @@ fn all_rows_did_not_run(why: &str) -> Verdict {
             rows.push(Row::fail(id, "the scan did not run", DID_NOT_RUN));
         }
     }
-    for id in [ROW_ROOT_MODULE, ROW_ROSTER, ROW_STALE] {
+    for id in [ROW_ROOT_MODULE, ROW_ROSTER, ROW_STALE, ROW_EVIDENCE] {
         rows.push(Row::fail(id, "the scan did not run", DID_NOT_RUN));
     }
     Verdict::of(rows)
@@ -1016,6 +1138,7 @@ impl Gate for ReachabilityGate {
             ROW_ROOT_MODULE.to_string(),
             ROW_ROSTER.to_string(),
             ROW_STALE.to_string(),
+            ROW_EVIDENCE.to_string(),
         ];
         for p in ROSTER {
             ids.push(row_registered(p.key));
@@ -1418,6 +1541,9 @@ impl Gate for ReachabilityGate {
                 ),
             )
         });
+
+        // ── the cited evidence is READ ───────────────────────────────────────────────────────
+        rows.push(evidence_row(cx, &findings, &undeclared));
 
         Verdict::of(rows)
     }

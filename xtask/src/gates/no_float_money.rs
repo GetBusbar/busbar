@@ -7,8 +7,19 @@
 //! failure this bans — a float sums differently depending on order, rounds in ways nobody
 //! configured, cannot hold `27.1` at all, and turns "the bill equals the sum of the lines" from a
 //! proof into a hope. So the crate that owns the money arithmetic (`busbar-kernel-ledger`), the
-//! crate that owns the exact count type (`busbar-contract`'s count module) and the binary's
-//! dedicated money-unit files carry no float in production source.
+//! crate that owns the exact count type (`busbar-contract`'s count module), the crate that decides
+//! affordability (`busbar-kernel-budget`) and the kernel's and binary's dedicated money-unit files
+//! carry no float in production source.
+//!
+//! # THE SCAN SET IS THE CHECK
+//!
+//! For most of this gate's life it scanned the ledger crate and six named files, and that was the
+//! whole of it. `crates/busbar-kernel/src/cost.rs` — which owns `RateNanos` and the conversion that
+//! builds it — and every file in `crates/busbar-kernel-budget/src` — which decides whether a request
+//! is affordable and prices the counters that answer — were in NEITHER set. No amount of float added
+//! to either could produce a RED, ever, for any reason. An instrument that cannot produce a NO is
+//! not a check, so both are in the set now: the budget crate whole (it is a money crate), the
+//! kernel's money files by name (the kernel is not).
 //!
 //! # THE ONE EXEMPT BOUNDARY (#44)
 //!
@@ -134,6 +145,48 @@ const CONTRACT_MONEY_FILES: &[&str] = &[
 
 /// The directory the contract money files live under.
 const CONTRACT_ROOT: &str = "crates/busbar-contract/src";
+
+/// THE BUDGET CRATE, scanned whole like the ledger, because it is a dedicated money crate and not a
+/// crate that happens to contain some money.
+///
+/// A budget decision is money arithmetic with a different verb: a hold, an estimate, a cell's
+/// counters, a rolling window and a pricer that turns those counters into cents. Every production
+/// file under it is on the money path, so the ban applies to the CRATE rather than to a hand-picked
+/// file list — a new file added beside `decide.rs` is in the ban the moment it exists, which a named
+/// list could never promise.
+///
+/// THIS ROOT WAS IN NO SCAN SET AT ALL. The ban's sets were the ledger crate and six named files,
+/// and `busbar-kernel-budget` was in neither — so no float added anywhere in the crate that decides
+/// whether a request is affordable could produce a RED, at any time, for any amount of float. That
+/// is not a narrower check than intended; it is not a check.
+const BUDGET_SRC: &str = "crates/busbar-kernel-budget/src";
+
+/// The denominator floor for the budget scan. Seven production files when this was written; the
+/// floor sits under that so ordinary churn does not trip it and an emptied or relocated crate does.
+const BUDGET_FLOOR: usize = 5;
+
+/// The KERNEL's DEDICATED money-unit files.
+///
+/// Named rather than walked, for the same reason the contract crate is on a named list:
+/// `busbar-kernel` is not a money crate, it is the whole kernel — 350-odd files carrying routing
+/// weights, health scores, scrape histograms and backoff curves, every one of them a legitimate
+/// float. A wholesale scan of it would drown the ban in noise and be waived inside a week. These two
+/// files ARE money, end to end:
+///
+/// * `cost.rs` — the rate projection and the unit-map arithmetic over it. It owns `RateNanos`, the
+///   integer nano-rate every hot-path multiply-add runs on, and the conversion that produces it.
+/// * `billing.rs` — the billable-item model, the shape a response's metered quantities arrive in.
+///
+/// NEITHER WAS IN ANY SCAN SET EITHER, and `cost.rs` is where a float is most consequential: it
+/// holds a SECOND copy of the card-build conversion. #44 exempts that conversion in exactly one file
+/// ([`CARD_BUILD_BOUNDARY`]) precisely so there is one place for the rounding and clamping rules to
+/// live; a copy of them somewhere the ban cannot see is how the two drift, and a rate that is judged
+/// at one value and billed at another is the failure the whole integer-money model exists to make
+/// impossible. The exemption is a FILE, not an arithmetic, so a second copy of it is a finding here.
+const KERNEL_MONEY_FILES: &[&str] = &[
+    "crates/busbar-kernel/src/billing.rs",
+    "crates/busbar-kernel/src/cost.rs",
+];
 
 /// The float tokens a money path may not name. Word-boundary matched so `nf64` or an identifier that
 /// merely contains the text is not a hit, but the bare type is.
@@ -466,7 +519,26 @@ const CLEAN: &str = "the scan cleared its floor and named no float on the money 
 
 /// The finding row, built from an offender list — the one constructor `run` calls, so the detail is
 /// only ever about which offenders were found.
-fn row_no_float(offenders: &[String]) -> Row {
+fn row_no_float(offenders: &[String], scan_problems: &[String]) -> Row {
+    // A SCAN SET THAT DID NOT FULLY RESOLVE CANNOT REPORT A CLEAN TREE. An unread root contributes
+    // zero offenders, and zero is the passing answer to every ban — so the absence is the finding.
+    if !scan_problems.is_empty() {
+        return Row::fail(
+            ROW_NO_FLOAT,
+            "the money-float scan set did not fully resolve, so its silence means nothing",
+            format!(
+                "{} unread scope(s), plus {} finding(s) from the scopes that did read: {}",
+                scan_problems.len(),
+                offenders.len(),
+                scan_problems
+                    .iter()
+                    .chain(offenders.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ),
+        );
+    }
     if offenders.is_empty() {
         return Row::pass(
             ROW_NO_FLOAT,
@@ -835,6 +907,29 @@ impl Gate for NoFloatMoneyGate {
 
         let mut set_problems: Vec<String> = Vec::new();
 
+        // PROBLEMS THAT NARROW THE FLOAT SCAN SPECIFICALLY. Kept apart from `set_problems` so the
+        // finding row itself can refuse to print "no floats found" over a scan set that did not
+        // fully resolve — a half-taken scan reads exactly like a clean one, and it is not one.
+        let mut float_scan_problems: Vec<String> = Vec::new();
+
+        // THE BUDGET CRATE, held to its own floor, the same treatment the ledger gets. A dedicated
+        // money crate that reads as empty is REFUSED, never scanned as zero hits and printed green.
+        let budget_files = match cx.walk(
+            &WalkSpec::new([BUDGET_SRC])
+                .ext("rs")
+                .exclude([EXCLUDE_TESTS_DIR, EXCLUDE_TESTS_FILE, EXCLUDE_TESTS_MOD])
+                .min_files(BUDGET_FLOOR),
+        ) {
+            Ok(f) => f,
+            Err(e) => {
+                float_scan_problems.push(format!(
+                    "{e} If the budget crate legitimately moved, point {BUDGET_SRC} at its new home \
+                     in a reviewed diff that says so — do not lower the floor."
+                ));
+                Vec::new()
+            }
+        };
+
         // The binary's dedicated money files and the contract's count module: walk each root once,
         // keep the named set. Every named file must be present — a rename that dropped one out of
         // the ban is a scan-set integrity failure, not a silent narrowing.
@@ -867,8 +962,29 @@ impl Gate for NoFloatMoneyGate {
             );
         }
 
+        // THE KERNEL'S NAMED MONEY FILES, read directly rather than reached through a walk of their
+        // root. The root here is the whole kernel; reading 350-odd files to keep two is a scan cost
+        // with no scan value. Absence is treated exactly as it is for the other named sets: a money
+        // file that moved must move the ban with it in the diff that moves it, never drop out of it.
+        for want in KERNEL_MONEY_FILES {
+            match cx.read(*want) {
+                Ok(text) => named_files.push(crate::ctx::SourceFile {
+                    rel: std::path::PathBuf::from(*want),
+                    abs: cx.abs(want),
+                    text,
+                }),
+                Err(e) => float_scan_problems.push(format!(
+                    "{want} is missing from the scan set ({e}) — a money file that moved must move \
+                     the ban with it in a reviewed diff, never drop out of it silently"
+                )),
+            }
+        }
+
         let mut offenders = Vec::new();
         for f in &ledger_files {
+            scan_file(&f.rel_str(), &f.text, &mut offenders);
+        }
+        for f in &budget_files {
             scan_file(&f.rel_str(), &f.text, &mut offenders);
         }
         for f in &named_files {
@@ -876,6 +992,7 @@ impl Gate for NoFloatMoneyGate {
         }
         offenders.sort();
         offenders.dedup();
+        set_problems.extend(float_scan_problems.iter().cloned());
 
         // THE COUNT-READ SHAPE, over every enumerated money root.
         let mut count_scan = CountReadScan {
@@ -958,9 +1075,11 @@ impl Gate for NoFloatMoneyGate {
                 ROW_SCAN_FLOOR,
                 "every money scan set is present and above its floor",
                 format!(
-                    "the ledger crate, {} named money file(s) and {} enumerated money area(s) \
-                     all read",
-                    BINARY_MONEY_FILES.len() + CONTRACT_MONEY_FILES.len(),
+                    "the ledger crate, the budget crate, {} named money file(s) and {} enumerated \
+                     money area(s) all read",
+                    BINARY_MONEY_FILES.len()
+                        + CONTRACT_MONEY_FILES.len()
+                        + KERNEL_MONEY_FILES.len(),
                     COUNT_READ_ROOTS.len()
                 ),
             )
@@ -978,7 +1097,7 @@ impl Gate for NoFloatMoneyGate {
 
         Verdict::of(vec![
             scan_floor,
-            row_no_float(&offenders),
+            row_no_float(&offenders, &float_scan_problems),
             row_count_read(&count_scan),
             row_count_scale(&scale_offenders),
         ])

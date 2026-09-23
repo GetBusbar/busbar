@@ -611,9 +611,15 @@ fn action_manifests(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
+    // TWO SPELLINGS, ONE SCOPE. `yml` and `yaml` are the same manifest under two names, and a
+    // repository that spells every one of them `yml` legitimately has zero `yaml` — so each
+    // individual walk declares that zero is a real answer FOR IT. What must not be empty is the
+    // UNION, and that is checked below rather than per-extension: a `.github/actions` that exists
+    // and holds no manifest at all is a scope this rule is reading nothing of, and zero is the
+    // passing answer to every ban.
     for ext in ["yml", "yaml"] {
         let files = cx
-            .walk(&WalkSpec::new([ACTIONS_DIR]).ext(ext))
+            .walk(&WalkSpec::new([ACTIONS_DIR]).ext(ext).allow_empty())
             .map_err(|e| e.to_string())?;
         for f in files {
             let rel = f.rel_str();
@@ -621,6 +627,14 @@ fn action_manifests(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
                 out.push((rel, f.text));
             }
         }
+    }
+    if out.is_empty() {
+        return Err(format!(
+            "{ACTIONS_DIR} is present and holds no `action.yml`/`action.yaml` at any depth. A \
+             composite-action directory with no manifest in it is a scope this rule reads nothing \
+             of, and nothing read is not a clean pin set. Remove the directory, or add the manifest \
+             it exists for."
+        ));
     }
     Ok(out)
 }

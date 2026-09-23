@@ -161,6 +161,7 @@ pub struct WalkSpec {
     ext: Option<String>,
     exclude: Vec<String>,
     min_files: usize,
+    allow_empty: bool,
 }
 
 impl WalkSpec {
@@ -197,6 +198,22 @@ impl WalkSpec {
         self
     }
 
+    /// DECLARE THAT ZERO FILES IS A REAL ANSWER FOR THIS SCOPE, and not the instrument going blind.
+    ///
+    /// Every scope refuses an empty result by default ([`WalkError::Empty`]), because an empty scan
+    /// and a clean tree are the same bytes on the terminal and only one of them is a verdict. A few
+    /// scopes genuinely mean "whatever is here, and nothing is a legitimate here" — a plugin
+    /// directory before the first plugin lands, an optional overlay tree, a census that COUNTS what
+    /// it finds rather than banning something in it. Those say so, at the call site, one at a time.
+    ///
+    /// It is deliberately not a default and deliberately not a convenience: each use is a written
+    /// claim that this particular rule still means something over an empty set, and a reviewer can
+    /// grep for every such claim in one command.
+    pub fn allow_empty(mut self) -> WalkSpec {
+        self.allow_empty = true;
+        self
+    }
+
     pub fn roots(&self) -> &[String] {
         &self.roots
     }
@@ -206,6 +223,13 @@ impl WalkSpec {
 pub enum WalkError {
     MissingRoot {
         root: String,
+    },
+    /// The roots ARE on disk and the filters left nothing. Distinct from
+    /// [`WalkError::MissingRoot`] because the failure is different: the address is right and the
+    /// scope is empty, which is the shape a rule takes when its `ext`, its `exclude` or an ignore
+    /// rule has quietly eaten the whole set.
+    Empty {
+        roots: Vec<String>,
     },
     BelowFloor {
         found: usize,
@@ -226,6 +250,15 @@ impl fmt::Display for WalkError {
                 "walk root `{root}` does not exist. `find` drops a missing root silently and then \
                  scans nothing of it, and zero is the passing answer to every ban — so a root that \
                  moved is an error here, never a narrower scan."
+            ),
+            WalkError::Empty { roots } => write!(
+                f,
+                "walk over [{}] yielded ZERO files. The roots are on disk and the filters left \
+                 nothing, so this rule is being asked about an empty set — and zero is the passing \
+                 answer to every ban. If the scope moved, move it in a reviewed diff; if zero is \
+                 genuinely a real answer for this rule, say so at the call site with \
+                 `WalkSpec::allow_empty`.",
+                roots.join(", ")
             ),
             WalkError::BelowFloor {
                 found,
@@ -260,6 +293,15 @@ pub struct Env {
     /// `CONFIG_SCHEMA_BOOTSTRAP` — that gate's declared, one-run escape from having no baseline at
     /// all. Declared, never inferred; it announces itself and it is not a pass.
     pub config_bootstrap: bool,
+    /// `XTASK_SCAN_AUDIT=1` — trace every resolved scope and its FILE COUNT to stderr, one
+    /// tab-separated line per walk.
+    ///
+    /// It exists so the question "what is this rule actually looking at" has a mechanical answer
+    /// instead of a reading of the source. A rule whose scope silently narrowed to four files still
+    /// prints the same green it printed over four hundred, and the only way to notice is to be able
+    /// to SEE the denominator. Diagnostic only: it changes no verdict and writes to stderr, so a
+    /// runner that captures stdout is unaffected.
+    pub scan_audit: bool,
 }
 
 impl Env {
@@ -273,6 +315,7 @@ impl Env {
                 .ok()
                 .filter(|s| !s.is_empty()),
             config_bootstrap: std::env::var("CONFIG_SCHEMA_BOOTSTRAP").as_deref() == Ok("1"),
+            scan_audit: std::env::var("XTASK_SCAN_AUDIT").as_deref() == Ok("1"),
         }
     }
 }
@@ -506,6 +549,19 @@ impl Ctx {
         }
         let mut kept = self.drop_ignored(kept);
         kept.sort();
+        // THE GENERAL RULE. A scope that resolves to nothing is refused here, at the one place every
+        // rule in every gate resolves its scope, rather than in the handful of gates that thought to
+        // set a floor. Fifty-five of the eighty-eight scan sets in this tree carried no floor at
+        // all: their roots existed, their filters returned nothing, and they printed the same green
+        // a genuinely clean tree prints. An instrument that cannot produce a NO is not a check.
+        if kept.is_empty() && !spec.allow_empty {
+            return Err(WalkError::Empty {
+                roots: spec.roots.clone(),
+            });
+        }
+        if self.env.scan_audit {
+            eprintln!("scan-audit\t{}\t{}", kept.len(), spec.roots.join("+"));
+        }
         Ok(kept)
     }
 
