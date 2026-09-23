@@ -57,6 +57,14 @@ answered rather than left to be inferred from an empty commit body.
 
 None owed. No released line ever carried the defect.
 
+## Addendum 2026-09-22 — where this code lives now
+
+The `crates/busbar-unit-trust/src/net.rs` path is cited as of commits `0aad54bfa`/`2bc50d2cb` and is
+left unchanged — it is a statement about a tree that existed. The 14 `busbar-unit-*` crates have
+since collapsed into the 8 `busbar-kernel-<name>` crates (#36) and trust folded into egress, so the
+guard now lives at **`crates/busbar-kernel-egress/src/trust/net.rs`**. The "None released" verdict is
+unaffected.
+
 ## Credit
 
 Internal audit.

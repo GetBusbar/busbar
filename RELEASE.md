@@ -10,7 +10,7 @@ The branch model is **dev → qa → main**, and the split is the whole design:
 
 > **The qa build is what we release.** Every shipped byte — six binaries, the SBOM, the OpenAPI
 > asset, the multi-arch image — is built exactly once, on the push to `qa`, under throwaway names.
-> The push to `main` builds nothing. `scripts/release-order-lint.py` rule R10 fails CI if
+> The push to `main` builds nothing. `cargo xtask gate release-order` rule R10 fails CI if
 > `release.yml` ever gains a `cargo build`, a `pgo-build`, a `docker/build-push-action` or a call to
 > `build-artifact.yml`, because "just rebuild it on main" ships bytes that are not the ones qa
 > verified.
@@ -24,7 +24,7 @@ the consumer side → promote.
 
 Write your notes under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md) (Keep-a-Changelog
 headings: Added / Changed / Fixed / Security). This is not optional any more: `release-stage.yml`'s
-`plan` job runs `scripts/changelog-lint.py --require-version <version>` and **refuses to stage** a
+`plan` job runs `cargo xtask gate changelog` (with the release version) and **refuses to stage** a
 version whose section is missing or is not the newest entry in the file.
 
 ## The runbook

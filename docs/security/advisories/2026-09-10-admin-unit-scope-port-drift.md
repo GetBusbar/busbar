@@ -96,6 +96,18 @@ advisory is owed to operators and no CVE is warranted.**
 
 None owed. No released line ever carried `busbar-unit-scope`.
 
+## Addendum 2026-09-22 — where this code lives now
+
+The paths above are cited **as of `v1.5.5`** and are left unchanged: that is what the tree held when
+the drift was measured. For a reader resolving them against the current `dev`, the crate layout has
+since moved (DECISIONS #19/#37 deleted `busbar-core` into `busbar-kernel`):
+
+| cited (historical) | current home |
+|---|---|
+| `crates/busbar/src/admin/v1/contract/mod.rs` | `crates/busbar-kernel/src/admin/v1/contract/mod.rs` |
+| `crates/busbar/src/auth/mod.rs` | `crates/busbar-kernel/src/auth/mod.rs` |
+| `busbar-unit-scope` | `busbar-kernel-scope` (the 14 `busbar-unit-*` crates collapsed to the 8 `busbar-kernel-<name>`, #36) |
+
 ## Credit
 
 Internal audit.

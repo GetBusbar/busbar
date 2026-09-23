@@ -1,9 +1,9 @@
 # ADR-0010: Plugin licensing — plugin self-validates, core resolves & delivers
 
 > Status: accepted (1.5.0). `ADR-0010` is referenced in
-> `crates/busbar-core/src/config/secret.rs` (`resolve_settings`), the three plugin
-> open paths (`crates/busbar/src/main.rs`, `crates/busbar-core/src/auth/mod.rs`,
-> `crates/busbar-core/src/hooks/mod.rs`), and the demo plugin
+> `crates/busbar-kernel/src/config/secret.rs` (`resolve_settings`), the three plugin
+> open paths (`crates/busbar/src/main.rs`, `crates/busbar-kernel/src/auth/mod.rs`,
+> `crates/busbar-kernel/src/hooks/mod.rs`), and the demo plugin
 > `crates/auth-static-plugin/src/lib.rs`.
 
 ## Context

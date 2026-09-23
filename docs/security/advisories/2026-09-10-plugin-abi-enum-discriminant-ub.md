@@ -52,6 +52,14 @@ owed to operators and no CVE is warranted.**
 
 None owed. No released line ever carried this code.
 
+## Addendum 2026-09-22 — where this code lives now
+
+The affected-file paths above are cited as of the commit range in which the defect existed and are
+left unchanged. `busbar-core` has since been deleted into `busbar-kernel` (#19/#37):
+`crates/busbar-core/src/plane_host/govern.rs` and `…/journal.rs` are now
+`crates/busbar-kernel/src/plane_host/govern.rs` and `crates/busbar-kernel/src/plane_host/journal.rs`.
+`crates/busbar-plugin/src/hot/pod.rs` is unchanged. The "None released" verdict is unaffected.
+
 ## Credit
 
 Internal audit.
