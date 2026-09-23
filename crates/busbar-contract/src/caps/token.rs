@@ -78,8 +78,26 @@ use std::marker::PhantomData;
 pub struct KernelSeal(());
 
 impl KernelSeal {
-    /// Obtain the seal. **Kernel only.** CI's symbol scan fails the build if this name appears
-    /// outside the kernel crate's source; see the lint hooks module for the exact list.
+    /// Obtain the seal. **Kernel only**, and enforced by CI's symbol scan rather than by the type
+    /// system — see the lint hooks module for the exact list.
+    ///
+    /// **This is the one remaining cross-crate hole, and it is `pub` on purpose (#65).** Rust has
+    /// no way to say "callable by exactly one other crate", and the sole production caller —
+    /// `crates/busbar-kernel/src/teller.rs` — is in a DIFFERENT crate, so `pub(crate)` would lock
+    /// out the one caller that is supposed to have it. `#[doc(hidden)]` hides this from rustdoc; it
+    /// restricts nobody. Anything that can name `busbar-contract` can still call this.
+    ///
+    /// What CHANGED in 1.6.0 is that the scan guarding it is now load-bearing instead of
+    /// decorative. [`KernelSeal`](crate::plugin::KernelSeal) — the TRAIT the kernel-built views
+    /// take — is now SEALED, so the only way to obtain a `&dyn KernelSeal` is to hold a real
+    /// [`Pass`] or [`Grant`], and the only way to mint one of those is this function. Before the
+    /// seal, a forger skipped this symbol entirely by implementing the trait on a type of its own,
+    /// which no amount of scanning for THIS name could ever see. Every path to a kernel-built view
+    /// now runs through the one symbol CI actually watches.
+    ///
+    /// Closing this hole in the type system means moving the token types into the kernel crate, or
+    /// gating them on a feature the whole graph would unify anyway. Both are owner rulings, not
+    /// changes this function's doc comment gets to make.
     #[doc(hidden)]
     pub fn acquire_for_kernel() -> Self {
         KernelSeal(())
@@ -181,6 +199,8 @@ impl<S: Step> std::fmt::Debug for Pass<S> {
     }
 }
 
+impl<S: Step> crate::plugin::sealed::KernelSealed for Pass<S> {}
+
 impl<S: Step> crate::plugin::KernelSeal for Pass<S> {
     fn seal_origin(&self) -> &'static str {
         "Pass"
@@ -242,6 +262,26 @@ impl<C: Capability> std::fmt::Debug for Grant<C> {
         write!(f, "Grant<{}>", C::NAME)
     }
 }
+
+// ── the TEST-ONLY seal (#65) ────────────────────────────────────────────────────────────────────
+//
+// `plugin::TestKernelSeal` is declared in the plugin module so that a PLANE can name it — a plane
+// may not name THIS module at all (section 1.2) — but its impls belong here, beside `Pass` and
+// `Grant`, because this directory is the one place a reader (and `kernel-seal-impls`) has to look
+// to enumerate every type that can present a seal. Feature-gated, so it does not exist in a
+// release build.
+
+#[cfg(feature = "test-seal")]
+impl crate::plugin::sealed::KernelSealed for crate::plugin::TestKernelSeal {}
+
+#[cfg(feature = "test-seal")]
+impl crate::plugin::KernelSeal for crate::plugin::TestKernelSeal {
+    fn seal_origin(&self) -> &'static str {
+        "test-seal: a fixture, not a kernel"
+    }
+}
+
+impl<C: Capability> crate::plugin::sealed::KernelSealed for Grant<C> {}
 
 impl<C: Capability> crate::plugin::KernelSeal for Grant<C> {
     fn seal_origin(&self) -> &'static str {

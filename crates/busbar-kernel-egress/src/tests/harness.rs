@@ -46,14 +46,10 @@ use crate::ports::{
     PermitHandle, Telemetry, Unavailable, UpstreamStatus,
 };
 
-/// The kernel-side marker the fixtures present to build the views a plane reads.
-pub struct TestSeal;
-
-impl busbar_contract::plugin::KernelSeal for TestSeal {
-    fn seal_origin(&self) -> &'static str {
-        "busbar-unit-egress::tests"
-    }
-}
+/// The blessed TEST seal (#65). `KernelSeal` is SEALED — no crate outside `busbar-contract` can
+/// implement it — so a fixture names the contract's own `test-seal` type instead of forging one.
+/// The type system stops a plugin now, not the manifest allow-list alone.
+pub use busbar_contract::plugin::TestKernelSeal as TestSeal;
 
 // ── the clock ───────────────────────────────────────────────────────────────────────────────────
 

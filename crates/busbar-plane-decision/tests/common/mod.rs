@@ -12,7 +12,6 @@ use busbar_contract::bounded::{
     Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, SlabBytes, Span,
 };
 use busbar_contract::ids::{PrincipalId, SessionId};
-use busbar_contract::plugin::KernelSeal;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, SessionView, TransportView};
 use busbar_contract::wire::{Direction, Frame, FrameMeta};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -186,14 +185,10 @@ impl SessionView for TestSession {
     }
 }
 
-/// The seal a test presents to build the values the kernel would build.
-pub struct TestSeal;
-
-impl KernelSeal for TestSeal {
-    fn seal_origin(&self) -> &'static str {
-        "test"
-    }
-}
+/// The blessed TEST seal (#65). `KernelSeal` is SEALED — no crate outside `busbar-contract` can
+/// implement it — so a fixture names the contract's own `test-seal` type instead of forging one.
+/// The type system stops a plugin now, not the manifest allow-list alone.
+pub use busbar_contract::plugin::TestKernelSeal as TestSeal;
 
 /// A clock frozen at a readable instant.
 pub const CLOCK: Clock = Clock {

@@ -71,22 +71,12 @@ impl busbar_contract::TransportConfigView for CapCfg {
 }
 
 fn test_key_handle() -> busbar_contract::TransportKeyHandle {
-    struct Seal;
-    impl busbar_contract::plugin::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "test"
-        }
-    }
+    use busbar_contract::plugin::TestKernelSeal as Seal;
     busbar_contract::TransportKeyHandle::issue(&Seal, 0, "test")
 }
 
 fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination {
-    struct Seal;
-    impl busbar_contract::plugin::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "test"
-        }
-    }
+    use busbar_contract::plugin::TestKernelSeal as Seal;
     busbar_contract::VerifiedDestination::seal(
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
@@ -709,12 +699,7 @@ async fn the_destinations_method_is_the_path_the_call_opens_against() {
     };
 
     let host: &'static str = Box::leak(addr.into_boxed_str());
-    struct Seal;
-    impl busbar_contract::plugin::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "test"
-        }
-    }
+    use busbar_contract::plugin::TestKernelSeal as Seal;
     let dest = busbar_contract::VerifiedDestination::seal(
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
@@ -1303,12 +1288,7 @@ async fn a_malformed_sealed_method_refuses_instead_of_panicking() {
     };
 
     let host: &'static str = Box::leak(addr.into_boxed_str());
-    struct Seal;
-    impl busbar_contract::plugin::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "test"
-        }
-    }
+    use busbar_contract::plugin::TestKernelSeal as Seal;
     let dest = busbar_contract::VerifiedDestination::seal(
         &Seal,
         busbar_contract::DestinationFacts::Upstream {

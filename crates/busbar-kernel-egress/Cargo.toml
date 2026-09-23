@@ -46,4 +46,8 @@ futures = { workspace = true }
 # units. This dev-dependency exists only so `tests/breaker_adapter.rs` can prove that seam is
 # actually implementable over the breaker unit's real API, not a fixture invented to fit it.
 [dev-dependencies]
+# The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
+# fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
+# forge their own. Dev-only and feature-gated, so it is absent from every release build.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }

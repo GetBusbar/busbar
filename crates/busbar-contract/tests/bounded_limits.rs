@@ -81,11 +81,10 @@ fn the_loop_has_exactly_its_ten_named_steps() {
 /// determined. The map is the draft's, key for key: nothing is dropped and nothing is invented.
 #[test]
 fn a_unit_carries_the_drafts_facts() {
-    struct Seal;
-    impl busbar_contract::plugin::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "busbar-contract::tests"
-        }
+    // A REAL capability token, not a fixture seal: `Pass<Verify>` is one of the two
+    // types this crate implements the sealed `KernelSeal` for (#65).
+    fn seal() -> busbar_contract::caps::Pass<busbar_contract::caps::Verify> {
+        busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
     }
 
     let mut facts = Facts::new();
@@ -95,7 +94,7 @@ fn a_unit_carries_the_drafts_facts() {
     facts.set("stream", FactValue::Bool(true)).expect("set");
 
     let unit = busbar_contract::unit::Unit::new(
-        &Seal,
+        &seal(),
         busbar_contract::UnitKey::new(1),
         busbar_contract::unit::Origin::Client,
         None,
@@ -187,15 +186,14 @@ fn a_bounded_list_refuses_past_its_capacity() {
 /// asserted only as a number.
 #[test]
 fn a_unit_refuses_the_leg_reply_past_its_ceiling_and_hands_it_back() {
-    struct Seal;
-    impl busbar_contract::plugin::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "busbar-contract::tests"
-        }
+    // A REAL capability token, not a fixture seal: `Pass<Verify>` is one of the two
+    // types this crate implements the sealed `KernelSeal` for (#65).
+    fn seal() -> busbar_contract::caps::Pass<busbar_contract::caps::Verify> {
+        busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
     }
 
     let mut unit = busbar_contract::unit::Unit::new(
-        &Seal,
+        &seal(),
         busbar_contract::UnitKey::new(1),
         busbar_contract::unit::Origin::Client,
         None,
@@ -215,13 +213,13 @@ fn a_unit_refuses_the_leg_reply_past_its_ceiling_and_hands_it_back() {
     };
 
     for leg in 0..MAX_LEG_REPLIES {
-        unit.push_leg_result(&Seal, reply(u8::try_from(leg).expect("small")))
+        unit.push_leg_result(&seal(), reply(u8::try_from(leg).expect("small")))
             .expect("under the ceiling");
     }
     assert_eq!(unit.leg_results().len(), MAX_LEG_REPLIES);
 
     let handed_back = unit
-        .push_leg_result(&Seal, reply(99))
+        .push_leg_result(&seal(), reply(99))
         .expect_err("the unit accepted a reply past its ceiling");
     assert_eq!(
         handed_back.leg, 99,

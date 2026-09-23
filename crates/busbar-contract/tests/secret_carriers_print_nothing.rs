@@ -105,15 +105,14 @@ fn a_resolved_secret_prints_exactly_the_redaction_and_nothing_else() {
 /// exactly once, and a reader who has it has what the verb minted.
 #[test]
 fn a_one_time_placeholder_does_not_print_its_nonce() {
-    struct Verbs;
-    impl busbar_contract::plugin::KernelSeal for Verbs {
-        fn seal_origin(&self) -> &'static str {
-            "test-verbs"
-        }
+    // A REAL capability token, not a fixture seal: `Pass<Verify>` is one of the two
+    // types this crate implements the sealed `KernelSeal` for (#65).
+    fn seal() -> busbar_contract::caps::Pass<busbar_contract::caps::Verify> {
+        busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
     }
 
     let nonce = 0x0dd1_c0ff_ee15_dead_beef_cafe_f00d_1234_u128;
-    let once = SecretOnce::mint(&Verbs, nonce, "body.secret");
+    let once = SecretOnce::mint(&seal(), nonce, "body.secret");
     let printed = format!("{once:?}");
     assert!(
         !printed.contains(&nonce.to_string()) && !printed.contains(&format!("{nonce:x}")),
