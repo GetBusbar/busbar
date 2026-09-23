@@ -1,22 +1,23 @@
-//! The voice plane: what bytes mean, for duplex/live-voice sessions.
+//! The STREAMING plane: what bytes mean, for duplex/live sessions. Voice is ONE dialect inside this
+//! plane (DECISIONS #18) — never the plane's name.
 //!
 //! ## What this crate is
 //!
 //! An ADAPTER, in the same sense `busbar-plane-llm` is one: every method of the plane kind here is a
-//! thin wrapper over a codec that already exists in `busbar-voice` — the OpenAI Realtime and Gemini
-//! Live dialect readers/writers and the four-layer duplex/session IR they meet in
+//! thin wrapper over a codec that already exists in `busbar-voice-codec` — the OpenAI Realtime and
+//! Gemini Live dialect readers/writers and the four-layer duplex/session IR they meet in
 //! (`docs/design/plane4-duplex-session.md`, the four-layer IR section). No wire format for those two dialects is written
 //! twice.
 //!
 //! Two things this crate DOES write itself, because nothing upstream provides them and the task this
 //! crate exists for names them explicitly:
 //!
-//! * A minimal Twilio Media Streams JSON reader/writer ([`twilio`]) — `busbar-voice` has no dialect
-//!   codec for Twilio's own wire, and the one Twilio-shaped module in that crate
+//! * A minimal Twilio Media Streams JSON reader/writer ([`twilio`]) — `busbar-voice-codec` has no
+//!   dialect codec for Twilio's own wire, and the one Twilio-shaped module in that crate
 //!   (`busbar_voice_codec::topology::twilio`) is gated behind its `runtime` cargo feature, which this crate
 //!   never turns on (see the crate-root dependency note below). So this crate's Twilio reader/writer
 //!   is written from the wire shape alone, independently, and is NOT a copy of that module.
-//! * A standard G.711 µ-law ↔ PCM16 transform ([`ulaw`]) — `busbar-voice` only carries the byte-rate
+//! * A standard G.711 µ-law ↔ PCM16 transform ([`ulaw`]) — `busbar-voice-codec` only carries the byte-rate
 //!   bookkeeping for the format (`busbar_voice_codec::ir::media::AudoFormat`), not an actual sample
 //!   transcoder; its own doc comments call the transcode an unimplemented "seam...armed only when a
 //!   lane declares it." This crate is the lane that declares it.
@@ -31,15 +32,23 @@
 //!
 //! ## The dependency seam, stated honestly
 //!
+//! THIS CRATE DOES NOT DEPEND ON `busbar-voice`, AND THE EDGE RUNS THE OTHER WAY. Measured with
+//! `cargo tree -p busbar-plane-streaming --edges normal --depth 1`, this crate's whole direct
+//! closure is `busbar-contract` + `busbar-voice-codec` + `serde_json` + `bytes` + `async-trait`
+//! (a proc-macro). It is `busbar-voice` that names THIS crate (`crates/busbar-voice/Cargo.toml`),
+//! not the reverse — so there is no `default-features = false` on a `busbar-voice` line here,
+//! because there is no such line at all.
+//!
 //! `busbar-voice`'s own plane machinery (`PLANE_DECL`, `mount`, `runtime`, `topology`) is built
 //! against a different, older plane architecture (`busbar_kernel::plane::registry::PlaneDecl`,
 //! the same shape `busbar-mcp`/`busbar-a2a` use) and is gated behind busbar-voice's `runtime` cargo
-//! feature. This crate depends on `busbar-voice` with `default-features = false` and never turns
-//! `runtime` on, so none of that machinery, and none of the async runtime it would pull in
-//! (`tokio`, `async-trait`, `futures`), is ever part of this crate's build. What this crate DOES use
-//! is `busbar_voice_codec::ir` — the plane-4 duplex/session intermediate representation and both dialect
-//! codecs — which is unconditional in `busbar-voice`'s own manifest (no feature gate at all) and is
-//! pure, sync, and free of any async surface. `cargo tree -p busbar-plane-streaming` is the proof.
+//! feature. None of that machinery, and none of the async runtime it would pull in (`tokio`,
+//! `futures`, `hyper`), is reachable from here — the closure above measures zero of them.
+//!
+//! What this crate DOES use is `busbar_voice_codec::ir` — the plane-4 duplex/session intermediate
+//! representation and both dialect codecs — which is unconditional in `busbar-voice-codec`'s own
+//! manifest (that crate's one feature, `runtime`, is not in `default` and this crate never turns it
+//! on) and is pure, sync, and free of any async surface.
 //!
 //! ## What it holds across calls
 //!
@@ -96,7 +105,7 @@ pub struct Upstream {
     pub dialect: Dialect,
 }
 
-/// The voice plane.
+/// The streaming plane. Voice is one dialect inside it (DECISIONS #18), not its name.
 ///
 /// The one field is a borrowed, immutable list: no cell, no lock, no atomic. The purity test in
 /// `tests::purity` asserts that by walking the type rather than by trusting this sentence.

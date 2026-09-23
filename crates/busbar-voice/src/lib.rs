@@ -8,8 +8,14 @@
 //! [`busbar_kernel::proto::ProtocolDecl`] with `codec: None`) — plus the plane's OWN four-layer
 //! duplex/session IR ([`ir`]) and BOTH dialect codecs (OpenAI Realtime + Gemini Live). The live pump,
 //! reader/writer bodies, and session store are implemented in [`runtime`] behind the `runtime` feature
-//! (see `docs/design/plane4-duplex-session.md` §8). Boot-mounting that runtime into the composition
-//! root (route / admission / handler wiring) is separate, tracked work — see [`PLANE_DECL`].
+//! (see `docs/design/plane4-duplex-session.md` §8).
+//!
+//! BOOT-MOUNTING HAS LANDED — this paragraph used to say it was separate, tracked work, and that is
+//! no longer true. `plane-voice` is IN the binary's `default` feature set, and the composition root
+//! installs this crate at four sites: `register_planes` pushes [`PLANE_DECL`] into the plane axis,
+//! `register_diagnostics` extends with [`DIAGNOSTICS`], `register_ws_arrivals` installs
+//! `mount::voice_ws_arrivals()`, and `mount_root_voice` calls `mount::install_governed_calls`. The
+//! shipped binary therefore serves this plane; see [`PLANE_DECL`].
 //!
 //! ONE PLUGIN PER PROTOCOL, the same rule `busbar-mcp` / `busbar-a2a` state: nothing in `busbar-core`
 //! names this crate. Everything the plane consumes from the engine comes through the neutral
@@ -46,9 +52,10 @@ pub mod diagnostics;
 /// THE VOICE PLANE'S PLANE-CONTRIBUTED DIAGNOSTICS — the `&'static [&'static Diagnostic]` the
 /// composition root installs via `busbar_substrate_values::diagnostics::install_diagnostics`, re-exported at
 /// the crate root so the `busbar` binary names one stable path (`busbar_voice::DIAGNOSTICS`), exactly
-/// as `busbar_mcp::DIAGNOSTICS` / `busbar_a2a::DIAGNOSTICS`. Not yet booted by the binary — voice
-/// joins `register_diagnostics` at M5; the export exists now so that is a one-line addition. See
-/// [`diagnostics`].
+/// as `busbar_mcp::DIAGNOSTICS` / `busbar_a2a::DIAGNOSTICS`. BOOTED BY THE BINARY: `main.rs`'s
+/// `register_diagnostics` carries `installed.extend_from_slice(busbar_voice::DIAGNOSTICS)` under
+/// `plane-voice`, which is in `default`. (This line used to read "not yet booted … at M5"; M5
+/// landed.) See [`diagnostics`].
 pub use diagnostics::DIAGNOSTICS;
 
 // THE T2 LIVE-SESSION RUNTIME + both topologies — behind the `runtime` cargo feature (OFF by default,
