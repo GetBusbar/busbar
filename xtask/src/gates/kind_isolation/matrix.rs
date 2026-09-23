@@ -1506,11 +1506,42 @@ fn plant(rel: &str, body: &str) -> crate::ctx::Overlay {
 }
 
 /// The ledger with one row rewritten, so a case can raise a ceiling, leave slack in one, or knock a
-/// whole class out. The anchors below quote the row's own lines: a fixture that pins a number goes
-/// LOUDLY red when the tree is re-measured, which is what a fixture is for.
-fn ledger_with(cx: &Ctx, from: &str, to: &str) -> crate::ctx::Overlay {
-    let text = cx.read(LEDGER).unwrap_or_default();
-    plant(LEDGER, &text.replacen(from, to, 1))
+/// whole class out.
+///
+/// THE SENTENCE THAT USED TO BE HERE WAS THE OPPOSITE OF TRUE. It read: *"a fixture that pins a
+/// number goes LOUDLY red when the tree is re-measured, which is what a fixture is for."* It did
+/// not. This was a bare `replacen`, and `replacen` over a needle that is not in the string returns
+/// the string: a fixture pinning `count = "1798"` against a cell the ratchet had re-pinned to
+/// `1942` wrote the ledger back BYTE-FOR-BYTE, the gate read the unplanted tree, and the case
+/// scored whatever that tree scores — quietly, for as long as it took anyone to check. Three cases
+/// in this file were doing it. A needle that is no longer in the ledger is an UNPLANTABLE CASE
+/// now, and [`cell_anchor`] reads the number off the file so a re-pin cannot cause it in the first
+/// place.
+fn ledger_with(cx: &Ctx, from: &str, to: &str) -> Result<crate::ctx::Overlay, String> {
+    let text = cx.read(LEDGER)?;
+    if !text.contains(from) {
+        return Err(format!(
+            "`{}` is not in {LEDGER} to plant over",
+            from.replace('\n', " / ")
+        ));
+    }
+    Ok(plant(LEDGER, &text.replacen(from, to, 1)))
+}
+
+/// [`prove_rows_red`](crate::gates::prove_rows_red) over a one-substitution plant into the real
+/// ledger, with the substitution given as the `(anchor, replacement)` the caller worked out.
+fn plant_ledger<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn crate::gates::Gate,
+    name: &str,
+    covers: &[&str],
+    subst: Result<(String, String), String>,
+    naming: &[&str],
+) -> crate::gates::CasePlan<'a> {
+    match subst.and_then(|(from, to)| ledger_with(cx, &from, &to)) {
+        Ok(ov) => crate::gates::prove_rows_red(cx, gate, name, covers, ov, naming),
+        Err(why) => super::unplantable(name, covers, naming, why).into(),
+    }
 }
 
 /// THE TREE WITH ALMOST EVERY FILE UNDER `crates/` GONE, for this row's own floor.
@@ -1532,8 +1563,39 @@ fn all_but_scanned(cx: &Ctx, keep: usize) -> crate::ctx::Overlay {
 }
 
 /// The three lines of one `[[cell]]` row.
-fn cell_row(krate: &str, kind: &str, count: &str) -> String {
+pub(super) fn cell_row(krate: &str, kind: &str, count: &str) -> String {
     format!("crate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"{count}\"")
+}
+
+/// THE `[[cell]]` ROW FOR `crate × kind` AS THE LEDGER SPELLS IT TODAY, count included.
+///
+/// A FIXTURE MAY NOT HARD-CODE A RATCHET VALUE. Every `count` in this file is TODAY'S MEASUREMENT
+/// by construction, and `cargo xtask gate kind-isolation --write` re-pins it whenever the tree
+/// moves down; a plant that quotes one is a plant that stops planting on the next re-pin and says
+/// nothing when it does. `busbar × plane` was `1798` when the cases below were written and is
+/// `1942` now; `busbar-kernel × plane` was `1` and is four figures. The anchor is read off the
+/// file every run instead.
+pub(super) fn cell_anchor(cx: &Ctx, krate: &str, kind: &str) -> Result<String, String> {
+    let text = cx.read(LEDGER)?;
+    let head = format!("crate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"");
+    let at = text.find(&head).ok_or_else(|| {
+        format!("no `[[cell]]` row for {krate} × {kind} in {LEDGER} to plant over")
+    })?;
+    let rest = &text[at + head.len()..];
+    let end = rest.find('"').ok_or_else(|| {
+        format!("the `[[cell]]` row for {krate} × {kind} has an unterminated `count`")
+    })?;
+    Ok(format!("{head}{}\"", &rest[..end]))
+}
+
+/// That row, and the same row with `count` moved to `count`.
+pub(super) fn cell_subst(
+    cx: &Ctx,
+    krate: &str,
+    kind: &str,
+    count: &str,
+) -> Result<(String, String), String> {
+    Ok((cell_anchor(cx, krate, kind)?, cell_row(krate, kind, count)))
 }
 
 /// Every RED case this row owes, and the GREEN one it is measured against.
@@ -1632,30 +1694,22 @@ pub fn selftest<'a>(
 
     // THE ROOT THAT HAND-WIRED FOUR PLANES. Drop the cell to what a registry-driven root would
     // measure and the row names the four files by name.
-    report.push(prove_rows_red(
+    report.push(plant_ledger(
         cx,
         gate,
         "the root that hand-wired four planes, held to the zero a registry-driven root would measure",
         &[ROW_MATRIX],
-        ledger_with(
-            cx,
-            &cell_row("busbar", "plane", "1798"),
-            &cell_row("busbar", "plane", "0"),
-        ),
+        cell_subst(cx, "busbar", "plane", "0"),
         &["ratchet", "busbar × plane", "RAISED", "units_voice.rs"],
     ));
 
     // A CEILING WITH SLACK IS THE OTHER HALF OF THE RATCHET.
-    report.push(prove_rows_red(
+    report.push(plant_ledger(
         cx,
         gate,
         "a ceiling left above the count it measures — stale slack is how drift hides",
         &[ROW_MATRIX],
-        ledger_with(
-            cx,
-            &cell_row("busbar-kernel", "plane", "1"),
-            &cell_row("busbar-kernel", "plane", "99999"),
-        ),
+        cell_subst(cx, "busbar-kernel", "plane", "99999"),
         &["ratchet", "busbar-kernel × plane", "STALE SLACK"],
     ));
 
@@ -1741,35 +1795,32 @@ pub fn selftest<'a>(
     ));
 
     // AN EDGE CLASS NOBODY WROTE DOWN.
-    report.push(prove_rows_red(
+    report.push(plant_ledger(
         cx,
         gate,
         "an edge class with no row at all is refused, whatever ARCHITECTURE.md may grant",
         &[ROW_MATRIX],
-        ledger_with(
-            cx,
-            "from = \"root\"\nto = \"plane\"\n",
-            "from = \"root\"\nto = \"plane-was-struck\"\n",
-        ),
+        Ok((
+            "from = \"root\"\nto = \"plane\"\n".to_string(),
+            "from = \"root\"\nto = \"plane-was-struck\"\n".to_string(),
+        )),
         &["unlisted-edge", "root -> plane"],
     ));
 
     // TWO ROWS FOR ONE CELL. The maps would keep the last, so which ceiling binds would be decided
     // by file order — and a ceiling nobody chose is not a ceiling.
-    report.push(prove_rows_red(
+    report.push(plant_ledger(
         cx,
         gate,
         "a second `[[cell]]` row for one cell is two answers, not a tighter one",
         &[ROW_MATRIX],
-        ledger_with(
-            cx,
-            &cell_row("busbar-kernel", "plane", "1"),
-            &format!(
-                "{}\n\n[[cell]]\n{}",
-                cell_row("busbar-kernel", "plane", "1"),
+        cell_anchor(cx, "busbar-kernel", "plane").map(|anchor| {
+            let doubled = format!(
+                "{anchor}\n\n[[cell]]\n{}",
                 cell_row("busbar-kernel", "plane", "0")
-            ),
-        ),
+            );
+            (anchor, doubled)
+        }),
         &["duplicate-row", "busbar-kernel × plane"],
     ));
 
