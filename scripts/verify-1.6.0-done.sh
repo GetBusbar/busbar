@@ -24,9 +24,10 @@
 #   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
 #   conformance      the conformance rigs' selftests + verdict-covers-every-leg.py + the voice legs =ready.
 #   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
-#                    scenario/script/leg/suite that owns it and the rigs behind them pass (NO
-#                    current entry point RUNS them — see the TELLER-STEPS group, an honest gap, not
-#                    faked green), and every root-leg cell it calls proven runs over the loop.
+#                    scenario/script/leg/suite that owns it, and the rigs behind them RUN and pass
+#                    (testing/shadow-oracle/rigs-ledger.sh, driven from the TELLER-STEPS group
+#                    rather than from the gate runner, which segregation forbids), and every
+#                    root-leg cell it calls proven runs over the loop.
 #   no-deferral      cargo xtask gate no-deferral-strict-done (nothing deferred; voice markers CLEARED).
 #   config-noun      scripts/plane-config-noun-gate.sh armed (GREP_GATE_REPORT_ONLY=0). Its residual is
 #                    a LOCKED-legitimate floor, not zero and not a done condition, so what is asserted
@@ -870,39 +871,59 @@ if [ -f qa/teller-steps.json ]; then
   # come with it: a missing rig ledger and a missing release binary are REFUSALS, not skips. Nothing
   # ran, so nothing is proven.
   #
-  # testing/shadow-oracle/rigs-ledger.sh is CONFIRMED ABSENT from this tree (the Phase C cutover
-  # retired the Python oracle tool in favour of the pinned Rust `busbar-oracle` engine,
-  # testing/shadow-oracle/oracle-rust.pin, reached through ./bin/oracle). It does NOT follow that
-  # `bin/oracle rigs-ledger` is the replacement -- that was tried here and is WRONG: `bin/oracle`'s
-  # own dispatcher (bin/oracle:~90-onward) forwards any subcommand it does not special-case straight
-  # to the pinned engine, and that engine's `--help` lists normalize/diff/cells/owed-baseline/record/
-  # replay/harness-rev/merge/renormalize/replay-selftest/selftest/fetch-plugin/tool-dir/fetch-golden
-  # -- no `rigs-ledger`. Confirmed two ways: running it here prints `error: unrecognized subcommand
-  # 'rigs-ledger'`, and the pinned engine's own crates/busbar-release-oracle/PORT-REMAINING.md lists
-  # `rigs-ledger` under "ported as recorder::* leaves + tested; not yet re-exposed as CLI
-  # subcommands (only needed if a caller invokes them directly — none in the money path does)". This
-  # caller does invoke it directly, so the gap is real, not a wrong flag to swap out.
+  # testing/shadow-oracle/rigs-ledger.sh WAS absent from this tree, and the reason this group used to
+  # print for that was wrong in both halves. It said the work had been "ported to library leaves
+  # only, not re-exposed as a CLI arm" in the pinned engine, citing
+  # crates/busbar-release-oracle/PORT-REMAINING.md. That document does not say that. What it says,
+  # verbatim, is one line (busbar-release/crates/busbar-release-oracle/PORT-REMAINING.md:67), filed
+  # under the heading at :57, "STILL DEFERRED (recorder internals the harness itself provides; we
+  # DRIVE them, never reimplement)":
   #
-  # NOR IS THIS AN XTASK REPOINT. `cargo xtask teller-steps` has exactly two run arms,
-  # `--root-legs` (used above) and `--root-legs-gating` (already run as part of `cargo xtask
-  # full-gate` in the BUILD group) -- and its own usage text says why a third, `--rig-legs`, does
-  # not exist: "Driving the oracle's rig ledger means RUNNING the oracle's code, which `cargo xtask
-  # gate segregation` forbids the gate runner from doing... That arm stayed in
-  # scripts/verify-1.6.0-done.sh, where the caller drives the oracle directly." Driving it directly
-  # is exactly what fails above -- the CLI surface to drive isn't there yet.
+  #     - `rigs-ledger.sh` / `fixture-gate-selftest.sh` — separate plane-rigs gate, not the LLM
+  #       money proof.
   #
-  # So: no file, no gate flag, and no CLI subcommand currently lets this tree RUN the rig suites the
-  # matrix cites and check they pass. That is an upstream gap (busbar-release, a separate pinned
-  # repo this file may not patch), not harness drift this script can repoint around. Reported as an
-  # honest absence rather than left as a cryptic clap usage error.
-  if [ ! -x bin/oracle ]; then
-    absent_step "the rig suites the matrix cites" "bin/oracle"
+  # So it was never ported: `grep -rln rigs crates/busbar-release-oracle/src/` returns nothing, and
+  # that crate has no `recorder::*` leaves at all, for rigs or anything else. It was ruled OUT of
+  # that port's scope, by name, as not being the money proof. The old citation both misquoted the
+  # source and understated the work — re-exposing an already-ported CLI arm is small, and this was
+  # not that.
+  #
+  # AND THE RULING IS RIGHT, WHICH MAKES "WAIT FOR UPSTREAM" THE WRONG ANSWER. A plane-rigs gate is
+  # not the LLM money oracle's job, so no CLI surface was ever going to land in busbar-release for
+  # this caller to drive. The gate belongs HERE, beside the other rows that read this tree — and it
+  # was here: testing/shadow-oracle/rigs-ledger.sh, deleted by c73ae4f66 ("the oracle tool leaves
+  # this tree"), a sweep that moved the JUDGE out and took this bridge with it even though the
+  # bridge drives busbar's OWN rigs (scripts/mcp-conformance.sh, scripts/a2a-subject/boot.sh,
+  # testing/voice-conformance/voice-conformance.sh) and never touches the judge. The one upstream
+  # hook it needed — voice-conformance.sh's additive VOICE_RESULT_LOG — survived the sweep intact,
+  # which is what made restoring it a restore rather than a rewrite. It is restored from fa15cd661.
+  #
+  # THIS ARM IS STILL DRIVEN FROM HERE, NOT FROM THE GATE RUNNER, and that is not this file's
+  # opinion: xtask/src/gates/segregation.rs names this exact path and this exact caller as the rule
+  # — "`teller-steps` may ask `rigs-baseline.json` what ids exist, and may NOT run `rigs-ledger.sh`
+  # to find out … that arm stayed in `scripts/verify-1.6.0-done.sh`, where a caller driving the
+  # oracle is a caller, rather than moving into the gate runner, where it would be the runner
+  # importing its subject." A `cargo xtask teller-steps --rig-legs` would break segregation; the
+  # repoint is to the restored script, not to a new gate flag.
+  #
+  # The self-test runs FIRST (the house rule): a ledger whose own vacuity guards have stopped firing
+  # is worse than none, and this one proves six of them — a flipped baseline row, a red run, a zero-
+  # row run, a leg that enumerated nothing, and --rebaseline refusing on red / writing on green.
+  # The refusals stay refusals: a missing script or a missing release binary is a REFUSAL, not a
+  # skip. Nothing ran, so nothing is proven.
+  if [ ! -x testing/shadow-oracle/rigs-ledger.sh ]; then
+    absent_step "the rig suites the matrix cites RUN and pass" \
+      "testing/shadow-oracle/rigs-ledger.sh — the plane-rigs bridge that folds the MCP / A2A / voice rigs into one ledger. Restore it (git show fa15cd661:testing/shadow-oracle/rigs-ledger.sh); it is NOT coming from busbar-release, which ruled it out of the oracle port by name (PORT-REMAINING.md:67)."
   elif [ ! -x target/release/busbar ]; then
-    absent_step "the rig suites the matrix cites" \
+    step "rigs-ledger --selftest (the ledger's own vacuity guards still fire)" \
+      bash testing/shadow-oracle/rigs-ledger.sh --selftest
+    absent_step "the rig suites the matrix cites RUN and pass" \
       "target/release/busbar — the MCP and A2A legs are armed from it (MCP_SUBJECT_BUSBAR_BIN / A2A_SUBJECT_BUSBAR_BIN), so without it the rigs cannot run at all. Build it first: cargo build --release -p busbar"
   else
-    absent_step "the rig suites the matrix cites RUN and pass" \
-      "bin/oracle rigs-ledger — the pinned busbar-oracle engine has no rigs-ledger subcommand (confirmed via --help and its own PORT-REMAINING.md: ported to library leaves only, not re-exposed as a CLI arm). Nothing in this tree can run the rig suites and check them until that CLI surface lands upstream."
+    step "rigs-ledger --selftest (the ledger's own vacuity guards still fire)" \
+      bash testing/shadow-oracle/rigs-ledger.sh --selftest
+    step "the rig suites the matrix cites RUN and pass" \
+      bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check
   fi
   printf '  \033[36m[info]\033[0m '
   cargo xtask teller-steps 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"
