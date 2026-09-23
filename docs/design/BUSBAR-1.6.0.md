@@ -105,9 +105,18 @@ rest mean exactly what they meant before this collapse. Cite a row; never re-lit
 > plus the standard plugins compiled in, with more dropped in later. A build has to know which
 > plugins it ships with. So a **Cargo manifest, a feature name, a build script, and the composition
 > root's dependency list MAY name planes and transports** — that is packaging stating what is in the
-> box. **No `.rs` file in a core crate may.** A plane or transport instance name in core Rust source
-> is a violation regardless of how it is spelled: a field, a const, a match arm, a string literal, a
-> function parameter, or a type.
+> box.
+>
+> **IN RUST SOURCE, ONLY THE THING ITSELF MAY NAME ITSELF.** `busbar-plane-llm` may say `llm` and may
+> name its own six dialects, because they are inside it. `busbar-transport-http` may say `http`.
+> Nothing else may — not the kernel, not the contract crate, not the loader, not admin, and **not a
+> sibling**: `busbar-transport-grpc` naming `http` is a violation exactly as `busbar-kernel` naming
+> `mcp` is, because grpc is naming a transport that is not itself. A violation counts however it is
+> spelled — a field, a const, a match arm, a string literal, a function parameter, or a type.
+>
+> This is why the seven transport-to-transport dependency edges are an architecture defect and not a
+> convenience: `grpc -> http`, `grpc -> tcp`, `sse -> http`, `tls -> tcp`, `tls -> unit-transport-key`,
+> `ws -> http`, `ws -> tcp`. Each is one transport reaching for another by name instead of asking core.
 >
 > That is why `plane-purity` scans `src/` and never `Cargo.toml` — the gate already encodes this
 > rule. What is wrong with it is its denominator, not its judgement.
