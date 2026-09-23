@@ -160,7 +160,7 @@ pub fn denominator(cx: &Ctx) -> Result<BTreeSet<String>, String> {
 /// empty cell, which is why the columns are taken from index 1. Header rows (`FILE`) and
 /// separator rows (`---`) are skipped by shape rather than by position, so a slice that adds a
 /// preamble does not silently lose its first file.
-pub fn claims(cx: &Ctx) -> Result<Vec<Claim>, String> {
+pub fn claims(cx: &Ctx, denom: &BTreeSet<String>) -> Result<Vec<Claim>, String> {
     let docs = cx.git_lines(&["ls-files", SWEEP_DIR])?;
     let mut out = Vec::new();
     for doc in docs {
@@ -196,6 +196,24 @@ pub fn claims(cx: &Ctx) -> Result<Vec<Claim>, String> {
                 continue;
             }
             if verdict.is_empty() || verdict.starts_with("---") {
+                continue;
+            }
+            // WHAT MAKES A ROW A CLAIM, and why it is not "it has four cells".
+            //
+            // The EVIDENCE column holds shell commands, and shell commands contain pipes. Split
+            // naively on `|`, a row like `| foo.rs | CLEAN | git grep x | wc -l | 3 |` yields
+            // cells that are fragments of a command, and those fragments then read as a file and
+            // a verdict. Sixteen such fragments were reported as phantom files in one run —
+            // noise that would drown the real ones, which is its own kind of blindness.
+            //
+            // A row is a CLAIM when it makes one: either its first cell names a file this tree
+            // has, or its second cell is one of the four words that are verdicts. A command
+            // fragment is neither, so it is ignored — while a phantom (legal verdict, absent
+            // file) and a prose verdict (real file, illegal word) are each still caught by one
+            // half of the test.
+            let names_a_real_file = denom.contains(file);
+            let carries_a_verdict = LEGAL_VERDICTS.contains(&verdict);
+            if !names_a_real_file && !carries_a_verdict {
                 continue;
             }
             out.push(Claim {
@@ -251,7 +269,7 @@ impl SweepCoverageGate {
             )
         });
 
-        let claims = match claims(cx) {
+        let claims = match claims(cx, &denom) {
             Ok(c) => c,
             Err(e) => {
                 rows.push(Row::fail(
