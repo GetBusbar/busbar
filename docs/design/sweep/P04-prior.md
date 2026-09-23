@@ -33,7 +33,7 @@ excluding `tests/`, `_tests.rs`, `tests.rs`, `test_support/`, `fixtures/`, `benc
 | crates/busbar-mcp/src/mcp/config.rs | FINDING | file-verdicts.md:1402 LIVE. config-surface.md rows for `tools.<s>.*` mostly WIRED (real evidence, CLEAN for those keys). LEDGER.md S23 (line 340): `effective_upstream_credentials` (config.rs:988) "exists with exactly one caller: a test" — operator's section-level `tools.upstream_credentials:` default is silently dropped for every server that doesn't repeat it entry-level; corroborated independently by local-only-audit.md G5/D22 (`catalogue.rs:1192` builds `UpstreamPosture` entry-level only, `#[allow(dead_code)]` on `effective_upstream_credentials`). unconstructed-sweep.md #178 `effective_hooks` (config.rs:982) also test-call-sites-only. | X-3305 |
 | crates/busbar-mcp/src/mcp/connect.rs | FINDING | file-verdicts.md:1403 LIVE. unconstructed-sweep.md #179 `overlay_patch` (connect.rs:495), 2 test call sites (`mcp/tests/connect_tests.rs:209,257`), 0 production. Confirmed via the combined grep — no non-test caller. | X-3306 |
 | crates/busbar-mcp/src/mcp/method.rs | FINDING | file-verdicts.md:92,218,1407 DUPLICATE (`tap_join_verdict` at method.rs:2519 and busbar-a2a/receive.rs:1096, plus "8 of 63 top-level symbols already exist in busbar-plane-mcp" — half-migrated). LEDGER.md GS29 (line 513): `structure-lint:plane-dup:unledgered` RED, `cargo xtask gate structure-lint` 2026-09-23 → "36 row(s), RED" — a live gate failure. Separately, LEDGER.md/local-only-audit.md G4 (money): `charged_at: 0` at production call site `method.rs:1261` — I read it directly (`sed -n '1255,1265p'`) and confirmed the literal `charged_at: 0,` is live; `governance/state.rs:1861-1893` documents `window_start == 0` as the special ALL-TIME budget cell, never aged/rolled. Every MCP `tools/call` therefore keys one window that never resets. Not previously promoted to a numbered LEDGER row for the MCP side (only found in `docs/design/1.6.0-local-only-audit.md`'s branch-sweep notes) — the twin at `busbar-a2a/src/a2a/receive.rs:897` is OUTSIDE this slice and carries the identical bug. | X-3307, X-3308 |
-| crates/busbar-mcp/src/mcp/sampling.rs | FINDING | file-verdicts.md:1412 LIVE. LEDGER.md M27 (line 262): `sampling/createMessage` has no size bound — unbounded message count, no running prompt-byte total, `temperature`/`stopSequences` forwarded near-verbatim — and it's charged to the INBOUND CALLER's budget for an UPSTREAM-induced ask. branch-sweep-ledger.md:864 confirms the fix (`MAX_SAMPLING_MESSAGES` etc.) lives only on an unlanded branch (`land/busbar-mcp` D17). local-only-audit.md G5/D17 independently reaches the same finding. Still OPEN — a money/DoS gap on trunk today. | X-3309 |
+| crates/busbar-mcp/src/mcp/sampling.rs | CLEAN | RE-GRADED BY THE SECOND PASS (see "CORRECTION to X-3309"). LEDGER.md M27's "no size bound" is false at HEAD: `grep -n 'MAX_SAMPLING' crates/busbar-mcp/src/mcp/sampling.rs` -> all four bounds declared (`:214,222,226,227`) AND enforced on the live path (`:248,261,304,360`); `temperature` range-checked `0.0..=2.0` at `:343`. `satisfy_upstream_ask` has real production callers (`method.rs:1954`, `tasks.rs:925`). X-3309 withdrawn; M27 should be closed. | - |
 | crates/busbar-mcp/src/mcp/tests/calllog_dispatch_tests.rs | FINDING | file-verdicts.md:1420 TEST. LEDGER.md GS32 (line 516) + gate-sweep.md:647,907: a PRIVATE duplicate `fn example_store_cdylib()` at `calllog_dispatch_tests.rs:138` that "deliberately does not build and asserts", while `busbar-kernel/src/test_support/plugin_store.rs:80` builds the fixture on demand. Consequence per GS32: "the four failures are the durable-record tests through a real `dlopen`ed store plugin... unless somebody built a cdylib by hand first" — an instrument that silently no-ops rather than exercising the real plugin boundary. Still present (both `fn example_store_cdylib` declarations read at HEAD per the ledger's own 2026-09-23 re-check). | X-3310 |
 | crates/busbar-mcp/src/mcp/upstream.rs | FINDING | file-verdicts.md:1465 LIVE. local-only-audit.md (line 2171, "New"): a secret source leaked in a refusal at `upstream.rs:409`. unconstructed-sweep.md #180 `authorise_verb` also test-call-sites-only (1 site) — minor, folded into the same row. | X-3311 |
 | crates/busbar-mcp/src/record.rs | FINDING | file-verdicts.md:220,1466 DUPLICATE (`encode`/`decode` implemented once per plane, twin `busbar-a2a/src/record.rs`, flagged `yes`). unconstructed-sweep.md #181 `from_journal_body` (record.rs:80) test-call-sites-only; I confirmed independently: `git grep -n from_journal_body -- crates \| grep -v tests` → only the file's own doc comments and the `pub fn` itself, zero production readers. The file's own comment (`record.rs:54-56`) calls this "the actual reader" of a call-log journal body — a durable-record reader that exists, is tested (`tests/record_tests.rs`, `calllog_dispatch_tests.rs`), and has no production caller reading a stored record back. | X-3312 |
@@ -83,7 +83,7 @@ excluding `tests/`, `_tests.rs`, `tests.rs`, `test_support/`, `fixtures/`, `benc
 | crates/busbar-substrate-values/src/ir/facts.rs | FINDING | file-verdicts.md:1631 LIVE. unconstructed-sweep.md #206 `screening_digest` (ir/facts.rs:203), 7 test sites. Confirmed via `git grep -n screening_digest -- crates \| grep -v tests`: only this file's own doc comments and `busbar-kernel/src/hooks/gate.rs:114`'s DOC COMMENT (not a call) referencing it for cache-key identity ("id + `ContentItem::screening_digest`... Safe degradation: a cold/evicted slot just means more gets [recomputed]"). The screening/incremental-scan gate's own documentation describes relying on this digest; no production code actually calls `.screening_digest()`. | X-3342 |
 | crates/busbar-substrate-values/src/lib.rs | CLEAN | file-verdicts.md:1639 LIVE. branch-sweep-ledger.md:97,137,149 are all REVIEW-level about deleted branches proposing `WireFraming`/`wire_format_name`/`WIRE_HTTP`/`WIRE_STDIO` — none confirmed as a trunk gap. | - |
 | crates/busbar-substrate-values/src/media.rs | FINDING | file-verdicts.md:1641 LIVE. unconstructed-sweep.md #207-208: `is_well_formed`/`has_payload` (media.rs:141,167), 3/4 test sites. Confirmed via combined grep: only `tests/media_tests.rs` references either. | X-3343 |
-| crates/busbar-substrate-values/src/proto.rs | FINDING | file-verdicts.md:193,1642 HALF-MIGRATED, flagged `yes`: "13 of its 79 top-level symbols also exist at the spec-named new home (busbar-contract+busbar-kernel); 66 do not... Spec DECISION #37." branch-sweep-ledger.md:1160 is a NO-GAP entry for a narrower, already-fixed interned-name bug (unrelated to the half-migration finding). | X-3344 |
+| crates/busbar-substrate-values/src/proto.rs | CLEAN | RE-GRADED BY THE SECOND PASS (see "CORRECTION to X-3344"). The "spec-named new home" is a re-export facade, not a second implementation: `busbar-kernel/src/proto/mod.rs:326` is `pub use busbar_substrate_values::proto::*;`, `registry.rs:65` re-exports `Registry`, `:129` `decl_for` is a two-line delegator, and `:134-156` are `#[cfg(test)]`-gated seams (`registry.rs:23,33,47` say so). File is live: 233 production references via `busbar_substrate_values::proto`. X-3344 demoted to a doc correction. | - |
 | crates/busbar-substrate-values/src/tests/proto.rs | CLEAN | file-verdicts.md:1656 TEST. This is the regression test proving the interned-name fix (branch-sweep-ledger.md:1160, NO GAP) — the test itself is correct and stronger than the branch it superseded. | - |
 | crates/busbar-timing/src/lib.rs | FINDING | file-verdicts.md:1667 LIVE. unconstructed-sweep.md #209-210: `set_enabled`/`dump_scoped` (lib.rs:373,500), 11/3 test sites. I confirmed via `git grep -n 'busbar_timing::set_enabled\|busbar_timing::dump_scoped' -- crates \| grep -v tests` → 0 hits. `dump_scoped`'s own doc: "Per-request: `reset` then `dump_scoped` bracket ONE request on ONE worker thread" — no production request-handling code calls it, so even with `BUSBAR_TIMING` enabled, the promised per-request breakdown never prints; only the crate's own `tests/smoke.rs` exercises it. | X-3345 |
 | crates/busbar-transport-grpc/src/mount.rs | FINDING | file-verdicts.md:1676 LIVE. unconstructed-sweep.md #211-212: `declared_calls`/`UNADDRESSED_STATUS` (mount.rs:117,177), 2 test sites each. Confirmed via combined grep: only `tests/mount.rs` references either. | X-3346 |
@@ -457,10 +457,391 @@ CERTAINTY: VERIFIED
 EVIDENCE:  `docs/design/1.6.0-TRACKER.md:108` (D25) and `docs/design/1.6.0-contract-gaps.md:238` (CG-49) both cite `SniCertResolver: ResolvesServerCert` and `provision_server_named` plus their tests as proof of "Done"/"SHIPPED" — neither cites a production caller. Traced the real boot path: `crates/busbar/src/main.rs:610` → `crates/busbar/src/root/transports.rs:144` `provision_servers` → `:178` calls `provision_server` (single-cert) — never `provision_server_named`. `git grep -n provision_server_named -- crates` → every non-doc-comment reference outside the declaration is a test (`busbar-transport-tls/src/tests/mod.rs:1331`, `busbar-unit-transport-key/src/tests.rs:528`).
 ACTION:    Either wire a config path (multiple `tls.certificates:` entries with names, or similar) through `root/transports.rs` to call `provision_server_named` when an operator configures more than one named certificate, or correct TRACKER.md/contract-gaps.md to stop describing CG-49 as shipped — a built-and-tested capability with no boot-path caller does not ship per this release's own construction law.
 
+
+## SECOND PASS — corrections to the rows above, and what a parallel sweep added
+
+This slice was swept twice, independently: once file-by-file end to end (rows X-3300..X-3357 above),
+and once by seven parallel investigations of disjoint file groups. The two passes agreed on the
+substance of nearly every row. Where they disagreed, the disagreement was re-measured at HEAD by a
+third command, recorded below, and resolved in favour of the measurement rather than the prior
+document. **Three rows above rest on prior-doc claims that are false at HEAD.** A stale OPEN row
+costs the same attention as a real one, so they are corrected here rather than left standing.
+
+### CORRECTION to X-3309 — WITHDRAWN, the bound exists and is enforced
+The row reads `sampling/createMessage` "has no size bound", citing `LEDGER.md` M27 and noting the fix
+"lives on a branch". It is on trunk at HEAD:
+```
+grep -n 'MAX_SAMPLING' crates/busbar-mcp/src/mcp/sampling.rs
+  214:const MAX_SAMPLING_MESSAGES: usize = 64;
+  222:const MAX_SAMPLING_PROMPT_BYTES: usize = 64 * 1024;
+  226:const MAX_STOP_SEQUENCES: usize = 8;
+  227:const MAX_STOP_SEQUENCE_BYTES: usize = 64;
+  248:            if prompt_bytes > MAX_SAMPLING_PROMPT_BYTES {
+  261:    if asked > MAX_SAMPLING_MESSAGES {
+  304:        if prompt_bytes > MAX_SAMPLING_PROMPT_BYTES {
+  360:        if list.len() > MAX_STOP_SEQUENCES {
+```
+All four bounds are declared AND enforced on the live path, and `temperature` is range-checked
+`0.0..=2.0` at `:343`. **X-3309 is withdrawn and `sampling.rs` is re-graded CLEAN.** LEDGER M27 should
+be closed.
+
+### CORRECTION to X-3305 — HALF WITHDRAWN, the credential default is no longer dropped
+The row bundles two claims. The credential half is false at HEAD:
+```
+git grep -n 'effective_upstream_credentials' -- '*.rs'
+  crates/busbar-mcp/src/mcp/catalogue.rs:1207:            credentials: cfg.effective_upstream_credentials(id),
+  crates/busbar-mcp/src/mcp/config.rs:994:    pub(crate) fn effective_upstream_credentials(
+  crates/busbar-mcp/src/mcp/tests/tools_config_tests.rs:50: …
+```
+`catalogue.rs:1207` is a production caller, so the operator's section-level
+`tools.upstream_credentials:` default is **not** silently dropped, and LEDGER S23 should be closed.
+The `effective_hooks` half **stands**: `git grep -n 'effective_hooks' -- '*.rs'` → definition
+`config.rs:982` plus `tests/tools_config_tests.rs:45` only, while the real combine is
+`admin_view.rs::reresolve_gates` → `reresolve_container_gates`, which re-derives it directly. So
+`config.rs` remains FINDING, on the hooks half alone.
+
+### CORRECTION to X-3311 — HALF WITHDRAWN, the refusal is redacted before it reaches the caller
+The secret-leak half is false at HEAD. `SetupRefusal::client_message()`
+(`crates/busbar-mcp/src/mcp/upstream.rs:208-218`) redacts exactly the credential arm —
+`SetupRefusal::Credential(_) => "the upstream credential for this server could not be resolved; see
+the server log for detail"` — and the caller-facing render site uses it, not `Display`:
+```
+sed -n '2650,2658p' crates/busbar-mcp/src/mcp/method.rs
+  error(StatusCode::FORBIDDEN, id, CODE_REFUSED,
+        &denied.client_message(),
+        Some(serde_json::json!({ "reason": denied.audit_reason() })), )
+```
+`local-only-audit.md:2171` should be closed. The `authorise_verb` half of the row **stands**
+(test-call-sites only), so `upstream.rs` remains FINDING on that half.
+
+### CORRECTION to X-3344 — DEMOTED, the "new home" is a re-export facade, not a second copy
+The row grades `proto.rs` HALF-MIGRATED on `file-verdicts.md:193,1642` ("13 of its 79 top-level
+symbols also exist at the spec-named new home"). Sampling those named symbols shows the new home is a
+facade whose stated job is keeping the historical paths compiling, not a competing implementation:
+```
+busbar-kernel/src/proto/mod.rs:326       pub use busbar_substrate_values::proto::*;
+busbar-kernel/src/proto/registry.rs:65   pub use busbar_substrate_values::proto::{merged_boot_decls, Registry};
+busbar-kernel/src/proto/registry.rs:129  pub fn decl_for(..) { registry().decl(name) }        ← delegator
+busbar-kernel/src/proto/registry.rs:134  #[cfg(test)] pub fn detect_protocol(..) { …delegates… }
+busbar-kernel/src/proto/registry.rs:153  #[cfg(test)] pub fn declared_verbs(..) { …delegates… }
+```
+`registry.rs:23,33,47` say so in prose. The file is live and reachable (233 production references via
+`busbar_substrate_values::proto`). CERTAINTY **ADJUDICATE**: 5 of the 8 named shared symbols were
+sampled, not all 13 — so the verdict is demoted, not declared false. **`proto.rs` is re-graded CLEAN**
+and the duplicate detector behind `file-verdicts.md` should be re-run with re-export awareness; if its
+other HALF-MIGRATED rows were produced the same way they warrant the same re-check.
+
+### X-3358 · `ServiceTier` is declared, derives Default, and is constructed nowhere — not even by a test
+CLASS:     money
+CERTAINTY: VERIFIED
+EVIDENCE:  `git grep -n 'ServiceTier' -- '*.rs'` → **exactly one line tree-wide**:
+           `crates/busbar-substrate-values/src/billing.rs:132:pub enum ServiceTier {`. No construction,
+           no match, no `use` — not in production, not in tests, not in fixtures. POSITIVE CONTROL,
+           same shape on carriers in the same file that ARE built: `Billing::Tokens` → all=37 prod=18;
+           `Billing::Flat` → all=20 prod=15; `RawTierRates` → all=22 prod=12; `Usage {` → all=311
+           prod=92. Its own doc (`billing.rs:127-130`) says "config resolves each variant to an integer
+           basis-point multiplier the pricer applies (`Standard` = ×1.0000 = 10_000 bp)" — no such
+           resolution exists, so no tier multiplier is ever applied to any priced quantity. Strengthens
+           `unconstructed-sweep.md:134,235,859` (row 44), which recorded 0 code construction sites; the
+           zero also covers tests. Distinct from X-3341, which is about the `f64` rate carrier.
+ACTION:    Owner call on a billed surface — do NOT self-approve. Either wire the tier multiplier into
+           the pricer (config → `ServiceTier` → basis points → applied where the rate projects to
+           nanos) with a test that a non-Standard tier changes the charged amount, or delete the enum
+           and strike the multiplier claim from its doc so the pricing surface stops advertising a
+           modifier it never applies.
+
+### X-3359 · `KIND_CALL`/`KIND_DEMOTION` are defined three times and the pin that claims to hold them is `A == A`
+CLASS:     drift
+CERTAINTY: VERIFIED
+EVIDENCE:  `git grep -n 'KIND_CALL\|KIND_DEMOTION' | grep 'const\|pub use'` →
+             crates/busbar-plane-mcp/src/records.rs:50,53   (literals)
+             crates/busbar-kernel/src/plane/store.rs:56,61  (literals)
+             crates/busbar-mcp/src/record.rs:16             (the only re-export)
+           The kernel restates the literals and says so (`store.rs:48-49`): "A plane crate mirrors the
+           constant it owns … so the tag it writes and the tag core reads agree" — a mirror with no
+           compile-time or test link. `records.rs:40-45` claims the opposite: "there is one answer to
+           'what is this record called' rather than two that agree today." The test that claims to hold
+           it cannot fail: `records.rs:56` is `SCHEMA_CALL = RecordSchemaId::new(KIND_CALL)` and
+           `src/tests/records.rs:16` asserts `SCHEMA_CALL.as_str() == KIND_CALL` — tautological for any
+           edit, while its doc claims "If the codec renames a kind, this goes red." This crate already
+           caught the identical shape once (`src/tests/jsonrpc.rs:217` — "the loop read `CODES ⊆ CODES`
+           and could not fail"). Broader than X-3330, which covers only the `OPERATIONS` const.
+ACTION:    Make the kernel read rather than restate: in `busbar-kernel/src/plane/store.rs` replace the
+           literals with a re-export of `busbar_plane_mcp::records::{KIND_CALL, KIND_DEMOTION}` if the
+           dependency edge permits; if not, invert it, or add a const assertion in the one crate that
+           names both (`busbar-mcp`). Then replace the tautology at `src/tests/records.rs:15-18` with an
+           assertion against the OTHER side's constant.
+
+### X-3360 · The MCP conformance battery census reads single-quoted strings only, and silently shrank
+CLASS:     instrument-blind
+CERTAINTY: VERIFIED
+EVIDENCE:  `crates/busbar-plane-mcp/tests/conformance.rs:42-71`'s `battery_methods()` extracts with
+           `text.split('\'').skip(1).step_by(2)`. Re-running that exact algorithm in python over the
+           three walked dirs (src/suites 5 .mjs, src/core 6, fakepeer 2) yields **12** method names; a
+           full regex census over any quoting yields **18**. Missed by the single-quote walk:
+           `notifications/{tools/list_changed, resources/updated, message, progress,
+           subscriptions/acknowledged}`; and `"server/discover"`, `"tools/call"`, `"tools/list"` are
+           double-quoted, caught only because they also appear single-quoted elsewhere. Direct
+           consequence: 3 of the 4 `emitted_only` arms (`:139-144`) can never be reached, and their
+           presence proves the census used to see them. The comment above them is stale too ("three
+           notices … and one deliberate nonsense name" while listing four notices and no nonsense
+           name). Separately `looks_like_a_method` (`:75-90`) cannot distinguish a method from a suite
+           id (`'server/tools'`, `'server/utilities/caching'`, the truncated `'tools/li'` would all
+           pass and FALSE-RED if ever single-quoted). The battery is NOT path-drifted:
+           `git ls-files testing/mcp-conformance | wc -l` → 26 (control: `git ls-files qa | wc -l` → 35);
+           `grep -c 2026-07-28 src/core/spec.mjs` → 4; all 10 codes present in `src/core/jsonrpc.mjs`.
+ACTION:    Extract on a quote-agnostic scan (single, double and backtick, or a regex over the same
+           `heads` prefixes) instead of `split('\'')`; raise the floor from `!found.is_empty()` to a
+           written-down count the way `CLIENT_ROWS`/`PROVIDER_ROWS`/`NOTICE_ROWS` already are, so a
+           shrinking census goes red rather than quiet. Then either delete the three unreachable
+           `emitted_only` arms or let the fixed census reach them, fix the stale comment, and tighten
+           `looks_like_a_method` so a suite id cannot false-red it.
+
+### X-3361 · The MCP plane's notification codec is the copy that does not ship; two hand-written copies do
+CLASS:     missing-code
+CERTAINTY: VERIFIED
+EVIDENCE:  `git grep -c 'McpNotification' -- 'crates/**/*.rs'` → `busbar-plane-mcp/src/codec.rs:7`,
+           `busbar-plane-mcp/src/tests/codec_tests.rs:7`, and one comment in
+           `busbar-mcp/src/codec/tests/mcp_tests.rs`. Zero non-test constructors; `codec.rs:268,280`
+           carry `#[cfg_attr(not(test), allow(dead_code))]`, and `read()`/`write()` have no ship
+           callers. POSITIVE CONTROL: `git grep -c 'MethodRow' -- crates/busbar-plane-mcp/` → ops.rs:19,
+           plane.rs:1, tests/conformance.rs:1. What ships instead, twice, hand-written:
+             `busbar-mcp/src/mcp/client/peer.rs:267-280` — a SECOND method table mapping the same two
+               names, whose own doc claims "One table, read in one direction, so a name cannot be
+               recognised here and spelled differently anywhere else."
+             `busbar-mcp/src/mcp/stdio_serve.rs:1155-1159` — the envelope written by hand as a `json!`
+               literal rather than through `McpNotification::write()`.
+           This contradicts the crate's stated reason to exist (`Cargo.toml:5-8`, `lib.rs:6-9`): "No
+           wire format is written twice, because a wire format written twice is two wire formats that
+           will disagree." Distinct from X-3326, which is about the structure-lint census being blind
+           to plane crates.
+ACTION:    Either delete `McpNotification`/`ResourceUpdatedParam` and the cfg_attr
+           (`codec.rs:24-42,268-326`) and let `peer.rs` own the reader, or make it ship — have
+           `peer.rs::notification_of()` delegate to `McpNotification::read()` and `stdio_serve.rs:1155`
+           emit `McpNotification::ResourceUpdated{uri}.write()`. If the latter, also fix `codec.rs:324`'s
+           `Bytes::from(serde_json::to_vec(&envelope).unwrap_or_default())`, which turns an
+           unserializable envelope into zero bytes on the wire rather than a refusal.
+
+### X-3362 · A crate that does not exist is named 249 times, including in a command the test tells you to run
+CLASS:     drift
+CERTAINTY: VERIFIED
+EVIDENCE:  `grep -rn '^name = ' --include=Cargo.toml . | grep -i substrate` →
+           `crates/busbar-substrate-values/Cargo.toml:2:name = "busbar-substrate-values"` — the only
+           substrate package (control: the same grep finds 121 package names tree-wide). There is no
+           package named `busbar-substrate`.
+           `git grep -nE 'busbar-substrate([^-]|$)' -- '*.rs' '*.toml' '*.yml' | wc -l` → **249**.
+           The actionable instances:
+             `busbar-substrate-values/src/diagnostics/mod.rs:271` — "regenerate the docs:
+               `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-substrate diagnostics`", a command an engineer
+               is told to run when the golden test fails; `-p busbar-substrate` names no package, so it
+               errors instead of regenerating.
+             `busbar-substrate-values/src/diagnostics/mod.rs:3855` — "(this crate is
+               `crates/busbar-substrate`)", the wrong path for the crate the line lives in.
+             `busbar-substrate-values/src/diagnostics/tests.rs:135,151` — the same broken command inside
+               the failure message a developer actually reads (outside this slice).
+             `busbar-substrate-values/src/lib.rs:6,19,25,44,45,62,69,98` — eight architectural comments
+               saying pieces "stayed in `busbar-substrate`".
+           The successor is identifiable from the file itself: `lib.rs:45` reads "`busbar-substrate`'s
+           own `plane` re-exports all three, so `busbar_kernel::plane::WIRE_JSONRPC`", and
+           `busbar-kernel/src/proto/mod.rs:326` is `pub use busbar_substrate_values::proto::*;` — the
+           crate meant is `busbar-kernel`.
+ACTION:    Fix the runnable and self-describing instances first — `diagnostics/mod.rs:271` and
+           `tests.rs:135,151` to `-p busbar-substrate-values`, `mod.rs:3855` to
+           `crates/busbar-substrate-values` — then sweep the prose, replacing "stayed in
+           `busbar-substrate`" with `busbar-kernel`.
+
+### X-3363 · The userinfo-smuggling refusal in ws's dial-URL parser has no regression test
+CLASS:     auth
+CERTAINTY: VERIFIED
+EVIDENCE:  `crates/busbar-transport-ws/src/transport.rs:146` —
+           `if authority.is_empty() || authority.contains('@') { return Err(TransportError::AddressRefused); }`
+           inside `split_ws_url`, the parser `dial()` uses on a caller-influenced destination URL.
+           `grep -n "userinfo\|@" crates/busbar-transport-ws/src/tests/battery.rs` targeted at
+           authority/refusal context → 0 hits: no test in trunk exercises this guard. Matches
+           `docs/design/1.6.0-local-only-audit.md:206-208`, which records that the regression test
+           `an_authority_carrying_userinfo_is_refused` existed on a now-deleted branch specifically
+           "because the guard could have been deleted and every cell in this file stayed green" — the
+           exact risk, named and still unaddressed on trunk. Distinct from X-3355, which is the
+           frame-byte-honesty cell.
+ACTION:    Port an `an_authority_carrying_userinfo_is_refused`-style test into
+           `crates/busbar-transport-ws/src/tests/battery.rs` asserting that
+           `split_ws_url("ws://user:pass@host/")` and a `wss` variant return
+           `TransportError::AddressRefused`.
+
+### X-3364 · `LoopDriver` — the one production-shaped UnitDriver — is never constructed, which is the root cause under X-3346 and X-3348
+CLASS:     missing-code
+CERTAINTY: VERIFIED
+EVIDENCE:  `git grep -n 'trait UnitDriver\|: UnitDriver' -- '*.rs'` → exactly 4 implementors tree-wide:
+           `Detached` (`busbar-contract/src/transport/driver.rs:184`, an honest-refusal placeholder),
+           `Counting` (`busbar-contract/tests/unit_driver.rs:131`, test-only), `Recorder`
+           (`busbar-transport-http/src/tests/mount.rs:116`, test-only) and `LoopDriver`
+           (`crates/busbar/src/root/transports.rs:498`).
+           `git grep -n 'LoopDriver::new\|LoopDriver {' -- '*.rs'` → **0 hits anywhere**, including its
+           own crate's tests. POSITIVE CONTROL: `ProductionUnits::new_sharing`/`ProductionUnits {` in
+           the same file family → real hits at `kernel.rs:689,721`.
+           So the two mount seams are not independently dead — they are dead because the only driver
+           that could run them is never built. No superseding mechanism exists either:
+           `git grep -n 'SessionLoopDriver\|serve_until'` → 0 hits, so the alternative design described
+           in `docs/design/1.6.0-streams-deletion-list.md` is not in this tree.
+           `crates/busbar/Cargo.toml` pulls only `ClientSettings`/`HttpTransport` from
+           busbar-transport-http; nothing in `crates/busbar/src` imports `mount`.
+           The cell is OUTSIDE this slice (`crates/busbar/src/root/transports.rs`) — reported, not acted on.
+ACTION:    Close X-3346, X-3348 and this row together: either wire `LoopDriver::new(..)` into the
+           composition root and hand it plus a real `WireSurface` to `mount::serve` / grpc's `resolve`
+           at the point HTTP/gRPC planes are admitted, or delete both `mount.rs` modules, `LoopDriver`,
+           and their ~700 lines of tests rather than ship dead, fully-tested architecture.
+
+### X-3365 · The whole hot "dropped-in" plane path is unreached from the composition root, while every cold kind is wired
+CLASS:     missing-code
+CERTAINTY: VERIFIED
+EVIDENCE:  `git grep -n "WorkItem::new(\|InboundHandle::finite_buffer" -- crates` (excluding
+           `workitem.rs`'s own definitions and `tests/`) → 0 hits. The only production consumer of
+           `&WorkItem` is `plugin-loader/src/plane.rs:263-275`'s `DynPlane::dispatch`, reachable only
+           via `open_plane`/`load_plane` (`plugin-loader/src/registry.rs:440`,
+           `plugin-loader/src/lib.rs:68`); `git grep -n "open_plane\|load_plane\b" -- crates` (excluding
+           `plugin-loader/src` and `busbar-plugin/src/hot`) → 0 hits in `busbar-kernel` or `busbar`.
+           POSITIVE CONTROL establishing that the grep shape finds real wiring: the same pattern on the
+           COLD kinds returns `open_store` → `busbar-kernel/src/appbuild.rs:1160`, `open_auth` →
+           `auth/mod.rs:234`, `open_hook` → `hooks/mod.rs:250`, `open_secret` → `preflight.rs:923`.
+           So the cold-load path IS wired and the hot dropped-in plane path is NOT.
+           `register.rs:51-56`'s S4 note calls the surface "compiled-in AND dropped-in"; only
+           compiled-in ships, via the separate and genuinely-wired `Plugin`/`PlaneHostVtable` path
+           (`plane_host/vtable.rs:36`). Generalises X-3337 and X-3340 from single dead symbols to the
+           unreached path that explains both.
+ACTION:    Either wire a real call site — an admin verb or boot-time scan that calls
+           `PluginRegistry::open_plane` and drives `DynPlane::dispatch` for a configured dylib plane —
+           or strike "dropped-in" from `register.rs`'s S4 claim and `qa/unconstructed.toml`-declare the
+           whole hot dropped-in surface as an intentionally-dormant seam (the M-7/`money_book`
+           precedent) so it stops scoring as silently-complete. The two files that would need the
+           caller — `crates/plugin-loader/src/plane.rs` and `registry.rs:440` — are outside this slice.
+
+### X-3366 · A provider-supplied usage count is cast `u64 as i64` and can reach the fact/export surface negative
+CLASS:     money
+CERTAINTY: ADJUDICATE
+EVIDENCE:  `crates/busbar-plane-decision/src/plane.rs:281-284` →
+             `if let Some(units) = codec::read_u64(body, PTR_USAGE_UNITS) {
+                  let _ = facts.set(f::FACT_USAGE_UNITS, FactValue::Int(units as i64)); }`
+           `units` is whatever the PROVIDER wrote at `/usage/units`; `codec/mod.rs:106-109`'s `read_u64`
+           parses the full u64 range with no ceiling, so `units as i64` wraps silently past `i64::MAX`.
+           That negative Int is copied verbatim onto the content-fact surface at `plane.rs:444-448`.
+           `meter` casts back at `:403` (`quantity: Some(units as u64)`), so the metered number
+           round-trips — but the record/export leg sees the wrapped negative and nothing refuses an
+           absurd count. ADJUDICATE because the plane is never dispatched today (X-3323), so this is
+           latent rather than live.
+ACTION:    Refuse rather than wrap: read the usage figure with an explicit ceiling (e.g.
+           `u64::try_from(..).ok().filter(|u| *u <= MAX_DECISION_UNITS)`) and on overflow set
+           `FACT_HAS_ERROR` / emit no usage line. Never `as i64` a provider-controlled billing quantity.
+
+### X-3367 · The decision plane's only reachable destination arm mints an empty host and an empty lane
+CLASS:     missing-code
+CERTAINTY: ADJUDICATE
+EVIDENCE:  `crates/busbar-plane-decision/src/plane.rs:62-75` — the `None` arm returns
+           `DestinationFacts::Upstream { transport: TRANSPORT_HTTP,
+             address: busbar_contract::UpstreamAddress::socket(""),
+             lane: busbar_contract::ids::LaneId::new("") }`. `providers()` is `&[]` in every build
+           (X-3323: `DecisionPlane::new` is reached only via `EMPTY = Self::new(&[])`, `lib.rs:92`), so
+           the `Some` arm is dead and the `None` arm is the whole behaviour, and `route()` pushes that
+           leg unconditionally for both operations (`plane.rs:387-389`). `plane.rs:53-54` claims "the
+           empty host is refused by the trust unit against the allow-list"; nothing in this crate proves
+           that, and the plane has no dispatch path that would exercise it. An empty `LaneId` is also the
+           lane key money is posted against.
+ACTION:    Return `DestinationFacts` that cannot be dialled rather than a syntactically-valid upstream
+           with empty strings — or have `route()` push no leg when `providers()` is empty so
+           `RefusalReason::NoDestination` (already rendered at `plane.rs:102-105`) is the answer. Add a
+           test that the unconfigured plane's destination is refused, since the comment currently stands
+           in for one.
+
+### X-3368 · Two module docs cite a witness file `tests/pii_witness.rs` that does not exist
+CLASS:     drift
+CERTAINTY: VERIFIED
+EVIDENCE:  `ls crates/busbar-plane-decision/tests/` → alloc_gate.rs common conformance.rs invariance.rs
+           jev.rs purity.rs. `ls crates/busbar-plane-decision/src/tests/` → claims.rs codec.rs config.rs
+           facts.rs meta.rs ops.rs plane.rs records.rs. No `pii_witness.rs` in either. Yet
+           `lib.rs:36` reads "`tests/pii_witness.rs` (mirrored in `src/tests`) drives a fixture …" and
+           `facts.rs:49` reads "the PII witness test (`tests/pii_witness.rs`)". The real test is a
+           FUNCTION in another file, and `conformance.rs:26` already spells it right:
+           `tests/jev.rs:174 fn pii_witness_never_surfaces_state_or_answers_in_any_fact()`. The
+           "(mirrored in `src/tests`)" clause is doubly wrong — there is no mirror.
+ACTION:    Change `lib.rs:36` and `facts.rs:49` to name
+           `tests/jev.rs::pii_witness_never_surfaces_state_or_answers_in_any_fact`, matching
+           `conformance.rs:26`, and drop the "(mirrored in `src/tests`)" clause.
+
+### X-3369 · `claims::STREAM_TRANSPORT` (plane-llm) is a pub const nothing reads
+CLASS:     missing-code
+CERTAINTY: VERIFIED
+EVIDENCE:  `git grep -n '\bSTREAM_TRANSPORT\b' -- '*.rs' | grep -v UPSTREAM` →
+           `crates/busbar-plane-llm/src/claims.rs:34:pub const STREAM_TRANSPORT: &str = "sse";` — one
+           line, the definition. (The other tree-wide matches are substrings of
+           `UPSTREAM_MIDSTREAM_TRANSPORT_ERROR` / `UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR`, a collision
+           controlled for here.) POSITIVE CONTROL, its sibling const in the same file:
+           `git grep -n 'claims::TRANSPORT' -- '*.rs'` → `crates/busbar-plane-llm/src/plane.rs:848`.
+           Its doc (`:31-33`) says it "names the framing the response uses" — nothing asks. Corroborates
+           `unconstructed-sweep.md:228` (row 37).
+ACTION:    Delete `pub const STREAM_TRANSPORT` (`claims.rs:30-34`), or read it where the SSE response
+           framing is chosen so the declaration and the behaviour are one value.
+
+### X-3370 · stdio's `wrap_pair` ships in the release binary but is only ever called from tests
+CLASS:     missing-code
+CERTAINTY: ADJUDICATE
+EVIDENCE:  `crates/busbar-transport-stdio/src/transport.rs:159` `pub fn wrap_pair<R, W>(...)`, whose
+           sibling `listen`'s own doc comment at `:121` calls it "the test-only `Self::wrap_pair`" — yet
+           no `#[cfg(test)]` gates it. `git grep -n wrap_pair -- '*.rs'` → callers only in
+           `src/tests/battery.rs` (9 sites) and `src/tests/mutation_hardening.rs` (3 sites); 0
+           production callers. Matches `unconstructed-sweep.md:494` (row 218, 12 test call sites).
+ACTION:    Either gate it `#[cfg(any(test, feature = "test-support"))]` so it does not ship in the
+           release binary, or — if it is meant as a public embedding API mirroring the 1.5.5 `serve_io`
+           seam, as its doc suggests — leave it and say so explicitly. Owner call, low priority.
+
+## Facts this slice proves about files OUTSIDE it (reported, not acted on)
+
+- **`crates/busbar/src/root/transports.rs`** — `LoopDriver` (`:498`) is the only production-shaped
+  `UnitDriver` implementor and is never constructed (X-3364); this same file is also where X-3357's
+  `provision_server_named` call would go. One file, two open rows.
+- **`crates/plugin-loader/src/plane.rs`** (`DynPlane::dispatch`) and **`registry.rs:440`**
+  (`open_plane`) — the two files that need a caller for X-3365 to close.
+- **`crates/busbar-kernel/src/plane/store.rs:56,61`** — the unpinned second definitions of
+  `KIND_CALL`/`KIND_DEMOTION` (X-3359).
+- **`crates/busbar-plane-mcp/src/plane.rs:180`** spells `"/params/_meta"` as a bare literal instead of
+  `jsonrpc::PTR_PARAMS_META` (X-3327); **`:963`** is the catalogue-PUT leg a caller-sent provider notice
+  reaches (X-3329); **`tests/conformance.rs:258-272`** currently asserts the wrong behaviour for all
+  three notice names and must be split by sender in the same commit as any X-3329 fix.
+- **`crates/busbar-mcp/src/mcp/client/peer.rs:267-280`** and **`stdio_serve.rs:1155-1159`** are the two
+  shipping hand-written MCP notification codecs (X-3361).
+- **`crates/busbar-substrate-values/src/diagnostics/tests.rs:135,151`** and
+  **`crates/busbar-kernel/src/egress_auth/mod.rs:22`** carry the same non-existent `-p busbar-substrate`
+  package name (X-3362); `tests.rs:151` is the failure message a developer actually reads.
+- **`xtask/src/gates/structure_lint/roots.rs:52-63`** still excludes every `busbar-plane-*` crate from
+  `Addresses::tree()`, so X-3326/GS18 is open and its cited lines are not stale.
+- **`crates/busbar-transport-grpc/tests/no_plane_names.rs:192`** carries the identical tautology to
+  X-3349.
+- **`crates/busbar-plane-llm/src/dialect.rs` → `busbar-llm-codec`** — `requires_max_response`
+  (`dialect.rs:160-165`) joins two independent name tables by string with `.is_some_and(..)`, so a
+  rename on either side silently returns `false` and an Anthropic request would stop getting a ceiling
+  at `plane.rs:546`. The six names match today; no test asserts set equality. Latent, worth a one-line
+  test — not raised as a row.
+- **`crates/busbar/src/root/plane_decision.rs:241-248`** — `DecisionsCfg::container_gates()` is the sole
+  consumer of `decisions.hooks` and nothing invokes it; the X-3322 edit likely belongs there.
+- **Three prior-corpus rows should be CLOSED, not carried into 1.6.0**: `LEDGER.md` S23, `LEDGER.md`
+  M27, and `local-only-audit.md:2171` — each measured fixed at HEAD above.
+
 ## TALLY
+```
 files in slice:  83
 verdict lines:   83
-CLEAN:           24
-FINDING:         59      rows raised: 58
-DELETABLE:       0
-UNREADABLE:      0
+CLEAN:           26      (24 + sampling.rs and proto.rs re-graded by the second pass)
+FINDING:         57      rows raised: 70 live
+DELETABLE:        0
+UNREADABLE:       0
+```
+
+**Row accounting.** 58 rows raised in the first pass (X-3300..X-3357) + 13 added by the second pass
+(X-3358..X-3370) = 71, less **X-3309 withdrawn** (the bound exists and is enforced) = **70 live rows**.
+Two further rows are half-withdrawn and stand on their surviving half only: **X-3305** (hooks half) and
+**X-3311** (`authorise_verb` half). **X-3344** is demoted to a documentation correction. Ids
+X-3371..X-3399 are unused.
+
+**By class:** missing-code 27 · drift 12 · money 8 · customer-surface 8 · instrument-blind 6 · config 5 ·
+auth 3 · abi 1.
+
+**By certainty:** VERIFIED 57 · ADJUDICATE 11 · PARK 2 (both on billed bytes: the `f64` rate carrier at
+`billing.rs` and `FrameMeta.bytes`, neither self-approved).
