@@ -504,19 +504,47 @@ const MEASURED_CONSTRUCTION: f64 = 33_096.0; // 36 cases, 352.4 s
 const MEASURED_KIND_ISOLATION: f64 = 128_034.0; // 152 cases, 1360.9 s
 const MEASURED_KIND_ISOLATION_SHIP: f64 = 120_208.0; // 122 cases, 1290.7 s
 
-// `audit-ledger` MEASURED 4 433 UNITS (14 cases, 46.5 s) at 2026-09-10 b6f66e929 and was struck as
-// below the default. It has since GROWN BACK PAST 9 000 — 8 779 units, the SAME 14 cases, 99.4 s, at
-// 2026-09-15 abf8e9ce8 — which is exactly the "if the gate grows back past 9 000 the default is what
-// says so" trigger the struck note named. Re-examined: no case was added; the growth is the 1.6.0
-// register itself. The `audited-at-reachable` case asks git to reach EVERY commit the register names,
-// and the register gained the whole 1.6.0 drain — so the same 14 cases now scan a bigger history. It
-// is NOT the per-plant disk rescan the earlier `construction` register had: each case plants a DIFFERENT
-// register, so the reachability answer differs per case and is not memoisable across them. Isolated
-// it is still under the default (8 779), but the battery runs under `cargo test`'s own ~1.4x
-// contention where it crosses it — the same reason every other whole-tree battery here carries the
-// 1.6x slack. Re-baselined below with that slack; a FUTURE doubling (past ~14 000) is still a red row
-// rather than minutes nobody attributes.
-const MEASURED_AUDIT_LEDGER: f64 = 8_779.0; // 14 cases, 99.4 s
+// `audit-ledger` IS STRUCK AGAIN, AND THE EXPLANATION IT WAS RE-BASELINED ON WAS WRONG.
+//
+// The history: it measured 4 433 units (14 cases, 46.5 s) at 2026-09-10 b6f66e929 and was struck as
+// below the default; it grew back to 8 779 (same 14 cases, 99.4 s) at 2026-09-15 abf8e9ce8 and was
+// re-baselined at 8 779 x 1.6 = 14 046; it then blew THAT, at 15 405 units / 190 s, which is the
+// "FUTURE doubling past ~14 000" the re-baseline said would be a red row rather than minutes nobody
+// attributes. It was. This is the attribution.
+//
+// THE RECORDED CAUSE WAS FALSE AND IS RETIRED. The note here and the entry's `why` both blamed
+// the register: "the 1.6.0 register gained the whole drain, so the same 14 cases now scan a
+// bigger history". Measured at abf8e9ce8 against HEAD, `qa/audit-ledger.json` went 247 201 ->
+// 251 865 bytes (+1.9%) over 23 -> 25 distinct commits. A 1.9% input cannot produce a 75% cost,
+// and the count that actually drives the work went DOWN: 133 -> 128 scopes carrying an
+// `audited_at`. Reachability was never the driver either — `Git::reachable` resolves ONE
+// `rev-list` per process behind a `OnceLock` and `Ctx::workspace()` is shared by all 14 cases, so
+// that cost is paid once, not per case. Nor was it scope hashing against a grown tree:
+// `tree_hash` over all 170 scopes measured 0.179 s of a 6.076 s `check`, under 3%.
+//
+// WHAT IT ACTUALLY WAS: `audit::rows` filled in `age` with a `rev-list --count <audited_at>..HEAD`
+// PER SCOPE — 128 git processes per `check`, inside the very function whose doc said it avoided
+// "144 scopes times a process each". Those 128 scopes name only SEVENTEEN distinct commits, so 111
+// of the processes re-asked an answered question. At ~24 ms each (16 ms of it bare fork/exec) that
+// was 6.2 s of a 6.076 s `check` — effectively all of it — and the battery pays it FOURTEEN TIMES,
+// once per planted case: 1 792 git processes for a field no rule reads (`age` is printed by `ledger
+// report`/`next` and by nothing else). It grew on its own without the register changing at all,
+// because every commit that lands on HEAD lengthens every `audited_at..HEAD` walk; 605 commits
+// landed between abf8e9ce8 and HEAD.
+//
+// FIXED, NOT RE-BASELINED. `Git::commits_between` now memoises on the WHOLE INPUT `(old, new)` —
+// see its note for why that key cannot serve a plant a stale reading. Measured at 2026-09-22
+// ee930eac8, at `--jobs 1`: 128 -> 17 processes, `commits_between` 6.216 s -> 0.637 s, `check`
+// 6.076 s -> 3.143 s, and the battery 8 779 -> 2 865 units (14 cases, 43.1 s), holding within 3.5%
+// across a box load that swung from 30 to 62. Under the whole `cargo test -p xtask --lib` shard it
+// reads 4 702 units / 107 s at load ~50, against the 15 405 / 190 s at load ~22 that opened this.
+//
+// 2 865 x 1.6 = 4 584, which is BELOW the default, so the entry is struck rather than lowered —
+// `every_selftest_budget_names_a_registered_gate_with_a_reason` refuses an entry that is not above
+// it. The default 9 000 is now the guard, at 3.1x the serial measurement and 1.9x the worst
+// contended reading. If it grows back past 9 000 the default is what says so, exactly as the first
+// struck note said — and the thing to measure first is the git PROCESS COUNT per `check`, not the
+// size of the register.
 
 /// ONE BUDGETED SELF-TEST: WHAT IT MEASURED, WHEN, ON WHAT, AND WHAT IT IS ALLOWED.
 ///
@@ -621,13 +649,10 @@ const SELFTEST_BUDGETS: &[Budget] = &[
         taken: TAKEN,
         why: "The ship twin of the battery above: the same shape held to a ceiling of zero, plus the derivations with a degenerate answer and the floors whose subject is the size of their own input.",
     },
-    Budget {
-        gate: "audit-ledger",
-        measured: MEASURED_AUDIT_LEDGER,
-        allowed: MEASURED_AUDIT_LEDGER * BUDGET_SLACK,
-        taken: "2026-09-15 abf8e9ce8",
-        why: "The `audited-at-reachable` case asks git to reach every commit the register names, and the 1.6.0 register gained the whole drain, so the same 14 cases now scan a bigger history. Isolated it is under the default, but under `cargo test`'s contention it crosses it, so it carries the standard whole-tree-battery slack; struck when it was cheap, re-baselined now that it grew back.",
-    },
+    // `audit-ledger` HAS NO ENTRY HERE. It had one, set from 8 779 units and justified by a
+    // register-growth story that measurement refuted; the cost was 128 `rev-list` processes per
+    // `check` where 17 answer the same questions. Memoised, it measures 2 865, which is under the
+    // default. The struck note sits above, where the measurement constants are.
 ];
 
 /// One WORK UNIT: how long THIS process takes to run a fixed piece of arithmetic, measured once.

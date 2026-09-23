@@ -212,6 +212,8 @@ pub struct Git {
     repo: std::path::PathBuf,
     /// See [`Git::reachable`]. Resolved at most once, and never from anything an overlay can move.
     reachable: std::sync::OnceLock<BTreeSet<String>>,
+    /// See [`Git::commits_between`]. One answer per DISTINCT commit pair, not per caller that asks.
+    distances: std::sync::Mutex<BTreeMap<(String, String), Option<u64>>>,
 }
 
 impl Git {
@@ -219,6 +221,7 @@ impl Git {
         Git {
             repo: repo.into(),
             reachable: std::sync::OnceLock::new(),
+            distances: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -345,10 +348,47 @@ impl Git {
         .is_ok()
     }
 
+    /// HOW FAR `new` HAS MOVED SINCE `old` — one `rev-list --count` per DISTINCT PAIR, not one per
+    /// caller that asks.
+    ///
+    /// THE MEASUREMENT THIS EXISTS FOR. [`rows`] asks this once per scope, to fill in `age`. On
+    /// this register that is 128 scopes — and those 128 scopes name only SEVENTEEN distinct
+    /// `audited_at` commits between them, so 111 of the 128 processes were re-asking a question
+    /// already answered. Each one costs about 24 ms, of which 16 ms is the bare fork/exec and the
+    /// rest is the walk, and the walk is getting longer on its own: every commit that lands on
+    /// HEAD adds a step to every `old..HEAD` range in the register. Measured on this tree, one
+    /// `check` spent 6.2 s of its 6.1 s here — effectively the whole of it — and the `audit-ledger`
+    /// self-test pays that FOURTEEN TIMES, once per planted case, because each case runs the gate.
+    /// That is 1 792 git processes for a field the gate never reads.
+    ///
+    /// THE KEY IS THE WHOLE INPUT, WHICH IS WHY A PLANT CANNOT BE SERVED A STALE READING. The
+    /// answer is a pure function of `(old, new)` and the commit graph. A self-test plant overlays
+    /// `qa/audit-ledger.json`; it cannot rewrite git objects, so it cannot change the answer for a
+    /// pair it did not change. And when a plant DOES move an `audited_at` — which several of them
+    /// do — it moves `old`, which is half the key, so it gets a different entry and a fresh
+    /// process. The memo [`Git::reachable`] keeps is sound because its inputs are ones an overlay
+    /// cannot move; this one is sound for the stronger reason that every input it has IS the key.
+    /// A memo that dropped `old` from the key would be exactly the stale reading that note warns
+    /// about.
+    ///
+    /// The lock is released before git runs, so two threads racing the same pair fork twice and
+    /// agree — a duplicated process, never a wrong answer, and never a subprocess held under a
+    /// mutex.
     pub fn commits_between(&self, old: &str, new: &str) -> Option<u64> {
-        self.run(&["rev-list", "--count", &format!("{old}..{new}")])
+        let key = (old.to_string(), new.to_string());
+        if let Ok(memo) = self.distances.lock() {
+            if let Some(hit) = memo.get(&key) {
+                return *hit;
+            }
+        }
+        let answer = self
+            .run(&["rev-list", "--count", &format!("{old}..{new}")])
             .ok()
-            .and_then(|s| s.trim().parse().ok())
+            .and_then(|s| s.trim().parse().ok());
+        if let Ok(mut memo) = self.distances.lock() {
+            memo.insert(key, answer);
+        }
+        answer
     }
 
     /// LOC per blob, through ONE `git cat-file --batch` process rather than one per file.
@@ -1255,6 +1295,13 @@ pub struct RowView {
 
 /// Every scope with its derived status, age and LOC. One pass over git, because 144 scopes times a
 /// process each is the difference between a query and a coffee break.
+///
+/// THAT SENTENCE USED TO BE HALF TRUE. The universe and the line counts are one `ls-tree` and one
+/// `cat-file --batch` for the whole tree, as it says — but `age` was a `rev-list --count` PER
+/// SCOPE, which is the 144-processes shape the sentence claims to have avoided, sitting inside the
+/// function that claims it. It is now one process per distinct `audited_at`; see
+/// [`Git::commits_between`] for the measurement and for why the memo cannot hand a self-test plant
+/// somebody else's answer.
 pub fn rows(doc: &Json, git: &Git) -> Result<Vec<RowView>, String> {
     let all = git.files_at("HEAD")?;
     let head = git.head()?;
