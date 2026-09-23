@@ -2432,7 +2432,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(no_float_money::NoFloatMoneyGate),
-        summary: "no floating point on the money runtime path (#77.8); the #44 card-build boundary is exempt",
+        summary: "no floating point past a declared money-intake boundary on the money runtime path (#77.8/#44)",
     },
     Registration {
         name: "seal-witness",

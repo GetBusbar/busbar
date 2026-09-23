@@ -12,8 +12,8 @@
 //! enough to parse without false positives. The FILE-level pointer is both load-bearing and
 //! reliably checkable; the within-file anchor is neither.
 //!
-//! Four rules, four ledger rows, because the Python's single "list of problem strings" return type
-//! hid three different ways of answering "no dangling references" that are not the same answer:
+//! Five rules, five ledger rows, because the Python's single "list of problem strings" return type
+//! hid several different ways of answering "no dangling references" that are not the same answer:
 //!
 //! 1. `inventory-ref:manifest` — the binding manifest was read, parsed, and carries the key the
 //!    scanner reads bindings out of. The Python's `doc.get("bindings", [])` turned a RENAMED
@@ -29,6 +29,16 @@
 //!    is an unrecognized prefix, which is a pointer this lint cannot follow and must not pretend
 //!    it did.
 //! 4. `inventory-ref:file-exists` — the file a recognized prefix names is on disk.
+//! 5. `inventory-ref:blank-inventory` — no binding's `inventory` column is BLANK. This was a
+//!    `continue` for the whole life of this gate and of the Python before it: a column with nothing
+//!    in it is a binding that points at NO evidence at all, which is the strongest possible reason
+//!    to fail, and it was being read as a reason to pass. It is not the same shape as a segment
+//!    that names no inventory file on purpose (a backticked source path, a `PB-N` self-reference):
+//!    those SAY where the evidence is and say it is not an inventory row. Blank says nothing.
+//!    MEASURED when this arm was closed (2026-09-23): 104 bindings, exactly one blank — `PB-38`,
+//!    whose Appendix B row cites `plugins-stores §3.5` and `governance 3.2.8` and lost both to a
+//!    `||` inside a backticked expression splitting the markdown row into extra cells. The pipes
+//!    are escaped at the source row now; the gate is what makes the next one impossible to ignore.
 
 use std::collections::BTreeMap;
 
@@ -40,6 +50,7 @@ pub const ROW_MANIFEST: &str = "inventory-ref:manifest";
 pub const ROW_FLOOR: &str = "inventory-ref:binding-floor";
 pub const ROW_PREFIX: &str = "inventory-ref:prefix";
 pub const ROW_FILE: &str = "inventory-ref:file-exists";
+pub const ROW_BLANK: &str = "inventory-ref:blank-inventory";
 
 /// The manifest the bindings are read out of, and the key inside it. Both are named in the FAIL
 /// text so a rename reads as a rename rather than as an empty scan.
@@ -86,7 +97,14 @@ pub const ALIASES: &[(&str, &str)] = &[
 pub const KNOWN_PARSE_ARTIFACTS: &[&str] = &["PB-20"];
 
 /// The master rule's own row describes the whole inventory instead of pointing at one file.
+///
+/// KEPT, AND KEPT NARROW. The exemption is the master rule's alone: BOTH the binding id and the
+/// opening words have to be the master rule's before a row is allowed to describe the inventory
+/// rather than point into it. Matching on the phrase alone would let any binding buy the same
+/// silence by opening with those seven words, and the whole finding this arm sits next to
+/// (`ROW_BLANK`) is about a binding that pointed at nothing and was skipped for it.
 const MASTER_RULE_PREFIX: &str = "every row of every inventory file";
+const MASTER_RULE_ID: &str = "PB-0";
 
 pub struct InventoryRefGate;
 
@@ -181,11 +199,18 @@ fn load_bindings(cx: &Ctx) -> Result<Vec<Binding>, String> {
     Ok(out)
 }
 
-/// The two problem lists, in the Python's wording, so a ledger row means the same thing before and
-/// after the conversion.
-fn scan(cx: &Ctx, bindings: &[Binding]) -> (Vec<String>, Vec<String>) {
-    let mut unrecognized = Vec::new();
-    let mut missing = Vec::new();
+/// THE PROBLEM LISTS. The first two are in the Python's wording, so a ledger row means the same
+/// thing before and after the conversion; the third is the arm the Python did not have.
+#[derive(Default)]
+struct Findings {
+    /// A binding whose `inventory` column is BLANK.
+    blank: Vec<String>,
+    unrecognized: Vec<String>,
+    missing: Vec<String>,
+}
+
+fn scan(cx: &Ctx, bindings: &[Binding]) -> Findings {
+    let mut found = Findings::default();
     let mut exists_cache: BTreeMap<&str, bool> = BTreeMap::new();
 
     for b in bindings {
@@ -193,8 +218,20 @@ fn scan(cx: &Ctx, bindings: &[Binding]) -> (Vec<String>, Vec<String>) {
             continue;
         }
         let inv = b.inventory.trim();
-        // The master rule's own row is a description of the whole inventory, not a pointer.
-        if inv.is_empty() || inv.starts_with(MASTER_RULE_PREFIX) {
+        // The MASTER RULE'S OWN ROW is a description of the whole inventory, not a pointer — and
+        // the exemption is the master rule's alone, by id as well as by wording.
+        if b.id == MASTER_RULE_ID && inv.starts_with(MASTER_RULE_PREFIX) {
+            continue;
+        }
+        // A BLANK COLUMN IS THE FINDING, NOT THE EXIT. This was a `continue` — the one shape that
+        // cites no evidence whatsoever was the one shape that could not be reported. A binding that
+        // points nowhere cannot be followed to a wrong file, so every rule below it is vacuously
+        // clean over it, and four green rows were printed about a binding nobody could check.
+        if inv.is_empty() {
+            found.blank.push(format!(
+                "{}: the `inventory` column is blank — this binding points at no evidence at all",
+                b.id
+            ));
             continue;
         }
         for segment in inv.split(';') {
@@ -204,14 +241,14 @@ fn scan(cx: &Ctx, bindings: &[Binding]) -> (Vec<String>, Vec<String>) {
             }
             match resolve_prefix(segment) {
                 None => continue,
-                Some(Resolved::Unrecognized) => unrecognized.push(format!(
+                Some(Resolved::Unrecognized) => found.unrecognized.push(format!(
                     "{}: unrecognized inventory file prefix in segment '{segment}'",
                     b.id
                 )),
                 Some(Resolved::Alias(alias, path)) => {
                     let present = *exists_cache.entry(path).or_insert_with(|| cx.exists(path));
                     if !present {
-                        missing.push(format!(
+                        found.missing.push(format!(
                             "{}: inventory file missing for '{alias}': {path}",
                             b.id
                         ));
@@ -220,7 +257,7 @@ fn scan(cx: &Ctx, bindings: &[Binding]) -> (Vec<String>, Vec<String>) {
             }
         }
     }
-    (unrecognized, missing)
+    found
 }
 
 impl Gate for InventoryRefGate {
@@ -234,6 +271,7 @@ impl Gate for InventoryRefGate {
             ROW_FLOOR.to_string(),
             ROW_PREFIX.to_string(),
             ROW_FILE.to_string(),
+            ROW_BLANK.to_string(),
         ]
     }
 
@@ -253,7 +291,8 @@ impl Gate for InventoryRefGate {
                         "no inventory prefix was resolved",
                         unproven.clone(),
                     ),
-                    Row::fail(ROW_FILE, "no inventory file was checked", unproven),
+                    Row::fail(ROW_FILE, "no inventory file was checked", unproven.clone()),
+                    Row::fail(ROW_BLANK, "no inventory column was read", unproven),
                 ]);
             }
         };
@@ -288,7 +327,12 @@ impl Gate for InventoryRefGate {
 
         // The reference rules still run below the floor: a floor that suppresses its neighbours
         // cannot be told apart from them in a self-test.
-        let (unrecognized, missing) = scan(cx, &bindings);
+        let found = scan(cx, &bindings);
+        let Findings {
+            blank,
+            unrecognized,
+            missing,
+        } = found;
 
         if unrecognized.is_empty() {
             rows.push(Row::pass(
@@ -317,6 +361,26 @@ impl Gate for InventoryRefGate {
                 format!(
                     "{} — a reference to a file that was renamed or never existed binds nothing",
                     missing.join(" | ")
+                ),
+            ));
+        }
+
+        if blank.is_empty() {
+            rows.push(Row::pass(
+                ROW_BLANK,
+                "every binding's inventory column cites something",
+                format!("{} binding(s) checked", bindings.len()),
+            ));
+        } else {
+            rows.push(Row::fail(
+                ROW_BLANK,
+                "a binding's inventory column is blank",
+                format!(
+                    "{} — a blank column is not a pointer this lint may skip: it is a binding that \
+                     cites no evidence at all, which is the strongest reason there is to fail. \
+                     Point the Appendix B row at the inventory rows it binds (and if a `|` inside a \
+                     backticked expression ate the column, escape it as `\\|`); do not delete the row.",
+                    blank.join(" | ")
                 ),
             ));
         }
@@ -370,12 +434,7 @@ impl Gate for InventoryRefGate {
                 );
                 match legacy_wording(p.label) {
                     Some(w) => probe.named_by(w),
-                    None => probe.diverges(crate::gates::Divergence::LegacyCrashes {
-                        reason: "the legacy reaches this verdict by raising out of its own file \
-                                 read rather than by reporting a rule, and an interpreter traceback \
-                                 and a considered refusal leave the same exit code."
-                            .to_string(),
-                    }),
+                    None => probe.diverges(divergence_for(p.label)),
                 }
             })
             .collect()
@@ -400,7 +459,33 @@ fn legacy_wording(label: &str) -> Option<&'static str> {
         }
         "an inventory file a binding cites was renamed away" => Some("inventory file missing for"),
         // The unreadable and not-JSON arms: the legacy raises rather than reporting.
+        // The blank-column arm: the legacy prints a clean green over it. Both are `None` here and
+        // are told apart by [`divergence_for`], which is where the difference is declared.
         _ => None,
+    }
+}
+
+/// HOW THE LEGACY DIFFERS WHERE IT HAS NO SENTENCE AT ALL, per plant.
+///
+/// Two different silences wear the same `None` in [`legacy_wording`] and they are not the same
+/// finding. The unreadable-manifest and not-JSON plants make the script DIE — right verdict, wrong
+/// instrument. The blank-column plant makes it print a PASS: `if not inv: continue` is the arm this
+/// gate closed, so the legacy is not merely quiet about it, it actively answers "clean".
+fn divergence_for(label: &str) -> crate::gates::Divergence {
+    if label == "a binding's inventory column is blank" {
+        return crate::gates::Divergence::LegacyGreen {
+            reason: "the legacy skips a blank `inventory` column outright (`if not inv: continue`) \
+                     and prints a clean green over a binding that cites no evidence at all — the \
+                     hole this row was added to close, so a divergence here is the point of the row \
+                     rather than a gap in the conversion."
+                .to_string(),
+        };
+    }
+    crate::gates::Divergence::LegacyCrashes {
+        reason: "the legacy reaches this verdict by raising out of its own file read rather than \
+                 by reporting a rule, and an interpreter traceback and a considered refusal leave \
+                 the same exit code."
+            .to_string(),
     }
 }
 
@@ -463,7 +548,7 @@ fn set_bindings(content: String) -> Overlay {
     ov
 }
 
-/// The six planted violations, one per refusal this gate makes.
+/// The seven planted violations, one per refusal this gate makes.
 fn plants() -> Vec<Plant> {
     let clean = repeat_binding("routes-admin LST-001", BINDING_FLOOR + 1);
 
@@ -522,6 +607,17 @@ fn plants() -> Vec<Plant> {
             rule: ROW_PREFIX,
             naming: vec!["unrecognized inventory file prefix".to_string()],
             overlay: set_bindings(bindings_json(&clean, Some("not-a-real-file ZZZ-001"))),
+            absent: Vec::new(),
+        },
+        // Rule 5, alone: every other rule is clean and ONE binding's inventory column is blank.
+        // THE ARM THIS GATE COULD NOT PRODUCE A NO FOR. `bindings_json(.., Some(""))` writes an
+        // entry whose `inventory` is the empty string — the exact shape the scanner used to
+        // `continue` past — so a green here is the hole and a red is the closure.
+        Plant {
+            label: "a binding's inventory column is blank",
+            rule: ROW_BLANK,
+            naming: vec!["points at no evidence at all".to_string()],
+            overlay: set_bindings(bindings_json(&clean, Some(""))),
             absent: Vec::new(),
         },
         // Rule 4, alone: every prefix resolves, the floor is clear, and the file one of them names
@@ -627,9 +723,47 @@ mod tests {
                 inventory: "seq|ts|action".to_string(),
             },
         ];
-        let (unrecognized, missing) = scan(&cx, &bindings);
-        assert!(unrecognized.is_empty(), "{unrecognized:?}");
-        assert!(missing.is_empty(), "{missing:?}");
+        let found = scan(&cx, &bindings);
+        assert!(found.unrecognized.is_empty(), "{:?}", found.unrecognized);
+        assert!(found.missing.is_empty(), "{:?}", found.missing);
+        assert!(found.blank.is_empty(), "{:?}", found.blank);
+    }
+
+    /// A BLANK COLUMN IS A FINDING, NOT A SKIP. The arm this gate could not produce a NO for.
+    #[test]
+    fn a_blank_inventory_column_is_a_finding() {
+        let cx = cx();
+        let bindings = vec![Binding {
+            id: "PB-X9".to_string(),
+            inventory: "   ".to_string(),
+        }];
+        let found = scan(&cx, &bindings);
+        assert_eq!(found.blank.len(), 1, "{:?}", found.blank);
+        assert!(
+            found.blank[0].contains("PB-X9") && found.blank[0].contains("no evidence at all"),
+            "{:?}",
+            found.blank
+        );
+        // And it is reported as a blank column rather than smuggled into a neighbour's row.
+        assert!(found.unrecognized.is_empty(), "{:?}", found.unrecognized);
+        assert!(found.missing.is_empty(), "{:?}", found.missing);
+    }
+
+    /// THE MASTER-RULE ARM IS THE MASTER RULE'S. A binding that opens with the master rule's words
+    /// under any other id buys no silence with them: it is a pointer like every other pointer, and
+    /// `every …` is not a prefix this lint knows.
+    #[test]
+    fn only_the_master_rule_may_describe_the_inventory_instead_of_pointing_into_it() {
+        let cx = cx();
+        let found = scan(
+            &cx,
+            &[Binding {
+                id: "PB-X8".to_string(),
+                inventory: "every row of every inventory file under `inventory/`".to_string(),
+            }],
+        );
+        assert_eq!(found.unrecognized.len(), 1, "{:?}", found.unrecognized);
+        assert!(found.blank.is_empty(), "{:?}", found.blank);
     }
 
     /// A renamed manifest key must NOT read as an empty binding list. This is the whole audit fix.
@@ -679,6 +813,20 @@ mod tests {
                 Some("not-a-real-file ZZZ-001")
             )),
             vec![ROW_PREFIX.to_string()]
+        );
+    }
+
+    /// AND THE BLANK ROW MUST FAIL ALONE. A manifest that loads, clears the floor, and whose every
+    /// non-blank segment resolves to a file that is there is clean by rules 1-4 and blank by rule 5
+    /// — so if this fixture reds anything else, rule 5 is being proven by its neighbours.
+    #[test]
+    fn the_blank_inventory_row_rejects_alone() {
+        assert_eq!(
+            failed_ids(bindings_json(
+                &repeat_binding("routes-admin LST-001", BINDING_FLOOR + 1),
+                Some("")
+            )),
+            vec![ROW_BLANK.to_string()]
         );
     }
 

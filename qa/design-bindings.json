@@ -1936,8 +1936,8 @@
   {
    "id": "PB-38",
    "surface": "memory-store sweeps",
-   "binding": "the four amortised 31-day sweeps verbatim (strict `>`, every 256 writes per ticker): `put_key` tombstones, `put_credential` revoked-only, `add_usage` rows by `window_start`, `add_metering` rows by bucket age; the idle uncapped all-time cell sweep after 31 d — a cell survives while `still_enforces_a_cap",
-   "inventory": "",
+   "binding": "the four amortised 31-day sweeps verbatim (strict `>`, every 256 writes per ticker): `put_key` tombstones, `put_credential` revoked-only, `add_usage` rows by `window_start`, `add_metering` rows by bucket age; the idle uncapped all-time cell sweep after 31 d — a cell survives while `still_enforces_a_cap || dirty || last_touch + max_window > now`; `put_usage` rows, live keys, live credentials and the denylist are never swept (the denylist has no bound)",
+   "inventory": "plugins-stores (:957-967), governance",
    "status": "mapped",
    "checks": [
     {
