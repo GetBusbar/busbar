@@ -1,0 +1,333 @@
+# qa/unconstructed.toml — WHERE "THIS CAPABILITY IS BUILT BUT NEVER CONSTRUCTED" IS WRITTEN DOWN.
+#
+# Read by `cargo xtask gate unconstructed` (xtask/src/gates/unconstructed.rs).
+#
+# THE RULE THIS FILE SERVES:
+#
+#   A CAPABILITY THAT IS NEVER CONSTRUCTED IS A CAPABILITY THAT DOES NOT SHIP.
+#   Its tests prove the code works; they prove nothing about whether it runs.
+#
+# WHY THIS FILE EXISTS. On 2026-09-22 the same defect was proven three times in one tree, and three
+# rows that said DONE were wrong in exactly this way:
+#
+#   1. THE PRODUCTION AUDIT CHAIN IS UNSIGNED. `AuditChain::signing_with` is a complete, green,
+#      sixteen-test signing implementation with ZERO non-test callers. The one production
+#      construction site — `crates/busbar/src/root/durability.rs` → `record: AuditChain::new()` —
+#      passes no signer, and no config supplies a key. Every deployed node seals a chain whose
+#      tamper-evidence is unsigned, while the signing sits beside it, green.
+#   2. #79's dated-history derivation has no production feed (a DIFFERENT shape — see THE LIMIT).
+#   3. Neither auth crate carries `#![forbid(unsafe_code)]`; both sit on a `known_missing_forbid`
+#      list. The INVISIBILITY was closed. The debt was not.
+#
+# In all three the code is correct, the tests are green, and the thing does not run. Nothing in this
+# repository measured that. A test suite cannot: it constructs the capability itself, which is the
+# one thing production does not do.
+#
+# WHAT THE GATE DOES WITH THIS FILE.
+#
+#   * A declared capability WITH a production construction site PASSES, and the row prints the site.
+#   * A declared capability WITHOUT one is RED, and the row prints every mention it REJECTED and
+#     why — so the reader sees "five mentions, none of them a call", not a bare absence.
+#   * A capability declared `unshipped = true` is a TRACKED ROW: it passes, and it prints its
+#     reason and its switch on every single run. That is strictly more than a source comment ever
+#     did — the three findings above were all known to somebody and written down nowhere a machine
+#     reads.
+#   * A declaration that OUTLIVES ITS DEBT is RED (`unconstructed:stale-declaration`): an
+#     `unshipped` row that has quietly acquired a construction site must be struck in the same
+#     commit that wires it, and a row naming a symbol its `built` file no longer defines must be
+#     corrected. The ledger cannot outlive the debt it tracked.
+#
+# THE FILE GOING EMPTY IS NOT THE GOAL STATE HERE — unlike qa/reachability.toml. The `required`
+# rows are permanent: they are the capabilities whose construction must never silently regress, and
+# they are what makes the gate a ratchet rather than a one-off audit. Only the `unshipped` rows are
+# meant to drain.
+#
+# THE ROW SHAPE:
+#
+#   [[capability]]
+#   id        = "audit-chain-signing"      # unique; the row id is `unconstructed:site:<id>`
+#   built     = "crates/.../record.rs"     # the file the capability is IMPLEMENTED in. Must exist.
+#   symbol    = "signing_with"             # must be DEFINED in `built`, or the row is stale
+#   construct = [".signing_with("]         # the call shape(s). EVERY ONE MUST END IN `(`.
+#   scope     = ["crates"]      # where a production construction site must appear
+#   why       = "..."                      # >= 40 chars. What is lost when it does not run.
+#   unshipped = true                       # optional; the row then PASSES and PRINTS
+#   switch    = "..."                      # >= 40 chars, REQUIRED when `unshipped`. What retires it.
+#
+# WHY `construct` MUST END IN `(`, AND WHY THAT IS CHECKED ON THE DECLARATION RATHER THAN THE HIT.
+# A construction site is a CALL. A needle that is not call-shaped would be satisfied by a `use`
+# statement, a doc comment or a type alias, and those are exactly the decorations that make an
+# unconstructed capability read as a constructed one. Checking it here means a future editor cannot
+# quietly weaken one row to `construct = ["signing_with"]` and have it pass on an import line: the
+# whole declaration is refused, loudly, before a single file is read.
+#
+# WRITING A ROW FOR A CAPABILITY REACHED BY FUNCTION POINTER. If the capability is an
+# `extern "C"` fn installed into a vtable slot and called across the ABI, its `construct` needle must
+# be the INSTALLATION, not the call: `metrics_emit: Some(` rather than `metrics_emit(`. Such a
+# function is called by nobody BY NAME, so a call-shaped needle yields a FALSE RED — this exact case
+# (`crates/busbar-plugin/src/hot/host.rs:958`) came up in the 2026-09-22 sweep and would have been
+# answered by deleting live code. The installation IS the construction decision; scan for that.
+#
+# THE LIMIT, STATED SO NOBODY READS MORE INTO A GREEN ROW THAN IS THERE. This gate proves a
+# production CALL SITE EXISTS. It does not prove that call is reached from `fn main()` — that is
+# `cargo xtask gate reachability`, and the honest claim is the two together. And it does not see
+# proven-instance 2 at all: `booked_lines()` IS called in production
+# (`crates/busbar/src/root/units_admin/mod.rs:1419`); what is missing there is a non-empty FEED, not
+# a construction site. That is a NEIGHBOURING shape — "constructed, but with its input hardwired
+# empty" — and a construction-site scanner cannot express it. It is recorded as an OPEN row in the
+# ledger rather than pretended into this file, because a row here would report it GREEN and be worse
+# than no row at all.
+#
+# ── DECLARATIONS ─────────────────────────────────────────────────────────────────────────────────
+
+# THE RATCHET ROW, AND THE GATE'S OWN POSITIVE CONTROL.
+#
+# `Ledger::dual_writing` is the stronger of two constructors and the composition root correctly
+# chooses it — `durability.rs` even says why in the line above the call: "Not `Ledger::new()`. The
+# reconciliation identity and rollback both require the dual write, and both are release
+# requirements rather than deployment choices." That sentence is a comment; this row is the
+# instrument. If anyone ever swaps it back to `Ledger::new()`, the money path silently loses
+# reconciliation and rollback and every test still passes — which is the precise failure mode this
+# gate exists for, in the one place it would cost the most.
+#
+# It is also what stops the gate being vacuous: this row is GREEN on HEAD, measured, so the RED
+# rows below are a measurement rather than a gate that is red about everything.
+[[capability]]
+id        = "ledger-dual-write"
+built     = "crates/busbar-kernel-ledger/src/settle.rs"
+symbol    = "dual_writing"
+construct = ["Ledger::dual_writing("]
+scope     = ["crates"]
+why       = "The reconciliation identity and rollback both require the dual write and both are release requirements, not deployment choices. Swapping the composition root back to Ledger::new() would keep its own books correctly and lose the legacy mirror, with no test anywhere going red."
+
+# PROVEN INSTANCE 1 — THE PRODUCTION AUDIT CHAIN IS UNSIGNED.
+#
+# EVIDENCE THAT RE-RUNS:
+#   grep -rn "signing_with" --include="*.rs" --exclude-dir=target . | grep -v "/tests/" | grep -v "tests.rs"
+#     → 1 hit: crates/busbar-kernel-audit/src/record.rs:356, the DEFINITION itself. Every other hit
+#       in the tree is under a tests/ path.
+#   grep -rn "AuditChain::new()" --include="*.rs" --exclude-dir=target . | grep -v "/tests/" | grep -v "tests.rs"
+#     → 2 hits: record.rs:320 (the `Default` impl, i.e. its own constructor) and
+#       crates/busbar/src/root/durability.rs:774 — the ONE production construction site, with no
+#       signer attached and no config anywhere supplying a key.
+#
+# This is NOT a money row and it is not being closed by an agent: it is a security capability that
+# is built, tested and switched off. Declared `unshipped` so the gate is honest about HEAD rather
+# than permanently red; the row prints on every run and `stale-declaration` reds the moment it is
+# wired, so it cannot be forgotten and cannot be silently retired.
+[[capability]]
+id        = "audit-chain-signing"
+built     = "crates/busbar-kernel-audit/src/record.rs"
+symbol    = "signing_with"
+construct = [".signing_with("]
+# THE WHOLE WORKSPACE, deliberately. There are two composition paths — `crates/busbar/src` (the bin
+# crate's root) and `crates/busbar-kernel/src/appbuild.rs`, where the tree's OTHER key wiring lives
+# (`auth.signing_key` -> resolve_signing_key -> gs.set_signing_key, an UNRELATED token-signing key).
+# Scoping to either would leave a reader wondering about the rest. The answer is the same everywhere:
+# nothing calls it. One root also means ONE walk shared by every row below.
+scope     = ["crates"]
+why       = "Every deployed node seals an audit chain whose tamper-evidence is UNSIGNED. A full signing implementation with sixteen green tests sits beside it and has zero non-test callers, so the chain walk proves only that records hash to themselves — not that THIS node produced them."
+unshipped = true
+switch    = "STRIKE THIS ROW in the same commit that gives the composition root a signing key and calls .signing_with() on the chain it builds in crates/busbar/src/root/durability.rs. That commit must also add the config seam that supplies the key, because a builder with no key source is the same defect one layer down."
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# THE SWEEP OF 2026-09-22 — capabilities found built, tested and never constructed.
+#
+# Every row below was verified with the SAME absence grep, which anyone can re-run:
+#
+#   grep -rn --include="*.rs" --exclude-dir=target -E '<construct>' . \
+#     | grep -v '/tests/' | grep -v 'tests\.rs' | grep -v '/fuzz/'
+#
+# and in every case the only surviving hit is the DEFINITION itself. None of these is being CLOSED
+# here: this file records that they do not run. The money rows are PARKED-OWNER in the ledger and an
+# owner signs them, not an agent.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+# BREAKER — the operator's per-destination request budget is never installed, so the root's
+# breaker answers "admissible" for every destination forever.
+[[capability]]
+id        = "breaker-request-budget"
+built     = "crates/busbar-kernel-breaker/src/lib.rs"
+symbol    = "set_budget"
+construct = [".set_budget("]
+scope     = ["crates"]
+why       = "BreakerAdapter::admissible() answers from budget_remaining(dest) != Some(0), and no destination ever HAS a budget, so the lifetime request cap config.yaml documents as max_requests can never refuse anything on the root's breaker path."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that reads the operator's max_requests out of config and calls set_budget for each destination when the root breaker is constructed (crates/busbar/src/root/kernel.rs, via adapters.rs BreakerAdapter::with_diagnostics)."
+
+# BREAKER — the operator's error map never reaches the breaker either.
+[[capability]]
+id        = "breaker-error-map"
+built     = "crates/busbar-kernel-breaker/src/lib.rs"
+symbol    = "set_error_map"
+construct = [".set_error_map("]
+scope     = ["crates"]
+why       = "The per-destination error map that lets an operator classify an upstream's failures is built and tested and installed by nothing, so every destination is judged by the compiled-in default classification whatever the deployment declares."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that feeds the operator's declared error_maps into the root breaker at construction time, alongside the budget row above — they are the same seam and should land together."
+
+# BREAKER — the explicit-limits constructor has no caller at all, not even a test.
+[[capability]]
+id        = "breaker-with-limits"
+built     = "crates/busbar-kernel-breaker/src/lib.rs"
+symbol    = "with_limits"
+construct = ["BreakerUnit::with_limits(", ".with_limits("]
+scope     = ["crates"]
+why       = "The constructor that takes explicit hard_down_cooldown and max_honored_retry_after has no caller anywhere, so the composed breaker runs on ADR-0002 compiled-in defaults and the two knobs cannot be moved by any deployment."
+unshipped = true
+switch    = "STRIKE THIS ROW when the root constructs its breaker through with_limits with values read from config, or DELETE with_limits if the defaults are the decision — an unreachable constructor is not a knob."
+
+# BUDGET — the pricer the admission door uses is never given a rate card.
+[[capability]]
+id        = "budget-pricer-card"
+built     = "crates/busbar-kernel-budget/src/price.rs"
+symbol    = "with_card"
+construct = ["Pricer::with_card("]
+scope     = ["crates"]
+why       = "The only production Pricer in the tree is Pricer::flat(0) (crates/busbar/src/main.rs), which prices every model at zero and carries no fee, so busbar-kernel-budget's Door/decide path has never been driven by an operator's card on any node."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that constructs the root's Pricer from the resolved rate card instead of flat(0). NOTE FOR THE OWNER: live admission today prices through busbar_kernel::cost::CostModel, which IS card-fed — so this is the split's unfinished half, not a live mispricing."
+
+# LEDGER — no node ever seals a checkpoint, so the checkpoints read is empty everywhere.
+[[capability]]
+id        = "ledger-checkpoint-seal"
+built     = "crates/busbar-kernel-ledger/src/checkpoint.rs"
+symbol    = "seal_as_of"
+construct = [".seal_as_of(", "::seal_as_of("]
+scope     = ["crates"]
+why       = "GET /api/v1/admin/ledger/checkpoints returns an empty list on every production node because nothing ever seals one. #79's premise that a window sealed into a signed checkpoint cannot be rewritten is vacuously true while no window is ever sealed."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that gives the composition root a caller for the checkpoint sealer — it lands with the journal_checkpoint row below, which is the writer half of the same seam."
+
+# LEDGER — the writer that would push a sealed checkpoint onto the node has no caller.
+[[capability]]
+id        = "ledger-checkpoint-journal"
+built     = "crates/busbar/src/root/durability.rs"
+symbol    = "journal_checkpoint"
+construct = [".journal_checkpoint("]
+scope     = ["crates"]
+why       = "Durability is built with checkpoints: Vec::new() and the one function that would push onto that vector is called by nothing, so the checkpoint list is not merely empty at boot — there is no code path on any node that can ever add to it."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that calls journal_checkpoint on a real schedule or seam, together with ledger-checkpoint-seal."
+
+# LEDGER — a signed rate-history amendment books no adjusting entry.
+[[capability]]
+id        = "ledger-adjusting-entries"
+built     = "crates/busbar-kernel-ledger/src/settle.rs"
+symbol    = "adjusting_entries"
+construct = ["adjusting_entries("]
+scope     = ["crates"]
+why       = "The admin verb that amends rate history appends a card entry and books nothing, so the adjustments/drawn journal pair that would make a correction legible beside the original bill is never written. MONEY: PARKED-OWNER, an owner signs this, not an agent."
+unshipped = true
+switch    = "STRIKE THIS ROW when the amend-rate-history effect books the adjusting entries it derives. This is a BILLED-BYTE change and needs an owner signature before it lands."
+
+# MONEY — the #79 exact pricing view has no production producer.
+[[capability]]
+id        = "money-one-function-view"
+built     = "crates/busbar-kernel-ledger/src/cost/view.rs"
+symbol    = "new"
+construct = ["LedgerEntry::new("]
+scope     = ["crates"]
+why       = "The class-keyed, tier-aware, refuse-on-hole exact derivation of #42/#71/#79 is proven equivalent to the live arithmetic by an integration test and is called by nothing in production, because no production code ever builds a LedgerEntry to feed it."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that gives the production money path a LedgerEntry producer and routes a real read through price_in_view/price_exact. MONEY: PARKED-OWNER — an owner signs, not an agent."
+
+# ─── SECURITY AND DURABILITY, from the same sweep ───────────────────────────────────────────────
+
+# A SECURITY GATE THAT RUNS ON EVERY SESSION AND CAN NEVER FIRE.
+[[capability]]
+id        = "voice-denied-destinations"
+built     = "crates/busbar-voice/src/runtime/mod.rs"
+symbol    = "with_denied_destinations"
+construct = [".with_denied_destinations("]
+scope     = ["crates"]
+why       = "destination_denied() IS consulted on the live request path and renders a 403, but denied_destinations is initialised empty, its only writer is this builder, and StreamsCfg carries no deny field — so the upstream-destination denial gate runs on every session and always answers allow."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that gives StreamsCfg (or its successor) a deny list and passes it through with_denied_destinations when the voice runtime is constructed. Until then the 403 path is unreachable by configuration."
+
+# NO NODE CAN LOAD A PLANE PLUGIN.
+[[capability]]
+id        = "plane-plugin-open"
+built     = "crates/plugin-loader/src/registry.rs"
+symbol    = "open_plane"
+construct = [".open_plane("]
+scope     = ["crates"]
+why       = "Of the registry's open_* kinds, open_auth/open_hook/open_secret/open_store all have production callers and open_plane has none, so no node can load a kind: plane plugin — the 1.6.0 plane ABI has a loader and no caller."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that calls open_plane from the composition root's plugin wiring. Already described at docs/design/BUSBAR-1.6.0.md:1627 — this row is that sentence made machine-readable."
+
+[[capability]]
+id        = "export-plugin-open"
+built     = "crates/plugin-loader/src/registry.rs"
+symbol    = "open_export"
+construct = [".open_export("]
+scope     = ["crates"]
+why       = "The kind: export plugin open has zero callers anywhere in the tree, not even a test, so an export plugin cannot be loaded by any node. Described in docs/design/SEAMS.md:337 and never in a file a machine reads."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that gives open_export a production caller, or delete the kind if export is not shipping in 1.6.0."
+
+# MID-LOG CORRUPTION IS TRUNCATED EXACTLY LIKE A CLEAN CRASH TAIL.
+[[capability]]
+id        = "wal-corruption-verdict"
+built     = "crates/busbar-kernel-wal/src/recover.rs"
+symbol    = "was_torn"
+construct = [".was_torn("]
+scope     = ["crates"]
+why       = "Recovered::stopped_because is written and never read, and recover_and_truncate cuts whenever discarded_bytes > 0 regardless of WHY the scan stopped — so data loss from a checksum failure mid-log is indistinguishable from a clean torn tail on every node."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that makes recover_and_truncate branch on the verdict — refusing or alarming on Corrupt and truncating only a genuine Torn tail. This is a DURABILITY decision and wants an owner ruling on the refuse-vs-alarm arm."
+
+# THE CRASH-RECOVERY MODULE IS REACHED BY NOTHING.
+[[capability]]
+id        = "crash-recovery-open-holds"
+built     = "crates/busbar-kernel/src/recovery.rs"
+symbol    = "recover_all"
+construct = ["recover_all("]
+scope     = ["crates"]
+why       = "The settle/void table for holds a crash left open — what happens after the power goes out — is an entire module nothing reaches: recover_all has no production caller and no production code constructs a HoldRecord to feed it."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that calls recover_all on the boot path. Note its TailVerdict::truncates already encodes the Corrupt-vs-Torn policy the WAL row above is missing, so the two should be reconciled rather than solved twice."
+
+# THE ROOT BREAKER OBSERVES NOTHING FOR ANY POOL.
+[[capability]]
+id        = "breaker-pool-observation"
+built     = "crates/busbar/src/root/adapters.rs"
+symbol    = "with_pool"
+construct = [".with_pool("]
+scope     = ["crates"]
+why       = "The sole production BreakerPolicy is BreakerPolicy::new() with no pool and no fallback cell, and observe() bails on `let Some(cfg) = self.policy.for_pool(pool) else { return false }` — so the root breaker records nothing for every pool that exists."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that builds the root's BreakerPolicy from configured pools. It belongs with the three breaker rows above — they are one seam and should land together."
+
+# THE ABI MINOR WAS BUMPED 19->20 FOR A CAPABILITY WITH NO PRODUCER AND NO CONSUMER.
+[[capability]]
+id        = "plugin-abi-keyed-units"
+built     = "crates/busbar-plugin/src/hot/pod.rs"
+symbol    = "decode_usage_units"
+construct = ["decode_usage_units("]
+scope     = ["crates"]
+why       = "The host-side decoder for ABI v20 keyed usage units has no production caller, and neither does the producer side, so every dlopen plugin still bills through the frozen amount x unit_cost_micros path and the ABI minor bump bought nothing that runs."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that makes the host decode keyed units on the real metering path. MONEY-ADJACENT: it changes how a plugin's usage becomes a charge, so an owner signs it."
+
+# MONEY — the late-accrual mechanism is back to being an assertion.
+[[capability]]
+id        = "hold-late-accrual-parent-exit"
+built     = "crates/busbar-contract/src/caps/hold.rs"
+symbol    = "convert_at_parent_exit"
+construct = [".convert_at_parent_exit("]
+scope     = ["crates"]
+why       = "Its own doc calls this what makes the late-accrual exposure a mechanism rather than an assertion. The sibling after_terminal IS live in the llm unit path; the parent-exit conversion has no production caller, so a child can still post late with no reservation behind it."
+unshipped = true
+switch    = "STRIKE THIS ROW in the commit that converts a child hold at parent exit on the real path. MONEY: PARKED-OWNER — an owner signs, not an agent."
+
+# MONEY — the multi-currency card has no production builder.
+[[capability]]
+id        = "rate-card-multi-currency"
+built     = "crates/busbar-kernel-ledger/src/cost/rate.rs"
+symbol    = "set_rate"
+construct = [".set_rate("]
+scope     = ["crates"]
+why       = "The documented way a multi-currency card is built has no production caller; production builds exactly one currency through from_micro_rates_in, so a card carrying a second currency cannot be constructed by any deployment."
+unshipped = true
+switch    = "STRIKE THIS ROW when a production path builds a multi-currency card, or DELETE set_rate/set_fee if a card is always built whole — a mutator nothing calls is a second way to move a price. MONEY: PARKED-OWNER."

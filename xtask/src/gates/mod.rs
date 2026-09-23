@@ -62,6 +62,7 @@ pub mod ship_ready;
 pub mod structure_lint;
 pub mod teller_steps;
 pub mod tracing;
+pub mod unconstructed;
 pub mod workspace_deps;
 
 use std::collections::BTreeSet;
@@ -2112,6 +2113,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Full,
         build: || Box::new(reachability::ReachabilityGate),
         summary: "every plane in the #48 roster is served by a unit path the root constructs",
+    },
+    Registration {
+        name: "unconstructed",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(unconstructed::UnconstructedGate),
+        summary: "every capability declared in qa/unconstructed.toml has a production construction site",
     },
     Registration {
         name: "segregation",
