@@ -259,7 +259,7 @@ why       = "The kind: export plugin open has zero callers anywhere in the tree,
 unshipped = true
 switch    = "STRIKE THIS ROW in the commit that gives open_export a production caller, or delete the kind if export is not shipping in 1.6.0."
 
-# MID-LOG CORRUPTION — row `wal-corruption-verdict` STRUCK 2026-09-24 by OWNER RULING (Q38):
+# MID-LOG CORRUPTION — row `wal-corruption-verdict` STRUCK 2026-09-24 by owner ruling:
 # `recover_and_truncate` now branches on the scan's verdict (`.was_torn(`): a torn tail is cut
 # silently; a Corrupt one has its damaged remainder copied and synced to
 # `<segment>.quarantine-<unix_ms>` BEFORE the cut, and the verdict is returned through
