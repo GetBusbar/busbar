@@ -210,11 +210,13 @@ fn a_card_edit_mid_window_prices_an_open_class_in_both_eras_and_refuses_neither(
     let lanes = [("rerank".to_string(), zero)];
     let era = |nanos: u64| [("rerank".to_string(), "search_units".to_string(), nanos)];
     let (before, after) = (era(5_000), era(3_000));
+    let no_fees = busbar_kernel::config::PlaneFeesMap::new();
     let raw = |units| busbar_kernel::rate_apply::RawRates {
         lanes: &lanes,
         units,
         flat_minor: 0,
         present: true,
+        plane_fees: &no_fees,
     };
 
     let holder = RootHistory::default();
@@ -243,6 +245,49 @@ fn a_card_edit_mid_window_prices_an_open_class_in_both_eras_and_refuses_neither(
         11_000_000,
         "each era at the open-class rate in force when it was earned"
     );
+}
+
+/// **A PLANE'S FEES ARE DATED WITH THE CARD** (#47 × Q14, OWNER RULING Q32). Plane `tp` charges 3
+/// minor units a request, then an edit mid-window moves it to 7. 2 requests were earned under the
+/// first card and 1 under the second: 2 × 3 + 1 × 7 = 13 minor units — each era at the fees in force
+/// when it was earned, because every dated entry is built with the plane fees its apply carried.
+#[test]
+fn a_fee_edit_mid_window_prices_each_era_at_the_plane_fee_in_force() {
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PlaneFees, PER_REQUEST};
+    let fees = |per_request| {
+        let f = PlaneFees {
+            per_request,
+            per_session: 0,
+        };
+        busbar_kernel::config::PlaneFeesMap::from([("tp".to_string(), f)])
+    };
+    let (before, after) = (fees(3), fees(7));
+    let raw = |plane_fees| busbar_kernel::rate_apply::RawRates {
+        lanes: &[],
+        units: &[],
+        flat_minor: 5,
+        present: false,
+        plane_fees,
+    };
+    let holder = RootHistory::default();
+    holder.apply(super::card_from_raw(&raw(&before)), 1_000);
+    holder.apply(super::card_from_raw(&raw(&after)), 2_000);
+    let history = holder.history().expect("two applies are a history");
+    let live = super::card_from_raw(&raw(&after));
+    let lane = plane_fee_lane("tp");
+    let two = std::collections::BTreeMap::from([(PER_REQUEST.to_string(), 2)]);
+    let one = std::collections::BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
+    let priced = busbar_kernel_ledger::usage::price_dated(
+        [(lane.as_str(), 0, &two), (lane.as_str(), 2_000, &one)],
+        [],
+        0,
+        &live,
+        Some(busbar_kernel_ledger::usage::DatedHistory::of(
+            &history, 3_000,
+        )),
+    )
+    .expect("a plane's fee units price");
+    assert_eq!(priced.minor(), 13, "each era at the plane fee in force");
 }
 
 /// A chain with one module in it, so the front door is CLOSED without needing a governance state

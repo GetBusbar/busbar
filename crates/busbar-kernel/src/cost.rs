@@ -138,7 +138,7 @@ fn unit_counts(
 /// every limit of the group that shares this window AND pool scope enforces against this one
 /// ledger cell. The three windowed metrics are independent caps on the same cell's counters
 /// (requests / total tokens / derived spend).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GroupBucket {
     /// The store/ledger bucket id: `group:<name>@<window>`, or `group:<name>@<window>#<pool>`
     /// for a pool-scoped bucket.
@@ -190,7 +190,7 @@ pub struct GroupRuntime {
 }
 
 /// One bucket of a resolved enforcement chain (borrowed views into the key / the `CostModel`).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ChainBucket<'a> {
     /// The store/ledger bucket id (the key id, or `group:<name>@<window>[#<pool>]`).
     pub bucket_id: &'a str,
@@ -416,15 +416,8 @@ impl CostModel {
                                     buckets.push(GroupBucket {
                                         bucket_id,
                                         window: w,
-                                        requests_cap: None,
-                                        tokens_cap: None,
-                                        tokens_input_cap: None,
-                                        tokens_output_cap: None,
-                                        tokens_cache_read_cap: None,
-                                        tokens_cache_write_cap: None,
-                                        budget_cap: None,
                                         scope: l.scope.clone(),
-                                        downgrade_to: None,
+                                        ..GroupBucket::default()
                                     });
                                     buckets.last_mut().expect("just pushed")
                                 }
@@ -513,8 +506,20 @@ impl CostModel {
         self.card.pricing_enabled()
     }
 
-    pub fn price_per_request_cents(&self) -> i64 {
-        self.card.fee()
+    /// The per-request fee of the plane keyed `plane` (#47): its own `fees.per_request`, `0` when it
+    /// configured none; the empty key is the pools plane's — `per_request_fee:`.
+    pub fn request_fee_on(&self, plane: &str) -> i64 {
+        let lane = busbar_kernel_ledger::cost::plane_fee_lane(plane);
+        self.card.plane_lane(&lane).0.fee()
+    }
+
+    /// Put each other plane's own fees (#47) on the card, by plane registry key.
+    #[must_use]
+    pub fn with_plane_fees(mut self, fees: &crate::config::PlaneFeesMap) -> Self {
+        self.card = self
+            .card
+            .with_plane_fees(fees.iter().map(|(p, f)| (&**p, *f)));
+        self
     }
 
     /// The card every figure this model derives is priced against — the one function's own type.
@@ -659,28 +664,17 @@ impl CostModel {
         key: &'a busbar_api::VirtualKey,
     ) -> Result<Chain<'a>, &'a str> {
         let mut buckets: Vec<ChainBucket<'a>> = Vec::with_capacity(8);
+        // The key's own attribution bucket: uncapped, unscoped, all-time.
         buckets.push(ChainBucket {
             bucket_id: &key.id,
-            group_name: None,
             window: crate::governance::WINDOW_TOTAL,
-            requests_cap: None,
-            tokens_cap: None,
-            tokens_input_cap: None,
-            tokens_output_cap: None,
-            tokens_cache_read_cap: None,
-            tokens_cache_write_cap: None,
-            budget_cap: None,
-            scope: None,
-            downgrade_to: None,
+            ..ChainBucket::default()
         });
         let mut groups: Vec<usize> = Vec::new();
-        let mut next = match key.group.as_deref() {
-            None => None,
-            Some(name) => match self.group_idx.get(name) {
-                Some(&i) => Some(i),
-                None => return Err(name),
-            },
-        };
+        let group = key.group.as_deref();
+        let mut next = group
+            .map(|n| self.group_idx.get(n).copied().ok_or(n))
+            .transpose()?;
         while let Some(i) = next {
             if groups.len() >= self.groups.len() {
                 // A distinct-node walk cannot exceed the group count without revisiting one, i.e.

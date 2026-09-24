@@ -445,6 +445,8 @@ pub(crate) fn card_from_raw(
             *nanos,
         )
     }))
+    // Each plane's own fees (#47), dated with the card they were configured beside.
+    .with_plane_fees(rates.plane_fees.iter().map(|(p, f)| (p.as_str(), *f)))
 }
 
 /// **THE ROOT, DATING A PRICE** — the read-side twin of the apply above.

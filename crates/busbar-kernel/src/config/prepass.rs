@@ -151,6 +151,7 @@ pub(crate) struct Lifted {
     decisions: Option<DecisionsSection>,
     auth_policy: Option<crate::config::AuthPolicyCfg>,
     plane_rate_cards: super::PlaneRateCards,
+    plane_fees: super::PlaneFeesMap,
 }
 
 impl Lifted {
@@ -158,6 +159,7 @@ impl Lifted {
     /// carrier at its `Default`, which is exactly what an omitted section means.
     fn install(self, deploy: &mut DeployCfg) {
         deploy.plane_rate_cards = self.plane_rate_cards;
+        deploy.plane_fees = self.plane_fees;
         if let Some(v) = self.endpoint {
             deploy.mcp = v;
         }
@@ -229,13 +231,11 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
 /// **THE CORE-OWNED SUB-KEYS OF A PLANE'S SECTION** (#43, #47): its `rate_card`, and its `fees`.
 /// Authored beside the plane's own settings for ergonomics, and LIFTED OFF the section here, before
 /// its remainder is handed to the plane — a plane plugin never sees its card or its fees, exactly
-/// as it never sees a secret (#40). The card lands on [`DeployCfg::plane_rate_cards`] under the
-/// plane's registry key, and prices that plane's rows alone (#42 "scoped per plane"). The fallback
-/// (`pools:`) plane's card is still the flat top-level `rate_card:`, loaded byte-identically.
-///
-/// `fees` is REFUSED rather than read: the enforcement book counts billable requests per bucket, not
-/// per plane, so a plane's own flat fee would bill nothing — a silent 0 beside a configured figure,
-/// which #42 forbids. The node's `per_request_fee:` is the one flat fee, charged on every plane.
+/// as it never sees a secret (#40). Each lands under the plane's registry key — the card on
+/// [`DeployCfg::plane_rate_cards`], the fees (`{ per_request, per_session }`, #44) on
+/// [`DeployCfg::plane_fees`] — and prices that plane's rows alone (#42 "scoped per plane"). The
+/// fallback (`pools:`) plane's card and fee are still the flat top-level `rate_card:` and
+/// `per_request_fee:`, loaded byte-identically.
 const PLANE_CARD_KEYS: [&str; 2] = ["rate_card", "fees"];
 
 /// Lift a plane section: strip its core-owned sub-keys (see [`PLANE_CARD_KEYS`]), then parse the
@@ -249,16 +249,21 @@ fn lift_plane<'de, S: LiftableSection, D: Deserializer<'de>>(
     let mut section = serde_yaml::Value::deserialize(de)?;
     let plane =
         crate::plane::registry::plane_decl_for_config_section(S::KEY).map_or(S::KEY, |d| d.key);
-    let map = section.as_mapping_mut();
-    if map.as_ref().is_some_and(|m| m.contains_key(fees_key)) {
-        let refusal = "is refused: requests are counted per bucket, not per plane, so it would bill \
-                       nothing. Every plane's requests are charged the top-level `per_request_fee:`";
-        return Err(D::Error::custom(format!("{}.{fees_key} {refusal}", S::KEY)));
-    }
-    if let Some(card) = map.and_then(|m| m.remove(card_key)) {
-        let card = serde_yaml::from_value(card)
-            .map_err(|e| D::Error::custom(format!("{}.{card_key}: {e}", S::KEY)))?;
+    let mut map = section.as_mapping_mut();
+    let mut take = |key: &str| map.as_mut().and_then(|m| m.remove(key));
+    let fail = |key: &str, e: serde_yaml::Error| D::Error::custom(format!("{}.{key}: {e}", S::KEY));
+    if let Some(card) = take(card_key) {
+        let card = serde_yaml::from_value(card).map_err(|e| fail(card_key, e))?;
         lifted.plane_rate_cards.insert(plane.to_string(), card);
+    }
+    if let Some(fees) = take(fees_key) {
+        let f: super::PlaneFeesCfg = serde_yaml::from_value(fees).map_err(|e| fail(fees_key, e))?;
+        let (per_request, per_session) = (f.per_request.into(), f.per_session.into());
+        let fees = busbar_kernel_ledger::cost::PlaneFees {
+            per_request,
+            per_session,
+        };
+        lifted.plane_fees.insert(plane.to_string(), fees);
     }
     S::deserialize(section)
         .map_err(D::Error::custom)?

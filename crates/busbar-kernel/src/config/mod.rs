@@ -467,6 +467,8 @@ pub struct RootCfg {
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
     /// Flat cents charged per request (default 0).
     pub per_request_fee: i64,
+    /// Every other plane's own fees, by plane registry key. See `DeployCfg::plane_fees`.
+    pub plane_fees: PlaneFeesMap,
     /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
     /// presence-driven governance stays off unless another governance signal is present).
     pub store: Option<StoreCfg>,
@@ -1123,6 +1125,20 @@ pub fn bind_is_loopback(addr: &str) -> bool {
 pub type PlaneRateCards =
     std::collections::BTreeMap<String, std::collections::BTreeMap<String, RateEntryCfg>>;
 
+/// Each non-fallback plane's own fees (#47): plane registry key → its fees, in minor units.
+pub type PlaneFeesMap = std::collections::BTreeMap<String, busbar_kernel_ledger::cost::PlaneFees>;
+
+/// A plane section's reserved `fees:` (#44: `{ per_request | per_session }`), in minor units; an
+/// absent key is a fee of 0. Never rounded, never divided — each is one flat fee per unit.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PlaneFeesCfg {
+    /// Charged once per billable request of the plane.
+    pub per_request: u32,
+    /// Charged once per session the plane opens.
+    pub per_session: u32,
+}
+
 /// Deployment configuration - operator-owned config.yaml structure.
 // deny_unknown_fields: a typo'd or unknown TOP-LEVEL key (e.g. `plugin:` for `plugins:`) must be a
 // loud startup error, not a silently-ignored block - the fail-closed posture every nested
@@ -1251,6 +1267,10 @@ pub struct DeployCfg {
     /// A lifted CARRIER, like the plane sections below; [`resolve`] composes it beside `rate_card:`.
     #[serde(skip)]
     pub plane_rate_cards: PlaneRateCards,
+    /// Every OTHER plane's own fees (#47): the reserved `fees:` sub-key of that plane's section,
+    /// lifted like its card. The pools plane's fee is `per_request_fee:`.
+    #[serde(skip)]
+    pub plane_fees: PlaneFeesMap,
     /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
     #[serde(default)]
     pub store: Option<StoreCfg>,
@@ -2288,9 +2308,7 @@ pub fn resolve(
                     Some(k) => match kind {
                         None => kind = Some(k),
                         Some(prev) if prev == k => {}
-                        Some(_) => {
-                            homogeneous = false;
-                        }
+                        Some(_) => homogeneous = false,
                     },
                 }
             }
@@ -2302,26 +2320,21 @@ pub fn resolve(
                 ));
                 continue;
             }
-            match kind {
-                Some(k) if k == tools_section || k == agents_section => {
-                    let derived = if k == tools_section {
-                        &mut tool_pools_derived
-                    } else {
-                        &mut agent_pools_derived
-                    };
-                    derived.insert(
-                        pool_name.clone(),
-                        crate::failover::CandidatePoolCfg {
-                            members: pool.members.iter().map(|m| m.model.clone()).collect(),
-                            repeatable: pool.repeatable.clone(),
-                        },
-                    );
-                    non_llm.push(pool_name.clone());
-                }
-                // Fallback-lane pools — and an all-unresolvable pool, which `config_validate` refuses
-                // member by member once it is resolved — stay in `pools`.
-                _ => {}
-            }
+            // Fallback-lane pools — and an all-unresolvable pool, which `config_validate` refuses
+            // member by member once it is resolved — stay in `pools`.
+            let derived = match kind {
+                Some(k) if k == tools_section => &mut tool_pools_derived,
+                Some(k) if k == agents_section => &mut agent_pools_derived,
+                _ => continue,
+            };
+            let members = pool.members.iter().map(|m| m.model.clone()).collect();
+            let repeatable = pool.repeatable.clone();
+            let candidates = crate::failover::CandidatePoolCfg {
+                members,
+                repeatable,
+            };
+            derived.insert(pool_name.clone(), candidates);
+            non_llm.push(pool_name.clone());
         }
         // A pool that is NOT a fallback-lane pool must not remain in the fallback `pools` map (its
         // bare members do not resolve to `models:` and would fail the fallback-lane build). Remove
@@ -2622,51 +2635,33 @@ pub fn resolve(
     // names a plane this build does not carry, so it is refused (the config deletion-gate leg) with
     // the same wording.
     let endpoint_block = deploy.mcp.0.as_ref();
-    let lowered_endpoint: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
-        match endpoint_block {
-            None => None,
-            Some(ep) => {
-                // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns
-                // the `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the
-                // deletion-gate refusal below.
-                match crate::plane::registry::plane_decl_for_config_section(
-                    busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-                )
-                .and_then(|d| d.lower_endpoint)
-                {
-                    Some(lower) => match lower(&**ep) {
-                        Ok(resource) => Some(resource),
-                        Err(e) => {
-                            errors.push(e);
-                            None
-                        }
-                    },
-                    None => {
-                        if ep.is_present() {
-                            errors.push(
-                            "an endpoint block is configured for a plane this build was compiled \
-                             without, so busbar cannot serve it. Rebuild with that plane's feature \
-                             enabled, or remove the block."
-                                .to_string(),
-                        );
-                        }
-                        None
-                    }
-                }
+    // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
+    // `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the deletion-gate refusal.
+    let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
+        .and_then(|d| d.lower_endpoint);
+    let lowered_endpoint = match (endpoint_block, lower) {
+        (None, _) => None,
+        (Some(ep), Some(lower)) => lower(&**ep).map_err(|e| errors.push(e)).ok(),
+        (Some(ep), None) => {
+            if ep.is_present() {
+                errors.push(
+                    "an endpoint block is configured for a plane this build was compiled without, \
+                     so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
+                     remove the block."
+                        .to_string(),
+                );
             }
-        };
+            None
+        }
+    };
 
     // The lowered endpoint resource, if any, keyed by its owning plane's config SECTION — the
     // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring
     // `tool_defs`/`agent_defs` beside it). The `tools:` plane owns the endpoint door, so its section
     // key is the map key; a build compiled without that plane produced no resource and inserts none.
     let endpoint_resources: std::collections::HashMap<_, _> = lowered_endpoint
-        .map(|resource| {
-            (
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-                resource,
-            )
-        })
+        .map(|resource| (endpoint_section, resource))
         .into_iter()
         .collect();
 
@@ -2710,6 +2705,7 @@ pub fn resolve(
             groups: deploy.groups.clone(),
             rate_card: compose_plane_cards(deploy.rate_card.as_ref(), &deploy.plane_rate_cards),
             per_request_fee: deploy.per_request_fee,
+            plane_fees: deploy.plane_fees.clone(),
             store: deploy.store.clone(),
             secrets: deploy.secrets.clone(),
             global_hooks: global_hook_names,

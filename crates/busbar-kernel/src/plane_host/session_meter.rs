@@ -72,7 +72,26 @@ impl SessionAccount {
         if account.dry() {
             return Err(BudgetRefused);
         }
+        account.count_open();
         Ok(Some(account))
+    }
+
+    /// ONE COUNT PER OPENED SESSION (#47 `fees.per_session`, OWNER RULING Q32): a count of the
+    /// reserved session class on the plane's own fee lane, through the same one metering path — the
+    /// plane's `fees.per_session` prices it at read, and a plane with none reads 0. A lane no plane
+    /// qualifies has no session fee to count.
+    fn count_open(&self) {
+        use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, PER_SESSION};
+        let (plane, _) = split_plane_lane(&self.lane);
+        if plane.is_empty() {
+            return;
+        }
+        let one = Usage {
+            usage_units: std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]),
+        };
+        let (lane, now) = (plane_fee_lane(plane), self.host.clock_now_secs());
+        self.host
+            .meter_ledger(&self.pin, &self.key, &self.pool, &lane, &one, now);
     }
 
     /// Ledger ONE turn's raw counts per class, unconditionally, then answer whether the carrier stays

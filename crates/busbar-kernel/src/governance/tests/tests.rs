@@ -5349,3 +5349,151 @@ fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
          in the same second would sort after every response of that second (#79): {body}"
     );
 }
+
+// ── PER-PLANE FEES (#47, OWNER RULING Q32): each plane's `fees` prices that plane's traffic ────────
+
+/// `per_request_fee: 5` (the pools plane's), `fees.per_request: 3` on plane `tp`,
+/// `fees.per_session: 40` on plane `sp`, no card, and a group `team` capped at `cap` minor units.
+/// Plane `np` configured no fees.
+fn plane_fee_cost(cap: i64) -> crate::cost::CostModel {
+    use busbar_kernel_ledger::cost::PlaneFees;
+    let fees = crate::config::PlaneFeesMap::from([
+        (
+            "tp".to_string(),
+            PlaneFees {
+                per_request: 3,
+                per_session: 0,
+            },
+        ),
+        (
+            "sp".to_string(),
+            PlaneFees {
+                per_request: 0,
+                per_session: 40,
+            },
+        ),
+    ]);
+    group_cost(5, &[("team", cap, "total", None)]).with_plane_fees(&fees)
+}
+
+/// An admission pool qualified by a plane's key, as that plane's admission sends it.
+fn plane_pool(plane: &str, pool: &str) -> String {
+    format!("{plane}{PLANE_LANE_SEP}{pool}")
+}
+
+fn team_gov() -> (Arc<MemoryStore>, GovState, VirtualKey) {
+    let store = Arc::new(MemoryStore::new());
+    let mut k = sample_key("k1", "h1");
+    k.group = Some("team".to_string());
+    store.put_key(&k).unwrap();
+    let gov = GovState::new(store.clone(), None).unwrap();
+    (store, gov, k)
+}
+
+const AT: u64 = 1_700_000_000;
+
+fn spend(gov: &GovState, cost: &crate::cost::CostModel) -> i64 {
+    gov.usage_for(cost, "k1", AT).unwrap().unwrap().spend_cents
+}
+
+#[test]
+fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools_plane() {
+    let (store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    for _ in 0..2 {
+        assert!(gov.try_admit(&cost, &k, "", AT).is_ok(), "a pools request");
+    }
+    for _ in 0..3 {
+        let pool = plane_pool("tp", "srv_read");
+        assert!(
+            gov.try_admit(&cost, &k, &pool, AT).is_ok(),
+            "a `tp` request"
+        );
+    }
+    // 2 pools × 5 + 3 `tp` × 3 — before: every request at the flat 5 (25).
+    assert_eq!(spend(&gov, &cost), 19);
+    let u = gov.usage_for(&cost, "k1", AT).unwrap().unwrap();
+    assert_eq!(
+        u.requests, 5,
+        "every admission still counts toward a requests cap"
+    );
+    assert_eq!(u.tokens, 0, "a fee unit is not a token");
+
+    // DURABLE: the `tp` requests are counted on the plane's fee lane, not in the flat fee base, and a
+    // node that hydrates from the store reads the same figure.
+    gov.flush_budgets();
+    let ledger = store.get_usage("k1", 0).unwrap();
+    assert_eq!(
+        ledger.billable_requests, 2,
+        "the flat fee base is the pools plane's"
+    );
+    let lane = busbar_kernel_ledger::cost::plane_fee_lane("tp");
+    let row = ledger
+        .models
+        .iter()
+        .find(|m| m.model == lane)
+        .expect("fee lane");
+    assert_eq!(row.usage_units[busbar_kernel_ledger::cost::PER_REQUEST], 3);
+    let restarted = GovState::new(store, None).unwrap();
+    restarted.hydrate_budgets(&cost, AT).unwrap();
+    assert_eq!(spend(&restarted, &cost), 19);
+}
+
+#[test]
+fn a_planes_session_fee_charges_one_per_session() {
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
+    let (_store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    let one = std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]);
+    for _ in 0..2 {
+        gov.record_usage(&cost, &k, "", &plane_fee_lane("sp"), &one, AT);
+    }
+    assert_eq!(spend(&gov, &cost), 80, "2 sessions × 40");
+}
+
+#[test]
+fn a_plane_without_fees_bills_no_fee() {
+    let (_store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    for _ in 0..4 {
+        let pool = plane_pool("np", "agent");
+        assert!(gov.try_admit(&cost, &k, &pool, AT).is_ok());
+    }
+    // Before: 4 × the flat 5 = 20.
+    assert_eq!(spend(&gov, &cost), 0);
+    assert_eq!(gov.usage_for(&cost, "k1", AT).unwrap().unwrap().requests, 4);
+}
+
+#[test]
+fn budget_caps_include_each_planes_fees() {
+    let (_store, gov, k) = team_gov();
+    let cost = plane_fee_cost(10);
+    let tp = plane_pool("tp", "srv_read");
+    assert!(gov.try_admit(&cost, &k, "", AT).is_ok(), "pools: 5");
+    assert!(gov.try_admit(&cost, &k, &tp, AT).is_ok(), "`tp`: 5 + 3 = 8");
+    let blocked = |r: Result<AdmitGrant, LimitBlocked>| {
+        matches!(
+            r,
+            Err(LimitBlocked::Limit {
+                metric: "budget",
+                ..
+            })
+        )
+    };
+    assert!(blocked(gov.try_admit(&cost, &k, &tp, AT)), "8 + 3 > 10");
+    assert!(blocked(gov.try_admit(&cost, &k, "", AT)), "8 + 5 > 10");
+    let free = plane_pool("np", "agent");
+    assert!(gov.try_admit(&cost, &k, &free, AT).is_ok(), "8 + 0 fits");
+    // A session's fee counts toward the cap too: 8 + 40 is past it, so nothing further is admitted.
+    let one = std::collections::BTreeMap::from([(
+        busbar_kernel_ledger::cost::PER_SESSION.to_string(),
+        1,
+    )]);
+    let lane = busbar_kernel_ledger::cost::plane_fee_lane("sp");
+    gov.record_usage(&cost, &k, "", &lane, &one, AT);
+    assert_eq!(spend(&gov, &cost), 48);
+    assert!(
+        blocked(gov.try_admit(&cost, &k, &free, AT)),
+        "48 is past 10"
+    );
+}

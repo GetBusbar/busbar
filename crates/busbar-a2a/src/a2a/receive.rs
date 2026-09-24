@@ -69,6 +69,17 @@ pub(super) const AUDIT_ACTION: &str = "agent.call";
 /// therefore distinguishable in one ledger, which is the whole reason the prefix rule exists.
 const PLANE_POOL: &str = busbar_plane_a2a::CONFIG_SECTION;
 
+/// An admission's pool qualified by THIS plane's key, as its ledger lane is: the kernel charges the
+/// call to the A2A plane — `agents.fees`, never the llm plane's fee (#47) — and reads the pool
+/// predicate off the unqualified `pool`.
+fn admission_pool(pool: &str) -> String {
+    format!(
+        "{}{}{pool}",
+        crate::PLANE_KEY,
+        busbar_kernel::governance::PLANE_LANE_SEP
+    )
+}
+
 /// THE CREDENTIAL KIND THIS MOUNT CONFERS. `a2a_inbound` only when the plane is audience-bound;
 /// otherwise the empty string, which [`super::inbound::authorize`] refuses.
 ///
@@ -1207,7 +1218,7 @@ async fn admitted(
         if matches!(
             engine_host.govern_admit_reason(
                 &cap_scope,
-                PLANE_POOL.as_bytes(),
+                admission_pool(PLANE_POOL).as_bytes(),
                 key.id.as_bytes(),
                 key.group.as_deref().map(str::as_bytes),
             ),
@@ -1522,7 +1533,7 @@ async fn admitted(
     // `Deny` is behavior-identical.
     let admitted_budget = engine_host.govern_admit_reason(
         &cap_scope,
-        resource.as_bytes(),
+        admission_pool(&resource).as_bytes(),
         key.id.as_bytes(),
         key.group.as_deref().map(str::as_bytes),
     );

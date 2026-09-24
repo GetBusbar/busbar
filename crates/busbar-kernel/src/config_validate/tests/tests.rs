@@ -30,6 +30,7 @@ fn make_root_cfg(
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,
+        plane_fees: Default::default(),
         store: None,
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),

@@ -68,6 +68,9 @@ pub type RewriteScript = Arc<dyn Fn(&[u8]) -> TransformVerdict + Send + Sync>;
 pub struct LedgerUsage {
     pub tokens: u64,
     pub requests: u64,
+    /// Sessions the kernel counted as opened, on the plane's own fee lane (#47 `fees.per_session`) —
+    /// kept apart from the turn counts above and from [`FixtureHost::ledger_rows`].
+    pub sessions: u64,
 }
 
 /// One `(pool, lane)` breaker cell of the fixture.
@@ -562,6 +565,14 @@ impl BudgetHost for FixtureHost {
         usage: &Usage,
         _now: u64,
     ) {
+        if lane.ends_with(busbar_kernel::governance::PLANE_LANE_SEP) {
+            // The kernel's session count on the plane's fee lane: not a turn's count.
+            let n = usage.usage_units.values().sum::<u64>();
+            let mut inner = self.lock();
+            let entry = inner.ledger.entry(key.id.clone()).or_default();
+            entry.sessions = entry.sessions.saturating_add(n);
+            return;
+        }
         let tokens: u64 = usage.usage_units.values().sum();
         if tokens == 0 {
             return;

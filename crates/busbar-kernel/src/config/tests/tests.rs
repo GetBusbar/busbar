@@ -66,6 +66,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         rate_card: None,
         per_request_fee: 0,
         plane_rate_cards: Default::default(),
+        plane_fees: Default::default(),
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),
@@ -4145,17 +4146,52 @@ fn a_plane_sections_rate_card_is_lifted_off_before_the_plane_sees_it() {
         ),
         "no top-level `rate_card:`: the flat plane stays billing OFF beside another plane's card"
     );
+}
 
+/// A plane section's reserved `fees:` (#47, OWNER RULING Q32) is LIFTED like its card: filed under the
+/// plane's registry key, resolved onto `RootCfg`, and never a byte of it handed to the plane (#43). A
+/// malformed one is refused naming `<section>.fees`, before the plane parses anything.
+#[test]
+fn a_plane_sections_fees_are_lifted_off_before_the_plane_sees_them() {
+    use busbar_kernel_ledger::cost::PlaneFees;
+    let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
     PLANE_SAW.lock().unwrap().clear();
-    let err = crate::config::deploy_from_yaml_str(
-        "providers: {}\nmodels: {}\ntools:\n  fees: { per_request: 1 }\n",
+    let deploy = crate::config::deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\nper_request_fee: 5\ntools:\n  srv: { url: \"https://x.example/srv\" }\n  \
+         fees: { per_request: 3, per_session: 40 }\n",
     )
-    .expect_err("a plane's own `fees` is refused");
-    assert!(err.to_string().contains("tools.fees"), "{err}");
+    .expect("a plane section with fees parses");
+    let saw = PLANE_SAW.lock().unwrap().clone();
+    let blob = serde_yaml::to_string(&saw[0]).unwrap();
     assert!(
-        PLANE_SAW.lock().unwrap().is_empty(),
-        "the refused section never reached the plane"
+        !blob.contains("fees") && !blob.contains("per_request") && blob.contains("srv"),
+        "the plane got its own settings and not a byte of its fees: {blob}"
     );
+    let fees = PlaneFees {
+        per_request: 3,
+        per_session: 40,
+    };
+    assert_eq!(deploy.plane_fees.get("card-plane"), Some(&fees));
+    let root = resolve(&deploy, &HashMap::new()).expect("resolves");
+    assert_eq!(root.plane_fees.get("card-plane"), Some(&fees));
+    assert_eq!(
+        root.per_request_fee, 5,
+        "the pools plane's fee is untouched"
+    );
+    assert_eq!(root.rate_card, None, "fees alone switch no card on");
+
+    for bad in ["{ per_call: 1 }", "{ per_request: -1 }", "3"] {
+        PLANE_SAW.lock().unwrap().clear();
+        let err = crate::config::deploy_from_yaml_str(&format!(
+            "providers: {{}}\nmodels: {{}}\ntools:\n  fees: {bad}\n"
+        ))
+        .expect_err("a malformed `fees` is refused");
+        assert!(err.to_string().contains("tools.fees"), "{bad}: {err}");
+        assert!(
+            PLANE_SAW.lock().unwrap().is_empty(),
+            "the refused section never reached the plane"
+        );
+    }
 }
 
 /// 1.5.5's flat top-level `rate_card:` loads as the fallback plane's card BYTE-IDENTICALLY: with no plane

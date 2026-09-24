@@ -257,19 +257,48 @@ pub struct RateCard {
     /// is on the card as an UNPRICED cell of a named lane, so a hit on it refuses; the list is kept
     /// so card-build validation can refuse the whole configuration at boot (#77(5)).
     refused: Vec<LaneClass>,
-    /// The other planes' cards, by plane key. Each carries no fee: the flat fee is one dimension of
-    /// the node's card (#44), posted once whatever plane the row is on.
+    /// The other planes' cards, by plane key. Each carries ITS OWN fees (#47: `fees` is a reserved
+    /// sub-key of every plane's section) and none of the node's: a plane that configured no fees
+    /// bills a fee of nothing, whatever another plane charges.
     planes: BTreeMap<String, RateCard>,
+    /// The flat fee per opened SESSION, in minor units (#44 `fees.per_session`). Zero on the flat
+    /// card, whose one fee is 1.5.5's `per_request_fee:`.
+    session_fee: i64,
 }
 
-/// The card a plane with no card of its own resolves to: ABSENT, so its every class reads 0 (#42).
+/// The card a plane with no card of its own resolves to: ABSENT, so its every class reads 0 (#42),
+/// and fee-less, so it bills no fee.
 static NO_CARD: RateCard = RateCard {
     present: false,
     prices: BTreeMap::new(),
     fee: 0,
     refused: Vec::new(),
     planes: BTreeMap::new(),
+    session_fee: 0,
 };
+
+/// The reserved class a plane's REQUEST fee units are counted under, on its fee lane
+/// ([`plane_fee_lane`]) — one per billable request (#44 `fees.per_request`).
+pub const PER_REQUEST: &str = "per_request";
+/// The reserved class a plane's SESSION fee units are counted under — one per opened session (#44
+/// `fees.per_session`).
+pub const PER_SESSION: &str = "per_session";
+
+/// **A PLANE'S FEE LANE**, `"<plane>\u{1f}"`: the lane its fee units ([`PER_REQUEST`],
+/// [`PER_SESSION`]) are counted on, and priced at that plane's own fees. The lane part is empty, so
+/// it is never a lane traffic is served on.
+pub fn plane_fee_lane(plane: &str) -> String {
+    format!("{plane}{}", crate::cost::PLANE_LANE_SEP)
+}
+
+/// One plane's configured fees, in minor units (#44: `fees = { per_request | per_session }`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlaneFees {
+    /// The fee per billable request.
+    pub per_request: i64,
+    /// The fee per opened session.
+    pub per_session: i64,
+}
 
 /// Split a card key (or a ledger row's lane) into `(plane key, lane)`. An unqualified key is the
 /// flat card's, spelt here as the empty plane key; `"<plane>\u{1f}"` with no lane is that plane's
@@ -331,6 +360,7 @@ impl RateCard {
             fee: per_request_fee.max(0),
             refused: Vec::new(),
             planes: BTreeMap::new(),
+            session_fee: 0,
         }
     }
 
@@ -350,6 +380,7 @@ impl RateCard {
             fee: per_request_fee.max(0),
             refused: Vec::new(),
             planes: BTreeMap::new(),
+            session_fee: 0,
         };
         for (cell, micro) in entries {
             card.place_rate(cell, micro);
@@ -379,6 +410,7 @@ impl RateCard {
             fee: per_request_fee.max(0),
             refused: Vec::new(),
             planes: BTreeMap::new(),
+            session_fee: 0,
         }
     }
 
@@ -477,6 +509,34 @@ impl RateCard {
             }
         }
         self
+    }
+
+    /// **EACH PLANE'S OWN FEES** (#47), by plane key: set on that plane's card, or on an ABSENT card
+    /// for a plane that configured fees and no rates — its classes read 0 (#42) and its fees post.
+    /// Negative figures clamp to zero, as the flat fee does.
+    pub fn with_plane_fees<'p>(
+        mut self,
+        fees: impl IntoIterator<Item = (&'p str, PlaneFees)>,
+    ) -> Self {
+        for (plane, f) in fees {
+            let card = self
+                .planes
+                .entry(plane.to_string())
+                .or_insert_with(|| RateCard::absent(0));
+            card.fee = f.per_request.max(0);
+            card.session_fee = f.per_session.max(0);
+        }
+        self
+    }
+
+    /// The fee a reserved fee class ([`PER_REQUEST`], [`PER_SESSION`]) prices at on this card, in
+    /// minor units; `None` for any other class.
+    pub fn fee_of(&self, class: &str) -> Option<i64> {
+        match class {
+            PER_REQUEST => Some(self.fee),
+            PER_SESSION => Some(self.session_fee),
+            _ => None,
+        }
     }
 
     /// **THE CARD A LANE IS PRICED BY, and the lane as that card keys it** (#42 "scoped per plane",

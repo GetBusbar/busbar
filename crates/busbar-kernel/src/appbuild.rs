@@ -616,11 +616,12 @@ pub fn build_app_from_config(
     // `cfg.models` is consumed below. Rebuilt on every apply/reload - unlike the GovState ledger,
     // which survives the swap - so a rate-card correction reprices every derived figure on the
     // next read (tokens are the truth).
-    let cost = Arc::new(crate::cost::CostModel::resolve_parts(
+    let cost = crate::cost::CostModel::resolve_parts(
         cfg.rate_card.as_ref(),
         cfg.per_request_fee,
         &cfg.groups,
-    ));
+    );
+    let cost = Arc::new(cost.with_plane_fees(&cfg.plane_fees));
     // AND TELL WHOEVER ELSE PRICES AGAINST THESE FIGURES. The resolution above is what reprices the
     // engine's own derived spend on the next read; a holder outside the engine that read the same
     // two configured figures ONCE, at boot, would keep pricing on rates this apply has replaced —
@@ -640,6 +641,7 @@ pub fn build_app_from_config(
         units: &units,
         flat_minor: cfg.per_request_fee,
         present: cfg.rate_card.is_some(),
+        plane_fees: &cfg.plane_fees,
     });
 
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();

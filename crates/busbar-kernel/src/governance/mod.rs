@@ -423,8 +423,7 @@ impl<V> Sharded<V> {
     /// which is irrelevant to correctness (the maps are ephemeral) but keeps behaviour deterministic.
     #[inline]
     fn shard_for(&self, key_id: &str) -> &MapShard<V> {
-        let h = busbar_kernel::store::fnv1a_u64(key_id) as usize;
-        &self.shards[h & (GOV_SHARDS - 1)]
+        &self.shards[self.shard_index(key_id)]
     }
 
     /// The shard INDEX owning `key_id` - for the budget-chain charge, which must acquire SEVERAL

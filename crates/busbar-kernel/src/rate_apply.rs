@@ -42,6 +42,9 @@ pub struct RawRates<'r> {
     pub flat_minor: i64,
     /// Whether the deployment configured a rate card at all.
     pub present: bool,
+    /// Each other plane's own fees (#47), by plane registry key — dated with the card, like the flat
+    /// figure, so an era before a fee edit prices at the fees in force then.
+    pub plane_fees: &'r crate::config::PlaneFeesMap,
 }
 
 /// A holder of rates that a live apply must reach.

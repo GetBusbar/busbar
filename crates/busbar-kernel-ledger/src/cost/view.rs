@@ -475,40 +475,50 @@ impl<'a> Tally<'a> {
         // THE CARD BY PLANE (#42 "scoped per plane", #47): the row's plane key picks its card, and a
         // plane with no card of its own is billing off for that plane whatever another plane's says.
         let (card, key) = node_card.plane_lane(lane);
-
-        let amount = if card.pricing_enabled() {
-            // A present card that names no entry for the lane REFUSES.
-            let rates = card
-                .lane_rates(key)
-                .ok_or_else(|| MoneyError::LaneUnpriced {
-                    card_seq,
-                    lane: lane.to_string(),
-                })?;
-            let mut amount: i128 = 0;
-            for (class, count) in counts {
-                // #42 STATED AS AN ARM: a present card silent about a class the traffic HIT is a
-                // refusal. A zero count is still a hit — the row reported the class.
-                if !rates.class_priced(class) {
-                    return Err(MoneyError::ClassUnpriced {
+        // A PLANE'S FEE LANE (`"<plane>\u{1f}"`, [`crate::cost::plane_fee_lane`]) counts that plane's
+        // fee units: its reserved classes price at the plane's OWN fees (#44, #47), card or no card.
+        let fee_lane = key.is_empty() && lane.ends_with(PLANE_LANE_SEP);
+        let unpriced = |class: &str| MoneyError::ClassUnpriced {
+            card_seq,
+            lane: lane.to_string(),
+            class: class.to_string(),
+        };
+        // A present card that names no entry for the lane REFUSES. BILLING OFF (#42, no card): every
+        // class prices at nothing and nothing is "unpriced" — there is no card to be missing from.
+        let rates = if card.pricing_enabled() && !fee_lane {
+            Some(
+                card.lane_rates(key)
+                    .ok_or_else(|| MoneyError::LaneUnpriced {
                         card_seq,
                         lane: lane.to_string(),
-                        class: class.to_string(),
-                    });
-                }
-                let line = count
-                    .micros()
-                    .checked_mul(i128::from(rates.nanos_per_unit(class)))
-                    .ok_or(MoneyError::Overflow)?;
-                amount = amount.checked_add(line).ok_or(MoneyError::Overflow)?;
-            }
-            amount
+                    })?,
+            )
         } else {
-            // BILLING OFF (#42): no rate card configured at all. Every class prices at nothing and
-            // nothing is "unpriced" because there is no card to be missing from.
-            0
+            None
         };
+        let mut amount: i128 = 0;
+        for (class, count) in counts {
+            let unit_nanos = match (card.fee_of(class).filter(|_| fee_lane), rates) {
+                // The fee dimension: never rounded, never divided (#44).
+                (Some(fee_minor), _) => minor_nanos(fee_minor)?,
+                // #42 STATED AS AN ARM: a present card silent about a class the traffic HIT is a
+                // refusal. A zero count is still a hit — the row reported the class. A fee lane
+                // carries nothing but the fee classes.
+                (None, Some(r)) if !r.class_priced(class) => return Err(unpriced(class)),
+                (None, Some(r)) => i128::from(r.nanos_per_unit(class)),
+                (None, None) if fee_lane && card.pricing_enabled() => return Err(unpriced(class)),
+                (None, None) => 0,
+            };
+            let line = count
+                .micros()
+                .checked_mul(unit_nanos)
+                .ok_or(MoneyError::Overflow)?;
+            amount = amount.checked_add(line).ok_or(MoneyError::Overflow)?;
+        }
 
-        let fee = fee_term(node_card, fee_count)?;
+        // The row's flat fees are ITS PLANE's (#47): the flat card's for an unqualified lane — 1.5.5's
+        // `per_request_fee:` — and a plane's own `fees.per_request` for a qualified one.
+        let fee = fee_term(card, fee_count)?;
         let amount = amount.checked_add(fee).ok_or(MoneyError::Overflow)?;
         self.add(tier_bp, amount)
     }
@@ -525,6 +535,20 @@ impl<'a> Tally<'a> {
     ) -> Result<(), MoneyError> {
         let (_card_seq, card) = self.resolve(arrived_ms)?;
         let fee = fee_term(card, fee_count)?;
+        self.add(tier_bp, fee)
+    }
+
+    /// [`Self::fee`] for one LANE: the flat fees at the fee of the lane's own plane (#47) — for a
+    /// row whose lane a present card does not name, which contributes its fees and nothing else.
+    pub fn lane_fee(
+        &mut self,
+        lane: &str,
+        arrived_ms: u64,
+        tier_bp: u32,
+        fee_count: Count,
+    ) -> Result<(), MoneyError> {
+        let (_card_seq, card) = self.resolve(arrived_ms)?;
+        let fee = fee_term(card.plane_lane(lane).0, fee_count)?;
         self.add(tier_bp, fee)
     }
 
@@ -586,13 +610,16 @@ impl<'a> Tally<'a> {
 /// its flat fee (#42 `BUSBAR-1.6.0.md:367`: *"rate_card ABSENT ⇒ NOT billed"* for the TOKENS; the
 /// fee is what such a deployment is actually billed).
 fn fee_term(card: &crate::cost::rate::RateCard, fee_count: Count) -> Result<i128, MoneyError> {
-    let fee_minor = i128::from(card.fee());
-    let nanos_per_minor = i128::try_from(NANOS_PER_CENT).map_err(|_| MoneyError::Overflow)?;
-    let unit_price_nanos = fee_minor
-        .checked_mul(nanos_per_minor)
-        .ok_or(MoneyError::Overflow)?;
     fee_count
         .micros()
-        .checked_mul(unit_price_nanos)
+        .checked_mul(minor_nanos(card.fee())?)
+        .ok_or(MoneyError::Overflow)
+}
+
+/// A fee in minor units as the nano-unit price of one fee unit: an exact multiple of one minor unit.
+fn minor_nanos(fee_minor: i64) -> Result<i128, MoneyError> {
+    let nanos_per_minor = i128::try_from(NANOS_PER_CENT).map_err(|_| MoneyError::Overflow)?;
+    i128::from(fee_minor)
+        .checked_mul(nanos_per_minor)
         .ok_or(MoneyError::Overflow)
 }

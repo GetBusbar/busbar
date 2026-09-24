@@ -2597,10 +2597,14 @@ fn charge_round(
     // `budget_remaining` are 0 so the POD gate is a no-op and the chain is the sole decider. On a
     // BLOCKED limit the host renders the SAME `format!("{blocked:?}")` bytes the in-place
     // `Err(format!("{blocked:?}"))` returned, so the operator-facing refusal is byte-identical.
+    // The pool is qualified by THIS plane's key, as the ledger lane is: the kernel charges the round
+    // to the MCP plane — `tools.fees`, never the pools plane's fee (#47) — and reads the pool
+    // predicate off the unqualified tool.
+    let pool = plane_qualified(namespaced);
     if let busbar_kernel::plane_host::GovAdmit::Blocked { reason, .. } =
         ctx.host.govern_admit_reason(
             scope,
-            namespaced.as_bytes(),
+            pool.as_bytes(),
             key.id.as_bytes(),
             key.group.as_deref().map(str::as_bytes),
         )
@@ -2670,12 +2674,19 @@ pub(super) fn ledger_tool_call(
     // The row's lane is qualified by THIS plane's key, so the view prices it with the MCP plane's own
     // card (#42 "scoped per plane", #47) and never with the llm plane's flat card, whose presence
     // says nothing about MCP billing.
-    let lane = format!(
+    let lane = plane_qualified(namespaced);
+    host.meter_ledger(&pin, key, namespaced, &lane, &usage, host.clock_now_secs());
+}
+
+/// A tool qualified by THIS plane's key (`"mcp\u{1f}<tool>"`) — the lane its calls are ledgered on
+/// and the pool its rounds are admitted under, so the kernel prices and charges them as the MCP
+/// plane's (#42/#47).
+fn plane_qualified(namespaced: &str) -> String {
+    format!(
         "{}{}{namespaced}",
         crate::PLANE_KEY,
         busbar_kernel::governance::PLANE_LANE_SEP
-    );
-    host.meter_ledger(&pin, key, namespaced, &lane, &usage, host.clock_now_secs());
+    )
 }
 
 /// A refusal from the EGRESS gate — the outbound credential could not be bound to this caller — or

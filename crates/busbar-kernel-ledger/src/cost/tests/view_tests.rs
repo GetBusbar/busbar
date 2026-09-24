@@ -631,3 +631,105 @@ fn a_flat_card_alone_composes_to_itself() {
         "`rate_card: {{}}` stays a present card"
     );
 }
+
+// ── PER-PLANE FEES (#47, OWNER RULING Q32): each plane's `fees` prices that plane's fee units ──────
+
+/// The composed card with fees: the flat (pools) card's `per_request_fee:` is 5; plane `t` charges
+/// 3 a request; plane `s` (a plane with sessions) 40 a session and NO rate card; plane `p`
+/// (the priced plane above) configured no fees at all.
+fn fee_card() -> RateCard {
+    use crate::cost::PlaneFees;
+    let mut card = per_plane_card(true, true);
+    card.set_fee(5);
+    card.with_plane_fees([
+        (
+            "t",
+            PlaneFees {
+                per_request: 3,
+                per_session: 0,
+            },
+        ),
+        (
+            "s",
+            PlaneFees {
+                per_request: 0,
+                per_session: 40,
+            },
+        ),
+    ])
+}
+
+fn fee_row(entry: LedgerEntry) -> Result<Money, MoneyError> {
+    price_ledger(&[entry], &History::opening(fee_card(), 0))
+}
+
+/// One minor unit, in micro-units.
+const MINOR: i128 = 10_000;
+
+#[test]
+fn a_planes_request_fee_charges_its_calls_and_the_flat_fee_charges_the_pools_plane() {
+    use crate::cost::{plane_fee_lane, PER_REQUEST};
+    // 4 tool calls on the tools plane's fee lane: 4 × 3 — its OWN fee, not the flat 5.
+    let tools = LedgerEntry::new(plane_fee_lane("t"), 0).with_whole(PER_REQUEST, 4);
+    assert_eq!(fee_row(tools), Ok(Money::from_micros(12 * MINOR)));
+    // 2 pools requests (the flat fee count on an unqualified lane): 2 × 5, as 1.5.5 billed them.
+    let pools = LedgerEntry::new(LANE, 0).with_fee_count(2);
+    assert_eq!(fee_row(pools), Ok(Money::from_micros(10 * MINOR)));
+    // A fee count on a QUALIFIED lane is its plane's: 2 × 3 on `t`.
+    let q = format!("t{}srv_read", crate::cost::PLANE_LANE_SEP);
+    let tools_posting = LedgerEntry::new(q, 0).with_fee_count(2);
+    assert_eq!(fee_row(tools_posting), Ok(Money::from_micros(6 * MINOR)));
+}
+
+#[test]
+fn a_planes_session_fee_charges_one_per_session() {
+    use crate::cost::{plane_fee_lane, PER_SESSION};
+    let sessions = LedgerEntry::new(plane_fee_lane("s"), 0).with_whole(PER_SESSION, 3);
+    assert_eq!(fee_row(sessions), Ok(Money::from_micros(120 * MINOR)));
+}
+
+#[test]
+fn a_plane_without_fees_bills_no_fee() {
+    use crate::cost::{plane_fee_lane, PER_REQUEST, PER_SESSION};
+    // `p` has a present card and no fees: its fee units read 0 and never borrow the flat 5.
+    let p = LedgerEntry::new(plane_fee_lane("p"), 0)
+        .with_whole(PER_REQUEST, 7)
+        .with_whole(PER_SESSION, 7);
+    assert_eq!(fee_row(p), Ok(Money::ZERO));
+    let q = format!("p{}{LANE}", crate::cost::PLANE_LANE_SEP);
+    assert_eq!(
+        fee_row(LedgerEntry::new(q, 0).with_fee_count(9)),
+        Ok(Money::ZERO)
+    );
+    // A plane the deployment never configured at all: 0 too.
+    let none = LedgerEntry::new(plane_fee_lane("x"), 0).with_whole(PER_REQUEST, 7);
+    assert_eq!(fee_row(none), Ok(Money::ZERO));
+}
+
+#[test]
+fn a_fee_lane_carries_only_the_fee_classes() {
+    use crate::cost::plane_fee_lane;
+    // `p`'s card is present: any other class on its fee lane is a hit it cannot price — REFUSED.
+    let stray = LedgerEntry::new(plane_fee_lane("p"), 0).with_whole("calls", 1);
+    assert!(matches!(
+        fee_row(stray),
+        Err(MoneyError::ClassUnpriced { .. })
+    ));
+    // With no card on `s`, billing is off for its classes: a stray class reads 0, never refused.
+    let off = LedgerEntry::new(plane_fee_lane("s"), 0).with_whole("calls", 1);
+    assert_eq!(fee_row(off), Ok(Money::ZERO));
+}
+
+#[test]
+fn plane_fees_leave_the_flat_card_byte_identical() {
+    // 1.5.5: a flat card and a flat fee. Adding plane fees moves no unqualified row by a micro-unit.
+    let row = LedgerEntry::new(LANE, 0)
+        .with_whole(INPUT, 1_000)
+        .with_fee_count(3);
+    let mut flat = per_plane_card(true, true);
+    flat.set_fee(5);
+    assert_eq!(
+        price_ledger(std::slice::from_ref(&row), &History::opening(flat, 0)),
+        fee_row(row)
+    );
+}

@@ -1,6 +1,7 @@
 use super::*;
 use busbar_api::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
-use busbar_kernel_ledger::cost::Money;
+use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, Money, PER_REQUEST};
+use std::collections::BTreeMap;
 
 use crate::diagnostics::{
     diag_debug, diag_error, diag_warn, ACCRUAL_GROUP_MISSING, BUDGET_FLUSH_PARTIAL_FAILURE,
@@ -1814,6 +1815,11 @@ impl GovState {
     /// slice, the shard-index/order/guard Vecs sized to the chain depth) — there are no fixed
     /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no store
     /// round-trip and no `await` anywhere on this path.
+    ///
+    /// PER-PLANE FEES (#47): a `pool` qualified `"<plane>\u{1f}<pool>"` is a request of THAT plane
+    /// — the pool predicate reads the unqualified part — and it charges that plane's own
+    /// `fees.per_request`, counted on the plane's fee lane (dated, durable, never the flat fee
+    /// base). An unqualified pool is the pools plane's and charges `per_request_fee:`.
     pub fn try_admit(
         &self,
         cost: &crate::cost::CostModel,
@@ -1821,12 +1827,11 @@ impl GovState {
         pool: &str,
         now: u64,
     ) -> Result<AdmitGrant, LimitBlocked> {
-        let chain = match cost.chain_for(key) {
-            Ok(c) => c,
-            // FAIL-CLOSED: a key bound to a group this node's config does not know cannot be
-            // admitted under the chain's caps, so it is not admitted at all.
-            Err(missing) => return Err(LimitBlocked::MissingGroup(missing.to_string())),
-        };
+        let (plane, pool) = split_plane_lane(pool);
+        // FAIL-CLOSED: a key bound to a group this node's config does not know cannot be admitted
+        // under the chain's caps, so it is not admitted at all.
+        let missing = |g: &str| LimitBlocked::MissingGroup(g.to_string());
+        let chain = cost.chain_for(key).map_err(missing)?;
         // Pool-scoped buckets participate only when THIS request's pool matches; filtered ONCE
         // here so the check pass, the charge pass, and the shard-lock set can never disagree.
         let buckets: Vec<&crate::cost::ChainBucket<'_>> =
@@ -1873,7 +1878,7 @@ impl GovState {
         // 3. WINDOWED limits: acquire every involved shard's write lock in ASCENDING shard order
         // (dedup) - scratch sized by the chain actually resolved. `guard_shards[j]` = the shard
         // whose guard sits at position j in `guards`.
-        let fee = cost.price_per_request_cents();
+        let fee = cost.request_fee_on(plane);
         let n = buckets.len();
         let mut shard_idx: Vec<usize> = Vec::with_capacity(n);
         for bucket in &buckets {
@@ -2053,6 +2058,9 @@ impl GovState {
 
         // The arrival's card era (Q14): each bucket's fee base records the request under it.
         let era = crate::rate_apply::effective_from_at(crate::store::now_ms());
+        // Another plane's request is one fee unit on ITS fee lane (#47), not the flat fee base.
+        let one = || BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
+        let plane_fee = (!plane.is_empty()).then(|| (plane_fee_lane(plane), one()));
         // PASS 2 - CHARGE every bucket (+1 request, dirty) under the SAME held guards: atomic
         // all-or-nothing with the checks above. STRADDLE-SAFE cell resolution (mirrors
         // `accrue_bucket`): reset ONLY a genuinely stale cell (this window strictly newer); a cell
@@ -2072,8 +2080,12 @@ impl GovState {
                     .or_insert_with(|| BudgetCell::fresh(window)),
             };
             cell.requests = cell.requests.saturating_add(1);
-            cell.billable_requests = cell.billable_requests.saturating_add(1);
-            cell.fee_eras.charge(era);
+            if let Some((lane, one)) = &plane_fee {
+                cell.accrue(lane, era, one);
+            } else {
+                cell.billable_requests = cell.billable_requests.saturating_add(1);
+                cell.fee_eras.charge(era);
+            }
             cell.dirty = true;
             cell.last_touch = now;
         }

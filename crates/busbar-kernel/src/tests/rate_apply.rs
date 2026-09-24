@@ -48,6 +48,7 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
         units: &[],
         flat_minor: 7,
         present: false,
+        plane_fees: &Default::default(),
     });
 
     // AFTER: the holder receives the figures the engine resolved, unchanged.
@@ -75,6 +76,7 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
         units: &units,
         flat_minor: 11,
         present: true,
+        plane_fees: &Default::default(),
     });
 
     let seen = recorder.0.lock().unwrap().clone();
@@ -93,6 +95,7 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
         units: &[],
         flat_minor: 11,
         present: true,
+        plane_fees: &Default::default(),
     });
     let seen = recorder.0.lock().unwrap().clone();
     assert_eq!(

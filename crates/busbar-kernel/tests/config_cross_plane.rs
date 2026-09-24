@@ -97,6 +97,7 @@ fn base_deploy() -> DeployCfg {
         rate_card: None,
         per_request_fee: 0,
         plane_rate_cards: Default::default(),
+        plane_fees: Default::default(),
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),

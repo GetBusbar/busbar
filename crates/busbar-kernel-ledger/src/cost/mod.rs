@@ -81,9 +81,10 @@ pub use posting::{
 };
 pub use project::{derive_spend_cents, derive_spend_micros};
 pub use rate::{
-    compose_plane_cards, flat_card_present, nano_rate, nanos_sum, representable_nano_rate,
-    split_plane_lane, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
-    CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
+    compose_plane_cards, flat_card_present, nano_rate, nanos_sum, plane_fee_lane,
+    representable_nano_rate, split_plane_lane, CellPrices, LaneClass, LaneRates, PlaneFees,
+    RateCard, TierRates, CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
+    PER_REQUEST, PER_SESSION,
 };
 pub use view::{
     nanos_of_exact, price as price_ledger, price_exact, price_in_view, whole, LedgerEntry, Money,

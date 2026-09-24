@@ -25,6 +25,7 @@
 use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer};
 use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
+use busbar_kernel::config::groups::LimitMetric;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
@@ -564,13 +565,14 @@ async fn a_metadata_url_hidden_in_the_tool_arguments_is_refused_and_never_sent()
 
 type Card = std::collections::BTreeMap<String, busbar_kernel::config::sections::RateEntryCfg>;
 
-/// A governed app whose group `g` carries `limits`, priced by `card` (`None` = no card at all), no
-/// flat fee. Hands back the app, the registry and the cost model so a test can read the ledger and
+/// A governed app whose group `g` carries `limits`, priced by `card` (`None` = no card at all) and
+/// the node's flat `per_request_fee:` (the pools plane's fee). Hands back the app, the registry and the cost model so a test can read the ledger and
 /// drive the llm door directly.
 fn budgeted_app(
     peer: &Peer,
     server: &str,
     card: Option<&Card>,
+    per_request_fee: i64,
     limits: Vec<busbar_kernel::config::groups::LimitCfg>,
 ) -> (
     std::sync::Arc<dyn EngineApp>,
@@ -593,7 +595,7 @@ fn budgeted_app(
         },
     )]
     .into();
-    let cost = engine().cost_parts(card, 0, &groups);
+    let cost = engine().cost_parts(card, per_request_fee, &groups);
     let app = test_app()
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(server, exchanging_server(peer, SUBJECT))
@@ -656,7 +658,6 @@ fn answered(status: u16, body: &serde_json::Value) -> bool {
 /// failed "cannot be priced", and the llm door blocked the whole group.
 #[tokio::test]
 async fn an_llm_card_does_not_price_mcp_tool_calls_they_are_ledgered_and_nothing_refuses() {
-    use busbar_kernel::config::groups::LimitMetric;
     metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let server = "llmcardfs";
@@ -666,6 +667,7 @@ async fn an_llm_card_does_not_price_mcp_tool_calls_they_are_ledgered_and_nothing
         &peer,
         server,
         Some(&llm_card),
+        0,
         vec![per_day(LimitMetric::Budget, 1)],
     );
     let key = budgeted_key("k-mcp-llm-card", server);
@@ -716,7 +718,6 @@ async fn an_llm_card_does_not_price_mcp_tool_calls_they_are_ledgered_and_nothing
 /// 6a32b3a67 call 2 was refused on budget. With no card at all the same traffic is served (reads 0).
 #[tokio::test]
 async fn a_requests_cap_trips_on_mcp_tool_calls_and_the_llm_budget_does_not() {
-    use busbar_kernel::config::groups::LimitMetric;
     metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let server = "countfs";
@@ -726,6 +727,7 @@ async fn a_requests_cap_trips_on_mcp_tool_calls_and_the_llm_budget_does_not() {
         &peer,
         server,
         Some(&llm_card),
+        0,
         vec![
             per_day(LimitMetric::Budget, 1_000),
             per_day(LimitMetric::Requests, 3),
@@ -748,8 +750,13 @@ async fn a_requests_cap_trips_on_mcp_tool_calls_and_the_llm_budget_does_not() {
 
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let server = "freefs";
-    let (app, _gov, _cost) =
-        budgeted_app(&peer, server, None, vec![per_day(LimitMetric::Budget, 1)]);
+    let (app, _gov, _cost) = budgeted_app(
+        &peer,
+        server,
+        None,
+        0,
+        vec![per_day(LimitMetric::Budget, 1)],
+    );
     let key = budgeted_key("k-mcp-budget-free", server);
     for n in 1..=5 {
         let (status, body) = read_once(&app, &key, server).await;
@@ -782,7 +789,6 @@ fn composed_card(yaml: &str) -> Option<Card> {
 /// beside an llm card, which prices none of it.
 #[tokio::test]
 async fn a_tools_card_prices_tool_calls_and_a_budget_cap_trips_on_mcp() {
-    use busbar_kernel::config::groups::LimitMetric;
     metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let server = "pricedfs";
@@ -794,6 +800,7 @@ async fn a_tools_card_prices_tool_calls_and_a_budget_cap_trips_on_mcp() {
         &peer,
         server,
         card.as_ref(),
+        0,
         vec![per_day(LimitMetric::Budget, 3)],
     );
     let key = budgeted_key("k-mcp-tools-card", server);
@@ -825,7 +832,6 @@ async fn a_tools_card_prices_tool_calls_and_a_budget_cap_trips_on_mcp() {
 /// refuses, and the bucket's usage read fails. Never a silent 0.
 #[tokio::test]
 async fn a_present_tools_card_silent_about_a_tool_refuses() {
-    use busbar_kernel::config::groups::LimitMetric;
     metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let server = "silentfs";
@@ -836,6 +842,7 @@ async fn a_present_tools_card_silent_about_a_tool_refuses() {
         &peer,
         server,
         card.as_ref(),
+        0,
         vec![per_day(LimitMetric::Budget, 1_000)],
     );
     let key = budgeted_key("k-mcp-tools-silent", server);
@@ -864,7 +871,6 @@ async fn a_present_tools_card_silent_about_a_tool_refuses() {
 /// `tools` card the MCP plane is billing OFF and a 1-minor-unit budget never trips.
 #[tokio::test]
 async fn an_llm_card_entry_named_like_a_tool_never_prices_it() {
-    use busbar_kernel::config::groups::LimitMetric;
     metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let server = "namesakefs";
@@ -875,6 +881,7 @@ async fn an_llm_card_entry_named_like_a_tool_never_prices_it() {
         &peer,
         server,
         card.as_ref(),
+        0,
         vec![per_day(LimitMetric::Budget, 1)],
     );
     let key = budgeted_key("k-mcp-llm-namesake", server);
@@ -894,5 +901,50 @@ async fn an_llm_card_entry_named_like_a_tool_never_prices_it() {
     assert_eq!(
         read.spend_cents, 0,
         "the llm card never prices the MCP lane"
+    );
+}
+
+// ── #47 PER-PLANE FEES (OWNER RULING Q32): an MCP call is the MCP plane's, never the pools plane's fee ──
+
+/// The node's flat `per_request_fee:` is the POOLS plane's fee (#47 back-compat). An MCP call is
+/// admitted as the MCP plane's (its pool qualified by the plane key), so with no `tools.fees` it bills
+/// a fee of nothing: a group `budget:` of 3 beside a flat fee of 5 serves every call and reads 0.
+/// Before: the first call was refused on budget (0 + 5 > 3) — the pools fee charged on MCP traffic.
+#[tokio::test]
+async fn the_pools_fee_is_never_charged_on_an_mcp_call() {
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "feefs";
+    let (app, gov, cost) = budgeted_app(
+        &peer,
+        server,
+        None,
+        5,
+        vec![per_day(LimitMetric::Budget, 3)],
+    );
+    let key = budgeted_key("k-mcp-no-pools-fee", server);
+    for n in 1..=3 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(
+            answered(status, &body),
+            "call {n}: the MCP plane has no fees, so it bills none: {status} {body}"
+        );
+    }
+    let now = busbar_kernel::store::now();
+    let read = gov
+        .derived_bucket_usage(&*cost, "group:g@day", "day", true, now)
+        .expect("the group reads");
+    assert_eq!(
+        read.spend_cents, 0,
+        "no MCP call carries the pools plane's fee"
+    );
+    assert_eq!(
+        read.requests, 3,
+        "every call still counts toward a requests cap"
+    );
+    // The same bucket's pools request IS charged the pools fee — and 5 > 3 trips the budget.
+    assert!(
+        gov.try_admit(&*cost, &key, "gpt-x", now).is_err(),
+        "a pools request carries the flat fee, which the cap cannot fit"
     );
 }

@@ -63,7 +63,8 @@ fn two_admissions_charge_two_request_fees() {
         host.ledger_usage("vk-payer"),
         Some(LedgerUsage {
             tokens: 0,
-            requests: 2
+            requests: 2,
+            sessions: 0,
         }),
         "the Admit step charges the per-request fee and no tokens"
     );
