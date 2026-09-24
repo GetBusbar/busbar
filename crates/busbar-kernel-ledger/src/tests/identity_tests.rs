@@ -347,3 +347,48 @@ fn an_estimated_usage_report_still_settles_and_still_balances() {
         .contains(busbar_contract::caps::PostingFlags::ESTIMATED));
     assert!(residual(&Totals::zero(), &ledger.book().get(&k, 1)).holds());
 }
+
+/// ITEMS 105/131: a maximally broken book FAILS verification rather than wrapping into a clean one.
+///
+/// `settled = i128::MAX`, `open_holds = i128::MAX`, `open_slice_remainders = 2` sums to exactly
+/// 2^128. A bare `+` panicked on these figures in a debug build and, in a release one, wrapped the
+/// accounted side to ZERO — against zero drawn, a residual of zero and a book that verified clean.
+/// Measured in both directions of the delta and through the verifier as well as the bare residual,
+/// so the answer cannot depend on which door a caller reads it through.
+#[test]
+fn a_maximally_broken_book_fails_verification_instead_of_wrapping() {
+    let broken = Totals {
+        settled: i128::MAX,
+        open_holds: i128::MAX,
+        open_slice_remainders: 2,
+        ..Totals::zero()
+    };
+    let r = residual(&Totals::zero(), &broken);
+    assert!(
+        !r.holds(),
+        "a book summing to 2^128 wrapped to balanced: {r}"
+    );
+    assert_ne!(r.amount(), 0);
+
+    // The other direction: a checkpoint at the ceiling and a book at the floor.
+    let floor = Totals {
+        settled: i128::MIN,
+        drawn: i128::MAX,
+        ..Totals::zero()
+    };
+    assert!(!residual(&broken, &floor).holds());
+    assert!(!residual(&floor, &broken).holds());
+
+    // And a closed window over the same figures reports that it moved.
+    assert!(closed_window_is_settled(&Totals::zero(), &broken).is_err());
+
+    // The ordinary case is untouched: a balanced book still balances.
+    let fine = Totals {
+        drawn: 1_000,
+        settled: 400,
+        open_holds: 200,
+        open_slice_remainders: 400,
+        ..Totals::zero()
+    };
+    assert!(residual(&Totals::zero(), &fine).holds());
+}
