@@ -450,8 +450,14 @@ selftest() {
     fi
   done
 
-  # (d) the RESERVED slots are defined-but-inert, each mapped to a release
-  for seg in mcp-integrity a2a smart-router; do
+  # (d) the RESERVED slots are defined-but-inert, each mapped to a release. `smart-router` was struck
+  # from this roster and from qa/segments.toml in the same commit (item 97): its `qa_smart_router`
+  # test target never existed at any point in the repo's history (`git log --all --diff-filter=A --
+  # '*qa_smart_router*'` is empty), so the slot named a capability that was never built, not one
+  # merely not-yet-armed. The reserved-with-absent-target and active-with-absent-target invariants
+  # this selftest proves (blocks (h) and (i) below) are both driven by synthetic fixtures, not by this
+  # roster, so striking smart-router here removes no coverage.
+  for seg in mcp-integrity a2a; do
     if printf '%s\n' "$reserved" | grep -qx "$seg"; then
       note "PASS  reserved slot defined-but-inert: $seg"
     else

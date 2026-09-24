@@ -58,7 +58,13 @@
 # umbrella's union is a SUPERSET of today's gate.
 #
 # Reserved -> release map:
-#   mcp-integrity -> 1.6.0    a2a -> 1.6.0    smart-router -> 1.5.6
+#   mcp-integrity -> 1.6.0    a2a -> 1.6.0
+# (smart-router struck at item 97: its reservation named a `qa_smart_router` test target that never
+# existed at any point in this repo's history — `git log --all --diff-filter=A -- '*qa_smart_router*'`
+# is empty — and its "-> active in 1.5.5/1.5.6" comment outlived two shipped releases without the
+# target ever landing. Not a rename: `examples/smart-router/` and the kind-isolation overlay path of
+# the same name are an unrelated hook example, never a QA test. Struck in the same commit as the
+# scripts/qa-segments.sh:454 roster edit that dropped it — see that script's header for the pairing.)
 
 # ── ACTIVE (green-on-completion) ─────────────────────────────────────────────────────────────────
 
@@ -309,23 +315,6 @@ id     = "a2a"
 status = "reserved"   # -> active in 1.6.0 (A2A)
 tier   = "live-mock"
 run    = "cargo test -p busbar --test qa_a2a"
-
-[[segment]]
-id     = "smart-router"
-status = "reserved"   # STALE REASON CORRECTED (item 97): the old comment read "-> active in 1.5.6",
-# a SHIPPED release — but 1.5.6 never shipped this. There is no `crates/busbar/tests/qa_smart_router.rs`
-# on the tip (verified: `find crates/busbar/tests -iname 'qa_smart_router*'` is empty) and none existed
-# at the 1.6.0 phase-start sha (fd3455e53) either — the same empty result there. "smart-router" today
-# names only an example hook (`examples/smart-router/`) and a kind-isolation overlay path, never a QA
-# test target. The reservation is DEAD, not merely stale-dated: activating it would hard-fail
-# `scripts/qa-segments.sh`'s own missing-test-target honesty check (line ~236) the moment it ran. It
-# stays `reserved` (INERT, excluded from the green claim) rather than struck from this file because
-# `scripts/qa-segments.sh:454` hardcodes `smart-router` in its own selftest's reserved-slot roster —
-# that script is owned by a different 1.6.0 slot, so removing the id here is a cross-slot edit this
-# slot does not make (see the P1A-seg report, item 97, DEPENDENCIES). Queued for the owner of
-# scripts/qa-segments.sh to drop the id from that roster and delete this block in one paired edit.
-tier   = "fast"
-run    = "cargo test -p busbar --test qa_smart_router"
 
 [[segment]]
 id     = "plane-purity"
