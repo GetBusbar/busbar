@@ -2843,6 +2843,78 @@ mod dated_rate_card_history {
             "with no history installed the read is the published 1.5.5 figure"
         );
     }
+
+    // ── ITEM 404 (OWNER RULING Q9): an `adjust` of a unit's COUNTS reaches the served figure ──
+
+    /// **THE EXIT TEST FOR ITEM 404's USAGE HALF.** A unit of key `vk_adjust_404` metered 1,000
+    /// input tokens at 2.5 micro-units each: `GET /api/v1/admin/usage` serves 2,500 micro-units
+    /// (2,500,000 nano-units). A root `adjust` seals 800 on the node amendment journal — counts, no
+    /// money — and the same read serves 800 tokens and 2,000 micro-units (2,000,000 nano-units): the
+    /// read prices the counts AS CORRECTED. A correction for another key leaves the row alone.
+    #[tokio::test]
+    async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
+        use busbar_kernel::audit::amend::{correct_counts, ClassCounts, CountCorrection};
+        const ADJUSTED_KEY: &str = "vk_adjust_404";
+        let (bucket, _, _) = windows();
+        let store = Arc::new(MemoryStore::new());
+        busbar_api::Store::add_metering(
+            store.as_ref(),
+            &busbar_api::MeteringDelta {
+                key_id: ADJUSTED_KEY.to_string(),
+                bucket,
+                model: LANE.to_string(),
+                provider: PROVIDER.to_string(),
+                tokens_input: TOKENS,
+                tokens_output: 0,
+                tokens_cache_read: 0,
+                tokens_cache_write: 0,
+                requests: 1,
+                billable_requests: 1,
+                key_group_at_use: String::new(),
+                pricing_version: String::new(),
+                priced_from_ms: 0,
+                usage_units: Default::default(),
+            },
+        )
+        .expect("the memory store accepts a metering delta");
+        let gov = Arc::new(GovState::new(store, None).expect("governance builds"));
+        let src = source(History::opening(card(2.5), 0));
+
+        let before = read(gov.clone(), src, bucket).await.total;
+        assert_eq!((before.tokens_input, before.spend_micros), (1_000, 2_500));
+
+        let count = |n: i128| busbar_contract::count::Count::from_integer(n).expect("whole");
+        let was = ClassCounts::from([(busbar_api::UNIT_INPUT.to_string(), count(1_000))]);
+        let correct = |principal: &'static str, amends: &'static str| {
+            correct_counts(
+                busbar_contract::authz::Scope::Full,
+                &was,
+                CountCorrection {
+                    amends,
+                    principal: Some(principal),
+                    lane: LANE,
+                    card_epoch_ms: bucket * 1_000 + 5,
+                    now: ClassCounts::from([(busbar_api::UNIT_INPUT.to_string(), count(800))]),
+                    authorised_by: "admin",
+                    reason: "a retried request was metered twice",
+                },
+            )
+            .expect("a root correction with a reason is sealed")
+        };
+        correct("vk_someone_else_404", "item-404-other-unit");
+        assert_eq!(
+            read(gov.clone(), src, bucket).await.total.spend_micros,
+            2_500,
+            "a correction for another key does not reach this row"
+        );
+        correct(ADJUSTED_KEY, "item-404-usage-unit");
+        let after = read(gov, src, bucket).await.total;
+        assert_eq!(
+            (after.tokens_input, after.spend_micros),
+            (800, 2_000),
+            "the served figure prices the corrected counts: 800 x 2.5"
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

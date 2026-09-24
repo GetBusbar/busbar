@@ -1435,6 +1435,10 @@ impl AdminService {
             Some(at) => h.snapshot(at),
             None => h.current(),
         });
+        // THE COUNT CORRECTIONS (item 404, OWNER RULING Q9): every `adjust` the node amendment
+        // journal sealed, read ONCE for the whole response. Each row prices its counts AS CORRECTED
+        // (`row_count_corrections`), never a money figure a correction carried — it carries none.
+        let corrections = busbar_kernel::audit::amend::node_corrections();
         // Aggregate in memory — a bucket is bounded by (keys × models) accumulation rows.
         let mut total = UsageBreakdown::default();
         let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =
@@ -1445,7 +1449,7 @@ impl AdminService {
             // Spend derives PER ROW (the model is known here - the per-model rate applies), then
             // aggregates ADDITIVELY into total/by_model/by_key, so every rollup is exact under a
             // heterogeneous rate card.
-            let row_view = UsageBreakdown {
+            let mut row_view = UsageBreakdown {
                 tokens_input: r.tokens_input,
                 tokens_output: r.tokens_output,
                 tokens_cache_read: r.tokens_cache_read,
@@ -1455,6 +1459,35 @@ impl AdminService {
                 requests: r.requests,
                 spend_micros: 0,
             };
+            // The row's counts AS CORRECTED — its token columns and its ledgered classes alike. A
+            // correction that leaves a count fractional or below zero REFUSES the read: a figure
+            // over counts nobody recorded is not one this read may serve.
+            let mut corrected_classes = std::borrow::Cow::Borrowed(&r.usage_units);
+            if !corrections.is_empty() {
+                let lane = row_lane(&r.model, &r.provider);
+                let eras: Vec<u64> = rows
+                    .iter()
+                    .filter(|o| o.key_id == r.key_id && row_lane(&o.model, &o.provider) == lane)
+                    .map(|o| o.priced_from_ms)
+                    .collect();
+                for (class, delta) in row_count_corrections(
+                    &corrections,
+                    &r.key_id,
+                    &lane,
+                    (window.start, window.end),
+                    r.priced_from_ms,
+                    &eras,
+                ) {
+                    let column = match class.as_str() {
+                        busbar_api::UNIT_INPUT => &mut row_view.tokens_input,
+                        busbar_api::UNIT_OUTPUT => &mut row_view.tokens_output,
+                        busbar_api::UNIT_CACHE_READ => &mut row_view.tokens_cache_read,
+                        busbar_api::UNIT_CACHE_WRITE => &mut row_view.tokens_cache_creation,
+                        _ => corrected_classes.to_mut().entry(class).or_insert(0),
+                    };
+                    *column = corrected_column(*column, delta).ok_or(AdminError::Internal)?;
+                }
+            }
             // **THE RESOLUTION**, and the key is the ROW'S OWN FIRST INSTANT (see
             // `row_priced_at_ms`): the row prices against the card it was earned under rather than
             // the newest card ever authored, and a card edit inside the day opened a second row at
@@ -1481,7 +1514,7 @@ impl AdminService {
             // THE ROW'S LEDGERED CLASSES (`usage_units`) — every count the budget book holds that the
             // token split does not (a plane's declared classes, a pools open class, a plane's session
             // count) — price on the row's lane beside its tokens, as the budget book prices them.
-            let classes = &r.usage_units;
+            let classes: &std::collections::BTreeMap<String, u64> = &corrected_classes;
             let row_spend = match view.as_ref() {
                 Some(v) => match v.card_at(at) {
                     Some((_card_seq, card)) => derive_spend_micros_row_classes_at_card(
@@ -1507,11 +1540,14 @@ impl AdminService {
                     .or_default(),
                 by_key.entry(r.key_id.clone()).or_default(),
             ] {
-                b.tokens_input = b.tokens_input.saturating_add(r.tokens_input);
-                b.tokens_output = b.tokens_output.saturating_add(r.tokens_output);
-                b.tokens_cache_read = b.tokens_cache_read.saturating_add(r.tokens_cache_read);
-                b.tokens_cache_creation =
-                    b.tokens_cache_creation.saturating_add(r.tokens_cache_write);
+                b.tokens_input = b.tokens_input.saturating_add(row_view.tokens_input);
+                b.tokens_output = b.tokens_output.saturating_add(row_view.tokens_output);
+                b.tokens_cache_read = b
+                    .tokens_cache_read
+                    .saturating_add(row_view.tokens_cache_read);
+                b.tokens_cache_creation = b
+                    .tokens_cache_creation
+                    .saturating_add(row_view.tokens_cache_creation);
                 b.requests = b.requests.saturating_add(r.requests);
                 // CHECKED, like the one function it sums (item 28): a rollup past the range is a
                 // refused read, never a figure pinned at the ceiling.

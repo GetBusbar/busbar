@@ -314,6 +314,67 @@ pub fn row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
     bucket_start_secs.saturating_mul(1_000).max(priced_from_ms)
 }
 
+/// **THE COUNT CORRECTIONS THAT LAND ON ONE METERING ROW** (item 404, OWNER RULING Q9), per class,
+/// in micro-units (`Count` scale 6).
+///
+/// An `adjust` corrects a recorded unit's COUNTS on the node amendment journal and never its money;
+/// money is this read, over the corrected counts. A row is an aggregate over `(key, lane, era)`, so
+/// what lands on it is Σ (now − was) over every correction whose subject is the row's key, whose lane
+/// is the row's lane, and whose card epoch falls inside the row's day and in the era the row covers:
+/// the latest `priced_from_ms` among this key's rows on this lane that is not after the epoch
+/// (`eras`). The sum TELESCOPES — a second correction of one unit names the first one's result as
+/// its `was` — so it is the unit's latest counts minus what it recorded.
+pub fn row_count_corrections(
+    corrections: &[busbar_kernel::audit::amend::Amendment],
+    key_id: &str,
+    lane: &str,
+    window: (u64, u64),
+    priced_from_ms: u64,
+    eras: &[u64],
+) -> std::collections::BTreeMap<String, i128> {
+    use busbar_kernel::audit::amend::{AmendBody, Subject};
+    let (start_ms, end_ms) = (
+        window.0.saturating_mul(1_000),
+        window.1.saturating_mul(1_000),
+    );
+    let mut deltas = std::collections::BTreeMap::<String, i128>::new();
+    for amendment in corrections {
+        let AmendBody::Adjust(adj) = &amendment.body else {
+            continue;
+        };
+        let at = adj.card_epoch_ms;
+        let era = eras.iter().copied().filter(|e| *e <= at).max().unwrap_or(0);
+        if !matches!(&adj.subject, Subject::PrincipalId(p) if p == key_id)
+            || adj.lane != lane
+            || at < start_ms
+            || at >= end_ms
+            || era != priced_from_ms
+        {
+            continue;
+        }
+        for class in adj.was.keys().chain(adj.now.keys()) {
+            deltas.entry(class.clone()).or_insert(0);
+        }
+        for (class, delta) in deltas.iter_mut() {
+            *delta = delta.saturating_add(adj.delta(class));
+        }
+    }
+    deltas.retain(|_, d| *d != 0);
+    deltas
+}
+
+/// Apply one class's corrected delta (micro-units) to a whole-unit column. `None` when the result
+/// is not a whole, non-negative unit count the column can hold — the read refuses rather than
+/// round or clamp a correction.
+pub fn corrected_column(recorded: u64, delta_micros: i128) -> Option<u64> {
+    const SCALE: i128 = 1_000_000;
+    if delta_micros % SCALE != 0 {
+        return None;
+    }
+    let whole = i128::from(recorded).checked_add(delta_micros / SCALE)?;
+    u64::try_from(whole).ok()
+}
+
 /// The row's flat tier fields under the reserved class spellings a card entry is written against,
 /// so no name is translated between a quantity and the entry that prices it.
 ///
