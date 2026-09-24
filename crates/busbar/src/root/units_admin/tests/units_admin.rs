@@ -4529,8 +4529,8 @@ fn a_forward_dated_card_leaves_an_earlier_postings_total_byte_identical() {
 /// **PROOF THREE — THE TOTALS VIEW AND `GET /api/v1/admin/usage` AGREE ON THE SAME DATA.**
 ///
 /// Two endpoints, one ruling (#79), and they must not become two implementations of it. The usage
-/// read resolves a posting's card at `card_at(arrived_ms)` and sums `LaneRates::nanos` over the
-/// lines, projects ONCE with `micros_of`, and adds the flat fee in micro-units after the divide
+/// read resolves a posting's card at `card_at(arrived_ms)` and prices the lines through the one spend
+/// fold (`Tally`), projects ONCE, and adds the flat fee in micro-units after the divide
 /// (`busbar-core-admin/src/v1/service.rs`, `resolve_row_spend_micros`). That arithmetic is spelled
 /// out here against the same card and the same quantities, and the totals view's own figure is
 /// asserted to equal it.
@@ -4553,18 +4553,25 @@ fn the_totals_view_and_the_usage_read_derive_the_same_figure() {
     let card = a_card_at(2.5, FEE_MINOR);
     view.history.apply(card.clone(), 1_000);
 
-    // THE USAGE READ'S ARITHMETIC, on the same card and the same quantities.
-    let lines = [busbar_contract::caps::UsageLine {
-        class: busbar_contract::caps::MeterClassId::new(busbar_kernel_ledger::cost::CLASS_INPUT),
-        quantity: QUANTITY,
-        source: busbar_contract::caps::QuantitySource::Count,
-        estimated: false,
-    }];
-    let rates = card
-        .lane_rates(A_LANE)
-        .expect("the fixture's card names the lane");
+    // THE USAGE READ'S ARITHMETIC, on the same card and the same quantities: the one spend fold
+    // at that card (`CostModel::derive_spend_micros` is `Tally` at the current card), the tokens
+    // projected once and the flat fee added in micro-units after the divide.
+    let mut tokens = busbar_kernel_ledger::cost::Tally::at_card(&card);
+    tokens
+        .row(
+            A_LANE,
+            A_LINE_MS,
+            busbar_kernel_ledger::cost::STANDARD_TIER_BP,
+            [(
+                busbar_kernel_ledger::cost::CLASS_INPUT,
+                busbar_kernel_ledger::cost::whole(QUANTITY),
+            )],
+            busbar_kernel_ledger::cost::whole(0),
+        )
+        .expect("the fixture's card prices the lane and the class");
     // The CHECKED projection (item 28) — the fixture is in range, and a pinned figure is not one.
-    let usage_micros = busbar_kernel_ledger::cost::Money::of_nanos(rates.nanos(&lines))
+    let usage_micros = tokens
+        .money()
         .and_then(busbar_kernel_ledger::cost::Money::micros_i64)
         .expect("the fixture's figure is in range")
         .saturating_add(

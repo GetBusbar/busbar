@@ -343,3 +343,51 @@ fn the_spend_fold_refuses_an_overflow_and_the_sizing_fold_pins_it() {
         "nanos_sum's doc must name Tally as the spend fold and itself as the reservation fold"
     );
 }
+
+/// A LANE'S RATES PRICE NO USAGE REPORT: a report is a spend, and every spend is `Tally`'s.
+///
+/// The lane's own report-sizing fold is gone. It summed a report at the lane's rates saturating,
+/// and sized a class the lane's card is silent about at NOTHING — right for a reservation size,
+/// wrong for a bill. What replaces it for every reader of a report's worth is the one spend fold:
+/// the priced classes come to `count × rate`, and a class the present card is silent about
+/// REFUSES rather than reading as a free line (#42).
+#[test]
+fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
+    let card = RateCard::from_micro_rates([(LaneClass::new("m", "input"), 2.5)], 0);
+    let mut priced = crate::cost::Tally::at_card(&card);
+    priced
+        .row(
+            "m",
+            0,
+            STANDARD_TIER_BP,
+            [("input", crate::cost::whole(1_000))],
+            crate::cost::whole(0),
+        )
+        .expect("a priced class prices");
+    assert_eq!(
+        crate::cost::nanos_of_exact(priced.exact().expect("in range")),
+        Ok(2_500_000),
+        "1,000 units at 2.5 micro-units is 2,500,000 nano-units"
+    );
+
+    let mut silent = crate::cost::Tally::at_card(&card);
+    assert!(
+        matches!(
+            silent.row(
+                "m",
+                0,
+                STANDARD_TIER_BP,
+                [("input", crate::cost::whole(1_000)), ("output", crate::cost::whole(7))],
+                crate::cost::whole(0),
+            ),
+            Err(crate::cost::MoneyError::ClassUnpriced { ref class, .. }) if class == "output"
+        ),
+        "a class the present card is silent about refuses; it is never sized at nothing"
+    );
+
+    let src = include_str!("../rate.rs");
+    assert!(
+        !src.contains("pub fn nanos(&self"),
+        "a lane's rates carry no report-sizing fold beside the spend fold"
+    );
+}

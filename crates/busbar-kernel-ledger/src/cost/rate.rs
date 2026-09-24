@@ -12,8 +12,6 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::caps::UsageLine;
-
 /// Convert one configured rate — micro-units per unit of quantity — into the integer nano-unit
 /// rate all later arithmetic uses.
 ///
@@ -103,7 +101,8 @@ pub fn representable_nano_rate(micro_per_unit: f64) -> Option<u64> {
 ///   `Estimate::pre_tier_nanos`), released at settlement and paid by nobody. For a hold, pinning at
 ///   the top is the safe reading of an over-the-top size — it can only reserve too much, which the
 ///   unit gives straight back — and a refusal would be wrong, because the hold is accounting and
-///   never refuses a unit the decision admitted. [`LaneRates::nanos`] is its one other caller.
+///   never refuses a unit the decision admitted. It has no other caller: a lane's rates size no
+///   usage report here, because pricing a report is a spend and a spend is `Tally`'s.
 ///
 /// A change to overflow or rounding here moves no bill; a change to a bill belongs in `Tally`.
 ///
@@ -686,20 +685,5 @@ impl LaneRates<'_> {
                 .get(class)
                 .is_some_and(|cell| cell.nanos_per_unit().is_some()),
         }
-    }
-
-    /// A SIZE, in nano-units, of a whole usage report at this lane's rates — [`nanos_sum`]'s
-    /// saturating sizing fold, NOT a spend figure (item 434).
-    ///
-    /// It saturates rather than refusing, and a class this lane's card is silent about sizes at
-    /// nothing rather than refusing (#42) — both right for a size and both wrong for a bill, which
-    /// is why no bill, read or cap is computed here: every spend figure is
-    /// [`crate::cost::Tally`]'s. It has no production caller.
-    pub fn nanos(&self, lines: &[UsageLine]) -> u128 {
-        nanos_sum(
-            lines
-                .iter()
-                .map(|l| (l.quantity, self.nanos_per_unit(l.class.as_str()))),
-        )
     }
 }
