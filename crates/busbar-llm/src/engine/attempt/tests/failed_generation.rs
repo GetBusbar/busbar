@@ -296,3 +296,87 @@ async fn streamed_gemini_stop_is_a_success_and_charges() {
     assert_eq!(out.reported, Some((10, 5)));
     assert_eq!(out.ledger_tokens, 15);
 }
+
+/// Relay `chunks` of one Cohere non-stream body through the SAME-PROTOCOL relay (`FirstByteBody`
+/// with no translator) with NO usage sink — the ungoverned relay, which keeps no copy of the body —
+/// and return (the bytes the client received, the tap's end, whether the pool cell faulted).
+async fn relay_ungoverned(chunks: Vec<&'static [u8]>) -> (Vec<u8>, Option<TapFinish>, bool) {
+    use http_body_util::BodyExt as _;
+    crate::testkit::install_test_seams();
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto_codec::PROTO_COHERE,
+            "http://127.0.0.1:1",
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
+    let inner = futures::stream::iter(
+        chunks
+            .into_iter()
+            .map(|c| Ok::<bytes::Bytes, hyper::Error>(bytes::Bytes::from_static(c)))
+            .collect::<Vec<_>>(),
+    );
+    let tap = TapCell::new();
+    let body = crate::engine::FirstByteBody::new(
+        inner,
+        false, // same-protocol NON-STREAM application/json
+        crate::proto_codec::PROTO_COHERE,
+        crate::test_support::CHAT,
+        (),
+        tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+        host,
+        rt,
+        0,
+        Arc::new(Default::default()),
+        "p",
+        None,
+        None,
+        None, // UNGOVERNED: no usage sink, so no copy of the body is kept
+        false,
+        tap.clone(),
+    );
+    let served = body
+        .into_body()
+        .collect()
+        .await
+        .expect("drain")
+        .to_bytes()
+        .to_vec();
+    let finish = tap.get().map(|r| r.finish);
+    let faulted = app.store.lane_needs_probe(0, crate::engine::now());
+    (served, finish, faulted)
+}
+
+/// UNGOVERNED SAME-PROTOCOL NON-STREAM (architect ruling on the Q31 follow-up). The stop-reason key
+/// arrives SPLIT across two chunks (`"finish_re` | `ason":"ERROR"…`); the incremental scan still
+/// finds it, the breaker records the fault and the end is `Error` — and the client's bytes are the
+/// upstream's, unchanged. At the pin the ungoverned relay read nothing and the breaker saw success.
+#[tokio::test]
+async fn ungoverned_same_protocol_cohere_error_split_key_faults_the_breaker() {
+    let first: &'static [u8] = br#"{"id":"c-1","finish_re"#;
+    let second: &'static [u8] = br#"ason":"ERROR","message":{"role":"assistant","content":[{"type":"text","text":"x"}]},"usage":{"tokens":{"input_tokens":10,"output_tokens":5}}}"#;
+    let (served, finish, faulted) = relay_ungoverned(vec![first, second]).await;
+    assert_eq!(
+        served,
+        [first, second].concat(),
+        "the upstream body reaches the client byte-for-byte unchanged"
+    );
+    assert!(
+        faulted,
+        "the serving lane's breaker must record a fault for a failed generation"
+    );
+    assert_eq!(finish, Some(TapFinish::Error), "the end is an Error");
+}
+
+/// CONTROL: the same split relay ending `COMPLETE` is no fault and ends `Complete`.
+#[tokio::test]
+async fn ungoverned_same_protocol_cohere_complete_split_key_is_no_fault() {
+    let first: &'static [u8] = br#"{"id":"c-1","finish_re"#;
+    let second: &'static [u8] = br#"ason":"COMPLETE","message":{"role":"assistant","content":[{"type":"text","text":"x"}]},"usage":{"tokens":{"input_tokens":10,"output_tokens":5}}}"#;
+    let (served, finish, faulted) = relay_ungoverned(vec![first, second]).await;
+    assert_eq!(served, [first, second].concat());
+    assert!(!faulted, "a completed generation is no fault");
+    assert_eq!(finish, Some(TapFinish::Complete));
+}

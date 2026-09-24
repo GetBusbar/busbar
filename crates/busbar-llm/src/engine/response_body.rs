@@ -287,6 +287,12 @@ pub(crate) struct FirstByteBody<S, P> {
     /// otherwise reliably fail to parse a fragment). Also gates the truncation counter/warn to fire
     /// ONCE per response rather than once per over-cap chunk.
     nonstream_buf_truncated: bool,
+    /// THE STOP-REASON SCAN of a SAME-PROTOCOL NON-STREAM relay (owner ruling Q31 follow-up): the
+    /// dialect reader's stop-reason key, located INCREMENTALLY in the chunks as they pass through —
+    /// governed or not, and without a copy of the body. Its state is inline and bounded (the partial
+    /// key across a chunk boundary, then the token), so it allocates nothing. `None` where there is
+    /// no such relay or the dialect's stop vocabulary cannot say the generation failed.
+    stop_scan: Option<crate::usage_tail::StopKeyScanner>,
     /// Every upstream byte this body has read, counted on the one arm every chunk passes through.
     /// It exists for ONE figure: when the stream's reader REFUSED a count it could not read (the
     /// terminal error is `ir_parse`), no usage was recovered, and the request bills the SAME floor
@@ -343,6 +349,15 @@ where
         // Arm the stream ceiling on the CALLER's per-attempt deadline — see the `ceiling` field
         // docs for the one-envelope exactness argument.
         let ceiling = Box::pin(tokio::time::sleep_until(ceiling_deadline));
+        // Only the raw same-protocol non-stream relay (no translator, not a stream) is scanned; a
+        // dialect whose reader names no stop-reason key is not.
+        let stop_scan = (!is_sse && translate.is_none())
+            .then(|| {
+                crate::proto_codec::with_reader(ingress_protocol, |r| r.stop_reason_key())
+                    .flatten()
+                    .and_then(crate::usage_tail::StopKeyScanner::new)
+            })
+            .flatten();
         Self {
             inner,
             first_byte_sent: false,
@@ -369,6 +384,7 @@ where
             ended: false,
             nonstream_buf: Vec::new(),
             nonstream_buf_truncated: false,
+            stop_scan,
             upstream_bytes: 0,
             ceiling,
             tap,
@@ -448,6 +464,11 @@ where
                             continue; // only a partial frame buffered; poll inner again
                         }
                         return Poll::Ready(Some(Ok(out_bytes)));
+                    }
+                    // The relayed body's stop-reason field, located as the bytes go by (the
+                    // client's bytes are untouched): see `stop_scan`.
+                    if let Some(scan) = this.stop_scan.as_mut() {
+                        scan.feed(&chunk);
                     }
                     // Passthrough: the raw chunk is already in the client's shape. This branch is reached
                     // only for (a) a SAME-PROTOCOL NON-STREAM (`!is_sse`) `application/json` body — the
@@ -827,9 +848,22 @@ where
                     // here. Either way the billing consumers below speak token totals and name zero
                     // concrete IR. Byte-identical (the projection carries the four billed totals).
                     // A SAME-PROTOCOL NON-STREAM body whose own stop reason says the generation
-                    // FAILED (owner ruling Q31 follow-up) — set below, from the relayed bytes this
-                    // body already holds, never from a second parse of them.
-                    let mut nonstream_generation_failed = false;
+                    // FAILED (owner ruling Q31 follow-up), governed or not: the token the
+                    // incremental scan found in the relayed bytes, mapped by the dialect's reader
+                    // exactly as `read_response` maps it. No copy of the body, no document parse.
+                    // It decides the breaker and the end, never the charge. A body whose field never
+                    // arrived (cut, absent) reads no reason and is not a fault.
+                    let nonstream_generation_failed = this
+                        .stop_scan
+                        .as_ref()
+                        .and_then(|scan| scan.token())
+                        .and_then(|token| {
+                            crate::proto_codec::with_reader(this.ingress_protocol, |r| {
+                                r.stop_reason_of_token(token)
+                            })
+                            .flatten()
+                        })
+                        == Some(crate::ir::IrStopReason::Error);
                     let token_usage: Option<busbar_substrate_values::billing::TokenUsage> =
                         if this.usage_sink.is_none() {
                             None
@@ -855,19 +889,6 @@ where
                             // flat-fee op returns None and bills nothing.
                             let truncated = this.nonstream_buf_truncated;
                             let buf: Vec<u8> = std::mem::take(&mut this.nonstream_buf);
-                            // The relayed body's stop reason, read off ITS FIELD ONLY: the dialect's
-                            // reader locates the stop-reason key in the bytes and maps its token the
-                            // way `read_response` does — one scan to find the key, bounded work
-                            // after it, no document parse. The body already went to the client
-                            // byte-for-byte; this decides the breaker and the end, never the charge.
-                            // A head-truncated buffer whose field fell off the front reads `None`
-                            // and is not a fault.
-                            nonstream_generation_failed =
-                                crate::proto_codec::with_reader(this.ingress_protocol, |r| {
-                                    r.raw_stop_reason(&buf)
-                                })
-                                .flatten()
-                                    == Some(crate::ir::IrStopReason::Error);
                             if truncated {
                                 // The buffer is a TAIL FRAGMENT (its head was dropped to stay within
                                 // cap), not a well-formed top-level document — `Op::extract_usage`'s

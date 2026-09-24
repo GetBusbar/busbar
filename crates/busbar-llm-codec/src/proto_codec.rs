@@ -111,7 +111,24 @@ pub trait ProtocolReader: Send + Sync {
     /// completed one at the cost of finding one field. `None` when the field is absent or not a
     /// plain token. Defaulted to `None`: only a dialect whose stop vocabulary can say
     /// [`crate::ir::IrStopReason::Error`] needs to answer.
-    fn raw_stop_reason(&self, _body: &[u8]) -> Option<crate::ir::IrStopReason> {
+    fn raw_stop_reason(&self, body: &[u8]) -> Option<crate::ir::IrStopReason> {
+        let key = self.stop_reason_key()?;
+        crate::usage_tail::first_string_value_after(body, key)
+            .and_then(|token| self.stop_reason_of_token(token))
+    }
+
+    /// This dialect's non-stream stop-reason KEY as it appears on the wire, quotes included (e.g.
+    /// `"finish_reason"`): the field [`Self::raw_stop_reason`] — and the relay's incremental
+    /// [`crate::usage_tail::StopKeyScanner`], which answers the same over a body it never holds —
+    /// locate. The FIRST occurrence in the body is the one read, so it must be the one
+    /// [`Self::read_response`] reads. `None` (the default): this dialect is not scanned.
+    fn stop_reason_key(&self) -> Option<&'static [u8]> {
+        None
+    }
+
+    /// Map a raw stop-reason token found under [`Self::stop_reason_key`] exactly as
+    /// [`Self::read_response`] maps it. `None` where `read_response` reads no reason.
+    fn stop_reason_of_token(&self, _token: &str) -> Option<crate::ir::IrStopReason> {
         None
     }
 
