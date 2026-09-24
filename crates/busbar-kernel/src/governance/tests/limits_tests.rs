@@ -1252,6 +1252,7 @@ static TOKEN_FAMILY_PLANE: crate::plane::registry::PlaneDecl = crate::plane::reg
             family: "duration",
         },
     ],
+    fee_units: &[],
     resolve_provider: None,
 };
 

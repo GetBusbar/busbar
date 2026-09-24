@@ -25,7 +25,12 @@
 use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer};
 use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
-use busbar_kernel::config::groups::LimitMetric;
+use busbar_kernel::{
+    config::{self, groups::LimitMetric},
+    config_validate::validate,
+    cost::CostModel,
+    test_support::engine_kit::CostKit,
+};
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";
 const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
@@ -774,14 +779,15 @@ async fn a_requests_cap_trips_on_mcp_tool_calls_and_the_llm_budget_does_not() {
 /// `CostModel::resolve_parts` is handed. The plane is registered first, as the composition root
 /// installs it before any config is read, so the section is parsed by the MCP plane's own reader.
 fn composed_card(yaml: &str) -> Option<Card> {
+    resolved(yaml).rate_card
+}
+
+/// The node's resolved config from `yaml`, exactly as boot builds it (see [`composed_card`]).
+fn resolved(yaml: &str) -> config::RootCfg {
     crate::testkit::install_test_seams();
-    let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
-        "providers: {{}}\nmodels: {{}}\n{yaml}"
-    ))
-    .expect("the config parses");
-    busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the config resolves")
-        .rate_card
+    let deploy = config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{yaml}"))
+        .expect("the config parses");
+    config::resolve(&deploy, &Default::default()).expect("the config resolves")
 }
 
 /// ITEM 136's ORIGINAL CONTROL, now expressible: a `tools.rate_card` pricing the tool's `tool_calls`
@@ -946,5 +952,53 @@ async fn the_pools_fee_is_never_charged_on_an_mcp_call() {
     assert!(
         gov.try_admit(&*cost, &key, "gpt-x", now).is_err(),
         "a pools request carries the flat fee, which the cap cannot fit"
+    );
+}
+
+// ── FEE UNITS (ARCHITECT ruling, fees): the MCP plane counts `per_request` and nothing else ───────
+
+/// **`tools.fees.per_request` BOOTS AND CHARGES; `tools.fees.per_session` REFUSES.** Each MCP call is
+/// admitted under the plane-qualified pool, one fee unit on the plane's fee lane, so a fee of 2 reads
+/// 2 × 3 = 6 over three calls — beside a pools flat fee of 5 that none of them carries. The plane
+/// opens no session account, so a session fee would charge nothing: boot and `--validate` refuse it,
+/// naming the key and the counted list.
+#[tokio::test]
+async fn tools_fees_per_request_boots_and_charges_and_per_session_refuses() {
+    metrics_init();
+    let verdict = |yaml: &str| validate(&resolved(yaml));
+    assert_eq!(
+        verdict("tools:\n  fees: { per_session: 40 }\n"),
+        Err(vec![
+            "tools.fees.per_session is not counted by this plane (counted: per_request); remove it"
+                .to_string()
+        ])
+    );
+    let fees = "tools:\n  fees: { per_request: 2 }\n";
+    assert_eq!(verdict(fees), Ok(()), "a counted fee boots");
+
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "feeunitfs";
+    let limits = vec![per_day(LimitMetric::Budget, 1_000)];
+    let (app, gov, _) = budgeted_app(&peer, server, None, 5, limits.clone());
+    let key = budgeted_key("k-mcp-fee-units", server);
+    for n in 1..=3 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(answered(status, &body), "call {n}: {status} {body}");
+    }
+    let group = config::GroupCfg {
+        limits,
+        ..Default::default()
+    };
+    let groups = [("g".to_string(), group)].into();
+    let cost =
+        CostModel::resolve_parts(None, 5, &groups).with_plane_fees(&resolved(fees).plane_fees);
+    let priced: std::sync::Arc<dyn CostKit> = std::sync::Arc::new(cost);
+    let now = busbar_substrate_values::store::now();
+    let read = gov
+        .derived_bucket_usage(&*priced, "group:g@day", "day", true, now)
+        .expect("the group reads");
+    assert_eq!(
+        read.spend_cents, 6,
+        "three calls at tools.fees.per_request 2"
     );
 }

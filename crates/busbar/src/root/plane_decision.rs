@@ -185,6 +185,9 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         }],
         // The providers/models/pools merge is the LLM plane's seam; a decision provider is resolved
         // from this plane's own section, not from the `providers:` catalog merge.
+        // No fee unit: nothing admits a decision request under this plane's key yet, so any
+        // `decisions.fees` figure would charge nothing — refused at boot.
+        fee_units: &[],
         resolve_provider: None,
     };
 

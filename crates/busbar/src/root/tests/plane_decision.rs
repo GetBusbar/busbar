@@ -207,3 +207,28 @@ fn an_absent_decisions_block_defaults_to_the_plane_s_own_empty_section() {
         "an empty section is not a section the operator wrote"
     );
 }
+
+/// **THE DECISION PLANE COUNTS NO FEE UNIT** (ARCHITECT ruling, fees): it admits nobody (see
+/// `the_declaration_mounts_nothing_and_admits_nobody`), so no request or session of it is ever
+/// counted and any `decisions.fees` figure would charge nothing — boot and `--validate` refuse each
+/// such key, naming it and the (empty) counted list. A fee of 0 charges what it says and passes.
+#[test]
+fn a_decisions_fee_refuses_because_the_plane_counts_no_fee_unit() {
+    let _reg = decisions_registered();
+    let verdict = |fees: &str| {
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(&doc(&format!(
+            "decisions:\n  fees: {fees}\n"
+        )))
+        .expect("the config parses");
+        let root = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        busbar_kernel::config_validate::validate(&root)
+    };
+    let refusal = |unit: &str| {
+        Err(vec![format!(
+            "decisions.fees.{unit} is not counted by this plane (counted: none); remove it"
+        )])
+    };
+    assert_eq!(verdict("{ per_request: 2 }"), refusal("per_request"));
+    assert_eq!(verdict("{ per_session: 40 }"), refusal("per_session"));
+    assert_eq!(verdict("{ per_request: 0 }"), Ok(()));
+}

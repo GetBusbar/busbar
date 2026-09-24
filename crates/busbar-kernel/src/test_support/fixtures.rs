@@ -130,6 +130,7 @@ static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl =
         default_section: None,
         owned_config_sections: &[],
         billable_classes: &[],
+        fee_units: &[],
         resolve_provider: None,
     };
 

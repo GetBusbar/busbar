@@ -114,7 +114,7 @@
 //! sealed with state busbar mints is the same rule that already makes busbar publish the operator's
 //! tool description rather than the upstream's — applied to the field where it matters most.
 
-use busbar_kernel::plane::registry::BillableClass;
+use busbar_kernel::plane::registry::{BillableClass, PER_REQUEST};
 
 /// THE MCP PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
 /// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::Mcp` `match`.
@@ -200,6 +200,9 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
                 family: "byte",
             },
         ],
+        // The fee unit this plane counts: one per call, admitted under its plane-qualified pool. It
+        // opens no session account, so `tools.fees.per_session` would charge nothing — refused.
+        fee_units: &[PER_REQUEST],
         resolve_provider: None,
     };
 

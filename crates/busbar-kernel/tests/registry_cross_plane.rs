@@ -91,6 +91,7 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     default_section: None,
     owned_config_sections: &[],
     billable_classes: &[],
+    fee_units: &[],
     resolve_provider: None,
 };
 
@@ -220,6 +221,7 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         default_section: None,
         owned_config_sections: &[],
         billable_classes: &[],
+        fee_units: &[],
         resolve_provider: None,
     };
 
@@ -431,6 +433,7 @@ fn install_planes_after_first_read_panics() {
 static ALPHA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
     key: "alpha",
     owned_config_sections: &["foo"],
+    fee_units: &[],
     resolve_provider: None,
     ..WIDGET_PLANE
 };
@@ -439,6 +442,7 @@ static ALPHA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
 static BETA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
     key: "beta",
     owned_config_sections: &["foo"],
+    fee_units: &[],
     resolve_provider: None,
     ..WIDGET_PLANE
 };
@@ -448,6 +452,7 @@ static BETA_CLAIMS_FOO: PlaneDecl = PlaneDecl {
 static GAMMA_CLAIMS_RATE_CARD: PlaneDecl = PlaneDecl {
     key: "gamma",
     owned_config_sections: &["rate_card"],
+    fee_units: &[],
     resolve_provider: None,
     ..WIDGET_PLANE
 };
@@ -486,6 +491,7 @@ fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
 static ONE_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
     key: "one",
     owned_config_sections: &["streams"],
+    fee_units: &[],
     resolve_provider: None,
     ..WIDGET_PLANE
 };
@@ -494,6 +500,7 @@ static ONE_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
 static TWO_CLAIMS_STREAMS: PlaneDecl = PlaneDecl {
     key: "two",
     owned_config_sections: &["streams"],
+    fee_units: &[],
     resolve_provider: None,
     ..WIDGET_PLANE
 };
@@ -696,6 +703,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         default_section: None,
         owned_config_sections: &[],
         billable_classes: &[],
+        fee_units: &[],
         resolve_provider: None,
     };
     let unit = ();
@@ -750,6 +758,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         default_section: None,
         owned_config_sections: &[],
         billable_classes: &[],
+        fee_units: &[],
         resolve_provider: None,
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
@@ -807,6 +816,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         default_section: None,
         owned_config_sections: &[],
         billable_classes: &[],
+        fee_units: &[],
         resolve_provider: None,
     };
     let ctx = busbar_kernel::plane::registry::BootCtx::stub();
@@ -856,6 +866,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         default_section: None,
         owned_config_sections: &[],
         billable_classes: &[],
+        fee_units: &[],
         resolve_provider: None,
     };
     busbar_kernel::boot::run_start_hooks(&[&STARTS_CLEAN, &WIDGET_PLANE], &ctx)
@@ -903,6 +914,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         default_section: None,
         owned_config_sections: &[],
         billable_classes: &[],
+        fee_units: &[],
         resolve_provider: None,
     };
     let ctx = busbar_kernel::plane::registry::BootCtx::stub();

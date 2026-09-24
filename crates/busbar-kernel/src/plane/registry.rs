@@ -388,9 +388,7 @@ pub fn merged_boot_plane_decls(
     // rather than silently double-declaring the grammar. A panic (not a `Result`) because a mis-wired
     // composition root is a build bug, not an operator error to recover from — same disposition as the
     // `install_planes`-twice / read-before-install asserts above.
-    if let Err(refusal) =
-        crate::plane::registry::check_owned_config_claims(&decls, CORE_OWNED_CONCRETE_SECTIONS)
-    {
+    if let Err(refusal) = check_owned_config_claims(&decls, CORE_OWNED_CONCRETE_SECTIONS) {
         panic!("plane-owned-config dup-claim guard: {refusal}");
     }
     decls
@@ -821,6 +819,9 @@ pub struct BillableClass {
 /// The token family: every class a plane declares in it counts toward a `tokens:` cap.
 pub const TOKEN_FAMILY: &str = "token";
 
+/// The two fee units a plane may declare in [`PlaneDecl::fee_units`].
+pub use busbar_kernel_ledger::cost::{PER_REQUEST, PER_SESSION};
+
 /// EVERYTHING CORE KNOWS ABOUT A PLANE'S VOCABULARY, declared once by the plane itself.
 ///
 /// Every field replaces one arm of one `match self` on `busbar_kernel::plane::Plane`. The doc on each
@@ -1199,6 +1200,12 @@ pub struct PlaneDecl {
     /// cap. Pairwise disjoint: no class is a subset of another. Identical for every plane, compiled-in or registered from outside
     /// core: the kernel reads the list and never names a class. `&[]` for a plane that bills nothing.
     pub billable_classes: &'static [BillableClass],
+
+    /// THE FEE UNITS THIS PLANE COUNTS — `per_request` (its requests pass per-request admission)
+    /// and/or `per_session` (it opens a session account). Boot and `--validate` REFUSE a nonzero
+    /// `<config_section>.fees` key naming a unit not listed here: a fee nothing counts charges
+    /// nothing. The kernel reads the list and never names a plane. `&[]` for a plane counting none.
+    pub fee_units: &'static [&'static str],
 
     /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
     /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,

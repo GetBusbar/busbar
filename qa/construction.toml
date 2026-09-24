@@ -347,8 +347,8 @@ counts can trend to zero at their own pace."""
 # TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
 busbar-llm = 1045
-busbar-mcp = 201
-busbar-a2a = 99
+busbar-mcp = 199
+busbar-a2a = 98
 busbar-voice = 43
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────

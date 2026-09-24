@@ -6020,6 +6020,7 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
     default_section: None,
     owned_config_sections: &[],
     billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
+    fee_units: &[],
     resolve_provider: None,
 };
 
@@ -6192,5 +6193,43 @@ fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list(
     cfg.rate_card = Some(card_yaml(
         "m: { input_utok: 3, units: { search_units: 0, images: 0 } }\n",
     ));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+}
+
+/// EVERY CONFIGURED FEE IS COUNTED: a nonzero `<section>.fees` key naming a unit the plane's
+/// declaration does not count refuses, naming the key and the plane's counted list (`none` for a
+/// plane counting no unit); a counted unit, and an uncounted one at 0, pass.
+#[test]
+fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
+    use busbar_kernel_ledger::cost::{PlaneFees, PER_SESSION};
+    let session: &'static crate::plane::registry::PlaneDecl =
+        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
+            key: "session-plane",
+            config_section: "streams",
+            fee_units: &[PER_SESSION],
+            ..CLASS_PLANE
+        }));
+    let _iso =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[session, &CLASS_PLANE]);
+    let fees = |plane: &str, per_request, per_session| {
+        let f = PlaneFees {
+            per_request,
+            per_session,
+        };
+        config::PlaneFeesMap::from([(plane.to_string(), f)])
+    };
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.plane_fees = fees("session-plane", 2, 40);
+    let errs = validate(&cfg).expect_err("the session plane counts no request");
+    let want = "streams.fees.per_request is not counted by this plane (counted: per_session); \
+                remove it";
+    assert_eq!(errs, vec![want.to_string()]);
+
+    cfg.plane_fees = fees("class-plane", 0, 1);
+    let errs = validate(&cfg).expect_err("the class plane counts no fee unit");
+    let want = "tools.fees.per_session is not counted by this plane (counted: none); remove it";
+    assert_eq!(errs, vec![want.to_string()]);
+
+    cfg.plane_fees = fees("session-plane", 0, 40);
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
 }

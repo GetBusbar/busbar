@@ -16,8 +16,13 @@
 //! same recorded wire the relay handed the transport.
 
 use super::relay_harness::*;
-use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-use busbar_kernel::governance::{budget_window, PLANE_LANE_SEP};
+use busbar_kernel::{
+    config::{self, groups::GroupCfg, groups::LimitCfg, groups::LimitMetric, groups::LimitWindow},
+    config_validate::validate,
+    cost::CostModel,
+    governance::{budget_window, PLANE_LANE_SEP},
+    test_support::engine_kit::CostKit,
+};
 
 fn per_day(metric: LimitMetric, amount: u64) -> LimitCfg {
     LimitCfg {
@@ -273,5 +278,53 @@ async fn a_hop_refused_before_the_socket_counts_nothing() {
         bytes_ledgered(&h),
         Some(left),
         "a hop refused before the socket moved no byte and ledgers none"
+    );
+}
+
+/// **`agents.fees.per_request` BOOTS AND CHARGES; `agents.fees.per_session` REFUSES** (ARCHITECT
+/// ruling, fees). Each hop is admitted under the plane-qualified pool, one fee unit on the plane's
+/// fee lane, so a fee of 2 reads 2 × 3 = 6 over three hops. The plane opens no session account, so a
+/// session fee would charge nothing: boot and `--validate` refuse it, naming the key and the counted
+/// list.
+#[tokio::test]
+async fn agents_fees_per_request_boots_and_charges_and_per_session_refuses() {
+    crate::testkit::install_test_seams();
+    let resolved = |yaml: &str| {
+        let text = format!("providers: {{}}\nmodels: {{}}\n{yaml}");
+        let deploy = config::deploy_from_yaml_str(&text).expect("the config parses");
+        config::resolve(&deploy, &Default::default()).expect("resolves")
+    };
+    assert_eq!(
+        validate(&resolved("agents:\n  fees: { per_session: 40 }\n")),
+        Err(vec![
+            "agents.fees.per_session is not counted by this plane (counted: per_request); \
+             remove it"
+                .to_string()
+        ])
+    );
+    let root = resolved("agents:\n  fees: { per_request: 2 }\n");
+    assert_eq!(validate(&root), Ok(()), "a counted fee boots");
+
+    let limits = vec![per_day(LimitMetric::Budget, 1_000)];
+    let h = harness_priced(Outcome::Answers(200, backend_ok()), None, limits.clone()).await;
+    for n in 1..=3 {
+        let (status, body) = call(&h).await;
+        assert_eq!(status, 200, "call {n}: {body}");
+    }
+    let group = GroupCfg {
+        limits,
+        ..Default::default()
+    };
+    let groups = [("g".to_string(), group)].into();
+    let cost = CostModel::resolve_parts(None, 0, &groups).with_plane_fees(&root.plane_fees);
+    let priced: std::sync::Arc<dyn CostKit> = std::sync::Arc::new(cost);
+    let now = busbar_substrate_values::store::now();
+    let read = h
+        .gov
+        .derived_bucket_usage(&*priced, "group:g@day", "day", true, now)
+        .expect("the group reads");
+    assert_eq!(
+        read.spend_cents, 6,
+        "three hops at agents.fees.per_request 2"
     );
 }

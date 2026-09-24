@@ -8,7 +8,10 @@ use crate::diagnostics::{
     diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
     CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
-use busbar_kernel_ledger::cost::{flat_card_present, split_plane_lane, PLANE_LANE_SEP};
+use crate::plane::registry::plane_decl_for;
+use busbar_kernel_ledger::cost::{
+    flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
+};
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
 /// over-long name is rejected at boot so a bad value cannot silently disable affinity at header
@@ -1710,6 +1713,21 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             "per_request_fee must be >= 0 (got {}); a negative fee would credit every request",
             cfg.per_request_fee
         ));
+    }
+    // EVERY CONFIGURED FEE IS COUNTED: a nonzero `<section>.fees` key naming a unit the plane never
+    // counts would charge nothing, so it refuses naming the key and the plane's counted list.
+    let fee_decls = (cfg.plane_fees.iter()).filter_map(|(p, f)| Some((plane_decl_for(p)?, f)));
+    for (d, f) in fee_decls {
+        let counted = Some(d.fee_units.join(", ")).filter(|l| !l.is_empty());
+        for (unit, fee) in [(PER_REQUEST, f.per_request), (PER_SESSION, f.per_session)] {
+            if fee != 0 && !d.fee_units.contains(&unit) {
+                errors.push(format!(
+                    "{}.fees.{unit} is not counted by this plane (counted: {}); remove it",
+                    d.config_section,
+                    counted.as_deref().unwrap_or("none")
+                ));
+            }
+        }
     }
 
     // groups: parents exist, chain acyclic — any depth, the cycle check is the bound (shared

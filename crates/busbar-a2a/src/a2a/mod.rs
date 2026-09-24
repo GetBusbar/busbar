@@ -62,7 +62,7 @@
 // invisible, including in the modules a request now goes through; per-file, a new gap in a mounted
 // module is a warning again, and the file that still has one has to say why.
 
-use busbar_kernel::plane::registry::BillableClass;
+use busbar_kernel::plane::registry::{BillableClass, PER_REQUEST};
 
 /// THE A2A PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
 /// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::A2a` `match`.
@@ -181,6 +181,9 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
             class: busbar_plane_a2a::meta::CLASS_BYTES.as_str(),
             family: "byte",
         }],
+        // The fee unit this plane counts: one per hop, admitted under its plane-qualified pool. It
+        // opens no session account, so `agents.fees.per_session` would charge nothing — refused.
+        fee_units: &[PER_REQUEST],
         resolve_provider: None,
         // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from
         // `agents:`/`public_url` on every apply, and its durable task table is restored at boot

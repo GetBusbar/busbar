@@ -4100,6 +4100,7 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
     default_section: None,
     owned_config_sections: &[],
     billable_classes: &[],
+    fee_units: &[],
     resolve_provider: None,
 };
 

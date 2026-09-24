@@ -3660,6 +3660,7 @@ mod plane_fees_on_admin_usage {
                 default_section: None,
                 owned_config_sections: &[],
                 billable_classes: &[],
+                fee_units: &[],
                 resolve_provider: None,
             }
         };

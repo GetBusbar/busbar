@@ -20,6 +20,10 @@
 use crate::ir::usage::IrDuplexUsage;
 use crate::runtime::metering::TurnMeter;
 use crate::testkit::fixture_host::FixtureHost;
+use busbar_kernel::{
+    config, config_validate::validate, cost::CostModel, governance::PLANE_LANE_SEP,
+    plane::registry::TestRegistryIsolation, plane_host::EngineHost,
+};
 use busbar_plane_streaming::session::TurnCounters;
 use std::sync::Arc;
 
@@ -58,7 +62,7 @@ fn a_voice_turn_lands_spend_on_the_presenting_keys_ledger() {
     // Drive ONE voice turn's usage through the SHIPPED Meter seam — the exact call `SessionCore`
     // makes per turn (the kernel session account → `host.meter_ledger`).
     let meter = TurnMeter::new(
-        Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
+        Arc::clone(&host) as Arc<dyn EngineHost>,
         key.clone(),
         "voice-server",
         crate::OPENAI_REALTIME,
@@ -118,7 +122,7 @@ fn an_ungoverned_voice_turn_meters_nobody_without_panicking() {
 fn a_voice_sessions_metering_writes_no_row_keyed_by_the_upstream_provider() {
     let (host, key) = governed_fixture();
     let meter = TurnMeter::new(
-        Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
+        Arc::clone(&host) as Arc<dyn EngineHost>,
         key.clone(),
         "voice-server",
         crate::OPENAI_REALTIME,
@@ -137,11 +141,7 @@ fn a_voice_sessions_metering_writes_no_row_keyed_by_the_upstream_provider() {
         "a turn is not a request: no per-turn series row (one keyed by the upstream provider \
          reads as a pools row, charged the flat per_request_fee per turn on /admin/usage)"
     );
-    let plane_lane = format!(
-        "{}{}",
-        crate::PLANE_KEY,
-        busbar_kernel::governance::PLANE_LANE_SEP
-    );
+    let plane_lane = format!("{}{}", crate::PLANE_KEY, PLANE_LANE_SEP);
     let rows = host.ledger_rows(&key.id);
     assert!(
         rows.keys().all(|(lane, _)| lane.starts_with(&plane_lane)),
@@ -154,5 +154,66 @@ fn a_voice_sessions_metering_writes_no_row_keyed_by_the_upstream_provider() {
         )),
         Some(&90),
         "the three turns' counts, on the plane-qualified model lane"
+    );
+}
+
+/// The node's resolved config from `yaml` (beside empty providers/models), under whatever plane
+/// declarations the registry holds.
+fn resolved(yaml: &str) -> config::RootCfg {
+    let text = format!("providers: {{}}\nmodels: {{}}\n{yaml}");
+    let deploy = config::deploy_from_yaml_str(&text).expect("the config parses");
+    config::resolve(&deploy, &Default::default()).expect("it resolves")
+}
+
+/// **THE STREAMING PLANE COUNTS `per_session` ONLY** (ARCHITECT ruling, fees): a turn never passes
+/// per-request admission, so `streams.fees.per_request` would charge nothing — boot and `--validate`
+/// refuse it, naming the key and the counted list. `streams.fees.per_session: 40` boots, and a
+/// session opened over the plane's shipped metering counts one session on the plane's fee lane,
+/// which the card the config resolves to prices at 40.
+#[test]
+fn streams_fees_per_request_refuses_and_per_session_boots_and_charges() {
+    let _reg = TestRegistryIsolation::seeded(&[&crate::PLANE_DECL]);
+    assert_eq!(
+        validate(&resolved("streams:\n  fees: { per_request: 2 }\n")),
+        Err(vec![
+            "streams.fees.per_request is not counted by this plane (counted: per_session); \
+             remove it"
+                .to_string()
+        ])
+    );
+    let root = resolved("streams:\n  fees: { per_session: 40 }\n");
+    assert_eq!(validate(&root), Ok(()), "a counted fee boots");
+
+    let (host, key) = governed_fixture();
+    let meter = TurnMeter::new(
+        Arc::clone(&host) as Arc<dyn EngineHost>,
+        key.clone(),
+        "voice-server",
+        crate::OPENAI_REALTIME,
+    );
+    let _session = meter
+        .open("gpt-realtime")
+        .expect("opens")
+        .expect("governed");
+    let sessions = host.ledger_usage(&key.id).expect("a ledger").sessions;
+    assert_eq!(
+        sessions, 1,
+        "one opened session, one count on the plane's fee lane"
+    );
+    let fee_lane = format!("{}{PLANE_LANE_SEP}", crate::PLANE_KEY);
+    let price = |fees: &config::PlaneFeesMap| {
+        let cost = CostModel::resolve_parts(None, 0, &Default::default()).with_plane_fees(fees);
+        let usage = busbar_substrate_values::billing::Usage {
+            usage_units: [("per_session".to_string(), sessions)].into(),
+        };
+        cost.price_usage_nanos(&fee_lane, &usage)
+            .expect("the fee lane prices")
+    };
+    let one = resolved("streams:\n  fees: { per_session: 1 }\n").plane_fees;
+    assert!(price(&one) > 0);
+    assert_eq!(
+        price(&root.plane_fees),
+        40 * price(&one),
+        "the session is charged 40"
     );
 }

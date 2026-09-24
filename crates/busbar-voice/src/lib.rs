@@ -218,7 +218,7 @@ fn voice_egress_auth_headers(
     voice_provider_bearer(key)
 }
 
-use busbar_kernel::plane::registry::{BillableClass, TOKEN_FAMILY};
+use busbar_kernel::plane::registry::{BillableClass, PER_SESSION, TOKEN_FAMILY};
 
 /// THE VOICE PLANE'S DECLARATION — a `&'static PlaneDecl` the composition root installs at boot so the
 /// `busbar` binary names one stable path (`busbar_voice::PLANE_DECL`). It declares the plane's identity
@@ -338,6 +338,9 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
                 family: "count",
             },
         ],
+        // The fee unit this plane counts: one per opened session (`SessionAccount::open`). A turn never
+        // passes per-request admission, so `streams.fees.per_request` would charge nothing — refused.
+        fee_units: &[PER_SESSION],
         resolve_provider: None,
     };
 

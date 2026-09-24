@@ -192,7 +192,7 @@ pub mod testkit;
 // binary by the codec crate's `test-support` dev edge in the manifest. Nothing in this crate names
 // it directly, so there is no re-export here.
 
-use busbar_kernel::plane::registry::{BillableClass, TOKEN_FAMILY};
+use busbar_kernel::plane::registry::{BillableClass, PER_REQUEST, TOKEN_FAMILY};
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
@@ -308,6 +308,8 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // CORE-OWNED-CONCRETE (never listed in `owned_config_sections` — see that field's doc), but
         // the per-provider catalog/deployment MERGE logic now lives here; core calls it at the exact
         // point the old inline merge ran.
+        // The fee unit this plane counts: one per admitted request, priced at `per_request_fee:`.
+        fee_units: &[PER_REQUEST],
         resolve_provider: Some(crate::engine::build_runtime::resolve_provider),
     };
 
