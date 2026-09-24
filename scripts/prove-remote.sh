@@ -5,6 +5,7 @@
 #   ./scripts/prove-remote.sh                       # prove THIS worktree's tip
 #   ./scripts/prove-remote.sh <branch>              # prove a local branch's tip
 #   ./scripts/prove-remote.sh --host i-0abc <branch>
+#   ./scripts/prove-remote.sh --selftest            # prove the scope resolver, offline, seconds
 #
 # ── WHY NOT GITHUB ACTIONS ──────────────────────────────────────────────────────────────────────
 # During dev churn the owner's ruling is that Actions judges integration/qa/main and nothing else.
@@ -30,16 +31,146 @@ REPO="$(cd "$HERE/.." && pwd)"
 # shellcheck source=scripts/ci-remote-lib.sh
 . "$HERE/ci-remote-lib.sh"
 
-HOST=""; BRANCH=""; SETUP=0
+HOST=""; BRANCH=""; SETUP=0; SELFTEST=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --setup) SETUP=1; shift ;;
+    --selftest) SELFTEST=1; shift ;;
     --host)  HOST="$2"; shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     -*) rdie "unknown option $1" ;;
     *) if [ -z "$HOST" ] && [ "$SETUP" = 1 ]; then HOST="$1"; else BRANCH="$1"; fi; shift ;;
   esac
 done
+
+# ── THE SCOPE: resolved from the PROVEN TREE, and refused off a keep branch ─────────────────────
+# `.keep-proof.toml` NARROWS the proof: `families` becomes the oracle's --filter and `tests` replaces
+# the whole-workspace test run. That is the point of it on a `keep-*` branch and a silent hole
+# everywhere else — once one was committed to the integration branch (item 13: 161 of 2,318 oracle
+# cells, 6.9%, and three package names that do not exist), every proof after it quietly proved
+# less while printing the same GREEN. So:
+#   * the file is read from the TIP BEING PROVEN (`git show <tip>:.keep-proof.toml`), the same place
+#     keep-proof.yml reads it — not from whatever the operator's working tree happens to hold;
+#   * with no file, the fallback is logged as what it is: EVERY family, the WHOLE workspace;
+#   * a file present on anything that is not a `keep-*` branch (detached HEAD included) is REFUSED,
+#     exit 3, before a box is touched. There is no override: a hand-back that wants a scope is a
+#     keep branch, and one that is not a keep branch gets the full proof.
+# Sets SCOPE_FAM and SCOPE_TESTS. Returns 3 on the refusal.
+resolve_scope() {
+  local repo="$1" tip="$2" branch="$3" body short
+  short="$(git -C "$repo" rev-parse --short "$tip" 2>/dev/null || echo "$tip")"
+  SCOPE_FAM='.'; SCOPE_TESTS=''
+  if ! body="$(git -C "$repo" show "$tip:.keep-proof.toml" 2>/dev/null)"; then
+    rlog "SCOPE: no .keep-proof.toml in $short's tree — EVERY family (oracle filter '.'), the WHOLE workspace's tests"
+    return 0
+  fi
+  case "$branch" in
+    keep-*) ;;
+    *)
+      rlog "SCOPE REFUSED: $short carries .keep-proof.toml but '${branch:-<detached HEAD>}' is not a keep-* branch."
+      rlog "  that file narrows the oracle and the test legs; off a keep branch it is a silent hole in the proof."
+      rlog "  delete it from the branch (snapshot it first), or prove from a keep-* branch."
+      return 3 ;;
+  esac
+  SCOPE_FAM="$(printf '%s\n' "$body" | sed -n "s/^[[:space:]]*families[[:space:]]*=[[:space:]]*['\"]\(.*\)['\"][[:space:]]*\$/\1/p" | head -1)"
+  if [ -z "$SCOPE_FAM" ]; then
+    SCOPE_FAM='.'
+    rlog "SCOPE: .keep-proof.toml on $branch names no families — EVERY family (oracle filter '.')"
+  else
+    rlog "SCOPE: NARROWED by .keep-proof.toml on keep branch $branch"
+  fi
+  SCOPE_TESTS="$(printf '%s\n' "$body" | sed -n 's/^[[:space:]]*tests[[:space:]]*=[[:space:]]*\[\(.*\)\].*/\1/p' \
+                 | head -1 | tr -d '"'"'" | tr ',' ' ')"
+  return 0
+}
+
+# The branch NAME the proven tip goes by: the argument as given (a remote-tracking prefix stripped),
+# or the checked-out branch; empty on a detached HEAD.
+branch_name() {
+  local repo="$1" given="$2"
+  if [ -n "$given" ]; then
+    given="${given#refs/heads/}"; given="${given#refs/remotes/}"; given="${given#origin/}"
+    printf '%s' "$given"
+  else
+    git -C "$repo" symbolic-ref --short -q HEAD || true
+  fi
+}
+
+# ── --selftest ──────────────────────────────────────────────────────────────────────────────────
+# Offline, seconds, no fleet: throwaway repos built here, every case one where a broken resolver
+# says the comfortable thing (a narrowed scope that looks like a full one, or no refusal).
+if [ "$SELFTEST" = 1 ]; then
+  st_bad=0
+  ok()   { printf '  [ok]     %s\n' "$1"; }
+  nope() { printf '  [FAILED] %s\n' "$1"; st_bad=1; }
+  st_tmp="$(mktemp -d "${TMPDIR:-/tmp}/prove-remote-selftest-XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$st_tmp'" EXIT
+  echo "prove-remote selftest"
+  # The throwaway repos carry no operator config and no hooks: an identity-policing global hook
+  # would otherwise refuse the fixture commits and every case would pass or fail for that reason.
+  stgit() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=st -c user.email=st@invalid \
+              -c core.hooksPath=/dev/null "$@"; }
+  mkrepo() {  # mkrepo <dir> <branch> [scope-file-body]
+    stgit init -q -b "$2" "$1" || exit 1
+    stgit -C "$1" commit -q --no-verify --allow-empty -m base || exit 1
+    if [ $# -ge 3 ]; then
+      printf '%s\n' "$3" > "$1/.keep-proof.toml"
+      stgit -C "$1" add .keep-proof.toml || exit 1
+      stgit -C "$1" commit -q --no-verify -m scope || exit 1
+    fi
+  }
+  NARROW="families = '^(llm|billing|ledger)([|.]|\$)'
+tests = [\"busbar-llm\", \"busbar\"]"
+
+  mkrepo "$st_tmp/none" predev
+  log="$( { resolve_scope "$st_tmp/none" HEAD predev; echo "rc=$? fam=$SCOPE_FAM tests=$SCOPE_TESTS"; } 2>&1 )"
+  case "$log" in
+    *"EVERY family"*"rc=0 fam=. tests=") ok "no scope file: every family, whole workspace, and the fallback is LOGGED" ;;
+    *) nope "no scope file did not resolve to a logged every-family proof: $log" ;;
+  esac
+
+  mkrepo "$st_tmp/integ" predev "$NARROW"
+  if (resolve_scope "$st_tmp/integ" HEAD predev) 2>"$st_tmp/err"; then
+    nope "a scope file on predev was ACCEPTED — the integration branch's proof is silently narrowed"
+  else
+    rc=$?; if [ "$rc" = 3 ] && grep -q 'SCOPE REFUSED' "$st_tmp/err"; then ok "scope file on predev: refused, exit 3"
+    else nope "scope file on predev: exit $rc without the refusal line"; fi
+  fi
+
+  stgit -C "$st_tmp/integ" checkout -q --detach
+  if (resolve_scope "$st_tmp/integ" HEAD "$(branch_name "$st_tmp/integ" '')") 2>/dev/null; then
+    nope "a scope file on a DETACHED HEAD was accepted"
+  else ok "scope file on a detached HEAD: refused"; fi
+
+  mkrepo "$st_tmp/keep" keep-money "$NARROW"
+  resolve_scope "$st_tmp/keep" HEAD "$(branch_name "$st_tmp/keep" '')" 2>/dev/null
+  # shellcheck disable=SC2086
+  if [ "$SCOPE_FAM" = '^(llm|billing|ledger)([|.]|$)' ] && [ "$(printf '%s ' $SCOPE_TESTS)" = "busbar-llm busbar " ]; then
+    ok "scope file on keep-money: narrowed to its families and packages"
+  else nope "scope file on keep-money resolved to fam='$SCOPE_FAM' tests='$SCOPE_TESTS'"; fi
+
+  if [ "$(branch_name "$st_tmp/keep" origin/keep-x)" = keep-x ] && [ "$(branch_name "$st_tmp/keep" refs/heads/predev)" = predev ]; then
+    ok "branch argument: origin/ and refs/heads/ prefixes stripped"
+  else nope "branch argument prefixes not stripped"; fi
+
+  mkrepo "$st_tmp/empty" keep-x "tests = [\"busbar\"]"
+  log="$(resolve_scope "$st_tmp/empty" HEAD keep-x 2>&1; echo "fam=$SCOPE_FAM")"
+  case "$log" in
+    *"names no families"*"fam=.") ok "keep file without families: every family, and the fallback is LOGGED" ;;
+    *) nope "keep file without families did not resolve to a logged every-family proof: $log" ;;
+  esac
+
+  # The WORKING TREE is not the authority: an untracked scope file must not narrow a tip without one.
+  mkrepo "$st_tmp/wt" keep-y
+  printf '%s\n' "$NARROW" > "$st_tmp/wt/.keep-proof.toml"
+  resolve_scope "$st_tmp/wt" HEAD keep-y 2>/dev/null
+  if [ "$SCOPE_FAM" = . ]; then ok "an untracked scope file does not narrow a tip that has none"
+  else nope "an untracked working-tree scope file narrowed the proof to '$SCOPE_FAM'"; fi
+
+  if [ "$st_bad" = 0 ]; then echo "prove-remote selftest: every case discriminates"; exit 0; fi
+  echo "prove-remote selftest: FAILED"; exit 1
+fi
 
 remote_wrapper
 
@@ -58,17 +189,9 @@ TIP="$(git -C "$REPO" rev-parse "${BRANCH:-HEAD}")" || rdie "no such rev: ${BRAN
 REF="prove-$(date -u +%Y%m%d-%H%M%S)-$$"
 rlog "host $HOST   tip $(git -C "$REPO" rev-parse --short "$TIP")   ref $REF"
 
-# The scope file is read LOCALLY as well as remotely: the operator should see the scope before the
-# twenty minutes start, not in the log afterwards.
-SCOPE_FAM='.'; SCOPE_TESTS=''
-if [ -f "$REPO/.keep-proof.toml" ]; then
-  SCOPE_FAM="$(sed -n "s/^[[:space:]]*families[[:space:]]*=[[:space:]]*['\"]\(.*\)['\"][[:space:]]*\$/\1/p" "$REPO/.keep-proof.toml" | head -1)"
-  [ -n "$SCOPE_FAM" ] || SCOPE_FAM='.'
-  SCOPE_TESTS="$(sed -n 's/^[[:space:]]*tests[[:space:]]*=[[:space:]]*\[\(.*\)\].*/\1/p' "$REPO/.keep-proof.toml" \
-                 | head -1 | tr -d '"'"'" | tr ',' ' ')"
-else
-  rlog "no .keep-proof.toml at the tree root — the oracle filter is '.' (every family)"
-fi
+# The scope is resolved LOCALLY, before the push: the operator should see it (or its refusal)
+# before the twenty minutes start, not in the log afterwards.
+resolve_scope "$REPO" "$TIP" "$(branch_name "$REPO" "$BRANCH")" || exit $?
 rlog "oracle families: $SCOPE_FAM"
 rlog "test packages:   ${SCOPE_TESTS:-<the whole workspace>}"
 
