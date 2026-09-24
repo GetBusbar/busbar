@@ -96,10 +96,20 @@ pub const ORACLE_PROSE_CITATION_ALLOW: &[(&str, &str)] = &[
 
 /// The `xtask/src/**` walk's denominator floor. An emptied or moved `src/` scans nothing, and zero
 /// is the passing answer to every ban here.
-const SRC_FLOOR: usize = 6;
+///
+/// ARMED AT THE POPULATION, NOT BENEATH IT (item 219). It read `6` over a walk of 120 files, so a
+/// walk narrowed to 7 still passed and `segregation:xtask-src-imports` certified xtask's
+/// independence from 6% of the runner. Measured 2026-09-23: 120 `.rs` files under `xtask/src`. The
+/// floor sits at 100 — the measured population less one sixth for files a split or a fold removes
+/// in the normal course — so a walk that lost a SUBTREE fails and a walk that lost a file does not.
+const SRC_FLOOR: usize = 100;
 
-/// Manifests are found by walking; this is the floor under that walk.
-const MANIFEST_FLOOR: usize = 5;
+/// Manifests are found by walking the WHOLE tree; this is the floor under that walk.
+///
+/// Measured 2026-09-23: 80 tracked `Cargo.toml` files (`git ls-files '*Cargo.toml'`). It read `5`,
+/// which the three manifests the old three-root walk could not see were never going to trip. The
+/// floor sits at 64 — the population less one fifth, for crates the 1.6.0 folds delete.
+const MANIFEST_FLOOR: usize = 64;
 
 pub struct SegregationGate;
 
@@ -223,6 +233,18 @@ impl Gate for SegregationGate {
             "xtask/fixtures/clean-pure/Cargo.toml",
             Edit::Append("\n[dev-dependencies]\nxtask = { path = \"../..\" }\n".to_string()),
             &["xtask/fixtures/clean-pure/Cargo.toml"],
+        ));
+
+        // THE MANIFEST OUTSIDE THE WORKSPACE ROOTS (item 219). `fuzz/` is not under `crates/` or
+        // `xtask/`, and a walk of those two roots passed this plant.
+        report.push(plant(
+            cx,
+            self,
+            "a manifest outside crates/ and xtask/ depends on xtask",
+            &[ROW_REVERSE],
+            "fuzz/Cargo.toml",
+            Edit::Append("\n[dev-dependencies]\nxtask = { path = \"../xtask\" }\n".to_string()),
+            &["fuzz/Cargo.toml"],
         ));
 
         // Both oracle paths below are BUILT AT RUN TIME rather than written as literals: a
@@ -561,10 +583,17 @@ fn rule_oracle_data(files: &[crate::ctx::SourceFile]) -> Row {
     }
 }
 
+/// `segregation:no-reverse-dep` — EVERY manifest in the repository, not the three roots the
+/// workspace happens to live under.
+///
+/// It walked `Cargo.toml`, `crates/` and `xtask/`, and said "nothing in the tree depends on xtask"
+/// while `fuzz/Cargo.toml`, `testing/ws-conformance/subject/Cargo.toml` and
+/// `examples/smart-router/rust-hook/Cargo.toml` were outside all three (item 219). A fuzz target
+/// path-depending xtask to reuse a gate helper is exactly the dependency this row forbids, and it
+/// was invisible. So the walk is the whole tree — the census `kind_isolation`'s `manifests()` takes
+/// on the same argument — and the ignore rules the walk already applies keep build output out.
 fn rule_reverse(cx: &Ctx) -> Row {
-    let spec = WalkSpec::new(["Cargo.toml", "crates", "xtask"])
-        .ext("toml")
-        .min_files(MANIFEST_FLOOR);
+    let spec = WalkSpec::new(["."]).ext("toml").min_files(MANIFEST_FLOOR);
     let manifests = match cx.walk(&spec) {
         Ok(m) => m,
         Err(e) => {
@@ -576,19 +605,32 @@ fn rule_reverse(cx: &Ctx) -> Row {
         }
     };
     let mut offenders = Vec::new();
+    let mut scanned = 0usize;
     for m in &manifests {
-        if !m.rel_str().ends_with("Cargo.toml") || m.rel_str().starts_with("xtask/Cargo.toml") {
+        let rel = m.rel_str();
+        if !(rel == "Cargo.toml" || rel.ends_with("/Cargo.toml")) || rel == "xtask/Cargo.toml" {
             continue;
         }
+        scanned += 1;
         if manifest_dep_names(&m.text).iter().any(|d| d == "xtask") {
             offenders.push(m.rel_str());
         }
+    }
+    if scanned < MANIFEST_FLOOR {
+        return Row::fail(
+            ROW_REVERSE,
+            "the manifest walk found too few manifests",
+            format!(
+                "{scanned} Cargo.toml manifest(s) found, under the floor of {MANIFEST_FLOOR} — a \
+                 walk that lost the tree is broken, not clean"
+            ),
+        );
     }
     if offenders.is_empty() {
         Row::pass(
             ROW_REVERSE,
             "nothing in the tree depends on xtask",
-            format!("{} manifest(s) scanned", manifests.len()),
+            format!("{scanned} Cargo.toml manifest(s) scanned, the whole tree"),
         )
     } else {
         Row::fail(
@@ -636,5 +678,57 @@ fn rule_oracle(cx: &Ctx) -> Row {
                 offenders.join(", ")
             ),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ledger::Status;
+
+    /// ITEM 219: a manifest OUTSIDE `crates/` and `xtask/` that depends on xtask reds the reverse
+    /// row. `fuzz/Cargo.toml` is one of three tracked manifests the old three-root walk never read.
+    #[test]
+    fn a_manifest_outside_the_workspace_roots_depending_on_xtask_is_red() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let text = cx
+            .read("fuzz/Cargo.toml")
+            .expect("fuzz/Cargo.toml is tracked");
+        let mut ov = Overlay::new();
+        ov.set(
+            "fuzz/Cargo.toml",
+            format!("{text}\n[dev-dependencies]\nxtask = {{ path = \"../xtask\" }}\n"),
+        );
+        let row = rule_reverse(&cx.with_overlay(ov));
+        assert_eq!(row.status, Status::Fail, "{}", row.detail);
+        assert!(row.detail.contains("fuzz/Cargo.toml"), "{}", row.detail);
+        let clean = rule_reverse(&cx);
+        assert_eq!(clean.status, Status::Pass, "{}", clean.detail);
+    }
+
+    /// ITEM 219: the floors sit near the populations they guard, not 5-20x beneath them. A floor
+    /// under a fifth of what it guards cannot tell a narrowed walk from a whole one.
+    #[test]
+    fn the_walk_floors_guard_most_of_their_populations() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let src = cx
+            .walk(&WalkSpec::new(["xtask/src"]).ext("rs").allow_empty())
+            .expect("xtask/src walk")
+            .len();
+        let manifests = cx
+            .walk(&WalkSpec::new(["."]).ext("toml").allow_empty())
+            .expect("tree walk")
+            .iter()
+            .filter(|f| f.rel_str() == "Cargo.toml" || f.rel_str().ends_with("/Cargo.toml"))
+            .count();
+        assert!(
+            SRC_FLOOR * 4 >= src * 3 && SRC_FLOOR <= src,
+            "SRC_FLOOR {SRC_FLOOR} against {src} files: a floor must guard at least three quarters \
+             of its population and never exceed it"
+        );
+        assert!(
+            MANIFEST_FLOOR * 4 >= manifests * 3 && MANIFEST_FLOOR <= manifests,
+            "MANIFEST_FLOOR {MANIFEST_FLOOR} against {manifests} manifests"
+        );
     }
 }
