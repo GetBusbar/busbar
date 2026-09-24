@@ -2261,6 +2261,10 @@ pub struct AdminBinding {
     /// root binds one, and `amend_rate_history` refuses while it is `None` — an amendment is never
     /// applied without its durable record (item 30).
     pub amendments: Option<Arc<AmendmentJournal>>,
+    /// Where an idempotency claim the admin plane's replay cache takes is made durable (item 271).
+    /// `None` until a root binds one — a node with no data dir behaves exactly as it did before
+    /// this seam existed.
+    pub claims: Option<Arc<RootClaimJournal>>,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -2391,6 +2395,7 @@ impl AdminBinding {
             audit: None,
             posture: Arc::new(UnsealedPosture),
             amendments: None,
+            claims: None,
             units: AdminUnits::new(),
         }
     }
@@ -2416,6 +2421,13 @@ impl AdminBinding {
     #[must_use]
     pub fn with_amendment_journal(mut self, journal: Arc<AmendmentJournal>) -> Self {
         self.amendments = Some(journal);
+        self
+    }
+
+    /// Bind the journal an idempotency claim is recorded on (item 271).
+    #[must_use]
+    pub fn with_claim_journal(mut self, journal: Arc<RootClaimJournal>) -> Self {
+        self.claims = Some(journal);
         self
     }
 
@@ -2753,6 +2765,14 @@ pub(crate) fn route(
         ArrivalNonce(request.at),
         PackedReplay,
         CONFIG_CLASS_RULES,
+    )
+    // Item 271: the claims the create-key and rotate-key caches take go on the node's journal
+    // where a root bound one; `None` (no data directory) is exactly the unbound executor.
+    .with_claim_journal(
+        binding
+            .claims
+            .clone()
+            .map(|j| j as Arc<dyn busbar_core_admin::idempotency::ClaimJournal>),
     );
 
     // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
@@ -3499,6 +3519,10 @@ impl busbar_core_admin::ReplayEncoder<busbar_core_admin::MintedKeyOutcome> for P
 // below — still names it at `root::units_admin::…` exactly as before.
 mod admin_mount;
 pub(crate) use admin_mount::*;
+
+// ── the idempotency claim journal: a sibling module, re-exported here ─────────────────────────────
+mod claims;
+pub use claims::RootClaimJournal;
 
 #[cfg(test)]
 #[path = "tests/units_admin.rs"]

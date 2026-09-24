@@ -4877,3 +4877,66 @@ fn the_node_books_carry_the_fee_count_on_both_sides_and_a_lost_count_is_out() {
     assert_eq!(out.len(), 1, "the lost count is named: {out:?}");
     assert!(out[0].fees_disagree());
 }
+
+// ── the claim journal (item 271) ─────────────────────────────────────────────────────────────────
+
+/// **THE EXIT TEST FOR ITEM 271's WRITER SIDE, AT THE ROOT.** An admin idempotency cache bound to
+/// [`RootClaimJournal`] over a node with a data directory journals EXACTLY ONE claim for a key it
+/// sees first and then sees again in flight: the restart's recovery finds that one claim, with no
+/// hold behind it, and voids it — once.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_idempotency_key_on_a_durable_node_journals_exactly_one_claim() {
+    use busbar_core_admin::idempotency::{ClaimJournal, IdempotencyCache, Probe};
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-units-admin-claims-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let cfg = crate::root::durability::DurabilityConfig {
+        data_dir: Some(dir.clone()),
+    };
+    let boot = || {
+        crate::root::durability::build_priced(
+            &cfg,
+            3,
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(|| None),
+        )
+        .expect("the directory is writable")
+    };
+    {
+        let book = Arc::new(Mutex::new(boot()));
+        let journal: Arc<dyn ClaimJournal> = Arc::new(RootClaimJournal::new(
+            Arc::clone(&book),
+            Grant::<busbar_contract::caps::DurableWrite>::mint(
+                &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+            ),
+        ));
+        let cache: IdempotencyCache<Vec<u8>> = IdempotencyCache::with_journal(journal);
+        let key = ("admin".to_string(), "create_key:idem-271".to_string());
+        let first = cache.probe(key.clone(), 1_700_000_000);
+        assert!(matches!(first, Probe::Reserved(_)), "a first sighting");
+        assert!(
+            matches!(cache.probe(key, 1_700_000_001), Probe::InFlight),
+            "the same key in flight is refused and takes no second claim"
+        );
+        drop(first);
+    }
+    let restarted = boot();
+    assert_eq!(
+        restarted.voided_claims,
+        vec!["admin:create_key:idem-271".to_string()],
+        "exactly one claim was journalled, and the restart voids it"
+    );
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+    drop(restarted);
+    let _ = std::fs::remove_dir_all(&dir);
+}
