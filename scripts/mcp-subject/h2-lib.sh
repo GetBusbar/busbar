@@ -361,6 +361,16 @@ items=d.get('items') or []
 print(sum(1 for r in items if r.get('seq',0) > since and r.get('action')==action and r.get('resource')==resource))"
 }
 
+# h2_int_is <value> <test-op> <n> -- true ONLY when <value> is a base-10 integer AND `[ value op n ]`
+# holds. A money assertion asks its question through this, negated (`if ! h2_int_is "$x" -eq 8`),
+# because the bare `if [ "$x" -ne 8 ]` FAILS OPEN on a read that came back empty or non-numeric: `[`
+# exits 2, the `if` takes its false arm and the leg records no failure. Here a non-integer read is
+# simply "not equal", so it fails closed. Pinned by `--selftest`.
+h2_int_is() {
+  [[ "${1:-}" =~ ^-?[0-9]+$ ]] || return 1
+  [ "$1" "$2" "$3" ]
+}
+
 # Emit a PASS/FAIL verdict line and EXIT the rig: 0 on PASS, 1 on FAIL or on any other outcome word
 # (a verdict nobody can read is not a pass). It exits rather than returns so a rig that writes
 # `h2_verdict FAIL "..."` followed by anything else -- a cleanup line, a second check -- still ends
@@ -442,12 +452,19 @@ _h2_st_case_verdict_exits() {
   _h2_st_want "verdict-exits: an unknown outcome word is red" red "$st"
 }
 
+_h2_st_case_card_epoch() {
+  _h2_st_want "card-epoch: control 1, 1, 8 passes" 0 "$(_h2_st_rig h2-card-epoch.sh H2_ST_USAGE='1|1|8')"
+  _h2_st_want "card-epoch: total 14 (newest-card reprice) is red" red "$(_h2_st_rig h2-card-epoch.sh H2_ST_USAGE='1|1|14')"
+  _h2_st_want "card-epoch: an EMPTY total read is red, not a pass" red "$(_h2_st_rig h2-card-epoch.sh H2_ST_USAGE='1|1|')"
+  _h2_st_want "card-epoch: a non-numeric total read is red, not a pass" red "$(_h2_st_rig h2-card-epoch.sh H2_ST_USAGE='1|1|8.0')"
+}
+
 h2_selftest() {
   local only="${1:-}" c
   _H2_ST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/h2-selftest.XXXXXX")" || return 1
   _H2_ST_RAN=0
   _H2_ST_FAILED=0
-  for c in verdict_exits; do
+  for c in verdict_exits card_epoch; do
     [ -z "$only" ] || [ "$only" = "$c" ] || continue
     "_h2_st_case_${c}"
   done
