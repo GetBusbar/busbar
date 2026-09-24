@@ -3,7 +3,7 @@
     "description": "busbar config-surface structural fingerprint — FROZEN at 1.5.3, additive-only forever (enforced by the config-stability gate).",
     "frozen_at": "1.5.3",
     "generator": "scripts/config-schema.py gen",
-    "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd, including each hand-impl'd type's declared shape, accepted wire keys, and the input forms it REFUSES outright -- the last frozen in BOTH directions, because a refusal that is dropped widens the grammar to accept exactly the inline literal the type exists to reject) + the named-definition-map type aliases, over the tracked source set (SOURCES in scripts/config-schema.py): the busbar config module, SecretRef, UpstreamCreds, the A2A `agents:` grammar and the MCP `tools:` grammar"
+    "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd, including each hand-impl'd type's declared shape, accepted wire keys, and the input forms it REFUSES outright -- the last frozen in BOTH directions, because a refusal that is dropped widens the grammar and may admit an inline literal the type exists to reject) + the named-definition-map type aliases, over the tracked source set (SOURCES in scripts/config-schema.py): the busbar config module, SecretRef, UpstreamCreds, the A2A `agents:` grammar, the MCP `tools:` grammar, the streaming `streams:` grammar and the decision plane's `decisions:` grammar"
   },
   "types": {
     "AdvancedCfg": {
@@ -365,6 +365,25 @@
         "bearer",
         "header"
       ]
+    },
+    "DecisionsSection": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "hooks": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "models": {
+          "optional": true,
+          "type": "HashMap<String, ModelCfg>"
+        },
+        "upstream_credentials": {
+          "optional": true,
+          "type": "UpstreamCreds"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
     },
     "DeployCfg": {
       "deny_unknown_fields": true,
@@ -1259,6 +1278,21 @@
         "unpinned"
       ]
     },
+    "PlaneFeesCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "per_request": {
+          "optional": false,
+          "type": "u32"
+        },
+        "per_session": {
+          "optional": false,
+          "type": "u32"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "PluginFetch": {
       "deny_unknown_fields": false,
       "kind": "enum",
@@ -1676,6 +1710,10 @@
         "output_utok": {
           "optional": true,
           "type": "f64"
+        },
+        "units": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, busbar_substrate_values::billing::UnitRate>"
         }
       },
       "kind": "struct",
@@ -1962,8 +2000,24 @@
     "SamplingCfg": {
       "deny_unknown_fields": true,
       "fields": {
+        "max_messages": {
+          "optional": true,
+          "type": "u32"
+        },
+        "max_prompt_bytes": {
+          "optional": true,
+          "type": "u32"
+        },
         "max_requests_per_minute": {
           "optional": false,
+          "type": "u32"
+        },
+        "max_stop_sequence_bytes": {
+          "optional": true,
+          "type": "u32"
+        },
+        "max_stop_sequences": {
+          "optional": true,
           "type": "u32"
         },
         "max_tokens": {
@@ -1973,6 +2027,14 @@
         "model": {
           "optional": false,
           "type": "String"
+        },
+        "temperature_max_milli": {
+          "optional": true,
+          "type": "u32"
+        },
+        "temperature_min_milli": {
+          "optional": true,
+          "type": "u32"
         }
       },
       "kind": "struct",
@@ -2084,7 +2146,7 @@
         },
         "session_max_secs": {
           "optional": true,
-          "type": "u32"
+          "type": "std::num::NonZeroU32"
         }
       },
       "kind": "struct",
@@ -2375,6 +2437,14 @@
     "type IdentityProviders": {
       "kind": "alias",
       "target": "indexmap::IndexMap<String, IdentityProviderCfg>"
+    },
+    "type PlaneFeesMap": {
+      "kind": "alias",
+      "target": "std::collections::BTreeMap<String, busbar_kernel_ledger::cost::PlaneFees>"
+    },
+    "type PlaneRateCards": {
+      "kind": "alias",
+      "target": "std::collections::BTreeMap<String, std::collections::BTreeMap<String, RateEntryCfg>>"
     },
     "type RoleBindings": {
       "kind": "alias",

@@ -339,7 +339,7 @@ fn gate(args: &[String]) -> i32 {
         // can diff — exactly like kind-isolation and inventory-coverage.
         if matches!(
             reg.name,
-            "kind-isolation" | "inventory-coverage" | "conformance-sync"
+            "kind-isolation" | "inventory-coverage" | "conformance-sync" | "config-schema"
         ) {
             let verdict = gates::execute(gate.as_ref(), &cx);
             gates::print_verdict(reg.name, &verdict);

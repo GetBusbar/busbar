@@ -41,10 +41,11 @@ const META_GENERATOR: &str = "scripts/config-schema.py gen";
 const META_SURFACE: &str = "serde-Deserialize structs/enums (derived AND hand-impl'd, including \
     each hand-impl'd type's declared shape, accepted wire keys, and the input forms it REFUSES \
     outright -- the last frozen in BOTH directions, because a refusal that is dropped widens the \
-    grammar to accept exactly the inline literal the type exists to reject) + the \
+    grammar and may admit an inline literal the type exists to reject) + the \
     named-definition-map type aliases, over the tracked source set (SOURCES in \
     scripts/config-schema.py): the busbar config module, SecretRef, UpstreamCreds, the A2A \
-    `agents:` grammar and the MCP `tools:` grammar";
+    `agents:` grammar, the MCP `tools:` grammar, the streaming `streams:` grammar and the \
+    decision plane's `decisions:` grammar";
 
 /// LOCATE A PLANE'S CONFIG-GRAMMAR ROOT WHEREVER THE TREE CURRENTLY KEEPS IT.
 ///
@@ -303,6 +304,9 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // `streams:` — the voice plane's grammar, including the three plane-imposed session
         // CEILINGS that bound what a live-voice deployment may ever hold.
         "crates/busbar-voice/src/config.rs".to_string(),
+        // `decisions:` — the decision plane's grammar (its `models:` map and hook references);
+        // a plane's config section is config grammar exactly as the other planes' sections are.
+        "crates/busbar-plane-decision/src/config.rs".to_string(),
     ]);
     Ok(out)
 }
