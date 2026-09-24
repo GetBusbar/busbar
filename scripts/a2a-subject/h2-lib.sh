@@ -192,11 +192,12 @@ h2_bind() {
   node "${H2_REPO}/scripts/mcp-subject/mint-audience-token.mjs" "$H2_SIGNING_KEY" "$1" "http://127.0.0.1:${H2_DATA_PORT}/a2a"
 }
 
-# h2_call <bound-token> <text> -> prints "<status> <body>"
+# h2_call <bound-token> <text> [<header-dump-file>] -> prints "<status> <body>". With a third
+# argument the response headers are written to that file (curl -D), for a leg that asserts on them.
 h2_call() {
-  local tok="$1" text="$2" out status
+  local tok="$1" text="$2" hdr="${3:-/dev/null}" out status
   out="${H2_WORKDIR}/call.$$.$RANDOM"
-  status="$(curl -sS -m 20 -o "$out" -w '%{http_code}' -X POST "$H2_PLANE_URL" \
+  status="$(curl -sS -m 20 -D "$hdr" -o "$out" -w '%{http_code}' -X POST "$H2_PLANE_URL" \
     -H "authorization: Bearer $tok" -H 'content-type: application/json' \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"message/send\",\"params\":{\"message\":{\"role\":\"user\",\"parts\":[{\"text\":\"$text\"}]}}}")"
   printf '%s %s\n' "$status" "$(tr -d '\n' <"$out")"
@@ -333,6 +334,12 @@ sys.stdout.write(src.replace(needle, os.environ['CARD']))" "${H2_WORKDIR}/config
 }
 
 h2_egress_count() { find "$H2_EGRESS_DIR" -type f 2>/dev/null | wc -l | tr -d ' '; }
+# The POSTs the fixture agent received -- the dispatched calls, NOT the agent-card GETs busbar makes
+# at boot, which h2_egress_count also counts (captureEgress runs before the card branch).
+h2_egress_post_count() {
+  find "$H2_EGRESS_DIR" -type f -name '*.json' -exec grep -l '"method":"POST"' {} + 2>/dev/null \
+    | wc -l | tr -d ' '
+}
 
 h2_audit_max_seq() {
   curl -sS -m 10 -H "Authorization: Bearer $H2_ADMIN_TOKEN" \
