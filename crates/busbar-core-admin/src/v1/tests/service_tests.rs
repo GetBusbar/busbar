@@ -1589,6 +1589,7 @@ fn usage_cost(
             output_utok: 10.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            ..Default::default()
         },
     )]);
     busbar_kernel::cost::CostModel::resolve_parts(Some(&card), 0, groups)
@@ -2419,6 +2420,7 @@ mod dated_rate_card_history {
                 output_utok: 0.0,
                 cache_read_utok: 0.0,
                 cache_write_utok: 0.0,
+                ..Default::default()
             },
         )]);
         busbar_kernel::cost::CostModel::resolve_parts(
@@ -2785,6 +2787,7 @@ mod dated_rate_card_history {
                 output_utok: 20_000_000.0,
                 cache_read_utok: 0.0,
                 cache_write_utok: 0.0,
+                ..Default::default()
             },
         )]);
         let app = crate::new_test_app()
@@ -3149,6 +3152,7 @@ mod one_recorded_usage_every_surface {
                 output_utok: 0.0,
                 cache_read_utok: 0.0,
                 cache_write_utok: 0.0,
+                ..Default::default()
             },
         )]);
         busbar_kernel::cost::CostModel::resolve_parts(

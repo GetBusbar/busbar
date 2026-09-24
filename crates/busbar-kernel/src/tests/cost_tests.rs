@@ -8,7 +8,7 @@
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::config::RateEntryCfg;
-use busbar_api::VirtualKey;
+use busbar_api::{VirtualKey, RESERVED_UNITS};
 use std::collections::BTreeMap;
 
 fn card(entries: &[(&str, f64, f64)]) -> BTreeMap<String, RateEntryCfg> {
@@ -22,6 +22,7 @@ fn card(entries: &[(&str, f64, f64)]) -> BTreeMap<String, RateEntryCfg> {
                     output_utok: *o,
                     cache_read_utok: 0.0,
                     cache_write_utok: 0.0,
+                    ..Default::default()
                 },
             )
         })
@@ -137,6 +138,7 @@ fn nano_scale_keeps_sub_micro_precision() {
             output_utok: 0.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            ..Default::default()
         },
     )]);
     let cm = resolve_card_fee(Some(&c), 0);
@@ -383,6 +385,7 @@ fn four_tier_card_prices_each_tier_against_its_own_rate() {
             output_utok: 2.0,      // 2000
             cache_read_utok: 0.5,  // 500
             cache_write_utok: 4.0, // 4000
+            ..Default::default()
         },
     )]);
     let cm = resolve_card_fee(Some(&c), 0);
@@ -466,6 +469,7 @@ fn explicit_zero_rate_model_is_known_and_derives_zero() {
             output_utok: 0.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            ..Default::default()
         },
     )]);
     let cm = resolve_card_fee(Some(&c), 0);
@@ -602,6 +606,7 @@ fn rate_nanos_from_cfg_rounds_to_nearest_at_the_nano_boundary() {
         output_utok: 0.0014,
         cache_read_utok: 0.0,
         cache_write_utok: 0.0,
+        ..Default::default()
     };
     let rn = crate::cost::RateNanos::from_cfg(&half_up);
     assert_eq!(rn.input, 2, "1.5 nano rounds to 2 (half away from zero)");
@@ -621,169 +626,12 @@ fn rate_nanos_from_cfg_clamps_a_non_finite_positive_rate_to_zero_not_max() {
         output_utok: 0.0,
         cache_read_utok: 0.0,
         cache_write_utok: 0.0,
+        ..Default::default()
     };
     let rn = crate::cost::RateNanos::from_cfg(&cfg);
     assert_eq!(
         rn.input, 0,
         "a non-finite (but positive) rate must clamp to 0, not saturate to u64::MAX"
-    );
-}
-
-// ── The neutral usage_units one-pricer (1.6.0 M1) ───────────────────────────────────────────────
-//
-// `cost::price` is the ADDITIVE spine every plane's `Usage` will reach. These oracles pin its
-// contract: the reserved four price byte-identically to the unchanged `cost_nanos`; opens price by
-// opaque lookup; a present-but-unpriced open is omitted (never a silent $0); and the service-tier
-// modifier keeps `CostBreakdown`'s exact-sum invariant (surcharge = a line, discount = folded rate).
-
-use crate::cost::{price, ExtraRates, STANDARD_TIER_BP};
-use crate::plane::cost::CostAmount;
-use busbar_substrate_values::billing::Usage as NeutralUsage;
-
-fn rate_2_5() -> crate::cost::RateNanos {
-    // input 2 µ/tok → 2000 nano, output 5 µ/tok → 5000 nano.
-    crate::cost::RateNanos::from_cfg(&RateEntryCfg {
-        input_utok: 2.0,
-        output_utok: 5.0,
-        cache_read_utok: 0.0,
-        cache_write_utok: 0.0,
-    })
-}
-
-#[test]
-fn price_reserved_four_is_byte_identical_to_cost_nanos() {
-    let rate = rate_2_5();
-    let tt = toks(3, 4); // 3*2000 + 4*5000 = 26_000 nano
-    let usage = NeutralUsage {
-        usage_units: tt.clone(),
-    };
-    let bd = price(&rate, &ExtraRates::new(), STANDARD_TIER_BP, &usage).expect("valid breakdown");
-    assert_eq!(
-        bd.total(),
-        CostAmount(26_000),
-        "reserved-four pricing must equal the one function's figure: 3×2000 + 4×5000"
-    );
-    // Two disjoint top-level lines (Prompt, Output); a zero tier is omitted.
-    assert_eq!(
-        bd.components().len(),
-        2,
-        "one line per nonzero reserved tier"
-    );
-}
-
-#[test]
-fn price_open_key_priced_via_opaque_extras_lookup() {
-    let rate = rate_2_5();
-    let mut extras = ExtraRates::new();
-    extras.insert("audio".to_string(), 100); // 100 nano per audio unit
-    let mut usage = NeutralUsage {
-        usage_units: toks(3, 0), // base 6000
-    };
-    usage.usage_units.insert("audio".to_string(), 7); // 700 nano
-    let bd = price(&rate, &extras, STANDARD_TIER_BP, &usage).expect("valid");
-    assert_eq!(bd.total(), CostAmount(6000 + 700));
-}
-
-#[test]
-fn price_present_but_unpriced_open_key_is_omitted_never_silent_zero() {
-    let rate = rate_2_5();
-    let mut usage = NeutralUsage {
-        usage_units: toks(3, 0), // base 6000
-    };
-    usage.usage_units.insert("web_search".to_string(), 3); // no extras entry
-    let bd = price(&rate, &ExtraRates::new(), STANDARD_TIER_BP, &usage).expect("valid");
-    // The unpriced key adds NO component and NO amount (fail-closed to visible, not to $0).
-    assert_eq!(bd.total(), CostAmount(6000));
-    assert_eq!(bd.components().len(), 1, "only the priced Prompt line");
-}
-
-/// FIX 2b — DUPLICATE-LABEL DoS. An OPEN unit literally named like a reserved tier's display label
-/// (`Prompt`) or the surcharge label (`service_tier`) must still price cleanly — its component label
-/// is namespaced so it can never collide inside `CostBreakdown::new` (which rejects duplicates). Before
-/// the fix this returned `Err(DuplicateLabel)` and the whole response failed to price.
-#[test]
-fn price_adversarial_open_unit_name_cannot_collide_with_reserved_or_surcharge_label() {
-    let rate = rate_2_5();
-    let mut extras = ExtraRates::new();
-    extras.insert("Prompt".to_string(), 10);
-    extras.insert("service_tier".to_string(), 20);
-    let mut usage = NeutralUsage {
-        usage_units: toks(3, 0), // reserved input → "Prompt" reserved label, base 6000
-    };
-    usage.usage_units.insert("Prompt".to_string(), 5); // open, priced 5*10 = 50
-    usage.usage_units.insert("service_tier".to_string(), 4); // open, priced 4*20 = 80
-                                                             // Surcharge tier too, so the surcharge "service_tier" label is ALSO present.
-    let bd =
-        price(&rate, &extras, 12_000, &usage).expect("adversarial names must not fail pricing");
-    // base = 6000 (Prompt tier) + 50 (open Prompt) + 80 (open service_tier) = 6130.
-    // surcharge = 6130 * 2000/10000 = 1226. total = 7356.
-    assert_eq!(bd.total(), CostAmount(6130 + 1226));
-    // Four distinct labels: reserved "Prompt", "unit:Prompt", "unit:service_tier", surcharge
-    // "service_tier" — none collide.
-    assert_eq!(bd.components().len(), 4);
-}
-
-#[test]
-fn price_surcharge_tier_is_a_top_level_line_preserving_exact_sum() {
-    let rate = rate_2_5();
-    let usage = NeutralUsage {
-        usage_units: toks(3, 4), // base 26_000
-    };
-    let bd = price(&rate, &ExtraRates::new(), 12_000, &usage).expect("exact-sum holds");
-    // surcharge = 26_000 * (12_000 - 10_000) / 10_000 = 5_200; total = 31_200.
-    assert_eq!(bd.total(), CostAmount(31_200));
-    assert!(
-        bd.components()
-            .iter()
-            .any(|c| c.label == "service_tier" && c.amount == CostAmount(5_200)),
-        "a surcharge tier adds a named top-level service_tier line"
-    );
-}
-
-#[test]
-fn price_discount_tier_folds_into_rate_with_no_named_line() {
-    let rate = rate_2_5();
-    let usage = NeutralUsage {
-        usage_units: toks(3, 4), // base 26_000
-    };
-    let bd = price(&rate, &ExtraRates::new(), 8_000, &usage).expect("exact-sum holds");
-    // each per-tier amount scaled ×0.8: Prompt 6000→4800, Output 20000→16000; total 20_800.
-    assert_eq!(bd.total(), CostAmount(20_800));
-    assert!(
-        !bd.components().iter().any(|c| c.label == "service_tier"),
-        "a discount folds into effective rate, never a named line"
-    );
-}
-
-/// FIX 2a — DISCOUNT SINGLE-DIVIDE, the NON-DIVISIBLE case the old per-component floor hid. Two
-/// components each 5 nano, discounted ×0.5: a per-component floor gives `floor(2.5)+floor(2.5)=2+2=4`
-/// (under-charge); a SINGLE divide of the summed nanos gives `floor(10*0.5)=5`. The pricer must bill
-/// 5, and the breakdown's top-level lines must SUM to exactly 5 (exact-sum invariant intact).
-#[test]
-fn price_discount_is_single_divide_not_sum_of_per_component_floors() {
-    // Two OPEN units, each 1 count at 5 nano → 5 nano undiscounted apiece, 10 total.
-    let rate = crate::cost::RateNanos::default(); // no reserved tiers priced
-    let mut extras = ExtraRates::new();
-    extras.insert("a".to_string(), 5);
-    extras.insert("b".to_string(), 5);
-    let mut usage = NeutralUsage::default();
-    usage.usage_units.insert("a".to_string(), 1);
-    usage.usage_units.insert("b".to_string(), 1);
-    let bd = price(&rate, &extras, 5_000, &usage).expect("exact-sum holds");
-    assert_eq!(
-        bd.total(),
-        CostAmount(5),
-        "single divide of the summed nanos (5), NOT the sum of per-component floors (4)"
-    );
-    let sum: u128 = bd
-        .components()
-        .iter()
-        .filter(|c| c.parent.is_none())
-        .map(|c| c.amount.0)
-        .sum();
-    assert_eq!(
-        sum, 5,
-        "top-level lines must sum to the single-divide total"
     );
 }
 
@@ -795,6 +643,19 @@ fn price_discount_is_single_divide_not_sum_of_per_component_floors() {
 // 25): every figure is `busbar_kernel_ledger::cost::Tally`, THE ONE FUNCTION, which REFUSES an
 // overflow (item 28). `one_nanos` below drives it exactly as `CostModel` does, over one model.
 // -------------------------------------------------------------------------------------------
+
+/// One reserved class's rate off the four-rate view — the lookup `RateNanos::reserved_rate` used
+/// to answer, whose `_ => 0` arm priced an open class as nothing (item 123); a test-side spelling
+/// of the four, so these delegation guards keep asking exactly what they asked.
+fn reserved_rate(rate: &RateNanos, unit: &str) -> u64 {
+    match unit {
+        busbar_api::UNIT_INPUT => rate.input,
+        busbar_api::UNIT_OUTPUT => rate.output,
+        busbar_api::UNIT_CACHE_READ => rate.cache_read,
+        busbar_api::UNIT_CACHE_WRITE => rate.cache_write,
+        other => panic!("`{other}` is not a reserved class"),
+    }
+}
 
 /// The one function's figure, in nano-units, for one model's reserved-four counts at these
 /// already-quantised rates — the same drive `CostModel::derive_spend_*` performs.
@@ -808,7 +669,7 @@ fn one_nanos(
     let card = RateCard::from_nano_rates(
         RESERVED_UNITS
             .iter()
-            .map(|u| (LaneClass::new("m", *u), rate.reserved_rate(u))),
+            .map(|u| (LaneClass::new("m", *u), reserved_rate(rate, u))),
         0,
     );
     let mut tally = Tally::at_card(&card);
@@ -901,7 +762,7 @@ fn the_one_function_is_byte_identical_to_the_unguarded_sum_wherever_that_sum_fit
     fn unguarded_reference(rate: &RateNanos, units: &BTreeMap<String, u64>) -> Option<u128> {
         RESERVED_UNITS.iter().try_fold(0u128, |acc, u| {
             let n = units.get(*u).copied().unwrap_or(0);
-            let product = (n as u128).checked_mul(rate.reserved_rate(u) as u128)?;
+            let product = (n as u128).checked_mul(reserved_rate(rate, u) as u128)?;
             acc.checked_add(product)
         })
     }

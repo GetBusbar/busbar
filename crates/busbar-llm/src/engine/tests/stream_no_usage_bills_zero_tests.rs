@@ -89,6 +89,7 @@ async fn stream_without_usage_frame_bills_zero_on_every_dialect() {
                         output_utok: 6.0,
                         cache_read_utok: 0.0,
                         cache_write_utok: 0.0,
+                        ..Default::default()
                     },
                 )])),
                 0,

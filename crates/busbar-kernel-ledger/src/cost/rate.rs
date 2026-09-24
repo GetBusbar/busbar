@@ -353,6 +353,29 @@ impl RateCard {
         RateCard::from_micro_rates(entries, per_request_fee)
     }
 
+    /// **THE OPEN CLASSES a deployment configured** (item 123): each `(lane, class)` cell set to an
+    /// integer nano-unit rate that was parsed EXACTLY at the config boundary, so no decimal and no
+    /// second quantisation enters here. The reserved four keep arriving through [`Self::from_config`]
+    /// byte-identically; this only ADDS cells beside them, on the lanes the card already names.
+    ///
+    /// ABSENT STAYS ABSENT. An absent card is billing off (#42): every class prices at nothing, so
+    /// open rates configured nowhere have nowhere to land and are ignored rather than switching
+    /// billing on by the back door. A card that is PRESENT carries them, and a class the traffic
+    /// hits that no cell prices still REFUSES in the one function — never a silent 0.
+    pub fn with_unit_rates(mut self, cells: impl IntoIterator<Item = (LaneClass, u64)>) -> Self {
+        if self.present {
+            for (cell, nanos) in cells {
+                self.prices
+                    .entry(cell.lane)
+                    .or_default()
+                    .entry(cell.class)
+                    .or_default()
+                    .set(nanos);
+            }
+        }
+        self
+    }
+
     /// Set one cell's rate.
     ///
     /// The number is configured and set, never derived: there is no arm here that reads another

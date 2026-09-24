@@ -319,7 +319,15 @@ pub struct OverlayBackend {
 /// model with no cache pricing simply omits the cache rates). Values must be finite and >= 0
 /// (validated at boot). Floats exist ONLY here at the config boundary: they are converted once at
 /// resolve time to integer nano-units per token, and the hot path does pure integer math.
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+///
+/// `units:` (item 123) prices the OPEN meter classes a plane declares on this lane — a rerank's
+/// `search_units`, an a2a `hops` — keyed by the class string, each rate in micro-units per unit like
+/// the four above but parsed EXACTLY, with no float, straight into the card's integer nano-unit
+/// representation ([`busbar_substrate_values::billing::UnitRate`]). Absent ⇒ no open class is priced
+/// here, and a hit on one refuses (#42). A reserved class named under `units:` is refused at boot
+/// (it would be priced twice). Omitted from the serialized form when empty, so an existing card
+/// round-trips byte-identically.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RateEntryCfg {
     #[serde(default)]
@@ -330,6 +338,8 @@ pub struct RateEntryCfg {
     pub cache_read_utok: f64,
     #[serde(default)]
     pub cache_write_utok: f64,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub units: std::collections::BTreeMap<String, busbar_substrate_values::billing::UnitRate>,
 }
 
 impl RateEntryCfg {

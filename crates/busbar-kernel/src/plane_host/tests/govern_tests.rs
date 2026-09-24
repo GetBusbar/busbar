@@ -461,3 +461,46 @@ fn billing_off_charge_still_appends_the_counts_to_the_ledger() {
         "the ledger is exactly what the plane did (§8.4): 42 means 42, card or no card"
     );
 }
+
+/// ITEM 123 AT THE ABI: the minor-20 keyed-unit tail of a [`Usage`] (`Usage::with_units`) was
+/// carried by two version bumps and decoded by nothing — an open class a dlopen plane counted never
+/// reached a ledger. The host meter now decodes it and appends every class VERBATIM to the
+/// attributed key's enforcement bucket (#71), where the card prices it: 7 `search_units` at 2000
+/// micro-units each (0.2 cents) read as 1.4 cents, truncated once to 1, plus the 1-cent fee.
+#[test]
+fn charge_decodes_the_keyed_unit_tail_into_the_ledger() {
+    let card: std::collections::BTreeMap<String, crate::config::RateEntryCfg> =
+        serde_yaml::from_str("rerank: { units: { search_units: 2000 } }\n").expect("parses");
+    let cost =
+        crate::cost::CostModel::resolve_parts(Some(&card), 1, &std::collections::BTreeMap::new());
+    let gov = gov();
+    let app = crate::test_support::TestApp::new()
+        .governance(Arc::clone(&gov))
+        .cost(cost)
+        .build();
+    let units = busbar_plugin::hot::pack_usage_units(&std::collections::BTreeMap::from([(
+        "search_units".to_string(),
+        7u64,
+    )]));
+    with_dispatch_scope(&app, |host, vt| {
+        let usage = Usage::with_units(
+            UsageComponent::Queries,
+            0,
+            0,
+            AdmissionId(3),
+            b"vk_units",
+            b"rerank",
+            b"plane:example",
+            &units,
+        );
+        assert_eq!(
+            (vt.meter_charge.unwrap())(host, &*usage as *const Usage),
+            MeterOutcome::Charged
+        );
+    });
+    let now = busbar_kernel::store::now_ms() / 1_000;
+    let read = gov
+        .derived_bucket_usage(&app.cost, "vk_units", "total", false, now)
+        .expect("the key bucket prices");
+    assert_eq!(read.spend_cents, 1, "7 × 0.2 cents = 1.4, truncated once");
+}

@@ -252,6 +252,15 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
         let token_usage = token_usage_for(component, usage.amount);
         let now = busbar_kernel::store::now_ms() / 1_000;
         gov.record_metering(key_id, model, provider, token_usage.as_ref(), now);
+        // ITEM 123 (#71): the keyed-unit tail — every class the plane counted, reserved and open —
+        // lands in the enforcement ledger VERBATIM for the attributed key; the card prices it.
+        // SAFETY: `usage` is the live POD this slot was handed; the decode reads the tail only
+        // when the sender's advertised `size` proves it was written.
+        let units = unsafe { busbar_plugin::hot::decode_usage_units(usage) };
+        if !units.is_empty() {
+            let key = virtual_key(key_id.to_string(), None);
+            gov.record_usage(&state.app.cost, &key, "", model, &units, now);
+        }
     }
     MeterOutcome::Charged
 }

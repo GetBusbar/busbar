@@ -58,6 +58,7 @@ fn model_with_card(groups: &[(&str, GroupCfg)], fee: i64, card: &[(&str, f64, f6
                     output_utok: *o,
                     cache_read_utok: 0.0,
                     cache_write_utok: 0.0,
+                    ..Default::default()
                 },
             )
         })
@@ -1094,4 +1095,109 @@ fn budget_block_carries_downgrade_target() {
         } => assert_eq!(to, "value"),
         other => panic!("the tighter budget's downgrade governs, got {other:?}"),
     }
+}
+
+/// ITEM 123 — THE KEYED-UNIT CONVERGENCE, END TO END. An OPEN meter class (a rerank's
+/// `search_units`) priced in config under `rate_card.<model>.units` is CHARGED by the read and
+/// CAPPED by the door, through every layer it used to be dropped at: the config grammar
+/// (`RateEntryCfg` was four floats, `deny_unknown_fields`), the card (`resolve_parts` built only the
+/// reserved four), and the enforcement derivation (`reserved_counts` handed the one function only
+/// the reserved four, so the class priced as nothing and a `budget:` cap never saw it).
+///
+/// 2000 micro-units per search unit = 2,000,000 nano-units = 0.2 cents; a 100-cent daily budget is
+/// reached at exactly 500 search units. Parsed from YAML, not built in Rust, so the grammar is part
+/// of the proof.
+#[test]
+fn an_open_class_priced_in_config_is_charged_and_capped_end_to_end() {
+    let card: BTreeMap<String, crate::config::RateEntryCfg> =
+        serde_yaml::from_str("rerank: { input_utok: 1, units: { search_units: 2000 } }\n")
+            .expect("an open class parses under units:");
+    let groups: BTreeMap<String, GroupCfg> = [(
+        "g".to_string(),
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Budget, 100, Some(LimitWindow::Day))],
+        ),
+    )]
+    .into();
+    let cm = CostModel::resolve_parts(Some(&card), 0, &groups);
+    let g = gov();
+    let k = key("vk_rerank", Some("g"));
+    let now = 1_700_000_000;
+    let search = |n: u64| BTreeMap::from([("search_units".to_string(), n)]);
+
+    g.try_admit(&cm, &k, "", now).expect("nothing spent");
+    g.record_usage(&cm, &k, "", "rerank", &search(499), now);
+    let read = g
+        .derived_bucket_usage(&cm, "group:g@day", "day", true, now)
+        .expect("the read prices");
+    assert_eq!(
+        read.spend_cents, 99,
+        "CHARGED: 499 × 0.2 cents, truncated once"
+    );
+    assert_eq!(
+        read.tokens, 0,
+        "a search unit is priced, never counted as a token"
+    );
+    g.try_admit(&cm, &k, "", now).expect("under the cap");
+
+    g.record_usage(&cm, &k, "", "rerank", &search(1), now);
+    let read = g
+        .derived_bucket_usage(&cm, "group:g@day", "day", true, now)
+        .expect("the read prices");
+    assert_eq!(read.spend_cents, 100, "500 search units = the whole budget");
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "budget",
+        Some("day"),
+        true,
+    );
+}
+
+/// The two other arms of #42 for the same open class: a PRESENT card silent about it REFUSES (the
+/// door blocks on the budget metric, never a silent 0), and an ABSENT card reads it as nothing.
+#[test]
+fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_zero() {
+    let groups: BTreeMap<String, GroupCfg> = [(
+        "g".to_string(),
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Budget, 100, Some(LimitWindow::Day))],
+        ),
+    )]
+    .into();
+    let units = BTreeMap::from([("search_units".to_string(), 1u64)]);
+    let now = 1_700_000_000;
+    let k = key("vk_rerank", Some("g"));
+
+    let silent: BTreeMap<String, crate::config::RateEntryCfg> =
+        serde_yaml::from_str("rerank: { input_utok: 1 }\n").expect("parses");
+    let cm = CostModel::resolve_parts(Some(&silent), 0, &groups);
+    assert!(
+        matches!(
+            cm.derive_spend_cents([("rerank", &units)].into_iter(), 0, true),
+            Err(busbar_kernel_ledger::cost::MoneyError::ClassUnpriced { ref class, .. })
+                if class == "search_units"
+        ),
+        "a present card silent about a hit class refuses (#42)"
+    );
+    let g = gov();
+    g.record_usage(&cm, &k, "", "rerank", &units, now);
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "budget",
+        Some("day"),
+        true,
+    );
+
+    let absent = CostModel::resolve_parts(None, 0, &groups);
+    assert_eq!(
+        absent.derive_spend_cents([("rerank", &units)].into_iter(), 0, true),
+        Ok(0),
+        "billing off reads 0"
+    );
 }

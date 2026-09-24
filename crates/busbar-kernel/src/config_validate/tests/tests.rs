@@ -4144,6 +4144,7 @@ fn test_validate_rate_card_rejects_nan_and_negative_rates() {
             output_utok: -1.0,
             cache_read_utok: f64::INFINITY,
             cache_write_utok: 0.0,
+            ..Default::default()
         },
     )]));
     let errs = validate(&cfg).expect_err("NaN/negative/infinite rates must fail");
@@ -4157,6 +4158,50 @@ fn test_validate_rate_card_rejects_nan_and_negative_rates() {
     assert!(
         !joined.contains("rate_card['m'].cache_write_utok"),
         "a well-formed tier (0) must not error: {joined}"
+    );
+}
+
+/// ITEM 123 — THE OPEN-CLASS GRAMMAR. `rate_card.<model>.units` prices open classes, each rate read
+/// EXACTLY (integer, or a decimal STRING) into the card's integer nano-units; a bare float, a rate
+/// finer than one nano-unit, and a negative rate are refused at parse; a RESERVED class named under
+/// `units:` would price one class twice and is refused at validation, naming the path.
+#[test]
+fn test_rate_card_open_class_grammar_is_exact_and_refuses_a_reserved_class() {
+    let parse = |y: &str| {
+        serde_yaml::from_str::<std::collections::BTreeMap<String, config::RateEntryCfg>>(y)
+    };
+    let card = parse("m: { units: { search_units: 2000, hops: \"0.5\" } }\n").expect("parses");
+    let units = &card["m"].units;
+    assert_eq!(units["search_units"].nanos_per_unit(), 2_000_000);
+    assert_eq!(units["hops"].nanos_per_unit(), 500);
+    let round_trip = serde_yaml::to_string(&card).expect("serializes");
+    assert_eq!(
+        parse(&round_trip).expect("re-parses"),
+        card,
+        "exact both ways: {round_trip}"
+    );
+    assert!(
+        parse("m: { units: { hops: 0.5 } }\n").is_err(),
+        "a bare float is not exact"
+    );
+    assert!(
+        parse("m: { units: { hops: \"0.0001\" } }\n").is_err(),
+        "finer than a nano-unit"
+    );
+    assert!(parse("m: { units: { hops: -1 } }\n").is_err(), "negative");
+    assert!(
+        parse("m: { units: { hops: 1 }, typo_utok: 1 }\n").is_err(),
+        "deny_unknown_fields stays"
+    );
+
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(parse("m: { input_utok: 1, units: { output: 5 } }\n").expect("parses"));
+    let joined = validate(&cfg)
+        .expect_err("a reserved class under units: must fail")
+        .join("\n");
+    assert!(
+        joined.contains("rate_card['m'].units.output names a reserved class"),
+        "{joined}"
     );
 }
 
@@ -4181,6 +4226,7 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
             output_utok: 15.0,
             cache_read_utok: 0.3,
             cache_write_utok: 3.75,
+            ..Default::default()
         },
     );
     // All-zero: every tier 0.0 (RateEntryCfg::default()), the exact shape the completeness stub

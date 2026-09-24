@@ -314,6 +314,7 @@ async fn rig_inner(fixture: Fixture, billed: bool) -> Rig {
             output_utok: 0.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            ..Default::default()
         },
     )]);
     let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(

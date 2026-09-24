@@ -257,6 +257,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
             output_utok: 1.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            ..Default::default()
         },
     )]);
     let cost = busbar_kernel::cost::CostModel::resolve_parts(

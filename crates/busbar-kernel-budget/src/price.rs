@@ -32,8 +32,8 @@ pub const UNIT_CACHE_READ: &str = "cache_read";
 /// The cache-write (cache creation) token key.
 pub const UNIT_CACHE_WRITE: &str = "cache_write";
 
-/// The four reserved token keys, in canonical order. A ledger map may carry other keys; only
-/// these four price through the rate table.
+/// The four reserved token keys, in canonical order. A ledger map may carry other (open) keys too;
+/// each prices through the card by its own class name (item 123), and an unpriced one refuses.
 pub const RESERVED_UNITS: [&str; 4] = [UNIT_INPUT, UNIT_OUTPUT, UNIT_CACHE_READ, UNIT_CACHE_WRITE];
 
 /// Saturating sum of every count in a keyed unit map — the scalar "total tokens" view over a
@@ -85,19 +85,6 @@ impl RateNanos {
             cache_write: busbar_kernel_ledger::cost::nano_rate(cache_write),
         }
     }
-
-    /// The nano rate for one reserved key (0 for any other key — open keys price through a
-    /// separate per-model table that the enforcement summation deliberately does not consult).
-    #[inline]
-    pub fn reserved_rate(&self, unit: &str) -> u64 {
-        match unit {
-            UNIT_INPUT => self.input,
-            UNIT_OUTPUT => self.output,
-            UNIT_CACHE_READ => self.cache_read,
-            UNIT_CACHE_WRITE => self.cache_write,
-            _ => 0,
-        }
-    }
 }
 
 /// The rate table plus the flat per-request fee: everything the budget comparison needs to turn a
@@ -140,9 +127,13 @@ impl Pricer {
         use busbar_kernel_ledger::cost::LaneClass;
         let card = busbar_kernel_ledger::cost::RateCard::from_nano_rates(
             rates.iter().flat_map(|(model, r)| {
-                RESERVED_UNITS
-                    .iter()
-                    .map(move |u| (LaneClass::new(model.as_str(), *u), r.reserved_rate(u)))
+                [
+                    (UNIT_INPUT, r.input),
+                    (UNIT_OUTPUT, r.output),
+                    (UNIT_CACHE_READ, r.cache_read),
+                    (UNIT_CACHE_WRITE, r.cache_write),
+                ]
+                .map(|(u, nanos)| (LaneClass::new(model.as_str(), u), nanos))
             }),
             price_per_request_cents,
         );
@@ -207,8 +198,7 @@ impl Pricer {
     /// path passes `true`; the flag exists for callers that want a tokens-only projection.
     ///
     /// **THE ONE FUNCTION** (items 104, 25, 124): [`busbar_kernel_ledger::cost::Tally`] over
-    /// this pricer's card, one row per model (its reserved-four counts, the enforcement book's
-    /// posture until item 123 converges the open classes), then the fee row.
+    /// this pricer's card, one row per model (every class it counted, item 123), then the fee row.
     ///
     /// **AN UNPRICED MODEL REFUSES; IT DOES NOT COST NOTHING — AND IT DOES NOT COST `i64::MAX`
     /// EITHER.** The first answer was #42's silent zero on the admission path. The second, which
@@ -225,13 +215,13 @@ impl Pricer {
         use busbar_kernel_ledger::cost::{whole, Tally, STANDARD_TIER_BP};
         let mut tally = Tally::at_card(&self.card);
         for (model, units) in models {
+            // EVERY class the bucket counted (item 123) — an open class the card prices is charged
+            // and one it does not REFUSES (#42); nothing is filtered out to price as nothing.
             tally.row(
                 model,
                 0,
                 STANDARD_TIER_BP,
-                RESERVED_UNITS
-                    .iter()
-                    .filter_map(|u| units.get(*u).map(|n| (*u, whole(*n)))),
+                units.iter().map(|(u, n)| (u.as_str(), whole(*n))),
                 whole(0),
             )?;
         }

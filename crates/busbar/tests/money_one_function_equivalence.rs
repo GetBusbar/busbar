@@ -106,6 +106,7 @@ fn kernel_cost_model(
                         output_utok: r[1],
                         cache_read_utok: r[2],
                         cache_write_utok: r[3],
+                        ..Default::default()
                     },
                 )
             })
@@ -687,15 +688,17 @@ fn d9_a_sub_day_back_dated_correction_is_a_no_op_for_the_admin_read() {
     assert_eq!(one.micros(), 70_000);
 }
 
-/// D2 — ITEM 123's BASELINE, KEPT AS A MEASUREMENT. The enforcement side (the kernel's cost model
-/// and the budget door) projects its unit map onto the RESERVED FOUR before it hands the row to the
-/// one function, so an open meter class (a2a `hops`, mcp `calls`, streaming `audio-seconds`) never
-/// reaches it there. That is the keyed-unit/open-class convergence (item 123), which builds on the
-/// one function and is not this collapse's; the arithmetic is one function on both sides — the
-/// difference is which counts each side hands it.
+/// D2 — ITEM 123, INVERTED FROM ITS BASELINE TO THE CONVERGENCE. This case used to MEASURE the
+/// residue: the enforcement side (the kernel's cost model and the budget door) projected its unit
+/// map onto the RESERVED FOUR before handing the row to the one function, so an open meter class
+/// (a2a `hops`, a rerank's `search_units`) priced there as nothing — 200 micro-units against the
+/// one function's 5,200, and 0 at the door. Item 123 converged it: every class reaches the one
+/// function on both sides, and the card (built from config's `units:` on the kernel side) prices
+/// it. So the figures now AGREE — and a card silent about the class REFUSES on both sides (#42)
+/// rather than dropping it.
 #[test]
-fn d2_an_open_meter_class_is_not_handed_to_the_one_function_by_the_enforcement_side() {
-    rule("D2  an open meter class — item 123's residue");
+fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side() {
+    rule("D2  an open meter class — item 123 converged");
     let card = RateCard::from_micro_rates(
         [
             (LaneClass::new(LANE, OUTPUT), 2.0),
@@ -703,7 +706,7 @@ fn d2_an_open_meter_class_is_not_handed_to_the_one_function_by_the_enforcement_s
         ],
         0,
     );
-    let counts: [(&str, u64); 2] = [(OUTPUT, 100), ("hops", 1_000)];
+    let counts: [(&str, u64); 2] = [(OUTPUT, 100_000), ("hops", 1_000_000)];
     let one = ledger_cost::price_ledger(
         &[one_entry(LANE, &counts, 0, 0)],
         &History::opening(card.clone(), 0),
@@ -716,26 +719,48 @@ fn d2_an_open_meter_class_is_not_handed_to_the_one_function_by_the_enforcement_s
         true,
     );
     let units = enforcement_units(&counts);
-    let kernel = kernel_cost_model(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
+    let config_card: BTreeMap<String, busbar_kernel::config::RateEntryCfg> = serde_yaml::from_str(
+        &format!("{LANE}: {{ output_utok: 2, units: {{ hops: 5 }} }}\n"),
+    )
+    .expect("an open class parses under units:");
+    let kernel =
+        busbar_kernel::cost::CostModel::resolve_parts(Some(&config_card), 0, &BTreeMap::new());
     let kernel_micros = kernel.derive_spend_micros([(LANE, &units)].into_iter(), 0, true);
-    let door = budget_pricer(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
+    let door = busbar_kernel_budget::Pricer::from_card(card.clone());
     let door_cents = door.derive_spend_cents([(LANE, &units)].into_iter(), 0, true);
     row("ONE function                 [micro]", one.micros());
     row("ledger derive (every class)  [micro]", &ledger_micros);
-    row("kernel derive (reserved four)[micro]", &kernel_micros);
-    row("budget door   (reserved four)[minor]", &door_cents);
-    assert_eq!(one.micros(), 5_200, "100×2 + 1000×5");
+    row("kernel derive (every class)  [micro]", &kernel_micros);
+    row("budget door   (every class)  [minor]", &door_cents);
+    assert_eq!(one.micros(), 5_200_000, "100,000×2 + 1,000,000×5");
     assert_eq!(ledger_micros.map(i128::from), Ok(one.micros()));
     assert_eq!(
-        kernel_micros,
-        Ok(200),
-        "item 123: only the reserved four are handed over"
+        kernel_micros.map(i128::from),
+        Ok(one.micros()),
+        "item 123: every class reaches it"
     );
     assert_eq!(
-        door_cents,
-        Ok(0),
-        "item 123: and in whole minor units that is nothing"
+        door_cents.map(i128::from),
+        Ok(one.minor()),
+        "and the door caps on the same figure"
     );
+
+    // A card that prices the lane but is silent about `hops`: both sides REFUSE (#42).
+    let silent = kernel_cost_model(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
+    let silent_door = budget_pricer(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
+    for refusal in [
+        silent
+            .derive_spend_micros([(LANE, &units)].into_iter(), 0, true)
+            .map(i128::from),
+        silent_door
+            .derive_spend_cents([(LANE, &units)].into_iter(), 0, true)
+            .map(i128::from),
+    ] {
+        assert!(
+            matches!(refusal, Err(MoneyError::ClassUnpriced { ref class, .. }) if class == "hops"),
+            "an unpriced open class refuses, never a silent 0: {refusal:?}"
+        );
+    }
 }
 
 /// D7 — `nano_rate` TAKES AN `f64` (#77(8), #81). PARKED (`1.6.0-money-sweep.md`): the double picks

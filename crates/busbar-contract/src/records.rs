@@ -698,11 +698,12 @@ impl UsageLedger {
             .map(ModelTokens::total)
     }
 
-    /// Total units across every model and unit key (the scalar `tokens` view).
+    /// Total TOKENS across every model — the reserved token classes only (the scalar `tokens`
+    /// view). An open class (item 123) is priced from the same map but is not a token.
     pub fn total_tokens(&self) -> u64 {
-        self.models
+        RESERVED_UNITS
             .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(m.total()))
+            .fold(0u64, |acc, u| acc.saturating_add(self.total_tier(u)))
     }
 
     /// Summed count of one reserved tier across every model — the durable counterpart of the

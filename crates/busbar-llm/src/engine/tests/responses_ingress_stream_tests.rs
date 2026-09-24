@@ -285,6 +285,7 @@ fn billed_m0() -> busbar_kernel::cost::CostModel {
                 output_utok: 6.0,
                 cache_read_utok: 0.0,
                 cache_write_utok: 0.0,
+                ..Default::default()
             },
         )])),
         0,

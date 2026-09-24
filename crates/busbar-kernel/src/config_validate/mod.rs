@@ -1565,7 +1565,15 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             // error — the operator keeps the choice, but an unintended free model is no longer
             // silent. Only fires when the entry is well-formed (all tiers finite) so it does not
             // pile onto a NaN/negative that already errored above.
-            if tiers.iter().all(|(_, v)| v.is_finite() && *v == 0.0) {
+            // Item 123: a reserved class under `units:` would price one class twice — refused.
+            for class in r
+                .units
+                .keys()
+                .filter(|c| busbar_api::RESERVED_UNITS.contains(&c.as_str()))
+            {
+                errors.push(format!("rate_card['{model}'].units.{class} names a reserved class; price it with {class}_utok"));
+            }
+            if tiers.iter().all(|(_, v)| v.is_finite() && *v == 0.0) && r.units.is_empty() {
                 diag_warn!(
                     CONFIG_RATE_CARD_ALL_ZERO,
                     model = %model,

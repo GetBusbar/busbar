@@ -232,11 +232,13 @@ impl BudgetCell {
             .retain(|m| units_total(&m.cur) != 0 || units_total(&m.flushed) != 0);
     }
 
-    /// Total current tokens across models and every unit (the legacy scalar view for admin reads).
+    /// Total current TOKENS across models — the reserved token classes only (the legacy scalar view
+    /// for admin reads and the `tokens:` cap). An open class (a rerank's `search_units`, item 123)
+    /// rides the same map to be PRICED, but it is not a token and never counts as one.
     fn total_tokens(&self) -> u64 {
-        self.models
+        busbar_api::RESERVED_UNITS
             .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(units_total(&m.cur)))
+            .fold(0u64, |acc, u| acc.saturating_add(self.total_tier(u)))
     }
 
     /// Current summed count of one reserved tier across models — a per-tier cap's counter.
