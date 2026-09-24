@@ -547,6 +547,13 @@ fn a_chain_that_has_sealed_nothing_publishes_a_null_head() {
 /// Stated as a test rather than only as a comment because the guarantee is the ABSENCE of an
 /// operation, and an absence is the one thing a reader stops noticing. `observe` only ever grows
 /// the series.
+///
+/// Driven PAST the size heads.rs costs the history at — 8 760 hourly heads a year — at the
+/// default hourly rate, for two years and one hour. A capacity bound is the one a tidy-up would
+/// reach for, and the number it would reach for is that one; fifty observations could not see it.
+/// One sealed record is re-observed at each hour with its position advanced: `observe` reads only
+/// the head fields, and sealing (and signing) seventeen thousand records would cost the suite far
+/// more than the property needs.
 #[test]
 fn nothing_shrinks_the_head_history() {
     let mut history = HeadHistory::every(0);
@@ -562,6 +569,35 @@ fn nothing_shrinks_the_head_history() {
         last = history.series().len();
     }
     assert_eq!(history.series().len(), 50);
+
+    const TWO_YEARS_AND_AN_HOUR: u64 = 2 * 8_760 + 1;
+    let mut hourly = HeadHistory::new();
+    let mut record = AuditChain::new().seal(inputs(1), &token());
+    let genesis_wall = record.wall;
+    for hour in 0..TWO_YEARS_AND_AN_HOUR {
+        record.seq = hour + 1;
+        record.wall = genesis_wall + hour * crate::heads::HEAD_SAMPLE_SECONDS;
+        history_grows_by_one(&mut hourly, &record);
+    }
+    let series = hourly.series();
+    assert_eq!(
+        series.len() as u64,
+        TWO_YEARS_AND_AN_HOUR,
+        "a head history dropped anchors past its costed size"
+    );
+    assert_eq!(series[0].seq, 1, "the genesis anchor was dropped");
+    assert_eq!(series[series.len() - 1].seq, TWO_YEARS_AND_AN_HOUR);
+}
+
+fn history_grows_by_one(history: &mut HeadHistory, record: &crate::record::AuditRecord) {
+    let before = history.series().len();
+    history.observe(record);
+    assert_eq!(
+        history.series().len(),
+        before + 1,
+        "an hourly head did not join the series at position {}",
+        record.seq
+    );
 }
 
 // ── THE COST ─────────────────────────────────────────────────────────────────────────────────────
