@@ -255,6 +255,33 @@ impl busbar_kernel::plane::config::PlaneCfg for DecisionsCfg {
         Ok(())
     }
 
+    /// EVERY `decisions.models.<m>.provider` REFERENCE, fully qualified — the plane-agnostic seam
+    /// `resolve` cross-checks against `providers:` (existence) and, when it exists, against
+    /// [`Self::known_dialects`] (P2-243/P2-decvalidate: neither refusal existed before this — a
+    /// `decisions.models.<m>.provider` naming an undefined provider booted, and so did one whose
+    /// provider resolved to a dialect this plane does not speak).
+    fn model_provider_refs(&self) -> Vec<(String, String)> {
+        self.0
+            .models
+            .iter()
+            .map(|(name, model)| {
+                (
+                    format!("decisions.models.{name}.provider"),
+                    model.provider.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// jev, and ONLY jev — BUSBAR-1.6.0.md #51 (OWNER-LOCKED 2026-09-20): "the decisions plane
+    /// (only jev) handed `anthropic` fails." jev is a direct HTTP+JSON passthrough with no
+    /// translating IR (see the module doc's `wire_format_names`/`has_superset_ir` note), so unlike
+    /// the LLM plane — which interprets whatever dialect its provider resolves to — this plane
+    /// interprets exactly one and fails closed on every other.
+    fn known_dialects(&self) -> Option<&'static [&'static str]> {
+        Some(&[busbar_plane_decision::config::JEV_PROTOCOL])
+    }
+
     /// True when the operator wrote CONTENT — anything other than the plane's own empty section.
     /// Spelled field by field rather than as `!= Default::default()` because the section derives no
     /// `PartialEq`, and exhaustively for the same anti-omission reason as `secret_refs`: a member

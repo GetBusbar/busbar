@@ -321,8 +321,28 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // app-boot fixture that never hit a request path), and an unseeded read would spuriously see an
     // empty codec set and refuse a valid provider. Production is unaffected — there `registry()` is
     // the direct substrate re-export and the composition root installed the protocols in `main`.
+    //
+    // UNIONED with every registered plane's OWN declared dialects (`PlaneCfg::known_dialects`,
+    // P2-243/P2-decvalidate) — a plane like the decision plane speaks a dialect with no translating
+    // IR (jev), so it is never a `busbar-llm-codec` wire codec and would otherwise be an "unknown
+    // protocol" here on the very config `resolve`'s own `known_dialects` cross-check (below) just
+    // accepted. Read from the STATIC plane registry via each decl's `default_section` hook — a
+    // plane's own dialect restriction is a declared CONSTANT, not something that varies with what a
+    // deployment configured, so a throwaway default instance answers it with no `DeployCfg` in
+    // scope. `default_section` is `None` only for a plane owning no registry section at all (the
+    // residual `proto` plane); such a plane declares no dialect restriction either.
+    let mut known_protocols: Vec<&str> = crate::proto::registry::registry()
+        .codec_protocols()
+        .to_vec();
+    for decl in crate::plane::registry::plane_decls() {
+        if let Some(default_section) = decl.default_section {
+            if let Some(dialects) = default_section().known_dialects() {
+                known_protocols.extend(dialects.iter().copied());
+            }
+        }
+    }
     validate_providers_with(
-        crate::proto::registry::registry().codec_protocols(),
+        &known_protocols,
         cfg,
         unset_env_vars,
         &mut errors,
@@ -2086,7 +2106,7 @@ pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allow
 /// `an_empty_protocol_set_refuses_every_provider_through_the_real_sweep` drives this whole sweep —
 /// the production code path, error ordering and all — against an empty set.
 fn validate_providers_with(
-    known: &'static [&'static str],
+    known: &[&str],
     cfg: &RootCfg,
     unset_env_vars: &[String],
     errors: &mut Vec<String>,
@@ -2427,7 +2447,7 @@ fn validate_providers_with(
 /// `tests/tests.rs` (`an_empty_protocol_set_refuses_every_provider_naming_the_build`) was watched
 /// RED against the contains-only body before this arm existed; do not fold the arms back together.
 fn validate_provider_protocol_with(
-    known: &'static [&'static str],
+    known: &[&str],
     provider_name: &str,
     protocol: &str,
     errors: &mut Vec<String>,

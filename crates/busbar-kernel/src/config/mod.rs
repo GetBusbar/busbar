@@ -2515,6 +2515,71 @@ pub fn resolve(
         }
     }
 
+    // THE `decisions:` PLANE's OWN reserved-attach hook reference (P2-243/P2-decvalidate — this
+    // section carries no per-registration containers, only the section-wide `decisions.hooks:`
+    // list, read through the SAME always-present `container_gates` seam the `tools:` block above
+    // reads). A `decisions.hooks` entry naming an undefined hook booted silently before this.
+    {
+        let g = deploy.decisions.0.container_gates();
+        for hook in &g.section_hooks {
+            if !deploy.hooks.contains_key(hook) {
+                errors.push(format!(
+                    "decisions.hooks: names `{hook}`, which is not defined in the top-level `hooks:` \
+                     map. Define it there, or remove the reference."
+                ));
+            }
+        }
+    }
+
+    // GENERIC MODEL → `providers:` CROSS-REFERENCE CHECK (P2-243/P2-decvalidate), the model-serving
+    // twin of the hook blocks above: every plane-owned section's own `PlaneCfg::model_provider_refs`
+    // lists its `models:`-shaped provider references, fully qualified — today only `decisions:`
+    // answers non-empty (`tools:`/`agents:`/`streams:` inherit the trait's empty default, so this is
+    // a no-op for them) — checked for EXISTENCE against the RESOLVED `providers:` catalog, and, when
+    // it exists, its resolved protocol checked against the plane's own `PlaneCfg::known_dialects`
+    // (BUSBAR-1.6.0.md #51, OWNER-LOCKED: an unknown dialect fails closed — "the decisions plane
+    // (only jev) handed `anthropic` fails"). Dialect validation stays the PLANE's answer (`#49`: core
+    // spells no protocol literal); this loop only compares strings the plane itself supplied.
+    for section in [
+        deploy.tools.0.as_ref(),
+        deploy.agents.0.as_ref(),
+        deploy.streams.0.as_ref(),
+        deploy.decisions.0.as_ref(),
+    ] {
+        for (path, provider_name) in section.model_provider_refs() {
+            match resolved_providers.get(&provider_name) {
+                None => {
+                    let mut names: Vec<&str> =
+                        resolved_providers.keys().map(String::as_str).collect();
+                    names.sort_unstable();
+                    errors.push(format!(
+                        "{path} names '{provider_name}', which is not defined in the top-level \
+                         `providers:` map. Valid providers: {}. Define it there, or fix the \
+                         reference.",
+                        if names.is_empty() {
+                            "(none configured)".to_string()
+                        } else {
+                            names.join(", ")
+                        }
+                    ));
+                }
+                Some(p) => {
+                    if let Some(known) = section.known_dialects() {
+                        if !known.contains(&p.protocol.as_str()) {
+                            errors.push(format!(
+                                "{path} '{provider_name}' resolves to protocol '{}', but this plane \
+                                 speaks only: {}. Point it at a provider whose protocol resolves to \
+                                 one of those, or remove the reference.",
+                                p.protocol,
+                                known.join(", ")
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // THE `tools:` PLANE's PUBLISHED-NAME UNIQUENESS, and it has to run HERE rather than inside
     // `validate_server` because it is the one registry rule that is not about one entry: a
     // `publish_as:` override on one registration can collide with the `{server}_{tool}` default of
