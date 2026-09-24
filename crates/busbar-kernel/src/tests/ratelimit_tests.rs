@@ -198,7 +198,7 @@ fn the_config_table_is_not_the_whole_decision_and_its_doc_names_what_else_decide
         .expect("the table has a doc block");
     let doc = &source[doc_start..source.find("const CONFIG_CLASS_RULES").unwrap()];
     assert!(
-        !doc.contains("nothing\n/// else decides class membership")
+        !doc.contains(&["nothing", "/// else decides class membership"].join("\n"))
             && !doc.contains("nothing else decides class membership"),
         "the table's doc claims to be the whole decision again"
     );
