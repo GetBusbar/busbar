@@ -230,6 +230,24 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
     // the route step" that found no `.await` in scope at all, and passed on that basis.
     "hold-discipline:cancellation-before-await",
+    // TWO CEILINGS WHOSE SUBJECT IS NOT IN THE TREE. `slice.rs` under busbar-kernel/src and the
+    // `busbar-unit-verbs` crate do not exist, so each row measures a vacuous 0 against a ceiling of
+    // 0 and the scan-set floor scores that RED, correctly. Drain: slot W1.1 corrects the two
+    // entries in qa/construction.toml (re-point to the subject's real home or strike the row), and
+    // strikes both names here on the same commit.
+    "loc-ceilings:kernel:slice",
+    "loc-ceilings:unit-verbs",
+    // SEVEN ROWS THAT DID NOT RUN. The allowlist rule owes one row per `busbar-transport-*` crate
+    // and emits none, because rules2.rs:314 does not read the `transport` kind — "owed but no row
+    // was recorded" is a red about the rule, not about the seven manifests. Drain: item 120
+    // (Phase 1) makes the rule read `transport`; its commit strikes these seven names.
+    "manifest-allowlist:busbar-transport-grpc",
+    "manifest-allowlist:busbar-transport-http",
+    "manifest-allowlist:busbar-transport-sse",
+    "manifest-allowlist:busbar-transport-stdio",
+    "manifest-allowlist:busbar-transport-tcp",
+    "manifest-allowlist:busbar-transport-tls",
+    "manifest-allowlist:busbar-transport-ws",
     "one-pick-site",
     "ports-only-tests:busbar-llm",
     "request-path-fn-size",
