@@ -2206,41 +2206,38 @@ pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)]
 ];
 
 // ---------------------------------------------------------------------------------------------
-// THE LLM-NATIVE RESOLVED-OP RIDER, DORMANT
+// THE LLM-NATIVE RESOLVED-OP RIDER, TEST-ONLY
 // ---------------------------------------------------------------------------------------------
 
-/// THE DORMANT KERNEL-LOOP SIBLING OF THE SHIPPED MONEY AUTHORITY, at the resolved-op entry.
+/// THE TEST-ONLY KERNEL-LOOP DRIVE OF THE RESOLVED-OP ENTRY, beside the shipped money authority.
 ///
-/// `busbar_llm::native_ingress::run` (native_ingress.rs:592) is the LIVE money authority: from the
-/// same resolved-op arrival — a known `model`, the dialect's already-resolved `operation`, the
-/// caller's headers and body — it builds a `NativePlane`/`GauntletRequest` and settles per-token
-/// billing through `busbar_kernel::plane_host::run_gauntlet` (the SUBSTRATE loop), late-accruing
-/// against the admission-pinned `ROOT_CARD` snapshot. Every resolved-op arrival funnels through it:
-/// `operation_ingress` (once the body's model is read), `ingress_path_model` (once the URL's is), and
-/// the MCP-sampling re-entry `synthesize_completion`.
+/// `busbar_llm::native_ingress::run` is the shipped money authority for a resolved-op arrival — a
+/// known `model`, the dialect's already-resolved `operation`, the caller's headers and body: it
+/// builds a `NativePlane`/`GauntletRequest` and settles per-token billing through
+/// `busbar_kernel::plane_host::run_gauntlet`, late-accruing against the admission-pinned
+/// `ROOT_CARD` snapshot. `run_gauntlet` dispatches to the kernel-loop runner
+/// `gauntlet_install::install()` registers for the LLM capability key at boot (item 125), and that
+/// runner is money-neutral (a `ZeroHold`, no evidence), so the plane's own metering inside `drive`
+/// stays what settles. Every resolved-op arrival funnels through `run()`: `operation_ingress` (once
+/// the body's model is read), `ingress_path_model` (once the URL's is), and the MCP-sampling
+/// re-entry `synthesize_completion`. On a default build (`root-llm` on) the body- and path-model
+/// arrivals do not reach `run()` at all: they are driven through [`LlmNode`] and this module's late
+/// accrual. Measured (item 125, 2026-09-24): `root-llm` OFF returns
+/// `billing|rate-card|history-mid-window` to its 1.5.5 figures; the `install()` flips do not move it.
 ///
-/// This is that SAME resolved-op arrival driven through the KERNEL loop instead —
-/// `answer_arriving_at` → `busbar_kernel::teller::run_unit_async` (units_llm.rs:471), settling onto
-/// the same Durability money-book the composition root bound via [`bind_book`] (main.rs:1460). The
-/// resolved `model` is carried as the loop's `model_hint`, exactly as `run()` carries its resolved
-/// `model`; `path: None`, because a native arrival's model rides its body.
+/// This is that SAME resolved-op arrival driven through [`LlmNode`] instead —
+/// `answer_arriving_at` → `busbar_kernel::teller::run_unit_async`, settling onto the same Durability
+/// money-book the composition root bound via [`bind_book`]. The resolved `model` is carried as the
+/// loop's `model_hint`, exactly as `run()` carries its resolved `model`; `path: None`, because a
+/// native arrival's model rides its body.
 ///
-/// CORRECTION (item 125, measured 2026-09-24): `run_gauntlet` is no longer "the SUBSTRATE loop" —
-/// `gauntlet_install::install()` registers the kernel-loop runner for the LLM capability key at
-/// boot, money-neutrally (a `ZeroHold`, no evidence). And on a default build (`root-llm` on) the
-/// body- and path-model arrivals do not reach `run()` at all: they are driven through [`LlmNode`]
-/// and this module's late accrual. Measured: `root-llm` OFF returns
-/// `billing|rate-card|history-mid-window` to its 1.5.5 figures; the `install()` flips do not move
-/// it.
-///
-/// THIS FUNCTION is test-only. Nothing mounts it, and it is NOT the shipped authority: the shipped
-/// `run()` still calls `run_gauntlet`. DECISION #28 unified the loop plane-neutrally; DECISION #29 gates the
-/// money-authority flip on the fleet-box oracle — the flip is thrown only once loop==legacy is proven
-/// byte-identical on that box (`bin/oracle` record+replay), never here. This entry exists so the
-/// entry-level shadow proof can drive it beside `run()` on the same fixtures and prove exactly that
-/// (see `the_loop_matches_native_ingress_run_at_the_resolved_op_entry`). When #29 authorizes the
-/// flip, this graduates — behind the `root-llm` composition-root switch — into the funnel `run()`'s
-/// three callers reach, replacing the `run_gauntlet` call at native_ingress.rs:592.
+/// THIS FUNCTION is test-only. Nothing mounts it: the shipped `run()` keeps its own call, and
+/// DECISION #29 gates moving the resolved-op money authority onto [`LlmNode`] on the fleet-box oracle
+/// — proven byte-identical on that box (`bin/oracle` record+replay), never here. This entry exists so
+/// the entry-level shadow proof can drive it beside `run()` on the same fixtures and prove exactly
+/// that (see `the_loop_matches_native_ingress_run_at_the_resolved_op_entry`). When #29 authorizes the
+/// move, this graduates — behind the `root-llm` composition-root switch — into the funnel `run()`'s
+/// three callers reach.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn native_run_via_loop(

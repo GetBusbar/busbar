@@ -42,14 +42,15 @@ fn kernel_one_shot<'a>(
 }
 
 /// FLIP a one-shot plane (mcp, a2a, llm-native) onto the unified kernel loop, by capability key.
-/// The per-plane cutover — call from [`install`] for that plane, gated on the fleet-box oracle (#29).
-/// Until called for a key, that plane rides the substrate loop, byte-identical.
+/// [`install`] calls it for every one-shot plane in the build. A key it is never called for runs
+/// `run_gauntlet`'s inline verify-then-`drive` fallback; there is no substrate loop left to ride.
 pub fn flip_one_shot_to_kernel(capability_key: &'static str) {
     register_gauntlet_runner(capability_key, kernel_one_shot);
 }
 
 /// FLIP a session plane (voice, duplex) onto the unified kernel loop's session admit, by capability
-/// key. The per-plane cutover — call from [`install`] for that plane, gated on the fleet-box oracle.
+/// key. [`install`] calls it for the session plane in the build; a key it is never called for runs
+/// `run_gauntlet_session`'s inline open-pass fallback.
 pub fn flip_session_to_kernel(capability_key: &'static str) {
     register_session_runner(capability_key, open_gauntlet_via_kernel);
 }
@@ -59,10 +60,10 @@ pub fn flip_session_to_kernel(capability_key: &'static str) {
 ///
 /// W2.b — EVERY plane is FLIPPED onto the unified kernel loop (DECISIONS #28/#29). Each plane reports
 /// its capability key and this registers the kernel-loop runner under it, so the SHIPPED serving path
-/// for all four flows through `busbar_kernel::teller::run_unit[_async]` / `open_unit` — proven
-/// byte-identical (the shadow-compare rider tests + the fleet-box oracle, #29). With every plane
-/// flipped, the redundant substrate teller loop was DELETED: an unregistered plane now fails closed
-/// in `run_gauntlet[_session]` rather than riding a second loop.
+/// for all four flows through `busbar_kernel::teller::run_unit[_async]` / `open_unit`. With every
+/// plane flipped, the redundant substrate teller loop was DELETED: a key with no runner registered
+/// runs the inline verify-then-`drive` (or open-pass) fallback in `run_gauntlet[_session]`, which is
+/// what that loop did, rather than riding a second loop.
 ///
 /// - MCP (W2.a) + A2A + LLM native are ONE-SHOT planes → [`flip_one_shot_to_kernel`].
 /// - Voice/streaming is a SESSION plane (open-pass admit, no one-shot `drive`) → [`flip_session_to_kernel`].

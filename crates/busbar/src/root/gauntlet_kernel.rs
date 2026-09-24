@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DORMANT KERNEL-LOOP SIBLING of `busbar_kernel::plane_host::run_gauntlet`.
+//! THE KERNEL-LOOP RUNNER behind `busbar_kernel::plane_host::run_gauntlet` — LIVE.
 //!
 //! [`run_gauntlet_via_kernel`] drives the SAME [`GauntletPlane`] the substrate gauntlet drives, but
 //! through `busbar_kernel::teller::run_unit_async` (the ONE unified loop) instead of the substrate
@@ -14,12 +14,13 @@
 //! [`PlaneInFlight`] table, keyed by the bare `ctx.key`. a2a/voice/llm ride this IDENTICAL rider
 //! with zero new code — only a re-point of their gauntlet call.
 //!
-//! MONEY-SAFE, DORMANT: the rider opens an EMPTY admit hold ([`Admission::ZeroHold`]) and reports
-//! ZERO [`Evidence`] at the kernel exit, so the kernel loop settles NOTHING and cannot double-count
-//! the plane's own per-round metering (which stays inside `drive`). It binds no money book. It is
-//! built and reachable but NOT the shipped path: `tools_call_via_gauntlet` still rides the substrate
-//! gauntlet, and the one-line flip waits on the fleet-box oracle (DECISIONS #29). The proof it
-//! reproduces the substrate gauntlet byte-for-byte is the shadow-compare test below.
+//! MONEY-NEUTRAL, AND THE SHIPPED PATH: the rider opens an EMPTY admit hold
+//! ([`Admission::ZeroHold`]) and reports ZERO [`Evidence`] at the kernel exit, so the kernel loop
+//! settles NOTHING and cannot double-count the plane's own per-round metering (which stays inside
+//! `drive`). It binds no money book. `gauntlet_install::install()` registers it at boot under the
+//! capability key of every plane in the build (item 125), so every `run_gauntlet[_session]` call for
+//! those planes — `tools_call_via_gauntlet` included — dispatches here. The proof it reproduces the
+//! deleted substrate gauntlet byte-for-byte is the shadow-compare test below.
 
 use axum::response::Response;
 
@@ -38,10 +39,10 @@ use busbar_kernel::teller::{AccrualMeter, Evidence, RouteAwait, RouteLeg, UnitCt
 
 /// The transport stack every gauntlet request arrives over — one HTTP layer, named rather than
 /// empty (mirrors the LLM plane's arrival record). The value only reaches the audit/record surface,
-/// which this dormant rider posts nothing onto.
+/// which this rider posts nothing onto.
 const TRANSPORT_CHAIN: [&str; 1] = ["http"];
 
-/// The neutral per-request counter for the dormant rider's `ctx.key`. Each call takes the next value;
+/// The neutral per-request counter for the rider's `ctx.key`. Each call takes the next value;
 /// nothing outside this file reads it, so a process-global monotonic is enough.
 static NEXT_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -293,7 +294,7 @@ fn principal_of(gov: &busbar_api::PlaneRequestCtx) -> PrincipalId {
 /// verify-before-charge order, same bytes out — driven through `busbar_kernel::teller::run_unit_async`
 /// over an ephemeral per-request kernel harness (uncapped in-flight table, node-wide gauge, canary).
 /// The loop's `Ended` is discarded: this rider binds no book and settles nothing (see the module
-/// header). DORMANT — reachable, not the shipped path.
+/// header). The shipped path for every plane `gauntlet_install::install()` flips.
 pub async fn run_gauntlet_via_kernel(
     req: GauntletRequest<'_>,
     plane: Box<dyn GauntletPlane + '_>,
@@ -317,7 +318,7 @@ pub async fn run_gauntlet_via_kernel(
         charged_at: req.charged_at,
         started: req.started,
         principal: principal.clone(),
-        // A neutral static class: this dormant rider posts no record, so the class only labels the
+        // A neutral static class: this rider posts no record, so the class only labels the
         // (unposted) audit fact and never touches the response bytes. A `'static` literal because
         // `OpClassId` interns a `&'static str`.
         op_class: OpClassId::new("gauntlet"),
@@ -386,7 +387,8 @@ pub async fn run_gauntlet_via_kernel(
 /// EMPTY hold, nothing settled — and the caller opens its own carrier next (its reserve-on-admit and
 /// per-turn settle stay plane-side, AFTER this gate, so there is no overlap and no double count). On
 /// a refusal the plane's OWN finished response comes back verbatim. Same shape and same admit
-/// decision as the substrate session opener; DORMANT — reachable, not the shipped path.
+/// decision as the substrate session opener; the shipped session admit for every session plane
+/// `gauntlet_install::install()` flips.
 ///
 /// Synchronous: a session's steps up to and including the door are all sync (only Route awaits, and a
 /// session has none here), exactly like the substrate `run_gauntlet_session`.
