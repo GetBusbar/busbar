@@ -2589,6 +2589,41 @@ mod dated_rate_card_history {
         );
     }
 
+    // ── PROOF 1b: a HOLE in the dated history REFUSES the read (#42, item 374) ───────────────
+
+    /// A history whose only entry starts at `monthly` leaves the PAYG window in a HOLE: no entry
+    /// covers the row's instant. That is `MoneyError::NoCardInForce`, a refusal like the other
+    /// three — the read fails rather than pricing the row at the CURRENT card (1 x 1_000 = 1_000,
+    /// the figure it served before), which is a card nobody put in force for that instant. The
+    /// covered window alongside it still prices, so the refusal is the hole's and not the fixture's.
+    #[tokio::test]
+    async fn a_hole_in_the_dated_history_refuses_rather_than_pricing_at_the_current_card() {
+        let (payg, monthly, _prepaid) = windows();
+        let mut history = History::new();
+        history.append(CardEntryDraft {
+            effective_from: monthly * 1_000,
+            effective_until: None,
+            card: card(5.0),
+            appended_at: monthly * 1_000,
+            author: Author::Config { policy_epoch: 0 },
+        });
+        let src = source(history);
+        let gov = gov_with_rows(&[(payg, 0), (monthly, monthly * 1_000)]);
+
+        assert_eq!(
+            read(gov.clone(), src, monthly).await.total.spend_micros,
+            5_000,
+            "the covered window prices at the entry in force (5 x 1_000 tokens)"
+        );
+        assert!(
+            matches!(
+                read_as_of(gov, src, payg, None).await,
+                Err(AdminError::Internal)
+            ),
+            "a row no history entry covers must REFUSE the read, never price at the current card"
+        );
+    }
+
     // ── PROOF 2: publishing a forward-dated card leaves the earlier window BYTE-IDENTICAL ────
 
     /// The same window read before and after a card is published, compared as BYTES.

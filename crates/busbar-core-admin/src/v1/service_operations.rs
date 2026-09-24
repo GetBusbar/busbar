@@ -1461,29 +1461,31 @@ impl AdminService {
             // version resolves only forward, which is what would put a back-dated correction out
             // of reach.
             //
-            // TWO WAYS TO FALL BACK, and each is a statement rather than a convenience: no source
-            // installed or no history resolved (a build with no root ledger in it), and a HOLE —
-            // an instant no entry of the snapshot covers. A hole falls back to the derivation this
-            // read has always used rather than costing the row nothing, because a silent zero on a
-            // money path is only ever right when no rate card is configured at all (#42).
+            // ONE WAY TO FALL BACK: no source installed or no history resolved (a build with no
+            // root ledger in it) prices through the derivation this read has always used. A HOLE —
+            // a history that IS resolved but has no entry covering this row's instant — is NOT a
+            // fallback: it is `MoneyError::NoCardInForce`, a refusal like the other three (#42,
+            // item 374). Pricing a hole at the current card would answer for an instant with a
+            // card nobody put in force for it; the record has a gap and the read says so.
             //
             // THE PRICING ITSELF IS NOT HERE AND IS NOT THIS CRATE'S: the row is handed to
             // `busbar_kernel_ledger::cost::price_in_view`, THE ONE FUNCTION, which resolves the
-            // card at the instant below and prices against it. `card_at` is still called here for
-            // the one thing the caller has to decide — whether the snapshot covers the row at all,
-            // which is the HOLE arm — and the entry it returns is carried only as the #42 fallback
-            // card. See `derive_spend_micros_row_at_card`.
+            // card at the instant below and prices against it. See
+            // `derive_spend_micros_row_at_card`.
             let at = row_priced_at_ms(window.start, r.priced_from_ms);
-            let row_spend = view
-                .as_ref()
-                .and_then(|v| v.card_at(at).map(|(_card_seq, card)| (v, card)))
-                .map(|(v, card)| {
-                    derive_spend_micros_row_at_card(v, at, card, &cost, &r.model, &row_view)
-                })
-                .unwrap_or_else(|| derive_spend_micros_row(&cost, &r.model, &row_view));
-            // A REFUSED figure fails the read (#42, item 31): the card is present and silent about
-            // this row's model or class, or the figure left the range (item 28). The response does
-            // not carry a number nobody priced; the refusal is logged with the row it came from.
+            let row_spend = match view.as_ref() {
+                Some(v) => match v.card_at(at) {
+                    Some((_card_seq, card)) => {
+                        derive_spend_micros_row_at_card(v, at, card, &cost, &r.model, &row_view)
+                    }
+                    None => Err(busbar_kernel_ledger::cost::MoneyError::NoCardInForce { at }),
+                },
+                None => derive_spend_micros_row(&cost, &r.model, &row_view),
+            };
+            // A REFUSED figure fails the read (#42, items 31 and 374): the card is present and
+            // silent about this row's model or class, no entry covers the row's instant, or the
+            // figure left the range (item 28). The response does not carry a number nobody
+            // priced; the refusal is logged with the row it came from.
             let row_spend = match row_spend {
                 Ok(spend) => spend,
                 Err(e) => {
