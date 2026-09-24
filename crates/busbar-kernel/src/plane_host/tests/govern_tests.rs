@@ -60,10 +60,10 @@ fn disabled_group_cost(name: &str) -> crate::cost::CostModel {
 }
 
 /// A BILLING-ON cost model: a `rate_card:` is PRESENT (one priced model), so
-/// [`CostModel::pricing_enabled`] is `true` and the host charge path records a metering row. Since
-/// DECISION #42 (`the money surface goes quiet when no rate_card is configured`) the metering row
-/// only fires with billing on, so the charge/metering tests below build the App with this — they are
-/// about the host→meter MECHANISM, which only runs on a billed plane.
+/// [`CostModel::pricing_enabled`] is `true`. The host charge path records a metering row with or
+/// without a card (DECISION #43 — the ledger write is unconditional; see
+/// `billing_off_charge_still_appends_the_counts_to_the_ledger`); the attribution tests below use the
+/// billed posture because it is the one every priced deployment runs.
 fn billing_on_cost() -> crate::cost::CostModel {
     let mut card = std::collections::BTreeMap::new();
     card.insert(
@@ -412,4 +412,52 @@ fn out_of_range_usage_component_is_refused_not_matched() {
     });
     let (cells, _counts) = gov.pending_metering_totals();
     assert_eq!(cells, 0, "a refused charge accrues no metering row");
+}
+
+/// ITEM 36 / DECISION #43 (owner ruling 2026-09-22, "planes always ledger"): the LEDGER WRITE IS
+/// UNCONDITIONAL. With `rate_card:` ABSENT (billing off, #42) a host charge STILL appends the plane's
+/// counts to the metering ledger — the card decides only whether a READ can turn those counts into
+/// money, never whether the write happens. Billing-off is a property of the VIEW (it reads 0 —
+/// `busbar_kernel_ledger::cost::price_exact`'s `!card.pricing_enabled()` arm), not of the ledger.
+///
+/// RED before the fix: `govern::charge` wrapped `record_metering` in `if pricing_enabled()`, so this
+/// deployment recorded ZERO cells for a charge the plane really made.
+#[test]
+fn billing_off_charge_still_appends_the_counts_to_the_ledger() {
+    let gov = gov();
+    // NO card, NO fee: the purest billing-off posture — nothing here can be priced.
+    let cost = crate::cost::CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
+    assert!(
+        !cost.pricing_enabled(),
+        "precondition: this deployment is billing-OFF (no rate_card)"
+    );
+    let app = crate::test_support::TestApp::new()
+        .governance(Arc::clone(&gov))
+        .cost(cost)
+        .build();
+    with_dispatch_scope(&app, |host, vt| {
+        let usage = Usage::with_attribution(
+            UsageComponent::Tokens,
+            42,
+            1,
+            AdmissionId(36),
+            b"vk_billing_off",
+            b"tool:fs",
+            b"plane:mcp",
+        );
+        assert_eq!(
+            (vt.meter_charge.unwrap())(host, &*usage as *const Usage),
+            MeterOutcome::Charged
+        );
+    });
+    let (cells, counts) = gov.pending_metering_totals();
+    assert_eq!(
+        cells, 1,
+        "billing off still ledgers: the plane's counts are appended unconditionally (#43)"
+    );
+    assert_eq!(counts.requests, 1, "the request is on the ledger");
+    assert_eq!(
+        counts.tokens_input, 42,
+        "the ledger is exactly what the plane did (§8.4): 42 means 42, card or no card"
+    );
 }
