@@ -112,9 +112,8 @@ struct Carry {
     /// to price, and holding it is what lets the seam be observed at all: a report the step builds
     /// and the carry throws away is a report no test can tell apart from one that was never built.
     step_report: Option<LateReport>,
-    /// What the Meter step said about the fee and the refund.
+    /// What the Meter step said the fee was.
     fee_count: u32,
-    refund: bool,
     /// The bytes the terminal posted, which are the bytes the client is given.
     terminal: Option<Served>,
 }
@@ -361,7 +360,8 @@ impl Walk {
         admitted.verdict
     }
 
-    /// Whether the admission charge landed, which is what decides whether a non-2xx refunds.
+    /// Whether the admission charge landed — what the admitted terminal door is handed, and the one
+    /// input besides the client-facing status its refund of the fee base turns on.
     #[must_use]
     pub fn charged(&self) -> bool {
         self.lock().charged
@@ -403,12 +403,6 @@ impl Walk {
     #[must_use]
     pub fn reported_at_step(&self) -> Option<LateReport> {
         self.lock().step_report.clone()
-    }
-
-    /// Whether the Audit step owes a refund of the fee base.
-    #[must_use]
-    pub fn refund(&self) -> bool {
-        self.lock().refund
     }
 
     /// The status the CLIENT saw, once the walk has produced one.
@@ -676,7 +670,6 @@ impl Walk {
     /// back on the report, and the side that holds the card is the one that turns it into an amount.
     pub fn meter(&self, token: &Pass<Meter>, usage: &Grant<Consumption>) -> Decision<Meter> {
         let mut carry = self.lock();
-        let charged = carry.charged;
         let Some(facts) = carry.facts.as_ref() else {
             // Route never ran, so there is nothing the walk reported to seal. Unreachable from the
             // loop's order and answered rather than unwrapped.
@@ -715,14 +708,13 @@ impl Walk {
         }
         let tables = crate::engine::EngineTables::new(&self.rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i));
-        let ctx = MeterCtx::bind(&self.host, carry.meter_sink.as_ref(), lane, &facts, charged);
+        let ctx = MeterCtx::bind(&self.host, carry.meter_sink.as_ref(), lane, &facts);
         let metered = crate::unit::meter::meter(token, usage, &ctx, &Outcome::Completed);
         // What the ACCRUAL ARM reported about itself. `row` is filled whether this step posted or
         // only sealed, so reading it here called every sealed unit a posting — and this value is
         // what the rehearsal asserts one-posting-per-unit on.
         carry.posted_here = metered.posted;
         carry.fee_count = metered.fee_count;
-        carry.refund = metered.refund;
         // WHAT THE STEP REPORTED, kept rather than dropped. It used to fall on the floor here, which
         // is what made the whole seam unobservable: a report the step assembles and the carry
         // discards cannot be told apart from one it never built.

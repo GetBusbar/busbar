@@ -67,7 +67,8 @@ pub mod chain;
 /// Step 1 — what it means: the model ladder and the handler lookup, in both live orders.
 #[cfg(feature = "teller-waist")]
 pub mod decode;
-/// Step 6 — the figures: the one metering seam, the fee and the refund decided by the outcome.
+/// Step 6 — the figures: the one metering seam and the fee decided by the outcome. The refund is the
+/// admitted terminal door's (step 7), not this step's.
 #[cfg(feature = "teller-waist")]
 pub mod meter;
 /// Step 5 — the one attempt: candidates, the pick, the walk, the completion tap.

@@ -225,15 +225,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
     let sink2 = sink(&host2, &key2, charged_at);
     let tables = crate::engine::EngineTables::new(&rt2);
     let lane = &tables.lanes()[0];
-    let ctx = MeterCtx::new(
-        &host2,
-        Some(&sink2),
-        Some(lane),
-        Some(&reported),
-        200,
-        true,
-        true,
-    );
+    let ctx = MeterCtx::new(&host2, Some(&sink2), Some(lane), Some(&reported), 200, true);
     let (seal, unit_token, usage_token) = tokens();
     let metered = meter(&unit_token, &usage_token, &ctx, &Outcome::Completed);
 
@@ -296,62 +288,35 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
         metered.fee_count, 1,
         "a delivered 2xx from an upstream posts the flat fee"
     );
-    assert!(!metered.refund, "a 2xx refunds nothing");
     server2.shutdown().await;
 }
 
-/// THE FAILED-TRANSFER IDENTITY. A charged request that did not deliver a 2xx refunds the fee
-/// base and NEVER the admission count, and it refunds only where the charge landed.
+/// THE FEE IS THE LEG AND THE CLIENT-FACING STATUS, AND NOTHING ELSE.
 ///
-/// Read the four rows together: they are the whole refund rule. A 502 on a charged request owes
-/// a refund; the same 502 on a request admitted without charging owes none, because the refund
-/// is a blind decrement that would erode another request's spend in the same window; and a 2xx
-/// owes none either way. The fee is the mirror image, and it is the LEG plus the client-facing
-/// status that decides it, never the refund.
+/// One flat fee per delivered client request that routed to an upstream: a 2xx from an upstream leg
+/// posts it; a 502 or a post-admission 404 posts none; a unit with no upstream leg (a kernel verb)
+/// posts none even on a 2xx. There is no refund row here, and that is the point: the refund of the
+/// fee base is the admitted terminal door's (step 7), decided once from the client-facing status
+/// and the admit step's `charged` — `unit/tests/chain.rs` holds it on the ledger.
 #[test]
-fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
+fn the_fee_is_decided_by_the_leg_and_the_client_facing_status() {
     let host: Arc<dyn EngineHost> =
         busbar_kernel::test_support::engine_host(&crate::test_support::TestApp::new().build());
     let (_seal, unit_token, usage_token) = tokens();
-    for (status, charged, upstream_leg, fee, refund, why) in [
-        (200u16, true, true, 1u32, false, "delivered and charged"),
-        (
-            502,
-            true,
-            true,
-            0,
-            true,
-            "a failed transfer refunds the fee base",
-        ),
-        (
-            502,
-            false,
-            true,
-            0,
-            false,
-            "admitted without charging, so there is nothing to refund",
-        ),
+    for (status, upstream_leg, fee, why) in [
+        (200u16, true, 1u32, "delivered from an upstream leg"),
+        (502, true, 0, "a failed transfer posts no fee"),
         (
             200,
-            true,
             false,
             0,
-            false,
             "no upstream leg, so no flat fee: a kernel verb is not a proxied request",
         ),
-        (
-            404,
-            true,
-            true,
-            0,
-            true,
-            "a post-admission 404 is charged, unbilled and refunded",
-        ),
+        (404, true, 0, "a post-admission 404 is unbilled"),
     ] {
-        let ctx = MeterCtx::new(&host, None, None, None, status, charged, upstream_leg);
+        let ctx = MeterCtx::new(&host, None, None, None, status, upstream_leg);
         let metered = meter(&unit_token, &usage_token, &ctx, &Outcome::Completed);
         assert_eq!(metered.fee_count, fee, "{why}: fee_count");
-        assert_eq!(metered.refund, refund, "{why}: refund");
         assert!(
             metered.row.is_none(),
             "{why}: nothing to attribute, so nothing metered"
@@ -381,7 +346,7 @@ fn a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned()
     // Everything the step is told about this unit: a 2xx went out, the readers had counted INPUT and
     // OUTPUT by the time the stream died. How it died is the provisional end below, and it is not a
     // fact the charge turns on.
-    let ctx = MeterCtx::new(&host, None, None, Some(&reported), 200, true, true);
+    let ctx = MeterCtx::new(&host, None, None, Some(&reported), 200, true);
     let metered = meter(
         &unit_token,
         &usage_token,
@@ -395,7 +360,6 @@ fn a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned()
         metered.fee_count, 1,
         "the 2xx that went out is not reversed"
     );
-    assert!(!metered.refund, "the client saw a success");
     assert!(
         metered.row.is_none(),
         "no sink and no lane on this rig, so nothing to attribute a row to"
@@ -523,7 +487,6 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
             Some(&reported),
             200,
             true,
-            true,
         ),
         &Outcome::Completed,
     );
@@ -549,13 +512,7 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
     let sealing = meter(
         &unit_token,
         &usage_token,
-        &MeterCtx::bind(
-            &host2,
-            Some(&sink2),
-            Some(&tables2.lanes()[0]),
-            &facts,
-            true,
-        ),
+        &MeterCtx::bind(&host2, Some(&sink2), Some(&tables2.lanes()[0]), &facts),
         &Outcome::Completed,
     );
     let gov2 = app2.governance.clone().expect("governance is configured");

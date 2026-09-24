@@ -58,15 +58,14 @@
 //! posts its fee, because the caller got the value that was on the wire when the status was
 //! settled. The fee is a lookahead at the door and a posting here, and this step reports which.
 //!
-//! **The refund rule is one counter, not two.** A non-2xx end refunds the fee base
-//! (`billable_requests`) and never the admission count (`requests`). That asymmetry is the whole
-//! design: the caller is not billed a flat fee for a failure outside its control, and a thousand
-//! failed requests still consume a thousand slots, so a cap cannot be escaped by hammering
-//! failures. A refund is only ever issued for a request whose charge LANDED — the admit step's
-//! `charged` — because the refund is a blind decrement of a shared window counter, and issuing one
-//! for a request that never charged erodes some other request's spend in the same window. It lands
-//! in the window the pinned arrival epoch names, which is the window the charge landed in, so a
-//! request that straddles a boundary refunds where it charged.
+//! **The refund is not this step's.** A non-2xx end refunds the fee base (`billable_requests`) and
+//! never the admission count (`requests`), only where the admission charge LANDED, in the window the
+//! pinned arrival epoch names — and that decision is made in exactly ONE place: the admitted
+//! terminal door (`EngineHost::finish_admitted`, reached through the Audit step with the admit
+//! step's `charged`), which reads the client-facing status and refunds. This step used to compute a
+//! second copy of the same rule that nothing read; a second decision with no consumer is a decision
+//! that can drift from the one that is applied, so it is gone, and the rehearsal
+//! (`unit/tests/chain.rs`) holds the door's refund on the ledger itself.
 //!
 //! **A stream that ends in an error bills the tokens it streamed.** A terminal error, a translate
 //! abort, a transport cut or a timeout is an interruption, not a reversal of incurred cost: the
@@ -208,7 +207,6 @@ pub struct MeterCtx<'a> {
     /// The open classes beside the token split; `None` where nothing reported any.
     open_units: Option<&'a std::collections::BTreeMap<String, u64>>,
     status: u16,
-    charged: bool,
     upstream_leg: bool,
     tap_posts: bool,
 }
@@ -217,8 +215,7 @@ impl<'a> MeterCtx<'a> {
     /// Bind the step to one response.
     ///
     /// `status` is the status the CLIENT saw, never the upstream's — the fee is decided from the
-    /// client-facing frame. `charged` is the admit step's: whether the admission charge landed, and
-    /// therefore whether there is anything a non-2xx could refund. `upstream_leg` says the unit
+    /// client-facing frame. `upstream_leg` says the unit
     /// routed to an upstream, which is what makes it a fee-bearing client request rather than a
     /// kernel verb or a delivery. How the response ENDED is not a parameter: a cut stream bills
     /// what it streamed (#62), so `usage` is the whole charge on every end.
@@ -233,7 +230,6 @@ impl<'a> MeterCtx<'a> {
         lane: Option<&'a crate::engine::Lane>,
         usage: Option<&'a busbar_substrate_values::billing::TokenUsage>,
         status: u16,
-        charged: bool,
         upstream_leg: bool,
     ) -> Self {
         MeterCtx {
@@ -243,7 +239,6 @@ impl<'a> MeterCtx<'a> {
             usage,
             open_units: None,
             status,
-            charged,
             upstream_leg,
             // The step is the posting unless something before it says otherwise; `bind` is what
             // says otherwise.
@@ -254,14 +249,12 @@ impl<'a> MeterCtx<'a> {
     /// Bind the step to what the ROUTE step observed.
     ///
     /// The expression that did not exist: a [`MeterFacts`] plus the two things the facts cannot
-    /// own — the host seam and the borrowed lane the index names — is a context. `charged` is still
-    /// the admit step's, because whether the admission charge landed is not a fact about the walk.
+    /// own — the host seam and the borrowed lane the index names — is a context.
     pub(crate) fn bind(
         host: &'a Arc<dyn EngineHost>,
         sink: Option<&'a crate::engine::UsageSink>,
         lane: Option<&'a crate::engine::Lane>,
         facts: &'a MeterFacts,
-        charged: bool,
     ) -> Self {
         MeterCtx {
             host,
@@ -270,13 +263,12 @@ impl<'a> MeterCtx<'a> {
             usage: facts.usage.as_ref(),
             open_units: Some(&facts.open_units),
             status: facts.status,
-            charged,
             upstream_leg: facts.upstream_leg,
             tap_posts: facts.tap_posts,
         }
     }
 
-    /// Whether the client saw a success. The one reading the fee and the refund both key off.
+    /// Whether the client saw a success. The one reading the fee keys off.
     #[must_use]
     pub fn delivered(&self) -> bool {
         matches!(self.status, 200..=299)
@@ -296,9 +288,6 @@ pub struct Metered {
     /// Whether the flat per-request fee posts: 1 on a delivered 2xx from an upstream leg, 0
     /// otherwise. Decided here, from the client-facing status, and never reversed later.
     pub fee_count: u32,
-    /// Whether the Audit step must refund the fee base. True exactly when the admission charge
-    /// landed and the client did not see a 2xx.
-    pub refund: bool,
     /// WHETHER THIS STEP MADE THE ACCRUAL, as opposed to sealing one the walk's tap already made.
     ///
     /// Set inside the accrual arm and nowhere else, so it is the arm's own report of itself rather
@@ -442,9 +431,6 @@ pub fn meter(
         decision: Decision::proceed(unit_token, usage),
         row,
         fee_count,
-        // The refund is owed only where a charge landed and the client did not see a 2xx — and it
-        // is owed against the fee base alone.
-        refund: ctx.charged && !delivered,
         posted,
         report,
     }
