@@ -7,14 +7,14 @@
 //! so the deletion gate that builds `busbar` WITHOUT voice still passes.
 #![cfg(feature = "plane-voice")]
 
-use busbar_kernel::plane::registry::{check_owned_config_claims, register_test_plane};
+use busbar_kernel::plane::registry::{
+    check_owned_config_claims, register_test_plane, CORE_OWNED_CONCRETE_SECTIONS,
+};
 
-/// The real `CORE_OWNED_CONCRETE_SECTIONS` (providers/models/pools/rate_card/limits) — mirrored here
-/// because `busbar_kernel`'s const is `pub(crate)`. `busbar_kernel`'s own unit test
-/// `dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision` proves the guard against the
-/// REAL const; this literal is kept honest by that test plus the plane-config-noun gate.
-const CORE_OWNED_CONCRETE_SECTIONS: &[&str] =
-    &["providers", "models", "pools", "rate_card", "limits"];
+// `CORE_OWNED_CONCRETE_SECTIONS` is the kernel's REAL list — the one the boot guard judges against —
+// imported rather than mirrored. A copy used to sit here on the grounds that the const was
+// `pub(crate)`; it is `pub`, and a mirror is a second list that can drift from the first while every
+// test below goes on passing against the wrong one (item 267).
 
 /// The voice plane DECLARES `streams:` as its owned section and wires the two seam hooks that let
 /// `DeployCfg` deserialize/validate it without naming a `busbar_voice` type.
@@ -79,4 +79,34 @@ fn registering_voice_puts_streams_into_config_sections() {
         "voice's owned `streams:` section must reach the config grammar once the plane is \
          registered, got: {sections:?}"
     );
+}
+
+/// Every section core owns is REFUSED to a plane that claims it — asked of the kernel's own list, so
+/// a section added to (or evicted from) it is judged here the day it moves, with no copy to update.
+/// Voice's `streams` is the admitted control: the refusal is about the section, not the plane.
+#[test]
+fn a_plane_claiming_any_real_core_owned_section_is_refused() {
+    assert!(
+        !CORE_OWNED_CONCRETE_SECTIONS.is_empty(),
+        "non-vacuity: core owns concrete sections, and this test must be asked of them"
+    );
+    assert!(
+        !CORE_OWNED_CONCRETE_SECTIONS.contains(&"streams"),
+        "voice's `streams:` is not core-owned; the admitted control depends on it"
+    );
+    for section in CORE_OWNED_CONCRETE_SECTIONS {
+        let owned: &'static [&'static str] = Box::leak(Box::new([*section]));
+        let grabber: &'static busbar_kernel::plane::registry::PlaneDecl =
+            Box::leak(Box::new(busbar_kernel::plane::registry::PlaneDecl {
+                key: "section-grabber",
+                owned_config_sections: owned,
+                ..busbar_voice::PLANE_DECL
+            }));
+        let err = check_owned_config_claims(&[grabber], CORE_OWNED_CONCRETE_SECTIONS)
+            .expect_err("a plane claiming a core-owned section must be refused");
+        assert!(
+            err.contains(section),
+            "the refusal must name the core-owned section `{section}`, got: {err}"
+        );
+    }
 }
