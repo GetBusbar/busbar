@@ -89,11 +89,16 @@ impl KernelSeal {
     ///
     /// What CHANGED in 1.6.0 is that the scan guarding it is now load-bearing instead of
     /// decorative. [`KernelSeal`](crate::plugin::KernelSeal) — the TRAIT the kernel-built views
-    /// take — is now SEALED, so the only way to obtain a `&dyn KernelSeal` is to hold a real
-    /// [`Pass`] or [`Grant`], and the only way to mint one of those is this function. Before the
-    /// seal, a forger skipped this symbol entirely by implementing the trait on a type of its own,
-    /// which no amount of scanning for THIS name could ever see. Every path to a kernel-built view
-    /// now runs through the one symbol CI actually watches.
+    /// take — is now SEALED, and it has exactly three implementors, all at the foot of this file: a
+    /// real [`Pass`], a real [`Grant`], and `plugin::TestKernelSeal`. The third exists only when the
+    /// dev-only `test-seal` feature is on — the contract's one named dev-only exemption (#65, item
+    /// 112), declared in the plugin module so a plane's own harness can name it, and absent from
+    /// every release build because no non-dev dependency edge enables the feature. So in a release
+    /// build the only way to obtain a `&dyn KernelSeal` is to hold a real `Pass` or `Grant`, and the
+    /// only way to mint one of those is this function. Before the seal, a forger skipped this symbol
+    /// entirely by implementing the trait on a type of its own, which no amount of scanning for THIS
+    /// name could ever see. Every release-build path to a kernel-built view now runs through the one
+    /// symbol CI watches.
     ///
     /// Closing this hole in the type system means moving the token types into the kernel crate, or
     /// gating them on a feature the whole graph would unify anyway. Both are owner rulings, not
@@ -286,5 +291,79 @@ impl<C: Capability> crate::plugin::sealed::KernelSealed for Grant<C> {}
 impl<C: Capability> crate::plugin::KernelSeal for Grant<C> {
     fn seal_origin(&self) -> &'static str {
         "Grant"
+    }
+}
+
+/// The implementors of the sealed [`crate::plugin::KernelSeal`] trait, read off this file's own
+/// code, against the enumeration [`KernelSeal::acquire_for_kernel`]'s documentation gives
+/// (item 329). A fourth implementor, or one the documentation leaves out, fails here.
+#[cfg(test)]
+mod seal_implementors {
+    const SOURCE: &str = include_str!("token.rs");
+
+    /// The short name of every type this file implements the plugin seal trait for, from code
+    /// lines only.
+    fn implementors() -> Vec<String> {
+        let needle = "crate::plugin::KernelSeal for ";
+        let mut out: Vec<String> = SOURCE
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| l.starts_with("impl"))
+            .filter_map(|l| l.split_once(needle).map(|(_, rest)| rest))
+            .map(|rest| {
+                let ty = rest.split([' ', '{']).next().unwrap_or_default();
+                let ty = ty.split('<').next().unwrap_or_default();
+                ty.rsplit("::").next().unwrap_or_default().to_string()
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// The `///` block directly above `pub fn acquire_for_kernel`.
+    fn acquire_doc() -> String {
+        let lines: Vec<&str> = SOURCE.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("pub fn acquire_for_kernel"))
+            .expect("the minter is declared in this file");
+        let mut doc = Vec::new();
+        for l in lines[..at].iter().rev() {
+            let t = l.trim_start();
+            if t.starts_with("///") {
+                doc.push(t.trim_start_matches('/').trim());
+            } else if t.starts_with("#[") {
+                continue;
+            } else {
+                break;
+            }
+        }
+        doc.reverse();
+        doc.join(" ")
+    }
+
+    #[test]
+    fn the_minter_doc_names_every_seal_implementor_and_counts_them() {
+        let found = implementors();
+        assert_eq!(
+            found,
+            vec![
+                "Grant".to_string(),
+                "Pass".to_string(),
+                "TestKernelSeal".to_string()
+            ],
+            "the seal trait's implementors in this file"
+        );
+        let doc = acquire_doc();
+        for name in &found {
+            assert!(
+                doc.contains(name.as_str()),
+                "`acquire_for_kernel`'s documentation leaves out the implementor `{name}`: {doc}"
+            );
+        }
+        assert!(
+            doc.contains("exactly three implementors"),
+            "the documentation states the implementor count: {doc}"
+        );
     }
 }
