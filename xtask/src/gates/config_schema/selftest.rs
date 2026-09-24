@@ -73,12 +73,30 @@ const T_DENY_OFF: &str = "BindingMode";
 
 // ── PLANTING ─────────────────────────────────────────────────────────────────────────────────────
 
-/// The committed snapshot, parsed. It is byte-equal to the fresh render on a clean tree, which is
-/// what makes it the honest starting point for a baseline: a mutation of it is a delta of exactly
-/// the size the case describes and of no other size.
+/// The FRESH RENDER of the tracked source set, parsed — what the committed snapshot is byte-equal
+/// to on a clean tree, and the honest starting point for a baseline: a mutation of it is a delta
+/// of exactly the size the case describes and of no other size.
+///
+/// It is the render and not the committed file because the two differ exactly when the snapshot
+/// is stale, and a stale snapshot used as a baseline carries the staleness into every case as a
+/// delta nobody planted: each additive green case goes red on it and each red case is measured
+/// from a row that is already red. The staleness itself stays RED on `:snapshot-drift` and on the
+/// first control. Falls back to the committed file only if the render cannot be made at all.
 fn snapshot(cx: &Ctx) -> Value {
-    serde_json::from_str(&cx.read(schema::SNAPSHOT).unwrap_or_default())
-        .unwrap_or_else(|_| json!({ "types": {} }))
+    let text = schema::render(cx).unwrap_or_else(|_| cx.read(schema::SNAPSHOT).unwrap_or_default());
+    serde_json::from_str(&text).unwrap_or_else(|_| json!({ "types": {} }))
+}
+
+/// A FIXTURE OVERLAY ON WHICH `:snapshot-drift` IS GREEN: the committed snapshot replaced by the
+/// fresh render. Every drift red proof is measured from it and plants on top of it, so a committed
+/// snapshot that has fallen behind the source cannot make those proofs impossible. The real
+/// staleness stays RED on the first control and on `cargo xtask gate config-schema`.
+fn fresh_snapshot_base(cx: &Ctx) -> Overlay {
+    let mut ov = Overlay::new();
+    if let Ok(fresh) = schema::render(cx) {
+        ov.set(schema::SNAPSHOT, fresh);
+    }
+    ov
 }
 
 /// An overlay whose BASELINE REF carries `doc` as the baseline snapshot.
@@ -470,13 +488,18 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 
     // ══ :snapshot-drift ══════════════════════════════════════════════════════════════════════════
 
-    let mut ov = Overlay::new();
+    // Every drift proof is measured from [`fresh_snapshot_base`] and plants on top of it: the row
+    // is green there, so the red each plant produces is the plant's.
+    let drift_base = fresh_snapshot_base(cx);
+    let drift_cx = cx.with_overlay(drift_base.clone());
+
+    let mut ov = drift_base.clone();
     ov.set(
         schema::SNAPSHOT,
-        cx.read(schema::SNAPSHOT).unwrap_or_default() + "\n",
+        drift_cx.read(schema::SNAPSHOT).unwrap_or_default() + "\n",
     );
     report.push(prove_rows_red(
-        cx,
+        &drift_cx,
         gate,
         "a committed snapshot that is not the fresh render is STALE",
         &[ROW_SNAPSHOT_DRIFT],
@@ -484,15 +507,16 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["is STALE"],
     ));
 
-    let mut ov = Overlay::new();
+    let mut ov = drift_base.clone();
     ov.set(
         schema::SNAPSHOT,
-        cx.read(schema::SNAPSHOT)
+        drift_cx
+            .read(schema::SNAPSHOT)
             .unwrap_or_default()
             .replace("\"frozen_at\": \"1.5.3\"", "\"frozen_at\": \"9.9.9\""),
     );
     report.push(prove_rows_red(
-        cx,
+        &drift_cx,
         gate,
         "drift in the _meta block is drift too — the whole file is frozen, not just the types",
         &[ROW_SNAPSHOT_DRIFT],
@@ -500,10 +524,10 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["is STALE"],
     ));
 
-    let mut ov = Overlay::new();
+    let mut ov = drift_base.clone();
     ov.remove(schema::SNAPSHOT);
     report.push(prove_rows_red(
-        cx,
+        &drift_cx,
         gate,
         "a MISSING committed snapshot is RED — there is nothing to compare against",
         &[ROW_SNAPSHOT_DRIFT],
@@ -516,13 +540,13 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // real edit to a real tracked file.
     match cx.read("crates/busbar-voice/src/config.rs") {
         Ok(src) => {
-            let mut ov = Overlay::new();
+            let mut ov = drift_base.clone();
             ov.set(
                 "crates/busbar-voice/src/config.rs",
                 src + "\n#[derive(serde::Deserialize)]\npub struct ZzDriftFx {\n    pub added: String,\n}\n",
             );
             report.push(prove_rows_red(
-                cx,
+                &drift_cx,
                 gate,
                 "a new config type in a tracked source makes the committed snapshot STALE",
                 &[ROW_SNAPSHOT_DRIFT],
