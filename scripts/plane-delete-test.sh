@@ -213,6 +213,19 @@ neutral_keep() {
 }
 valid_plane() { case " $PLANES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
+# plane_contract_crate <plane> → the contract plane crate (`busbar-plane-<locked>`) for an on-disk
+# plane key, DERIVED through scripts/plane-keys.sh's alias rather than spelled `busbar-plane-<P>`.
+# The spelled form named `busbar-plane-voice`, which does not exist -- voice's contract plane is
+# `busbar-plane-streaming` -- and leg 1b's bare `[ -d ]` then did nothing for voice, silently,
+# while the gate printed PASS for it (item 505). Empty when no locked plane maps to <plane>.
+plane_contract_crate() {
+  local lp
+  for lp in $PLANE_KEYS_LOCKED; do
+    if [ "$(plane_ondisk_key "$lp")" = "$1" ]; then printf 'busbar-plane-%s' "$lp"; return 0; fi
+  done
+  printf ''
+}
+
 # ── scratch lifecycle ─────────────────────────────────────────────────────────────────────────────
 # Scratch tree base: TMPDIR by default (CI house-style, same as proto-deletion-gate.sh). Overridable so
 # a sandboxed run can put it under the repo's own target/ (which is excluded from the copy, so no
@@ -220,18 +233,31 @@ valid_plane() { case " $PLANES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # ~130 external deps compile once, not once per plane.
 SCRATCH_BASE="${PLANE_DELETE_SCRATCH_BASE:-${TMPDIR:-/tmp}}"
 CACHE_TARGET="${PLANE_DELETE_CARGO_TARGET:-$REPO/target/plane-delete-cache}"
-SCRATCHES=""   # space-separated list of scratch dirs to tear down
+# THE TEARDOWN LIST IS A FILE, NOT A VARIABLE. Every caller runs `s="$(make_scratch)"`, i.e. in a
+# command-substitution SUBSHELL, so a `SCRATCHES="$SCRATCHES $s"` inside make_scratch appended to the
+# subshell's copy and the parent's list stayed empty for the life of the run: the EXIT/INT/TERM/HUP
+# trap iterated nothing and every scratch -- a full copy of the working tree -- was left behind
+# (item 503). A file is shared by the subshell and the trap alike.
+SCRATCH_REGISTRY="$(mktemp "${TMPDIR:-/tmp}/plane-delete-scratches.XXXXXX")" \
+  || { echo "plane-delete-test: cannot create the scratch registry" >&2; exit 2; }
 
-cleanup() { local d; for d in $SCRATCHES; do rm -rf "$d" 2>/dev/null; done; }
+cleanup() {
+  local d
+  if [ -f "$SCRATCH_REGISTRY" ]; then
+    while IFS= read -r d; do [ -n "$d" ] && rm -rf "$d" 2>/dev/null; done <"$SCRATCH_REGISTRY"
+    rm -f "$SCRATCH_REGISTRY"
+  fi
+}
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM HUP
 
-# make_scratch → echoes a fresh scratch dir populated with a copy of the working tree.
+# make_scratch → echoes a fresh scratch dir populated with a copy of the working tree. The dir is
+# registered for teardown BEFORE it is populated, so an interrupted copy is torn down too.
 make_scratch() {
   local s
   s="$(mktemp -d "$SCRATCH_BASE/plane-delete-test.XXXXXX")" || return 1
-  SCRATCHES="$SCRATCHES $s"
+  printf '%s\n' "$s" >>"$SCRATCH_REGISTRY" || return 1
   # Copy the working tree, excluding the heavy/irrelevant dirs. Excluding ./target also auto-excludes an
   # in-repo SCRATCH_BASE (which lives under target/), so the copy never ingests itself.
   ( cd "$REPO" && tar --exclude='./target' --exclude='./.git' --exclude='./.claude' -cf - . ) \
@@ -425,6 +451,40 @@ apply_removal() {
   neutralise_bin       "$s" "$p"
   strip_workspace_edges "$s" "$p"
   strip_feature_edges   "$s" "$p"
+}
+
+# remove_codec_and_assert <scratch> <plane> → 0 removed and proven / 1 failed / 2 no codec half.
+#
+# A PLANE IS TWO CRATES WHILE THE CODEC SPLIT STANDS (scripts/plane-keys.sh `plane_src_roots`):
+# `busbar-<P>` (the I/O half) and `busbar-<P>-codec` (the pure half -- dialects, record vocabularies,
+# the bulk of the plane). The strong form removed only the first, and its verdict read as if the
+# whole plane were gone while `crates/busbar-<P>-codec` stayed a workspace member (item 504). This
+# removes the second half with the same `git rm -r` mechanics and the same asserted evidence as
+# `remove_and_assert`: the directory existed and is gone, the root manifest changed and no longer
+# lists it, and no manifest anywhere still declares a dependency on it.
+CODEC_EDGE_CRATES=""
+remove_codec_and_assert() {
+  local s="$1" c="$2-codec" pre_root left
+  [ -d "$s/crates/busbar-$c" ] || return 2
+  pre_root="$s/.plane-delete-pre-codec-root.toml"
+  cp "$s/Cargo.toml" "$pre_root" 2>/dev/null || { red "  cannot read the scratch's root manifest"; return 1; }
+  remove_crate_dir      "$s" "$c"
+  drop_member           "$s" "$c"
+  strip_workspace_edges "$s" "$c"
+  CODEC_EDGE_CRATES="$EDGE_CRATES"
+  strip_feature_edges   "$s" "$c"
+  if [ -d "$s/crates/busbar-$c" ]; then
+    red "  crates/busbar-$c is STILL PRESENT after the removal"; return 1
+  fi
+  if grep -q "\"crates/busbar-$c\"" "$s/Cargo.toml" 2>/dev/null || cmp -s "$pre_root" "$s/Cargo.toml"; then
+    red "  the root manifest still lists crates/busbar-$c, or was not rewritten"; return 1
+  fi
+  left="$(grep -l "^busbar-$c[[:space:]]*=" "$s/Cargo.toml" "$s"/crates/*/Cargo.toml 2>/dev/null | tr '\n' ' ')"
+  if [ -n "$left" ]; then
+    red "  a manifest still declares busbar-$c after the removal: $left"; return 1
+  fi
+  rm -f "$pre_root"
+  return 0
 }
 
 # ── PICKING A FREE PORT PAIR ─────────────────────────────────────────────────────────────────────
@@ -996,7 +1056,7 @@ remove_and_assert() {
 
 # strong_form <plane>  → 0 (PASS) / 1 (FAIL). Prints the two legs (neutral crates, bin) with evidence.
 strong_form() {
-  local p="$1" s keep log rc fail=0
+  local p="$1" s keep log rc pc fail=0
   keep="$(neutral_keep "$p")"
   s="$(make_scratch)" || { red "  scratch copy failed"; return 1; }
 
@@ -1034,13 +1094,19 @@ strong_form() {
   # way through a green run. That is a green that says a plane is independently buildable when it
   # is not, and the whole point of the strong form is that it cannot say that. `--all-targets` is
   # load-bearing: a test-only include only exists under it.
+  #
+  # NEVER SILENT. The crate is derived (plane_contract_crate); if it cannot be named or is not on disk
+  # this leg FAILS, because a leg that quietly does nothing for one plane is a PASS nobody earned.
   log="$CACHE_TARGET/.plane-delete-$p-plane.log"
-  if [ -d "$s/crates/busbar-plane-$p" ]; then
-    run_check "$s" "$log" -- -p "busbar-plane-$p" --all-targets; rc=$?
+  pc="$(plane_contract_crate "$p")"
+  if [ -z "$pc" ] || [ ! -d "$s/crates/$pc" ]; then
+    fail=1; red "  leg 1b: no contract plane crate for '$p' (derived: '${pc:-<none>}') — the plane crate was NOT compiled"
+  else
+    run_check "$s" "$log" -- -p "$pc" --all-targets; rc=$?
     if [ "$rc" -eq 0 ]; then
-      grn "  busbar-plane-$p compiles (all targets) without busbar-$p"
+      grn "  $pc compiles (all targets) without busbar-$p"
     else
-      fail=1; red "  busbar-plane-$p DOES NOT compile without busbar-$p — the plane reaches into the plugin"
+      fail=1; red "  $pc DOES NOT compile without busbar-$p — the plane reaches into the plugin"
       grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
     fi
   fi
@@ -1078,6 +1144,30 @@ strong_form() {
     fi
   fi
 
+  # Leg 1c — THE OTHER HALF OF THE PLANE (item 504). Legs 1/1b/2/3 above ran with
+  # `busbar-<P>-codec` still present: the bin compiles in the contract plane crate, which adapts over
+  # the codec, so those legs prove the I/O half is removable and say nothing about the codec half.
+  # Now take the codec away too and re-check the NEUTRAL crates — the owner's literal requirement is
+  # that they survive the plane's removal, and the codec is the bulk of the plane.
+  remove_codec_and_assert "$s" "$p"; rc=$?
+  case "$rc" in
+    2) note "  no busbar-$p-codec on disk — busbar-$p is the whole I/O plane crate; nothing further to remove" ;;
+    0)
+      [ -n "$CODEC_EDGE_CRATES" ] && note "  codec dependents severed with it:${CODEC_EDGE_CRATES}"
+      log="$CACHE_TARGET/.plane-delete-$p-codec-neutral.log"
+      # shellcheck disable=SC2086  # neutral_pkg_args expands to multiple -p flags, splitting is the point
+      run_check "$s" "$log" -- $(neutral_pkg_args) --no-default-features --features "$keep"; rc=$?
+      if [ "$rc" -eq 0 ]; then
+        grn "  neutral crates compile without busbar-$p AND busbar-$p-codec (the whole plane)"
+        note "  (the bin legs above ran with busbar-$p-codec present: the compiled-in contract plane crate adapts over it)"
+      else
+        fail=1; red "  neutral crates DO NOT compile without busbar-$p-codec — the neutral side still needs the plane's codec half"
+        grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+      fi
+      ;;
+    *) fail=1; red "  busbar-$p-codec exists but its removal could not be proven — no whole-plane verdict" ;;
+  esac
+
   return "$fail"
 }
 
@@ -1101,7 +1191,7 @@ plant_feature_ref() {
 # ── SELF-TEST — the harness cannot be lied to ─────────────────────────────────────────────────────
 run_selftest() {
   hdr "plane-delete-test SELF-TEST (the removal + verdict machinery proves itself)"
-  local fail=0 p s core_toml
+  local fail=0 p s core_toml rc pc
 
   # (1) REMOVAL EVIDENCE for EVERY plane (fast, no compile): the mutation really removes the crate dir,
   #     the members entry, and the bin dependency line. This is the unfakeable mechanism proof, and it
@@ -1117,6 +1207,42 @@ run_selftest() {
     fi
     rm -rf "$s"
   done
+
+  # (1c) THE CODEC HALF IS REMOVED TOO (item 504), with evidence, for every plane that has one; and a
+  #      plane with none is reported as such (status 2), never as a removal that happened.
+  for p in $PLANES; do
+    [ -d "$REPO/crates/busbar-$p-codec" ] || continue
+    s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+    if remove_and_assert "$s" "$p" >/dev/null 2>&1 && remove_codec_and_assert "$s" "$p" \
+       && [ ! -d "$s/crates/busbar-$p-codec" ] \
+       && ! grep -q "\"crates/busbar-$p-codec\"" "$s/Cargo.toml"; then
+      note "PASS  codec removal($p): crates/busbar-$p-codec + its member + every dependency on it gone, and asserted"
+    else
+      fail=1; note "FAIL  codec removal($p): busbar-$p-codec is on disk and the strong form did not remove it"
+    fi
+    rm -rf "$s"
+  done
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  remove_codec_and_assert "$s" "mcp" >/dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 2 ]; then
+    note "PASS  codec removal control: a plane with no -codec crate answers 'none on disk' (2), not a removal"
+  else
+    fail=1; note "FAIL  codec removal control: a plane with no -codec crate returned $rc, not 2"
+  fi
+  rm -rf "$s"
+
+  # (1d) THE TEARDOWN WORKS FROM WHERE IT IS CALLED (item 503). Every call site is
+  #      `s="$(make_scratch)"`; run exactly that in a child of this script, let it exit, and the
+  #      scratch it made must be gone. A teardown list kept in a variable the subshell appends to
+  #      is empty in the parent, and the scratch — a full tree copy — survives.
+  local leaked
+  leaked="$(bash "$REPO/scripts/$(basename "$0")" --selftest-scratch-probe 2>/dev/null | tail -1)"
+  if [ -n "$leaked" ] && [ ! -e "$leaked" ]; then
+    note "PASS  teardown: a scratch made via \$(make_scratch) is removed when the run exits"
+  else
+    fail=1; note "FAIL  teardown: the scratch '${leaked:-<none printed>}' survived the run that made it"
+    [ -n "$leaked" ] && case "$leaked" in "$SCRATCH_BASE"/plane-delete-test.*) rm -rf "$leaked" ;; esac
+  fi
 
   # (1b) THE RED CONTROL FOR THE REMOVAL ITSELF — a REAL crate planted under a name the harness does
   #      not know, which is exactly what a renamed plane crate looks like from here.
@@ -1178,7 +1304,7 @@ run_selftest() {
   s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
   remove_crate_dir "$s" "$rp"
   drop_member      "$s" "$rp"     # note: neutralise_bin intentionally OMITTED
-  local log rc
+  local log
   log="$CACHE_TARGET/.plane-delete-selftest-red.log"; mkdir -p "$CACHE_TARGET"
   run_check "$s" "$log" -- -p busbar; rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -1442,6 +1568,17 @@ run_selftest() {
     fi
   done
 
+  # (6b) LEG 1b HAS A REAL CRATE FOR EVERY PLANE (item 505). A plane whose contract plane crate the
+  #      harness cannot name, or names wrongly, is a plane whose leg 1b does nothing.
+  for p in $PLANES; do
+    pc="$(plane_contract_crate "$p")"
+    if [ -n "$pc" ] && [ -d "$REPO/crates/$pc" ]; then
+      note "PASS  contract plane crate($p): $pc exists — leg 1b compiles it"
+    else
+      fail=1; note "FAIL  contract plane crate($p): '${pc:-<none>}' is not on disk — leg 1b would compile nothing for $p"
+    fi
+  done
+
   # (7) THE ROSTER-COVERAGE GAP IS COMPUTED, NAMED, AND NEVER SILENT. `--all`/`--baseline` iterate
   #     $PLANES (today: llm, mcp, a2a, voice) and used to let that stand in for "the whole roster" —
   #     proving nothing about the two planes (streaming, decisions) where the locked name and the
@@ -1521,6 +1658,9 @@ run_baseline() {
 # ── modes ─────────────────────────────────────────────────────────────────────────────────────────
 case "${1:-}" in
   --selftest) run_selftest; exit $? ;;
+  # SELF-TEST HELPER (item 503): make one scratch the way every caller does, print it, and exit so the
+  # EXIT trap runs. The self-test then checks the directory is gone.
+  --selftest-scratch-probe) s="$(make_scratch)" || exit 1; printf '%s\n' "$s"; exit 0 ;;
   # DIAGNOSTIC: build and boot the UNMUTATED tree and print what each plane's probe answers with its
   # crate present. This is the calibration every boot-leg verdict is taken against, so being able to
   # look at it directly is how a failing positive control gets diagnosed (bad path? bad method? a
@@ -1560,11 +1700,11 @@ case "${1:-}" in
     fi
     red "plane-delete gate: FAIL — a plane's neutral crates still need its crate to compile"; exit 1
     ;;
-  --with-witness) export WITH_WITNESS=1; shift; exec "$0" "${1:---baseline}" ;;
+  --with-witness) export WITH_WITNESS=1; shift; cleanup; exec "$0" "${1:---baseline}" ;;
   # The boot leg is the expensive half (a bin build per plane plus the one-off control build and two
   # boots each). It is ON by default — it is the only leg that can tell a mounted route from a
   # deleted one — and this flag turns it off for a compile-only pass on a machine that cannot boot.
-  --skip-boot-leg) export SKIP_BOOT_LEG=1; shift; exec "$0" "${1:---baseline}" ;;
+  --skip-boot-leg) export SKIP_BOOT_LEG=1; shift; cleanup; exec "$0" "${1:---baseline}" ;;
   -h | --help) sed -n '2,74p' "$0" ;;
   "" ) echo "usage: $0 [--selftest | --baseline | --all | <$(printf '%s' "$PLANES" | tr ' ' '|')>] [--with-witness] [--skip-boot-leg]" >&2
        [ -n "$LOCKED_GAPS" ] && echo "  (locked five-plane roster: $PLANE_KEYS_LOCKED — NOT YET testable here: $LOCKED_GAPS)" >&2
@@ -1573,7 +1713,11 @@ case "${1:-}" in
     if valid_plane "$1"; then
       hdr "STRONG-FORM deletion test — plane: $1"
       if strong_form "$1"; then
-        grn "plane-delete gate ($1): PASS — neutral crates + bin compile with busbar-$1 physically gone"
+        if [ -d "$REPO/crates/busbar-$1-codec" ]; then
+          grn "plane-delete gate ($1): PASS — neutral crates + bin compile with busbar-$1 physically gone; neutral crates also with busbar-$1-codec gone"
+        else
+          grn "plane-delete gate ($1): PASS — neutral crates + bin compile with busbar-$1 physically gone"
+        fi
         exit 0
       fi
       red "plane-delete gate ($1): FAIL — a neutral crate or the bin still needs busbar-$1 to compile"
