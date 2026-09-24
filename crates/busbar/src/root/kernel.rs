@@ -421,15 +421,30 @@ pub struct CardRepricer;
 
 impl busbar_kernel::rate_apply::RateApply for CardRepricer {
     fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
-        ROOT_CARD.apply(
-            card_from_config(
-                rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
-                rates.flat_minor,
-                rates.present,
-            ),
-            busbar_kernel::store::now_ms(),
-        );
+        ROOT_CARD.apply(card_from_raw(rates), busbar_kernel::store::now_ms());
     }
+}
+
+/// The card one rate apply builds, and so the card every DATED history entry holds: the reserved
+/// four and the flat figure through [`card_from_config`], then every open-class rate the lanes'
+/// `units:` name (item 123) — the same two steps, in the same order, the live card is built by
+/// (`CostModel::resolve_parts`). Without the second step an older era holding open-class usage
+/// (a rerank's `search_units`) resolved to a card with no such cell and REFUSED where the live
+/// card priced it.
+pub(crate) fn card_from_raw(
+    rates: &busbar_kernel::rate_apply::RawRates<'_>,
+) -> busbar_kernel_ledger::cost::RateCard {
+    card_from_config(
+        rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
+        rates.flat_minor,
+        rates.present,
+    )
+    .with_unit_rates(rates.units.iter().map(|(lane, class, nanos)| {
+        (
+            busbar_kernel_ledger::cost::LaneClass::new(lane.as_str(), class.as_str()),
+            *nanos,
+        )
+    }))
 }
 
 /// **THE ROOT, DATING A PRICE** — the read-side twin of the apply above.

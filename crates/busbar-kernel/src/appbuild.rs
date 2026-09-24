@@ -628,13 +628,16 @@ pub fn build_app_from_config(
     // rates are resolved raises the one seam that says so, and it says it on the boot resolution and
     // on every apply/reload alike, because this function is both. Nothing is installed in a build
     // with no such holder and the call is a no-op there.
+    let (mut lanes, mut units) = (Vec::new(), Vec::new());
+    for (lane, e) in cfg.rate_card.iter().flatten() {
+        lanes.push((lane.clone(), e.raw_tier_rates()));
+        for (class, rate) in &e.units {
+            units.push((lane.clone(), class.clone(), rate.nanos_per_unit()));
+        }
+    }
     busbar_kernel::rate_apply::rates_applied(&busbar_kernel::rate_apply::RawRates {
-        lanes: &cfg
-            .rate_card
-            .iter()
-            .flat_map(|card| card.iter())
-            .map(|(lane, entry)| (lane.clone(), entry.raw_tier_rates()))
-            .collect::<Vec<_>>(),
+        lanes: &lanes,
+        units: &units,
         flat_minor: cfg.per_request_fee,
         present: cfg.rate_card.is_some(),
     });

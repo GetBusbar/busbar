@@ -191,6 +191,60 @@ fn the_card_an_apply_builds_carries_its_configured_fee_at_the_one_scale() {
     );
 }
 
+/// **EVERY DATED CARD PRICES THE OPEN CLASSES THE LIVE ONE DOES** (item 123 × Q14, P2-rootfollow).
+///
+/// A rerank lane prices `search_units` at 5 µ/unit, then an edit mid-window moves it to 3 µ/unit.
+/// 1,000,000 units were earned under the first card and 2,000,000 under the second. The history
+/// entry each era resolves to is built by the SAME builder a rate apply uses, so the older era's
+/// card carries the open-class cell: 5,000,000 + 6,000,000 = 11,000,000 micro (1,100 minor), and
+/// nothing refuses. Before the builder carried `units`, the older era's card had no
+/// `search_units` cell and the whole read REFUSED with `ClassUnpriced`.
+#[test]
+fn a_card_edit_mid_window_prices_an_open_class_in_both_eras_and_refuses_neither() {
+    let zero = busbar_substrate_values::billing::RawTierRates {
+        input: 0.0,
+        output: 0.0,
+        cache_read: 0.0,
+        cache_write: 0.0,
+    };
+    let lanes = [("rerank".to_string(), zero)];
+    let era = |nanos: u64| [("rerank".to_string(), "search_units".to_string(), nanos)];
+    let (before, after) = (era(5_000), era(3_000));
+    let raw = |units| busbar_kernel::rate_apply::RawRates {
+        lanes: &lanes,
+        units,
+        flat_minor: 0,
+        present: true,
+    };
+
+    let holder = RootHistory::default();
+    holder.apply(super::card_from_raw(&raw(&before)), 1_000);
+    holder.apply(super::card_from_raw(&raw(&after)), 2_000);
+    let history = holder.history().expect("two applies are a history");
+    let live = super::card_from_raw(&raw(&after));
+
+    let earned_before = std::collections::BTreeMap::from([("search_units".to_string(), 1_000_000)]);
+    let earned_after = std::collections::BTreeMap::from([("search_units".to_string(), 2_000_000)]);
+    let priced = busbar_kernel_ledger::usage::price_dated(
+        [
+            ("rerank", 0, &earned_before),
+            ("rerank", 2_000, &earned_after),
+        ],
+        [],
+        0,
+        &live,
+        Some(busbar_kernel_ledger::usage::DatedHistory::of(
+            &history, 3_000,
+        )),
+    )
+    .expect("an open class the older era's card priced must price, not refuse");
+    assert_eq!(
+        priced.micros(),
+        11_000_000,
+        "each era at the open-class rate in force when it was earned"
+    );
+}
+
 /// A chain with one module in it, so the front door is CLOSED without needing a governance state
 /// to close it. What the grant reads is the posture, not the module, so a module that answers
 /// nothing is enough to state the posture with.

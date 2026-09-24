@@ -9,15 +9,23 @@ use std::sync::Mutex;
 /// assertion about the figures rather than about the call not panicking.
 struct Recorder(Mutex<Vec<Seen>>);
 
-/// One apply, as the holder saw it: the lanes with their four tier rates, the fee, the flag.
-type Seen = (Vec<(String, RawTierRates)>, i64, bool);
+/// One apply, as the holder saw it: the lanes with their four tier rates, the open-class rates,
+/// the fee, the flag.
+type Seen = (
+    Vec<(String, RawTierRates)>,
+    Vec<(String, String, u64)>,
+    i64,
+    bool,
+);
 
 impl RateApply for Recorder {
     fn rates_applied(&self, rates: &RawRates<'_>) {
-        self.0
-            .lock()
-            .unwrap()
-            .push((rates.lanes.to_vec(), rates.flat_minor, rates.present));
+        self.0.lock().unwrap().push((
+            rates.lanes.to_vec(),
+            rates.units.to_vec(),
+            rates.flat_minor,
+            rates.present,
+        ));
     }
 }
 
@@ -37,6 +45,7 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     );
     rates_applied(&RawRates {
         lanes: &[],
+        units: &[],
         flat_minor: 7,
         present: false,
     });
@@ -59,8 +68,11 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
         cache_write: 8.0,
     };
     let lanes = [("fast".to_string(), fast), ("slow".to_string(), slow)];
+    // An open-class rate (item 123) travels beside the four, verbatim.
+    let units = [("slow".to_string(), "search_units".to_string(), 5_000)];
     rates_applied(&RawRates {
         lanes: &lanes,
+        units: &units,
         flat_minor: 11,
         present: true,
     });
@@ -68,7 +80,7 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     let seen = recorder.0.lock().unwrap().clone();
     assert_eq!(
         seen,
-        vec![(lanes.to_vec(), 11, true)],
+        vec![(lanes.to_vec(), units.to_vec(), 11, true)],
         "exactly the one apply raised after the install, with the lanes in the deployment's own \
          order, every tier rate, the fee and the present flag as they were resolved — the apply \
          raised BEFORE it reached nobody, which is what an uninstalled seam owes"
@@ -78,13 +90,14 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     // all, and collapsing the two would turn one deployment's configuration into another's.
     rates_applied(&RawRates {
         lanes: &[],
+        units: &[],
         flat_minor: 11,
         present: true,
     });
     let seen = recorder.0.lock().unwrap().clone();
     assert_eq!(
         seen.last(),
-        Some(&(Vec::new(), 11, true)),
+        Some(&(Vec::new(), Vec::new(), 11, true)),
         "an empty lane list under a PRESENT card is carried as present, not folded into absent"
     );
 }
