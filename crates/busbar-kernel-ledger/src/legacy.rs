@@ -41,6 +41,9 @@ pub struct LegacyPosting {
     pub settled: u64,
     /// How much of what was posted had no reservation behind it.
     pub overdraft: u64,
+    /// How many billable requests the posting is: the count the flat fee is charged on, and the
+    /// figure the previous release's rows keep as the row's billable requests.
+    pub fee_count: u64,
 }
 
 /// Why a legacy row could not be written.

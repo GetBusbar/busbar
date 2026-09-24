@@ -447,10 +447,11 @@ impl LedgerView for UnopenedLedger {
 /// which is why the release's own gate on that identity is the test over both pricing paths, and
 /// this view is the operator's read of the node rather than a second gate.
 ///
-/// The fee count is zero on both sides for the same reason and it is zero on BOTH, never on one:
-/// neither the books nor the previous release's posting carry one at this width, so the count half of
-/// the identity compares two absences and reports nothing. A view that put a count on one side and a
-/// zero on the other would report every row on a healthy node as out.
+/// The fee count is read on BOTH sides from the one settlement that moved them: a posting that is
+/// `n` billable requests settles `n` onto the balance beside its figure and writes `n` onto the
+/// previous release's row as that row's billable requests. So the count half of the identity
+/// compares two real counts — a dual write that dropped or doubled a count is a row that is out,
+/// exactly as a dropped figure is.
 pub struct NodeLedger {
     durability: Arc<Mutex<crate::root::durability::Durability>>,
     legacy: Arc<dyn LegacyRowsRead>,
@@ -504,8 +505,10 @@ impl NodeLedger {
             // hold opens on it, and serving those as rows of zero would put a line in front of an
             // operator for every key that was ever admitted and never billed. A cell whose settled
             // figure has been adjusted below zero is not a row that was posted either, which is why
-            // this is a skip rather than a saturating cast that would report it as zero.
-            if totals.settled <= 0 {
+            // this is a skip rather than a saturating cast that would report it as zero. A cell
+            // holding billable requests IS a row, figure or none: the previous release's side
+            // counts every one of them, and skipping it here would report its count as missing.
+            if totals.settled <= 0 && totals.fee_count == 0 {
                 continue;
             }
             let row = RowKey::new(
@@ -517,9 +520,10 @@ impl NodeLedger {
             // Accumulated rather than inserted: one bucket-day can hold several cells — a dimension
             // and a scope apiece — and at the width this view reads they are one row.
             let entry: &mut LedgerRow = rows.entry(row).or_default();
-            entry.priced_nanos = entry
-                .priced_nanos
-                .saturating_add(totals.settled.unsigned_abs());
+            if let Ok(settled) = u128::try_from(totals.settled) {
+                entry.priced_nanos = entry.priced_nanos.saturating_add(settled);
+            }
+            entry.fee_count = entry.fee_count.saturating_add(totals.fee_count);
         }
         rows
     }
@@ -540,7 +544,8 @@ impl NodeLedger {
         // which is a handful whatever the traffic since boot has been, and the postings themselves
         // are read where they already live. A view that took a copy of the whole history first paid
         // for every posting ever made, under the lock every settlement waits on.
-        let mut nanos: std::collections::BTreeMap<RowKey, u128> = std::collections::BTreeMap::new();
+        let mut sums: std::collections::BTreeMap<RowKey, (u128, u64)> =
+            std::collections::BTreeMap::new();
         self.legacy.fold_postings(&mut |posting| {
             let row = RowKey::new(
                 posting.bucket.as_str(),
@@ -548,20 +553,20 @@ impl NodeLedger {
                 WIDTH_THE_NODE_KEEPS,
                 WIDTH_THE_NODE_KEEPS,
             );
-            let entry = nanos.entry(row).or_default();
-            *entry = entry.saturating_add(u128::from(posting.settled));
+            let (nanos, billable) = sums.entry(row).or_default();
+            *nanos = nanos.saturating_add(u128::from(posting.settled));
+            *billable = billable.saturating_add(posting.fee_count);
         });
         // THE ONE PROJECTION, CHECKED (item 28): a row past the `i64` it is served in refuses the
         // whole read. It was pinned at `i64::MAX`, a figure nobody posted.
-        nanos
-            .into_iter()
-            .map(|(row, nanos)| {
+        sums.into_iter()
+            .map(|(row, (nanos, billable_requests))| {
                 let spend_micros = Money::of_nanos(nanos)?.micros_i64()?;
                 Ok((
                     row,
                     LegacyRow {
                         spend_micros,
-                        billable_requests: 0,
+                        billable_requests,
                     },
                 ))
             })

@@ -465,15 +465,18 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
          an absolute so a change that moved both sides of the comparison identically still fails here"
     );
 
-    // The fee count, at the width the node keeps. Zero on BOTH sides and never on one: neither the
-    // books nor the legacy posting retain a count at this width, so the count half of the identity
-    // compares two absences. A view that put a count on one side and a zero on the other would
-    // report every row on a healthy node as out — which is why this is asserted rather than skipped.
+    // The fee count, at the width the node keeps: ONE per delivered response, on the books as on the
+    // legacy side — each late posting settles its billable-request count beside its figure and
+    // writes the same count onto the previous release's row, so the count half of the identity
+    // compares two real counts rather than two zeros that could never disagree.
     let served_fees: u64 = rows
         .iter()
         .map(|r| r["fee_count"].as_u64().expect("fee_count"))
         .sum();
-    assert_eq!(served_fees, 0);
+    assert_eq!(
+        served_fees, total_requests,
+        "one flat fee per delivered response on the node's own books\n{totals}"
+    );
     for row in rows {
         assert_eq!(
             row["day"].as_u64(),

@@ -4541,3 +4541,106 @@ fn a_ledger_figure_past_the_served_range_fails_the_read_and_is_never_served_pinn
     let doc: serde_json::Value = serde_json::from_slice(&totals).expect("valid JSON");
     assert_eq!(doc["rows"][0]["priced_micros"], "1");
 }
+
+/// The day the fee-count proof settles in.
+#[cfg(feature = "root-admin")]
+const FEE_DAY: u64 = 1_767_225_600;
+
+/// Settle one late unit onto `durability` the way the LLM late arm does: `amount` nano-units, with
+/// its counts — `fee_count` billable requests among them.
+#[cfg(feature = "root-admin")]
+fn settle_late_unit_with_fees(
+    durability: &mut crate::root::durability::Durability,
+    bucket: &str,
+    amount: u64,
+    fee_count: u64,
+) {
+    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
+    use busbar_contract::caps::{
+        DurableWrite, Grant, HoldAccrual, KernelSeal, Posted, PrincipalId, WriteMoney,
+    };
+    let seal = KernelSeal::acquire_for_kernel();
+    let ledger = Grant::<WriteMoney>::mint(&seal);
+    let token = Grant::<DurableWrite>::mint(&seal);
+    let posted = Posted::settle_late(
+        HoldAccrual::after_terminal(PrincipalId::new(bucket), amount, &ledger),
+        &ledger,
+    );
+    let counts = UnitCounts {
+        lane: "lane-a".to_string(),
+        fee_count,
+        classes: std::collections::BTreeMap::from([
+            ("input".to_string(), 11),
+            ("output".to_string(), 7),
+        ]),
+    };
+    durability
+        .settle_counted(
+            &Settling {
+                key: &busbar_kernel_ledger::totals::TotalsKey::new(
+                    busbar_kernel_ledger::totals::BucketId::new(bucket),
+                    busbar_kernel_ledger::totals::CapDimension::NanoUnits,
+                    busbar_kernel_ledger::totals::BucketScope::All,
+                ),
+                window: FEE_DAY,
+                durability: &token,
+                step: busbar_contract::caps::StepName::Meter,
+                stamp: PostingStamp {
+                    rate_card_version: 0,
+                    wall: FEE_DAY,
+                    mono: 1,
+                },
+            },
+            posted,
+            &counts,
+            FEE_DAY * 1_000,
+        )
+        .expect("the memory-buffered journal takes it");
+}
+
+/// **THE COUNT HALF OF THE NODE'S OWN RECONCILIATION COMPARES TWO REAL COUNTS.**
+///
+/// A unit that is a billable request settles its fee count onto the balance beside its figure,
+/// and the dual write carries the same count onto the previous release's row as that row's
+/// billable requests. Both sides of the served identity therefore read the count the postings
+/// made — three billable requests over two units here, on each side — and a previous-release side
+/// that lost one is a row that is OUT on the count half, where two sides fixed at zero compared
+/// `0 == 0` on every row of every node and could never say so.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_node_books_carry_the_fee_count_on_both_sides_and_a_lost_count_is_out() {
+    use crate::root::ledger_identity::{reconcile, RowKey};
+    use crate::root::units_admin::{LedgerView, LegacyRowsRead, NodeLedger};
+
+    let book = crate::root::durability::node_book();
+    {
+        let mut durability = book.durability.lock().expect("unpoisoned");
+        settle_late_unit_with_fees(&mut durability, "key-1", 1_250_000, 1);
+        settle_late_unit_with_fees(&mut durability, "key-1", 3_500_000, 2);
+    }
+    let legacy: std::sync::Arc<dyn LegacyRowsRead> = book.rows.clone();
+    let view = NodeLedger::new(std::sync::Arc::clone(&book.durability), legacy);
+    let (ledger, legacy) = view.identity_snapshot().expect("every row projects");
+
+    let key = RowKey::new("key-1", FEE_DAY, "", "");
+    assert_eq!(
+        ledger.get(&key).map(|row| row.fee_count),
+        Some(3),
+        "the books carry the fee count the postings settled"
+    );
+    assert_eq!(
+        legacy.get(&key).map(|row| row.billable_requests),
+        Some(3),
+        "the previous release's row carries the same count as its billable requests"
+    );
+    assert_eq!(reconcile(&ledger, &legacy), Ok(Vec::new()));
+
+    // A previous-release side that lost one billable request is out, on the count half alone.
+    let mut short = legacy.clone();
+    if let Some(row) = short.get_mut(&key) {
+        row.billable_requests = 2;
+    }
+    let out = reconcile(&ledger, &short).expect("every row projects");
+    assert_eq!(out.len(), 1, "the lost count is named: {out:?}");
+    assert!(out[0].fees_disagree());
+}

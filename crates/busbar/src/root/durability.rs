@@ -99,7 +99,7 @@ use busbar_kernel_ledger::checkpoint::Checkpoint;
 use busbar_kernel_ledger::cost::{HistoryView, MoneyError};
 use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_kernel_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
-use busbar_kernel_ledger::settle::{Ledger, Settlement};
+use busbar_kernel_ledger::settle::{Figures, Ledger, Settlement};
 use busbar_kernel_ledger::totals::{
     BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart,
 };
@@ -553,7 +553,9 @@ impl Durability {
         counts: &UnitCounts,
         arrived_ms: u64,
     ) -> Result<Settled, DurabilityLost> {
-        let settlement = self.ledger.post(at.key, at.window, posted);
+        let settlement = self
+            .ledger
+            .post_counted(at.key, at.window, posted, counts.fee_count);
         self.journal_settlement_counted(at, settlement, self.incarnation, Some(counts), arrived_ms)
     }
 
@@ -1641,19 +1643,12 @@ fn replay_into(
                 RecordEra::Counts => derived_figures(&posting, closes.unwrap_or(0), history),
             };
             match figures {
-                Ok(Some((reserved, settled, overdraft))) => {
-                    ledger.replay_post(
-                        &posting.key,
-                        posting.window,
-                        &posting.principal,
-                        reserved,
-                        settled,
-                        overdraft,
-                    );
+                Ok(Some(figures)) => {
+                    ledger.replay_post(&posting.key, posting.window, &posting.principal, figures);
                     if keep {
-                        posting.reserved = i128::from(reserved);
-                        posting.settled = i128::from(settled);
-                        posting.overdraft = i128::from(overdraft);
+                        posting.reserved = i128::from(figures.reserved);
+                        posting.settled = i128::from(figures.settled);
+                        posting.overdraft = i128::from(figures.overdraft);
                         read.push(posting);
                     }
                 }
@@ -1676,9 +1671,10 @@ fn replay_into(
                             &posting.key,
                             posting.window,
                             &posting.principal,
-                            reserved,
-                            0,
-                            0,
+                            Figures {
+                                reserved,
+                                ..Figures::default()
+                            },
                         );
                     }
                     posting.refusal = Some(why);
@@ -1713,9 +1709,15 @@ enum Unplaced {
 }
 use Unplaced::{Negative, Refused};
 
+/// How many billable requests a posting is: its counts' fee count, and none on a record that
+/// carries no counts.
+fn fee_count_of(posting: &Posting) -> u64 {
+    posting.counts.as_ref().map_or(0, |counts| counts.fee_count)
+}
+
 /// The three figures a figures-era record holds, as written. `None` for a counts row, which
 /// moved no balance when it was written.
-fn figures_as_written(posting: &Posting) -> Result<Option<(u64, u64, u64)>, Unplaced> {
+fn figures_as_written(posting: &Posting) -> Result<Option<Figures>, Unplaced> {
     if posting.kind == PostingKind::Counted {
         return match &posting.refusal {
             Some(why) => Err(Refused(why.clone())),
@@ -1727,7 +1729,12 @@ fn figures_as_written(posting: &Posting) -> Result<Option<(u64, u64, u64)>, Unpl
         u64::try_from(posting.settled),
         u64::try_from(posting.overdraft),
     ) {
-        (Ok(reserved), Ok(settled), Ok(overdraft)) => Ok(Some((reserved, settled, overdraft))),
+        (Ok(reserved), Ok(settled), Ok(overdraft)) => Ok(Some(Figures {
+            reserved,
+            settled,
+            overdraft,
+            fee_count: fee_count_of(posting),
+        })),
         _ => Err(Negative),
     }
 }
@@ -1739,7 +1746,7 @@ fn derived_figures(
     posting: &Posting,
     reserved: u64,
     history: Option<&HistoryView<'_>>,
-) -> Result<Option<(u64, u64, u64)>, Unplaced> {
+) -> Result<Option<Figures>, Unplaced> {
     let settled = match &posting.counts {
         None => 0,
         Some(counts) => price_counts(history, counts, posting.arrived_ms)
@@ -1749,7 +1756,12 @@ fn derived_figures(
     if posting.kind == PostingKind::Counted && settled == 0 {
         return Ok(None);
     }
-    Ok(Some((reserved, settled, settled.saturating_sub(reserved))))
+    Ok(Some(Figures {
+        reserved,
+        settled,
+        overdraft: settled.saturating_sub(reserved),
+        fee_count: fee_count_of(posting),
+    }))
 }
 
 /// A posting of the figures era without the tail: a balance display, a window and three figures and
