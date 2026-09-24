@@ -682,7 +682,9 @@ where
                         // before the first byte fed no reader and so bills nothing.
                         this.tap.report(TapReport {
                             lane: this.lane_idx,
-                            usage: this.translate.as_ref().and_then(|t| t.usage()),
+                            // The figure the Drop bills for this cut — a same-protocol non-stream
+                            // prefix included (item 367) — so the report and the accrual agree.
+                            usage: this.incurred_usage(),
                             // This end reads usage through a TOKEN reader only, so no counted class reaches it.
                             open_units: Default::default(),
                             finish: if had_first {
@@ -980,11 +982,16 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         // the guard makes that a fact about this file rather than about the cell.
         //
         // The tokens below were really generated and really delivered before the caller went away,
-        // and the arm underneath bills them — as it bills a cut's (#62).
+        // and the arm underneath bills them — as it bills a cut's (#62). ONE reading serves both.
+        let usage = if !self.ended || self.usage_sink.is_some() {
+            self.incurred_usage()
+        } else {
+            None
+        };
         if !self.ended {
             self.tap.report(TapReport {
                 lane: self.lane_idx,
-                usage: self.translate.as_ref().and_then(|t| t.usage()),
+                usage: usage.clone(),
                 // This end reads usage through a TOKEN reader only, so no counted class reaches it.
                 open_units: Default::default(),
                 finish: TapFinish::Partial,
@@ -996,14 +1003,15 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         // (client disconnect / cancellation), or CUT by an upstream transport error or the stream
         // ceiling (both transport arms set `ended` and leave the sink in place for this site). Either
         // way the natural-end site never ran, and the tokens already generated + delivered would go
-        // unbilled. Bill the tokens the readers accumulated up to the cut point instead: a
-        // mid-stream cut is an interruption, not a reversal of incurred cost (#62, owner-locked).
+        // unbilled. Bill the tokens incurred up to the cut point instead: a mid-stream cut is an
+        // interruption, not a reversal of incurred cost (#62, owner-locked).
         //
-        // Best-effort: the provider's terminal usage frame may not have arrived before the cancel, so
-        // `translate.usage()` may be partial or absent — partial/zero usage bills partial/zero
-        // (`record_tokens` no-ops on 0 tokens). Only the streaming `translate.usage()` source is
-        // consulted; a partially-buffered same-proto non-stream body cannot be reliably parsed for
-        // usage, so it is not billed on a mid-buffer drop.
+        // Best-effort on a STREAM: the provider's terminal usage frame may not have arrived before the
+        // cancel, so `translate.usage()` may be partial or absent — partial/zero usage bills
+        // partial/zero (`record_tokens` no-ops on 0 tokens). A SAME-PROTOCOL NON-STREAM body dropped
+        // mid-relay is NOT zero: the completion was generated whole before its first byte, so it bills
+        // the usage recovered from the bytes in hand, else the floor over them (`incurred_usage`, item
+        // 367). It used to bill nothing here, on the one delivery path whose tokens were all spent.
         let Some(sink) = self.usage_sink.take() else {
             return;
         };
@@ -1011,7 +1019,6 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         // readers were fed only the frames that arrived before it, so their usage is what streamed
         // (`test_mid_stream_transport_error_does_not_bill_partial_usage`, whose name PB-27 still binds). Nothing streamed
         // before the first byte, so a cut there has no reader usage and accrues nothing below.
-        let usage = self.translate.as_ref().and_then(|t| t.usage());
         let tier = usage
             .as_ref()
             .map(crate::engine::usage::tier_usage)
@@ -1032,6 +1039,25 @@ impl<S, P> Drop for FirstByteBody<S, P> {
 }
 
 impl<S, P> FirstByteBody<S, P> {
+    /// THE USAGE A BODY THAT ENDED EARLY HAD ALREADY INCURRED — the one figure both the cut's
+    /// report-back and the drop-time accrual read, so the two books are handed one number (#71).
+    ///
+    /// A streaming body (same- or cross-protocol) reads what its readers accumulated up to the end
+    /// (`translate.usage()`, #62). A SAME-PROTOCOL NON-STREAM body (`translate == None`, `!is_sse`)
+    /// has no incremental reader, but its bounded copy (`nonstream_buf`) holds the bytes relayed so
+    /// far — and a non-streamed completion is generated WHOLE before its first byte is sent, so a body
+    /// that was cut or dropped mid-relay was paid for upstream in full. It bills exactly what the
+    /// truncated-tail path bills when it cannot read the whole document: the dialect's own `usage`
+    /// scan over the bytes in hand, else the conservative floor over them (`unrecovered_usage`), never
+    /// 0 (item 367). An empty copy — nothing relayed, a flat-fee op, or no sink to bill — is `None`.
+    fn incurred_usage(&self) -> Option<busbar_substrate_values::billing::TokenUsage> {
+        match self.translate.as_ref() {
+            Some(t) => t.usage(),
+            None => (!self.is_sse && !self.nonstream_buf.is_empty())
+                .then(|| unrecovered_usage(self.ingress_protocol, &self.nonstream_buf)),
+        }
+    }
+
     pub(crate) fn into_body(self) -> Body
     where
         S: Stream<Item = Result<Bytes, hyper::Error>> + Unpin + Send + 'static,
@@ -1044,3 +1070,7 @@ impl<S, P> FirstByteBody<S, P> {
 #[cfg(test)]
 #[path = "tests/unreadable_usage_floor_tests.rs"]
 mod unreadable_usage_floor_tests;
+
+#[cfg(test)]
+#[path = "engine_tests/nonstream_drop_billing_tests.rs"]
+mod nonstream_drop_billing_tests;
