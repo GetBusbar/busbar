@@ -49,6 +49,33 @@ const FIELD_CONTENT_TYPE: &str = "content-type";
 const CONTENT_TYPE_JSON: &[u8] = b"application/json";
 
 impl DecisionPlane {
+    /// The ONE provider a unit on this plane is dialled against, judged against and named by.
+    ///
+    /// A jev request names no provider — its body is the caller's `state`, its operation is the
+    /// verb and path — so the plane can only answer "which provider" when exactly one is
+    /// configured. With none, or with several, there is no provider the request can be said to
+    /// target, and every per-unit answer (`verify`, `approve`, the provider fact) is the same
+    /// honest one [`DecisionPlane::EMPTY`] gives: no destination the trust unit admits, no provider
+    /// named for scope. Picking the first-declared of several would dial, and ask scope for, a
+    /// provider the caller never chose.
+    fn provider(&self) -> Option<&'static crate::DecisionProvider> {
+        match self.providers() {
+            [only] => Some(only),
+            _ => None,
+        }
+    }
+
+    /// The draft facts every unit starts with: its operation, and the provider it is dialled
+    /// against where one resolves.
+    fn draft_facts(&self, row: &ops::MethodRow) -> Facts<'static> {
+        let mut facts = Facts::new();
+        let _ = facts.set(f::FACT_OP, FactValue::Str(row.op.as_str()));
+        if let Some(p) = self.provider() {
+            let _ = facts.set(f::FACT_PROVIDER, FactValue::Str(p.id));
+        }
+        facts
+    }
+
     /// A leg reaching the configured provider, or an unreachable one when none is configured.
     ///
     /// A plane with nothing configured answers honestly rather than panicking or inventing a host:
@@ -61,7 +88,7 @@ impl DecisionPlane {
 
     /// Where a hop to the configured provider goes.
     fn upstream_destination(&self) -> DestinationFacts {
-        match self.providers().first() {
+        match self.provider() {
             Some(p) => DestinationFacts::Upstream {
                 transport: p.transport,
                 address: busbar_contract::UpstreamAddress::socket(p.host),
@@ -175,14 +202,12 @@ impl Plane for DecisionPlane {
         if !row.has_request_body {
             // `GET /v1/models` carries no body. It is complete the moment the surface is
             // recognised, exactly as A2A's discovery documents are.
-            let mut facts = Facts::new();
-            let _ = facts.set(f::FACT_OP, FactValue::Str(row.op.as_str()));
             return Ok(Ingress::OneShot(Box::new(UnitDraft {
                 op: row.op,
                 body_ir: Ir::empty(),
                 correlates: None,
                 correlation_out: None,
-                facts,
+                facts: self.draft_facts(row),
             })));
         }
         let Some(frame) = frames.next_frame() else {
@@ -192,8 +217,7 @@ impl Plane for DecisionPlane {
         if body.is_empty() {
             return Ok(Ingress::NeedMore);
         }
-        let mut facts = Facts::new();
-        let _ = facts.set(f::FACT_OP, FactValue::Str(row.op.as_str()));
+        let facts = self.draft_facts(row);
         Ok(Ingress::OneShot(Box::new(UnitDraft {
             op: row.op,
             // The request body is never read for a declared pointer — see `codec::REQUEST_PTRS`'s
@@ -360,7 +384,7 @@ impl Plane for DecisionPlane {
 
     fn approve<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
         let mut facts = ScopeFacts::default();
-        if let Some(p) = self.providers().first() {
+        if let Some(p) = self.provider() {
             let _ = facts.resources.push(ResourceLocator {
                 kind: "decision_provider",
                 name: p.id,

@@ -66,6 +66,8 @@ mod common;
 use busbar_contract::plane::Progress;
 use busbar_contract::wire::FrameCursor;
 
+use crate::DecisionProvider;
+
 /// Decode one provider answer through `decode_response` and meter it — the plane's whole metering
 /// surface for one `systemone` exchange, as the kernel would drive it.
 fn metered(plane: DecisionPlane, body: &[u8]) -> Vec<UsageLocator> {
@@ -161,4 +163,113 @@ fn no_usage_member_and_an_error_answer_both_post_no_line() {
         br#"{"error":{"code":"x"},"usage":{"units":7.5}}"#
     )
     .is_empty());
+}
+
+static ONE: &[DecisionProvider] = &[DecisionProvider {
+    id: "typesafe-prod",
+    lane: busbar_contract::ids::LaneId::new("prod"),
+    host: "api.typesafe.ai",
+    transport: "http",
+}];
+
+static TWO: &[DecisionProvider] = &[
+    DecisionProvider {
+        id: "typesafe-prod",
+        lane: busbar_contract::ids::LaneId::new("prod"),
+        host: "api.typesafe.ai",
+        transport: "http",
+    },
+    DecisionProvider {
+        id: "typesafe-backup",
+        lane: busbar_contract::ids::LaneId::new("backup"),
+        host: "backup.typesafe.ai",
+        transport: "http",
+    },
+];
+
+/// What `verify` and `approve` answer for one `systemone` unit on a plane.
+fn verify_and_approve(plane: DecisionPlane) -> (DestinationFacts, Vec<ResourceLocator>) {
+    let scaffold = common::Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let seal = common::TestSeal;
+    let unit = Unit::new(
+        &seal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        ops::OP_SYSTEMONE,
+        Ir::new(b"{}", &[]),
+        Facts::new(),
+        None,
+    );
+    (
+        plane.verify(&unit, &ctx),
+        plane.approve(&unit, &ctx).resources.as_slice().to_vec(),
+    )
+}
+
+/// Item 399. A request names no provider, so with more than one configured the plane cannot say
+/// which one a caller meant. Before: it dialled, and asked scope for, whichever was declared first.
+/// After: the same honest answer as a plane with none — the unreachable destination the trust unit
+/// refuses, and no provider named for scope.
+#[test]
+fn more_than_one_provider_resolves_to_no_destination_and_names_no_provider() {
+    let (dest, resources) = verify_and_approve(DecisionPlane::new(TWO));
+    assert_eq!(dest, verify_and_approve(DecisionPlane::EMPTY).0);
+    assert!(resources.is_empty(), "{resources:?}");
+}
+
+/// With exactly one provider, it is the one dialled and the one scope is asked for.
+#[test]
+fn exactly_one_provider_is_the_one_dialled_and_judged() {
+    let (dest, resources) = verify_and_approve(DecisionPlane::new(ONE));
+    assert_eq!(
+        dest,
+        DestinationFacts::Upstream {
+            transport: "http",
+            address: busbar_contract::UpstreamAddress::socket("api.typesafe.ai"),
+            lane: busbar_contract::ids::LaneId::new("prod"),
+        }
+    );
+    assert_eq!(
+        resources,
+        vec![ResourceLocator {
+            kind: "decision_provider",
+            name: "typesafe-prod",
+        }]
+    );
+}
+
+/// The draft facts `decode_ingress` writes for a `GET /v1/models` on a plane.
+fn ingress_provider_fact(plane: DecisionPlane) -> Option<String> {
+    let scaffold = common::Scaffold::new("http")
+        .with_method("GET")
+        .on_path(ops::PATH_MODELS);
+    let ctx = scaffold.ctx();
+    let frames: Vec<busbar_contract::wire::Frame> = Vec::new();
+    let mut cursor = FrameCursor::new(&frames);
+    let Ok(Ingress::OneShot(draft)) = plane.decode_ingress(&mut cursor, None, &ctx) else {
+        panic!("a models request is complete on arrival");
+    };
+    match draft.facts.get(f::FACT_PROVIDER) {
+        Some(FactValue::Str(id)) => Some(id.to_string()),
+        None => None,
+        Some(other) => panic!("the provider fact is a name, never {other:?}"),
+    }
+}
+
+/// Item 397. The provider a unit is dialled against is the session-scoped fact the declaration
+/// says it is: declared in `SESSION_FACTS`, and written on every draft with the provider's id.
+#[test]
+fn the_provider_is_the_declared_and_written_session_fact() {
+    assert_eq!(f::SESSION_FACTS, &[f::FACT_PROVIDER]);
+    assert_eq!(
+        ingress_provider_fact(DecisionPlane::new(ONE)).as_deref(),
+        Some("typesafe-prod")
+    );
+    assert_eq!(ingress_provider_fact(DecisionPlane::new(TWO)), None);
+    assert_eq!(ingress_provider_fact(DecisionPlane::EMPTY), None);
 }
