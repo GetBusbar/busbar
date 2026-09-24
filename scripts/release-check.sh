@@ -668,6 +668,21 @@ unaccounted_phases() {
   return 0
 }
 
+# Read a child gate's "<phase-id> <status>" gap rows into this run's PHASE_RUN_* accounting. A row
+# whose status is not one this gate counts as a gap is a harness disagreement, not a silent drop.
+import_child_gaps() {  # $1 = the gap file the child wrote
+  local pid st rest
+  [ -f "$1" ] || return 0
+  while read -r pid st rest; do
+    [ -n "$pid" ] || continue
+    if ! is_gap_status "${st:-}"; then
+      setup_fail "child gate gap row '${pid} ${st:-} ${rest:-}' in $1 carries no status this gate counts (${GAP_STATUSES})."
+    fi
+    record_phase_skip "$pid" "$st"
+  done <"$1"
+  return 0
+}
+
 executed_count() {
   local i=0 n=0
   while [ "$i" -lt "${#PHASE_RUN_IDS[@]}" ]; do
@@ -823,6 +838,28 @@ run_selftest() {
   check "an in-scope phase that left no record is fatal" "1" "$rc"
   check "and it is named" "yes" \
     "$(case "$out" in (*"UNACCOUNTED"*" b "*) echo yes ;; (*) echo no ;; esac)"
+  SELECTED_PHASES=""
+
+  # 7b. A CHILD GATE'S GAPS REACH THIS VERDICT (item 480). release-check-1.5.2.sh writes each live
+  #     proof it skipped to $BUSBAR_RELEASE_GAP_FILE; without reading it back this run printed a clean
+  #     PASS over a feature gate whose OIDC proofs never ran.
+  local cg_tmp
+  cg_tmp="$(mktemp -d "${TMPDIR:-/tmp}/release-check-childgaps.XXXXXX")"
+  printf 'phase-152-oidc-live sibling-missing\n' >"${cg_tmp}/gaps"
+  PHASE_RUN_IDS=(phase-152-feature-gate); PHASE_RUN_SECS=(1); PHASE_RUN_STATUS=(ran)
+  SELECTED_PHASES=phase-152-feature-gate
+  import_child_gaps "${cg_tmp}/gaps"
+  REQUIRE_SIBLINGS=0
+  out="$(print_verdict)" && rc=0 || rc=$?
+  check "a child gate's gap is NOT a clean pass" "yes" \
+    "$(case "$out" in (*"RELEASE GATE PASSED WITH GAPS"*) echo yes ;; (*) echo no ;; esac)"
+  check "and the child's gap is named" "yes" \
+    "$(case "$out" in (*"DID NOT RUN"*phase-152-oidc-live*) echo yes ;; (*) echo no ;; esac)"
+  REQUIRE_SIBLINGS=1
+  out="$(print_verdict)" && rc=0 || rc=$?
+  check "a child gate's gap is fatal under --require-siblings" "1" "$rc"
+  REQUIRE_SIBLINGS=0
+  rm -rf "$cg_tmp"
   SELECTED_PHASES=""
 
   # 8. NO PLUGIN PHASE ID IS A LITERAL (item 541). Every non-suite plugin phase id is derived from
@@ -1872,7 +1909,15 @@ if ! phase_selected phase-152-feature-gate; then
   record_phase_skip phase-152-feature-gate "not-in-segment"
 else
   begin_phase phase-152-feature-gate "1.5.2 feature gate (plugins.fetch + token-exchange matrix + admin authz matrix)"
-  BUSBAR_BIN="$BUSBAR_BIN" PACK_BIN="$PACK_BIN" bash "${REPO_ROOT}/scripts/release-check-1.5.2.sh"
+  # THE CHILD'S GAPS ARE THIS GATE'S GAPS (item 480). release-check-1.5.2.sh writes every live proof
+  # it could not run as "<phase-id> <status>" to $BUSBAR_RELEASE_GAP_FILE; they are read back into
+  # this run's own accounting, so print_verdict NAMES them and applies --require-siblings to them.
+  # The child is told not to be fatal on its own: this verdict is the one that decides, and it can
+  # only name what it was handed -- a bare exit code from the child named nothing.
+  new_tmpdir; CHILD_GAP_FILE="$NEW_TMPDIR/release-check-1.5.2.gaps"; : >"$CHILD_GAP_FILE"
+  BUSBAR_BIN="$BUSBAR_BIN" PACK_BIN="$PACK_BIN" BUSBAR_RELEASE_GAP_FILE="$CHILD_GAP_FILE" \
+    BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=0 bash "${REPO_ROOT}/scripts/release-check-1.5.2.sh"
+  import_child_gaps "$CHILD_GAP_FILE"
   ok "1.5.2 feature gate passed (see its own VERIFIED-AT-INTEGRATION notes above)"
   end_phase ran
 fi
