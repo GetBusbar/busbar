@@ -41,6 +41,8 @@ pub mod freeze;
 pub mod scanner;
 pub mod strict;
 pub mod vocab;
+#[cfg(test)]
+mod w18_tests;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -416,11 +418,13 @@ impl Gate for PlanePurityGate {
             let _ = std::fs::write(PathBuf::from(path), hits_artefact(&m, &hits));
         }
 
-        match cx.walk(
-            &WalkSpec::new([freeze::CORE_ROOT])
-                .ext("rs")
-                .min_files(CORE_FLOOR),
-        ) {
+        // Every PRESENT neutral root: a missing one is `ROW_ROOTS`'s finding, and handing it to
+        // the walk would turn this row into "could not be scanned" instead of the count it owns.
+        let freeze_roots: Vec<String> = freeze::roots()
+            .into_iter()
+            .filter(|r| cx.exists(r))
+            .collect();
+        match cx.walk(&WalkSpec::new(freeze_roots).ext("rs").min_files(CORE_FLOOR)) {
             Ok(core) => rows.push(freeze_row(&freeze::measure(&core))),
             Err(e) => rows.push(Row::fail(
                 ROW_FREEZE,
@@ -690,12 +694,29 @@ impl Gate for PlanePurityGate {
             self,
             "core names a concrete LLM-family IR type",
             &[ROW_FREEZE],
-            &format!("{}/planted_freeze_witness.rs", freeze::CORE_ROOT),
+            &format!("{}/planted_freeze_witness.rs", neutral[0]),
             "pub fn f(_: IrStreamEvent) {}\n",
             // The row's detail is the COUNTED table and nothing else, because that is all the
             // legacy witness prints and `--parity` compares this row against it. A named site here
             // would be a row the legacy half cannot produce, i.e. a parity diff by construction.
             &[ROW_FREEZE, "count=1"],
+        ));
+
+        // THE FREEZE WALKS THE WHOLE NEUTRAL SET (1.6.0 item 218). The same concrete type moved
+        // into another neutral crate's `ir/` module is still core naming the family — it walked the
+        // kernel alone, so the move declared the freeze met. Planted in the LAST neutral root so
+        // the case is not the kernel case above in a different file.
+        report.push(create(
+            cx,
+            self,
+            "a concrete LLM-family IR type moved into another neutral crate's ir/ module",
+            &[ROW_FREEZE],
+            &format!(
+                "{}/ir/planted_freeze_witness.rs",
+                neutral[neutral.len() - 1]
+            ),
+            "pub fn f(_: IrStreamEvent) {}\n",
+            &[ROW_FREEZE, "count=1 defs=1"],
         ));
 
         // ── THE VOCABULARY IS THE TREE'S (1.6.0 item 3) ──────────────────────────────────────

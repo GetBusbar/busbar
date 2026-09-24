@@ -13,15 +13,27 @@
 
 use crate::ctx::SourceFile;
 
-/// The root the witness measures. A neutral crate, so the shell's `$CORE`.
+/// The roots the witness measures: EVERY neutral root [`crate::planes::neutral_src_roots`]
+/// declares, not the kernel alone (1.6.0 item 218).
 ///
-/// `busbar-core` was absorbed into `busbar-kernel` (W4.a, commit 673ecdaaa) — the `ir/` module and
-/// its consumer up-refs both landed under `crates/busbar-kernel/src`, so the witness follows them
-/// there rather than scanning the now-deleted `busbar-core` path as zero files.
-pub const CORE_ROOT: &str = "crates/busbar-kernel/src";
+/// The claim is "core names zero concrete LLM-family IR type", and "core" is the neutral set, not
+/// one crate of it. Walking `crates/busbar-kernel/src` only meant the freeze could be declared met
+/// by a file move: a concrete IR type relocated into `busbar-contract` or `busbar-substrate-values`
+/// (which already carries an `ir/` module) is still core naming the family, and the witness read
+/// zero. The population is the SAME list every other plane-purity row scans, so a neutral crate
+/// added there is measured here the day it lands.
+pub fn roots() -> Vec<String> {
+    crate::planes::neutral_src_roots()
+}
 
-/// The definitions half: everything under here DEFINES the concrete types and relocates as a unit.
-pub const DEFS_PREFIX: &str = "crates/busbar-kernel/src/ir/";
+/// The definitions half: a site under `<neutral root>/ir/` DEFINES the concrete types and relocates
+/// as a unit. Any neutral crate's `ir/` module is a definitions module, not only the kernel's.
+fn is_def(rel: &str, roots: &[String]) -> bool {
+    roots.iter().any(|r| {
+        rel.strip_prefix(r.as_str())
+            .is_some_and(|t| t.starts_with("/ir/"))
+    })
+}
 
 /// Concrete LLM-family IR types that MUST leave core. Whole-word matched.
 ///
@@ -88,12 +100,13 @@ pub struct Freeze {
     pub uprefs: usize,
 }
 
-/// Count the remaining concrete-family references in core's PRODUCTION code.
+/// Count the remaining concrete-family references in the neutral set's PRODUCTION code.
 ///
 /// The scope exclusions are the ripgrep globs the shell preferred (`**/tests/**`, `**/*_test.rs`,
 /// `**/test_support/**`), not the narrower grep fallback: the fallback dropped the `*_test.rs`
 /// arm, so which of the two ran decided the number. One scope, named here.
 pub fn measure(files: &[SourceFile]) -> Freeze {
+    let roots = roots();
     let mut out = Freeze::default();
     for f in files {
         let rel = f.rel_str();
@@ -111,7 +124,7 @@ pub fn measure(files: &[SourceFile]) -> Freeze {
                 continue;
             }
             let site = format!("{rel}:{}", idx + 1);
-            if site.starts_with(DEFS_PREFIX) {
+            if is_def(&rel, &roots) {
                 out.defs += 1;
             } else {
                 out.uprefs += 1;
