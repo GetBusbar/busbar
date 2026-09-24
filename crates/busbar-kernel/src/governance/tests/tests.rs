@@ -1648,6 +1648,7 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         flushed_requests: 0,
         flushed_billable_requests: 0,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty,
         last_touch: now,
     };
@@ -1724,6 +1725,7 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
         flushed_requests: 0,
         flushed_billable_requests: 0,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch,
     };
@@ -1801,6 +1803,7 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         flushed_requests: 0,
         flushed_billable_requests: 0,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch: now,
     };
@@ -3332,6 +3335,7 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
         flushed_requests: requests,
         flushed_billable_requests: requests,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty,
         last_touch,
     };
@@ -4265,6 +4269,7 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         flushed_requests: 7,
         flushed_billable_requests: 7,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4327,6 +4332,7 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         flushed_requests: 1,
         flushed_billable_requests: 1,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch: now,
     };
@@ -4494,6 +4500,7 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
         flushed_requests: 7,
         flushed_billable_requests: 7,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4541,6 +4548,7 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
         flushed_requests: 1,
         flushed_billable_requests: 1,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch: now,
     };

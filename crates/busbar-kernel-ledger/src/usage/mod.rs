@@ -33,12 +33,14 @@
 //! second table of its own that nothing in production called, and it disagreed with the live one
 //! about a durability-lost unit (item 436): two tables for one amount is one table too many.
 
+mod dated;
 mod evidence;
 mod lane;
 mod meter;
 mod series;
 mod source;
 
+pub use dated::{by_lane, price_dated, DatedHistory, FeeEras};
 pub use evidence::{
     KernelCounts, KernelLine, LocatedValue, MeterPolicy, RetainedLocatorValues,
     DEFAULT_LOCATOR_FLOOR_RATIO, DEFAULT_VARIANCE_TOLERANCE_BP,

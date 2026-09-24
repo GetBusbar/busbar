@@ -83,6 +83,14 @@ pub trait RateEpoch: Send + Sync {
     /// therefore the reading that covers everything — never a refusal, because an accrual that
     /// could not be dated must still be recorded.
     fn effective_from_at(&self, at_ms: u64) -> u64;
+
+    /// THE HISTORY ITSELF, for the budget ledger's reads and its gate (OWNER RULING Q14): a budget
+    /// cell's counts are dated by [`Self::effective_from_at`] and priced at the card each era
+    /// resolves to. `None` — the default, and a build with no root ledger — prices every era at
+    /// the live card, the undated derivation.
+    fn history(&self) -> Option<std::sync::Arc<busbar_kernel_ledger::cost::History>> {
+        None
+    }
 }
 
 /// THE PROCESS-WIDE rate DATER, installed once by the composition root ([`install_rate_epoch`]).
@@ -104,6 +112,12 @@ pub fn effective_from_at(at_ms: u64) -> u64 {
     EPOCH
         .get()
         .map_or(0, |holder| holder.effective_from_at(at_ms))
+}
+
+/// The installed holder's dated history, if it holds one — see [`RateEpoch::history`].
+#[must_use]
+pub fn dated_history() -> Option<std::sync::Arc<busbar_kernel_ledger::cost::History>> {
+    EPOCH.get().and_then(|holder| holder.history())
 }
 
 /// Raise the seam: the configured rates are now `rates`.

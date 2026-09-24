@@ -129,6 +129,9 @@ const AWS_SECRET_ACCESS_KEY_LEN: usize = 40;
 #[derive(Clone)]
 struct ModelCell {
     model: std::sync::Arc<str>,
+    /// The card era these counts were earned under (Q14, #79): the `effective_from` in force at
+    /// accrual, `0` undated. One cell per (model, era), so an edit mid-window opens a second one.
+    era: u64,
     /// (1.6.0 M1b) The name-keyed CURRENT unit counters — the reserved four
     /// (`input`/`output`/`cache_read`/`cache_write`) are ordinary keys beside any open unit, the
     /// sole representation now that `TierTokens` is dissolved. Sparse (a zero unit is absent).
@@ -139,9 +142,11 @@ struct ModelCell {
 
 /// In-memory TOKEN-LEDGER cell for a bucket's CURRENT window - the AUTHORITATIVE hot-path
 /// enforcement state. A bucket is a key's own budget bucket OR a budget-group bucket (same shape).
-/// NO SPEND FIELD: dollars are derived at check time as `cell tokens x rate card` (+ the flat fee
-/// x requests on the key bucket) - tokens are the only stored truth, so a rate-card correction
-/// reprices everything on the next read with no data fix. The durable store is a write-behind
+/// NO SPEND FIELD: money is derived at check time as `cell tokens x the card IN FORCE WHEN EACH WAS
+/// EARNED` (+ the flat fee x requests per admission era) - OWNER RULING Q14 / #79. The counts are
+/// segmented by card era and each era prices at the card the dated history resolves for it, so an
+/// edit prices what follows it and a signed back-dated correction reprices the window it names,
+/// with no data fix either way. The durable store is a write-behind
 /// layer flushed off the request path. One cell per bucket (current window only; reset on
 /// rollover), so growth is bucket-count-bounded (keys + group-window buckets).
 #[derive(Clone, Default)]
@@ -165,9 +170,11 @@ struct BudgetCell {
     flushed_requests: u64,
     /// The billable-request flush baseline (twin of `flushed_requests` for the fee-base counter).
     flushed_billable_requests: u64,
-    /// Per-(model, tier) token counters + flush baselines. Small Vec (the models this bucket
+    /// Per-(model, era, tier) token counters + flush baselines. Small Vec (the models this bucket
     /// actually used), scanned linearly.
     models: Vec<ModelCell>,
+    /// The fee base split by the era each billable request was admitted under (Q14).
+    fee_eras: busbar_kernel_ledger::usage::FeeEras,
     dirty: bool,
     /// Wall-clock of the last accrual or admission charge. The eviction sweep ages cells by
     /// `window_start`, but a key's own bucket and a synthesized SSO principal's bucket both live in
@@ -186,15 +193,20 @@ impl BudgetCell {
         }
     }
 
-    /// Accrue one response's keyed units under `model`, interning the model name on first sight and
-    /// each unit key on first sight of that (model, unit) pair.
-    fn accrue(&mut self, model: &str, units: &std::collections::BTreeMap<String, u64>) {
-        let cell = match self.models.iter_mut().find(|m| &*m.model == model) {
-            Some(m) => m,
+    /// Accrue one response's keyed units under `model` in card era `era`, interning the pair on
+    /// first sight and each unit key on first sight of that (model, era, unit).
+    fn accrue(&mut self, model: &str, era: u64, units: &std::collections::BTreeMap<String, u64>) {
+        let at = self
+            .models
+            .iter()
+            .position(|m| &*m.model == model && m.era == era);
+        let cell = match at {
+            Some(i) => &mut self.models[i],
             None => {
-                // Allocate ONLY on the first sight of a (bucket, model) pair.
+                // Allocate ONLY on the first sight of a (bucket, model, era).
                 self.models.push(ModelCell {
                     model: std::sync::Arc::from(model),
+                    era,
                     cur: std::collections::BTreeMap::new(),
                     flushed: std::collections::BTreeMap::new(),
                 });
@@ -210,12 +222,22 @@ impl BudgetCell {
         }
     }
 
-    /// Borrowed (model, current units) view for the spend derivation - the few multiply-adds the
-    /// admission check runs.
-    fn model_views(
+    /// THE CELL, PRICED (Q14): every (model, era) segment and — with `include_fee` — the fee base
+    /// per era, each at the card its era resolves to in the installed dated history (none: the live
+    /// card), through the one function. Unpriced or overflowing REFUSES (#42, item 28).
+    fn spend(
         &self,
-    ) -> impl Iterator<Item = (&str, &std::collections::BTreeMap<String, u64>)> {
-        self.models.iter().map(|m| (&*m.model, &m.cur))
+        cost: &crate::cost::CostModel,
+        include_fee: bool,
+    ) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
+        use busbar_kernel_ledger::usage::{price_dated, DatedHistory};
+        let history = crate::rate_apply::dated_history();
+        let now_ms = crate::store::now_ms();
+        let dated = history.as_deref().map(|h| DatedHistory::of(h, now_ms));
+        let fees = (self.fee_eras.split(self.billable_requests)).filter(|_| include_fee);
+        let rows = self.models.iter().map(|m| (&*m.model, m.era, &m.cur));
+        let start_ms = self.window_start.saturating_mul(1_000);
+        price_dated(rows, fees, start_ms, cost.card(), dated)
     }
 
     /// Drop DEAD `ModelCell`s so the `models` Vec cannot grow without bound in a long-lived,
@@ -246,27 +268,6 @@ impl BudgetCell {
         self.models.iter().fold(0u64, |acc, m| {
             acc.saturating_add(m.cur.get(unit).copied().unwrap_or(0))
         })
-    }
-
-    /// Current UNCACHED-INPUT tokens across models — the `tokens_input` per-tier cap's counter.
-    fn total_input(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_INPUT)
-    }
-
-    /// Current OUTPUT tokens across models — the `tokens_output` per-tier cap's counter.
-    fn total_output(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_OUTPUT)
-    }
-
-    /// Current CACHE-READ tokens across models — the `tokens_cache_read` per-tier cap's counter.
-    fn total_cache_read(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_CACHE_READ)
-    }
-
-    /// Current CACHE-WRITE (cache_creation) tokens across models — the `tokens_cache_write`
-    /// per-tier cap's counter.
-    fn total_cache_write(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_CACHE_WRITE)
     }
 }
 
@@ -340,7 +341,8 @@ impl std::fmt::Debug for AdmitGrant {
 }
 
 // A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
-// the token ledger x the current rate card at the moment of the read - never stored.
+// the token ledger, each era at the card in force when it was earned, at the moment of the read -
+// never stored.
 //
 // Re-export BY IDENTITY of its canonical home, `busbar_kernel::governance::DerivedUsage`: the
 // figure is three integers with no engine dependency, so it belongs to the neutral governance
@@ -1350,7 +1352,8 @@ pub fn metering_bucket(now: u64) -> u64 {
 }
 
 /// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
-/// the token ledger x the current rate card at the moment of the read - never stored.
+/// the token ledger, each era at the card in force when it was earned (Q14), at the moment of the
+/// read - never stored.
 ///
 /// A pure three-field figure with no engine dependency at all, so it lives HERE (the neutral
 /// governance vocabulary) rather than in the engine: a plane's tests read it back off the neutral
@@ -1358,7 +1361,8 @@ pub fn metering_bucket(now: u64) -> u64 {
 /// type as `busbar_kernel::governance::DerivedUsage` — the same type, one home.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DerivedUsage {
-    /// The spend derived from the token ledger at the CURRENT card, truncated to whole cents.
+    /// The spend derived from the token ledger at the card in force per era, truncated to whole
+    /// cents.
     pub spend_cents: i64,
     /// The token count the ledger holds for the bucket.
     pub tokens: u64,

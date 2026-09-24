@@ -12,6 +12,7 @@ use crate::usage::{
     RetainedLocatorValues,
 };
 
+mod dated_tests;
 mod lane_tests;
 mod meter_tests;
 mod one_table_tests;
