@@ -19,7 +19,10 @@ fn empty_section_equals_default() {
 #[test]
 fn defaults_are_the_dod_values() {
     let c = StreamsCfg::default();
-    assert_eq!(c.session_max_secs, 3600);
+    assert_eq!(
+        c.session_max_secs, None,
+        "no ceiling unless configured (Q21a)"
+    );
     assert_eq!(c.context_window_tokens, 32_768);
     assert_eq!(c.max_output_tokens, 4096);
     match c.session.turn_detection {
@@ -68,4 +71,30 @@ fn unknown_key_is_refused() {
 fn default_section_is_absent() {
     let s = streams_default_section();
     assert!(!s.is_present());
+}
+
+/// OWNER RULING Q21a: the session wall-clock ceiling is optional and plane-owned. Absent reads as no
+/// ceiling; a positive figure is kept; zero and a negative figure are refused at parse.
+#[test]
+fn the_session_ceiling_is_optional_and_refuses_zero_and_negative() {
+    let parse = |yaml: &str| {
+        streams_parse_section(&serde_yaml::from_str::<serde_yaml::Value>(yaml).unwrap()).map(|b| {
+            b.as_any()
+                .downcast_ref::<StreamsCfg>()
+                .expect("the plane's own section")
+                .session_max_secs
+        })
+    };
+    assert_eq!(parse("{}").unwrap(), None, "absent: no ceiling");
+    assert_eq!(
+        parse("session_max_secs: 1800")
+            .unwrap()
+            .map(std::num::NonZeroU32::get),
+        Some(1800)
+    );
+    assert!(parse("session_max_secs: 0").is_err(), "zero is refused");
+    assert!(
+        parse("session_max_secs: -5").is_err(),
+        "a negative figure is refused"
+    );
 }

@@ -390,9 +390,13 @@ where
         Arc::clone(&rt.tools),
         carrier,
         locked_config,
-    )
-    // The operator's hard wall-clock ceiling, enforced on the sweep tick beside the pump.
-    .with_session_ceiling(rt.session_max_secs);
+    );
+    // The operator's hard wall-clock ceiling, enforced on the sweep tick beside the pump — only when
+    // the operator configured one (Q21a: no config, no limit).
+    let core = match rt.session_max_secs {
+        Some(secs) => core.with_session_ceiling(secs.get()),
+        None => core,
+    };
     // The binding, applied before the core is shared: a session that reached a socket ungoverned and
     // was governed afterwards would have a window in which its pump could see a tool call it had no
     // table to enter.

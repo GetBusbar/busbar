@@ -925,39 +925,95 @@ async fn serving_a_session_to_its_teardown_settles_and_evicts_its_row() {
     );
 }
 
-/// The session wall-clock ceiling is COMPARED: a session past `streams.session_max_secs:` is
-/// hard-closed and its pump ends.
-///
-/// The ceiling was declared, defaulted, parsed and plumbed onto the runtime and then compared with
-/// nothing, so a session could run (and bill) for as long as its sockets stayed up.
-#[tokio::test]
-async fn a_session_past_its_wall_clock_ceiling_is_hard_closed() {
-    let mut rt = VoiceRuntimeFixture::runtime();
-    rt.session_max_secs = 1;
+/// OWNER RULING Q21a — NO CONFIG, NO LIMIT. A runtime whose operator configured no
+/// `streams.session_max_secs` binds no ceiling, so a session that has run far past the hour the
+/// retired default cut at is still open. (The test clock is the `now` handed to the comparison.)
+#[test]
+fn an_unconfigured_session_is_never_cut_by_a_ceiling() {
+    let rt = VoiceRuntimeFixture::runtime();
+    assert_eq!(
+        rt.session_max_secs, None,
+        "nothing configured, nothing bound"
+    );
     let (core, _handle) = crate::topology::begin_session(
         &rt,
         OpenAiRealtimeCodec,
         "acct-1",
-        "call-long",
+        "call-unbounded",
         None,
         Carrier::sideband(),
         None,
         1,
     )
     .expect("the session opens");
+    let much_later = std::time::Instant::now() + std::time::Duration::from_secs(3_600 * 5);
+    assert!(
+        !core.enforce_ceiling(much_later),
+        "five hours in, an unconfigured session is not closed"
+    );
+    assert!(!core.carrier().is_closed());
+}
+
+/// Q21a — A CONFIGURED ceiling closes the session at the limit, with the dialect's own error frame
+/// under the named reason, and the turn it cut is settled with the session.
+///
+/// The ceiling was once declared, defaulted, parsed and plumbed onto the runtime and then compared
+/// with nothing; it is compared, and only when configured.
+#[tokio::test]
+async fn a_configured_ceiling_closes_the_session_and_settles_its_counts() {
+    let mut rt = VoiceRuntimeFixture::runtime();
+    rt.session_max_secs = std::num::NonZeroU32::new(1);
+    let host = governed_host(None);
+    let (dtx, mut drx) = unbounded::<Vec<u8>>();
+    let (core, handle) = crate::topology::begin_session(
+        &rt,
+        OpenAiRealtimeCodec,
+        "acct-1",
+        "call-long",
+        None,
+        Carrier::with_downlink(dtx),
+        Some(TurnMeter::new(
+            Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
+            caller(),
+            "voice-server",
+            crate::OPENAI_REALTIME,
+        )),
+        1,
+    )
+    .expect("the session opens");
+    let _ = core.on_client_frame(uplink_audio(2_000));
     // A pump that never ends on its own: only the ceiling can end this session.
     let served = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        crate::runtime::serve_with_sweep(Arc::clone(&core), futures::future::pending::<()>()),
+        crate::runtime::serve_to_teardown(
+            Arc::clone(&core),
+            handle,
+            futures::future::pending::<()>(),
+            || 2,
+        ),
     )
     .await;
     assert!(
         served.is_ok(),
         "a one-second ceiling ends the session well inside five seconds"
     );
+    assert!(core.carrier().is_closed(), "the ceiling closes the carrier");
+    drx.close();
+    let told: Vec<serde_json::Value> = drx
+        .collect::<Vec<_>>()
+        .await
+        .iter()
+        .map(|f| serde_json::from_slice(f).expect("a json frame"))
+        .collect();
     assert!(
-        core.carrier().is_closed(),
-        "the ceiling hard-closes the carrier"
+        told.iter().any(|v| v["type"] == "error"
+            && v["error"]["code"] == crate::runtime::session::SESSION_CEILING_REASON),
+        "the client is told why, in its dialect's own error frame: {told:?}"
+    );
+    assert_eq!(
+        rows(&host),
+        row_set(&[("audio_seconds_in", 2)]),
+        "the turn the ceiling cut is settled with the session"
     );
 }
 

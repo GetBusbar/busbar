@@ -19,6 +19,10 @@
 //! plane-imposed ceilings — session wall-clock, context window, per-response output tokens — as the
 //! sole NEW scalars. No second copy of the VAD grammar exists to drift from the wire one.
 //!
+//! The session wall-clock ceiling is OPTIONAL and has no default (OWNER RULING Q21a): absent, a session
+//! runs as long as its sockets stay up, exactly as in 1.5.5; present, it is a positive number of
+//! seconds and the plane closes a session at it.
+//!
 //! ## It IS in the config-schema tracked set
 //!
 //! Exactly like `tools:`/`agents:`, this file is fingerprinted by `cargo xtask gate config-schema` (it is a
@@ -30,10 +34,6 @@ use crate::ir::config::SessionConfig;
 use crate::ir::control::IrVad;
 use serde::{Deserialize, Serialize};
 
-/// Hard session wall-clock ceiling default — 3600s (60 minutes).
-fn default_session_max_secs() -> u32 {
-    3600
-}
 /// Context-window ceiling default — 32768 tokens.
 fn default_context_window_tokens() -> u32 {
     32_768
@@ -74,9 +74,11 @@ pub struct StreamsCfg {
     /// (server_vad, 500ms silence).
     #[serde(default = "default_session")]
     pub session: SessionConfig,
-    /// Hard session wall-clock ceiling. Default 3600s (60 min).
-    #[serde(default = "default_session_max_secs")]
-    pub session_max_secs: u32,
+    /// Hard session wall-clock ceiling, in seconds. OPTIONAL, with no default: absent ⇒ no ceiling.
+    /// Zero is refused at parse (a ceiling that closes every session at its open is not a ceiling),
+    /// and so is a negative figure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_max_secs: Option<std::num::NonZeroU32>,
     /// Context-window ceiling. Default 32768.
     #[serde(default = "default_context_window_tokens")]
     pub context_window_tokens: u32,
@@ -93,7 +95,7 @@ impl Default for StreamsCfg {
     fn default() -> Self {
         StreamsCfg {
             session: default_session(),
-            session_max_secs: default_session_max_secs(),
+            session_max_secs: None,
             context_window_tokens: default_context_window_tokens(),
             max_output_tokens: default_max_output_tokens(),
         }

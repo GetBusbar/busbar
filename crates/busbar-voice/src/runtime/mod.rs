@@ -62,7 +62,8 @@ pub struct VoiceRuntime {
     pub session_defaults: crate::ir::config::SessionConfig,
     /// The hard session wall-clock ceiling (`streams.session_max_secs:`), bound onto every session
     /// core at open and compared on the sweep tick beside the pump (`SessionCore::enforce_ceiling`).
-    pub session_max_secs: u32,
+    /// `None` — the default, and what an operator who writes nothing gets — is no ceiling (Q21a).
+    pub session_max_secs: Option<std::num::NonZeroU32>,
     /// The context-window ceiling (`streams.context_window_tokens:`).
     pub context_window_tokens: u32,
     /// The per-response output-token ceiling (`streams.max_output_tokens:`).

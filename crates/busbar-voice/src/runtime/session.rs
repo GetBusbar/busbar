@@ -163,15 +163,37 @@ where
         self
     }
 
-    /// **The ceiling's comparison.** Hard-close the carrier when the session has run for its ceiling
-    /// as of `now`, and say whether it is (now or already) closed on that account. A session with no
-    /// ceiling bound is never closed here.
+    /// **The ceiling's comparison.** Close the session when it has run for its ceiling as of `now`,
+    /// and say whether it is (now or already) closed on that account. A session with no ceiling bound
+    /// is never closed here.
+    ///
+    /// The close is the dialect's own: the client is told in its dialect's error frame, under the
+    /// named reason [`SESSION_CEILING_REASON`], and then the carrier hard-closes. The turn it cut is
+    /// settled by the session's teardown like any other close.
     pub fn enforce_ceiling(&self, now: std::time::Instant) -> bool {
         let Some(ceiling) = self.ceiling else {
             return false;
         };
         if now.saturating_duration_since(self.opened) < ceiling {
             return false;
+        }
+        if !self.carrier.is_closed() {
+            let told = {
+                let mut g = self.inner.lock().expect("session inner poisoned");
+                self.codec.write_down(
+                    IrServerEvent::Error {
+                        code: SESSION_CEILING_REASON.to_string(),
+                        message: format!(
+                            "the session reached its configured ceiling of {} s (streams.session_max_secs)",
+                            ceiling.as_secs()
+                        ),
+                    },
+                    &mut g.decode,
+                )
+            };
+            if let Some(frame) = told {
+                self.carrier.send_downlink(frame.0.to_vec());
+            }
         }
         self.carrier.hard_close();
         true
@@ -477,6 +499,9 @@ where
         self.settle_turn(&mut g, None, &mut out);
     }
 }
+
+/// The named reason a session closed at its configured wall-clock ceiling is told under.
+pub const SESSION_CEILING_REASON: &str = "session_expired";
 
 /// How often the tick beside a session's pump sweeps its governed calls.
 ///
