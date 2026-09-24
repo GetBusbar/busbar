@@ -266,9 +266,9 @@ fn register_protocols() {
 /// plane axis. The MCP plane is now a crate (`busbar-mcp`), so it contributes its `&PLANE_DECL` here
 /// under the `plane-mcp` feature; core's PRODUCTION build carries no MCP built-in row (it dual-compiles
 /// the plane back in for its own test builds only), and `merged_boot_plane_decls` folds this installed
-/// copy into its canonical slot. The A2A plane is still built into core until its own extraction, so it
-/// is not pushed here yet. Leaked so the installed set is `'static`, exactly as `register_protocols`
-/// does — this runs once at startup and lives for the process.
+/// copy into its canonical slot. The LLM, A2A, voice and decision planes are pushed here the same way,
+/// each behind its own feature (see the rows below). Leaked so the installed set is `'static`, exactly
+/// as `register_protocols` does — this runs once at startup and lives for the process.
 // `Vec::new()` then a FEATURE-GATED push (not `vec![]`): the one element is present only under
 // `plane-mcp`, and with every plane compiled out (`--no-default-features`) nothing pushes — the same
 // shape `register_protocols` has, minus its unconditional `extend`.
@@ -1364,8 +1364,9 @@ async fn run(data_workers: usize) {
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
-    // THE PROCESS'S ONE BOOK. Every plane's exit arm settles onto it and the administrative ledger
-    // views read it, which is a property of there being ONE: a mount that opened its own would post
+    // THE PROCESS'S ONE BOOK. The LLM plane's exit arm settles onto it (`bind_book` below) and the
+    // administrative ledger views read it; the MCP, A2A and voice planes bind no exit arm to it here.
+    // It is ONE book, and that matters: a mount that opened its own would post
     // onto books nothing serves and serve books nothing posts to, and both halves of that would look
     // healthy, because an empty ledger reconciles. Its records ship to the deployment's CONFIGURED
     // STORE (committed-before-ack, and onto this node's own disk as well when a data directory was
@@ -2048,9 +2049,9 @@ fn spawn_jemalloc_idle_purge_fallback() {
 }
 
 // THE COMPOSITION ROOT. The kernel, the units, the planes and the transports composed in one
-// place — the only place in the tree entitled to name all four. Nothing in `main()` calls into it
-// yet: the root is built before any plane is switched onto it, so the shape can be checked against
-// the real traits while the serving path is untouched.
+// place — the only place in the tree entitled to name all four. `main()` and `run()` call into it
+// to register the plane axis, seal the boot registry, open the boot book and mount the root-driven
+// surfaces.
 mod root;
 
 /// The stamp's derivation half, shared VERBATIM with `build.rs` (which `include!`s the same file).

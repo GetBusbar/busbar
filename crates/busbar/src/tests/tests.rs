@@ -1142,3 +1142,39 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
          offered to it"
     );
 }
+
+/// ITEMS 244, 247, 259 — THREE DOC CLAIMS IN `main.rs` THAT THE CODE BESIDE THEM CONTRADICTED.
+///
+/// Read off the source, because each claim is prose and the code that falsifies it sits in the same
+/// file: `register_planes` pushes `busbar_a2a::PLANE_DECL` (so "A2A is still built into core ... not
+/// pushed here yet" was false); `main()`/`run()` call into `root::` throughout (so "Nothing in
+/// `main()` calls into it yet" was false); and only the LLM plane binds the boot book here while the
+/// admin views share it (so "Every plane's exit arm settles onto it" was false for mcp/a2a/voice).
+#[test]
+fn main_rs_doc_claims_match_the_code_beside_them() {
+    const MAIN: &str = include_str!("../main.rs");
+
+    // 244: the A2A plane IS pushed by `register_planes`, so its doc may not say otherwise.
+    assert!(MAIN.contains("installed.push(&busbar_a2a::PLANE_DECL);"));
+    assert!(
+        !MAIN.contains("is not pushed here yet"),
+        "register_planes' doc says A2A is not pushed, and the function pushes it"
+    );
+
+    // 247: `main()` calls into `root::`, so the `mod root;` doc may not say nothing does.
+    let main_fn = &MAIN[MAIN.find("\nfn main() {").expect("main() is in main.rs")..];
+    let main_body = &main_fn[..main_fn.find("\n}\n").expect("main() closes")];
+    assert!(main_body.contains("root::"), "the control: main() reaches root::");
+    assert!(
+        !MAIN.contains("Nothing in `main()` calls into it"),
+        "the `mod root;` doc says main() does not call into the root, and it does"
+    );
+
+    // 259: exactly one `bind_book` call in main.rs (the LLM arm), so the book's doc may not claim
+    // every plane settles onto it.
+    assert_eq!(MAIN.matches("root::units_llm::bind_book(").count(), 1);
+    assert!(
+        !MAIN.contains("Every plane's exit arm settles onto it"),
+        "the boot book's doc claims every plane settles onto it; only the LLM arm is bound here"
+    );
+}
