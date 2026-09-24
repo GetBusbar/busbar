@@ -60,6 +60,33 @@ pub fn nano_rate(micro_per_unit: f64) -> u64 {
     }
 }
 
+/// **THE CARD-BUILD QUESTION**: can the card hold this configured rate as what it says it is?
+///
+/// `Some(n)` — the rate the card records, which is [`nano_rate`]'s quantisation, unchanged (#44:
+/// card-build quantisation stays half-away-from-zero, byte-identical). `Some(0)` only for a rate
+/// CONFIGURED at zero, which is #77(5)'s explicit zero row: legitimately free.
+///
+/// `None` — the card CANNOT represent it, and must not claim to (item 22). [`nano_rate`] maps every
+/// value it cannot hold onto `0`, which is the right answer for a conversion with no error channel
+/// and the WRONG answer for a card: a configured positive rate below the half-nano-unit quantum
+/// (`0.0004` micro-units — `$0.10/GB` is `0.00009313` micro-units a byte) became `0` while the
+/// card reported the class PRICED, so every unit of it billed as nothing and #42's refusal could
+/// never fire. The same is true of a rate too large for the integer (it was a clamp to `0`), and of
+/// a value that is not a rate at all (negative, NaN, infinite — config validation refuses those
+/// first; this is the card's own statement of the same rule). Each of those is now an UNPRICED
+/// cell, so a hit on it REFUSES (#42) instead of pricing at a zero nobody configured.
+pub fn representable_nano_rate(micro_per_unit: f64) -> Option<u64> {
+    if micro_per_unit == 0.0 {
+        // An explicit zero (`-0.0` included): the operator configured this class free.
+        return Some(0);
+    }
+    match nano_rate(micro_per_unit) {
+        // A non-zero configured value that quantises to nothing is a value the card cannot hold.
+        0 => None,
+        n => Some(n),
+    }
+}
+
 /// Fold quantity-and-rate pairs into one nano-unit total: multiply each pair, sum the products,
 /// and SATURATE at both steps.
 ///
@@ -216,6 +243,10 @@ pub struct RateCard {
     present: bool,
     prices: BTreeMap<String, BTreeMap<String, CellPrices>>,
     fee: i64,
+    /// Every configured cell the card could not represent (see [`representable_nano_rate`]). Each
+    /// is on the card as an UNPRICED cell of a named lane, so a hit on it refuses; the list is kept
+    /// so card-build validation can refuse the whole configuration at boot (#77(5)).
+    refused: Vec<LaneClass>,
 }
 
 impl RateCard {
@@ -230,29 +261,61 @@ impl RateCard {
             // A negative configured fee is clamped here, once: no request may ever bill a negative
             // amount, which would credit a budget back toward headroom.
             fee: per_request_fee.max(0),
+            refused: Vec::new(),
         }
     }
 
     /// Resolve a card from configured micro-unit rates. Each rate converts to nano-units once,
     /// here, and never again.
+    ///
+    /// A configured value the card cannot represent ([`representable_nano_rate`] answers `None`)
+    /// lands as an UNPRICED cell of its lane and is listed in [`Self::refused_cells`] — never as a
+    /// cell priced at zero (item 22).
     pub fn from_micro_rates(
         entries: impl IntoIterator<Item = (LaneClass, f64)>,
         per_request_fee: i64,
     ) -> Self {
-        let mut prices: BTreeMap<String, BTreeMap<String, CellPrices>> = BTreeMap::new();
+        let mut card = RateCard {
+            present: true,
+            prices: BTreeMap::new(),
+            fee: per_request_fee.max(0),
+            refused: Vec::new(),
+        };
         for (cell, micro) in entries {
+            card.set_rate(cell, micro);
+        }
+        card
+    }
+
+    /// Resolve a card from rates ALREADY in integer nano-units per unit — for a holder whose rates
+    /// were quantised once by [`nano_rate`] and which must not round them a second time. No decimal
+    /// enters here. A rate of zero is an explicit zero row, exactly as it is on the micro path.
+    pub fn from_nano_rates(
+        entries: impl IntoIterator<Item = (LaneClass, u64)>,
+        per_request_fee: i64,
+    ) -> Self {
+        let mut prices: BTreeMap<String, BTreeMap<String, CellPrices>> = BTreeMap::new();
+        for (cell, nanos) in entries {
             prices
                 .entry(cell.lane)
                 .or_default()
                 .entry(cell.class)
                 .or_default()
-                .set(nano_rate(micro));
+                .set(nanos);
         }
         RateCard {
             present: true,
             prices,
             fee: per_request_fee.max(0),
+            refused: Vec::new(),
         }
+    }
+
+    /// Every configured cell this card could not represent, in the order it was configured. Empty
+    /// for every card whose rates are all representable — which is every card config validation
+    /// admits (#77(5): an unpriced class is a BOOT refusal when billing is on).
+    pub fn refused_cells(&self) -> &[LaneClass] {
+        &self.refused
     }
 
     /// **THE CARD A DEPLOYMENT CONFIGURED**, built here and nowhere else.
@@ -294,14 +357,30 @@ impl RateCard {
     ///
     /// The number is configured and set, never derived: there is no arm here that reads another
     /// cell's rate, and no second denomination a rate could be derived through (#66).
+    ///
+    /// A value the card cannot represent leaves the cell UNPRICED (and records it in
+    /// [`Self::refused_cells`]) — it never sets a zero the operator did not configure (item 22).
     pub fn set_rate(&mut self, cell: LaneClass, micro_per_unit: f64) {
         self.present = true;
-        self.prices
-            .entry(cell.lane)
+        let slot = self
+            .prices
+            .entry(cell.lane.clone())
             .or_default()
-            .entry(cell.class)
-            .or_default()
-            .set(nano_rate(micro_per_unit));
+            .entry(cell.class.clone())
+            .or_default();
+        match representable_nano_rate(micro_per_unit) {
+            Some(nanos) => {
+                slot.set(nanos);
+                self.refused.retain(|r| r != &cell);
+            }
+            None => {
+                // UNPRICED, not zero: the lane is named, the class is silent, and #42 refuses a hit.
+                *slot = CellPrices::default();
+                if !self.refused.contains(&cell) {
+                    self.refused.push(cell);
+                }
+            }
+        }
     }
 
     /// Set the flat per-request fee in minor units, clamped at zero.

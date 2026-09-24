@@ -233,3 +233,59 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
         "a snapshot taken before the edit cannot see the edit"
     );
 }
+
+/// ITEM 22: A RATE THE CARD CANNOT HOLD IS NOT A RATE OF ZERO.
+///
+/// `0.0004` micro-units a unit is below the half-nano-unit quantum; `$0.10/GB` priced per byte is
+/// `0.00009313`. `nano_rate` maps both to `0` (it has no error channel), and the card used to record
+/// that `0` as a PRICED cell — so the class billed as nothing while the card claimed to price it, and
+/// #42's refusal could never fire. The card now records it UNPRICED: the lane is named, the class is
+/// silent, the one function REFUSES a hit on it, and the cell is listed for boot validation.
+#[test]
+fn a_sub_quantum_rate_is_unpriced_on_the_card_and_refuses_never_priced_at_zero() {
+    let per_byte = 0.10 * 1_000_000.0 / 1_073_741_824.0; // $0.10/GB in micro-units a byte
+    let card = RateCard::from_micro_rates(
+        [
+            (LaneClass::new("m", "bytes"), per_byte),
+            (LaneClass::new("m", "tiny"), 0.0004),
+            (LaneClass::new("m", "output"), 2.0),
+            (LaneClass::new("m", "free"), 0.0),
+        ],
+        0,
+    );
+    let rates = card.lane_rates("m").expect("the lane is named");
+    assert!(
+        !rates.class_priced("bytes"),
+        "never priced-at-zero while claiming priced"
+    );
+    assert!(!rates.class_priced("tiny"));
+    assert!(rates.class_priced("output"));
+    assert!(
+        rates.class_priced("free"),
+        "a rate CONFIGURED at zero is the explicit zero row (#77(5)), not a refusal"
+    );
+    assert_eq!(
+        card.refused_cells(),
+        &[LaneClass::new("m", "bytes"), LaneClass::new("m", "tiny")]
+    );
+
+    // The one function refuses a hit on the unrepresentable class instead of pricing it at zero.
+    let history = History::opening(card, 0);
+    let one = crate::cost::price_ledger(
+        &[crate::cost::LedgerEntry::new("m", 0)
+            .with_whole("output", 10)
+            .with_whole("bytes", 1_000_000_000)],
+        &history,
+    );
+    assert!(
+        matches!(one, Err(crate::cost::MoneyError::ClassUnpriced { ref class, .. }) if class == "bytes"),
+        "#42: a hit class the card cannot price REFUSES; got {one:?}"
+    );
+
+    // And a representable rate is byte-identical to the quantisation it always had (#44).
+    assert_eq!(crate::cost::representable_nano_rate(0.0005), Some(1));
+    assert_eq!(crate::cost::representable_nano_rate(0.0015), Some(2));
+    assert_eq!(crate::cost::representable_nano_rate(0.0004), None);
+    assert_eq!(crate::cost::representable_nano_rate(0.0), Some(0));
+    assert_eq!(crate::cost::representable_nano_rate(f64::MAX), None);
+}

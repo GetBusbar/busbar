@@ -79,8 +79,8 @@ pub use project::{
     cents_of, derive_spend_cents, derive_spend_micros, derive_spend_minor, micros_of, minor_of,
 };
 pub use rate::{
-    nano_rate, nanos_sum, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
-    CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
+    nano_rate, nanos_sum, representable_nano_rate, CellPrices, LaneClass, LaneRates, RateCard,
+    TierRates, CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
 };
 pub use view::{
     price as price_ledger, price_exact, price_in_view, LedgerEntry, Money, MoneyError, EXACT_SCALE,
