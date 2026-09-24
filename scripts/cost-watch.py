@@ -104,7 +104,11 @@ EXIT CODE CONTRACT -- the money bands (distinct from --selftest's own pass/fail 
     1   total >= $100                           -- HARD CAP BREACH (DECISIONS #78's $100 line)
     4   the tool itself could not complete (a `gh api` call failed, no network, bad --repo, a bad
         --period, ...) -- distinct from every money band on purpose: a caller must never read
-        "the tool could not run" as "spend is fine".
+        "the tool could not run" as "spend is fine". ALSO 4 when the period total is INCOMPLETE:
+        any job on a runner label with no rate (`unknown`) contributes nothing to the banded
+        total, so that total is a lower bound, not the period's spend -- an unpriced class
+        refuses, it does not silently answer $0 (KICKOFF 8.6). The money band of the priced
+        subset is still computed and printed (`band`), but the exit code is 4.
 
 --selftest is a DIFFERENT exit code space: 0 if every planted-fixture assertion passed, 1 if any
 failed. It never touches the network -- it shims `gh` on $PATH the same way
@@ -287,6 +291,9 @@ class Report:
     latchkey_billable_minutes: int  # wall-clock minutes above the free-tier pool
     latchkey_api: LatchkeyApiResult
     warnings: list = field(default_factory=list)
+    # Why the banded total is NOT the period's spend. Non-empty => exit_code is 4, whatever the
+    # band of the priced subset says (see the EXIT CODE CONTRACT in the module docstring).
+    incomplete: list = field(default_factory=list)
 
     def to_json(self) -> dict:
         return {
@@ -319,6 +326,7 @@ class Report:
                 "sample": self.latchkey_api.sample,
             },
             "warnings": self.warnings,
+            "incomplete": self.incomplete,
         }
 
 
@@ -676,6 +684,18 @@ def build_report(records: list, *, repo: str, period_days: int, since: datetime,
     # financial control that can be defeated by float epsilon is worse than one that cannot run.
     band, exit_code = band_for(round(total_would_be, 2))
 
+    # An unpriced job contributes $0 to `total_would_be` above, so the band is computed over a
+    # lower bound. Refuse (exit 4) rather than let a runaway on an unrecognised runner read green.
+    incomplete: list = []
+    if unknown:
+        incomplete.append(
+            f"{len(unknown)} job(s) on unrecognised runner label(s) "
+            f"{sorted({c.key for c in unknown})} have no rate -- the banded total excludes them "
+            f"and is a lower bound, not the period's spend"
+        )
+    if incomplete:
+        exit_code = 4
+
     latchkey_api = latchkey_api or LatchkeyApiResult(
         "not_available", None, f"Latchkey: UNAVAILABLE (set {LATCHKEY_TOKEN_ENV})"
     )
@@ -728,6 +748,7 @@ def build_report(records: list, *, repo: str, period_days: int, since: datetime,
         latchkey_billable_minutes=latchkey_billable_minutes,
         latchkey_api=latchkey_api,
         warnings=warnings,
+        incomplete=incomplete,
     )
 
 
@@ -811,6 +832,11 @@ def print_human_report(report: Report) -> None:
         "hard-cap": (f"HARD CAP BREACH -- would-be total >= ${HARD_CAP_USD:.0f}. "
                      "DECISIONS #78: find the top workflow above and cut its trigger/right-size."),
     }[report.band]
+    if report.incomplete:
+        print("  INCOMPLETE -- the total above is a LOWER BOUND, not the period's spend:")
+        for why in report.incomplete:
+            print(f"    - {why}")
+        label = f"INCOMPLETE -- priced subset reads '{report.band}', true band unknown"
     print(f"  VERDICT: {label}  (exit {report.exit_code})")
 
 
@@ -1124,6 +1150,9 @@ def selftest() -> int:
     say(report.unknown_labels == ["some-custom-label"],
         f"build_report: unknown labels are named (got {report.unknown_labels})")
     say(report.job_count == 6, "build_report: every job is counted, priced or not")
+    say(report.exit_code == 4,
+        f"build_report: an unrecognised-label job REFUSES the band -- exit 4 (incomplete), never a "
+        f"silent $0 contribution to the total the exit code bands on (got {report.exit_code})")
     say(abs(report.by_category_would_be.get("ec2", 0) - EC2_SPOT_PER_SLOT_HOURLY) < 1e-9,
         "build_report: the ec2 category is broken out separately, per-task requirement")
     say(abs(report.total_actual_usd - (EC2_SPOT_PER_SLOT_HOURLY)) < 1e-9,
@@ -1284,6 +1313,17 @@ def selftest() -> int:
             "-- EC2 is real spend regardless of repo visibility or the Latchkey free-tier pool")
         say(doc["by_category_would_be_usd"].get("ec2") is not None,
             "end-to-end --json: the ec2 category appears in by_category_would_be_usd")
+
+        # 7f. an unpriced runner label, end to end: the priced subset alone reads GREEN ($0.25),
+        # but 5000 minutes on an unknown label would be a hard-cap breach at any latchkey rate --
+        # the tool must refuse (4), not band the lower bound as "ok" (item 471).
+        runs = [_mk_run(606, "mixed-wf")]
+        jobs = {606: [_mk_job("build", "latchkey-small", 100),
+                      _mk_job("runaway", "some-new-runner-label", 5000)]}
+        code, out = _run_main_under_shim(tmp, ["--repo", "acme/example", "--period", "7"],
+                                          runs=runs, jobs_by_run=jobs, private=False)
+        say(code == 4, f"end-to-end: a job on an unrecognised runner label exits 4, not a money band (got {code})")
+        say("INCOMPLETE" in out, "end-to-end: the unpriced-label report says INCOMPLETE")
 
     print()
     if bad:
