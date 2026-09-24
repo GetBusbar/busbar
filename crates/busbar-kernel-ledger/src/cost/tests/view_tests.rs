@@ -356,7 +356,7 @@ fn it_equals_the_posting_lookup_on_the_same_quantities() {
         .with_fee_count(3)];
     let one = price_in_view(&slice, &history.current()).expect("prices");
 
-    assert_eq!(i128::from(lookup.micros()), one.micros());
+    assert_eq!(i128::from(super::micros(&lookup)), one.micros());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

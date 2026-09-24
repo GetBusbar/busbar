@@ -34,7 +34,7 @@
 //! second-copy tripwire it was always meant to be.
 
 use busbar_kernel_budget::RateNanos;
-use busbar_kernel_ledger::cost::{minor_of, nano_rate, LaneClass, RateCard, NANOS_PER_CENT};
+use busbar_kernel_ledger::cost::{nano_rate, LaneClass, Money, RateCard, NANOS_PER_CENT};
 
 /// The admission unit's conversion, asked for one rate.
 ///
@@ -200,8 +200,9 @@ fn every_boundary_value_converts_to_its_named_integer_and_both_readers_agree() {
 ///
 /// This is the assertion that stands where a cross-rate would have gone. #66 removed the axis a
 /// cross-rate needed: there is no second denomination for a rate to be scaled against, so a rate
-/// on a card can only ever be the integer somebody configured. The projection (`minor_of`) divides
-/// by ONE constant, `NANOS_PER_CENT`, which nothing can name and therefore nothing can move.
+/// on a card can only ever be the integer somebody configured. The projection (`Money::of_nanos`,
+/// then `minor_i64`) divides by ONE constant, `NANOS_PER_CENT`, which nothing can name and therefore
+/// nothing can move.
 #[test]
 fn the_conversion_is_the_integer_the_card_holds() {
     let mut seq = Seq(0x1234_5678_9ABC_DEF0);
@@ -233,10 +234,12 @@ fn the_conversion_is_the_integer_the_card_holds() {
 fn the_projection_divides_by_the_one_constant() {
     assert_eq!(NANOS_PER_CENT, 10_000_000);
     let nanos = 3_500_000_000u128;
-    assert_eq!(minor_of(nanos), 350);
+    // The CHECKED projection (item 28): the one money type, which refuses rather than pins.
+    let minor = Money::of_nanos(nanos).and_then(Money::minor_i64);
+    assert_eq!(minor, Ok(350));
     assert_eq!(
-        minor_of(nanos),
-        i64::try_from(nanos / NANOS_PER_CENT).expect("fits"),
+        minor,
+        Ok(i64::try_from(nanos / NANOS_PER_CENT).expect("fits")),
         "the projection is the constant and nothing else"
     );
 }

@@ -189,17 +189,6 @@ pub struct Priced {
 }
 
 impl Priced {
-    /// The answer in whole minor units — one truncation over the summed nano-units, floored at
-    /// zero, at the one scale (#66).
-    pub fn minor(&self) -> i64 {
-        crate::cost::project::minor_of(self.priced_nanos)
-    }
-
-    /// The answer in micro-units — one truncation over the summed nano-units, NOT floored.
-    pub fn micros(&self) -> i64 {
-        crate::cost::project::micros_of(self.priced_nanos)
-    }
-
     /// Every class the card was present for but silent about. The flat fee is never among them:
     /// a card carries exactly one fee and every constructor sets it, so a fee can be an explicit
     /// zero (#77(5) `BUSBAR-1.6.0.md:420`) but never a silence.

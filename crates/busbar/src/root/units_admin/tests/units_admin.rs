@@ -4403,11 +4403,15 @@ fn the_totals_view_and_the_usage_read_derive_the_same_figure() {
     let rates = card
         .lane_rates(A_LANE)
         .expect("the fixture's card names the lane");
-    let usage_micros = busbar_kernel_ledger::cost::micros_of(rates.nanos(&lines)).saturating_add(
-        card.fee()
-            .saturating_mul(busbar_kernel_ledger::cost::MICROS_PER_CENT)
-            .saturating_mul(i64::try_from(FEES).expect("small")),
-    );
+    // The CHECKED projection (item 28) — the fixture is in range, and a pinned figure is not one.
+    let usage_micros = busbar_kernel_ledger::cost::Money::of_nanos(rates.nanos(&lines))
+        .and_then(busbar_kernel_ledger::cost::Money::micros_i64)
+        .expect("the fixture's figure is in range")
+        .saturating_add(
+            card.fee()
+                .saturating_mul(busbar_kernel_ledger::cost::MICROS_PER_CENT)
+                .saturating_mul(i64::try_from(FEES).expect("small")),
+        );
 
     let rows = totals_rows_over(&view);
     assert_eq!(rows.len(), 1);

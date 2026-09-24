@@ -18,7 +18,7 @@
 //! someone else's seed is not a property.
 
 use super::*;
-use crate::cost::{cents_of, derive_spend_cents, derive_spend_micros, micros_of, STANDARD_TIER_BP};
+use crate::cost::{derive_spend_cents, derive_spend_micros, MoneyError, STANDARD_TIER_BP};
 use crate::cost::{LaneClass, RateCard, FEE_CLASS, NANOS_PER_CENT};
 
 /// A deterministic sequence. Same numbers everywhere, forever.
@@ -95,12 +95,12 @@ fn the_lookup_over_a_single_entry_history_equals_the_legacy_derivation() {
 
         assert_eq!(
             derived_cents,
-            posted.minor(),
+            minor(&posted),
             "case {case}: derived cents must equal the projection of the stored nano-units"
         );
         assert_eq!(
             derived_micros,
-            posted.micros(),
+            micros(&posted),
             "case {case}: derived micro-units must equal the projection of the stored nano-units"
         );
 
@@ -121,7 +121,7 @@ fn the_lookup_over_a_single_entry_history_equals_the_legacy_derivation() {
             .fold(0u128, |a, l| a + l.amount_nanos);
         assert_eq!(
             usage_only,
-            cents_of(stored_usage),
+            minor_nanos(stored_usage).expect("in range"),
             "case {case}: usage alone"
         );
         let stored_fee = posted
@@ -140,28 +140,21 @@ fn the_lookup_over_a_single_entry_history_equals_the_legacy_derivation() {
     }
 }
 
-/// The exact total above which the two projections stop agreeing, and therefore the exact bound the
-/// generator below must respect.
+/// The exact total above which the micro projection can no longer be SERVED, and therefore the
+/// exact bound the generator below must respect.
 ///
-/// [`micros_of`] divides the nano-unit total by a thousand and then converts to the signed display
-/// type, SATURATING at its maximum rather than wrapping. So the largest total it can still represent
-/// is `i64::MAX` micro-units, which is `i64::MAX * NANOS_PER_MICRO` = 9_223_372_036_854_775_807_000
-/// nano-units. One nano-unit past that and the micro projection pins while [`cents_of`], dividing by
-/// ten million first, keeps counting for another three orders of magnitude.
-///
-/// The generated cases stay at or below this point on purpose. The identity being asserted is that
-/// the two projections are the same number at two scales; above the point they are not, and a
-/// generator that wandered past it would be asserting something false. The generator's own product
-/// happened to top out about two per cent under this bound, which is a margin nobody chose and a
-/// one-character edit could erase — so the bound is now applied rather than hoped for, and the
-/// behaviour on the far side of it is pinned by its own case below.
+/// The micro projection divides the nano-unit total by a thousand and narrows to the signed served
+/// type, CHECKED: the largest total it can state is `i64::MAX` micro-units, which is `i64::MAX *
+/// NANOS_PER_MICRO` = 9_223_372_036_854_775_807_000 nano-units. One micro-unit past that and it
+/// REFUSES (item 28) — the deleted `micros_of` pinned it at `i64::MAX` instead — while the minor
+/// projection, dividing by ten million first, keeps counting for another three orders of magnitude.
 const MICRO_PROJECTION_CEILING_NANOS: u128 = (i64::MAX as u128) * crate::cost::NANOS_PER_MICRO;
 
-/// The two projections are consistent with each other by construction, BELOW the point where the
-/// finer of them saturates: a nano-unit total in micro-units, divided by the ten thousand
-/// micro-units in a cent, is the same total in cents.
+/// The two projections are consistent with each other by construction, up to the point where the
+/// finer of them can no longer be served: a nano-unit total in micro-units, divided by the ten
+/// thousand micro-units in a minor unit, is the same total in minor units.
 #[test]
-fn the_two_projections_agree_at_every_generated_total_below_the_saturation_point() {
+fn the_two_projections_agree_at_every_generated_total_below_the_micro_ceiling() {
     let mut seq = Seq(0x0FF1_CE00_1234_5678);
     let mut largest = 0u128;
     for _ in 0..10_000 {
@@ -169,55 +162,54 @@ fn the_two_projections_agree_at_every_generated_total_below_the_saturation_point
         let nanos = raw % (MICRO_PROJECTION_CEILING_NANOS + 1);
         largest = largest.max(nanos);
         assert_eq!(
-            cents_of(nanos),
-            micros_of(nanos) / crate::cost::MICROS_PER_CENT
+            minor_nanos(nanos),
+            micros_nanos(nanos).map(|m| m / crate::cost::MICROS_PER_CENT)
         );
     }
     assert!(
         largest <= MICRO_PROJECTION_CEILING_NANOS,
-        "the generator is bounded by the saturation point, not by luck"
+        "the generator is bounded by the micro ceiling, not by luck"
     );
 }
 
-/// PAST THE SATURATION POINT THE TWO PROJECTIONS DIVERGE, AND THAT IS THE DESIGNED BEHAVIOUR.
+/// PAST THE MICRO CEILING THE MICRO PROJECTION REFUSES, AND THE MINOR ONE DOES NOT (item 28).
 ///
-/// Ten to the twenty-second nano-units is above `i64::MAX * NANOS_PER_MICRO`, so the micro
-/// projection pins at the signed maximum while the cent projection — a divide by ten million rather
-/// than by a thousand — still fits and keeps counting. Reading the micro figure back into cents
-/// therefore UNDERSTATES the total, which is the safe direction for a display projection to fail in
-/// but is not an agreement, and pretending otherwise would make the identity above a claim about
-/// numbers nobody generates.
+/// Ten to the twenty-second nano-units is above `i64::MAX * NANOS_PER_MICRO`. The deleted pinning
+/// projection answered `i64::MAX` micro-units here — read back into minor units it UNDERSTATED the
+/// total by more than seven per cent, a bill nobody posted. The checked projection refuses instead,
+/// while the minor projection still fits and is exact.
 #[test]
-fn past_the_saturation_point_the_micro_projection_pins_and_the_cent_one_does_not() {
+fn past_the_micro_ceiling_the_micro_projection_refuses_and_the_minor_one_does_not() {
     let nanos = 10_000_000_000_000_000_000_000u128; // ten to the twenty-second
     assert!(nanos > MICRO_PROJECTION_CEILING_NANOS);
-    assert_eq!(micros_of(nanos), i64::MAX, "the finer projection pins");
     assert_eq!(
-        cents_of(nanos),
-        1_000_000_000_000_000,
-        "the cent projection still fits and is exact"
-    );
-    // Read the pinned micro figure back into cents and it is short by more than seven per cent.
-    // That is the divergence, exactly: not a rounding difference, a saturation.
-    assert_ne!(
-        cents_of(nanos),
-        micros_of(nanos) / crate::cost::MICROS_PER_CENT,
-        "past the ceiling the identity does not hold, and must not be asserted to"
+        micros_nanos(nanos),
+        Err(MoneyError::Overflow),
+        "the finer projection refuses, never pins"
     );
     assert_eq!(
-        micros_of(nanos) / crate::cost::MICROS_PER_CENT,
-        922_337_203_685_477,
-        "the pinned micro figure read back into cents understates the total"
+        minor_nanos(nanos),
+        Ok(1_000_000_000_000_000),
+        "the minor projection still fits and is exact"
     );
 
-    // The last total on the agreeing side of the line, and the first on the far side: the ceiling
+    // The last total on the served side of the line, and the first micro-unit past it: the ceiling
     // is a boundary, not an approximate region.
     assert_eq!(
-        cents_of(MICRO_PROJECTION_CEILING_NANOS),
-        micros_of(MICRO_PROJECTION_CEILING_NANOS) / crate::cost::MICROS_PER_CENT,
+        micros_nanos(MICRO_PROJECTION_CEILING_NANOS),
+        Ok(i64::MAX),
+        "at the ceiling itself the figure is exact, not pinned"
+    );
+    assert_eq!(
+        minor_nanos(MICRO_PROJECTION_CEILING_NANOS),
+        micros_nanos(MICRO_PROJECTION_CEILING_NANOS).map(|m| m / crate::cost::MICROS_PER_CENT),
         "at the ceiling itself the two still agree"
     );
-    assert_eq!(micros_of(MICRO_PROJECTION_CEILING_NANOS), i64::MAX);
+    assert_eq!(
+        micros_nanos(MICRO_PROJECTION_CEILING_NANOS + crate::cost::NANOS_PER_MICRO),
+        Err(MoneyError::Overflow),
+        "one micro-unit past the ceiling refuses"
+    );
 }
 
 /// A tiered posting has no older-release counterpart, so the identity deliberately stops at the
@@ -234,12 +226,12 @@ fn the_identity_holds_at_the_neutral_tier_and_the_tier_is_the_only_divergence() 
         .expect("the one function prices");
 
     let neutral = priced(&c, "m", &report, 1, STANDARD_TIER_BP);
-    assert_eq!(derived, neutral.minor());
+    assert_eq!(derived, minor(&neutral));
 
     let tiered = priced(&c, "m", &report, 1, 15_000);
     assert_ne!(
         derived,
-        tiered.minor(),
+        minor(&tiered),
         "a tier away from neutral is expected to differ from the older derivation"
     );
     assert_eq!(tiered.pre_tier_nanos, neutral.priced_nanos);

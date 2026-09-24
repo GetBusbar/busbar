@@ -12,6 +12,27 @@ use busbar_contract::caps::{Consumption, Grant, KernelSeal, QuantitySource, Usag
 
 use crate::cost::{price, History, LaneClass, Posting, Priced, RateCard};
 
+/// A nano-unit total in whole MINOR units through the CHECKED projection (item 28): the one money
+/// type, which refuses a figure the served type cannot hold rather than pinning it at a ceiling.
+pub(crate) fn minor_nanos(nanos: u128) -> Result<i64, crate::cost::MoneyError> {
+    crate::cost::Money::of_nanos(nanos).and_then(crate::cost::Money::minor_i64)
+}
+
+/// [`minor_nanos`] at the micro scale: the same checked projection, the finer narrowing.
+pub(crate) fn micros_nanos(nanos: u128) -> Result<i64, crate::cost::MoneyError> {
+    crate::cost::Money::of_nanos(nanos).and_then(crate::cost::Money::micros_i64)
+}
+
+/// A priced posting's figure in minor units, checked. Every fixture here is in range.
+pub(crate) fn minor(p: &Priced) -> i64 {
+    minor_nanos(p.priced_nanos).expect("the fixture's figure is in range")
+}
+
+/// A priced posting's figure in micro-units, checked. Every fixture here is in range.
+pub(crate) fn micros(p: &Priced) -> i64 {
+    micros_nanos(p.priced_nanos).expect("the fixture's figure is in range")
+}
+
 mod derive_tests;
 mod history_tests;
 mod identity_tests;

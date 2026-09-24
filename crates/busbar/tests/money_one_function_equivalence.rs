@@ -311,7 +311,8 @@ impl Case {
         );
         let settled = ledger_cost::price_fail_closed(&history.current(), &posting)
             .ok()
-            .map(|p| i128::from(p.micros()));
+            .and_then(|p| ledger_cost::Money::of_nanos(p.priced_nanos).ok())
+            .map(ledger_cost::Money::micros);
         // THE HOST METERING SEAM (`MeteringHost::price_usage`): nano-units, no fee.
         let metered = kernel
             .price_usage_nanos(

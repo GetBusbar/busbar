@@ -211,13 +211,13 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
     let later = price(&view, &after).expect("entry one covers it");
     assert_eq!(earlier.card_seq, HistorySeq(0));
     assert_eq!(
-        earlier.minor(),
+        minor(&earlier),
         1000,
         "the unit that arrived first did not move"
     );
     assert_eq!(later.card_seq, HistorySeq(1));
     assert_eq!(
-        later.minor(),
+        minor(&later),
         500,
         "the unit that arrived after pays the new rate"
     );
@@ -226,9 +226,7 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
     // invoice cut against it reproducible.
     let at_zero = history.snapshot(HistorySeq(0));
     assert_eq!(
-        price(&at_zero, &after)
-            .expect("entry zero is open-ended")
-            .minor(),
+        minor(&price(&at_zero, &after).expect("entry zero is open-ended")),
         1000,
         "a snapshot taken before the edit cannot see the edit"
     );

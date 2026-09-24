@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::cost::{
-    apply_tier, apply_tier_signed, cents_of, checked_apply_tier, micros_of, LaneClass, RateCard,
-    FEE_CLASS, STANDARD_TIER_BP,
+    apply_tier, apply_tier_signed, checked_apply_tier, LaneClass, MoneyError, RateCard, FEE_CLASS,
+    STANDARD_TIER_BP,
 };
 
 /// The stored pre-tier amount is the sum over the posting's lines INCLUDING the fee line, and each
@@ -66,7 +66,7 @@ fn with_no_card_every_class_prices_at_zero_and_the_fee_still_posts() {
         STANDARD_TIER_BP,
     );
     assert_eq!(posted.pre_tier_nanos, 150_000_000, "five fees of 3 cents");
-    assert_eq!(posted.minor(), 15);
+    assert_eq!(minor(&posted), 15);
     assert!(!posted.lane_unpriced, "no card means no missing lane");
     assert!(
         posted.unpriced_classes().is_empty(),
@@ -166,7 +166,7 @@ fn each_class_bills_against_its_own_rate() {
         STANDARD_TIER_BP,
     );
     assert_eq!(posted.pre_tier_nanos, 15_000_000_000);
-    assert_eq!(posted.minor(), 1500);
+    assert_eq!(minor(&posted), 1500);
 }
 
 /// THE ORACLE'S CARD, reproduced. A tenth of a cost unit per input token and a fifth per output
@@ -184,8 +184,8 @@ fn the_oracle_rate_card_reproduces_its_pinned_figure() {
         STANDARD_TIER_BP,
     );
     assert_eq!(posted.pre_tier_nanos, 2_500_000_000, "two and a half units");
-    assert_eq!(posted.minor(), 250);
-    assert_eq!(posted.micros(), 2_500_000);
+    assert_eq!(minor(&posted), 250);
+    assert_eq!(micros(&posted), 2_500_000);
 }
 
 /// The cent projection TRUNCATES toward zero; it never rounds up. Just under two cents is one, and
@@ -194,23 +194,31 @@ fn the_oracle_rate_card_reproduces_its_pinned_figure() {
 #[test]
 fn the_cent_projection_truncates_toward_zero() {
     let c = card("m", 1.0, 0.0, 0);
-    let at = |tokens: u64| priced(&c, "m", &usage(&[(INPUT, tokens)]), 0, STANDARD_TIER_BP).minor();
+    let at = |tokens: u64| {
+        minor(&priced(
+            &c,
+            "m",
+            &usage(&[(INPUT, tokens)]),
+            0,
+            STANDARD_TIER_BP,
+        ))
+    };
     assert_eq!(at(19_999), 1, "just under two cents floors to one");
     assert_eq!(at(20_000), 2, "exactly two cents is two");
     assert_eq!(at(20_001), 2, "just over two cents still floors to two");
 }
 
-/// Both projections pin at the top of the signed range rather than wrapping. A wrapping conversion
-/// would land negative, the cent floor would turn that into nothing, and an over-the-top ledger
-/// would bill as free — escaping every cap it should have blocked.
+/// Both projections REFUSE a total past the served range — they neither wrap nor pin (item 28). A
+/// wrapping conversion would land negative and bill as free; a pinning one (`cents_of` /
+/// `micros_of`, deleted) answered `i64::MAX`, a bill nobody posted. The checked projection says
+/// neither: it refuses.
 ///
-/// And a POSTING that large is never priced at all (item 28): the lookup's figure is the one
-/// function's, which REFUSES an overflow rather than billing the ceiling — so there is no pinned
-/// posting for these projections to be asked about.
+/// And a POSTING that large is never priced at all: the lookup's figure is the one function's,
+/// which REFUSES an overflow rather than billing the ceiling.
 #[test]
-fn both_projections_saturate_rather_than_wrap() {
-    assert_eq!(cents_of(u128::MAX), i64::MAX);
-    assert_eq!(micros_of(u128::MAX), i64::MAX);
+fn both_projections_refuse_rather_than_pin_or_wrap() {
+    assert_eq!(minor_nanos(u128::MAX), Err(MoneyError::Overflow));
+    assert_eq!(micros_nanos(u128::MAX), Err(MoneyError::Overflow));
     let c = card("m", 1e15, 0.0, 0);
     let history = crate::cost::History::opening(c, 0);
     let posting = Posting::from_usage("m", &usage(&[(INPUT, u64::MAX)]), 0, STANDARD_TIER_BP, 0, 0);
@@ -228,8 +236,8 @@ fn both_projections_saturate_rather_than_wrap() {
 fn the_nano_scale_keeps_sub_micro_precision() {
     let c = card("m", 3.125, 0.0, 0);
     let posted = priced(&c, "m", &usage(&[(INPUT, 8)]), 0, STANDARD_TIER_BP);
-    assert_eq!(posted.micros(), 25);
-    assert_eq!(posted.minor(), 0, "twenty-five micro-units is under a cent");
+    assert_eq!(micros(&posted), 25);
+    assert_eq!(minor(&posted), 0, "twenty-five micro-units is under a cent");
 }
 
 /// A class priced explicitly at zero is a KNOWN class that bills nothing at any volume — quite
@@ -268,7 +276,7 @@ fn the_tier_multiplier_applies_once_over_the_summed_pre_tier_amount() {
     assert_eq!(posted.tier_bp, 15_000);
     assert_eq!(posted.pre_tier_nanos, 30_026_000);
     assert_eq!(posted.priced_nanos, 45_039_000);
-    assert_eq!(posted.minor(), 4);
+    assert_eq!(minor(&posted), 4);
     // The lines stay at their pre-tier amounts: the multiplier is on the sum, not on each line.
     assert_eq!(posted.lines[0].amount_nanos, 6_000);
 }
@@ -281,7 +289,7 @@ fn a_discount_tier_is_the_same_single_operation() {
     let posted = priced(&c, "m", &usage(&[(INPUT, 3), (OUTPUT, 4)]), 1, 8_000);
     assert_eq!(posted.pre_tier_nanos, 30_026_000);
     assert_eq!(posted.priced_nanos, 24_020_800);
-    assert_eq!(posted.minor(), 2);
+    assert_eq!(minor(&posted), 2);
 }
 
 /// THE ONE DIVIDE, in the case that tells the two implementations apart. Two lines of five
