@@ -395,7 +395,9 @@ fn it_equals_the_posting_lookup_at_every_tier_including_an_exact_half() {
             );
             assert_eq!(
                 i128::from(super::micros(&lookup)),
-                price_in_view(&slice, &view).expect("the view prices").micros(),
+                price_in_view(&slice, &view)
+                    .expect("the view prices")
+                    .micros(),
                 "tier {tier} bp, {quantity} units: one micro-unit figure"
             );
         }
