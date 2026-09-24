@@ -1875,9 +1875,12 @@ impl LedgerView for SeededLedger {
         .collect()
     }
 
-    fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot {
+    fn legacy_rows(
+        &self,
+    ) -> Result<crate::root::ledger_identity::LegacySnapshot, busbar_kernel_ledger::cost::MoneyError>
+    {
         use crate::root::ledger_identity::{LegacyRow, RowKey};
-        [
+        Ok([
             (
                 RowKey::new("key-1", A_DAY, "lane-a", "prov-x"),
                 LegacyRow {
@@ -1901,7 +1904,7 @@ impl LedgerView for SeededLedger {
             ),
         ]
         .into_iter()
-        .collect()
+        .collect())
     }
 
     fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
@@ -2263,7 +2266,8 @@ fn an_unopened_ledger_answers_empty_rather_than_absent() {
 fn the_reconciliation_served_is_the_identitys_own_answer() {
     let view = SeededLedger;
     let expected =
-        crate::root::ledger_identity::reconcile(&view.ledger_rows(), &view.legacy_rows());
+        crate::root::ledger_identity::reconcile(&view.ledger_rows(), &view.legacy_rows().unwrap())
+            .expect("every row projects");
     assert_eq!(
         expected.len(),
         1,
@@ -3265,8 +3269,8 @@ fn a_configured_name_cannot_break_out_of_the_document() {
             fee_count: 0,
         },
     );
-    let parsed: serde_json::Value =
-        serde_json::from_str(&render_totals(&rows)).expect("a hostile name still renders JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&render_totals(&rows).expect("projects"))
+        .expect("a hostile name still renders JSON");
     assert_eq!(parsed["rows"][0]["bucket"], hostile);
     assert_eq!(parsed["rows"][0]["lane"], hostile);
     assert_eq!(parsed["rows"][0]["provider"], hostile);
@@ -4201,8 +4205,11 @@ impl LedgerView for PricedLedger {
         self.book.clone()
     }
 
-    fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot {
-        crate::root::ledger_identity::LegacySnapshot::new()
+    fn legacy_rows(
+        &self,
+    ) -> Result<crate::root::ledger_identity::LegacySnapshot, busbar_kernel_ledger::cost::MoneyError>
+    {
+        Ok(crate::root::ledger_identity::LegacySnapshot::new())
     }
 
     fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
@@ -4450,4 +4457,67 @@ fn the_derived_figure_equals_the_settled_balance_while_the_history_has_not_moved
         "the read-time derivation and the figure the node settled disagree on an unmoved history; \
          that is not a rounding choice — one of the two is wrong"
     );
+}
+
+/// Item 28, the replacing behaviour (§15.3), at the served surface: a ledger row whose micro-unit
+/// figure is past the `i64` it is served in FAILS the totals and reconciliation reads (`Store`, the
+/// 500 the other money reads answer with) — it was served as `"priced_micros":"9223372036854775807"`
+/// by the pinning projection. A legacy side that cannot project refuses the reconciliation the same
+/// way, and the views whose figures project still answer.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_ledger_figure_past_the_served_range_fails_the_read_and_is_never_served_pinned() {
+    use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, LegacySnapshot, RowKey};
+    use busbar_kernel_ledger::cost::MoneyError;
+
+    struct Past {
+        legacy_refuses: bool,
+    }
+    impl LedgerView for Past {
+        fn ledger_rows(&self) -> LedgerSnapshot {
+            let past = u128::try_from(i64::MAX).expect("fits") * 1_000 + 1_000;
+            [(
+                RowKey::new("key-1", A_DAY, "", ""),
+                LedgerRow {
+                    priced_nanos: if self.legacy_refuses { 1_000 } else { past },
+                    fee_count: 0,
+                },
+            )]
+            .into_iter()
+            .collect()
+        }
+        fn legacy_rows(&self) -> Result<LegacySnapshot, MoneyError> {
+            if self.legacy_refuses {
+                Err(MoneyError::Overflow)
+            } else {
+                Ok(LegacySnapshot::new())
+            }
+        }
+        fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
+            Vec::new()
+        }
+        fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
+            None
+        }
+    }
+
+    let refused = |verb, view: &Past| {
+        matches!(
+            render_ledger_view(verb, view),
+            Err(busbar_core_admin::GovernanceError::Store)
+        )
+    };
+    let past = Past {
+        legacy_refuses: false,
+    };
+    assert!(refused(KernelVerb::GetLedgerTotals, &past));
+    assert!(refused(KernelVerb::GetLedgerReconciliation, &past));
+    let legacy_past = Past {
+        legacy_refuses: true,
+    };
+    assert!(refused(KernelVerb::GetLedgerReconciliation, &legacy_past));
+    // The row that projects is still served, figure intact: the refusal is the overflow's alone.
+    let totals = render_ledger_view(KernelVerb::GetLedgerTotals, &legacy_past).expect("projects");
+    let doc: serde_json::Value = serde_json::from_slice(&totals).expect("valid JSON");
+    assert_eq!(doc["rows"][0]["priced_micros"], "1");
 }

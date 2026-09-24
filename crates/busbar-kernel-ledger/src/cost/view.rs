@@ -368,6 +368,15 @@ impl Money {
     pub fn minor_i64(self) -> Result<i64, MoneyError> {
         i64::try_from(self.minor()).map_err(|_| MoneyError::Overflow)
     }
+
+    /// A NANO-unit total — a ledger row's summed `priced_amount` — as [`Money`]: one truncation,
+    /// toward zero, to scale six, CHECKED. The projection a nano-unit accumulator reads through
+    /// (item 28): `Err(Overflow)` for a figure the type cannot hold, never a pin at a ceiling.
+    pub fn of_nanos(nanos: u128) -> Result<Money, MoneyError> {
+        i128::try_from(nanos / NANOS_PER_MICRO)
+            .map(Money)
+            .map_err(|_| MoneyError::Overflow)
+    }
 }
 
 /// Where a [`Tally`] resolves the card a row prices against.

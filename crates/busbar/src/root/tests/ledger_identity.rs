@@ -307,7 +307,7 @@ fn the_two_paths_agree_on_every_row() {
     );
     assert!(ledger.len() >= 7, "the fixture must span several rows");
 
-    let out = reconcile(&ledger, &legacy);
+    let out = reconcile(&ledger, &legacy).expect("every row projects");
     assert!(
         out.is_empty(),
         "the books do not reconcile: {}",
@@ -335,12 +335,14 @@ fn a_dropped_posting_names_its_row_and_its_amount() {
 
     let (whole, legacy, _) = drive(&s, None);
     assert!(
-        reconcile(&whole, &legacy).is_empty(),
+        reconcile(&whole, &legacy)
+            .expect("every row projects")
+            .is_empty(),
         "the same fixture must be green before the posting is dropped"
     );
 
     let (short, legacy, _) = drive(&s, Some(dropped));
-    let out = reconcile(&short, &legacy);
+    let out = reconcile(&short, &legacy).expect("every row projects");
 
     assert_eq!(
         out.len(),
@@ -352,7 +354,10 @@ fn a_dropped_posting_names_its_row_and_its_amount() {
 
     // The magnitude is the missing posting, and the sign says which side it is missing from:
     // the ledger accounted for LESS than the legacy row drew, so the residual is negative.
-    let missing = i128::from(whole[&expected_row].micros() - short[&expected_row].micros());
+    let missing = i128::from(
+        whole[&expected_row].micros().expect("projects")
+            - short[&expected_row].micros().expect("projects"),
+    );
     assert_eq!(
         out[0].spend.amount(),
         -missing,
@@ -379,7 +384,9 @@ fn a_dropped_posting_names_its_row_and_its_amount() {
 fn a_posting_the_legacy_rows_never_saw_is_reported() {
     let s = settlements();
     let (mut ledger, legacy, _) = drive(&s, None);
-    assert!(reconcile(&ledger, &legacy).is_empty());
+    assert!(reconcile(&ledger, &legacy)
+        .expect("every row projects")
+        .is_empty());
 
     let invented = RowKey::new("key-9", DAY, "lane-a", "prov-x");
     ledger.insert(
@@ -390,7 +397,7 @@ fn a_posting_the_legacy_rows_never_saw_is_reported() {
         },
     );
 
-    let out = reconcile(&ledger, &legacy);
+    let out = reconcile(&ledger, &legacy).expect("every row projects");
     assert_eq!(out.len(), 1, "{}", describe(&out));
     assert_eq!(out[0].row, invented);
     assert_eq!(
@@ -426,7 +433,7 @@ fn the_count_side_is_checked_even_when_the_money_agrees() {
     .into_iter()
     .collect();
 
-    let out = reconcile(&ledger, &legacy);
+    let out = reconcile(&ledger, &legacy).expect("every row projects");
     assert_eq!(out.len(), 1);
     assert!(out[0].spend.holds(), "the money side agrees");
     assert!(out[0].fees_disagree(), "the count side does not");
@@ -445,10 +452,46 @@ fn the_projection_happens_once_over_the_row() {
         let entry = snapshot.entry(row.clone()).or_default();
         entry.priced_nanos += 900;
     }
-    assert_eq!(snapshot[&row].micros(), 7);
+    assert_eq!(snapshot[&row].micros().expect("projects"), 7);
+    let one = LedgerRow {
+        priced_nanos: 900,
+        fee_count: 0,
+    };
     assert_eq!(
-        micros_of(900) * 8,
+        one.micros().expect("projects") * 8,
         0,
         "the per-posting projection is what this shape exists to avoid"
     );
+}
+
+/// Item 28, the replacing behaviour (§15.3): a row whose micro-unit figure is past the `i64` it is
+/// served in is REFUSED — by the row, by the identity, by the boolean — never pinned at `i64::MAX`.
+/// The pinning projection (`micros_of`) answered `i64::MAX` here: a bill nobody posted, which the
+/// identity then reported as a residual against a real figure.
+#[test]
+fn a_row_past_the_served_range_refuses_and_is_never_pinned_at_the_ceiling() {
+    let top = u128::try_from(i64::MAX).expect("fits") * 1_000;
+    let row = |priced_nanos| LedgerRow {
+        priced_nanos,
+        fee_count: 0,
+    };
+    // The largest honest figure still projects, exactly — the boundary is the type's, not a pin.
+    assert_eq!(row(top + 999).micros(), Ok(i64::MAX));
+    for past in [top + 1_000, u128::MAX] {
+        assert_eq!(row(past).micros(), Err(MoneyError::Overflow));
+        let key = RowKey::new("key-1", DAY, "lane-a", "prov-x");
+        let ledger: LedgerSnapshot = [(key.clone(), row(past))].into_iter().collect();
+        let legacy: LegacySnapshot = [(
+            key,
+            LegacyRow {
+                spend_micros: i64::MAX,
+                billable_requests: 0,
+            },
+        )]
+        .into_iter()
+        .collect();
+        // Against a legacy row of exactly the old pinned figure: the pin "reconciled" this row.
+        assert_eq!(reconcile(&ledger, &legacy), Err(MoneyError::Overflow));
+        assert!(!holds(&ledger, &legacy), "a refused projection never holds");
+    }
 }

@@ -354,7 +354,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         );
     }
 
-    let out = reconcile(&ledger, &legacy);
+    let out = reconcile(&ledger, &legacy).expect("every row projects");
     assert!(
         out.is_empty(),
         "the ledger and the previous release's rows do not reconcile: {}",
@@ -373,7 +373,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         total_spend, expected_micros,
         "{delivered} delivered responses at {MICROS_PER_RESPONSE} micro-units each"
     );
-    let ledger_micros: i64 = ledger.values().map(|r| r.micros()).sum();
+    let ledger_micros: i64 = ledger.values().map(|r| r.micros().expect("projects")).sum();
     assert_eq!(ledger_micros, expected_micros);
     let fee_total: u64 = ledger.values().map(|r| r.fee_count).sum();
     assert_eq!(

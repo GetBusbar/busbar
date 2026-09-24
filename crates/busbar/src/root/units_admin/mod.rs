@@ -58,6 +58,7 @@ use busbar_core_admin::{
     verb_name, ApprovalState, KernelVerb, PostureCtx, VerbScope, AUDIT_VERBS, LEDGER_VERBS,
     LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
 };
+use busbar_kernel_ledger::cost::{Money, MoneyError};
 
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
 /// admin verb carries.
@@ -297,8 +298,10 @@ pub trait LedgerView: Send + Sync {
     /// What the ledger posted, by row — the ledger side of the reconciliation identity.
     fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot;
 
-    /// What the previous release's rows carry for the same cells — the other side of it.
-    fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot;
+    /// What the previous release's rows carry for the same cells — the other side of it. `Err` when
+    /// a row's figure cannot be projected into the `i64` that row carries (item 28): refused, never
+    /// pinned at `i64::MAX`.
+    fn legacy_rows(&self) -> Result<crate::root::ledger_identity::LegacySnapshot, MoneyError>;
 
     /// The sealed checkpoints, oldest first.
     fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint>;
@@ -319,11 +322,14 @@ pub trait LedgerView: Send + Sync {
     /// them behind, which is the only place that guarantee can be made.
     fn identity_snapshot(
         &self,
-    ) -> (
-        crate::root::ledger_identity::LedgerSnapshot,
-        crate::root::ledger_identity::LegacySnapshot,
-    ) {
-        (self.ledger_rows(), self.legacy_rows())
+    ) -> Result<
+        (
+            crate::root::ledger_identity::LedgerSnapshot,
+            crate::root::ledger_identity::LegacySnapshot,
+        ),
+        MoneyError,
+    > {
+        Ok((self.ledger_rows(), self.legacy_rows()?))
     }
 
     /// SEAM `booked-lines`: the lines this view can price, each carrying ITS OWN ARRIVAL INSTANT.
@@ -374,8 +380,8 @@ impl LedgerView for UnopenedLedger {
         crate::root::ledger_identity::LedgerSnapshot::new()
     }
 
-    fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot {
-        crate::root::ledger_identity::LegacySnapshot::new()
+    fn legacy_rows(&self) -> Result<crate::root::ledger_identity::LegacySnapshot, MoneyError> {
+        Ok(crate::root::ledger_identity::LegacySnapshot::new())
     }
 
     fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
@@ -505,7 +511,7 @@ impl NodeLedger {
     /// The dual write happens inside the ledger's one book-moving function, which the node calls
     /// under this same lock — so a reader holding it sees a settlement's two halves together or
     /// neither, and never the ledger's half alone.
-    fn legacy_rows_under_lock(&self) -> LegacySnapshot {
+    fn legacy_rows_under_lock(&self) -> Result<LegacySnapshot, MoneyError> {
         use crate::root::ledger_identity::{LegacyRow, RowKey};
 
         // Nano-units accumulate per row and the projection to micro-units happens ONCE over the sum,
@@ -527,16 +533,19 @@ impl NodeLedger {
             let entry = nanos.entry(row).or_default();
             *entry = entry.saturating_add(u128::from(posting.settled));
         });
+        // THE ONE PROJECTION, CHECKED (item 28): a row past the `i64` it is served in refuses the
+        // whole read. It was pinned at `i64::MAX`, a figure nobody posted.
         nanos
             .into_iter()
             .map(|(row, nanos)| {
-                (
+                let spend_micros = Money::of_nanos(nanos)?.micros_i64()?;
+                Ok((
                     row,
                     LegacyRow {
-                        spend_micros: busbar_kernel_ledger::cost::micros_of(nanos),
+                        spend_micros,
                         billable_requests: 0,
                     },
-                )
+                ))
             })
             .collect()
     }
@@ -550,18 +559,18 @@ impl LedgerView for NodeLedger {
         NodeLedger::rows_of(&self.lock())
     }
 
-    fn legacy_rows(&self) -> LegacySnapshot {
+    fn legacy_rows(&self) -> Result<LegacySnapshot, MoneyError> {
         let _durability = self.lock();
         self.legacy_rows_under_lock()
     }
 
     /// Both sides under ONE hold, which is what makes the served residual a fact rather than a race.
-    fn identity_snapshot(&self) -> (LedgerSnapshot, LegacySnapshot) {
+    fn identity_snapshot(&self) -> Result<(LedgerSnapshot, LegacySnapshot), MoneyError> {
         let durability = self.lock();
-        (
+        Ok((
             NodeLedger::rows_of(&durability),
-            self.legacy_rows_under_lock(),
-        )
+            self.legacy_rows_under_lock()?,
+        ))
     }
 
     fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
@@ -1016,8 +1025,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
         // path, so a body would be an argument to an operation that takes none — and an operation
         // that quietly read one would have a second way to be asked a question, which is exactly the
         // kind of surface a closed table exists to prevent.
-        let body = render_ledger_view(verb, self.ledger.as_ref())
-            .ok_or(busbar_core_admin::GovernanceError::NotFound)?;
+        let body = render_ledger_view(verb, self.ledger.as_ref())?;
         Ok(json_answer(body).pack())
     }
 
@@ -1555,13 +1563,18 @@ fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> 
     payload.into_bytes()
 }
 
-/// The bytes one ledger view answers with, or `None` for a verb that is not one.
+/// The bytes one ledger view answers with, or `NotFound` for a verb that is not one.
 ///
-/// `None` is reachable only if the closed table and this match ever disagree, which is a defect in
-/// this file rather than a request to forgive — so it becomes a `NotFound` at the call site rather
-/// than a body invented for a verb nobody wrote one for.
-fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>> {
-    Some(match verb {
+/// `NotFound` is reachable only if the closed table and this match ever disagree, which is a defect
+/// in this file rather than a request to forgive — so it is a refusal rather than a body invented
+/// for a verb nobody wrote one for. A money figure the view cannot project (item 28: past the range
+/// it is served in) fails the read as `Store` — refused, never served pinned at `i64::MAX`.
+fn render_ledger_view(
+    verb: KernelVerb,
+    view: &dyn LedgerView,
+) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
+    let refused = |_: MoneyError| busbar_core_admin::GovernanceError::Store;
+    Ok(match verb {
         // THE MONEY IS DERIVED HERE, NOT READ. The rows the totals view renders are the lines
         // priced through the dated history at each line's OWN arrival instant (#77(3)/#79), and
         // the book's balance only where this view has no line to resolve. The reconciliation arm
@@ -1569,17 +1582,21 @@ fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>
         // the PREVIOUS release's rows, which are what that release's read-time derivation produced
         // at settlement and are never repriced, so the two sides of it have to be read at the same
         // vintage or an amendment would report every row on a healthy node as out.
-        KernelVerb::GetLedgerTotals => render_totals(&totals_rows(view)).into_bytes(),
+        KernelVerb::GetLedgerTotals => render_totals(&totals_rows(view))
+            .map_err(refused)?
+            .into_bytes(),
         KernelVerb::GetLedgerCheckpoints => render_checkpoints(&view.checkpoints()).into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
-            let (ledger, legacy) = view.identity_snapshot();
-            render_reconciliation(&ledger, &legacy).into_bytes()
+            let (ledger, legacy) = view.identity_snapshot().map_err(refused)?;
+            render_reconciliation(&ledger, &legacy)
+                .map_err(refused)?
+                .into_bytes()
         }
         KernelVerb::GetLedgerMigration => {
             render_migration(view.migration_marker().as_ref()).into_bytes()
         }
         KernelVerb::GetLedgerOpenapiJson => LEDGER_OPENAPI_ADDITIVE.as_bytes().to_vec(),
-        _ => return None,
+        _ => return Err(busbar_core_admin::GovernanceError::NotFound),
     })
 }
 
@@ -1777,7 +1794,9 @@ fn derived_totals_rows(
 /// the reconciliation view keeps by calling `ledger_identity::reconcile` instead of re-deriving the
 /// identity. An endpoint that did its own arithmetic could disagree with the code that gates the
 /// release, and then there would be two answers and no way to tell which one was the money.
-fn render_totals(rows: &crate::root::ledger_identity::LedgerSnapshot) -> String {
+fn render_totals(
+    rows: &crate::root::ledger_identity::LedgerSnapshot,
+) -> Result<String, MoneyError> {
     let mut out = String::from("{\"rows\":[");
     for (i, (row, figures)) in rows.iter().enumerate() {
         if i > 0 {
@@ -1794,13 +1813,13 @@ fn render_totals(rows: &crate::root::ledger_identity::LedgerSnapshot) -> String 
         out.push_str(",\"priced_nanos\":\"");
         out.push_str(&figures.priced_nanos.to_string());
         out.push_str("\",\"priced_micros\":");
-        json_amount(i128::from(figures.micros()), &mut out);
+        json_amount(i128::from(figures.micros()?), &mut out);
         out.push_str(",\"fee_count\":");
         out.push_str(&figures.fee_count.to_string());
         out.push('}');
     }
     out.push_str("]}");
-    out
+    Ok(out)
 }
 
 /// `GET /api/v1/admin/ledger/checkpoints` — the sealed figures, and whether each seal verifies.
@@ -1927,8 +1946,8 @@ fn render_totals_cell(
 fn render_reconciliation(
     ledger: &crate::root::ledger_identity::LedgerSnapshot,
     legacy: &crate::root::ledger_identity::LegacySnapshot,
-) -> String {
-    let discrepancies = crate::root::ledger_identity::reconcile(ledger, legacy);
+) -> Result<String, MoneyError> {
+    let discrepancies = crate::root::ledger_identity::reconcile(ledger, legacy)?;
     let mut out = String::from("{\"holds\":");
     out.push_str(if discrepancies.is_empty() {
         "true"
@@ -1961,7 +1980,7 @@ fn render_reconciliation(
         out.push('}');
     }
     out.push_str("]}");
-    out
+    Ok(out)
 }
 
 /// `GET /api/v1/admin/ledger/migration` — the marker the first boot after the upgrade sealed.
