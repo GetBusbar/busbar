@@ -114,7 +114,7 @@ def job_block(text: str, job: str):
             continue
         if not in_jobs:
             continue
-        if re.match(r"^\S", line):
+        if re.match(r"^[^\s#]", line):   # a column-0 comment does not end `jobs:`
             if start is not None:
                 end = i
                 break
@@ -443,6 +443,14 @@ def selftest(root: str) -> int:
                 print("  SELFTEST FAILED: redis:7 planted in `%s`: expected %s. Got: %s"
                       % (job, "a finding" if want_finding else "no finding", got or "nothing"))
                 failures += 1
+
+    # job_block survives a column-0 comment between jobs (YAML allows it; `jobs:` does not end).
+    synthetic = "on: push\njobs:\n  a:\n    runs-on: x\n# note\n  gate:\n    runs-on: y\n"
+    if (job_block(synthetic, "gate") or "").startswith("  gate:"):
+        print("  GREEN: a column-0 comment inside `jobs:` does not hide the jobs after it")
+    else:
+        print("  SELFTEST FAILED: a column-0 comment ended `jobs:` early")
+        failures += 1
 
     # A RENAMED AGREEMENT JOB is a finding, never a comparison over nothing.
     with tempfile.TemporaryDirectory() as tmp:
