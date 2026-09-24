@@ -128,6 +128,45 @@ async fn telephony_proxy_relays_both_directions() {
     );
 }
 
+/// Item 137: a telephony call that ends settles its durable row terminal and evicts it. The proxy
+/// used to bind its handle as `_handle` and drop it unsettled, so every call's row stayed ACTIVE in
+/// the working set after both sockets were gone.
+#[tokio::test]
+async fn a_finished_telephony_call_settles_and_evicts_its_durable_row() {
+    let rt = runtime();
+    let proxy = begin_telephony(
+        &rt,
+        OpenAiRealtimeCodec,
+        "acct-1",
+        "call-ended",
+        g711_config(),
+        SessionBudget {
+            estimate_nanos: 1_000,
+            fee_nanos: 0,
+            cap_nanos: None,
+        },
+        None,
+        1,
+    )
+    .expect("telephony begins");
+    let (prov_in_tx, prov_in_rx) = unbounded::<Vec<u8>>();
+    let (prov_out_tx, _prov_out_rx) = unbounded::<Vec<u8>>();
+    let (cli_in_tx, cli_in_rx) = unbounded::<Vec<u8>>();
+    let (cli_out_tx, _cli_out_rx) = unbounded::<Vec<u8>>();
+    // Both sockets end at once: the call is over.
+    drop(prov_in_tx);
+    drop(cli_in_tx);
+    proxy
+        .run(prov_in_rx, prov_out_tx, cli_in_rx, cli_out_tx)
+        .await;
+    assert!(
+        crate::runtime::SessionHandle::bind(Arc::clone(&rt.engine), "acct-1", "call-ended")
+            .get()
+            .is_none(),
+        "the ended call's durable row is settled terminal and evicted"
+    );
+}
+
 // ── The provider WSS dials THROUGH the neutral guarded transport (HARD RULE 3) ───────────────────
 
 /// A loopback echo "provider" served over the neutral WS ingress acceptor — stands in for the Realtime

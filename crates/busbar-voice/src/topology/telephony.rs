@@ -206,7 +206,7 @@ where
     {
         let TelephonyProxy {
             core,
-            handle: _handle,
+            handle,
             guard,
             downlink_plane,
             uplink_plane,
@@ -258,5 +258,8 @@ where
         drop(core);
         let _ = up_drain.await;
         let _ = down_drain.await;
+        // The call is over: its durable row goes terminal and leaves the working set. Dropped
+        // unsettled, it stayed ACTIVE after both sockets were gone.
+        handle.finish(crate::runtime::scope::unix_now_secs());
     }
 }

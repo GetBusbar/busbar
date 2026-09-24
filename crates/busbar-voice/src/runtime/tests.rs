@@ -836,3 +836,78 @@ async fn a_close_racing_the_supervisors_arrival_still_wakes_it() {
             });
     }
 }
+
+// ── Item 137: a voice session's durable row is settled, never leaked ACTIVE ─────────────────────
+
+/// The retention sweep ABANDONS an idle ACTIVE session terminal, and a later sweep evicts it.
+///
+/// The session's own `open` opted OUT of the sweep (`|_, _, _, _| None`), and the cap rule evicts
+/// only terminal rows, so a session whose teardown never ran stayed ACTIVE in the working set for
+/// ever. Any later session's open is what claims the sweep.
+#[test]
+fn an_idle_voice_session_is_abandoned_terminal_then_evicted() {
+    let engine = Arc::new(DurableHandleEngine::new());
+    let idle = SessionHandle::bind(Arc::clone(&engine), "alice", "call-idle");
+    idle.open(1).expect("the idle session opens");
+
+    // An hour and a bit later another session opens, which claims the retention sweep.
+    let later = SessionHandle::bind(Arc::clone(&engine), "bob", "call-later");
+    later.open(1 + 3_600 + 2).expect("a later session opens");
+    assert_eq!(
+        idle.get().map(|row| row.terminal),
+        Some(true),
+        "a session idle past the abandon bound is settled terminal by the sweep"
+    );
+
+    // And a terminal-TTL later still, a third open evicts it.
+    let third = SessionHandle::bind(Arc::clone(&engine), "carol", "call-third");
+    third
+        .open(1 + 3_600 + 2 + 3_600 + 2)
+        .expect("a third session opens");
+    assert!(
+        idle.get().is_none(),
+        "the abandoned session leaves the working set"
+    );
+}
+
+/// A served session's pump returning settles its durable row terminal and evicts it.
+#[tokio::test]
+async fn serving_a_session_to_its_teardown_settles_and_evicts_its_row() {
+    let rt = VoiceRuntimeFixture::runtime();
+    let (core, handle, _guard) = crate::topology::begin_session(
+        &rt,
+        OpenAiRealtimeCodec,
+        "acct-1",
+        "call-served",
+        None,
+        Carrier::sideband(),
+        crate::topology::SessionBudget {
+            estimate_nanos: 1_000,
+            fee_nanos: 0,
+            cap_nanos: None,
+        },
+        None,
+        1,
+    )
+    .expect("the session opens");
+    crate::runtime::serve_to_teardown(core, handle, async {}, || 2).await;
+    assert!(
+        SessionHandle::bind(Arc::clone(&rt.engine), "acct-1", "call-served")
+            .get()
+            .is_none(),
+        "the served session's row is settled and evicted when its pump returns"
+    );
+}
+
+/// The runtime these three cells open sessions on: the production money hop over the mock host.
+struct VoiceRuntimeFixture;
+impl VoiceRuntimeFixture {
+    fn runtime() -> crate::runtime::VoiceRuntime {
+        let host = Arc::new(MockMeteringHost::default()) as Arc<dyn MeteringHost>;
+        crate::runtime::VoiceRuntime::new(
+            Arc::new(DurableHandleEngine::new()),
+            Arc::new(HostMeteringPort::new(host)),
+            Arc::new(crate::runtime::tools::EchoToolExecutor),
+        )
+    }
+}

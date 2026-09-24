@@ -474,6 +474,26 @@ where
     futures::future::select(pump, sweep).await;
 }
 
+/// **SERVE A SESSION TO ITS TEARDOWN.** [`serve_with_sweep`], then settle the session's durable row
+/// terminal and evict it, stamped at `now()` taken when the pump returns.
+///
+/// Every serving site used to drop its [`crate::runtime::SessionHandle`] unsettled once the pump
+/// returned, so the row outlived the socket as an ACTIVE session. This is the one shape a serving
+/// site takes instead, so none of them can forget the second half.
+pub async fn serve_to_teardown<C, F, N>(
+    core: Arc<SessionCore<C>>,
+    handle: crate::runtime::SessionHandle,
+    pump: F,
+    now: N,
+) where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+    F: std::future::Future<Output = ()>,
+    N: FnOnce() -> u64,
+{
+    serve_with_sweep(core, pump).await;
+    handle.finish(now());
+}
+
 /// Wall-clock milliseconds, for the sweep's "which deadlines have passed" question.
 ///
 /// The reading is handed to the node's table rather than compared here: which calls are past their

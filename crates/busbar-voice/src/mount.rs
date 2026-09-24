@@ -34,7 +34,7 @@ use crate::ir::codec::{DuplexReader, DuplexWriter, OpenAiRealtimeCodec};
 use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
-use crate::runtime::session::{serve_with_sweep, UplinkForwarder, VoiceSession};
+use crate::runtime::session::{serve_to_teardown, serve_with_sweep, UplinkForwarder, VoiceSession};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use crate::topology::minter_https::HttpsTokenMinter;
 use crate::topology::telephony::{begin_telephony, g711_config, open_admitted_telephony};
@@ -1478,6 +1478,8 @@ where
         Ingress::Gemini => composed_gemini_provider(),
         _ => composed_provider(),
     };
+    // The clock each served session's teardown is stamped with — the same host clock its open was.
+    let teardown_clock = Arc::clone(&host);
     accept_gauntlet(
         arrival.upgrade,
         gauntlet_req,
@@ -1520,10 +1522,12 @@ where
                                     .await;
                                 }
                                 Err(e) => {
-                                    // The dial failed: nothing to relay client frames to. Drop the
-                                    // proxy (its lease-close guard closes the D2 reserve, and its
-                                    // durable handle's own drop path applies) rather than serve a
-                                    // client socket with no upstream — fail closed, no orphaned row.
+                                    // The dial failed: nothing to relay client frames to. Settle the
+                                    // just-opened durable row terminal and evict it, then drop the
+                                    // proxy (its lease-close guard closes the D2 reserve) rather than
+                                    // serve a client socket with no upstream — fail closed, no
+                                    // orphaned row. The handle has no drop path of its own.
+                                    proxy.handle.finish(unix_secs(&*teardown_clock));
                                     tracing::warn!(
                                         error = %redact_url_credentials(&e.to_string()),
                                         dialect,
@@ -1541,7 +1545,7 @@ where
                     // frame is discarded with ZERO buffering — client uplink is decoded + metered with
                     // no upstream to funnel to, and no unbounded queue grows for the session's life.
                     None => {
-                        if let Ok((core, _handle, _guard)) = open_admitted_session(
+                        if let Ok((core, handle, _guard)) = open_admitted_session(
                             &rt,
                             codec,
                             owner,
@@ -1554,13 +1558,15 @@ where
                             served_governed_session(),
                         ) {
                             let (upstream_tx, _) = futures::channel::mpsc::unbounded::<Vec<u8>>();
-                            serve_with_sweep(
+                            serve_to_teardown(
                                 Arc::clone(&core),
+                                handle,
                                 serve_messages(
                                     stream,
                                     sink,
                                     Arc::new(UplinkForwarder::new(core, upstream_tx)),
                                 ),
+                                || unix_secs(&*teardown_clock),
                             )
                             .await;
                         }
@@ -1569,7 +1575,7 @@ where
                 // BROWSER-WEBRTC SIDEBAND: media is peer-to-peer by design (see `crate::topology::webrtc`
                 // docs) — this socket is control-only, so there is no provider leg to dial here.
                 Ingress::Sideband => {
-                    if let Ok((core, _handle, _guard)) = open_admitted_session(
+                    if let Ok((core, handle, _guard)) = open_admitted_session(
                         &rt,
                         codec,
                         owner,
@@ -1581,9 +1587,11 @@ where
                         now,
                         served_governed_session(),
                     ) {
-                        serve_with_sweep(
+                        serve_to_teardown(
                             Arc::clone(&core),
+                            handle,
                             serve_messages(stream, sink, Arc::new(VoiceSession::new(core))),
+                            || unix_secs(&*teardown_clock),
                         )
                         .await;
                     }

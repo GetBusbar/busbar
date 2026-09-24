@@ -155,8 +155,13 @@ impl SessionHandle {
                     }),
                 })
             },
-            // No sweep-time abandon transition for a voice session; teardown is explicit.
-            |_id, _row, _pos, _now| None,
+            // An ACTIVE session idle past `abandon_secs` is ABANDONED TERMINAL by the retention
+            // sweep, so the sweep's terminal-TTL rule can then evict it. Opting out (`None`) left
+            // every session whose teardown never ran — a dropped socket, a one-shot pass whose
+            // sideband never came — ACTIVE for ever: the cap rule evicts only terminal rows, so the
+            // working set grew without bound. Explicit teardown ([`SessionHandle::finish`]) is the
+            // fast path; this is the backstop that makes it not the only one.
+            |_id, row, _pos, now| abandon_idle(row, now),
             // No durable sink attached in this build ⇒ no sweep-time failures to report.
             |_id, _e| {},
         )?;
@@ -221,6 +226,15 @@ impl SessionHandle {
         Ok(())
     }
 
+    /// TEAR the session DOWN: drive it terminal, then evict it — the one call a serving site makes
+    /// when its pump returns. Returns `true` when the handle was this session's and is now gone.
+    ///
+    /// Every serving site used to drop its handle unsettled, so its durable row stayed ACTIVE after
+    /// the socket was gone and nothing but the retention sweep could ever end it.
+    pub fn finish(&self, now: u64) -> bool {
+        self.settle_terminal(now).is_ok() && self.close()
+    }
+
     /// CLOSE the session: evict the terminal handle from the working set (owner-gated, terminal-only),
     /// leaving durable rows behind. Returns `true` only when this session owns the handle AND it was
     /// terminal; a foreign owner or a still-active handle returns `false`.
@@ -258,6 +272,26 @@ pub fn rehydrate_sessions(
             Err(_) => Ok(RehydrateOutcome::Unreadable),
         }
     })
+}
+
+/// The retention sweep's transition for an idle ACTIVE voice session: the same row, terminal, stamped
+/// at `now`. `None` for a row that is not a voice session's (nothing this plane can speak for).
+fn abandon_idle(row: &(dyn std::any::Any + Send + Sync), now: u64) -> Option<Mutation> {
+    let cur = row.downcast_ref::<VoiceSessionRow>()?;
+    let mut next = cur.clone();
+    next.terminal = true;
+    next.updated_at = now;
+    Some(mutation_for(next))
+}
+
+/// Wall-clock Unix seconds — the clock a serving site stamps its teardown with. The retention sweep
+/// ages a row by these same seconds, so a teardown stamped on another clock would age wrongly.
+#[must_use]
+pub fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn mutation_for(next: VoiceSessionRow) -> Mutation {
