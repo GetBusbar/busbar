@@ -181,12 +181,17 @@ pub fn pins(cfg: &Cfg) -> Vec<Pin> {
 /// ready to absorb the subject's return at any size, while the rule itself printed PASS. An absent
 /// subject is now RED where the row is built (see `measure`'s scan-set floor), so there is nothing
 /// left to exempt — and a ceiling over a subject that is not there is slack like any other.
+///
+/// AN ORPHAN PIN IS RED HERE TOO (item 232). A pin whose row this run did not emit is a ceiling
+/// nobody measured: it cannot be slack-checked, `--write` refuses to re-pin it, and it sits in the
+/// ceilings file ready to absorb its subject's return at any size. [`slack_findings`] has always
+/// computed that list and said "the caller reports it"; this caller discarded it, so only the
+/// `--write` path ever saw it. It is reported and scored, beside the slack.
 pub fn ceiling_slack(cfg: &Cfg, rows: &[CRow]) -> Vec<CRow> {
-    let (slack, _) = slack_findings(cfg, rows);
-    let detail = if slack.is_empty() {
-        "every ratcheted ceiling equals what it measures".to_string()
-    } else {
-        format!(
+    let (slack, orphan) = slack_findings(cfg, rows);
+    let mut parts = Vec::new();
+    if !slack.is_empty() {
+        parts.push(format!(
             "{} ceiling(s) with slack — a ceiling above its measurement is room nobody voted for; \
              `cargo xtask gate construction --write` re-pins them (downward only): {}",
             slack.len(),
@@ -195,16 +200,35 @@ pub fn ceiling_slack(cfg: &Cfg, rows: &[CRow]) -> Vec<CRow> {
                 .map(|s| s.line())
                 .collect::<Vec<_>>()
                 .join("; ")
-        )
+        ));
+    }
+    if !orphan.is_empty() {
+        parts.push(format!(
+            "{} ceiling(s) name a row this run did not emit, so nothing measured them and they \
+             cannot be re-pinned — point each at its row or strike it: {}",
+            orphan.len(),
+            orphan.join(", ")
+        ));
+    }
+    let detail = if parts.is_empty() {
+        "every ratcheted ceiling equals what it measures".to_string()
+    } else {
+        parts.join("; ")
     };
+    let mut offenders: Vec<String> = slack.iter().map(|s| s.line()).collect();
+    offenders.extend(
+        orphan
+            .iter()
+            .map(|o| format!("{o}: ceiling names a row this run did not emit")),
+    );
     vec![plain(
         ROW_SLACK,
-        slack.is_empty(),
+        offenders.is_empty(),
         "every ratcheted ceiling is pinned to today's measurement",
         detail,
-        slack.len() as i64,
+        offenders.len() as i64,
         0,
-        slack.iter().map(|s| s.line()).collect(),
+        offenders,
     )]
 }
 
@@ -925,6 +949,37 @@ fn ints_of(text: &str) -> Result<BTreeMap<String, i64>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ledger::Status;
+
+    /// ITEM 232: A PIN WHOSE ROW THE RUN DID NOT EMIT IS RED ON `ceiling-slack`, not only on
+    /// `--write`. The same run with every pinned row present at its ceiling is GREEN, so the red
+    /// is the orphan and nothing else.
+    #[test]
+    fn ceiling_slack_reports_a_pin_whose_row_never_appeared() {
+        let cx = crate::ctx::Ctx::workspace().expect("workspace");
+        let cfg = super::super::ConstructionGate::cfg(&cx).expect("ceilings");
+        let all = pins(&cfg);
+        assert!(all.len() > 1, "the control needs pins");
+        let at_ceiling: Vec<CRow> = all
+            .iter()
+            .map(|p| plain(p.row.clone(), true, "t", "d", 3, 3, vec![]))
+            .collect();
+        let green = ceiling_slack(&cfg, &at_ceiling);
+        assert_eq!(green[0].status, Status::Pass, "{}", green[0].detail);
+
+        let orphaned = &all[0].row;
+        let missing_one: Vec<CRow> = at_ceiling
+            .into_iter()
+            .filter(|r| &r.id != orphaned)
+            .collect();
+        let red = ceiling_slack(&cfg, &missing_one);
+        assert_eq!(red[0].status, Status::Fail, "{}", red[0].detail);
+        assert!(
+            red[0].detail.contains(orphaned.as_str()),
+            "{}",
+            red[0].detail
+        );
+    }
 
     const DOC: &str = "# a comment\n[gate.surface_ceilings]\ngrammar = 500\n\n[rules.x]\nn = 1\n";
 
