@@ -146,7 +146,7 @@ for i in 1 2 3 4 5 6 7 8; do
   fi
 done
 
-IFS=$'\t' read -r judged_trip judged_failures judged_detail <<<"$(judge_route_failover "$records")"
+IFS=$'\t' read -r _ judged_failures judged_detail <<<"$(judge_route_failover "$records")"
 failures=$((failures + judged_failures))
 [ "$judged_failures" -eq 0 ] || detail="${detail}${judged_detail}; "
 
