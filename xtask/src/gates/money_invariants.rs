@@ -103,10 +103,13 @@ const STORE_TYPE_FLOOR: usize = 18;
 /// are what DEFINE which types are durable journal records.
 const JOURNAL_SEAM: &str = "crates/busbar/src/root/durability.rs";
 
-/// The seam's journal record types, MEASURED 2026-09-24: `Posting` (`impl Posting { fn body }`),
+/// The seam's journal record types, MEASURED 2026-09-24 at 8d9ce9113: `Posting`
+/// (`impl Posting { fn body }`), `HoldOpened` (`impl HoldOpened { fn body }`, the journalled hold),
 /// `AuditRecord` (`audit_body`), `Checkpoint` (`checkpoint_body`), `MigrationMarker`
-/// (`migration_body`). Fewer is a journal writer the derivation stopped seeing.
-const JOURNAL_ROOT_FLOOR: usize = 4;
+/// (`migration_body`). Fewer is a journal writer the derivation stopped seeing. The floor is the
+/// count, not below it: a floor one short lets exactly one writer vanish in silence, which is the
+/// defect it exists to refuse.
+const JOURNAL_ROOT_FLOOR: usize = 5;
 
 /// The record files BUSBAR-1.6.0 Part 0 holds this gate to by name. The population is derived; this
 /// is the check that the derivation still REACHES them — the defect item 9 names is exactly this
@@ -967,7 +970,7 @@ impl Gate for MoneyInvariantsGate {
             "a journal writer the derivation stops seeing is RED, not a smaller clean population",
             &[ROW_NO_PLUGIN_KEYED, ROW_NO_STORED_PRICE],
             ov7,
-            &["below the floor of 4"],
+            &[&format!("below the floor of {JOURNAL_ROOT_FLOOR}")],
         ));
 
         // RED (c): a plane/plugin crate sealing its own facts line is caught (#77(2)).
