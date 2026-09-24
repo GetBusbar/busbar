@@ -184,9 +184,9 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# THE ENTRIES THAT STAND ON THIS BRANCH: item 376 and item 381 (Q11/Q32, owner ruling
-# 2026-09-24, docs/design/1.6.0-QUESTIONS.md). Both are declared below, after the historical
-# record of why the branch carried none before this commit.
+# NO ENTRY STANDS ON THIS BRANCH. The last two (items 376 and 381, Q11/Q32, owner ruling
+# 2026-09-24) expired when their commit reached the base and are struck below, with the record of
+# what they declared.
 #
 # All twelve of the earlier set were struck on 2026-09-22 in the re-baseline below, for two
 # reasons, both of which are this section's own rules:
@@ -206,82 +206,19 @@ busbar-voice = ["busbar-voice-codec"]
 #
 # The re-baseline that struck them changed no ceiling upward, so nothing below needs a declaration.
 
-# ── ITEMS 376 + 381 (Q11/Q32, OWNER-SIGNED 2026-09-24) ──────────────────────────────────────────
+# ── ITEMS 376 + 381 (Q11/Q32, OWNER-SIGNED 2026-09-24) — EXPIRED AND STRUCK ──────────────────────
 #
-# Both fixes are NEEDLE repairs whose true measurement exceeds the existing ceiling, formally a
-# RAISE, which only an owner signature may make. The owner signed on 2026-09-24: re-pin both
-# needle repairs at their TRUE counts, and from there the ceilings move downward only. Measured on
-# the committed tree in a clean detached worktree (`cargo xtask gate construction --report`).
-#
-# 376: `[rules.ports-only]`/`[rules.ports-only-tests]` named the needle `busbar_core::`, a crate
-# 673ecdaaa absorbed into busbar-kernel — the row measured a false zero against a crate that no
-# longer exists, whatever the plane actually reached. Repointed at `busbar_kernel::` and armed at
-# today's measurement; every ceiling below is downward-only from here.
-[gate.ceiling_raises."rules.ports-only.max_per_crate.busbar-llm"]
-file    = "qa/construction.toml"
-from    = 0
-to      = 265
-because = "item 376 (Q11/Q32): the needle busbar_core:: named a crate 673ecdaaa absorbed into busbar-kernel, a false zero over real production reach. Repointed at busbar_kernel:: and armed at today's measurement, HEAD b091b4e83."
-
-[gate.ceiling_raises."rules.ports-only.max_per_crate.busbar-mcp"]
-file    = "qa/construction.toml"
-from    = 0
-to      = 288
-because = "item 376 (Q11/Q32): the needle busbar_core:: named a crate 673ecdaaa absorbed into busbar-kernel, a false zero over real production reach. Repointed at busbar_kernel:: and armed at today's measurement, HEAD b091b4e83."
-
-[gate.ceiling_raises."rules.ports-only.max_per_crate.busbar-a2a"]
-file    = "qa/construction.toml"
-from    = 0
-to      = 252
-because = "item 376 (Q11/Q32): the needle busbar_core:: named a crate 673ecdaaa absorbed into busbar-kernel, a false zero over real production reach. Repointed at busbar_kernel:: and armed at today's measurement, HEAD b091b4e83."
-
-[gate.ceiling_raises."rules.ports-only.max_per_crate.busbar-voice"]
-file    = "qa/construction.toml"
-from    = 0
-to      = 91
-because = "item 376 (Q11/Q32): the needle busbar_core:: named a crate 673ecdaaa absorbed into busbar-kernel, a false zero over real production reach. Repointed at busbar_kernel:: and armed at today's measurement, HEAD b091b4e83."
-
-[gate.ceiling_raises."rules.ports-only-tests.max_per_crate.busbar-llm"]
-file    = "qa/construction.toml"
-from    = 0
-to      = 1045
-because = "item 376 (Q11/Q32): the same needle repair as ports-only, from test code. Repointed at busbar_kernel:: and armed at today's measurement, HEAD b091b4e83."
-
-[gate.ceiling_raises."rules.ports-only-tests.max_per_crate.busbar-mcp"]
-file    = "qa/construction.toml"
-from    = 0
-to      = 204
-because = "item 376 (Q11/Q32): the same needle repair as ports-only, from test code. Repointed at busbar_kernel:: and armed at today's measurement, HEAD b091b4e83."
-
-[gate.ceiling_raises."rules.ports-only-tests.max_per_crate.busbar-a2a"]
-file    = "qa/construction.toml"
-from    = 0
-to      = 99
-because = "item 376 (Q11/Q32): the same needle repair as ports-only, from test code. Repointed at busbar_kernel:: and armed at today's measurement, HEAD b091b4e83."
-
-[gate.ceiling_raises."rules.ports-only-tests.max_per_crate.busbar-voice"]
-file    = "qa/construction.toml"
-from    = 0
-to      = 45
-because = "item 376 (Q11/Q32): the same needle repair as ports-only, from test code. Repointed at busbar_kernel:: and armed at today's measurement, HEAD b091b4e83."
-
-# 381: `[rules.legacy-reach]` totalled 17, gated only through `busbar_llm`, `busbar_core` and
-# `busbar_substrate` — the latter two measuring 0 hits forever (busbar_core is deleted;
-# busbar_substrate's root reach was already fully retired). Three live retiring engines the root
-# still names by prefix (busbar_mcp, busbar_a2a, busbar_voice) were never counted at all. Struck
-# the two dead prefixes, added the three live ones, armed both the total and the census at today's
-# measurement: 17 (busbar_llm, unchanged) + 5 (busbar_mcp) + 3 (busbar_a2a) + 12 (busbar_voice) = 37.
-[gate.ceiling_raises."rules.legacy-reach.ceiling"]
-file    = "qa/construction.toml"
-from    = 17
-to      = 37
-because = "item 381 (Q11/Q32): busbar_core/busbar_substrate measured 0 hits forever and are struck; busbar_mcp 5, busbar_a2a 3, busbar_voice 12 are the live retiring engines the root already names by prefix, now counted. Armed at today's measurement, HEAD b091b4e83."
-
-[gate.ceiling_raises."gate.census.legacy_reach_prefixes"]
-file    = "qa/construction.toml"
-from    = 3
-to      = 4
-because = "item 381 (Q11/Q32): the prefix table drops busbar_core and busbar_substrate (0 hits forever) and gains busbar_mcp, busbar_a2a and busbar_voice, net 3 -> 4 tables. Armed at today's measurement, HEAD b091b4e83."
+# 6493bed3f re-pinned two needle repairs at their TRUE counts under an owner signature and declared
+# the ten raises here: `rules.ports-only.max_per_crate.{busbar-llm 0->265, busbar-mcp 0->288,
+# busbar-a2a 0->252, busbar-voice 0->91}`, `rules.ports-only-tests.max_per_crate.{busbar-llm
+# 0->1045, busbar-mcp 0->204, busbar-a2a 0->99, busbar-voice 0->45}` (item 376: the needle
+# `busbar_core::` named a crate 673ecdaaa absorbed into busbar-kernel, a false zero; repointed at
+# `busbar_kernel::`), `rules.legacy-reach.ceiling 17->37` and `gate.census.legacy_reach_prefixes
+# 3->4` (item 381: the two dead prefixes struck, the three live retiring engines counted). That
+# commit reached the base: every one of the ten paths already reads its `to` value there, so
+# `ceiling-rose` reported all ten as "a declared raise ... that is not a raise at the base". This
+# is the commit after. Nothing here moved a ceiling; the numbers live in their rules and did not
+# change.
 
 # ── THE P0 RE-BASELINE OF qa/kind-isolation.toml, 2026-09-22 — EXPIRED AND STRUCK ───────────────
 #
@@ -1170,9 +1107,9 @@ max_hits = 0
 # call this rule's cleanup gets to make unilaterally.
 known_sites = [
   "crates/busbar-kernel/src/appbuild.rs:240",
-  "crates/busbar-kernel/src/appbuild.rs:619",
-  "crates/busbar-kernel/src/appbuild.rs:693",
-  "crates/busbar-kernel/src/appbuild.rs:795",
+  "crates/busbar-kernel/src/appbuild.rs:685",
+  "crates/busbar-kernel/src/appbuild.rs:759",
+  "crates/busbar-kernel/src/appbuild.rs:861",
   "crates/busbar-kernel/src/config/migrate.rs:302",
   "crates/busbar-kernel/src/config/migrate.rs:1481",
   "crates/busbar-kernel/src/config/migrate.rs:1826",
@@ -1183,23 +1120,23 @@ known_sites = [
   "crates/busbar-kernel/src/config/prepass.rs:123",
   "crates/busbar-kernel/src/config/providers.rs:75",
   "crates/busbar-kernel/src/config/transaction.rs:365",
-  "crates/busbar-kernel/src/config_validate/mod.rs:111",
-  "crates/busbar-kernel/src/config_validate/mod.rs:119",
-  "crates/busbar-kernel/src/config_validate/mod.rs:131",
-  "crates/busbar-kernel/src/config_validate/mod.rs:160",
-  "crates/busbar-kernel/src/config_validate/mod.rs:171",
-  "crates/busbar-kernel/src/config_validate/mod.rs:181",
-  "crates/busbar-kernel/src/config_validate/mod.rs:200",
-  "crates/busbar-kernel/src/config_validate/mod.rs:206",
-  "crates/busbar-kernel/src/config_validate/mod.rs:228",
-  "crates/busbar-kernel/src/config_validate/mod.rs:274",
-  "crates/busbar-kernel/src/config_validate/mod.rs:280",
-  "crates/busbar-kernel/src/config_validate/mod.rs:341",
-  "crates/busbar-kernel/src/config_validate/mod.rs:362",
-  "crates/busbar-kernel/src/config_validate/mod.rs:367",
-  "crates/busbar-kernel/src/config_validate/mod.rs:1220",
+  "crates/busbar-kernel/src/config_validate/mod.rs:126",
+  "crates/busbar-kernel/src/config_validate/mod.rs:134",
+  "crates/busbar-kernel/src/config_validate/mod.rs:146",
+  "crates/busbar-kernel/src/config_validate/mod.rs:175",
+  "crates/busbar-kernel/src/config_validate/mod.rs:186",
+  "crates/busbar-kernel/src/config_validate/mod.rs:207",
+  "crates/busbar-kernel/src/config_validate/mod.rs:226",
+  "crates/busbar-kernel/src/config_validate/mod.rs:232",
+  "crates/busbar-kernel/src/config_validate/mod.rs:254",
+  "crates/busbar-kernel/src/config_validate/mod.rs:300",
+  "crates/busbar-kernel/src/config_validate/mod.rs:306",
+  "crates/busbar-kernel/src/config_validate/mod.rs:387",
+  "crates/busbar-kernel/src/config_validate/mod.rs:416",
+  "crates/busbar-kernel/src/config_validate/mod.rs:421",
+  "crates/busbar-kernel/src/config_validate/mod.rs:1266",
   "crates/busbar-kernel/src/config_validate/mod.rs:1984",
-  "crates/busbar-kernel/src/endpoints.rs:108",
+  "crates/busbar-kernel/src/endpoints.rs:109",
   "crates/busbar-kernel/src/ingress/mod.rs:417",
   "crates/busbar-kernel/src/ingress/mod.rs:422",
   "crates/busbar-kernel/src/ingress/mod.rs:768",
@@ -1208,9 +1145,9 @@ known_sites = [
   "crates/busbar-kernel/src/metrics/money.rs:224",
   "crates/busbar-kernel/src/plane/config.rs:368",
   "crates/busbar-kernel/src/plane_host/build_input.rs:149",
-  "crates/busbar-kernel/src/router.rs:419",
+  "crates/busbar-kernel/src/router.rs:425",
   "crates/busbar-kernel/src/store/vocab.rs:136",
-  "crates/busbar-kernel/src/test_support/mod.rs:235",
+  "crates/busbar-kernel/src/test_support/mod.rs:220",
 ]
 
 # ── 18. no-default-bodies (ARCHITECTURE.md section 3.7) ─────────────────────────────────────────────────────
@@ -2142,13 +2079,13 @@ verdict = "real"
 because = "this is where the unbound posture is declared; declaring it is not composing a node out of it"
 
 [rules.no-test-doubles-in-production.known_sites.node-book-rows]
-file = "crates/busbar/src/root/durability.rs"
+file = "crates/busbar/src/root/durability/mod.rs"
 symbol = "RecordingRows"
 verdict = "real"
 because = "the one book a process settles onto keeps the previous release's rows, and a view reads that same value"
 
 [rules.no-test-doubles-in-production.known_sites.node-book-shipper]
-file = "crates/busbar/src/root/durability.rs"
+file = "crates/busbar/src/root/durability/mod.rs"
 symbol = "NullShipper"
 verdict = "real"
 because = "no peer is configured, so shipping nowhere is what this node's journal really does"
