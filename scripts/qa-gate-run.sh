@@ -404,14 +404,46 @@ SIBLING_DEFAULT_REF=dev
 # not exist. The fallback is what keeps the new default safe: `gh repo clone -- --branch dev` is a
 # hard failure on a repo with no `dev`, and silently losing a sibling is the failure mode this whole
 # registry-driven loop was written to end. Warn-and-continue on top of that, as before.
+# AN ALREADY-PRESENT SIBLING IS JUDGED, NOT TRUSTED (item 537). Reusing a directory that happens
+# to exist skips every ref decision above: a checkout left on `main`, one that is commits behind
+# `dev`, or one carrying local edits would be tested as if it were the sibling this gate asked for.
+# So it must be a git checkout, on the branch the clone arms would have chosen (the asked ref, or
+# the origin's default branch when a `dev` default does not exist there), at exactly origin's tip
+# of that branch, with a clean tree. Anything else is a sibling gap under the soak policy.
+sibling_present_ok() {
+  local path="$1" ref="$2" want branch head tip lsrc=0
+  git -C "$path" rev-parse --git-dir >/dev/null 2>&1 \
+    || { sibling_gap "${path} exists but is not a git checkout - it cannot be the sibling at '${ref}'"; return 0; }
+  git -C "$path" ls-remote --exit-code --heads origin "$ref" >/dev/null 2>&1 || lsrc=$?
+  want="$ref"
+  if [ "$lsrc" = 2 ] && [ "$ref" = "$SIBLING_DEFAULT_REF" ]; then
+    want="$(git -C "$path" ls-remote --symref origin HEAD 2>/dev/null \
+            | awk '$1 == "ref:" { sub("refs/heads/", "", $2); print $2; exit }')"
+    [ -n "$want" ] || { sibling_gap "${path}: origin has no '${ref}' and its default branch could not be read"; return 0; }
+  elif [ "$lsrc" != 0 ]; then
+    sibling_gap "${path}: could not verify '${ref}' against its origin (git ls-remote exit ${lsrc})"; return 0
+  fi
+  branch="$(git -C "$path" symbolic-ref --short -q HEAD || true)"
+  [ "$branch" = "$want" ] \
+    || { sibling_gap "${path} is already present on '${branch:-a detached HEAD}', not '${want}' - reusing it would test a different sibling than this gate asked for"; return 0; }
+  head="$(git -C "$path" rev-parse HEAD)"
+  tip="$(git -C "$path" ls-remote origin "refs/heads/${want}" 2>/dev/null | cut -f1)"
+  [ -n "$tip" ] && [ "$head" = "$tip" ] \
+    || { sibling_gap "${path} is on '${want}' at ${head:0:12} but origin's '${want}' is ${tip:0:12} - a stale sibling"; return 0; }
+  [ -z "$(git -C "$path" status --porcelain 2>/dev/null)" ] \
+    || { sibling_gap "${path} carries local modifications - it is not origin's '${want}' at ${head:0:12}"; return 0; }
+  note "already present: ${path} on '${want}' at ${head:0:12}, matching origin"
+}
+
 clone_sibling() {
-  local repo="$1" dir="$2" ref="$3" why="$4"
+  local repo="$1" dir="$2" ref="$3" why="$4" root
+  root="$(sibling_root)"
   echo "::group::clone GetBusbar/${repo} -> ${dir} (ref: ${ref})"
-  if [ -d "../${dir}" ]; then
-    note "already present: ../${dir}"
-  elif (cd .. && gh repo clone "GetBusbar/${repo}" "${dir}" -- --depth 1 --branch "${ref}"); then
+  if [ -d "${root}/${dir}" ]; then
+    sibling_present_ok "${root}/${dir}" "$ref"
+  elif (cd "$root" && gh repo clone "GetBusbar/${repo}" "${dir}" -- --depth 1 --branch "${ref}"); then
     note "cloned GetBusbar/${repo} at ${ref}"
-  elif [ "$ref" = "$SIBLING_DEFAULT_REF" ] && (cd .. && gh repo clone "GetBusbar/${repo}" "${dir}" -- --depth 1); then
+  elif [ "$ref" = "$SIBLING_DEFAULT_REF" ] && (cd "$root" && gh repo clone "GetBusbar/${repo}" "${dir}" -- --depth 1); then
     echo "::warning::GetBusbar/${repo} has no '${ref}' branch - fell back to its default branch, which for a release-only \`main\` may predate the core change this gate is testing"
   else
     echo "::warning::clone of GetBusbar/${repo} failed - ${why}"
@@ -523,7 +555,38 @@ cmd_selftest() {
   st "loader: a sibling whose cdylib build FAILS is RED"      1 in_root "$tmp/have" 1 loader_sibling_cdylib
   st "loader: off the soak (REQUIRE_SIBLINGS=0) it only warns" 0 in_root "$tmp/none" 0 loader_sibling_cdylib
 
-  [ "$ran" -ge 4 ] || { echo "qa-gate-run selftest: only $ran case(s) ran"; return 1; }
+  # ITEM 537: a sibling that is ALREADY PRESENT is judged, not trusted. Origins are local bare
+  # repositories (file://), so every case is offline and exact.
+  local G=(git -c user.email=selftest@example.invalid -c user.name=selftest -c commit.gpgsign=false
+           -c init.defaultBranch=main -c advice.detachedHead=false -c core.hooksPath=/dev/null)
+  mkorigin() { # name, with-dev(0|1) -> bare origin at $tmp/origins/<name>.git
+    local work="$tmp/work-$1"
+    "${G[@]}" init -q "$work"; "${G[@]}" -C "$work" commit -q --allow-empty -m base
+    if [ "$2" = 1 ]; then "${G[@]}" -C "$work" checkout -q -b dev; "${G[@]}" -C "$work" commit -q --allow-empty -m dev1
+                          "${G[@]}" -C "$work" checkout -q main; fi
+    "${G[@]}" clone -q --bare "$work" "$tmp/origins/$1.git"
+  }
+  mkdir -p "$tmp/origins" "$tmp/sib"
+  mkorigin withdev 1; mkorigin nodev 0
+  "${G[@]}" clone -q --branch main "file://$tmp/origins/withdev.git" "$tmp/sib/at-main"
+  "${G[@]}" clone -q "file://$tmp/origins/nodev.git" "$tmp/sib/nodev"
+  "${G[@]}" clone -q --branch dev "file://$tmp/origins/withdev.git" "$tmp/sib/stale"
+  "${G[@]}" clone -q --branch dev "file://$tmp/origins/withdev.git" "$tmp/sib/dirty"
+  echo scribble >"$tmp/sib/dirty/untracked-edit"
+  mkdir -p "$tmp/sib/not-git"
+  # advance origin dev AFTER `stale` was cloned
+  "${G[@]}" clone -q --branch dev "file://$tmp/origins/withdev.git" "$tmp/adv"
+  "${G[@]}" -C "$tmp/adv" commit -q --allow-empty -m dev2; "${G[@]}" -C "$tmp/adv" push -q origin dev
+  "${G[@]}" clone -q --branch dev "file://$tmp/origins/withdev.git" "$tmp/sib/at-dev"
+  st "present: on the asked ref, at origin's tip, is reused"          0 in_root "$tmp/sib" 1 clone_sibling x at-dev dev why
+  st "present: on main while origin HAS dev is RED"                   1 in_root "$tmp/sib" 1 clone_sibling x at-main dev why
+  st "present: on dev but BEHIND origin's dev is RED (stale)"         1 in_root "$tmp/sib" 1 clone_sibling x stale dev why
+  st "present: repo with no dev, on its default branch, is reused"    0 in_root "$tmp/sib" 1 clone_sibling x nodev dev why
+  st "present: a checkout with local modifications is RED"            1 in_root "$tmp/sib" 1 clone_sibling x dirty dev why
+  st "present: a directory that is not a git checkout is RED"         1 in_root "$tmp/sib" 1 clone_sibling x not-git dev why
+  st "present: off the soak a wrong ref only warns"                   0 in_root "$tmp/sib" 0 clone_sibling x at-main dev why
+
+  [ "$ran" -ge 11 ] || { echo "qa-gate-run selftest: only $ran case(s) ran"; return 1; }
   [ "$fails" = 0 ] || { echo "qa-gate-run selftest: $fails FAILED"; return 1; }
   echo "qa-gate-run selftest: all $ran case(s) green"
 }
