@@ -2,6 +2,8 @@ use super::*;
 use busbar_api::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use busbar_kernel_ledger::cost::{plane_fee_lane, split_plane_lane, Money, PER_REQUEST};
 use std::collections::BTreeMap;
+// The wall clock, by name: the admission path reads it and never a store handle (A7).
+use crate::store::now_ms as wall_ms;
 
 use crate::diagnostics::{
     diag_debug, diag_error, diag_warn, ACCRUAL_GROUP_MISSING, BUDGET_FLUSH_PARTIAL_FAILURE,
@@ -2057,7 +2059,7 @@ impl GovState {
         }
 
         // The arrival's card era (Q14): each bucket's fee base records the request under it.
-        let era = crate::rate_apply::effective_from_at(crate::store::now_ms());
+        let era = crate::rate_apply::effective_from_at(wall_ms());
         // Another plane's request is one fee unit on ITS fee lane (#47), not the flat fee base.
         let one = || BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
         let plane_fee = (!plane.is_empty()).then(|| (plane_fee_lane(plane), one()));
