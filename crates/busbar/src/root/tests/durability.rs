@@ -976,6 +976,75 @@ fn settle_one(durability: &mut Durability, key: &TotalsKey, reserved: u64, used:
         .expect("the journal takes the posting");
 }
 
+/// PB-58: A SPEND PAST THE RESERVATION IS CARRIED OUT AS AN OVERDRAFT — the unit runs to its end
+/// and settles, and the part nothing reserved is carried, DERIVED AT READ (#71, Q9).
+///
+/// A unit reserved 1,000 and spent 1,500. It is not ended for money: its hold closes by a
+/// settlement, like any other. The chain holds that settlement's counts and epoch and no figure,
+/// and the carry beside it holds no figure either. The node restarts, and the book it rebuilds
+/// from those counts carries 500 out as an overdraft — settled 1,500 against 1,000 reserved —
+/// and the chain read back through the one spend function says the same of the posting.
+#[test]
+fn a_spend_past_the_reservation_is_carried_out_as_an_overdraft() {
+    let scratch = ScratchDir::new("overdraft-carried-out");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_overdraft");
+    {
+        let mut durability = boot(&cfg, 8).expect("the directory is writable");
+        settle_one(&mut durability, &key, 1_000, 1_500, 1);
+        let records = durability
+            .journal
+            .replay()
+            .expect("reads")
+            .expect("verifies");
+        let on_chain: Vec<Posting> = records.iter().filter_map(Posting::from_record).collect();
+        assert_eq!(
+            on_chain.iter().map(|p| p.kind).collect::<Vec<_>>(),
+            vec![PostingKind::Settlement, PostingKind::Carry],
+            "the unit settled, and the carry sits beside its settlement"
+        );
+        for posting in &on_chain {
+            assert_eq!(
+                (posting.reserved, posting.settled, posting.overdraft),
+                (0, 0, 0),
+                "no record holds the overdraft: it is a derivation, not a fact on the chain"
+            );
+        }
+    }
+
+    let restarted = boot(&cfg, 8).expect("the journal reopens onto what it wrote");
+    let figures = restarted.ledger.book().get(&key, 86_400);
+    assert_eq!(figures.settled, 1_500, "the whole spend is posted");
+    assert_eq!(figures.open_holds, 0, "the hold closed by settling");
+    assert_eq!(
+        figures.overdraft_carried_out, 500,
+        "the part past the reservation is carried out, derived from the counts at read"
+    );
+    assert_eq!(restarted.recovered_holds, 0, "no unit was left unsettled");
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+
+    let settlement = restarted
+        .read_back()
+        .into_iter()
+        .find(|p| p.kind == PostingKind::Settlement)
+        .expect("the settlement reads back");
+    assert_eq!(
+        (
+            settlement.reserved,
+            settlement.settled,
+            settlement.overdraft
+        ),
+        (1_000, 1_500, 500),
+        "read through the one spend function, the posting carries the overdraft out"
+    );
+}
+
 /// ITEM 128: THE RESTART RECONCILIATION COMPARES THE REAL BOOK, and goes RED on a book that lost a
 /// row.
 ///
