@@ -1,12 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The MCP plane, driven through the kernel.
+//! The MCP plane's step bindings for the kernel — built, tested, and NOT ON THE SERVING PATH.
 //!
 //! The plane says what bytes mean and stops there: it returns facts and locators, a destination per
 //! operation class, a plan of legs, a resource pair, a usage class and an operation class. Every one
 //! of those is an input to a unit, and no unit knows which plane produced it. This file is where the
-//! two are introduced, and it is the whole of what "switching the MCP plane onto the kernel" means.
+//! two are introduced for the day the MCP plane's own units are switched onto the kernel.
+//!
+//! ## What production reaches here, and what it does not
+//!
+//! Stated first because it decides whether an edit here changes anything a caller is billed. Boot
+//! calls [`seal`] — the self-consistency check over the plane's declarations — and nothing else in
+//! this file has a production caller: [`read_ingress`], [`decode`], the authenticate, verify,
+//! approve, admit, route, meter and settle bindings and the audit inputs are driven by this module's
+//! tests and by nothing on the serving path. A served MCP request is answered by `busbar-mcp`'s own
+//! `GauntletPlane` through `busbar_kernel::plane_host::run_gauntlet`, which dispatches to the
+//! kernel-loop runner `gauntlet_install::install()` registers (`gauntlet_kernel.rs`); that runner
+//! opens a zero hold and reports no evidence, so the plane's metering inside `drive` is what
+//! settles. A pricing or metering fix made here changes no served figure until these bindings are
+//! the ones that path calls. `reachability:unit-path:mcp` reports the same fact from the code side.
 //!
 //! ## One row per step
 //!
@@ -196,8 +209,6 @@ pub enum Read<'u> {
 pub struct Decoded<'u> {
     /// The operation class the plane's method table named.
     pub op: OpClassId,
-    /// Whether the unit holds its direction open rather than being answered once.
-    pub streaming: bool,
     /// The facts the plane read off the bytes, including the caller's metadata block.
     pub facts: busbar_contract::bounded::Facts<'u>,
 }
@@ -228,14 +239,16 @@ pub fn read_ingress<'u>(
     Ok(match ingress {
         busbar_contract::plane::Ingress::OneShot(draft) => Read::Unit(Box::new(Decoded {
             op: draft.op,
-            streaming: false,
             facts: draft.facts,
         })),
-        busbar_contract::plane::Ingress::Open(draft) => Read::Unit(Box::new(Decoded {
-            op: draft.op,
-            streaming: true,
-            facts: draft.facts,
-        })),
+        // A unit that holds its direction open is not one this path can carry to an end: every
+        // step below — admit, meter, settle — answers a request that is answered once, and none of
+        // them has an arm for an answer that is still arriving. Reading an open unit through them
+        // would meter and settle it as though its first answer were its whole cost. So the one
+        // place the distinction exists is where it is decided: an open unit is refused here, with
+        // the same reason as the other shapes this path does not carry, rather than reaching a
+        // step as a one-shot unit carrying a flag no step reads.
+        busbar_contract::plane::Ingress::Open(_) => return Err(ReasonCode::DecodeFailed),
         busbar_contract::plane::Ingress::Discard { .. } => Read::Dropped,
         busbar_contract::plane::Ingress::NeedMore => Read::NeedMore,
         // This plane opens no handshake unit and closes no session of its own — every claim it
