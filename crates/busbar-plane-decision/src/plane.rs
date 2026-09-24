@@ -7,6 +7,7 @@
 
 use busbar_contract::bounded::{FactValue, Facts, Ir, ScratchBytes};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
+use busbar_contract::grammar::{ArrivalLocation, Location};
 use busbar_contract::ids::SchemeAlt;
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{
@@ -277,10 +278,14 @@ impl Plane for DecisionPlane {
         let _ = facts.set(f::FACT_HAS_ERROR, FactValue::Bool(is_error));
         // The usage figure is read ONLY on a response that did not error — a 4xx has nothing
         // extractable under the billable-decision class (see `meter` below and the signed design's
-        // C-3 "billable-success" rule).
+        // C-3 "billable-success" rule). Only a whole count the fact can hold EXACTLY is set here; a
+        // member that is not one (fractional, negative, not a number, past `i64`) is left to
+        // `meter`, which locates it rather than letting a cast wrap it or a parse drop it.
         if !is_error {
-            if let Some(units) = codec::read_u64(body, PTR_USAGE_UNITS) {
-                let _ = facts.set(f::FACT_USAGE_UNITS, FactValue::Int(units as i64));
+            if let Some(units) =
+                codec::read_u64(body, PTR_USAGE_UNITS).and_then(|u| i64::try_from(u).ok())
+            {
+                let _ = facts.set(f::FACT_USAGE_UNITS, FactValue::Int(units));
             }
         }
         let r = Response {
@@ -398,14 +403,36 @@ impl Plane for DecisionPlane {
         if let Some(FactValue::Bool(true)) = r.facts.get(f::FACT_HAS_ERROR) {
             return locators;
         }
-        if let Some(FactValue::Int(units)) = r.facts.get(f::FACT_USAGE_UNITS) {
+        let whole = match r.facts.get(f::FACT_USAGE_UNITS) {
+            Some(FactValue::Int(units)) => u64::try_from(units).ok(),
+            _ => None,
+        };
+        let line = match whole {
+            // The quantity was already read out of the response by `decode_response`, so the
+            // locator carries the value and no location — the same shape A2A's byte-class locator
+            // uses when the plane already has the number in hand.
+            Some(units) => Some((None, Some(units))),
+            // The provider REPORTED a usage member this plane cannot carry as a whole count — `7.5`,
+            // `-3`, `"7"`, `null`, a figure past `i64`. That is a measurement, not an absence (#81),
+            // and judging it is not this plane's job (#42): the locator names WHERE it is and
+            // carries no value, so the step that folds locators reads the exact decimal text or
+            // refuses it. Dropping it would record "reported nothing" for an exchange that reported
+            // a figure.
+            None if codec::has(r.ir.body(), PTR_USAGE_UNITS) => Some((
+                Some(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
+                    PTR_USAGE_UNITS,
+                ))),
+                None,
+            )),
+            // No usage member at all: the provider reported nothing, and no line is the record of
+            // that — the settlement's "destination reported no usage" row decides what it bills.
+            None => None,
+        };
+        if let Some((location, quantity)) = line {
             let _ = locators.lines.push(UsageLocator {
                 class: CLASS_DECISION,
-                // The quantity was already read out of the response by `decode_response`, so the
-                // locator carries the value and no location — the same shape A2A's byte-class
-                // locator uses when the plane already has the number in hand.
-                location: None,
-                quantity: Some(units as u64),
+                location,
+                quantity,
                 // jev's response never names a lane of its own; the lane is the provider's,
                 // sealed by the trust unit.
                 lane: None,

@@ -57,3 +57,108 @@ fn refusal_render_never_names_a_provider_or_billing_word() {
         assert!(!message.contains("answers"));
     }
 }
+
+// ---- the plane driven through its own trait, over the crate's shared test scaffold ----
+
+#[path = "../../tests/common/mod.rs"]
+mod common;
+
+use busbar_contract::plane::Progress;
+use busbar_contract::wire::FrameCursor;
+
+/// Decode one provider answer through `decode_response` and meter it — the plane's whole metering
+/// surface for one `systemone` exchange, as the kernel would drive it.
+fn metered(plane: DecisionPlane, body: &[u8]) -> Vec<UsageLocator> {
+    let scaffold = common::Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let seal = common::TestSeal;
+    let unit = Unit::new(
+        &seal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        ops::OP_SYSTEMONE,
+        Ir::new(b"{}", &[]),
+        Facts::new(),
+        None,
+    );
+    let frames = vec![common::response_frame(body)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::Terminal { r, .. } = plane
+        .decode_response(&mut cursor, &common::sealed_destination(), None, &ctx)
+        .expect("a whole answer decodes")
+    else {
+        panic!("a whole answer decodes as terminal");
+    };
+    for (key, value) in r.facts.iter() {
+        if key == f::FACT_USAGE_UNITS {
+            assert!(
+                matches!(value, FactValue::Int(n) if n >= 0),
+                "the usage fact is a whole, non-negative count or absent, never {value:?}"
+            );
+        }
+    }
+    plane.meter(&unit, &r, &ctx).lines.as_slice().to_vec()
+}
+
+/// Item 395 (LEDGER). A success whose `/usage/units` member is PRESENT but is not a whole count the
+/// plane can carry is a reported measurement, not an absent one. Before: no locator at all — the
+/// same record as a provider that reported nothing. After: one location-only locator naming where
+/// the figure is, so the kernel's decimal reader reads it exactly (#81) or refuses it (#42).
+#[test]
+fn a_success_whose_usage_member_is_not_a_whole_count_is_located_never_dropped() {
+    for body in [
+        br#"{"usage":{"units":7.5}}"#.as_slice(),
+        br#"{"usage":{"units":-3}}"#.as_slice(),
+        br#"{"usage":{"units":"7"}}"#.as_slice(),
+        br#"{"usage":{"units":null}}"#.as_slice(),
+        br#"{"usage":{"units":18446744073709551615}}"#.as_slice(),
+    ] {
+        let lines = metered(DecisionPlane::EMPTY, body);
+        assert_eq!(
+            lines,
+            vec![UsageLocator {
+                class: CLASS_DECISION,
+                location: Some(Location::Arrival(ArrivalLocation::FirstFrameJsonPointer(
+                    PTR_USAGE_UNITS
+                ))),
+                quantity: None,
+                lane: None,
+            }],
+            "{}",
+            String::from_utf8_lossy(body)
+        );
+    }
+}
+
+/// A whole count is carried exactly as before: the value in hand, no location.
+#[test]
+fn a_success_with_a_whole_count_carries_it() {
+    let lines = metered(DecisionPlane::EMPTY, br#"{"usage":{"units":42}}"#);
+    assert_eq!(
+        lines,
+        vec![UsageLocator {
+            class: CLASS_DECISION,
+            location: None,
+            quantity: Some(42),
+            lane: None,
+        }]
+    );
+}
+
+/// A success that reported no usage member at all posts no line: that is the settlement table's
+/// "destination reported no usage" row (nothing billed, flagged disputed where a card prices the
+/// class), and a locator pointing at a member that is not there would be a fabricated location.
+/// An error answer posts nothing whatever its usage member says (billable-success, C-3).
+#[test]
+fn no_usage_member_and_an_error_answer_both_post_no_line() {
+    assert!(metered(DecisionPlane::EMPTY, br#"{"request_id":"r1"}"#).is_empty());
+    assert!(metered(
+        DecisionPlane::EMPTY,
+        br#"{"error":{"code":"x"},"usage":{"units":7.5}}"#
+    )
+    .is_empty());
+}
