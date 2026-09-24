@@ -504,7 +504,7 @@ fn the_sealed_digest_of_an_amendment_is_the_frozen_hex() {
         // had ever been sealed in production (the item's own measurement: zero construction sites),
         // so no stored correction carries the previous encoding. The value is computed independently
         // of this crate, by hashing the length-prefixed framing of the fixture by hand
-        // (/Users/matthew/Developer/tmp/busbar-run/P2-404-digest.py, which also reproduces the
+        // (`amend_digest.py` beside this file, which also reproduces the
         // access constant above and the retired adjustment constant 56addfe3…0a2bc byte for byte).
         adjust.hash,
         "2efa76937dfebe0452c23ac8dee4a1293c9fcb2b6488dfd9ed9ae183cb9ea940",
