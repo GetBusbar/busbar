@@ -602,6 +602,19 @@ pub(crate) struct RootCfg {
 ///   old waiver named as missing ("no per-upstream budget to spend against"), and it is per
 ///   UPSTREAM deliberately: the caller's own per-key budget and the round cap still apply, but
 ///   neither of them is a statement about what THIS server may induce across all callers.
+///
+/// ## THE INPUT-SIDE BOUNDS (owner ruling Q22c / Q35) — HOW LARGE ONE ASK IS
+///
+/// The three fields above all bound HOW MANY completions happen or HOW MANY tokens one may cost;
+/// none of them bounds HOW LARGE the ask itself is. The `messages` array, the system prompt, the
+/// stop list and the temperature arrive on an UPSTREAM'S ask — the least trusted input this plane
+/// handles — and are charged to the INBOUND CALLER'S budget. A caller's budget bounds what the
+/// caller asked for; it cannot bound what somebody else appended to it, and prompt tokens are the
+/// larger half of a completion's bill. So the input side is bounded here too, with the same
+/// deploy-anywhere posture as the three fields above: every one of these is OPTIONAL and defaults
+/// to a sensible ceiling, so an existing `sampling:` block that predates them keeps working exactly
+/// as declared. Each is a COUNT or a RANGE, never a price: what it is worth is the money plane's
+/// business, not this one's.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SamplingCfg {
@@ -615,6 +628,94 @@ pub(crate) struct SamplingCfg {
     /// The per-upstream request budget, per minute, across every caller and dispatch. Exhausted ⇒
     /// the ask is refused naming this key, before any model leg is entered.
     pub(crate) max_requests_per_minute: u32,
+    /// HOW MANY messages one sampling ask may carry, judged BEFORE the walk that builds the chat
+    /// body — refusing after building a large array is refusing at the cost the bound exists to
+    /// avoid paying. Defaults to [`DEFAULT_MAX_SAMPLING_MESSAGES`].
+    #[serde(default = "default_max_sampling_messages")]
+    pub(crate) max_messages: u32,
+    /// TOTAL prompt bytes one sampling ask may carry — the system prompt plus every message's text.
+    /// A total rather than a per-message limit because the cost is the sum: a thousand messages of
+    /// a kilobyte each and one message of a megabyte are the same bill. Defaults to
+    /// [`DEFAULT_MAX_SAMPLING_PROMPT_BYTES`].
+    #[serde(default = "default_max_sampling_prompt_bytes")]
+    pub(crate) max_prompt_bytes: u32,
+    /// HOW MANY stop sequences one sampling ask may name. Forwarded verbatim before this bound
+    /// existed, which was an upstream's free hand on a request the caller pays for. Defaults to
+    /// [`DEFAULT_MAX_STOP_SEQUENCES`].
+    #[serde(default = "default_max_stop_sequences")]
+    pub(crate) max_stop_sequences: u32,
+    /// HOW LONG each stop sequence may be, in bytes. Defaults to
+    /// [`DEFAULT_MAX_STOP_SEQUENCE_BYTES`].
+    #[serde(default = "default_max_stop_sequence_bytes")]
+    pub(crate) max_stop_sequence_bytes: u32,
+    /// THE LOWEST temperature busbar forwards, in THOUSANDTHS (`700` means `0.7`). An integer, not
+    /// a float, for the same reason every other numeric config on this plane is: `f64` has no
+    /// `Eq`, and a config type an operator diffs or a boot check compares must compare exactly.
+    /// Range-checked rather than merely type-checked: a value outside
+    /// `temperature_min_milli..=temperature_max_milli` (read as thousandths) is the upstream's
+    /// mistake, refused here rather than forwarded to a provider that would answer with an error
+    /// the caller paid the round trip for. Defaults to [`DEFAULT_TEMPERATURE_MIN_MILLI`] — the
+    /// protocol's own floor. See [`Self::temperature_min`] for the `f64` view used at the
+    /// comparison site.
+    #[serde(default = "default_temperature_min_milli")]
+    pub(crate) temperature_min_milli: u32,
+    /// THE HIGHEST temperature busbar forwards, in THOUSANDTHS. Defaults to
+    /// [`DEFAULT_TEMPERATURE_MAX_MILLI`] — the protocol's own ceiling. See
+    /// [`Self::temperature_max`].
+    #[serde(default = "default_temperature_max_milli")]
+    pub(crate) temperature_max_milli: u32,
+}
+
+impl SamplingCfg {
+    /// The configured temperature floor, as the `f64` the wire protocol and `serde_json::Value`
+    /// comparison need. Derived from the stored integer on every call rather than cached, so there
+    /// is exactly one source of truth for the bound.
+    pub(crate) fn temperature_min(&self) -> f64 {
+        f64::from(self.temperature_min_milli) / 1000.0
+    }
+    /// The configured temperature ceiling, as the `f64` the wire protocol needs. See
+    /// [`Self::temperature_min`].
+    pub(crate) fn temperature_max(&self) -> f64 {
+        f64::from(self.temperature_max_milli) / 1000.0
+    }
+}
+
+/// The DEFAULT ceiling on [`SamplingCfg::max_messages`].
+pub(crate) const DEFAULT_MAX_SAMPLING_MESSAGES: u32 = 64;
+fn default_max_sampling_messages() -> u32 {
+    DEFAULT_MAX_SAMPLING_MESSAGES
+}
+
+/// The DEFAULT ceiling on [`SamplingCfg::max_prompt_bytes`].
+pub(crate) const DEFAULT_MAX_SAMPLING_PROMPT_BYTES: u32 = 64 * 1024;
+fn default_max_sampling_prompt_bytes() -> u32 {
+    DEFAULT_MAX_SAMPLING_PROMPT_BYTES
+}
+
+/// The DEFAULT ceiling on [`SamplingCfg::max_stop_sequences`].
+pub(crate) const DEFAULT_MAX_STOP_SEQUENCES: u32 = 8;
+fn default_max_stop_sequences() -> u32 {
+    DEFAULT_MAX_STOP_SEQUENCES
+}
+
+/// The DEFAULT ceiling on [`SamplingCfg::max_stop_sequence_bytes`].
+pub(crate) const DEFAULT_MAX_STOP_SEQUENCE_BYTES: u32 = 64;
+fn default_max_stop_sequence_bytes() -> u32 {
+    DEFAULT_MAX_STOP_SEQUENCE_BYTES
+}
+
+/// The DEFAULT floor on [`SamplingCfg::temperature_min_milli`] — the protocol's own `0.0..=2.0`
+/// range, in thousandths.
+pub(crate) const DEFAULT_TEMPERATURE_MIN_MILLI: u32 = 0;
+fn default_temperature_min_milli() -> u32 {
+    DEFAULT_TEMPERATURE_MIN_MILLI
+}
+
+/// The DEFAULT ceiling on [`SamplingCfg::temperature_max_milli`] — the protocol's own `0.0..=2.0`
+/// range, in thousandths.
+pub(crate) const DEFAULT_TEMPERATURE_MAX_MILLI: u32 = 2000;
+fn default_temperature_max_milli() -> u32 {
+    DEFAULT_TEMPERATURE_MAX_MILLI
 }
 
 /// The DEFAULT cap on input-required rounds per logical dispatch.
@@ -1506,6 +1607,29 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
                 "{at}: `sampling.max_requests_per_minute: 0` admits no request ever, which is the \
                  grant withheld wearing a budget's clothes. Set a real budget, or delete the \
                  `sampling:` block (and the grant) to refuse the ask honestly."
+            ));
+        }
+        if sampling.max_messages == 0 {
+            return Err(format!(
+                "{at}: `sampling.max_messages: 0` admits no ask with any message ever, which is the \
+                 grant withheld wearing a bound's clothes. Set a real ceiling, or delete the \
+                 `sampling:` block (and the grant) to refuse the ask honestly."
+            ));
+        }
+        if sampling.max_prompt_bytes == 0 {
+            return Err(format!(
+                "{at}: `sampling.max_prompt_bytes: 0` admits no ask with a non-empty prompt ever, \
+                 which is the grant withheld wearing a bound's clothes. Set a real ceiling, or \
+                 delete the `sampling:` block (and the grant) to refuse the ask honestly."
+            ));
+        }
+        if sampling.temperature_min_milli > sampling.temperature_max_milli {
+            return Err(format!(
+                "{at}: `sampling.temperature_min_milli: {}` is greater than \
+                 `sampling.temperature_max_milli: {}`. This is the range (in thousandths) busbar \
+                 forwards a sampling ask's `temperature` within; an inverted range refuses every \
+                 ask that names one.",
+                sampling.temperature_min_milli, sampling.temperature_max_milli
             ));
         }
     }

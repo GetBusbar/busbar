@@ -306,8 +306,6 @@ fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
     };
     let facts = decoded.facts;
     assert_eq!(decoded.op, ops::OP_TOOL_CALL);
-    // A call is answered once and does not hold the direction open.
-    assert!(!decoded.streaming);
     // The depth-1 walk: located by pointer, members read by name out of the block.
     assert_eq!(
         facts.get(f::FACT_PROTOCOL_VERSION),
@@ -379,6 +377,121 @@ fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
     let mut cursor = FrameCursor::new(&frames);
     let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
     assert_eq!(read_ingress(&plane, &mut cursor, &ctx), Ok(Read::Dropped));
+}
+
+/// The module doc says which of its bindings production reaches, and it is right (item 255).
+///
+/// The doc used to present this file, in the present tense, as the completed switch of the plane
+/// onto the kernel, while its per-request bindings had no production caller — so a pricing fix made
+/// here would ship green and move no served figure. The doc now says so, and this holds it to the
+/// code: every name the rest of the composition root reaches in this module is one the doc names as
+/// reached, so wiring a binding onto the serving path without rewriting the disclosure goes red.
+#[test]
+fn the_module_doc_names_the_only_bindings_production_reaches() {
+    // This module's own name, read off the path the compiler gives it, so the check follows the
+    // module wherever it is and spells no plane.
+    let stem = module_path!()
+        .rsplit("::")
+        .nth(1)
+        .expect("a test module sits inside its parent");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let own = std::fs::read_to_string(root.join("root").join(format!("{stem}.rs")))
+        .expect("the module's own source");
+    let doc: String = own
+        .lines()
+        .filter(|l| l.starts_with("//!"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        doc.contains("NOT ON THE SERVING PATH"),
+        "the module doc discloses that its step bindings do not serve"
+    );
+
+    let needle = format!("{stem}::");
+    let mut reached = std::collections::BTreeSet::new();
+    let mut sources = vec![root.join("main.rs")];
+    for entry in std::fs::read_dir(root.join("root")).expect("the composition root") {
+        let path = entry.expect("a directory entry").path();
+        if path.extension().is_some_and(|e| e == "rs")
+            && path.file_stem().is_some_and(|s| s != stem)
+        {
+            sources.push(path);
+        }
+    }
+    for path in sources {
+        let text = std::fs::read_to_string(&path).expect("a readable source file");
+        for line in text.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            for (at, _) in code.match_indices(&needle) {
+                let name: String = code[at + needle.len()..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                reached.insert(name);
+            }
+        }
+    }
+    // `seal` is the boot check the doc names; `Provenance` is a type, carried and never driven.
+    let named: std::collections::BTreeSet<String> = ["seal", "Provenance"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    assert!(
+        reached.is_subset(&named),
+        "production now reaches {reached:?} in this module; the doc names only {named:?} — rewrite \
+         the disclosure with the wiring"
+    );
+    assert!(
+        reached.contains("seal"),
+        "boot seals the plane's declarations"
+    );
+}
+
+/// A unit that holds its direction open is refused at decode, never read as a one-shot (item 256).
+///
+/// The decoded value used to carry a `streaming` flag set from the plane's ingress shape and read by
+/// nothing: admit, meter and settle all answered an open unit exactly as they answer a request that
+/// is answered once, so its first answer would have been metered as its whole cost. The distinction
+/// is now decided where it exists — the one read of the bytes — and the method the plane's table
+/// marks as holding its direction open reaches no later step.
+#[test]
+fn an_open_unit_is_refused_at_decode_rather_than_read_as_a_one_shot() {
+    use busbar_contract::bounded::Labels;
+    use busbar_contract::caps::KernelSeal;
+    use busbar_contract::unit::{Clock, Ctx};
+    use busbar_contract::wire::FrameCursor;
+
+    let seal = KernelSeal::acquire_for_kernel();
+    let arena = CellPlaneAlloc;
+    let config = CellConfig;
+    let transport = CellTransport;
+    let labels = Labels::new();
+    let clock = Clock {
+        unix_secs: 1_700_000_000,
+        monotonic_nanos: 0,
+    };
+    // The plane with nothing configured, by its `Default`.
+    let plane = Default::default();
+
+    let open = r#"{"jsonrpc":"2.0","id":9,"method":"subscriptions/listen","params":{}}"#;
+    let frames = one_frame(open);
+    let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+    let mut cursor = FrameCursor::new(&frames);
+    let read = read_ingress(&plane, &mut cursor, &ctx);
+    assert_eq!(read, Err(ReasonCode::DecodeFailed), "an open unit was read");
+
+    let mut cursor = FrameCursor::new(&frames);
+    assert!(
+        matches!(
+            plane.decode_ingress(&mut cursor, None, &ctx),
+            Ok(busbar_contract::plane::Ingress::Open(_))
+        ),
+        "the plane itself reads this method as an open unit"
+    );
+    let refusal = decode(&read, &Pass::mint(&seal))
+        .into_result(&seal)
+        .expect_err("an open unit is refused at decode");
+    assert_eq!(refusal.reason(), ReasonCode::DecodeFailed);
 }
 
 /// The plane declares one scheme with two alternatives, and the authenticate binding offers the
@@ -1220,7 +1333,7 @@ fn the_settlement_and_the_record_read_one_fee_decision() {
             no_card(),
         );
         assert_eq!(
-            record.amount.fee_count,
+            record.usage.fee_count,
             fee_count(&evidence(&unit).fee).0,
             "the row and the posting agree about the fee"
         );
@@ -1273,7 +1386,7 @@ fn the_record_names_the_caller_the_class_and_the_resource() {
     );
     assert_eq!(record.wall, 1_700_000_000);
     assert_eq!(record.mono, 7, "the unit's own reading, not the wall clock");
-    assert_eq!(record.amount.fee_count, 1);
+    assert_eq!(record.usage.fee_count, 1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1789,7 +1902,7 @@ fn the_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
                 arrived_ms,
             },
         )
-        .amount
+        .usage
         .rate_card_version
     };
 
@@ -1925,7 +2038,7 @@ fn the_posting_and_the_record_name_one_rate_card_entry() {
         "the posting names the entry in force when the unit arrived, not the head of the history"
     );
     assert_eq!(
-        record.amount.rate_card_version, settled.posting.rate_card_version,
+        record.usage.rate_card_version, settled.posting.rate_card_version,
         "and the row names the same one — two readers, one resolution"
     );
 }

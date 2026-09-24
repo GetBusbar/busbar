@@ -144,8 +144,14 @@ fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
     );
     assert_eq!(
         canary.counts().holds,
-        0,
-        "a challenge opens no reservation: no hold was ever swapped into the cell"
+        1,
+        "a challenge swaps no hold into the cell: the arrival hold, which reserves nothing, is the \
+         one hold it settles (item 272)"
+    );
+    assert_eq!(
+        canary.balanced(),
+        Ok(()),
+        "a challenge round balances the canary"
     );
     assert!(
         matches!(ended, Ended::Settled { .. }),
@@ -393,7 +399,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
         ..TestUnits::default()
     };
     // The child enters the table like every other unit, so its cell and its leases are its slot's.
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let child_slot = table
         .insert(client(1))
         .expect("the empty table takes the child");
@@ -590,7 +596,7 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
 
     // A table with room for exactly one unit, so the slot this unit occupies IS the node's in-flight
     // ceiling: a second arrival is refused while it is held and admitted the moment it is not.
-    let table = InFlight::new(1, 0);
+    let table = InFlight::new(1);
     let key = UnitKey::new(11);
     let slot = table
         .insert(Enter {
@@ -598,7 +604,6 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
             now: 0,
@@ -718,7 +723,7 @@ fn the_door_draws_the_in_flight_lease_and_the_end_gives_it_back() {
         units: &units,
         dropped: &dropped,
     };
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let slot = table
         .insert(client(21))
         .map_err(|_| ())
@@ -787,7 +792,7 @@ fn two_capped_groups_are_two_leases_while_the_unit_flies_and_none_after() {
         units: &units,
         dropped: &dropped,
     };
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let slot = table
         .insert(client(31))
         .map_err(|_| ())
@@ -952,7 +957,7 @@ fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
         units: &units,
         dropped: &dropped,
     };
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let first = table
         .insert(client(51))
         .map_err(|_| ())
@@ -1055,9 +1060,42 @@ fn client(key: u64) -> Enter {
         origin: OriginKind::Client,
         session: None,
         admin_listener: false,
-        provider_of_open_session: false,
         zero_hold_tick: false,
         arrival: arrival_hold(&Kernel::new(), &TestDoor, principal()),
         now: 0,
     }
+}
+
+/// THE CANARY BALANCES OVER EVERY SHAPE OF UNIT, NOT ONLY ADMITTED ONES (item 272).
+///
+/// The identity `drafts == holds + accruals == settlements` was unsatisfiable for every refusal and
+/// every zero-hold unit: the draft was counted four steps before the door (so a unit refused at
+/// arrival or decode settled without a draft), and the hold only on the admitted arm (so a refused
+/// or zero-priced unit, which settles its arrival hold, settled without a hold). On a deployment
+/// with no rate card every admitted unit is zero-hold, so the one arithmetic proof that no unit went
+/// missing could never be read on a running node. A run of every shape must balance.
+#[test]
+fn the_canary_balances_over_refusals_and_zero_hold_units_too() {
+    let kernel = Kernel::new();
+    let canary = Canary::new();
+    for step in ORDER.iter().take(6) {
+        let units = TestUnits::refusing(*step, ReasonCode::ScopeDenied);
+        let cell = cell(&kernel);
+        run(&units, &kernel, &cell, &canary);
+    }
+    let challenge = TestUnits {
+        challenge: true,
+        ..TestUnits::passing()
+    };
+    let cell_c = cell(&kernel);
+    run(&challenge, &kernel, &cell_c, &canary);
+    let passing = TestUnits::passing();
+    let cell_p = cell(&kernel);
+    run(&passing, &kernel, &cell_p, &canary);
+    let counts = canary.counts();
+    assert_eq!(
+        counts.drafts, 8,
+        "one draft per unit the loop ran: {counts:?}"
+    );
+    assert_eq!(canary.balanced(), Ok(()), "{counts:?}");
 }

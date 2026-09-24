@@ -204,7 +204,9 @@ async fn apply_global_rewrites_chains_in_order() {
         ),
     ];
     let mut v = serde_json::json!({"messages": [{"role": "user", "content": "orig"}]});
+    let (host, _rt) = crate::engine::test_host_rt(&crate::test_support::TestApp::new().build());
     super::apply_global_rewrites(
+        &*host,
         &hooks,
         &mut v,
         "pool",

@@ -60,6 +60,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,
+        plane_fees: Default::default(),
         store: None,
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),
@@ -128,6 +129,8 @@ static NEUTRAL_FALLBACK_PLANE: crate::plane::registry::PlaneDecl =
         retain_verify_gates: None,
         default_section: None,
         owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
         resolve_provider: None,
     };
 
@@ -148,7 +151,7 @@ pub fn build_once(
     // Test-only direct call: there is no outer admin transaction / persist step here, so firing any
     // resolved governance-credential rotation immediately is correct
     // and keeps this helper's callers (which assert on rotation taking effect) unchanged.
-    let (app, gov_rotate) = crate::build_app_from_config(
+    let (app, gov_rotate, limits) = crate::build_app_from_config(
         cfg,
         crate::config::PluginsCfg::default(),
         None,
@@ -157,6 +160,9 @@ pub fn build_once(
         (None, None),
         prior,
     )?;
+    // Same reasoning for the limits: no persist step follows, so this build IS the live generation
+    // and its limits stay installed — the behaviour every caller of this helper has always had.
+    limits.keep();
     if let Some(rotate) = gov_rotate {
         rotate();
     }

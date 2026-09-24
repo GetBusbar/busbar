@@ -469,8 +469,11 @@ pub fn takes_lease(origin: OriginKind, kernel_verb_only: bool) -> bool {
 
 /// The concurrency leases one unit holds.
 ///
-/// Released on the exit path, for every end. Not on the success path, not in a drop guard: on the
-/// one path every unit leaves through, whatever it was that ended it.
+/// Released at the unit's END, for every end — never on the success path alone, never in a drop
+/// guard. A unit has two ends and so this has two releasers, both reaching it through the unit's
+/// [`LeaseCell`]: its own exit (the teller's exit path, and the settle arm that ends a child against
+/// its parent) and the node's sweep (`tick::sweep_settle`) for a unit whose task disappeared.
+/// Whichever arrives first gives the leases back; the second finds them gone.
 #[derive(Debug, Default)]
 #[must_use = "leases have to be released on the exit path, whatever the end"]
 pub struct LeaseSet {

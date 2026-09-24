@@ -463,6 +463,24 @@ fn join_error(op: &str, e: &tokio::task::JoinError) -> Response {
     busbar_kernel::admin::v1::json::err_json(&AdminError::Internal)
 }
 
+/// Journal a claim's first sighting on the node's durable journal (item 271): called exactly once,
+/// at the moment a NEW reservation is inserted into the live App-state idempotency cache — never on
+/// a replay (the cached-body arm returns before reaching this), never on an in-flight refusal (the
+/// conflict arm returns before reaching this), never a second time for the same reservation. This is
+/// precisely the contract `ClaimJournal::journal_claim` documents, satisfied here rather than on the
+/// `Verbs`-level `IdempotencyCache` (which this crate's own `create_key`/`rotate_key` verbs implement
+/// but which no production caller reaches — see `verbs.rs`'s dedicated methods): this cache, reached
+/// from `App::idempotency_cache`, is the one a live request actually replays against.
+fn journal_first_sighting(
+    claim_journal: &Option<axum::Extension<std::sync::Arc<dyn crate::idempotency::ClaimJournal>>>,
+    key: &(String, String),
+    now: u64,
+) {
+    if let Some(axum::Extension(journal)) = claim_journal {
+        journal.journal_claim(key, now);
+    }
+}
+
 /// The request header carrying a client-chosen idempotency token on the two replayable admin
 /// mutations (key mint + key rotate).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
@@ -593,6 +611,12 @@ pub(crate) async fn create_key(
     >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     headers: axum::http::HeaderMap,
+    // The node's claim journal (item 271), reached from the composition root through the mounted
+    // admin surface — see `journal_first_sighting`. `None` on a node that never bound one (a
+    // memory-buffered node, or a caller that mounted this router without the root's wrap: every
+    // test/test-support router built by `busbar_kernel::build_router` and friends) — behaves exactly
+    // as it did before this seam existed.
+    claim_journal: Option<axum::Extension<std::sync::Arc<dyn crate::idempotency::ClaimJournal>>>,
     body: Bytes,
 ) -> Response {
     // A fresh snapshot for the mint's pool/group READS; the auto-provision path (below) swaps
@@ -647,6 +671,7 @@ pub(crate) async fn create_key(
             // reservation instead of an empty slot.
             None => {
                 cache.insert(ck.clone(), (now, serde_json::Value::Null));
+                journal_first_sighting(&claim_journal, ck, now);
             }
         }
     }
@@ -1467,6 +1492,8 @@ pub(crate) async fn rotate_key(
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
+    // See `create_key`'s identical parameter.
+    claim_journal: Option<axum::Extension<std::sync::Arc<dyn crate::idempotency::ClaimJournal>>>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
@@ -1518,6 +1545,7 @@ pub(crate) async fn rotate_key(
             }
             None => {
                 cache.insert(ck.clone(), (now, serde_json::Value::Null));
+                journal_first_sighting(&claim_journal, ck, now);
             }
         }
     }
@@ -1786,24 +1814,35 @@ pub(crate) async fn key_usage(
     // in-memory `rate_headroom` read, which needs the configured caps).
     let cost = app.cost.clone();
     let res = tokio::task::spawn_blocking(move || {
-        // DERIVED at read time: spend_cents = ledger x CURRENT rate card (+ fee x requests) - a
-        // rate-card correction changes this number on the very next read (tokens are the truth).
-        let usage = gov2.usage_for(&cost, &id2, now)?;
         // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id.
         let key = gov2.store().get_key(&id2)?;
-        // TOMBSTONE (1.5.0): `get_key` (and `usage_for`, which may still find a residual/derived
-        // bucket) can both still answer for a deleted key — attribution rows survive on purpose.
-        // The admin-facing "does this key exist" surface must not, though: a tombstoned key reads
-        // as absent here, same as an unknown id, so DELETE stays a real removal from every reader's
-        // point of view.
-        if key.as_ref().is_some_and(|k| k.deleted_at.is_some()) {
+        // TOMBSTONE (1.5.0): `get_key` can still answer for a deleted key — attribution rows
+        // survive on purpose. The admin-facing "does this key exist" surface must not, though: a
+        // tombstoned key reads as absent here, same as an unknown id, so DELETE stays a real
+        // removal from every reader's point of view.
+        let Some(key) = key.filter(|k| k.deleted_at.is_none()) else {
             return Ok::<_, busbar_kernel::governance::StoreError>(None);
-        }
-        Ok::<_, busbar_kernel::governance::StoreError>(usage.map(|u| (u, key)))
+        };
+        // DERIVED at read time: spend_cents = ledger x CURRENT rate card (+ fee x requests) - a
+        // rate-card correction changes this number on the very next read (tokens are the truth).
+        // The key's own attribution bucket, exactly as `usage_for` reads it, with the money
+        // refusal kept TYPED so an unpriced class is named below (Q25b).
+        let usage = gov2.derived_bucket_usage_priced(
+            &cost,
+            &id2,
+            busbar_kernel::governance::WINDOW_TOTAL,
+            true,
+            now,
+        )?;
+        Ok::<_, busbar_kernel::governance::StoreError>(Some((usage, Some(key))))
     })
     .await;
     match res {
-        Ok(Ok(Some((u, key)))) => {
+        Ok(Ok(Some((Err(refused), _)))) => busbar_kernel::admin::v1::json::err_json_cond(
+            &crate::v1::service::usage_refusal("key_usage", &refused),
+            Cond::Unpriced,
+        ),
+        Ok(Ok(Some((Ok(u), key)))) => {
             // Headroom derives from the key's GROUP CHAIN (keys carry no caps of their own):
             // the tightest requests/tokens limit across the chain, `null` when unlimited.
             // Pool-less read: a per-pool cap is not a property of the key as a whole, so

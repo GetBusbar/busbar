@@ -449,6 +449,62 @@ pub fn load_config_from_disk(
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
+/// The process-wide operational limits a build installed, still PROVISIONAL.
+///
+/// `build_app_from_config` has to install the candidate limits before it starts (the build reads
+/// them through the deep-call-stack accessors), and every step of the build itself is fallible — the
+/// `InstallGuard` inside covers that, rolling them back on any `return Err`/`?`. What it did NOT
+/// cover is everything the CALLER still has to do: an admin apply persists the desired state to the
+/// overlay AFTER the build returns, and a persist failure aborts the transaction with "nothing was
+/// changed (the running engine is unaffected)". Committing the guard at the end of the build made
+/// that message false for exactly the values a rejected config should never get to set — the old
+/// `App` keeps serving, but under the rejected config's body caps.
+///
+/// So the commit is now the CALLER's, and it is the same shape as the governance-credential
+/// rotation beside it: the build hands back an uncommitted handle, and the one place that knows the
+/// transaction actually landed (persist AND swap both `Ok`) calls [`InstalledLimits::keep`]. Dropped
+/// unkept — a persist failure, an early return, a caller that simply lets it fall out of scope — the
+/// previous limits are restored.
+///
+/// **THE RATE APPLY RIDES THE SAME COMMIT.** The build resolves this configuration's rates, but the
+/// rate-apply seam ([`crate::rate_apply::rates_applied`]) is raised HERE, at `keep`, and not
+/// during the build: its holder appends the rates to the dated rate-card history and journals them
+/// (#79), and neither is a thing a rejected apply may leave behind. Raised during the build, an
+/// apply whose persist then failed kept serving the old `App` while the history and the journal
+/// said its rates were in force — a price the operator was told was never applied, dated as if it
+/// had been. Dropped unkept, the resolved rates are dropped with it and nothing was raised.
+#[must_use = "an unkept InstalledLimits rolls the process-wide limits back when dropped"]
+pub struct InstalledLimits {
+    guard: limits::InstallGuard,
+    rates: ResolvedRates,
+}
+
+/// The rates one build resolved, held (owned) until the build's commit raises them.
+struct ResolvedRates {
+    lanes: Vec<(String, crate::billing::RawTierRates)>,
+    units: Vec<(String, String, u64)>,
+    flat_minor: i64,
+    present: bool,
+    plane_fees: config::PlaneFeesMap,
+}
+
+impl InstalledLimits {
+    /// The new generation is live (and durable, where the caller persists): KEEP these limits, and
+    /// raise the rate-apply seam with the rates this build resolved — the one moment the
+    /// configuration they came from is the one in force.
+    pub fn keep(self) {
+        let InstalledLimits { guard, rates } = self;
+        guard.commit();
+        crate::rate_apply::rates_applied(&crate::rate_apply::RawRates {
+            lanes: &rates.lanes,
+            units: &rates.units,
+            flat_minor: rates.flat_minor,
+            present: rates.present,
+            plane_fees: &rates.plane_fees,
+        });
+    }
+}
+
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn build_app_from_config(
@@ -459,7 +515,7 @@ pub fn build_app_from_config(
     base_group_names: std::collections::HashSet<String>,
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
-) -> Result<(state::App, Option<GovCredentialRotation>), String> {
+) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
@@ -469,8 +525,11 @@ pub fn build_app_from_config(
     // …THROUGH A GUARD, because everything below this line is fallible. The install has to come
     // first (the build itself reads these values), but a build that goes on to FAIL must not leave
     // the rejected config's limits installed under the old `App` that keeps serving. The guard
-    // restores the previous values on drop unless the build reaches its `Ok`, so "an invalid apply
-    // changes nothing" holds for process-wide limits the same way it holds for everything else.
+    // restores the previous values on drop unless it is COMMITTED — and the commit is the CALLER's
+    // (see `InstalledLimits`), not this function's, because the apply is not over when the build
+    // returns: the admin paths still have to persist. So "an invalid apply changes nothing" holds
+    // for process-wide limits the same way it holds for everything else, including when it is the
+    // PERSIST that refused.
     let limits_guard = limits::InstallGuard::install(&cfg.limits);
     // The config version this App will carry — computed ONCE up front because hook-transport
     // resolution stamps it into every socket configure preamble (the preamble's
@@ -587,28 +646,35 @@ pub fn build_app_from_config(
     // `cfg.models` is consumed below. Rebuilt on every apply/reload - unlike the GovState ledger,
     // which survives the swap - so a rate-card correction reprices every derived figure on the
     // next read (tokens are the truth).
-    let cost = Arc::new(crate::cost::CostModel::resolve_parts(
+    let cost = crate::cost::CostModel::resolve_parts(
         cfg.rate_card.as_ref(),
         cfg.per_request_fee,
         &cfg.groups,
-    ));
+    );
+    let cost = Arc::new(cost.with_plane_fees(&cfg.plane_fees));
     // AND TELL WHOEVER ELSE PRICES AGAINST THESE FIGURES. The resolution above is what reprices the
     // engine's own derived spend on the next read; a holder outside the engine that read the same
     // two configured figures ONCE, at boot, would keep pricing on rates this apply has replaced —
     // one request, two numbers, and only one of them the operator's configuration. So the one place
-    // rates are resolved raises the one seam that says so, and it says it on the boot resolution and
-    // on every apply/reload alike, because this function is both. Nothing is installed in a build
-    // with no such holder and the call is a no-op there.
-    busbar_kernel::rate_apply::rates_applied(&busbar_kernel::rate_apply::RawRates {
-        lanes: &cfg
-            .rate_card
-            .iter()
-            .flat_map(|card| card.iter())
-            .map(|(lane, entry)| (lane.clone(), entry.raw_tier_rates()))
-            .collect::<Vec<_>>(),
+    // rates are resolved captures them for the one seam that says so, on the boot resolution and on
+    // every apply/reload alike, because this function is both. The seam is RAISED at the commit
+    // (`InstalledLimits::keep`), never here: a build that fails below, or an apply whose persist
+    // fails after it, must leave the holder's dated history and its journal untouched. Nothing is
+    // installed in a build with no such holder and the raise is a no-op there.
+    let (mut lanes, mut units) = (Vec::new(), Vec::new());
+    for (lane, e) in cfg.rate_card.iter().flatten() {
+        lanes.push((lane.clone(), e.raw_tier_rates()));
+        for (class, rate) in &e.units {
+            units.push((lane.clone(), class.clone(), rate.nanos_per_unit()));
+        }
+    }
+    let resolved_rates = ResolvedRates {
+        lanes,
+        units,
         flat_minor: cfg.per_request_fee,
         present: cfg.rate_card.is_some(),
-    });
+        plane_fees: cfg.plane_fees.clone(),
+    };
 
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
@@ -958,9 +1024,6 @@ pub fn build_app_from_config(
         );
     }
     let http1_only = upstream_bool_env_override(http1_env, cfg.limits.upstream_http1_only);
-    let mut new_client_settings = crate::state::UpstreamClientSettings::from_limits(&cfg.limits);
-    new_client_settings.upstream_h2_prior_knowledge = h2_prior_knowledge;
-    new_client_settings.upstream_http1_only = http1_only;
     let llm_client_settings = ClientSettingsInput {
         upstream_request_timeout_secs: cfg.limits.upstream_request_timeout_secs,
         pool_max_idle_per_host: cfg.limits.pool_max_idle_per_host,
@@ -1697,7 +1760,6 @@ pub fn build_app_from_config(
             }
             m
         },
-        client_settings: new_client_settings,
         auth: auth_mw.clone(),
         rewrite_hooks,
         tap_hooks,
@@ -1918,8 +1980,16 @@ pub fn build_app_from_config(
             retain(&app);
         }
     }
-    // The build reached its end without a single fallible step refusing: KEEP the limits installed
-    // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.
-    limits_guard.commit();
-    Ok((app, rotate_gov_credentials))
+    // The build reached its end without a single fallible step refusing — but the build is not the
+    // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
+    // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it
+    // here instead and rolls them back, exactly as before.
+    Ok((
+        app,
+        rotate_gov_credentials,
+        InstalledLimits {
+            guard: limits_guard,
+            rates: resolved_rates,
+        },
+    ))
 }

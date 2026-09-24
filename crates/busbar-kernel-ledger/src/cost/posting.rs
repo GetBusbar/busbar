@@ -403,7 +403,8 @@ pub fn price_at_card(
     // The fee is a usage line, not a scalar bolted onto the total. A card carries exactly ONE fee
     // and every constructor sets it, so this line is never a silent zero read out of a map that
     // does not hold the key (#77(5) `BUSBAR-1.6.0.md:420`).
-    let fee_unit_price_nanos = card.fee_unit_price_nanos();
+    // The lane's OWN plane's fee (#47): the flat card's for an unqualified lane.
+    let fee_unit_price_nanos = card.plane_lane(&posting.lane).0.fee_unit_price_nanos();
     lines.push(PricedLine {
         class: FEE_CLASS.to_string(),
         quantity: posting.fee_count,
@@ -434,7 +435,8 @@ pub fn price_at_card(
                 .map(|l| (l.class.as_str(), crate::cost::whole(l.quantity))),
             crate::cost::whole(posting.fee_count),
         ),
-        None => tally.fee(
+        None => tally.lane_fee(
+            &posting.lane,
             posting.arrived_ms,
             posting.tier_bp,
             crate::cost::whole(posting.fee_count),

@@ -17,7 +17,9 @@
 //! scans below read the production source and answer, per position, which reasons are built there:
 //!
 //!   * `Abort::Kernel { reason: … }` — the only abort a kernel can raise;
-//!   * `Refusal::new(ReasonCode::…)` — the only way a reason becomes a refusal;
+//!   * `Refusal::new(…)` — the only way a reason becomes a refusal, censused at EVERY site: a reason
+//!     written at the site under any path and any line breaks, and a reason carried in an expression,
+//!     which is answered by reading where reason values come from;
 //!   * `Overdraft::Ceiling` — the verdict the ceiling clause is about.
 //!
 //! Each scan is answered against the whole of `crates/`, excluding tests, and each carries its own
@@ -91,46 +93,188 @@ fn production_sources() -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// Every `ReasonCode::<Name>` that follows `marker` in production source, with the file it is in.
+/// One production file, as the scans below read it: every line that is a `//` comment dropped, and
+/// then EVERY whitespace character removed.
 ///
-/// `marker` is the opening of the position being asked about, so the answer is the set of reasons
-/// the tree can put IN that position. A `match` arm that merely READS a reason binds a name
-/// (`Abort::Kernel { reason } =>`) and never writes `reason: ReasonCode::…`, so a rendering or
-/// classification site is not mistaken for a construction.
-fn reasons_after(marker: &str) -> BTreeSet<(String, String)> {
-    let mut found = BTreeSet::new();
-    for (path, text) in production_sources() {
-        let file = path
-            .strip_prefix(crates_root())
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .into_owned();
-        // Whitespace-normalised, so a construction rustfmt broke across four lines reads the same
-        // as one written on a single line.
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let mut rest = text.as_str();
-        while let Some(at) = rest.find(marker) {
-            rest = &rest[at + marker.len()..];
-            let name: String = rest
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            if !name.is_empty() {
-                found.insert((file.clone(), name));
+/// Removed, not collapsed. Collapsing a run of whitespace to one space (what this file used to do)
+/// is what BROKE the match it claimed to fix: rustfmt breaks `Refusal::new(ReasonCode::X)` into
+/// `Refusal::new(` / `ReasonCode::X,` / `)` on three lines once the line is long, the collapse left
+/// `Refusal::new( ReasonCode::X, )`, and a marker spelled with no space after the paren could not
+/// cross the one the collapse put there — so every broken construction was invisible (item 263).
+/// With every whitespace character gone, the one-line and the rustfmt-broken spelling are the same
+/// string. Comment lines are dropped first so a doc comment that QUOTES a construction is not
+/// counted as one.
+fn squeezed(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .flat_map(str::chars)
+        .filter(|c| !c.is_whitespace())
+        .collect()
+}
+
+/// What a construction site puts in the reason position.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Reason {
+    /// A `ReasonCode::<Name>` written at the site, under any path prefix
+    /// (`busbar_contract::caps::ReasonCode::NoDestination` is `NoDestination`).
+    Named(String),
+    /// An expression the reason is carried in — a variable, a field, a call. Its value is decided
+    /// elsewhere, which is why [`every_value_a_computed_refusal_could_carry_excludes_the_ceiling_and_the_stale_slice`]
+    /// exists.
+    Computed(String),
+}
+
+/// `ReasonCode::<Name>` under any path prefix, and nothing after it.
+fn named_reason(expr: &str) -> Option<String> {
+    let at = expr.rfind("ReasonCode::")?;
+    let prefix = &expr[..at];
+    let path_ok = prefix.is_empty()
+        || (prefix.ends_with("::")
+            && prefix
+                .split("::")
+                .filter(|seg| !seg.is_empty())
+                .all(|seg| seg.chars().all(|c| c.is_alphanumeric() || c == '_')));
+    let name = &expr[at + "ReasonCode::".len()..];
+    (path_ok && !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_'))
+        .then(|| name.to_string())
+}
+
+/// The text between `open` (just past an opening delimiter) and its matching close, split at the
+/// top-level commas. `None` when the delimiters never balance.
+fn top_level_args(text: &str, open: usize) -> Option<(Vec<&str>, usize)> {
+    let bytes = text.as_bytes();
+    let (mut depth, mut from, mut args) = (1usize, open, Vec::new());
+    let mut at = open;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if at > from {
+                        args.push(&text[from..at]);
+                    }
+                    return Some((args, at + 1));
+                }
+            }
+            b',' if depth == 1 => {
+                args.push(&text[from..at]);
+                from = at + 1;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    None
+}
+
+/// Every `Refusal::new(…)` in one squeezed file, with what its reason position holds.
+///
+/// The census is EVERY occurrence of the constructor, not the ones a marker happens to match: a
+/// site whose reason is written as a `ReasonCode` is [`Reason::Named`] whatever path prefix it wears
+/// and however rustfmt broke it, and a site whose reason is carried in an expression is
+/// [`Reason::Computed`] rather than invisible. The admin crate's two-argument spelling
+/// (`Refusal::new(RefusalStep::X, ReasonCode::Y)`) reads its reason from the argument after the step.
+fn refusal_sites_in(squeezed: &str) -> Vec<Reason> {
+    const OPEN: &str = "Refusal::new(";
+    let mut out = Vec::new();
+    let mut rest = 0;
+    while let Some(found) = squeezed[rest..].find(OPEN) {
+        let open = rest + found + OPEN.len();
+        let (args, end) = top_level_args(squeezed, open)
+            .unwrap_or_else(|| panic!("an unbalanced `Refusal::new(` at byte {open}"));
+        let reason = args
+            .iter()
+            .find(|a| !a.starts_with("RefusalStep::"))
+            .copied()
+            .unwrap_or("");
+        out.push(match named_reason(reason) {
+            Some(name) => Reason::Named(name),
+            None => Reason::Computed(reason.to_string()),
+        });
+        rest = end;
+    }
+    out
+}
+
+/// Every `Abort::Kernel { reason: … }` CONSTRUCTION in one squeezed file. A read of the variant
+/// binds the name (`Abort::Kernel { reason } =>`) and has no `:` after it, so it is not a site.
+fn abort_sites_in(squeezed: &str) -> Vec<Reason> {
+    const OPEN: &str = "Abort::Kernel{";
+    let mut out = Vec::new();
+    let mut rest = 0;
+    while let Some(found) = squeezed[rest..].find(OPEN) {
+        let open = rest + found + OPEN.len();
+        let (fields, end) = top_level_args(squeezed, open)
+            .unwrap_or_else(|| panic!("an unbalanced `Abort::Kernel {{` at byte {open}"));
+        for field in fields {
+            if let Some(expr) = field.strip_prefix("reason:") {
+                out.push(match named_reason(expr) {
+                    Some(name) => Reason::Named(name),
+                    None => Reason::Computed(expr.to_string()),
+                });
             }
         }
+        rest = end;
     }
-    found
+    out
+}
+
+/// The production tree, squeezed, with each file's path relative to `crates/`.
+fn squeezed_sources() -> Vec<(String, String)> {
+    production_sources()
+        .into_iter()
+        .map(|(path, text)| {
+            let file = path
+                .strip_prefix(crates_root())
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            (file, squeezed(&text))
+        })
+        .collect()
+}
+
+/// Every site `sites_in` finds across the production tree, with the file it is in.
+fn census(sites_in: fn(&str) -> Vec<Reason>) -> Vec<(String, Reason)> {
+    squeezed_sources()
+        .into_iter()
+        .flat_map(|(file, text)| {
+            sites_in(&text)
+                .into_iter()
+                .map(move |reason| (file.clone(), reason))
+        })
+        .collect()
+}
+
+/// The named reasons in a census.
+fn named(sites: &[(String, Reason)]) -> BTreeSet<&str> {
+    sites
+        .iter()
+        .filter_map(|(_, r)| match r {
+            Reason::Named(n) => Some(n.as_str()),
+            Reason::Computed(_) => None,
+        })
+        .collect()
 }
 
 /// The kernel's abort vocabulary is `ClientGone` and `Drain`, and no money reason is in it.
 ///
 /// These are the two ends a kernel raises on its own initiative: the client went away, and the node
-/// is draining. Neither is about money. The day a third is added, this names it.
+/// is draining. Neither is about money. The day a third is added, this names it — and an abort whose
+/// reason is carried in a variable is refused outright, because its vocabulary is not on the page.
 #[test]
 fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
-    let built = reasons_after("Abort::Kernel { reason: ReasonCode::");
-    let reasons: BTreeSet<&str> = built.iter().map(|(_, r)| r.as_str()).collect();
+    let built = census(abort_sites_in);
+    let computed: Vec<&(String, Reason)> = built
+        .iter()
+        .filter(|(_, r)| matches!(r, Reason::Computed(_)))
+        .collect();
+    assert!(
+        computed.is_empty(),
+        "an abort whose reason is not written at the site cannot be answered by reading: {computed:?}"
+    );
+    let reasons = named(&built);
 
     assert_eq!(
         reasons,
@@ -141,21 +285,92 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
         assert!(
             !reasons.contains(money),
             "a shipped abort is constructed with the money reason {money}: {:?}",
-            built.iter().filter(|(_, r)| r == money).collect::<Vec<_>>()
+            built
+                .iter()
+                .filter(|(_, r)| *r == Reason::Named(money.to_string()))
+                .collect::<Vec<_>>()
         );
     }
 }
 
+/// THE CENSUS FLOOR, armed at today's measured number: one hundred `Refusal::new(` constructions in
+/// production source. The scan this file used to run matched fifty-seven of them (item 258); a floor
+/// under the census is what stops a scanner regression from quietly shrinking the population every
+/// "nothing refuses with" claim below is asserted over.
+const MIN_REFUSAL_SITES: usize = 100;
+
+/// THE SITES WHOSE REASON IS CARRIED, NOT WRITTEN — pinned, file by file, at today's measurement.
+///
+/// A refusal whose reason is an expression cannot be answered by reading the site; it is answered
+/// by [`every_value_a_computed_refusal_could_carry_excludes_the_ceiling_and_the_stale_slice`], which
+/// reads where reason VALUES come from instead. The pin is what makes a new carried site a reviewed
+/// event rather than an invisible one: it goes red here until somebody has looked at it.
+const COMPUTED_REFUSAL_SITES: &[(&str, &str)] = &[
+    ("busbar-core-admin/src/governance.rs", "reason"),
+    ("busbar-core-admin/src/refusal.rs", "reason"),
+    ("busbar-kernel-budget/src/lib.rs", "reason"),
+    (
+        "busbar-kernel-egress/src/trust/unit.rs",
+        "refusal.kind.reason()",
+    ),
+    ("busbar-llm/src/unit/verify.rs", "refusal.reason()"),
+    ("busbar/src/root/units_a2a.rs", "refusal.kind.reason()"),
+    (
+        "busbar/src/root/units_admin/mod.rs",
+        "verbs_reason(refusal.reason)",
+    ),
+    (
+        "busbar/src/root/units_admin/mod.rs",
+        "verbs_reason(refusal.reason)",
+    ),
+    ("busbar/src/root/units_mcp.rs", "*reason"),
+    ("busbar/src/root/units_voice.rs", "reason"),
+    ("busbar/src/root/units_voice.rs", "refusal.reason()"),
+];
+
 /// `OverdraftCeiling` and `StaleSlice` are refusal reasons nothing in the tree ever refuses with.
 ///
-/// The scan is on the one construction that turns a reason into a refusal. `OverBudget` IS in the
-/// answer — that is the non-vacuity, and it is also the binding's positive half: over-budget is a
-/// refusal, taken at a door, and never an end for a unit that is already running.
+/// The scan is on the one construction that turns a reason into a refusal, and it is a CENSUS: every
+/// `Refusal::new(` in production source is a site, named or carried, and the two add up to the whole.
+/// `OverBudget` IS in the named answer — that is the non-vacuity, and it is also the binding's
+/// positive half: over-budget is a refusal, taken at a door, and never an end for a unit that is
+/// already running.
 #[test]
 fn overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with() {
-    let refusals = reasons_after("Refusal::new(ReasonCode::");
-    let reasons: BTreeSet<&str> = refusals.iter().map(|(_, r)| r.as_str()).collect();
+    let refusals = census(refusal_sites_in);
+    let every_constructor: usize = squeezed_sources()
+        .iter()
+        .map(|(_, text)| text.matches("Refusal::new(").count())
+        .sum();
+    assert_eq!(
+        refusals.len(),
+        every_constructor,
+        "the census must classify every `Refusal::new(` in production source, named or carried"
+    );
+    assert!(
+        refusals.len() >= MIN_REFUSAL_SITES,
+        "the census found {} refusal constructions (floor {MIN_REFUSAL_SITES}); a scan that lost \
+         sites answers 'nothing refuses with' over a partial population",
+        refusals.len()
+    );
 
+    let mut computed: Vec<(&str, &str)> = refusals
+        .iter()
+        .filter_map(|(file, r)| match r {
+            Reason::Computed(expr) => Some((file.as_str(), expr.as_str())),
+            Reason::Named(_) => None,
+        })
+        .collect();
+    computed.sort_unstable();
+    let mut pinned = COMPUTED_REFUSAL_SITES.to_vec();
+    pinned.sort_unstable();
+    assert_eq!(
+        computed, pinned,
+        "the refusal sites whose reason is carried in an expression moved; a new one is a site this \
+         file cannot answer by reading, so it is reviewed and pinned rather than passed"
+    );
+
+    let reasons = named(&refusals);
     assert!(
         reasons.contains("OverBudget"),
         "non-vacuity: over-budget IS a refusal in the shipped tree, and the scan must see it"
@@ -166,10 +381,140 @@ fn overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with() 
             "{never} is constructed as a refusal at {:?}",
             refusals
                 .iter()
-                .filter(|(_, r)| r == never)
+                .filter(|(_, r)| *r == Reason::Named(never.to_string()))
                 .collect::<Vec<_>>()
         );
     }
+}
+
+/// The carried half of the claim: a refusal whose reason is an expression can only carry a
+/// `OverdraftCeiling` or a `StaleSlice` if something in production PRODUCES one as a value.
+///
+/// So this reads every mention of the two variants (under any enum and any path) and separates the
+/// ones in a PATTERN — an arm or an alternation, which reads a reason and makes none — from the ones
+/// in value position. There is exactly one value today: `SliceError::reason` answers
+/// `ReasonCode::StaleSlice` for a stale epoch. That function is reached only through a `SliceError`,
+/// which only a `SliceStore` hands out, and the only production file that touches either outside
+/// the defining module is the store adapter that IMPLEMENTS the trait and never asks an error its
+/// reason. The one other place a reason value is read back out of nothing — the cancel token's
+/// `ReasonCode::ALL.get(index)` — decodes an index its own `trip` stored from a reason it was handed,
+/// so it can return no reason that was not already a value.
+#[test]
+fn every_value_a_computed_refusal_could_carry_excludes_the_ceiling_and_the_stale_slice() {
+    let sources = squeezed_sources();
+    let mut values: BTreeSet<(String, String)> = BTreeSet::new();
+    for (file, text) in &sources {
+        for name in ["OverdraftCeiling", "StaleSlice"] {
+            let needle = format!("::{name}");
+            let mut rest = 0;
+            while let Some(found) = text[rest..].find(&needle) {
+                let at = rest + found;
+                let end = at + needle.len();
+                rest = end;
+                let after = &text[end..];
+                if after
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    continue; // a longer name, e.g. `SetOverdraftCeiling`'s neighbours
+                }
+                let path_start = text[..at]
+                    .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                    .map_or(0, |i| i + 1);
+                let before = &text[..path_start];
+                let in_pattern =
+                    before.ends_with('|') || after.starts_with('|') || after.starts_with("=>");
+                if !in_pattern {
+                    values.insert((file.clone(), text[path_start..end].to_string()));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        values,
+        BTreeSet::from([(
+            "busbar-contract/src/slice.rs".to_string(),
+            "ReasonCode::StaleSlice".to_string()
+        )]),
+        "a production value of the ceiling or stale-slice reason appeared; a carried refusal could \
+         now be one of them"
+    );
+
+    let slice_reach: BTreeSet<&str> = sources
+        .iter()
+        .filter(|(_, text)| {
+            text.contains("SliceError")
+                || text.contains("SliceStore")
+                || text.contains("slice_store(")
+        })
+        .map(|(file, _)| file.as_str())
+        .collect();
+    assert_eq!(
+        slice_reach,
+        BTreeSet::from([
+            "busbar-contract/src/slice.rs",
+            "plugin-loader/src/store_adapter.rs"
+        ]),
+        "something outside the slice module and its one implementor now reaches a SliceError, \
+         and SliceError::reason is the tree's one StaleSlice value"
+    );
+    for (file, text) in &sources {
+        if slice_reach.contains(file.as_str()) {
+            assert!(
+                !text.contains(".reason()") && !text.contains("Refusal::new("),
+                "{file} reaches a SliceError and also asks a reason or builds a refusal"
+            );
+        }
+    }
+
+    let decoders: BTreeSet<&str> = sources
+        .iter()
+        .filter(|(_, text)| text.contains("ReasonCode::ALL"))
+        .map(|(file, _)| file.as_str())
+        .collect();
+    assert_eq!(
+        decoders,
+        BTreeSet::from(["busbar-kernel/src/inflight.rs"]),
+        "a new reader of the whole reason vocabulary can hand out any reason, the two included"
+    );
+}
+
+/// THE SCANNER, ON THE SPELLINGS IT USED TO MISS. rustfmt breaks a long construction across lines
+/// and some sites spell the enum by its full path; both are the same construction as the one-line
+/// spelling and must read as one. The one-line spelling is here too, as the control.
+#[test]
+fn the_census_reads_a_broken_or_path_qualified_construction_as_the_same_site() {
+    for spelling in [
+        "Refusal::new(ReasonCode::OverdraftCeiling)",
+        "Refusal::new(\n    ReasonCode::OverdraftCeiling,\n)",
+        "Refusal::new(\n    busbar_contract::caps::ReasonCode::OverdraftCeiling,\n)",
+        "Refusal::new(RefusalStep::Admit, ReasonCode::OverdraftCeiling)",
+        "Refusal::new(\n    RefusalStep::Admit,\n    ReasonCode::OverdraftCeiling,\n)",
+    ] {
+        assert_eq!(
+            refusal_sites_in(&squeezed(spelling)),
+            vec![Reason::Named("OverdraftCeiling".to_string())],
+            "{spelling:?}"
+        );
+    }
+    assert_eq!(
+        refusal_sites_in(&squeezed("Refusal::new(refusal.reason())")),
+        vec![Reason::Computed("refusal.reason()".to_string())],
+        "a carried reason is a site, not an absence"
+    );
+    assert_eq!(
+        refusal_sites_in(&squeezed("// Refusal::new(ReasonCode::StaleSlice)\n")),
+        Vec::<Reason>::new(),
+        "a comment that quotes a construction is not one"
+    );
+    assert_eq!(
+        abort_sites_in(&squeezed(
+            "Abort::Kernel {\n    reason: busbar_contract::caps::ReasonCode::Drain,\n}\nAbort::Kernel { reason } => reason,"
+        )),
+        vec![Reason::Named("Drain".to_string())],
+        "a construction is a site under any prefix and a read of the variant is not"
+    );
 }
 
 /// The ceiling verdict is named in one file: the module that defines the rule.

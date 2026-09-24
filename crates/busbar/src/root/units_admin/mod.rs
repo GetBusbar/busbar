@@ -379,6 +379,13 @@ pub trait LedgerView: Send + Sync {
     fn has_refused_rows(&self) -> bool {
         false
     }
+
+    /// SEAM `recorded-counts` (item 404): what the book RECORDED for the entry whose journal digest
+    /// is `amends` — the unit's principal, lane, card epoch and counts — which is what an `adjust`
+    /// corrects. `None` is "this view holds no such entry", and the verb answers `NotFound`.
+    fn recorded_counts(&self, _amends: &str) -> Option<RecordedCounts> {
+        None
+    }
 }
 
 /// The view a node has before a ledger is bound behind it.
@@ -447,10 +454,11 @@ impl LedgerView for UnopenedLedger {
 /// which is why the release's own gate on that identity is the test over both pricing paths, and
 /// this view is the operator's read of the node rather than a second gate.
 ///
-/// The fee count is zero on both sides for the same reason and it is zero on BOTH, never on one:
-/// neither the books nor the previous release's posting carry one at this width, so the count half of
-/// the identity compares two absences and reports nothing. A view that put a count on one side and a
-/// zero on the other would report every row on a healthy node as out.
+/// The fee count is read on BOTH sides from the one settlement that moved them: a posting that is
+/// `n` billable requests settles `n` onto the balance beside its figure and writes `n` onto the
+/// previous release's row as that row's billable requests. So the count half of the identity
+/// compares two real counts — a dual write that dropped or doubled a count is a row that is out,
+/// exactly as a dropped figure is.
 pub struct NodeLedger {
     durability: Arc<Mutex<crate::root::durability::Durability>>,
     legacy: Arc<dyn LegacyRowsRead>,
@@ -504,8 +512,10 @@ impl NodeLedger {
             // hold opens on it, and serving those as rows of zero would put a line in front of an
             // operator for every key that was ever admitted and never billed. A cell whose settled
             // figure has been adjusted below zero is not a row that was posted either, which is why
-            // this is a skip rather than a saturating cast that would report it as zero.
-            if totals.settled <= 0 {
+            // this is a skip rather than a saturating cast that would report it as zero. A cell
+            // holding billable requests IS a row, figure or none: the previous release's side
+            // counts every one of them, and skipping it here would report its count as missing.
+            if totals.settled <= 0 && totals.fee_count == 0 {
                 continue;
             }
             let row = RowKey::new(
@@ -517,9 +527,10 @@ impl NodeLedger {
             // Accumulated rather than inserted: one bucket-day can hold several cells — a dimension
             // and a scope apiece — and at the width this view reads they are one row.
             let entry: &mut LedgerRow = rows.entry(row).or_default();
-            entry.priced_nanos = entry
-                .priced_nanos
-                .saturating_add(totals.settled.unsigned_abs());
+            if let Ok(settled) = u128::try_from(totals.settled) {
+                entry.priced_nanos = entry.priced_nanos.saturating_add(settled);
+            }
+            entry.fee_count = entry.fee_count.saturating_add(totals.fee_count);
         }
         rows
     }
@@ -540,7 +551,8 @@ impl NodeLedger {
         // which is a handful whatever the traffic since boot has been, and the postings themselves
         // are read where they already live. A view that took a copy of the whole history first paid
         // for every posting ever made, under the lock every settlement waits on.
-        let mut nanos: std::collections::BTreeMap<RowKey, u128> = std::collections::BTreeMap::new();
+        let mut sums: std::collections::BTreeMap<RowKey, (u128, u64)> =
+            std::collections::BTreeMap::new();
         self.legacy.fold_postings(&mut |posting| {
             let row = RowKey::new(
                 posting.bucket.as_str(),
@@ -548,20 +560,20 @@ impl NodeLedger {
                 WIDTH_THE_NODE_KEEPS,
                 WIDTH_THE_NODE_KEEPS,
             );
-            let entry = nanos.entry(row).or_default();
-            *entry = entry.saturating_add(u128::from(posting.settled));
+            let (nanos, billable) = sums.entry(row).or_default();
+            *nanos = nanos.saturating_add(u128::from(posting.settled));
+            *billable = billable.saturating_add(posting.fee_count);
         });
         // THE ONE PROJECTION, CHECKED (item 28): a row past the `i64` it is served in refuses the
         // whole read. It was pinned at `i64::MAX`, a figure nobody posted.
-        nanos
-            .into_iter()
-            .map(|(row, nanos)| {
+        sums.into_iter()
+            .map(|(row, (nanos, billable_requests))| {
                 let spend_micros = Money::of_nanos(nanos)?.micros_i64()?;
                 Ok((
                     row,
                     LegacyRow {
                         spend_micros,
-                        billable_requests: 0,
+                        billable_requests,
                     },
                 ))
             })
@@ -634,6 +646,11 @@ impl LedgerView for NodeLedger {
     /// this check and the read it guards cannot slip through either side of the race.
     fn has_refused_rows(&self) -> bool {
         !self.lock().refused_rows().is_empty()
+    }
+
+    /// Read off this node's own journal, under the same lock every other read takes.
+    fn recorded_counts(&self, amends: &str) -> Option<RecordedCounts> {
+        adjust::recorded_in(&self.lock(), amends)
     }
 }
 
@@ -919,6 +936,10 @@ pub struct CoreGovernance {
     amendments: Option<Arc<AmendmentJournal>>,
     /// Who submitted this unit's call and under which dual-control posture it was admitted.
     attribution: AmendAttribution,
+    /// The scope the caller was admitted under. `adjust` hands it to the kernel half, which
+    /// refuses anything below `full` whatever the verbs unit decided. `ReadOnly` until a root says
+    /// otherwise, so an unbound scope corrects nothing.
+    granted: VerbScope,
 }
 
 impl CoreGovernance {
@@ -942,7 +963,15 @@ impl CoreGovernance {
                 principal: String::new(),
                 dual_control: None,
             },
+            granted: VerbScope::ReadOnly,
         }
+    }
+
+    /// Bind the scope the caller was admitted under.
+    #[must_use]
+    pub fn granted(mut self, granted: VerbScope) -> Self {
+        self.granted = granted;
+        self
     }
 
     /// Bind where an amendment is recorded and who is asking for it.
@@ -1035,6 +1064,21 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 operator,
                 &self.attribution,
             );
+        }
+        // `adjust` (item 404, owner ruling Q9): a correction to a recorded unit's COUNTS, sealed on
+        // the node amendment journal by the kernel's half. Its scope, rate class and the irreducible
+        // gate ran in the verbs unit before this seam; the kernel half re-checks the scope and
+        // refuses a count below zero or a blank reason. What the counts WERE is read from the book,
+        // by the digest of the journal record the correction names — never from the body.
+        if verb == KernelVerb::Adjust {
+            let scope = match self.granted {
+                VerbScope::Full => busbar_contract::authz::Scope::Full,
+                VerbScope::ReadOnly => busbar_contract::authz::Scope::ReadOnly,
+            };
+            return adjust::adjust_effect(request, scope, &self.attribution.principal, |amends| {
+                self.ledger.recorded_counts(amends)
+            })
+            .map(|body| json_answer(body).pack());
         }
         Ok(self.run())
     }
@@ -1308,9 +1352,13 @@ fn amend_rate_history_effect(
         rates: cells
             .into_iter()
             .map(|(lane, class)| {
+                // A cell the card could not represent (a sub-quantum rate) is UNPRICED on the live
+                // card and refuses a hit (#42); the record says so rather than writing a zero the
+                // signer never sealed, so the entry a restart rebuilds refuses it too.
                 let nanos = card
                     .lane_rates(&lane)
-                    .map_or(0, |rates| rates.nanos_per_unit(&class));
+                    .filter(|rates| rates.class_priced(&class))
+                    .map(|rates| rates.nanos_per_unit(&class));
                 (lane, class, nanos)
             })
             .collect(),
@@ -1380,7 +1428,14 @@ fn dual_control_word(dual_control: busbar_core_admin::DualControl) -> &'static s
 
 /// The domain tag every durable amendment record's body opens with, so a `Policy`-class journal
 /// record is recognisable as a rate-card amendment without guessing.
-pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v1";
+///
+/// `v2` states, per cell, whether the sealed card PRICED it: a `v1` record wrote an unpriced cell
+/// as nanos 0, which a restart read back as a free cell where the live card refused it (#42).
+pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v2";
+
+/// The tag a record written before [`AMENDMENT_RECORD_TAG`] carried, still read: every cell on it
+/// reads back as the figure it holds, which is all a `v1` record can say.
+const AMENDMENT_RECORD_TAG_V1: &str = "busbar/rate-amendment/v1";
 
 /// One sealed rate-card amendment, as the node's journal keeps it: every figure the correction put
 /// on the history, who signed it, who submitted it, under which posture, and the exact bytes the
@@ -1405,7 +1460,9 @@ pub struct AmendmentRecord {
     /// binary journal format that was never reviewed as a wire reader.
     pub sealed_fee: i64,
     /// `(lane, class, nanos_per_unit)` for every cell the correction named, as the card sealed it.
-    pub rates: Vec<(String, String, u64)>,
+    /// `None` is a cell the card could not represent: UNPRICED, so a hit on it refuses (#42) — never
+    /// a zero.
+    pub rates: Vec<(String, String, Option<u64>)>,
     /// The signer: `sha256(operator key)`, hex.
     pub operator_fingerprint: String,
     /// `sha256(reason)`.
@@ -1434,7 +1491,8 @@ pub fn amendment_body(record: &AmendmentRecord) -> Vec<u8> {
     for (lane, class, nanos) in &record.rates {
         body.text(lane);
         body.text(class);
-        body.num(*nanos);
+        body.num(u64::from(nanos.is_some()));
+        body.num(nanos.unwrap_or(0));
     }
     body.text(&record.operator_fingerprint);
     body.bytes(&record.reason_hash);
@@ -1473,9 +1531,11 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
         }
     }
     let mut r = Reader(body);
-    if r.text()? != AMENDMENT_RECORD_TAG {
-        return None;
-    }
+    let v2 = match r.text()?.as_str() {
+        AMENDMENT_RECORD_TAG => true,
+        AMENDMENT_RECORD_TAG_V1 => false,
+        _ => return None,
+    };
     let effective_from = r.num()?;
     let has_until = r.num()?;
     let until = r.num()?;
@@ -1484,7 +1544,15 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
     let n = r.num()?;
     let mut rates = Vec::new();
     for _ in 0..n {
-        rates.push((r.text()?, r.text()?, r.num()?));
+        let (lane, class) = (r.text()?, r.text()?);
+        let priced = if v2 { r.num()? } else { 1 };
+        let nanos = r.num()?;
+        let nanos = match priced {
+            0 => None,
+            1 => Some(nanos),
+            _ => return None,
+        };
+        rates.push((lane, class, nanos));
     }
     let record = AmendmentRecord {
         effective_from,
@@ -2232,6 +2300,10 @@ pub struct AdminBinding {
     /// root binds one, and `amend_rate_history` refuses while it is `None` — an amendment is never
     /// applied without its durable record (item 30).
     pub amendments: Option<Arc<AmendmentJournal>>,
+    /// Where an idempotency claim the admin plane's replay cache takes is made durable (item 271).
+    /// `None` until a root binds one — a node with no data dir behaves exactly as it did before
+    /// this seam existed.
+    pub claims: Option<Arc<RootClaimJournal>>,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
@@ -2362,6 +2434,7 @@ impl AdminBinding {
             audit: None,
             posture: Arc::new(UnsealedPosture),
             amendments: None,
+            claims: None,
             units: AdminUnits::new(),
         }
     }
@@ -2387,6 +2460,13 @@ impl AdminBinding {
     #[must_use]
     pub fn with_amendment_journal(mut self, journal: Arc<AmendmentJournal>) -> Self {
         self.amendments = Some(journal);
+        self
+    }
+
+    /// Bind the journal an idempotency claim is recorded on (item 271).
+    #[must_use]
+    pub fn with_claim_journal(mut self, journal: Arc<RootClaimJournal>) -> Self {
+        self.claims = Some(journal);
         self
     }
 
@@ -2719,11 +2799,20 @@ pub(crate) fn route(
                 principal: actor.clone(),
                 dual_control: posture.map(|p| p.dual_control),
             },
-        ),
+        )
+        .granted(granted),
         StoreRef(store),
         ArrivalNonce(request.at),
         PackedReplay,
         CONFIG_CLASS_RULES,
+    )
+    // Item 271: the claims the create-key and rotate-key caches take go on the node's journal
+    // where a root bound one; `None` (no data directory) is exactly the unbound executor.
+    .with_claim_journal(
+        binding
+            .claims
+            .clone()
+            .map(|j| j as Arc<dyn busbar_core_admin::idempotency::ClaimJournal>),
     );
 
     // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
@@ -2902,10 +2991,7 @@ fn mints_its_own_identity(verb: KernelVerb) -> bool {
 /// secret — and it also attributes two callers sharing one token to two different actors while
 /// attributing one caller rotating a token to one actor per rotation.
 ///
-/// `None` where no identity was resolved, which is the answer the audit doors act on: a unit refused
-/// at or before Authenticate has no actor, so the previous release's chain takes no row for it. The
-/// literal that used to stand in was the CONFIGURED administrator's name, which made every refused
-/// unauthenticated mutation a row in that operator's own history.
+/// `None` where no identity was resolved: a unit refused at or before Authenticate has no actor.
 fn resolved_actor(binding: &AdminBinding, key: UnitKey) -> Option<String> {
     binding.units.principal(key).map(|p| p.as_str().to_string())
 }
@@ -2914,8 +3000,6 @@ fn resolved_actor(binding: &AdminBinding, key: UnitKey) -> Option<String> {
 ///
 /// Reached only by Route, and Route is downstream of Authenticate — a unit that reaches it has a
 /// principal, so this is the shape of an impossibility rather than a fallback anything exercises.
-/// It is NOT what the audit doors use: those decline to write at all, because a record naming a
-/// non-participant is a worse answer than no record.
 const UNRESOLVED_ACTOR: &str = "admin";
 
 /// The identity a step that cannot decline is handed. See [`UNRESOLVED_ACTOR`].
@@ -2963,21 +3047,21 @@ pub(crate) fn meter(
     }
 }
 
-/// Step 7. The end, sealed onto the previous release's administrative chain.
+/// Step 7. The end, stated as the facts the audit unit seals.
 ///
-/// The chain is `busbar-unit-audit`'s legacy one: the mutation history an operator's `/audit` page
-/// has always read, moved rather than rewritten, so that a digest change cannot silently report every
-/// deployment's history as tampered. A read is not a mutation and is not appended; the chain is a
-/// record of what changed.
+/// There is ONE administrative ring — the kernel's durable one, and it is what an operator's
+/// `/audit` page reads. A 1.5.5 verb's row is written onto it by the core-admin handler as the
+/// mutation applies, so this step writes none for those (a second copy was item 237). A ROOT-ONLY
+/// mutating verb has no core-admin handler to write it, so this step writes its one row onto that
+/// same ring ([`seal_root_only`]). Beyond that the step decides the operation class and the finish
+/// the audit unit seals.
 pub(crate) fn audit(
     binding: &AdminBinding,
-    legacy: &busbar_kernel_audit::AuditLog,
     token: &Pass<Audit>,
     ctx: &UnitCtx,
     outcome: &Outcome,
 ) -> Decision<Audit> {
-    let (Some(request), Some(resolved)) =
-        (binding.units.request(ctx.key), binding.units.verb(ctx.key))
+    let (Some(_), Some(resolved)) = (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
         return Decision::proceed(
             token,
@@ -2991,11 +3075,12 @@ pub(crate) fn audit(
             ),
         );
     };
-    if !resolved.read_only {
-        if let Some(actor) = resolved_actor(binding, ctx.key) {
-            legacy.record_by(resolved.verb, &request.path, outcome_word(outcome), &actor);
-        }
-    }
+    let applied = matches!(outcome, Outcome::Completed)
+        && binding
+            .units
+            .answer(ctx.key)
+            .is_some_and(|answer| (200..300).contains(&answer.status));
+    seal_root_only(binding, ctx, &resolved, applied);
     Decision::proceed(
         token,
         busbar_contract::AuditFacts {
@@ -3005,17 +3090,39 @@ pub(crate) fn audit(
     )
 }
 
-/// Step 7, the other door. A unit that never passed Admit was charged nothing, and the chain records
-/// the attempt rather than pretending it did not happen.
+/// ONE row on the kernel's durable administrative ring for a ROOT-ONLY mutating verb — a 1.6.0 verb
+/// (`NEW_VERBS`, reads excluded) whose effect lands on this root or its store, where no core-admin
+/// handler exists to write the row. `applied` only for a 2xx answer the operation produced; every
+/// other end is `rejected`. A unit refused before its identity resolved writes nothing: no principal
+/// acted, and a row naming one would attribute the attempt to somebody who was not there.
+fn seal_root_only(binding: &AdminBinding, ctx: &UnitCtx, resolved: &ResolvedVerb, applied: bool) {
+    let root_only =
+        !resolved.read_only && kernel_verb(resolved).is_some_and(|v| NEW_VERBS.contains(&v));
+    if let (true, Some(actor)) = (root_only, resolved_actor(binding, ctx.key)) {
+        let outcome = if applied {
+            busbar_kernel::audit_ring::OUTCOME_APPLIED
+        } else {
+            busbar_kernel::audit_ring::OUTCOME_REJECTED
+        };
+        busbar_kernel::audit_ring::AUDIT.record_by(
+            resolved.verb,
+            resolved.template,
+            outcome,
+            &actor,
+        );
+    }
+}
+
+/// Step 7, the other door. A unit that never passed Admit was charged nothing, and the sealed facts
+/// record the attempt rather than pretending it did not happen. Like [`audit`], it writes a row only
+/// for a root-only mutating verb, `rejected`, onto the kernel's one ring.
 pub(crate) fn audit_refused(
     binding: &AdminBinding,
-    legacy: &busbar_kernel_audit::AuditLog,
     token: &Pass<Audit>,
     ctx: &UnitCtx,
     refusal: &Refusal,
 ) -> Decision<Audit> {
-    let (Some(request), Some(resolved)) =
-        (binding.units.request(ctx.key), binding.units.verb(ctx.key))
+    let (Some(_), Some(resolved)) = (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
         // THE REFUSAL THAT HAPPENED, not one composed here. This arm used to seal every unresolved
         // unit as a decode failure raised at Decode, whatever it had actually been refused for: a
@@ -3040,24 +3147,7 @@ pub(crate) fn audit_refused(
             ),
         );
     };
-    // A REFUSAL BEFORE THE IDENTITY RESOLVED APPENDS NOTHING. The previous release's chain is what
-    // an operator's history page reads, and for an unauthenticated administrative request it holds
-    // no row at all — the credential was never accepted, so no principal ever acted. Writing one
-    // anyway put a mutation in the history under the configured administrator's name for a request
-    // that administrator never made, which is worse than a gap: an anonymous caller could grow that
-    // operator's history one refused `DELETE` at a time. The attempt is still reported — it is the
-    // refusal the caller receives and the sealed facts below — it is simply not attributed to
-    // somebody who was not there.
-    if !resolved.read_only {
-        if let Some(actor) = resolved_actor(binding, ctx.key) {
-            legacy.record_by(
-                resolved.verb,
-                &request.path,
-                busbar_kernel_audit::OUTCOME_REJECTED,
-                &actor,
-            );
-        }
-    }
+    seal_root_only(binding, ctx, &resolved, false);
     Decision::proceed(
         token,
         busbar_contract::AuditFacts {
@@ -3106,13 +3196,6 @@ const OP_UNRESOLVED_WRITE: &str = "admin_write";
 /// direction for a column an audit review is read for.
 fn is_read_method(method: &str) -> bool {
     method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD")
-}
-
-fn outcome_word(outcome: &Outcome) -> &'static str {
-    match outcome {
-        Outcome::Completed => busbar_kernel_audit::OUTCOME_APPLIED,
-        _ => busbar_kernel_audit::OUTCOME_REJECTED,
-    }
 }
 
 fn finish_of(outcome: &Outcome) -> busbar_contract::FinishClass {
@@ -3308,8 +3391,7 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> Decision<Audit> {
-        let durability = root.durability.lock().unwrap_or_else(|p| p.into_inner());
-        audit(&root.admin, &durability.legacy, token, ctx, outcome)
+        audit(&root.admin, token, ctx, outcome)
     }
 
     fn audit_refused(
@@ -3319,8 +3401,7 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit> {
-        let durability = root.durability.lock().unwrap_or_else(|p| p.into_inner());
-        audit_refused(&root.admin, &durability.legacy, token, ctx, refusal)
+        audit_refused(&root.admin, token, ctx, refusal)
     }
 
     fn encode(
@@ -3478,6 +3559,12 @@ impl busbar_core_admin::ReplayEncoder<busbar_core_admin::MintedKeyOutcome> for P
 // below — still names it at `root::units_admin::…` exactly as before.
 mod admin_mount;
 pub(crate) use admin_mount::*;
+
+// ── `adjust` and the idempotency claim journal: sibling modules, re-exported here ─────────────────
+mod adjust;
+pub use adjust::RecordedCounts;
+mod claims;
+pub use claims::RootClaimJournal;
 
 #[cfg(test)]
 #[path = "tests/units_admin.rs"]

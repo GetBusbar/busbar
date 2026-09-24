@@ -563,6 +563,32 @@ pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// returns `Ok(())`.
     fn validate_registry(&self) -> Result<(), String>;
 
+    /// Every MODEL → `providers:` REFERENCE this section's own registry makes, as `(config-path,
+    /// provider-name)` — the `models:`-shaped twin of [`Self::container_gates`]'s hook list, so
+    /// `resolve` cross-checks a model-serving section's provider references (existence, then dialect
+    /// via [`Self::known_dialects`]) without naming the plane's own model-entry type. The path is
+    /// the fully-qualified operator-facing key (`decisions.models.<m>.provider`), matching
+    /// `container_gates`'s own convention.
+    ///
+    /// Empty default: a section with no `models:` map of its own (`tools:`/`agents:`/`streams:`
+    /// today) makes no such reference and this is a no-op for it — adding this method breaks no
+    /// existing implementor.
+    fn model_provider_refs(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// The wire dialects this plane's [`Self::model_provider_refs`] entries are restricted to, or
+    /// `None` for a plane that does not restrict (accepts whatever protocol its provider resolves
+    /// to — every existing implementor's answer, unchanged). `Some(&[...])` names the ONLY
+    /// protocol strings this plane's own dialect-interpretation code speaks; a resolved provider
+    /// protocol outside that list FAILS CLOSED at `resolve` (BUSBAR-1.6.0.md #51: "the PLANE then
+    /// interprets the resolved dialect against what it supports: knows it ⇒ use it; doesn't ⇒
+    /// FAIL"). Kernel never spells a dialect string itself (#49) — it only compares against
+    /// whatever the plane returns here.
+    fn known_dialects(&self) -> Option<&'static [&'static str]> {
+        None
+    }
+
     /// True when the operator actually wrote CONTENT for this section (a non-empty registry). Read by
     /// the config deletion-gate leg to refuse a present section that names a compiled-out plane — so it
     /// is called ONLY in a build where at least one plane is off; with both planes compiled in every

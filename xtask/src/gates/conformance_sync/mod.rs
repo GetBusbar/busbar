@@ -19,8 +19,8 @@
 //! | `conformance:manifest-drift` | `conformance/manifest.json` byte-equals a fresh render from the registry + verdicts. `--write` rewrites; otherwise diff. (The config-schema `snapshot-drift` rule, `config_schema/mod.rs:11`.) |
 //! | `conformance:coverage` | every registered suite appears in the committed manifest and every manifest suite is registered — SET EQUALITY (`verdict-covers-every-leg.py:12-18` applied to suites). |
 //! | `conformance:readme-drift` | the README badge block between the markers byte-equals a fresh render from the manifest. |
-//! | `conformance:freshness` | every armed passing verdict's `commit` equals the release commit — `git rev-parse HEAD` of the checkout under judgement, resolved from OUTSIDE the verdicts, never elected by them — so a pass carried over from an older sha is RED however many verdicts share that sha (§5.2). |
-//! | `conformance:no-orphan-claim` | no human-visible claim string outside the marker block lacks a backing manifest entry: neither a registered suite's badge string nor any claim word ([`render::CLAIM_WORDS`]) for a standard no registry names (the grep backstop, §5). |
+//! | `conformance:freshness` | every armed passing verdict's `commit` equals the release commit — `git rev-parse HEAD` of the checkout under judgement, resolved from OUTSIDE the verdicts, never elected by them — so a pass carried over from an older sha is RED however many verdicts share that sha. |
+//! | `conformance:no-orphan-claim` | no human-visible claim string outside the marker block lacks a backing manifest entry: neither a registered suite's badge string nor any claim word ([`render::CLAIM_WORDS`]) for a standard no registry names (the grep backstop). |
 //!
 //! ## Why the website page is not a row here
 //!

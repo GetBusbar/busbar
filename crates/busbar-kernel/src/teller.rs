@@ -139,7 +139,7 @@ impl Kernel {
 
     /// The transport-key unit's token, as the composition root lends it.
     ///
-    /// The one token minted OUTSIDE the loop. Keys are resolved at listen, dial and upgrade, none
+    /// The first token minted OUTSIDE the loop. Keys are resolved at listen, dial and upgrade, none
     /// of which is a step of a unit, so there is no step whose token could stand in — and without
     /// this the unit's `provision_server` and `provision_client` have a parameter no caller in the
     /// tree can supply, which is why the only thing that ever registered a listener's TLS config
@@ -174,8 +174,8 @@ impl Kernel {
     /// reach for the seal itself, which is the one symbol that must not be spelled outside this
     /// crate.
     ///
-    /// Kept beside the other two and named the same way, so the source scan that accounts for every
-    /// mint sees this one too.
+    /// Kept beside the other three and named the same way, so the source scan that accounts for
+    /// every mint sees this one too.
     pub fn durability_token(&self) -> Grant<DurableWrite> {
         Grant::<DurableWrite>::mint(&self.seal)
     }
@@ -217,9 +217,14 @@ impl Kernel {
         Grant::<Consumption>::mint(&self.seal)
     }
 
-    /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
-    /// module, which materialises a hold from a journal record, and the node's sweep, which is the
-    /// second and last holder of an exit token.
+    /// The seal itself, for the other two places in the kernel that mint tokens. Between them they
+    /// mint seven, two of them `WriteMoney` — the source scan that accounts for every mint counts
+    /// these as well as the factories above:
+    ///
+    /// - the recovery module, which materialises a hold from a journal record and settles it:
+    ///   `Recover`, `Consumption` and `WriteMoney`;
+    /// - the node's sweep, which settles an abandoned unit: `Exit` for the take, `Consumption`,
+    ///   `WriteMoney`, and `Exit` again to seal the end.
     pub(crate) fn seal(&self) -> &KernelSeal {
         &self.seal
     }
@@ -234,8 +239,9 @@ pub struct UnitCtx {
     pub origin: OriginKind,
     /// Its session, if it has one.
     pub session: Option<SessionId>,
-    /// The registry generation it pinned when it started, so it finishes against what it started
-    /// with even while a reload installs a replacement.
+    /// The registry generation it pinned when it started, so it would finish against what it
+    /// started with if a reload installed a replacement. None does today: the registry is built once
+    /// at boot and every unit pins `Generation::FIRST` (see `registry`'s "Generations").
     pub generation: Generation,
     /// Whether it arrived on the administrative listener.
     pub admin_listener: bool,
@@ -739,9 +745,7 @@ pub fn run_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'_
         // private to this file and is the only leg this entry point can be given, so there is no
         // caller — inside the kernel or outside it — that can make this arm happen.
         std::task::Poll::Pending => {
-            unreachable!(
-                "the synchronous loop's one await is a leg that is ready on its first poll"
-            )
+            unreachable!("the synchronous loop's one await is ready on its first poll")
         }
     }
 }
@@ -764,7 +768,17 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
     route: &R,
 ) -> Ended {
     let seal = &kernel.seal;
+    // THE CANARY'S THREE COUNTS, each at the seat that makes it true for EVERY unit (item 272). A
+    // draft is a unit the table admitted and this loop runs; every unit ends with exactly one hold
+    // or one accrual (the arrival hold the table minted is the hold a refused or zero-priced unit
+    // settles, and the door's hold replaces it for an admitted one); and exactly one settlement, by
+    // the exit or the sweep, whichever takes the cell. Counting the draft four steps before the door
+    // and the hold only on the admitted arm left every refusal and every zero-hold unit unbalanced.
+    run.canary.draft_accepted();
     let opened = open_to_door(seal, units, ctx, &run);
+    if !matches!(opened, Ok((Admission::Accrual(_), _))) {
+        run.canary.hold_opened();
+    }
 
     match opened {
         // The refused door: nothing was charged beyond the arrival hold the table minted, and the
@@ -805,7 +819,6 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                 Admission::Own(hold) => {
                     match run.cell.admit(hold, &Grant::<Admittance>::mint(seal)) {
                         Ok(arrival) => {
-                            run.canary.hold_opened();
                             // The arrival hold has done its job; the admitted hold has taken its
                             // place and is the one the exit settles.
                             drop_arrival(arrival);
@@ -876,7 +889,6 @@ fn open_to_door<U: Units>(
                 .into_result(seal)
         })
         .and_then(|_| {
-            run.canary.draft_accepted();
             units
                 .authenticate(&Pass::<Authenticate>::mint(seal), ctx)
                 .into_result(seal)
@@ -1381,3 +1393,7 @@ mod call_binding_tests;
 #[cfg(test)]
 #[path = "tests/teller_verified_destination_tests.rs"]
 mod teller_verified_destination_tests;
+
+#[cfg(test)]
+#[path = "tests/teller_seal_doc_tests.rs"]
+mod teller_seal_doc_tests;

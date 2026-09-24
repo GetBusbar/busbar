@@ -266,9 +266,9 @@ fn register_protocols() {
 /// plane axis. The MCP plane is now a crate (`busbar-mcp`), so it contributes its `&PLANE_DECL` here
 /// under the `plane-mcp` feature; core's PRODUCTION build carries no MCP built-in row (it dual-compiles
 /// the plane back in for its own test builds only), and `merged_boot_plane_decls` folds this installed
-/// copy into its canonical slot. The A2A plane is still built into core until its own extraction, so it
-/// is not pushed here yet. Leaked so the installed set is `'static`, exactly as `register_protocols`
-/// does — this runs once at startup and lives for the process.
+/// copy into its canonical slot. The LLM, A2A, voice and decision planes are pushed here the same way,
+/// each behind its own feature (see the rows below). Leaked so the installed set is `'static`, exactly
+/// as `register_protocols` does — this runs once at startup and lives for the process.
 // `Vec::new()` then a FEATURE-GATED push (not `vec![]`): the one element is present only under
 // `plane-mcp`, and with every plane compiled out (`--no-default-features`) nothing pushes — the same
 // shape `register_protocols` has, minus its unconditional `extend`.
@@ -484,6 +484,12 @@ fn mount_root_voice(
 /// the switch that routes a frame through it is the one that has to thread the deployment's real
 /// auth, rate cards and data directory in, and it fails to compile until it does.
 ///
+/// NONE OF A SERVED SESSION'S MONEY PASSES THROUGH THIS NODE (OWNER RULING Q21b). The served path
+/// meters on the streaming plane's units: each turn's raw counts per class go to the kernel's
+/// session account over the live host, which ledgers them through the one metering path and closes
+/// the carrier off the kernel's own budget view; the view prices them at read with the `streams`
+/// card. The flat pricer below prices this node's own door, which admits no served frame.
+///
 /// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
 /// this node's live sessions are already keyed into.
 #[cfg(feature = "root-voice")]
@@ -632,9 +638,9 @@ fn main() {
     register_planes();
     // HOST-SELECTION SEAM INSTALL (loop unification, DECISIONS #28), after the planes are registered
     // and mirroring `busbar_admin::install()`: inject the kernel-loop runners into the neutral
-    // per-capability-keyed seam. DORMANT — it registers ZERO planes, so every gauntlet/session path
-    // stays on the substrate loop, byte-identical. Each per-plane flip onto the unified kernel loop is
-    // one line inside this install, landed only when that plane's money family is fleet-box oracle-green (#29).
+    // per-capability-keyed seam. LIVE — it flips every plane in the build (mcp, a2a, llm-native,
+    // voice) onto the unified kernel loop, whose runner opens a zero hold and reports no evidence, so
+    // each plane's own metering inside `drive` stays what settles (item 125, measured money-neutral).
     root::gauntlet_install::install();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
@@ -932,6 +938,20 @@ fn compose_boot_book(
         Box::new(busbar_kernel_ledger::legacy::RecordingRows::clone(&rows)),
     )
     .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
+    // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
+    // corrected count and every recorded content access survive the restart (a node with no data
+    // directory rebuilds nothing).
+    durability.restore_amendments();
+    // A corrupt journal segment was already logged and counted when the book was built; this puts
+    // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
+    if let Err(lost) =
+        durability.journal_quarantines(token, busbar_contract::caps::StepName::Meter, now)
+    {
+        tracing::error!(
+            step = lost.step().as_str(),
+            "the journal could not record the quarantine boot recovery made"
+        );
+    }
     let migration = {
         let mut records =
             durability.migration_records(token, busbar_contract::caps::StepName::Meter);
@@ -993,10 +1013,10 @@ fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook
                      over the buckets the configuration named"
                 );
             }
-            root::durability::NodeBook {
-                durability: Arc::new(std::sync::Mutex::new(durability)),
-                rows,
-            }
+            let durability = Arc::new(std::sync::Mutex::new(durability));
+            // Every amendment sealed from here on goes on the book it was rebuilt from.
+            root::durability::bind_amendments(&durability);
+            root::durability::NodeBook { durability, rows }
         }
         Err(e) => die(e),
     }
@@ -1247,7 +1267,7 @@ async fn run(data_workers: usize) {
     // The marker sits DIRECTLY above the call it exempts, and must: the lint carries an allow across
     // the comment block that starts it and no further, so the voice-credential capture that used to
     // stand between the two silently ate this exemption and left the build itself flagged.
-    let (boot_app, _boot_gov_rotate) = build_app_from_config(
+    let (boot_app, _boot_gov_rotate, boot_limits) = build_app_from_config(
         cfg,
         plugins_cfg,
         overlay_path,
@@ -1257,6 +1277,11 @@ async fn run(data_workers: usize) {
         None,
     )
     .unwrap_or_else(|e| die(e));
+    // BOOT KEEPS THEM IMMEDIATELY. The admin applies defer this to after their persist-and-swap,
+    // because a rejected apply must leave the still-serving generation's limits alone. Boot has no
+    // such caller: the config file IS the durable state, this build IS the first generation, and a
+    // build that failed already `die`d above.
+    boot_limits.keep();
     let app = Arc::new(boot_app);
 
     // COMPOSE the voice plane's realtime provider: hand the plane the origin + the secret reference
@@ -1364,8 +1389,9 @@ async fn run(data_workers: usize) {
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
-    // THE PROCESS'S ONE BOOK. Every plane's exit arm settles onto it and the administrative ledger
-    // views read it, which is a property of there being ONE: a mount that opened its own would post
+    // THE PROCESS'S ONE BOOK. The LLM plane's exit arm settles onto it (`bind_book` below) and the
+    // administrative ledger views read it; the MCP, A2A and voice planes bind no exit arm to it here.
+    // It is ONE book, and that matters: a mount that opened its own would post
     // onto books nothing serves and serve books nothing posts to, and both halves of that would look
     // healthy, because an empty ledger reconciles. Its records ship to the deployment's CONFIGURED
     // STORE (committed-before-ack, and onto this node's own disk as well when a data directory was
@@ -1462,6 +1488,11 @@ async fn run(data_workers: usize) {
     // spawn_probers call above and `AppHandle::set_snapshot_host`.
     #[cfg(feature = "proto-llm")]
     app_handle.set_snapshot_host(boot_host);
+    // And bind the spawner every later swap re-attaches the probers with (item 552): the swap drops
+    // this generation's host and retires its probers, so without the binding the first admin
+    // mutation stops active health probing for the life of the process.
+    #[cfg(feature = "proto-llm")]
+    app_handle.attach_on_swap(busbar_llm::spawn_probers);
 
     // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections, let
     // in-flight requests drain, then flush the OTLP tracer so the final (most diagnostic) spans are
@@ -2048,9 +2079,9 @@ fn spawn_jemalloc_idle_purge_fallback() {
 }
 
 // THE COMPOSITION ROOT. The kernel, the units, the planes and the transports composed in one
-// place — the only place in the tree entitled to name all four. Nothing in `main()` calls into it
-// yet: the root is built before any plane is switched onto it, so the shape can be checked against
-// the real traits while the serving path is untouched.
+// place — the only place in the tree entitled to name all four. `main()` and `run()` call into it
+// to register the plane axis, seal the boot registry, open the boot book and mount the root-driven
+// surfaces.
 mod root;
 
 /// The stamp's derivation half, shared VERBATIM with `build.rs` (which `include!`s the same file).

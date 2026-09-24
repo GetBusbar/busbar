@@ -1463,6 +1463,16 @@ impl Gate for TellerStepsGate {
             ),
         ];
 
+        // THE GREEN BASE EVERY PLANT IS PROVEN FROM. A root cell whose named loop cell is gone
+        // from its file keeps `root-column` red on the unplanted tree, and a row that is already
+        // red cannot be shown to turn red: every root-column plant below would report an
+        // impossible proof. The base gives each such cell a stub `fn` of the name it cites, in an
+        // overlay, so the row starts green and only the plant can move it. The real tree is not
+        // healed by this: the control case above still reads it unplanted and stays red until the
+        // matrix names a cell that exists.
+        let base = missing_root_cells(cx, &doc);
+        let base_cx = cx.with_overlay(base.clone());
+
         for (label, covers, naming, mutate) in plants {
             let mut plant = Plant { doc: doc.clone() };
             mutate(&mut plant);
@@ -1475,11 +1485,58 @@ impl Gate for TellerStepsGate {
             // THE PLANT MUST BE NAMED. `naming` is the substring the report has to carry — "the
             // gate went red" says nothing about whether it went red for the planted reason, and
             // eight of these nine plants are one JSON key apart from each other.
-            report.push(prove_red(cx, self, label, &[covers], ov, &[naming]));
+            report.push(prove_red(
+                &base_cx,
+                self,
+                label,
+                &[covers],
+                base.layered(&ov),
+                &[naming],
+            ));
         }
 
         report
     }
+}
+
+/// A FIXTURE OVERLAY THAT GIVES EVERY STALE ROOT CITATION A CELL TO RESOLVE TO: for each matrix
+/// cell whose `root.test` names `file::func` and whose `file` declares no `fn func(`, a stub
+/// `fn func() {}` is appended to that file. Empty when every citation resolves, which is the
+/// ordinary state of the tree.
+fn missing_root_cells(cx: &Ctx, doc: &Json) -> Overlay {
+    let mut stubs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    if let Some(planes) = doc.get("matrix").as_object() {
+        for (_, steps) in planes.iter() {
+            let Some(steps) = steps.as_object() else {
+                continue;
+            };
+            for (_, cell) in steps.iter() {
+                let Some(test) = cell.get("root").get("test").as_str() else {
+                    continue;
+                };
+                let Some((file, func)) = test.split_once("::") else {
+                    continue;
+                };
+                let body = cx.read(file).unwrap_or_default();
+                if body.is_empty() || body.contains(&format!("fn {func}(")) {
+                    continue;
+                }
+                stubs
+                    .entry(file.to_string())
+                    .or_default()
+                    .push(func.to_string());
+            }
+        }
+    }
+    let mut ov = Overlay::new();
+    for (file, funcs) in stubs {
+        let mut body = cx.read(&file).unwrap_or_default();
+        for func in funcs {
+            body.push_str(&format!("\n#[test]\nfn {func}() {{}}\n"));
+        }
+        ov.set(&file, body);
+    }
+    ov
 }
 
 /// One planted violation: its label, the owed row it exercises, the substring its report must NAME,

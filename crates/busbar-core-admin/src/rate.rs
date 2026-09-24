@@ -15,6 +15,10 @@
 //! `NamedMapSection::ALL` rather than listing as literals — reproduced here as data because this
 //! crate cannot name that registry. Everything downstream of "which class is this verb" — the
 //! limit values, the fixed window, the sweep, the audit-once signal — is unchanged.
+//!
+//! [`CONFIG_CLASS_RULES`] is a second, independent table from `busbar_kernel::ratelimit`'s own
+//! (item 558) — see that constant's doc for why the two are not collapsed into one, and for the
+//! cross-check test that keeps them from silently drifting apart.
 
 use crate::verb::KernelVerb;
 use std::collections::HashMap;
@@ -44,12 +48,25 @@ impl ConfigClassRule {
 }
 
 /// THE single source of truth for which admin mutation endpoints are in the tight CONFIG class
-/// (10/min) versus the roomy CRUD class (60/min) — 1.5.5's `CONFIG_CLASS_RULES`
-/// (`crates/busbar/src/admin/rate.rs`), transcribed verbatim against ADMIN_PREFIX-relative paths,
-/// with the two `NamedMapSection::ALL` roots (`export`, `identity-providers`) appended as the same
-/// kind of `Prefix` rule 1.5.5 derives from that registry (this crate cannot name it, so the root's
-/// sealed policy is expected to supply the current, possibly larger, set of named-map roots at
-/// composition time — this constant is the 1.5.5-parity default the root may pass as-is or extend).
+/// (10/min) versus the roomy CRUD class (60/min) on the admin-VERB path — 1.5.5's
+/// `CONFIG_CLASS_RULES` (`crates/busbar/src/admin/rate.rs`), transcribed verbatim against
+/// ADMIN_PREFIX-relative paths, with the two `NamedMapSection::ALL` roots (`export`,
+/// `identity-providers`) appended as the same kind of `Prefix` rule 1.5.5 derives from that
+/// registry (this crate cannot name it, so the root's sealed policy is expected to supply the
+/// current, possibly larger, set of named-map roots at composition time — this constant is the
+/// 1.5.5-parity default the root may pass as-is or extend).
+///
+/// A SECOND, independent table answers the same question on the admin-HTTP path:
+/// `busbar_kernel::ratelimit::classify_mutation` (item 558) — driven from the live plane registry
+/// rather than a literal list, so it sees named-map roots this table does not (`tools`, `agents`).
+/// This crate cannot collapse into that one: it has no `KernelVerb`-shaped input to the kernel's
+/// path classifier, and swapping this table for a call into it would change which class two
+/// `Full`-scope verbs land in today (a customer-visible rate-limit tier change out of this item's
+/// scope — see item 372, owned elsewhere). What ties the two tables together instead is
+/// `for_verb_agrees_with_the_kernel_path_classifier_for_every_legacy_mutating_verb`
+/// (`tests/rate_tests.rs`), which walks every legacy mutating verb through both classifiers over
+/// the same relative path and goes RED the moment they disagree — currently green, because no live
+/// `KernelVerb` reaches a path either table classifies differently today.
 pub const CONFIG_CLASS_RULES: &[ConfigClassRule] = &[
     // Whole-config mutations (apply/reload/rollback/settings). `/config/validate` is a stateless
     // dry-run and `ReadOnly`-scoped, so it never reaches `for_verb`'s table lookup at all (filtered

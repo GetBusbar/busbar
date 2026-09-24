@@ -369,7 +369,9 @@ pub(crate) fn build_rewrite_request<'a>(
 /// those paths) — or `Err((status, message))` when a hook REJECTED the request:
 /// reject > rewrite > abstain on the transform path too; a rw gate that also screens must be able
 /// to stop the request — dropping its reject would be fail-OPEN from the hook author's view.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_global_rewrites(
+    host: &dyn EngineHost,
     rewrite_hooks: &[(
         std::time::Duration,
         std::sync::Arc<dyn busbar_api::RoutingPolicy>,
@@ -410,6 +412,10 @@ pub(crate) async fn apply_global_rewrites(
             true,
             request_id,
         );
+        // The hook is handed the prompt: one access amendment, through the kernel's one seam.
+        if req.prompt.is_some() {
+            host.hook_read(hook.name(), None, ingress_protocol, false);
+        }
         let outcome = hook.transform(&req, *timeout).await;
         drop(req); // end the immutable borrow of `v` before mutating it
         match outcome {
@@ -738,6 +744,16 @@ pub(crate) async fn decide_policy_order(
         budget: &budget_chain,
     };
 
+    // A policy handed the prompt leaves one access amendment, through the kernel's one seam — the
+    // same record the kernel's own gate seam leaves, naming the caller whose content it was.
+    let principal = gov_key.as_ref().map(|k| k.id.as_str());
+    let hook_read = |name: &str, identity: bool| {
+        host.hook_read(name, principal, ingress_protocol, identity);
+    };
+    if req.prompt.is_some() {
+        hook_read(policy.name(), req.identity.is_some());
+    }
+
     // Run the decision under a HARD wall-clock timeout (the policy is also asked to respect `budget`).
     // A timeout or an `Err` is coerced to `on_error`; an impl that simply has no opinion returns
     // `Ok(Abstain)`. The decision NEVER blocks past `timeout` and NEVER propagates an error to the
@@ -785,6 +801,7 @@ pub(crate) async fn decide_policy_order(
                 &ctx,
                 policy.name(),
                 pool_name,
+                &hook_read,
             )
             .await;
         }
@@ -817,6 +834,7 @@ pub(crate) async fn decide_policy_order(
                 &ctx,
                 policy.name(),
                 pool_name,
+                &hook_read,
             )
             .await;
         }
@@ -830,6 +848,7 @@ pub(crate) async fn decide_policy_order(
 /// don't allow), and let the FIRST one that answers decide, exactly as a primary decision would.
 /// Every link failing lands on the chain's reserved TERMINAL (weighted/reject/first). The common
 /// case — `on_error: weighted` etc. — has an EMPTY chain and goes straight to the terminal.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_on_error_chain(
     chain: &[busbar_kernel::hooks::FallbackHook],
     terminal: &busbar_kernel::config::PolicyOnError,
@@ -838,6 +857,8 @@ pub(crate) async fn run_on_error_chain(
     ctx: &busbar_api::RoutingContext<'_>,
     failed_policy_name: &'static str,
     pool_name: &str,
+    // Leaves the access amendment for a fallback handed the prompt: `(hook name, identity handed)`.
+    hook_read: &(dyn Fn(&str, bool) + Sync),
 ) -> PolicyOutcome {
     for fb in chain {
         // Re-project per the FALLBACK's grants: it may see at most what the primary projection
@@ -856,6 +877,9 @@ pub(crate) async fn run_on_error_chain(
             },
             ..req.clone()
         };
+        if fb_req.prompt.is_some() {
+            hook_read(fb.policy.name(), fb_req.identity.is_some());
+        }
         match tokio::time::timeout(
             fb.timeout,
             fb.policy.decide(&fb_req, candidates, ctx, fb.timeout),

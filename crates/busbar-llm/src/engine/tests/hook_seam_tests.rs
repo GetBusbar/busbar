@@ -8,7 +8,7 @@ use crate::test_support::{LaneSpec, TestApp};
 use busbar_api::{
     Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
 };
-use busbar_kernel::hooks::ResolvedPolicy;
+use busbar_kernel::hooks::{ResolvedPolicy, REQUIRED_HOOK_UNAVAILABLE_STATUS};
 use std::sync::Mutex as StdMutex;
 
 /// The prompt as the policy saw it: (flattened system, [(role, text)]).
@@ -2163,7 +2163,7 @@ fn reject_kind_mapping_matches_status_semantics() {
     // minted as the transform path's `reject` verb). It must read as RETRYABLE — the identical kind
     // the read-only seat renders for the same condition — never as a client error.
     assert_eq!(
-        reject_kind_for_status(busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS),
+        reject_kind_for_status(REQUIRED_HOOK_UNAVAILABLE_STATUS),
         KIND_OVERLOADED
     );
     for other in [400, 422, 451, 499] {

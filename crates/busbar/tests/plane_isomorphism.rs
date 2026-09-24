@@ -404,16 +404,12 @@ fn every_installed_plane_is_answered_by_a_root_leg() {
             );
         }
     }
-    // Which legs prove at least one cell over the loop, read off the same ledger.
-    let mut leg_proven: BTreeMap<String, usize> = BTreeMap::new();
-    for cell in ledger["cells"].as_array().expect("`cells` is an array") {
-        let r = &cell["root"];
-        if r["state"].as_str() == Some("proven") {
-            if let Some(leg) = r["leg"].as_str() {
-                *leg_proven.entry(leg.to_string()).or_default() += 1;
-            }
-        }
-    }
+    // How many cells each leg proves over the loop ON EACH COLUMN, read off the same ledger. Keyed
+    // by (leg, column) and not by leg: a leg answers for two directional columns on the
+    // bidirectional planes (root-mcp is mcp-client AND mcp-server), and a per-leg tally stays
+    // positive while one of its two columns has lost every root-loop proof — the assertion below
+    // names the column, so the count it reads must be the column's (item 264).
+    let leg_proven = proven_per_leg_column(&ledger);
 
     let compiled = compiled_legs();
     let columns = columns_map();
@@ -435,12 +431,15 @@ fn every_installed_plane_is_answered_by_a_root_leg() {
             // plane running through a loop nobody is judging, which is the same hole this test
             // refuses one level up.
             if compiled.contains(leg.as_str()) {
-                let proven = leg_proven.get(leg).copied().unwrap_or(0);
+                let proven = leg_proven
+                    .get(&(leg.clone(), col.to_string()))
+                    .copied()
+                    .unwrap_or(0);
                 assert!(
                     proven > 0,
                     "installed plane `{key}` answers to column `{col}` through leg `{leg}`, which \
-                     THIS BUILD COMPILES, and that leg proves ZERO cells over the loop. A plane \
-                     installed and switched onto a leg nobody drove is a loop nobody is judging."
+                     THIS BUILD COMPILES, and that leg proves ZERO `{col}` cells over the loop. A \
+                     plane installed and switched onto a leg nobody drove is a loop nobody is judging."
                 );
                 println!("  {key:<6} {col:<13} -> {leg} [compiled, {proven} cell(s) proven]");
             } else {
@@ -452,6 +451,43 @@ fn every_installed_plane_is_answered_by_a_root_leg() {
         "ROOT-LEG ANSWERS: {} installed plane(s); legs compiled here: {:?}",
         decls.len(),
         compiled
+    );
+}
+
+/// Root-proven cells per `(leg, column)` — the unit the root-leg assertion above names.
+fn proven_per_leg_column(ledger: &serde_json::Value) -> BTreeMap<(String, String), usize> {
+    let mut out: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for cell in ledger["cells"].as_array().expect("`cells` is an array") {
+        let r = &cell["root"];
+        if r["state"].as_str() == Some("proven") {
+            if let (Some(leg), Some(col)) = (r["leg"].as_str(), cell["plane"].as_str()) {
+                *out.entry((leg.to_string(), col.to_string())).or_default() += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The tally is per COLUMN: a leg proving seven `mcp-client` cells and no `mcp-server` cell has a
+/// dead `mcp-server` column, and the per-leg count of seven must not stand in for it.
+#[test]
+fn selftest_a_column_whose_root_proofs_are_all_gone_counts_zero_under_a_leg_that_proves_others() {
+    let ledger = serde_json::json!({
+        "cells": [
+            { "capability": "c1", "plane": "mcp-client", "root": { "state": "proven", "leg": "root-mcp" } },
+            { "capability": "c2", "plane": "mcp-client", "root": { "state": "proven", "leg": "root-mcp" } },
+            { "capability": "c1", "plane": "mcp-server", "root": { "state": "none", "leg": "root-mcp" } }
+        ]
+    });
+    let tally = proven_per_leg_column(&ledger);
+    assert_eq!(
+        tally.get(&("root-mcp".to_string(), "mcp-client".to_string())),
+        Some(&2)
+    );
+    assert_eq!(
+        tally.get(&("root-mcp".to_string(), "mcp-server".to_string())),
+        None,
+        "the server column has no root proof, whatever its leg proves on the client column"
     );
 }
 

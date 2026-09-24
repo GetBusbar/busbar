@@ -7,6 +7,7 @@
 //! sink: the projection is built in core, this module only ships it. Configured from
 //! `export.request-log-file`; absent ⇒ no file sink.
 
+use crate::config::sections::EXPORT_MODULE_REQUEST_LOG_FILE;
 use crate::config::ExportCfg;
 use crate::export::projection::Projection;
 use crate::export::PayloadCache;
@@ -79,24 +80,34 @@ pub(crate) fn configure(cfg: &ExportCfg) {
 /// `busbar_file_logs_dropped_total` + `busbar_admission_denied_total{gate="request-log-file"}`)
 /// rather than accumulating tasks and owned lines without limit.
 pub(crate) fn deliver(cache: &mut PayloadCache<'_>) {
-    let Some(sinks) = SINKS.get() else {
-        return;
-    };
+    if let Some(sinks) = SINKS.get() {
+        deliver_to(sinks, cache);
+    }
+}
+
+/// [`deliver`] over a given sink set. Every sink that is handed its line is an export plugin
+/// reading the unit's facts, and is recorded as one access amendment (item 404).
+fn deliver_to(sinks: &'static [FileSink], cache: &mut PayloadCache<'_>) {
     for sink in sinks {
         // Built to THIS sink's projection (shared with any sibling holding the identical one).
-        append_one(sink, cache.get(sink.projection).to_string());
+        let payload = cache.get(sink.projection);
+        if append_one(sink, payload.to_string()) {
+            let op = cache.facts.ingress_protocol;
+            crate::audit::amend::export_read(EXPORT_MODULE_REQUEST_LOG_FILE, op, &payload);
+        }
     }
 }
 
 /// Append one already-serialized line to ONE sink, off the async path. Split out of [`deliver`] so
-/// the fan-out over named instances stays a plain loop.
-fn append_one(sink: &'static FileSink, line: String) {
+/// the fan-out over named instances stays a plain loop. `true` when the line was admitted — the
+/// sink was handed it — and `false` when it was shed.
+fn append_one(sink: &'static FileSink, line: String) -> bool {
     // Take an append slot WITHOUT waiting; drop this log (counted) rather than block the request
     // path or pile up an unbounded backlog of blocked blocking-pool tasks when the sink is saturated.
     // Same posture — and the same mechanic — as the webhook exporter's shed.
     let Some(permit) = sink.gate.try_enter() else {
         metrics::counter!(crate::metrics::FILE_LOGS_DROPPED_TOTAL).increment(1);
-        return;
+        return false;
     };
     tokio::task::spawn_blocking(move || {
         let _permit = permit; // slot releases on task end via the owned permit's Drop.
@@ -128,6 +139,7 @@ fn append_one(sink: &'static FileSink, line: String) {
             }
         }
     });
+    true
 }
 
 /// Roll `path` over to a numbered archive series (`path.1` is the newest archive, `path.N` the

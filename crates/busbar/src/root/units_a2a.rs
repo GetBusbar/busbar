@@ -532,12 +532,14 @@ pub struct A2aDraft {
     pub legs: Vec<Leg>,
     /// The whole request document's length, which is what this plane prices its input on.
     pub request_bytes: u64,
-    /// What the metering step's locator carried — the size of the answer the plane read.
+    /// The size of the answer the plane read. The metered quantity is this PLUS `request_bytes`
+    /// (OWNER RULING Q30c/Q35: a billed A2A byte is payload relayed both ways).
     pub response_bytes: u64,
     /// How the plane says the unit finished.
     pub finish: FinishClass,
-    /// Whether the answer arrives as a run of events rather than one reply.
-    pub streaming: bool,
+    /// Whether the answer arrives as a run of events rather than one reply. Read at decode, which
+    /// refuses such a unit: nothing after it can price an answer that is still arriving.
+    pub in_events: bool,
     /// What the transport recorded about the arrival.
     pub arrival: ArrivalRecord,
 }
@@ -583,7 +585,7 @@ impl std::fmt::Debug for A2aDraft {
             .field("request_bytes", &self.request_bytes)
             .field("response_bytes", &self.response_bytes)
             .field("finish", &self.finish)
-            .field("streaming", &self.streaming)
+            .field("in_events", &self.in_events)
             .field("arrival", &self.arrival)
             .finish()
     }
@@ -1172,10 +1174,8 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 emission_delta: 0,
                 stale_policy: false,
             },
-            amount: busbar_kernel_audit::Amount {
+            usage: busbar_kernel_audit::Usage {
                 lines: Vec::new(),
-                pre_tier: 0,
-                priced: 0,
                 tier_bp: 0,
                 fee_count,
                 currency: String::new(),
@@ -1217,9 +1217,12 @@ const _: () = assert!(NANOS_PER_CENT as u128 == busbar_kernel_ledger::cost::NANO
 
 /// The audit unit's spelling of a finish class.
 ///
-/// Two crates name the same four endings and neither depends on the other, so the mapping is
-/// written once, here, where both are in scope. Totality is what makes it safe: a fifth ending
-/// would not compile.
+/// The audit crate declares its own four endings rather than re-exporting the contract's. The
+/// crate edge is not what keeps them apart — `busbar-kernel-audit` depends on `busbar-contract` and
+/// already re-exports its `QuantitySource` and `UsageLine` — so this is a choice that crate made,
+/// and the composition root pays for it by mapping between the two in three places: here, the MCP
+/// bindings' `record_finish` and the streaming bindings' `audit_finish`. Totality is what keeps the
+/// three honest: a fifth ending on either side fails to compile at every one of them.
 fn audit_finish(finish: FinishClass) -> busbar_kernel_audit::FinishClass {
     match finish {
         FinishClass::Complete => busbar_kernel_audit::FinishClass::Complete,
@@ -1278,7 +1281,16 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
         // The plane read the bytes; this is its answer. A body carrying a method this plane does
         // not name is a refusal at the step that read it, not a guess at the nearest class.
+        //
+        // An answer that arrives as a run of events is refused here too. Every step after this one
+        // prices the unit off one reply — `response_bytes` is the size of the answer the plane
+        // read, once — and none of them has an arm for an answer still arriving, so a streamed
+        // unit reaching them would be metered and settled as though its first event were its
+        // whole cost. The step that knows the shape is the one that decides it.
         match self.draft.op {
+            Some(_) if self.draft.in_events => {
+                Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
+            }
             Some(op) => Decision::proceed(token, op),
             None => Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
         }
@@ -1548,7 +1560,9 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         _provisional: &Outcome,
         _destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> Decision<Meter> {
-        let retained = RetainedLocatorValues::new(vec![bytes_located(&self.draft)]);
+        let located = bytes_located(&self.draft);
+        let relayed = located.quantity;
+        let retained = RetainedLocatorValues::new(vec![located]);
         // The kernel's own floor for this unit is what it moved on the way in. It is the tripwire
         // beside the located figure, never the charge.
         let kernel = KernelCounts::new(vec![busbar_kernel_ledger::usage::KernelLine {
@@ -1576,7 +1590,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::MeterDisputed)),
             Ok(metered) => {
                 let mut progress = read_through_poison(&self.progress);
-                progress.metered = Some(self.draft.response_bytes);
+                progress.metered = Some(relayed);
                 progress.disputed = metered.disputed();
                 Decision::proceed(token, metered.usage)
             }
@@ -1707,18 +1721,20 @@ fn fee_evidence(
 
 /// This plane's one metered line: how many bytes, and which side of the exchange they came off.
 ///
-/// One class, one line, and the quantity is one the plane already had in front of it: the size of
-/// the document it read. There is no pointer to walk, so the locator carries the value.
+/// One class, one line. THE QUANTITY IS THE PAYLOAD RELAYED BOTH WAYS — the request document plus
+/// the answer document: a billed A2A byte is payload bytes relayed BOTH ways per hop (request +
+/// response), class `bytes`, priced by `agents.rate_card`; no card → 0, the same count the relay
+/// ledgers in `busbar-a2a`.
+/// It used to be the answer alone, so the request half of every exchange was never metered. There is
+/// no pointer to walk, so the locator carries the value. Saturating: a count is never a refusal.
 ///
-/// The DIRECTION is the side that quantity was measured on, and here that is the response — the
-/// answer document, not the request. It is not a label: a direction is what a class cap, a rate-card
-/// entry and a usage projection all partition on, so a line metered against one side while the
-/// deployment configured the other is a line silently exempt from its own limit. Written out here,
-/// beside the field it describes, so the two cannot be changed apart.
+/// The DIRECTION is the one the plane declares for its one class, the response: the count is known
+/// once the agent has answered. A direction is what a class cap, a rate-card entry and a usage
+/// projection all partition on, so it is the declared one and no other.
 fn bytes_located(draft: &A2aDraft) -> LocatedValue {
     LocatedValue {
         class: CLASS_BYTES,
-        quantity: draft.response_bytes,
+        quantity: draft.request_bytes.saturating_add(draft.response_bytes),
         source: busbar_contract::caps::QuantitySource::Locator {
             direction: busbar_contract::ids::ClassDirection::Response,
             // The quantity was not at a pointer: it is the size of the document the plane just

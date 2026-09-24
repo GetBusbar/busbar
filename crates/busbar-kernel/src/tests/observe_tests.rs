@@ -264,3 +264,36 @@ fn hook_envelope_metrics_are_carried_but_not_folded() {
         &[serde_json::json!({"code": "BUSBAR-65535"})],
     );
 }
+
+/// THE HOOK FREEZE IS A METRICS FREEZE; A HOOK'S DIAGNOSTIC STILL REACHES THE LOG (item 556).
+///
+/// The early return for the hook kind used to skip `fold_diagnostics` as well as `fold_metrics`,
+/// while every word of its justification was about metrics — a second path with a different
+/// freshness and exposition. Diagnostics have no second path (`hooks::scrape` knows none), so the
+/// return silenced a hook's catalogue banner outright. A hook's registered diagnostic must now be
+/// emitted exactly as any other kind's is, and its metrics must still not be folded.
+#[test]
+fn a_hooks_diagnostic_is_emitted_while_its_metrics_stay_frozen() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let d = crate::diagnostics::FILE_LOG_APPEND_FAILED;
+    let banner = format!("BUSBAR-{}", d.code);
+    let cap = WarnCapture::capturing_debug();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        KernelPluginObserver.observe(
+            "some-hook",
+            busbar_plugin::cold::kind::HOOK,
+            &[serde_json::json!({"name": "x_total", "type": "counter", "value": 1})],
+            &[serde_json::json!({
+                "code": banner,
+                "message": "hook-raised-condition-556",
+            })],
+        );
+    });
+    assert!(
+        cap.contains("hook-raised-condition-556"),
+        "a hook's registered diagnostic must reach the operator's log; captured: {:?}",
+        cap.messages()
+    );
+}

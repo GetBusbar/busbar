@@ -146,27 +146,6 @@ pub fn build(cfg: &MeterPolicyConfig) -> MeterPolicyHandle {
     })
 }
 
-/// Whether a deployment that configured pools got expansions for all of them.
-///
-/// The boot check for the hazard above. A configured pool with no expansion is the shape that turns
-/// the set-membership test into an equality test for that pool, and the symptom is a disputed
-/// posting rather than anything that names the pool, so it is worth catching where the pool is
-/// still in scope.
-#[must_use]
-pub fn pools_without_expansion(cfg: &MeterPolicyConfig, policy: &MeterPolicyHandle) -> Vec<String> {
-    cfg.pools
-        .iter()
-        .filter(|p| {
-            policy
-                .policy()
-                .lane_expansions
-                .get(&p.pool)
-                .is_none_or(BTreeSet::is_empty)
-        })
-        .map(|p| p.pool.clone())
-        .collect()
-}
-
 /// The egress/ingress client settings the http transport is built from, taken off the deployment's
 /// resolved limits rather than from the transport crate's `Default`.
 ///

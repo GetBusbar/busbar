@@ -43,3 +43,7 @@ fn every_teller_step_is_importable_through_the_drain_facade() {
     // The `use` block above names every step's facade path; if a step were missing from the facade
     // the crate would not compile and this test could not exist. The compile is the assertion.
 }
+
+// THE FACADE'S AUTHENTICATE PROSE (item 289) is held to the binary's dependency by
+// `busbar`'s `root::auth_bindings::tests::the_facade_names_the_relocated_authenticate_step_it_does_not_point_at`:
+// the fact it depends on is the binary's manifest, which this crate has no edge to read.

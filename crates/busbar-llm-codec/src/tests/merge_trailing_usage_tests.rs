@@ -122,6 +122,8 @@ fn trailing_detail_merge_is_exhaustive_over_every_bucket() {
             unaccounted: 32,
             identity: "gemini.usageMetadata",
         }),
+        traffic_type: Some("ON_DEMAND".to_string()),
+        create_time: Some("2026-09-07T16:54:20.179017Z".to_string()),
     };
     let mut acc = usage(0, 0, None, None);
     let mut trailing = usage(50, 20, None, None);

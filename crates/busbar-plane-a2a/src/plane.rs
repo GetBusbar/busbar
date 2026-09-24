@@ -85,20 +85,37 @@ impl A2aPlane {
         }
     }
 
-    /// A leg reaching the configured agent, or an unreachable one when none is configured.
+    /// A leg reaching the unit's agent, or an unreachable one when it has none.
     ///
-    /// A plane with nothing configured answers honestly rather than panicking or inventing a host:
-    /// the empty host is refused by the trust unit against the allow-list, which is the right place
-    /// for that refusal to happen.
-    fn upstream_leg(&self) -> Leg {
+    /// A plane with no agent for the unit answers honestly rather than panicking or inventing a
+    /// host: the empty host is refused by the trust unit against the allow-list, which is the right
+    /// place for that refusal to happen.
+    fn upstream_leg(&self, u: &Unit<'_>) -> Leg {
         Leg {
-            destination: self.upstream_destination(),
+            destination: self.upstream_destination(u),
         }
     }
 
-    /// Where a hop to the configured agent goes.
-    fn upstream_destination(&self) -> DestinationFacts {
-        match self.agents().first() {
+    /// The agent one unit is for.
+    ///
+    /// The one the request NAMED (`/a2a/agents/{agent_id}`, read at decode), and only a configured
+    /// one. A request that names none is for the only agent there is, and for no agent at all when
+    /// several are configured: choosing among them is the caller's catalogue's answer, which this
+    /// plane does not hold. It used to take the FIRST configured agent whatever the caller named, so
+    /// a call to the second was dialled, scoped and laned as the first.
+    fn agent_for(&self, u: &Unit<'_>) -> Option<&'static crate::Agent> {
+        match u.draft_facts().get(f::FACT_AGENT_ID) {
+            Some(FactValue::Str(name)) => self.agents().iter().find(|a| a.id == name),
+            _ => match self.agents() {
+                [only] => Some(only),
+                _ => None,
+            },
+        }
+    }
+
+    /// Where a hop to the unit's agent goes.
+    fn upstream_destination(&self, u: &Unit<'_>) -> DestinationFacts {
+        match self.agent_for(u) {
             Some(agent) => DestinationFacts::Upstream {
                 transport: agent.transport,
                 address: busbar_contract::UpstreamAddress::socket(agent.host),
@@ -457,6 +474,16 @@ fn task_id_of(target: &str) -> Option<&str> {
     }
 }
 
+/// The agent a target names, where it names one: the one segment below the catalogue.
+fn agent_id_of(target: &str) -> Option<&str> {
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    match segments.as_slice() {
+        ["a2a", "agents", id] => Some(id),
+        _ => None,
+    }
+}
+
 impl Plane for A2aPlane {
     fn decode_ingress<'u>(
         &self,
@@ -489,7 +516,13 @@ impl Plane for A2aPlane {
         let envelope = jsonrpc::read(body)?;
         let method = envelope.method_str(body).ok_or(Decode::Malformed)?;
         let row = ops::row_for(method).ok_or(Decode::UnsupportedOperation)?;
-        let facts = request_facts(body, &envelope);
+        let mut facts = request_facts(body, &envelope);
+        // Which agent the caller addressed is a fact about the target, read here once so every later
+        // step dials, scopes and lanes the unit against THAT agent.
+        if let Some(agent) = ctx.transport().fact(FACT_PATH).and_then(agent_id_of) {
+            let agent = ctx.arena().alloc_str(agent).map_err(|_| Decode::Oversize)?;
+            let _ = facts.set(f::FACT_AGENT_ID, FactValue::Str(agent));
+        }
         let correlation_out = envelope
             .id_bytes(body)
             .and_then(|raw| f::correlation_for(raw, ctx.arena()));
@@ -793,16 +826,16 @@ impl Plane for A2aPlane {
                 op: rec::OP_PUT,
             },
             // Everything else is a hop to the agent.
-            _ => self.upstream_destination(),
+            _ => self.upstream_destination(u),
         }
     }
 
-    fn approve<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
+    fn approve<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
         let mut facts = ScopeFacts::default();
         // The resource is the agent, under the kind the codec already names it by. The plane says
         // WHAT is being asked for; which scope that requires, and whether this principal holds it,
         // is the scope unit's answer and never this plane's.
-        if let Some(agent) = self.agents().first() {
+        if let Some(agent) = self.agent_for(u) {
             let _ = facts.resources.push(ResourceLocator {
                 kind: "agent",
                 name: agent.id,
@@ -837,17 +870,17 @@ impl Plane for A2aPlane {
                 // Open the task, record that it opened, then hop.
                 leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
                 leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
-                leg(self.upstream_leg());
+                leg(self.upstream_leg(u));
             }
             ops::OP_TASK_GET | ops::OP_TASK_SUBSCRIBE => {
                 // Read the row first: it is what says whether this caller may see the task at all,
                 // and what the agent's own name for it is.
                 leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
-                leg(self.upstream_leg());
+                leg(self.upstream_leg(u));
             }
             ops::OP_TASK_CANCEL => {
                 leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
-                leg(self.upstream_leg());
+                leg(self.upstream_leg(u));
                 leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
                 leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
             }
@@ -855,7 +888,7 @@ impl Plane for A2aPlane {
             ops::OP_PUSH_CONFIG_CREATE => {
                 leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_PUT));
                 leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_PUT));
-                leg(self.upstream_leg());
+                leg(self.upstream_leg(u));
             }
             ops::OP_PUSH_CONFIG_GET => leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_GET)),
             ops::OP_PUSH_CONFIG_LIST => {
@@ -864,7 +897,7 @@ impl Plane for A2aPlane {
             ops::OP_PUSH_CONFIG_DELETE => {
                 leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_DELETE));
                 leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_DELETE));
-                leg(self.upstream_leg());
+                leg(self.upstream_leg(u));
             }
             ops::OP_AGENT_CARD => leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_GET)),
             ops::OP_PUSH_EVENT => {

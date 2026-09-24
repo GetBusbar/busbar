@@ -294,3 +294,166 @@ pub fn item_body<'a>(lines: &'a [Line], signature: &str) -> Option<Vec<&'a Line>
     // scans it, rather than silently reporting the item absent.
     Some(body)
 }
+
+// ---------------------------------------------------------------------------
+// WHAT COUNTS AS A TEST THAT WAS WATCHED — shared by every gate that accepts a named test as
+// evidence (`capability_equality.rs`'s proven cells, `field_coverage.rs`'s carried fields).
+//
+// A named function is evidence only when it is (1) TEST CODE, (2) a TEST the harness runs, and
+// (3) a body that ASSERTS something, directly or one hop into a same-file helper. A gate that
+// checked only that `fn NAME(` appears somewhere accepts a production helper, a `fn` quoted in a
+// doc comment and an empty body alike; one copy of the rule is what keeps two gates from holding
+// two different bars.
+// ---------------------------------------------------------------------------
+
+/// What an assertion looks like. `expect`/`unwrap` are deliberately NOT here: they say a value was
+/// the shape the test assumed, which is a precondition, not the thing under test.
+pub const ASSERTION_TOKENS: &[&str] = &[
+    "assert!",
+    "assert_eq!",
+    "assert_ne!",
+    "assert_matches!",
+    "debug_assert!",
+    "debug_assert_eq!",
+    "debug_assert_ne!",
+    "expect_err(",
+    "unwrap_err(",
+];
+
+/// Whether an attribute line marks the item below it as a test the harness runs. `#[test]`,
+/// `#[tokio::test]`, `#[tokio::test(flavor = "…")]` and `#[rstest]` all satisfy it.
+pub fn is_test_attribute(code: &str) -> bool {
+    let t = code.trim();
+    t.starts_with("#[") && (t.contains("test]") || t.contains("test("))
+}
+
+/// Whether a body — a slice of classified lines — asserts anything itself.
+pub fn asserts_directly(body: &[&Line]) -> bool {
+    body.iter()
+        .any(|l| ASSERTION_TOKENS.iter().any(|tok| l.code.contains(tok)))
+}
+
+/// The bare identifiers a body CALLS, so one hop into a same-file helper can be followed. Crude on
+/// purpose: this is used only to widen what counts as asserting, never to narrow it.
+pub fn called_idents(body: &[&Line]) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for line in body {
+        let chars: Vec<char> = line.code.chars().collect();
+        let mut i = 0usize;
+        while i < chars.len() {
+            if chars[i] == '(' {
+                let mut j = i;
+                while j > 0 && (chars[j - 1].is_ascii_alphanumeric() || chars[j - 1] == '_') {
+                    j -= 1;
+                }
+                if j < i && !chars[j].is_ascii_digit() {
+                    out.insert(chars[j..i].iter().collect::<String>());
+                }
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Whether the item whose signature is on line `at` carries a test attribute in the attribute block
+/// directly above it.
+pub fn has_test_attribute(lines: &[Line], at: usize) -> bool {
+    let mut i = at;
+    while i > 0 {
+        i -= 1;
+        let code = lines[i].code.trim();
+        if code.is_empty() {
+            continue;
+        }
+        if code.starts_with("#[") || code.starts_with("#!") {
+            if is_test_attribute(code) {
+                return true;
+            }
+            continue;
+        }
+        // Anything else is the previous item; the attribute block is over.
+        return false;
+    }
+    false
+}
+
+/// Why a named function is not evidence, in the order the three checks run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotEvidence {
+    /// No `fn NAME(` in the code (comments stripped) of any file searched.
+    Absent,
+    /// Only in production code: outside every `#[cfg(test)]` module and not in a test file.
+    Production,
+    /// Test code, but no test attribute: a helper the harness never runs.
+    NotATest,
+    /// A test whose body asserts nothing, directly or one hop down.
+    AssertsNothing,
+}
+
+/// THE EVIDENCE CHECK over a set of classified files: `Ok` when at least one `fn NAME(` is a test
+/// that asserts; otherwise the furthest any occurrence got, so the failure names the real gap.
+pub fn test_fn_is_evidence(files: &[Vec<Line>], func: &str) -> Result<(), NotEvidence> {
+    let sig = format!("fn {func}(");
+    let mut best = NotEvidence::Absent;
+    let rank = |n: NotEvidence| match n {
+        NotEvidence::Absent => 0,
+        NotEvidence::Production => 1,
+        NotEvidence::NotATest => 2,
+        NotEvidence::AssertsNothing => 3,
+    };
+    for lines in files {
+        for (at, line) in lines.iter().enumerate() {
+            // The name must be the whole identifier: `fn NAME(` inside `fn XNAME(` is not it.
+            let Some(col) = line.code.find(&sig) else {
+                continue;
+            };
+            if line.code[..col]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let verdict = if !line.intest {
+                NotEvidence::Production
+            } else if !has_test_attribute(lines, at) {
+                NotEvidence::NotATest
+            } else if !body_asserts_at(lines, at, &sig) {
+                NotEvidence::AssertsNothing
+            } else {
+                return Ok(());
+            };
+            if rank(verdict) > rank(best) {
+                best = verdict;
+            }
+        }
+    }
+    Err(best)
+}
+
+/// Whether the occurrence of `signature` on line `at` asserts — directly, or through helpers in
+/// the same file, followed to any depth. Read from `at` so the body is THIS occurrence's, not the
+/// file's first. Any depth rather than one hop because a matrix test commonly delegates twice
+/// (`roundtrip_x()` → `assert_request_roundtrip()` → `assert_divergences()`); the helpers must still
+/// live in the same file, so a name that merely matches something elsewhere cannot vouch for it.
+pub fn body_asserts_at(lines: &[Line], at: usize, signature: &str) -> bool {
+    let Some(body) = item_body(&lines[at..], signature) else {
+        return false;
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let mut queue = vec![body];
+    while let Some(body) = queue.pop() {
+        if asserts_directly(&body) {
+            return true;
+        }
+        for callee in called_idents(&body) {
+            if seen.insert(callee.clone()) {
+                if let Some(helper) = item_body(lines, &format!("fn {callee}(")) {
+                    queue.push(helper);
+                }
+            }
+        }
+    }
+    false
+}

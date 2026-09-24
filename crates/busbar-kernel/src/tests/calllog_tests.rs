@@ -564,13 +564,56 @@ fn an_undecodable_record_is_skipped_and_counted_not_fatal_to_the_rest() {
         restored.chain_breaks
     );
 
-    // The chain RESUMES from the highest DECODABLE tail (seq 2), so the next write continues at 3 —
-    // the poisoned tail did not advance the position, and the working set was not lost.
+    // The survivors are seeded (seq 1, 2), so the working set was not lost. But the store still
+    // HOLDS seq 3 — the poisoned row — so the position the survivors offer is BELOW the real tail.
     assert_eq!(
         log2.next_seq(P),
         3,
-        "the chain resumes after the last decodable record"
+        "the survivors seed the position after the last decodable record"
     );
+    // Item 554: an append here would mint seq 3 a second time into a store that still holds a seq 3
+    // — the forked log. With the tail unreadable the position is unknown, so the append is REFUSED
+    // (and reaches the emitter as a loud write failure) instead of forking.
+    let refused = log2
+        .record(P, dispatched(1003, "fs_read", "sha256:aaa", 8))
+        .expect_err("an append below a tail nobody can read must be refused, never minted");
+    assert!(
+        refused.to_string().contains("refused rather than forking"),
+        "the refusal names why: {refused}"
+    );
+    assert_eq!(
+        backing.calls.lock().unwrap().len(),
+        3,
+        "nothing was written over or beside the stored tail"
+    );
+}
+
+/// Item 554, the WORSE sub-case: EVERY stored row of a principal is undecodable. The survivors are
+/// none, so a seed from them is an empty chain at seq 1 — under a principal the store holds rows
+/// for. The first append would collide with the stored seq 1. It is refused instead, and a principal
+/// whose tail DID decode is untouched by the refusal.
+#[test]
+fn a_principal_whose_every_row_is_undecodable_is_refused_not_reopened_at_seq_one() {
+    let backing = Arc::new(DurableCallStore::new());
+    let store: Arc<dyn Store> = backing.clone();
+    write_then_drop(&store);
+    for seq in 1..=3 {
+        backing.poison_row(P, seq);
+    }
+    let log2 = CallTestHarness::over(store.clone());
+    let restored = log2
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
+        .expect("undecodable rows are counted, not fatal");
+    assert_eq!(restored.unreadable, 3);
+    let refused = log2
+        .record(P, dispatched(1003, "fs_read", "sha256:aaa", 8))
+        .expect_err("seq 1 is already stored; reopening the chain there forks it");
+    assert!(refused.to_string().contains("refused rather than forking"));
+    // Another principal, with nothing unreadable, records as ever.
+    let other = log2
+        .record("key_beta", dispatched(1004, "fs_read", "sha256:aaa", 8))
+        .expect("a principal with a readable tail is not refused");
+    assert_eq!(other.seq, 1);
 }
 
 /// THE SKIP MUST BE LOUD, not merely counted. The regression this pins: the per-record tolerance
@@ -1441,3 +1484,35 @@ fn an_evicted_principal_whose_readback_fails_is_surfaced_not_forked() {
 // and make every healthy chain read as tampered) lives with the ONE `Chain` impl it protects, in
 // `audit::tests::chain_tests` — there is a single `Default` for every stream, so the generic guard
 // covers this one too. It was a typed-`CallChain`-only duplicate here.
+
+/// Item 555: the HOSTLESS emitter (the MCP client-leg path) reports a lost per-call record exactly
+/// as the production emitter does — at ERROR, with the coded diagnostic — not at debug where an
+/// operator at any normal log level sees nothing while the evidence for every client leg is lost.
+#[test]
+fn the_hostless_emitter_raises_a_lost_record_at_error_like_emit() {
+    use super::super::calllog::{emit_hostless, CALLS};
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    const LOSING: &str = "key_hostless_losing_probe";
+    crate::calllog::ensure_global_call_stream_registered();
+    // A principal the global log cannot append for: its stored tail did not decode at restore.
+    CALLS.mark_unresumable_for_test(LOSING);
+    let cap = WarnCapture::default();
+    {
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let _g = tracing::subscriber::set_default(subscriber);
+        // A good write first, so the outage below is a TRANSITION into failing (the latch the two
+        // emitters share re-arms on success), then the write that is lost.
+        emit_hostless(
+            "key_hostless_good_probe",
+            dispatched(4000, "fs_read", "sha256:hhh", 1),
+        );
+        emit_hostless(LOSING, dispatched(4001, "fs_read", "sha256:hhh", 1));
+    }
+    assert!(
+        cap.contains("BUSBAR-7093"),
+        "a lost client-leg record must raise PLANE_CALLLOG_WRITE_FAILED (BUSBAR-7093) at ERROR; \
+         captured: {:?}",
+        cap.messages()
+    );
+}

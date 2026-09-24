@@ -15,7 +15,8 @@
 //!   BEFORE the slot is tested, so a barge-in reaches the compare-and-set instead of bouncing off
 //!   the slot it is trying to take over.
 //! - **One-shots do not take the slot.** They run under a small fixed concurrency, so a burst of
-//!   them cannot starve the open conversation or the node.
+//!   them cannot starve the open conversation or the node. A one-shot's place is a permit that
+//!   gives itself back when it drops, however the unit ends; one past the concurrency is refused.
 //! - **A body arrives before its unit opens.** Where a declared pointer sits at the end of a body,
 //!   the body is spooled — against its own budget, in real bytes — and the unit opens when the
 //!   deepest pointer has resolved. No pointer is ever read off a truncated document.
@@ -69,14 +70,15 @@ pub enum Shape {
 }
 
 /// What the pump decided to do about a frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Dispatch {
+#[derive(Debug, PartialEq, Eq)]
+pub enum Dispatch<'s> {
     /// Nothing yet: keep reading.
     Wait,
     /// Open a unit that will hold the direction until it closes.
     OpenUnit,
-    /// Open a unit that takes no slot.
-    OpenOneShot,
+    /// Open a unit that takes no slot. It carries the unit's place under the one-shot concurrency,
+    /// which goes back when the permit drops.
+    OpenOneShot(OneShotPermit<'s>),
     /// Open a handshake unit. No money moves in one, so it neither takes the slot nor counts
     /// against the one-shot concurrency.
     OpenHandshake,
@@ -102,6 +104,31 @@ pub enum Dispatch {
         reason: ReasonCode,
     },
 }
+
+/// A one-shot unit's place under the concurrency, given back when it drops (item 557).
+///
+/// It used to be a bare `bool` from `start_one_shot` with a release no production code called: once
+/// K one-shots had ever opened, every later one answered `Wait` on a frame with nothing left to read
+/// — neither served, refused, dropped nor counted. Holding the place IS holding this.
+#[derive(Debug)]
+#[must_use = "the one-shot place goes back the moment this drops"]
+pub struct OneShotPermit<'s>(&'s AtomicUsize);
+
+impl Drop for OneShotPermit<'_> {
+    fn drop(&mut self) {
+        let _ = self
+            .0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+    }
+}
+
+impl PartialEq for OneShotPermit<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0, other.0)
+    }
+}
+
+impl Eq for OneShotPermit<'_> {}
 
 /// The scheduler: the open slot, the one-shot concurrency, and the interrupt.
 #[derive(Debug)]
@@ -129,42 +156,19 @@ impl Scheduler {
         }
     }
 
-    /// A frame that was something ends the run.
-    fn made_progress(session: Option<&SessionSlot>) {
-        if let Some(session) = session {
-            session.made_progress();
-        }
-    }
-
     /// How many one-shots are running.
     pub fn one_shots(&self) -> usize {
         self.one_shots.load(Ordering::Acquire)
     }
 
-    /// Take a one-shot permit, if there is one.
-    pub fn start_one_shot(&self) -> bool {
-        let mut current = self.one_shots.load(Ordering::Acquire);
-        loop {
-            if current >= self.k {
-                return false;
-            }
-            match self.one_shots.compare_exchange_weak(
-                current,
-                current + 1,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(seen) => current = seen,
-            }
-        }
-    }
-
-    /// Give a one-shot permit back.
-    pub fn finish_one_shot(&self) {
-        let _ = self
-            .one_shots
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+    /// Take a one-shot place, if there is one. It goes back when the permit drops.
+    pub fn start_one_shot(&self) -> Option<OneShotPermit<'_>> {
+        self.one_shots
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < self.k).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| OneShotPermit(&self.one_shots))
     }
 
     /// Decide what happens to one frame.
@@ -178,10 +182,10 @@ impl Scheduler {
         stream: StreamId,
         direction: Direction,
         shape: Shape,
-    ) -> Dispatch {
+    ) -> Dispatch<'_> {
         // A frame that is something ends whatever run of "not yet" came before it.
-        if shape != Shape::NeedMore {
-            Scheduler::made_progress(session);
+        if let Some(session) = session.filter(|_| shape != Shape::NeedMore) {
+            session.made_progress();
         }
         match shape {
             // The handshake framing ceiling, enforced where it can be: a peer that never finishes a
@@ -194,13 +198,15 @@ impl Scheduler {
             Shape::NeedMore => Dispatch::Wait,
             Shape::Discard => Dispatch::Drop,
             Shape::Handshake => Dispatch::OpenHandshake,
-            Shape::OneShot => {
-                if self.start_one_shot() {
-                    Dispatch::OpenOneShot
-                } else {
-                    Dispatch::Wait
-                }
-            }
+            // A one-shot frame is a whole unit: there is nothing more to read, so one past the
+            // concurrency is REFUSED (rendered, the session stays up), never told to wait.
+            Shape::OneShot => match self.start_one_shot() {
+                Some(permit) => Dispatch::OpenOneShot(permit),
+                None => Dispatch::Refuse {
+                    step: StepName::Decode,
+                    reason: ReasonCode::InFlightCap,
+                },
+            },
             Shape::Open { interrupt } => {
                 // The interrupt is evaluated BEFORE the slot check, on purpose: a superseding open
                 // on an occupied direction has to reach the compare-and-set.

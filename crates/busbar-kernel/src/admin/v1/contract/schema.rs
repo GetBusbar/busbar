@@ -490,6 +490,7 @@ fn _error_taxonomy_is_referenced(e: &AdminError) {
         | AdminError::Conflict(_)
         | AdminError::RateLimited
         | AdminError::Internal
-        | AdminError::Unavailable(_) => {}
+        | AdminError::Unavailable(_)
+        | AdminError::UnpricedClass { .. } => {}
     }
 }

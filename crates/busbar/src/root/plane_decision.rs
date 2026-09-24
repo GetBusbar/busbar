@@ -178,8 +178,16 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // buys is that a SECOND claimant of `decisions` is now a boot refusal by construction, which
         // is the whole reason the guard exists. Voice's `streams` claim is the precedent.
         owned_config_sections: &[CONFIG_SECTION],
+        // The class the plane crate declares (`busbar_plane_decision::meta`), by its own symbol.
+        billable_classes: &[busbar_kernel::plane::registry::BillableClass {
+            class: busbar_plane_decision::meta::CLASS_DECISION.as_str(),
+            family: "decision",
+        }],
         // The providers/models/pools merge is the LLM plane's seam; a decision provider is resolved
         // from this plane's own section, not from the `providers:` catalog merge.
+        // No fee unit: nothing admits a decision request under this plane's key yet, so any
+        // `decisions.fees` figure would charge nothing — refused at boot.
+        fee_units: &[],
         resolve_provider: None,
     };
 
@@ -248,6 +256,33 @@ impl busbar_kernel::plane::config::PlaneCfg for DecisionsCfg {
     /// `models` map.
     fn validate_registry(&self) -> Result<(), String> {
         Ok(())
+    }
+
+    /// EVERY `decisions.models.<m>.provider` REFERENCE, fully qualified — the plane-agnostic seam
+    /// `resolve` cross-checks against `providers:` (existence) and, when it exists, against
+    /// [`Self::known_dialects`] (P2-243/P2-decvalidate: neither refusal existed before this — a
+    /// `decisions.models.<m>.provider` naming an undefined provider booted, and so did one whose
+    /// provider resolved to a dialect this plane does not speak).
+    fn model_provider_refs(&self) -> Vec<(String, String)> {
+        self.0
+            .models
+            .iter()
+            .map(|(name, model)| {
+                (
+                    format!("decisions.models.{name}.provider"),
+                    model.provider.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// jev, and ONLY jev — BUSBAR-1.6.0.md #51 (OWNER-LOCKED 2026-09-20): "the decisions plane
+    /// (only jev) handed `anthropic` fails." jev is a direct HTTP+JSON passthrough with no
+    /// translating IR (see the module doc's `wire_format_names`/`has_superset_ir` note), so unlike
+    /// the LLM plane — which interprets whatever dialect its provider resolves to — this plane
+    /// interprets exactly one and fails closed on every other.
+    fn known_dialects(&self) -> Option<&'static [&'static str]> {
+        Some(&[busbar_plane_decision::config::JEV_PROTOCOL])
     }
 
     /// True when the operator wrote CONTENT — anything other than the plane's own empty section.

@@ -198,6 +198,10 @@ pub struct Totals {
     pub open_dispute_count: u64,
     /// The age of the oldest open dispute, in seconds.
     pub oldest_dispute_age_secs: u64,
+    /// How many billable requests have settled on this balance: one flat fee each. A count, not a
+    /// figure — the reconciliation's count half reads it against the previous release's billable
+    /// requests for the same row.
+    pub fee_count: u64,
 }
 
 impl Totals {

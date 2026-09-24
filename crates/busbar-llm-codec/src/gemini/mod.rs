@@ -282,6 +282,12 @@ const FIELD_CACHED_CONTENT_TOKEN_COUNT: &str = "cachedContentTokenCount";
 /// this is NOT a slice of `promptTokenCount` but a FOURTH ADDITIVE TERM beside it, charged at the
 /// input rate and billed as such since 1.6.0 — see [`GEMINI_USAGE_ADDITIVE_TERMS`].
 const FIELD_TOOL_USE_PROMPT_TOKEN_COUNT: &str = "toolUsePromptTokenCount";
+/// JSON key for the billing-lane marker inside `usageMetadata` (`ON_DEMAND` / `PROVISIONED`).
+/// INFORMATIONAL, not billed — see [`crate::ir::types::IrUsageDetail::traffic_type`]. Undeclared by
+/// the pinned generativelanguage discovery document (it describes the Gemini API surface; this is
+/// the Vertex one) — carried in the IR per OWNER RULING Q1, docs/design/1.6.0-QUESTIONS.md Q36,
+/// rather than left as a silent drop.
+const FIELD_TRAFFIC_TYPE: &str = "trafficType";
 
 /// THE MEASURED GEMINI USAGE IDENTITY — the four counters inside `usageMetadata` that are ADDITIVE
 /// terms of `totalTokenCount`:
@@ -409,6 +415,21 @@ fn gemini_usage_identity_note(
 const FIELD_RESPONSE_ID: &str = "responseId";
 /// JSON key for the serving model name emitted at the top level.
 const FIELD_MODEL_VERSION: &str = "modelVersion";
+/// JSON key for the RFC3339 response-creation timestamp Vertex stamps at the top level of every
+/// `GenerateContentResponse`. Undeclared by the pinned generativelanguage discovery document for
+/// the same reason [`FIELD_TRAFFIC_TYPE`] is (Vertex-only surface) — carried in the IR per OWNER
+/// RULING Q1, docs/design/1.6.0-QUESTIONS.md Q36. See [`crate::ir::types::IrResponse::create_time`].
+const FIELD_CREATE_TIME: &str = "createTime";
+
+/// Read Gemini/Vertex's top-level `createTime` off a response body, verbatim (no reformatting — a
+/// foreign timestamp parser could reject a Vertex-specific precision/zone quirk this codec has no
+/// need to understand). `None` when the body carries no such field (every non-Vertex Gemini
+/// response, and every non-Gemini protocol).
+fn read_gemini_create_time(body: &serde_json::Value) -> Option<String> {
+    body.get(FIELD_CREATE_TIME)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
 
 // ── gRPC / google.rpc.Code status name tokens ────────────────────────────────
 /// google.rpc.Code name for a malformed/bad-argument request.
@@ -961,6 +982,13 @@ fn read_gemini_grounding_citations(
 
     // `{web: {uri, title}}` and `{retrievedContext: {uri, title}}` are the two documented chunk
     // members and carry the same two fields; read whichever is present rather than name only `web`.
+    // A `web` chunk (Vertex, not `retrievedContext`) can ALSO carry `domain` — the bare hostname of
+    // the source alongside its full `uri`/`title`. Undeclared by the pinned generativelanguage
+    // discovery document (Vertex-only surface). It has no neutral IR field of its own (adding one to
+    // `IrCitation` is a required field touching every dialect's own citation-construction/test
+    // sites); instead the ORIGINAL chunk object is stashed in `raw` at each push site below and
+    // `write_gemini_citation` re-derives `domain` from it — carried per OWNER RULING Q1,
+    // docs/design/1.6.0-QUESTIONS.md Q36, rather than dropped.
     let chunk_source = |chunk: &serde_json::Value| -> (Option<String>, Option<String>) {
         let inner = chunk
             .get("web")
@@ -1035,7 +1063,13 @@ fn read_gemini_grounding_citations(
                 start_index: start,
                 end_index: end,
                 encrypted_index: None,
-                raw: None,
+                // Stash the ORIGINAL chunk (not just its `web`/`retrievedContext` inner object) so
+                // `write_gemini_citation` can re-derive `domain` from it — see `chunk_source`'s doc
+                // comment above for why there is no dedicated `IrCitation` field for it. This does
+                // NOT engage `write_gemini_citation`'s byte-exact short-circuit: that only fires on
+                // a `raw` carrying `uri`/`startIndex`/`endIndex` at its OWN top level, which a
+                // `{web: {...}}` / `{retrievedContext: {...}}` chunk never does.
+                raw: Some(chunk.clone()),
             });
         }
     }
@@ -1055,7 +1089,7 @@ fn read_gemini_grounding_citations(
                 start_index: None,
                 end_index: None,
                 encrypted_index: None,
-                raw: None,
+                raw: Some(chunk.clone()),
             });
         }
     }
@@ -1204,6 +1238,26 @@ fn write_gemini_citation(
     }
     if let Some(t) = &c.title {
         obj.insert("title".to_string(), serde_json::json!(t));
+    }
+    // `domain` has no home in Gemini's `citationSources[]` shape (only a `groundingChunks[].web`
+    // object carries one, and this writer always re-emits INTO `citationMetadata.citationSources`
+    // regardless of which slot the source came from — see this function's caller), and `IrCitation`
+    // has no dedicated field for it (see `chunk_source`'s doc comment in
+    // `read_gemini_grounding_citations`) — a grounding-origin citation instead stashes the ORIGINAL
+    // `{web: {...}}` / `{retrievedContext: {...}}` chunk in `raw` (this function's short-circuit
+    // above does not fire on it: that chunk carries no top-level `uri`/`startIndex`/`endIndex`).
+    // Re-derive `domain` from it here and re-emit as an additional sibling key, so a
+    // grounding-sourced domain still SURVIVES the hop rather than being silently dropped (OWNER
+    // RULING Q1, docs/design/1.6.0-QUESTIONS.md Q36); only present when the source carried one, so
+    // an ordinary (non-grounding) citation stays byte-identical.
+    if let Some(d) = c
+        .raw
+        .as_ref()
+        .and_then(|r| r.get("web").or_else(|| r.get("retrievedContext")))
+        .and_then(|w| w.get("domain"))
+        .and_then(|d| d.as_str())
+    {
+        obj.insert("domain".to_string(), serde_json::json!(d));
     }
     serde_json::Value::Object(obj)
 }
@@ -1757,6 +1811,17 @@ fn gemini_billed_usage(data: &serde_json::Value) -> Result<crate::ir::IrUsage, I
             // The cross-check that makes the paragraph above impossible to lose again: Google's own
             // `totalTokenCount` versus the counters busbar decoded. `None` when they agree.
             usage_identity_note: gemini_usage_identity_note(u, billed_total),
+            // `usageMetadata.trafficType` — INFORMATIONAL (ON_DEMAND vs PROVISIONED), never a count.
+            // Read here rather than dropped so it round-trips; kept OUT of every billed total above
+            // (OWNER RULING Q1, docs/design/1.6.0-QUESTIONS.md Q36).
+            traffic_type: u
+                .and_then(|u| u.get(FIELD_TRAFFIC_TYPE))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            // Top-level `createTime` (a sibling of `usageMetadata`, not a member of it) — read here
+            // rather than dropped so it round-trips; see the field's own doc comment for why it
+            // rides the usage-detail bag (OWNER RULING Q1, docs/design/1.6.0-QUESTIONS.md Q36).
+            create_time: read_gemini_create_time(data),
             ..Default::default()
         },
     })

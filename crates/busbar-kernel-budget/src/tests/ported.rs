@@ -180,6 +180,72 @@ fn tokens_cap_blocks_after_ledger_crosses() {
     d.try_admit(&p, &c, "", now + 60).expect("fresh window");
 }
 
+/// A `tokens:` cap counts every class the door was HANDED as a token class, not only the reserved
+/// four (P2-voicecaps): a plane's own token-family classes — 60 of one plus 40 of another — reach a
+/// 100-token cap and refuse the next admission on (tokens, minute). A class the door was not handed
+/// (a duration-family count on the same cell) never counts. The class names are this fixture's own;
+/// the door names no plane's vocabulary.
+#[test]
+fn tokens_cap_counts_every_class_the_door_was_handed_as_a_token() {
+    let d = Door::with_token_classes(
+        InMemoryCells::new(),
+        ["plane_tokens_in", "plane_tokens_out"],
+    );
+    let p = no_card(0);
+    let t = table(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Tokens, 100, Some(MINUTE))],
+        ),
+    )]);
+    let c = chain(&t, "vk_plane_tok", Some("g"));
+    let now = 1_700_000_000;
+    let units = |pairs: &[(&str, u64)]| -> BTreeMap<String, u64> {
+        pairs.iter().map(|(k, n)| (k.to_string(), *n)).collect()
+    };
+    d.try_admit(&p, &c, "", now).expect("nothing ledgered");
+    d.record_usage(
+        &c,
+        "",
+        "m",
+        &units(&[("plane_tokens_in", 60), ("plane_seconds_in", 1_000)]),
+        now,
+    );
+    d.try_admit(&p, &c, "", now)
+        .expect("60 tokens < 100, and 1000 seconds are not tokens");
+    d.record_usage(&c, "", "m", &units(&[("plane_tokens_out", 40)]), now);
+    assert_blocked(
+        d.try_admit(&p, &c, "", now).unwrap_err(),
+        "g",
+        Metric::Tokens,
+        Some(MINUTE),
+        true,
+    );
+
+    // CONTROL: a door handed no plane token class counts the reserved four alone, so the same
+    // ledger (and a non-token class far past the cap) admits.
+    let reserved_only = door();
+    reserved_only
+        .try_admit(&p, &c, "", now)
+        .expect("nothing ledgered");
+    reserved_only.record_usage(
+        &c,
+        "",
+        "m",
+        &units(&[
+            ("plane_tokens_in", 60),
+            ("plane_tokens_out", 40),
+            ("plane_seconds_in", 1_000),
+        ]),
+        now,
+    );
+    reserved_only
+        .try_admit(&p, &c, "", now)
+        .expect("classes the door was not handed never count toward a tokens cap");
+}
+
 /// `tokens_input` is best-effort post-paid on the UNCACHED-INPUT tier ONLY: admission passes until
 /// the ledgered input crosses the cap. Output tokens on the same cell do NOT trip it — the tiers
 /// are budgeted independently.
@@ -673,7 +739,7 @@ fn record_usage_unchained_ledgers_onto_the_principals_bucket_and_ignores_an_all_
         .cells()
         .snapshot("vk_unchained2")
         .expect("real usage created the cell");
-    assert_eq!(cell.total_tokens(), 150);
+    assert_eq!(cell.total_tokens(d.token_classes()), 150);
     assert_eq!(
         cell.window_start,
         crate::window::budget_window(TOTAL, now),

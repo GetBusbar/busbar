@@ -318,9 +318,11 @@ pub(crate) async fn pick_among(
         tried: &tried,
         // THE MODEL PLANE'S REPEAT POSTURE, STATED RATHER THAN ASSUMED. A hop after the first is a
         // genuine `AfterDispatch` retry — the previous lane may already have received the request —
-        // and the model plane has always permitted it, because a completion is a read: it charges the
-        // caller twice and can never send a second email. That is why `Repeatable::Yes` here is a
-        // description and not an exemption. The MCP/A2A planes hand the seam `Repeatable::No` unless
+        // and the model plane has always permitted it, because a completion is a read: it never
+        // charges the caller twice (only the SERVING lane's delivered response is metered — the
+        // abandoned leg's attempt bills nothing to the key) and can never send a second email. That
+        // is why `Repeatable::Yes` here is a description and not an exemption. The MCP/A2A planes
+        // hand the seam `Repeatable::No` unless
         // the operator names the operation in `repeatable:`, and the SAME rule in the SAME loop then
         // refuses their after-dispatch hop. The rule is one; the answer differs because the operations
         // differ, which is exactly what the rule is for.

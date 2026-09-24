@@ -8,6 +8,8 @@
 
 use std::sync::OnceLock;
 
+use opentelemetry_sdk::trace::SdkTracerProvider;
+
 // SSRF obfuscation-defense primitives shared with the analogous operator-configured-upstream-URL
 // guard in `config_validate`.
 // Here they are a defense-in-depth parity mirror (the webhook/OTLP URL is already
@@ -351,7 +353,7 @@ fn host_is_internal(url: &url::Url) -> bool {
 /// Retained `SdkTracerProvider` handle so its batched span buffer can be flushed/shut down on
 /// process exit (`shutdown_tracing`). Set at most once, only after the subscriber installs
 /// successfully — see `init_logging`.
-static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = OnceLock::new();
+static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
 /// THE TRACING SEAM — the one-spot level policy for every per-request span/event.
 ///
@@ -473,17 +475,23 @@ pub fn init_logging(otlp_endpoint: Option<&str>, stdout_reserved: bool) {
         // dropped here, which shuts down its (never-used) exporter cleanly.
         return;
     }
-    if let Some(provider) = otel_provider {
-        opentelemetry::global::set_tracer_provider(provider.clone());
-        // Retain the handle for an explicit shutdown/flush on exit.
-        let _ = TRACER_PROVIDER.set(provider);
-    }
-    if let Some(endpoint) = otlp_endpoint {
-        // Mask any embedded userinfo (`https://user:pass@host`) BEFORE logging — the raw endpoint
-        // can carry operator credentials that must not leak into structured logs.
-        let endpoint = mask_userinfo(endpoint);
-        tracing::info!(endpoint, "OTLP tracing enabled");
-    }
+    install_otlp(otel_provider, otlp_endpoint);
+}
+
+/// Install a built OTLP provider and say so — the "enabled" line is gated on the PROVIDER, never on
+/// the endpoint alone. An endpoint whose exporter failed to build (`build_otlp`'s `None` arm, which
+/// has already said so on stderr) installs nothing and exports nothing, and a boot log that still
+/// read "OTLP tracing enabled" is the line a rollout check greps for and believes (item 570).
+fn install_otlp(provider: Option<SdkTracerProvider>, endpoint: Option<&str>) {
+    let (Some(provider), Some(endpoint)) = (provider, endpoint) else {
+        return;
+    };
+    opentelemetry::global::set_tracer_provider(provider.clone());
+    // Retain the handle for an explicit shutdown/flush on exit.
+    let _ = TRACER_PROVIDER.set(provider);
+    // Mask any embedded userinfo (`https://user:pass@host`) BEFORE logging — the raw endpoint can
+    // carry operator credentials that must not leak into structured logs.
+    tracing::info!(endpoint = mask_userinfo(endpoint), "OTLP tracing enabled");
 }
 
 /// Flush and shut down the OTLP tracer provider's batched span buffer. Idempotent and a no-op when
@@ -764,12 +772,7 @@ fn is_alternate_loopback_v4(host: &str) -> bool {
 /// Returns `None` (and logs to stderr — the subscriber isn't up yet) if the exporter can't be
 /// built. Does NOT install the global provider; the caller does so only after the subscriber is
 /// successfully installed.
-fn build_otlp<S>(
-    endpoint: &str,
-) -> Option<(
-    impl tracing_subscriber::Layer<S>,
-    opentelemetry_sdk::trace::SdkTracerProvider,
-)>
+fn build_otlp<S>(endpoint: &str) -> Option<(impl tracing_subscriber::Layer<S>, SdkTracerProvider)>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
@@ -812,7 +815,7 @@ where
             return None;
         }
     };
-    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+    let provider = SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
         .build();
     let tracer = provider.tracer("busbar");

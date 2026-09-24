@@ -417,9 +417,12 @@ fn a_replayed_posting_moves_the_book_exactly_as_the_live_one_did() {
             &k,
             1,
             "p",
-            posted.reserved(),
-            posted.settled(),
-            posted.overdraft(),
+            crate::settle::Figures {
+                reserved: posted.reserved(),
+                settled: posted.settled(),
+                overdraft: posted.overdraft(),
+                fee_count: 0,
+            },
         );
         assert_eq!(
             live.book().snapshot(),

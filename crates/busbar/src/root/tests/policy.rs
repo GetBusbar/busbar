@@ -125,35 +125,6 @@ fn a_class_tightening_reaches_the_unit_and_a_loosening_is_ignored() {
     );
 }
 
-/// The boot check: a configured pool with no expansion is nameable while the pool is still in
-/// scope, rather than turning up later as a disputed posting that names nothing.
-#[test]
-fn a_pool_with_no_expansion_is_named_at_boot() {
-    let cfg = MeterPolicyConfig {
-        pools: vec![
-            PoolExpansion {
-                pool: POOL.into(),
-                lanes: vec![LANE_A.into()],
-            },
-            PoolExpansion {
-                pool: "pool-empty".into(),
-                lanes: vec![],
-            },
-        ],
-        ..MeterPolicyConfig::default()
-    };
-    let policy = build(&cfg);
-    assert_eq!(pools_without_expansion(&cfg, &policy), vec!["pool-empty"]);
-}
-
-/// And a fully configured deployment names none.
-#[test]
-fn a_configured_deployment_has_no_unexpanded_pool() {
-    let cfg = a_configured_card();
-    let policy = build(&cfg);
-    assert!(pools_without_expansion(&cfg, &policy).is_empty());
-}
-
 /// **The hazard**, on the transport axis: a client built from the crate's own `Default` ignores
 /// what the operator wrote. A deployment that caps request bodies at 1 KiB gets a transport that
 /// buffers 32 MiB, and the door and the transport then disagree about which bodies exist. Every
@@ -167,14 +138,26 @@ fn the_transport_client_reads_the_operators_limits_and_not_a_default() {
         pool_idle_timeout_secs: 11,
         upstream_http1_only: true,
         upstream_h2_prior_knowledge: false,
+        upstream_request_timeout_secs: 13,
         ..LimitsResolved::default()
     };
     let settings = client_settings(&limits);
     assert_eq!(settings.request_body_max_bytes, 1024);
+    assert_eq!(settings.response_body_max_bytes, 1024);
     assert_eq!(settings.pool_max_idle_per_host, 7);
     assert_eq!(settings.pool_idle_timeout_secs, 11);
     assert!(settings.upstream_http1_only);
     assert!(!settings.upstream_h2_prior_knowledge);
+    // The request timeout is the operator's too: a figure the transport hardcoded would
+    // cut a slow upstream at a number nobody configured. 13 is neither the resolved default nor the
+    // transport's own, so reading either instead of the operator's goes red here.
+    assert_ne!(
+        LimitsResolved::default().upstream_request_timeout_secs,
+        13,
+        "the fixture's timeout must differ from the resolved default"
+    );
+    assert_ne!(ClientSettings::default().request_timeout_secs, 13);
+    assert_eq!(settings.request_timeout_secs, 13);
 }
 
 /// And a deployment that set nothing is left where it was: the resolved default body cap is the

@@ -150,12 +150,16 @@ pub(crate) struct Lifted {
     streams: Option<StreamsSection>,
     decisions: Option<DecisionsSection>,
     auth_policy: Option<crate::config::AuthPolicyCfg>,
+    plane_rate_cards: super::PlaneRateCards,
+    plane_fees: super::PlaneFeesMap,
 }
 
 impl Lifted {
     /// Install what was lifted onto the freshly parsed frozen struct. Absent keys leave the
     /// carrier at its `Default`, which is exactly what an omitted section means.
     fn install(self, deploy: &mut DeployCfg) {
+        deploy.plane_rate_cards = self.plane_rate_cards;
+        deploy.plane_fees = self.plane_fees;
         if let Some(v) = self.endpoint {
             deploy.mcp = v;
         }
@@ -205,10 +209,10 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
             k if k == <Option<crate::oauth_as::config::OauthAsCfg> as LiftableSection>::KEY => {
                 Option::<crate::oauth_as::config::OauthAsCfg>::deserialize(de)?.bank(self.lifted)
             }
-            k if k == ToolsSection::KEY => ToolsSection::deserialize(de)?.bank(self.lifted),
-            k if k == AgentsSection::KEY => AgentsSection::deserialize(de)?.bank(self.lifted),
-            k if k == StreamsSection::KEY => StreamsSection::deserialize(de)?.bank(self.lifted),
-            k if k == DecisionsSection::KEY => DecisionsSection::deserialize(de)?.bank(self.lifted),
+            k if k == ToolsSection::KEY => lift_plane::<ToolsSection, D>(de, self.lifted)?,
+            k if k == AgentsSection::KEY => lift_plane::<AgentsSection, D>(de, self.lifted)?,
+            k if k == StreamsSection::KEY => lift_plane::<StreamsSection, D>(de, self.lifted)?,
+            k if k == DecisionsSection::KEY => lift_plane::<DecisionsSection, D>(de, self.lifted)?,
             k if k == crate::config::AuthPolicyCfg::KEY => {
                 crate::config::AuthPolicyCfg::deserialize(de)?.bank(self.lifted)
             }
@@ -222,6 +226,49 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
         }
         Ok(())
     }
+}
+
+/// **THE CORE-OWNED SUB-KEYS OF A PLANE'S SECTION** (#43, #47): its `rate_card`, and its `fees`.
+/// Authored beside the plane's own settings for ergonomics, and LIFTED OFF the section here, before
+/// its remainder is handed to the plane — a plane plugin never sees its card or its fees, exactly
+/// as it never sees a secret (#40). Each lands under the plane's registry key — the card on
+/// [`DeployCfg::plane_rate_cards`], the fees (`{ per_request, per_session }`, #44) on
+/// [`DeployCfg::plane_fees`] — and prices that plane's rows alone (#42 "scoped per plane"). The
+/// fallback (`pools:`) plane's card and fee are still the flat top-level `rate_card:` and
+/// `per_request_fee:`, loaded byte-identically.
+const PLANE_CARD_KEYS: [&str; 2] = ["rate_card", "fees"];
+
+/// Lift a plane section: strip its core-owned sub-keys (see [`PLANE_CARD_KEYS`]), then parse the
+/// REMAINDER through the section's own carrier exactly as before — the plane's parse error reaches
+/// the operator through the same `custom` channel it always did.
+fn lift_plane<'de, S: LiftableSection, D: Deserializer<'de>>(
+    de: D,
+    lifted: &mut Lifted,
+) -> Result<(), D::Error> {
+    let [card_key, fees_key] = PLANE_CARD_KEYS;
+    let mut section = serde_yaml::Value::deserialize(de)?;
+    let plane =
+        crate::plane::registry::plane_decl_for_config_section(S::KEY).map_or(S::KEY, |d| d.key);
+    let mut map = section.as_mapping_mut();
+    let mut take = |key: &str| map.as_mut().and_then(|m| m.remove(key));
+    let fail = |key: &str, e: serde_yaml::Error| D::Error::custom(format!("{}.{key}: {e}", S::KEY));
+    if let Some(card) = take(card_key) {
+        let card = serde_yaml::from_value(card).map_err(|e| fail(card_key, e))?;
+        lifted.plane_rate_cards.insert(plane.to_string(), card);
+    }
+    if let Some(fees) = take(fees_key) {
+        let f: super::PlaneFeesCfg = serde_yaml::from_value(fees).map_err(|e| fail(fees_key, e))?;
+        let (per_request, per_session) = (f.per_request.into(), f.per_session.into());
+        let fees = busbar_kernel_ledger::cost::PlaneFees {
+            per_request,
+            per_session,
+        };
+        lifted.plane_fees.insert(plane.to_string(), fees);
+    }
+    S::deserialize(section)
+        .map_err(D::Error::custom)?
+        .bank(lifted);
+    Ok(())
 }
 
 /// What reading one map key produced: a key for the frozen struct, or a key this pass lifts (in

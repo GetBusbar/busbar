@@ -571,3 +571,32 @@ fn the_fitness_answer_is_carried_out_of_the_filter() {
     );
     assert!(entitled(&inventory, &caller(&holds), &gone).is_empty());
 }
+
+/// THE HEADER SAYS WHERE THE CATALOGUE LIVES, AND IT LIVES HERE (item 563).
+///
+/// The module doc used to call this file a glob re-export shim over a catalogue that had moved to
+/// `busbar-substrate`. The code had been merged back inline and the file re-exported nothing, so a
+/// reader (or a relocation audit) following the header went looking for the fail-closed visibility
+/// gate in a crate that does not hold it. The claim is judged against the file: a header may call it
+/// a re-export only while the file actually re-exports something.
+#[test]
+fn the_header_does_not_describe_a_re_export_the_file_does_not_make() {
+    let src = include_str!("../catalogue.rs");
+    let header = src
+        .lines()
+        .take_while(|l| l.starts_with("//") || l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let re_exports = src.lines().any(|l| l.trim_start().starts_with("pub use "));
+    for claim in ["re-export shim", "re-exports it"] {
+        assert!(
+            re_exports || !header.contains(claim),
+            "catalogue.rs's header claims {claim:?} but the file re-exports nothing"
+        );
+    }
+    assert!(
+        !re_exports,
+        "the catalogue is defined inline; a `pub use` here is a second home for it"
+    );
+}

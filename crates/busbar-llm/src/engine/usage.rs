@@ -39,19 +39,10 @@ pub(crate) fn record_resp_usage(
             // its open class (#71) against the key's budget chain, in the fee's window — where the
             // card prices it; a present card silent about it refuses (#42); an absent card reads 0.
             // The metering row below is untouched: the request counts with no token split.
-            if let Some(busbar_substrate_values::billing::Billing::Counted { class, count }) =
-                &usage
-            {
-                let usage_units = std::collections::BTreeMap::from([(class.clone(), *count)]);
-                host.meter_ledger(
-                    &sink.pin,
-                    &sink.key,
-                    &sink.pool,
-                    &lane.model,
-                    &busbar_substrate_values::billing::Usage { usage_units },
-                    sink.charged_at,
-                );
-            }
+            //
+            // The class map is [`open_units_of`]'s — the SAME map the tap reports back for the
+            // durable book (#71), so the two books are handed one set of counts from one function.
+            ledger_open_units(host, sink, lane, open_units_of(&usage));
             host.meter_series(
                 sink.pin.gov(),
                 &sink.key.id,
@@ -62,6 +53,61 @@ pub(crate) fn record_resp_usage(
             );
         }
     }
+}
+
+/// **EVERY OPEN CLASS a delivery billed**, as the class map it is ledgered under (#71): a COUNTED
+/// non-token unit (a rerank's search units, item 134) VERBATIM as its open class, and nothing for any
+/// other shape.
+///
+/// ONE function, read twice: [`record_resp_usage`] ledgers exactly this map onto the governance
+/// ledger, and the buffered tap reports exactly this map back
+/// ([`crate::engine::TapReport::open_units`]) so the late reading hands the durable (second) book
+/// the same counts. Two spellings of this projection are how the two books came to disagree.
+///
+/// Every variant is spelled, as in the tap's token projection: `Billing` is closed, and a wildcard
+/// here would quietly report nothing for a counted shape added after this was written. The token
+/// split rides [`crate::engine::TapReport::usage`]; duration, characters, images and the flat fee are
+/// not ledgered as a class today, so reporting one here would put a count on the durable book the
+/// governance ledger does not hold.
+pub(crate) fn open_units_of(
+    usage: &Option<busbar_substrate_values::billing::Billing>,
+) -> std::collections::BTreeMap<String, u64> {
+    use busbar_substrate_values::billing::Billing;
+    match usage {
+        Some(Billing::Counted { class, count }) => {
+            std::collections::BTreeMap::from([(class.clone(), *count)])
+        }
+        Some(Billing::Tokens(_))
+        | Some(Billing::Duration { .. })
+        | Some(Billing::Characters { .. })
+        | Some(Billing::Images { .. })
+        | Some(Billing::Flat)
+        | None => std::collections::BTreeMap::new(),
+    }
+}
+
+/// Ledger a delivery's OPEN classes ([`open_units_of`]'s map) VERBATIM against the key's budget
+/// chain, in the fee's window (#71) — where the card prices them; a present card silent about one
+/// refuses (#42); an absent card reads 0. The ONE ledger write for them: the buffered accrual
+/// ([`record_resp_usage`]) and the same-protocol tap both call it with the map they report back to
+/// the durable book. An empty map ledgers nothing.
+pub(crate) fn ledger_open_units(
+    host: &Arc<dyn EngineHost>,
+    sink: &UsageSink,
+    lane: &crate::engine::Lane,
+    usage_units: std::collections::BTreeMap<String, u64>,
+) {
+    if usage_units.is_empty() {
+        return;
+    }
+    host.meter_ledger(
+        &sink.pin,
+        &sink.key,
+        &sink.pool,
+        &lane.model,
+        &busbar_substrate_values::billing::Usage { usage_units },
+        sink.charged_at,
+    );
 }
 
 /// Project the IR's normalized usage into the neutral name-keyed [`busbar_substrate_values::billing::Usage`]
@@ -118,16 +164,18 @@ pub(crate) fn ledger_and_meter(
     // Metering (raw per-model consumption series, token SPLIT preserved) — even a zero-token
     // delivered response counts its request. Same pinned epoch as the budget charges (#29).
     //
-    // The plane hands its counts over UNCONDITIONALLY (DECISION #43: no branch, no knowledge of
-    // billing state). Whether the row is written — BILLING OFF ⇒ NO METERING ROW, #42 — is the
-    // kernel's question, answered in `meter_series_billed` over the card the sink pinned at the
-    // door; with a card PRESENT the row is recorded byte-for-byte as before. The budget/ledger
-    // accrual ABOVE is not switched at all: token-COUNT rate caps (a non-money limit, like
-    // `concurrent`) enforce off that accrual, and #42 keeps admission, concurrency and breaker on for
-    // an unbilled plane — only the money surface goes quiet.
-    busbar_kernel::plane_host::meter_series_billed(
-        &**host,
-        &sink.pin,
+    // THE ROW IS WRITTEN UNCONDITIONALLY (DECISION #43, owner ruling 2026-09-22: "planes always
+    // ledger"). The plane hands its counts over with no branch and no knowledge of billing state, and
+    // nothing between here and the series asks either: with no `rate_card:` the row is still the
+    // record of what the plane did, and BILLING OFF is the money VIEW reading it as 0 (#42), never a
+    // missing row. This used to route through the kernel's `meter_series_billed`, which dropped the
+    // row whenever the pinned card was absent — the same card-gated write item 36 removed from the
+    // MCP/A2A charge. The flat/counted arm of `record_resp_usage` above already wrote its
+    // row this way; the token arm now matches it. The budget/ledger accrual ABOVE is not switched
+    // either: token-COUNT rate caps enforce off that accrual, and #42 keeps admission, concurrency and
+    // breaker on for an unbilled plane.
+    host.meter_series(
+        sink.pin.gov(),
         &sink.key.id,
         &lane.model,
         &lane.provider,

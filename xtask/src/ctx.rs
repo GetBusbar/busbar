@@ -115,6 +115,24 @@ impl Overlay {
         !self.commands.is_empty()
     }
 
+    /// THIS OVERLAY WITH `top` LAID OVER IT: every claim `top` makes wins, every claim only this
+    /// one makes survives.
+    ///
+    /// The shape a self-test needs when the unplanted tree is already red on the row a case is
+    /// about. The case is then proven over a GREEN BASE — a fixture overlay that clears the
+    /// standing red — and the planted run must read the base AND the plant, because
+    /// [`Ctx::with_overlay`] replaces the context's overlay rather than stacking on it.
+    pub fn layered(&self, top: &Overlay) -> Overlay {
+        let mut out = self.clone();
+        for (path, change) in &top.files {
+            out.files.insert(path.clone(), change.clone());
+        }
+        for (key, stdout) in &top.commands {
+            out.commands.insert(key.clone(), stdout.clone());
+        }
+        out
+    }
+
     /// An overlay that claims nothing at all.
     pub fn is_empty(&self) -> bool {
         self.files.is_empty() && self.commands.is_empty()

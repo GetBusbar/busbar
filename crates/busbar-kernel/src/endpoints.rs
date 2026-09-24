@@ -15,15 +15,16 @@ use busbar_kernel::store::now;
 
 use crate::state::App;
 
-/// `/stats` reports the pool/lane topology. It is governance-scoped: a virtual key with a
-/// non-empty `allowed_pools` must NOT learn the full topology of pools and lanes it can never
-/// reach (info disclosure — a restricted tenant could otherwise enumerate every model, provider,
-/// and pool the gateway fronts). We FILTER the reported pools to those the caller may target, and
-/// the reported lanes to the union of lanes reachable via those visible pools.
+/// `/stats` reports the pool/lane topology. It is governance-scoped: a virtual key minted with an
+/// `allowed_scopes` list must NOT learn the full topology of pools and lanes it can never reach
+/// (info disclosure — a restricted tenant could otherwise enumerate every model, provider, and pool
+/// the gateway fronts). We FILTER the reported pools to those the caller may target, and the
+/// reported lanes to the union of lanes reachable via those visible pools.
 ///
-/// An empty `allowed_pools` (or `key: None` — governance disabled, or the operator/admin default
-/// `GovCtx`) means "all pools", so those callers see the full topology exactly as before: this
-/// preserves today's operator/admin behavior.
+/// Only an OMITTED list is a wildcard, exactly as the frozen `VirtualKey::scope_allowed` reads it: a
+/// key whose `allowed_scopes` is `None`, or no key at all (`key: None` — governance disabled, or the
+/// operator/admin default `GovCtx`), sees the full topology. An explicit EMPTY list is no scopes at
+/// all — never "all pools" — so such a key sees no pool and no lane.
 pub async fn stats(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Extension(gov): Extension<GovCtx>,
@@ -31,7 +32,7 @@ pub async fn stats(
     let t = now();
 
     // Decide which pools are visible to this caller. No key => no restriction (the visible set is
-    // every pool). A key whose `allowed_pools` was omitted at mint (None) admits every pool via
+    // every pool). A key whose `allowed_scopes` was omitted at mint (None) admits every pool via
     // `pool_allowed`, so an unrestricted key also sees everything; an explicit list (even empty)
     // restricts.
     let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_scopes.is_some());
@@ -64,8 +65,8 @@ pub async fn stats(
         .collect();
 
     // Lanes are filtered to those reachable via a visible pool ONLY when the caller is restricted.
-    // An unrestricted caller (no key, or empty `allowed_pools`) sees every lane — including any
-    // lane not bound to a pool — exactly as before. A restricted caller sees only the lanes its
+    // An unrestricted caller (no key, or a key with no `allowed_scopes` list) sees every lane — any
+    // lane not bound to a pool included. A restricted caller sees only the lanes its
     // visible pools route to; lanes outside those pools (and pool-less lanes) stay hidden, so the
     // lane list can't be used to enumerate the topology the pool filter just removed.
     let lane_visible = |i: usize| -> bool {
@@ -149,8 +150,8 @@ pub async fn stats(
 /// configured model entries AND pool names (a pool is a routable model from the client's
 /// point of view).
 ///
-/// Governance-scoped with the same rules as `/stats`: a virtual key with a non-empty
-/// `allowed_pools` sees only its visible pools and the models reachable through them —
+/// Governance-scoped with the same rules as `/stats`: a virtual key with an `allowed_scopes` list
+/// (even an empty one) sees only its visible pools and the models reachable through them —
 /// the model list must not leak topology the pool ACL hides.
 pub async fn list_models(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
@@ -291,3 +292,7 @@ pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) ->
 // "fix the 38" pass after the A6/HostCtx dev-dependency-cycle cleanup): every test in it builds real
 // lanes/pools, which only materialize through the REAL `busbar_llm` plane's `build_runtime`/`viewer`
 // — an integration-test target, never this `#[cfg(test)]` unit module. See that file's header.
+
+#[cfg(test)]
+#[path = "tests/endpoints_doc_tests.rs"]
+mod endpoints_doc_tests;

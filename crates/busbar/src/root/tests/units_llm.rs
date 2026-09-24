@@ -3,6 +3,9 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+// The node and its unit under neutral names: this file is about what the composition root does
+// with them, and the plane is the module these tests sit in.
+use super::{LlmNode as Node, LlmUnit as NodeUnit};
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
@@ -508,7 +511,7 @@ async fn leg_loop_billed(fixture: Fixture) -> Observed {
 
 /// One request, through the real loop, awaited on this task — exactly as the mount drives it.
 async fn drive(rig: &Rig, fixture: Fixture) -> Response {
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
@@ -561,7 +564,7 @@ fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
 /// second field is a copy of the first and this ordering does not exist.
 #[test]
 fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
-    let node = LlmNode::new();
+    let node = Node::new();
     let taken: Vec<Arrived> = (0..4).map(|_| node.arrived()).collect();
 
     for pair in taken.windows(2) {
@@ -668,7 +671,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
         "and one second later is a different bucket, which is what makes this a straddle"
     );
 
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
@@ -967,7 +970,7 @@ fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
     let rig = rig(Fixture::BufferedOk).await;
-    let node = LlmNode::new();
+    let node = Node::new();
     let ended = drive_to_end(&rig, &node, Fixture::BufferedOk, rig.gov(), NATIVE_SEATS).await;
     rig.server.shutdown().await;
 
@@ -1027,7 +1030,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_provider_origin_unit_posts_no_flat_fee() {
     let rig = rig(Fixture::BufferedOk).await;
-    let node = LlmNode::new();
+    let node = Node::new();
     let (unit, _ended) =
         drive_keeping_the_unit(&rig, &node, Fixture::BufferedOk, rig.gov(), NATIVE_SEATS).await;
     rig.server.shutdown().await;
@@ -1067,7 +1070,7 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
 /// it. A drive that always used the rig's key could not tell the step's answer from the walk's.
 async fn drive_to_end<'n>(
     rig: &Rig,
-    node: &'n LlmNode,
+    node: &'n Node,
     fixture: Fixture,
     gov: busbar_api::PlaneRequestCtx,
     seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
@@ -1084,11 +1087,11 @@ async fn drive_to_end<'n>(
 /// drive above; the only difference is what is returned.
 async fn drive_keeping_the_unit<'n>(
     rig: &Rig,
-    node: &'n LlmNode,
+    node: &'n Node,
     fixture: Fixture,
     gov: busbar_api::PlaneRequestCtx,
     seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
-) -> (LlmUnit<'n>, Ended) {
+) -> (NodeUnit<'n>, Ended) {
     let arrival = WalkArrival {
         host: rig.host(),
         gov,
@@ -1102,7 +1105,7 @@ async fn drive_keeping_the_unit<'n>(
     let key = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
     let principal = authenticate::principal_id(&arrival.gov);
     let meter = Arc::new(AccrualMeter::new());
-    let unit = LlmUnit {
+    let unit = NodeUnit {
         node,
         seats,
         meter: Arc::clone(&meter),
@@ -1125,7 +1128,6 @@ async fn drive_keeping_the_unit<'n>(
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: hold,
             now: busbar_kernel::store::now_ms(),
@@ -1260,35 +1262,46 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
     assert_eq!(field(&post_door, "metering_rows"), "");
 }
 
-/// W3.c / DECISION #42: BILLING OFF (no `rate_card:`) ⇒ SERVE FREE WITH ZERO METERING ROWS, YET
-/// STILL GOVERNED. The complement of `the_loop_leaves_the_money_where_the_shipped_plane_leaves_it`
+/// W3.c / DECISIONS #42 + #43: BILLING OFF (no `rate_card:`) ⇒ SERVE FREE, WRITE THE COUNTS, READ 0,
+/// YET STILL GOVERNED. The complement of `the_loop_leaves_the_money_where_the_shipped_plane_leaves_it`
 /// (which drives the BILLED rig): with no card the node is a pure failover/routing proxy — the SAME
-/// delivered request is served identically (status 200) but writes NO metering row, because #42 says
-/// an unbilled plane emits none. And the plane is NOT unlimited: admission/governance still runs — a
-/// pool-ACL guard refuses exactly as it does on a billed plane — which is the "breaker + concurrency
-/// still enforced" half of #42 (both live on the admission/egress path, independent of the card).
+/// delivered request is served identically (status 200) and writes the SAME metering row a billed
+/// plane writes, because the plane always ledgers what it did (#43, owner ruling 2026-09-22; the
+/// LLM twin of item 36, 0ee95aafd). Billing off is the money VIEW: that row reads 0 (#42). And the
+/// plane is NOT unlimited: admission/governance still runs — a pool-ACL guard refuses exactly as it
+/// does on a billed plane — which is the "breaker + concurrency still enforced" half of #42 (both live
+/// on the admission/egress path, independent of the card).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn billing_off_serves_free_with_zero_metering_rows_yet_still_governs() {
-    // BILLING OFF (default rig, no `rate_card:`): a delivered request is served, and writes no
-    // metering row (#42), where the BILLED rig would write one — the only difference the card makes.
+async fn billing_off_serves_free_writes_its_metering_row_reading_zero_yet_still_governs() {
+    // BILLING OFF (default rig, no `rate_card:`): a delivered request is served, and writes its
+    // metering row — the plane's own counts, byte-for-byte the row the BILLED rig writes — which the
+    // money view reads as 0.
     let free = leg_loop(Fixture::BufferedOk).await;
     assert_eq!(
         field(&free, "status"),
         "200",
         "billing off still serves the request (a free failover/routing proxy)"
     );
+    let row = format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1");
     assert_eq!(
         field(&free, "metering_rows"),
-        "",
-        "billing off (no rate_card) emits ZERO metering rows (#42)"
+        row,
+        "billing off (no rate_card) still writes the plane's counts: the ledger is what the plane did (#43)"
     );
-    // The exact same delivered request on a BILLED rig DOES write a metering row — proof the empty
-    // result above is billing-off and not a metering path that never ran.
+    // …and the view reads those counts as 0 (#42): the derived spend is the flat per-request fee
+    // alone (`FEE_CENTS` x 1 request), the token counts contributing nothing — not a missing row.
+    assert_eq!(
+        field(&free, "ledger_spend_cents"),
+        FEE_CENTS.to_string(),
+        "billing off is the VIEW reading the counts as 0 (#42): only the flat fee posts"
+    );
+    // The exact same delivered request on a BILLED rig writes the IDENTICAL row — the card changes
+    // what the row is WORTH, never whether it is written.
     let billed = leg_loop_billed(Fixture::BufferedOk).await;
     assert_eq!(
         field(&billed, "metering_rows"),
-        format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1"),
-        "the same request on a billed plane writes exactly one metering row"
+        row,
+        "the same request on a billed plane writes exactly the same metering row"
     );
     // STILL GOVERNED with billing off: the admission-time pool-ACL guard refuses, exactly as on a
     // billed plane — the plane is a proxy, never unlimited. (Breaker + concurrency ride the same
@@ -1452,7 +1465,7 @@ async fn leg_legacy_path(fixture: Fixture, proto: &'static str) -> Observed {
 /// LEG 2 — the same request through the kernel's loop, with the URL's facts in the unit's carry.
 async fn leg_loop_path(fixture: Fixture, proto: &'static str) -> Observed {
     let rig = rig(fixture).await;
-    let node = LlmNode::new();
+    let node = Node::new();
     let facts = path_facts(proto, fixture);
     let arrival = WalkArrival {
         host: rig.host(),
@@ -1598,7 +1611,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
         };
         let looped = {
             let rig = rig(Fixture::UnknownModel).await;
-            let node = LlmNode::new();
+            let node = Node::new();
             let arrival = WalkArrival {
                 host: rig.host(),
                 gov: rig.gov(),
@@ -1702,7 +1715,7 @@ fn the_switched_table_names_every_dialect_the_plane_names() {
 /// leak per request whatever it was called.
 #[test]
 fn the_nodes_interner_leaks_a_lane_name_once() {
-    let node = LlmNode::new();
+    let node = Node::new();
     let lanes = node.lanes();
     let first = lanes
         .lock()
@@ -1726,7 +1739,7 @@ fn the_nodes_interner_leaks_a_lane_name_once() {
 /// per distinct name and does not grow with how often the name is asked for.
 #[test]
 fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
-    let node = LlmNode::new();
+    let node = Node::new();
     let mut names = node
         .lane_names
         .lock()
@@ -1852,7 +1865,7 @@ async fn leg_loop_decode(
     body: Bytes,
 ) -> Observed {
     let rig = rig(Fixture::BufferedOk).await;
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
@@ -2017,7 +2030,7 @@ async fn admit(rig: &Rig, cred: Credential) -> Result<busbar_api::PlaneRequestCt
 /// that answer — the walk keeps its own context for the money and the record — so this is the
 /// one observation that is about step 2 and about nothing else.
 async fn principal_the_loop_settled_on(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> String {
-    let node = LlmNode::new();
+    let node = Node::new();
     let ended = drive_to_end(rig, &node, Fixture::BufferedOk, gov, NATIVE_SEATS).await;
     let Ended::Settled { end, .. } = ended else {
         panic!("the exit path settles a delivered unit");
@@ -2050,7 +2063,7 @@ async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed 
 
 /// LEG 2 — the loop, driven with the same context the door produced.
 async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov,
@@ -2246,7 +2259,7 @@ impl approve::VetoSeat for StopsNothing {
 /// One request through the real loop with a named seat list, exactly as the mount drives it with
 /// its own.
 async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -> Observed {
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
@@ -2385,7 +2398,7 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
 /// A NODE PER REQUEST, exactly as [`drive`] builds one, so the figure is this unit's and not a
 /// running total the order of the tests could change.
 async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) {
-    let node = LlmNode::new();
+    let node = Node::new();
     let arrival = WalkArrival {
         host: rig.host(),
         gov: rig.gov(),
@@ -3182,7 +3195,7 @@ fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
 /// slot back.
 #[test]
 fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
-    let node = LlmNode::new();
+    let node = Node::new();
     let book = Arc::new(Mutex::new(
         crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
@@ -3202,7 +3215,6 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, who),
             now: EPOCH * 1_000,
@@ -3267,7 +3279,6 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: busbar_kernel::inflight::arrival_hold(
                 &node.kernel,
@@ -3305,7 +3316,9 @@ fn late_post(
     principal: &str,
     report: &LateReport,
 ) -> crate::root::durability::NodeBook {
-    let node = crate::root::durability::node_book();
+    // The book prices its chain against the same history the arm priced the unit against.
+    let pinned = history.clone();
+    let node = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
     let kernel = busbar_kernel::teller::Kernel::new();
     let (durability, ledger, usage) = (
         kernel.durability_token(),
@@ -3328,18 +3341,15 @@ fn late_post(
 }
 
 /// The unit records the second book's chain holds (settlements and counts rows), read back off the
-/// journal.
+/// journal — each with the figure the book derives from its counts at its epoch (the chain itself
+/// holds no money, #71).
 fn second_book_rows(
     node: &crate::root::durability::NodeBook,
 ) -> Vec<crate::root::durability::Posting> {
     let durability = node.durability.lock().expect("unpoisoned");
     durability
-        .journal
-        .replay()
-        .expect("reads")
-        .expect("verifies")
-        .iter()
-        .filter_map(crate::root::durability::Posting::from_record)
+        .read_back()
+        .into_iter()
         // The overdraft CARRY beside a late settlement repeats its unreserved part and carries no
         // counts; it is the same unit's second record, not a second unit.
         .filter(|p| p.kind != crate::root::durability::PostingKind::Carry)
@@ -3442,15 +3452,24 @@ fn every_cell_agrees(
 /// `search_units` is `Some` — the open class `search_units` at that many nano-units per unit
 /// (the `units:` grammar, item 123). `None` is a present card SILENT about search units.
 fn rerank_history(fee: i64, search_units: Option<u64>) -> crate::root::kernel::PinnedHistory {
+    rerank_history_on("lane", fee, search_units)
+}
+
+/// [`rerank_history`], over the lane named `lane`.
+fn rerank_history_on(
+    lane: &str,
+    fee: i64,
+    search_units: Option<u64>,
+) -> crate::root::kernel::PinnedHistory {
     use busbar_kernel_ledger::cost::{History, HistorySeq, LaneClass, RateCard};
     let card = RateCard::from_micro_rates(
         [
-            (LaneClass::new("lane", busbar_api::UNIT_INPUT), 3.0),
-            (LaneClass::new("lane", busbar_api::UNIT_OUTPUT), 16.0),
+            (LaneClass::new(lane, busbar_api::UNIT_INPUT), 3.0),
+            (LaneClass::new(lane, busbar_api::UNIT_OUTPUT), 16.0),
         ],
         fee,
     )
-    .with_unit_rates(search_units.map(|nanos| (LaneClass::new("lane", SEARCH_UNITS), nanos)));
+    .with_unit_rates(search_units.map(|nanos| (LaneClass::new(lane, SEARCH_UNITS), nanos)));
     crate::root::kernel::PinnedHistory::for_test(
         std::sync::Arc::new(History::opening(card, 0)),
         HistorySeq(0),
@@ -3684,4 +3703,311 @@ fn a_planted_open_class_divergence_goes_red() {
         .is_err(),
         "a second book with no counts was NOT caught"
     );
+}
+
+/// The serving lane of the served-rerank fixture: a Cohere lane, the one dialect whose rerank reader
+/// reads `meta.billed_units.search_units`.
+const RERANK_LANE: &str = "rerank-v3.5";
+/// The pool the rerank fixture's caller names.
+const RERANK_POOL: &str = "rr";
+/// The search units the scripted Cohere upstream bills.
+const RERANK_UNITS: u64 = 50;
+
+/// **A SERVED RERANK, THROUGH THE REAL WALK, PUTS IDENTICAL SEARCH UNITS ON BOTH BOOKS** (#71/#43,
+/// follows 15d23bb90 and item 134).
+///
+/// A Bedrock-dialect rerank (`/model/{model}/invoke` with `query` + `documents`) served by a Cohere
+/// lane whose upstream bills 50 search units: the real loop over the real steps, the real
+/// cross-protocol buffered tap, and the REAL late arm — the node's own `attach_late_accrual`, fired by
+/// draining the body the client is handed, onto a bound book. Nothing is hand-built between the
+/// upstream's bytes and either book.
+///
+/// The governance side is read off the governance ledger itself (the key's bucket, flushed to its
+/// store), not derived from the report the second book was posted from — so the agreement is two
+/// books compared, not one report compared with itself.
+///
+/// RED before the tap carried open classes: `TapReport.usage` was a `TokenUsage` and the buffered
+/// tap's projection dropped `Billing::Counted`, so the late report carried no classes, the second
+/// book's row held no `search_units` and priced the fee alone, while the governance ledger held 50.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_served_rerank_puts_identical_search_units_on_both_books() {
+    busbar_llm::testkit::install_test_seams();
+    busbar_kernel::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    for _ in 0..4 {
+        state.push(MockResponse::Ok {
+            status: reqwest::StatusCode::OK,
+            body: serde_json::json!({
+                "id": "rr-1",
+                "results": [{"index": 0, "relevance_score": 0.9}],
+                "meta": {"billed_units": {"search_units": RERANK_UNITS}}
+            }),
+        });
+    }
+    let server = MockServer::new(Arc::clone(&state)).await;
+    let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+        &SIGNING_SECRET,
+        busbar_kernel::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        busbar_kernel::governance::GovState::new_with_signer(store, None, Some(signer))
+            .expect("governance"),
+    );
+    let (key, _token) = gov
+        .mint_signed(
+            busbar_kernel::governance::NewKeySpec {
+                name: unique("root-rerank"),
+                ..Default::default()
+            },
+            LIVE_EXP,
+            MINTED_AT,
+        )
+        .expect("mint the deployment's key");
+    // No `rate_card:` on the governance side: its ledger accrues the raw counts either way (#43),
+    // and the agreement check prices the governance row through the SAME history the second book
+    // is priced against, below.
+    let cost = busbar_kernel::cost::CostModel::resolve_parts(None, FEE_CENTS, &Default::default());
+    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    let app = TestApp::new()
+        .keys_chain()
+        .lane(
+            LaneSpec::new(
+                RERANK_LANE,
+                busbar_llm::proto_codec::PROTO_COHERE,
+                &server.base_url(),
+            )
+            .provider("cohere"),
+        )
+        .pool(RERANK_POOL, &[(0, 1)])
+        .governance(Arc::clone(&gov))
+        .cost(cost)
+        .build();
+    let key = Arc::new(key);
+    let gov_ctx = busbar_api::PlaneRequestCtx {
+        key: Some(Arc::clone(&key)),
+    };
+
+    // 2,000 micro-units per search unit and a 3-unit fee, over the serving lane.
+    let history = rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
+    let node = Node::new();
+    let pinned = history.clone();
+    let book = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
+    node.bind_book(Arc::clone(&book.durability));
+
+    let arrival = WalkArrival {
+        host: busbar_kernel::plane_host::engine_host(&app),
+        gov: gov_ctx.clone(),
+        proto: BEDROCK,
+        operation: busbar_api::operation::Operation::RERANK,
+        caller_token: None,
+        headers: json_headers(),
+        body: Bytes::from_static(br#"{"query":"which is fastest","documents":["a","b","c"]}"#),
+        path: Some(PathFacts {
+            operation: busbar_api::operation::Operation::RERANK,
+            stream: false,
+            gemini_json_array: false,
+            model_not_found_message: None,
+            model: RERANK_POOL.to_string(),
+        }),
+    };
+    let arrived = Arrived::at(EPOCH * 1_000, 0);
+    let key_n = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
+    let principal = authenticate::principal_id(&arrival.gov);
+    let meter = Arc::new(AccrualMeter::new());
+    let unit = NodeUnit {
+        node: &node,
+        seats: NATIVE_SEATS,
+        meter: Arc::clone(&meter),
+        op_class: OpClassId::new(arrival.operation.name()),
+        model_hint: None,
+        started: Instant::now(),
+        charged_at: EPOCH,
+        // THE PIN the node's own drive takes off `ROOT_CARD` at admission, handed in: the process
+        // holder is empty in a test, and the late arm posts nothing without a pinned history.
+        history: Some(history.clone()),
+        arrived,
+        principal: principal.clone(),
+        deferred: Mutex::new(None),
+        model: Mutex::new(String::new()),
+        walk: Walk::open(arrival),
+    };
+    let hold = busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, principal.clone());
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key: key_n,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            zero_hold_tick: false,
+            arrival: hold,
+            now: arrived.ms(),
+        })
+        .expect("the uncapped table takes the unit");
+    let ctx = UnitCtx {
+        key: key_n,
+        origin: OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let _ended = busbar_kernel::teller::run_unit_async(
+        &node.kernel,
+        &unit,
+        &ctx,
+        busbar_kernel::teller::Run {
+            cell: slot.cell(),
+            parent: None,
+            leases: slot.leases(),
+            gauge: &node.gauge,
+            canary: &node.canary,
+            meter: &meter,
+        },
+        &unit,
+    )
+    .await;
+    node.inflight.remove(key_n);
+    // THE NODE'S OWN TAIL, as `answer_arriving_at` runs it: the terminal's bytes, wrapped by the
+    // late arm, drained the way a client drains them.
+    let walk = unit.walk;
+    let response = walk
+        .take_terminal()
+        .map(audit::Served::into_response)
+        .expect("the served unit posted its terminal");
+    assert_eq!(response.status(), StatusCode::OK, "the rerank was served");
+    let response =
+        node.attach_late_accrual(response, walk, &principal, arrived, Some(history.clone()));
+    let _body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("the served body drains");
+    server.shutdown().await;
+
+    // THE GOVERNANCE LEDGER: the key's bucket, flushed to its store and read back.
+    gov.flush_budgets();
+    let ledger = gov
+        .store()
+        .get_usage(
+            &key.id,
+            busbar_kernel_budget::budget_window(busbar_kernel_budget::window::WINDOW_TOTAL, EPOCH),
+        )
+        .expect("the governance ledger reads");
+    let classes = ledger
+        .models
+        .iter()
+        .find(|m| m.model == RERANK_LANE)
+        .map(|m| {
+            m.usage_units
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(class, count)| (class.clone(), *count))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    // NON-VACUITY: the governance ledger holds the search units, so an agreement below is an
+    // agreement ON them.
+    assert_eq!(
+        classes.get(SEARCH_UNITS),
+        Some(&RERANK_UNITS),
+        "the governance ledger accrued the rerank's search units: {classes:?}"
+    );
+    let governance = crate::root::durability::UnitCounts {
+        lane: RERANK_LANE.to_string(),
+        fee_count: ledger.billable_requests,
+        classes,
+    };
+
+    // THE SECOND BOOK: the late arm's row.
+    let rows = second_book_rows(&book);
+    assert_eq!(
+        rows.first()
+            .and_then(|row| row.counts.as_ref())
+            .and_then(|counts| counts.classes.get(SEARCH_UNITS)),
+        Some(&RERANK_UNITS),
+        "the durable book's row carries the rerank's search units: {rows:?}"
+    );
+    every_cell_agrees("served rerank", &rows, &governance, &history, arrived.ms())
+        .expect("both books hold the same search units and the same figure");
+}
+
+/// **THE LLM PLANE'S BOOK BINDING JOURNALS THE APPLIED CARDS** (#79): a build with this plane and no
+/// admin surface binds the dated rate-card history to the book here or nowhere, so a card applied
+/// after the boot must land on the chain through this binding alone. Before, only the admin
+/// assembly bound it: this plane's node settled onto the book while every live apply stayed in
+/// memory, and a restart repriced the node's postings at the boot card.
+#[test]
+fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
+    use crate::root::kernel::{CardApplied, RootHistory};
+    fn apply(holder: &RootHistory, input: f64, at: u64) {
+        let lanes = [(
+            "gpt".to_string(),
+            busbar_substrate_values::billing::RawTierRates {
+                input,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+        )];
+        holder.apply_rates(
+            &busbar_kernel::rate_apply::RawRates {
+                lanes: &lanes,
+                units: &[],
+                flat_minor: 0,
+                present: true,
+                plane_fees: &busbar_kernel::config::PlaneFeesMap::new(),
+            },
+            at,
+        );
+    }
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-llm-book-cards-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+
+    // The production boot's holder: armed, resolved at boot, its history rebuilt by the book.
+    let holder: &'static RootHistory = Box::leak(Box::default());
+    holder.arm_journal();
+    apply(holder, 3.0, 1_000);
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build_with_cards(
+            &crate::root::durability::DurabilityConfig {
+                data_dir: Some(dir.clone()),
+            },
+            7,
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(move || holder.pin()),
+            Some(holder),
+        )
+        .expect("the journal opens"),
+    ));
+
+    // THE LLM PLANE'S BINDING, and nothing else — no admin assembly.
+    super::bind_node_book(&Node::new(), holder, Arc::clone(&book));
+    apply(holder, 5.0, 20_000);
+
+    let cards = book
+        .lock()
+        .expect("the book")
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("verifies")
+        .iter()
+        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
+        .filter_map(|r| CardApplied::from_body(&r.body))
+        .map(|applied| applied.effective_from)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cards,
+        vec![0, 20_000],
+        "the boot card and the card applied after the binding are both on the chain"
+    );
+    drop(book);
+    let _ = std::fs::remove_dir_all(&dir);
 }

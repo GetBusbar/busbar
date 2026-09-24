@@ -464,7 +464,7 @@ fn the_projection_happens_once_over_the_row() {
     );
 }
 
-/// Item 28, the replacing behaviour (§15.3): a row whose micro-unit figure is past the `i64` it is
+/// The replacing behaviour: a row whose micro-unit figure is past the `i64` it is
 /// served in is REFUSED — by the row, by the identity, by the boolean — never pinned at `i64::MAX`.
 /// The pinning projection (`micros_of`) answered `i64::MAX` here: a bill nobody posted, which the
 /// identity then reported as a residual against a real figure.

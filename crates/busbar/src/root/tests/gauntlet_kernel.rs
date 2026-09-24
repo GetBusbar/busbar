@@ -330,6 +330,57 @@ fn install_flips_voice_session_onto_the_unified_kernel_loop() {
     );
 }
 
+/// THE ROOT'S PROSE AGREES WITH `install()` (item 238).
+///
+/// The four tests above prove `install()` registers the kernel-loop runner for every plane in the
+/// build. The files that describe that runner used to call it DORMANT and "not the shipped path",
+/// and `install()`'s own doc said a key with no runner "fails closed" when `run_gauntlet` runs the
+/// inline fallback. An on-call engineer tracing a billing figure reads the prose first, so a
+/// contradiction there sends them to the wrong path. Every composition-root source file is read,
+/// so a new file cannot reintroduce the claim beside the ones this was written about.
+#[test]
+fn no_root_prose_calls_the_registered_kernel_runner_dormant() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/root");
+    let mut files = Vec::new();
+    for dir in [root.clone(), root.join("units_admin")] {
+        for entry in std::fs::read_dir(&dir).expect("the composition root is on disk") {
+            let path = entry.expect("a directory entry").path();
+            if path.extension().is_some_and(|e| e == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    assert!(
+        files.len() > 10,
+        "the scan found the composition root: {files:?}"
+    );
+    for path in files {
+        let text = std::fs::read_to_string(&path).expect("a readable source file");
+        for (no, line) in text.lines().enumerate() {
+            let lower = line.to_ascii_lowercase();
+            assert!(
+                !(lower.contains("dormant") && lower.contains("kernel-loop")),
+                "{}:{} calls a kernel-loop path `install()` registers at boot dormant: {line}",
+                path.display(),
+                no + 1
+            );
+            for stale in [
+                "not the shipped path",
+                "registers zero planes",
+                "rides the substrate loop",
+                "now fails closed",
+            ] {
+                assert!(
+                    !lower.contains(stale),
+                    "{}:{} contradicts what `install()` registers at boot ({stale:?}): {line}",
+                    path.display(),
+                    no + 1
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn host_selection_seam_routes_session_to_registered_runner_when_set() {
     register_session_runner("kappa-test-session", sentinel_session);

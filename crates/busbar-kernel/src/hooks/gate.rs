@@ -250,6 +250,14 @@ pub(crate) async fn decide(
         }
         let content: &ScreenedContent = screened.as_ref().unwrap_or(&all);
         let req = project(subject, content, *send_prompt, *send_user);
+        if *send_prompt {
+            crate::audit::amend::hook_read(
+                policy.name(),
+                subject.key.map(|k| k.id.as_str()),
+                subject.ingress_protocol,
+                *send_user,
+            );
+        }
         let ctx = RoutingContext {
             pool: subject.container,
             // No pool-scoped budget signal on these planes: the budget a request here spends is the

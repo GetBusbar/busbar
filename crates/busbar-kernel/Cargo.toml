@@ -64,6 +64,12 @@ busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 # edge is acyclic, it is kernel -> kernel (an intra-tier edge ARCHITECTURE_ALLOWED grants), and it
 # is already in this crate's compile closure via `busbar-plugin-loader`.
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
+# THE AMENDMENT JOURNAL (item 404): the hook seam and the export dispatch record every content read
+# as an access amendment, and the correction a root admin makes to a recorded count is an adjustment
+# on the same chain. The audit unit depends only on `busbar-contract` and its digest/signature
+# crates, so the edge is acyclic and kernel -> kernel (an intra-tier edge ARCHITECTURE_ALLOWED
+# grants), exactly as the ledger edge above.
+busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.

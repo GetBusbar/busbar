@@ -67,7 +67,7 @@ const EXCLUDE_BENCHES: &str = "/benches/";
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub rel: String,
-    pub lines: Vec<ScopeLine>,
+    pub lines: std::sync::Arc<Vec<ScopeLine>>,
 }
 
 impl Candidate {
@@ -86,6 +86,31 @@ pub struct Corpus {
     pub test_only: std::collections::BTreeSet<String>,
 }
 
+/// THE PER-FILE SCOPE SCAN, MEMOISED on the file's path and bytes. [`scan::test_scope`] is a pure
+/// function of the text, so a hit is the answer and never a stale reading; what the memo buys is
+/// the self-test, which runs the whole gate twice per case over a tree that differs from the last
+/// one by a file or two, and used to re-lex every candidate each time.
+pub fn scope_lines(rel: &str, text: &str) -> std::sync::Arc<Vec<ScopeLine>> {
+    use std::collections::BTreeMap;
+    use std::hash::{Hash, Hasher};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    static MEMO: OnceLock<Mutex<BTreeMap<u64, Arc<Vec<ScopeLine>>>>> = OnceLock::new();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    rel.hash(&mut h);
+    text.hash(&mut h);
+    let key = h.finish();
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(hit) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Arc::clone(hit);
+    }
+    let lines = Arc::new(scan::test_scope(text));
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, Arc::clone(&lines));
+    lines
+}
+
 impl Corpus {
     pub fn build(cx: &Ctx) -> Result<Corpus, String> {
         let spec = WalkSpec::new([super::roots::CRATES])
@@ -100,7 +125,7 @@ impl Corpus {
                 .into_iter()
                 .map(|s| Candidate {
                     rel: s.rel_str(),
-                    lines: scan::test_scope(&s.text),
+                    lines: scope_lines(&s.rel_str(), &s.text),
                 })
                 .collect(),
         })

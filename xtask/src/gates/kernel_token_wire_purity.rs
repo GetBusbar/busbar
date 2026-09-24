@@ -59,8 +59,8 @@ const REQUIRED_KERNEL_CRATES: &[&str] = &[
 ];
 
 /// The denominator floor over the WHOLE kernel scan set. Measured 292 production files across the
-/// nine crates (busbar-kernel 200, -ledger 23, -egress 20, -identity 14, -audit 10, -breaker 8,
-/// -wal 8, -budget 7, -scope 2) when item 199 raised it from 8 (which was 4% of `busbar-kernel`
+/// nine crates (busbar-kernel 200, -ledger 23, -egress 20, -identity 14, -breaker 8, -wal 8,
+/// -budget 7, -scope 2, and 10 in the audit crate) when it was raised from 8 (which was 4% of `busbar-kernel`
 /// alone). 200 leaves room for the 1.6.0 deletion lists and still refuses the failure the old floor
 /// admitted: `handlers/` + `ingress/` lifted into a crate outside the prefix drops the set to ~100.
 const SCAN_FLOOR: usize = 200;

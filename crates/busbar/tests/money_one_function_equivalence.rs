@@ -651,7 +651,7 @@ fn d8_the_gauge_figure_is_the_one_functions_integer_up_to_the_egress_boundary() 
     );
 }
 
-/// D9 — M32, PARKED-OWNER (Q14): the admin read resolves a row at a BUCKET-level instant, not at
+/// PARKED: the admin read resolves a row at a BUCKET-level instant, not at
 /// each posting's own `arrived_ms`, so a sub-day back-dated correction cannot reach its rows. Kept
 /// verbatim as the parked measurement; not this collapse's to resolve.
 #[test]
@@ -937,7 +937,11 @@ fn is_derivation_name(name: &str) -> bool {
         || name.starts_with("spend_cents")
         || matches!(
             name,
-            "price_exact" | "price_at_card" | "price_in_view" | "one_function_total"
+            "price_exact"
+                | "price_at_card"
+                | "price_in_view"
+                | "price_dated"
+                | "one_function_total"
         )
 }
 
@@ -968,6 +972,10 @@ fn census(sources: &[(String, String)]) -> Vec<String> {
         "crates/busbar-kernel-ledger/src/cost/posting.rs",
         "crates/busbar-kernel/src/cost.rs",
         "crates/busbar-kernel-budget/src/price.rs",
+        // The DATED budget ledger (OWNER RULING Q14): each era of a budget cell at the card its era
+        // resolves to — behind `/keys` and `/groups` usage, the `/metrics` spend gauges, the hook
+        // seam's `budget_state` and the live LLM gate `try_admit`.
+        "crates/busbar-kernel-ledger/src/usage/dated.rs",
     ];
     let mut findings = Vec::new();
     let mut exempt_seen: BTreeMap<(&str, &str), usize> = BTreeMap::new();
@@ -1037,16 +1045,11 @@ fn census(sources: &[(String, String)]) -> Vec<String> {
 }
 
 /// Derivation-named functions the census SEES and that are not routed through the one function,
-/// each owned outside this collapse and named with its reason. Armed at today's count (§9.4).
-const KNOWN_OUTSIDE_THIS_COLLAPSE: &[(&str, &str, usize, &str)] = &[
-    (
-        "crates/busbar-voice/src/runtime/metering.rs",
-        "price_usage",
-        1,
-        "a `#[cfg(test)]` MockMeteringHost (LocalLease's stand-in and voice-conform's mock host \
-         went with 1ee8dac1d, the session meter)",
-    ),
-];
+/// each owned outside this collapse and named with its reason. Armed at today's measured count.
+///
+/// EMPTY: the last entry (busbar-voice's `#[cfg(test)]` MockMeteringHost `price_usage`) went with the
+/// D2 lease (OWNER RULING Q21b, P2-voice f87fd3800) — struck, as the census asks of a fixed one.
+const KNOWN_OUTSIDE_THIS_COLLAPSE: &[(&str, &str, usize, &str)] = &[];
 
 /// THE TREE HOLDS ONE `f`. Every derivation routes through it; no copy of the tier rule or the
 /// fold is called anywhere the census does not name.
@@ -1095,6 +1098,10 @@ fn census_every_former_copy_routes_to_the_one_function() {
         (
             "crates/busbar-core-admin/src/v1/service.rs",
             "derive_spend_micros_row_at_card",
+        ),
+        (
+            "crates/busbar-kernel-ledger/src/usage/dated.rs",
+            "price_dated",
         ),
     ] {
         assert!(

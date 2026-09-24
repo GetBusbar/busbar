@@ -324,6 +324,36 @@ impl DurableSeam for NoSeam {
     fn emit(&self, _ts: u64, _action: &str, _resource: &str, _outcome: &str, _principal: &str) {}
 }
 
+/// THE RING HAS HANDED OUT ITS LAST POSITION, and an append that would reuse or wrap one is refused.
+///
+/// A position is a `u64` counted from one, and the highest one it can hold has no successor. Before,
+/// the ring saturated: the entry after a restore at the top of the range took the SAME position as
+/// the restored one, and the allocator's next step wrapped to zero — two entries at one position,
+/// then one below the genesis. Either makes the ring call its own honest history out of order. A
+/// refusal is the only answer that neither reuses nor wraps. `last` is the position already spent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PositionsExhausted {
+    /// The last position the ring handed out, which has no successor.
+    pub last: u64,
+}
+
+impl std::fmt::Display for PositionsExhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the admin audit ring has handed out position {} and has no successor to give — the \
+             entry was refused rather than placed at a reused or wrapped position",
+            self.last
+        )
+    }
+}
+
+impl std::error::Error for PositionsExhausted {}
+
+/// The allocator's "no position left" state. Zero is never a position — a chain counts from one —
+/// so it cannot collide with a real next position.
+const EXHAUSTED: u64 = 0;
+
 /// The in-memory admin audit ring.
 ///
 /// Appending is append-only and bounded, pruning the oldest past the cap — a hot cache of the recent
@@ -378,39 +408,72 @@ impl AuditLog {
     /// Fetching it before taking the lock let two concurrent recorders interleave — the one with the
     /// higher number took the lock first and pushed first — producing out-of-order sequences in the
     /// ring. Under the lock, a relaxed ordering is sufficient: the lock is the ordering point.
+    ///
+    /// At the top of the position range the RING refuses the entry (see [`PositionsExhausted`]) and
+    /// the durable write still happens: the mutation is never failed and its durable record is never
+    /// dropped. A caller that must know uses [`AuditLog::try_record_by`].
     pub fn record_by(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
+        let _refused_by_the_ring = self.try_record_by(action, resource, outcome, principal);
+    }
+
+    /// [`AuditLog::record_by`], saying whether the ring placed the entry.
+    ///
+    /// # Errors
+    ///
+    /// [`PositionsExhausted`] when the ring has already handed out `u64::MAX`: the entry is not
+    /// placed in the ring, because its only candidate positions are a reused one or a wrapped one.
+    /// The durable seam is fed either way.
+    pub fn try_record_by(
+        &self,
+        action: &str,
+        resource: &str,
+        outcome: &str,
+        principal: &str,
+    ) -> Result<(), PositionsExhausted> {
         // ONE clock read for this mutation, shared by the sealed ring record below AND the durable
         // emit after it.
         let ts = self.clock.now();
-        {
+        let placed = {
             let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-            let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            // Chain to the most recent entry, before any prune.
-            let prev_hash = q.back().map(|e| e.hash.clone()).unwrap_or_default();
-            // The ring allocates the POSITION — it must, under this lock, to match insertion order
-            // — and the chain builds and digests the record. The caller's payload and the chain's
-            // position arrive through different arguments, so no call site can supply either.
-            let entry: AuditEntry = super::chain::seal(
-                ADMIN_LOG,
-                seq,
-                prev_hash,
-                AuditInput {
-                    ts,
-                    action: action.to_string(),
-                    resource: resource.to_string(),
-                    outcome: outcome.to_string(),
-                    principal: principal.to_string(),
-                },
-            );
-            while q.len() >= MAX_AUDIT_ENTRIES {
-                q.pop_front();
+            let seq = self.seq.load(std::sync::atomic::Ordering::Relaxed);
+            if seq == EXHAUSTED {
+                Err(PositionsExhausted { last: u64::MAX })
+            } else {
+                // CHECKED, never saturating: `u64::MAX` is handed out once and the allocator then
+                // holds the exhausted state instead of the same position again or a wrapped zero.
+                self.seq.store(
+                    seq.checked_add(1).unwrap_or(EXHAUSTED),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                // Chain to the most recent entry, before any prune.
+                let prev_hash = q.back().map(|e| e.hash.clone()).unwrap_or_default();
+                // The ring allocates the POSITION — it must, under this lock, to match insertion order
+                // — and the chain builds and digests the record. The caller's payload and the chain's
+                // position arrive through different arguments, so no call site can supply either.
+                let entry: AuditEntry = super::chain::seal(
+                    ADMIN_LOG,
+                    seq,
+                    prev_hash,
+                    AuditInput {
+                        ts,
+                        action: action.to_string(),
+                        resource: resource.to_string(),
+                        outcome: outcome.to_string(),
+                        principal: principal.to_string(),
+                    },
+                );
+                while q.len() >= MAX_AUDIT_ENTRIES {
+                    q.pop_front();
+                }
+                q.push_back(entry);
+                Ok(())
             }
-            q.push_back(entry);
-        }
+        };
         // THE CHOKEPOINT FEED onto the durable seam. Recording a mutation is the ONE place a
         // mutation is recorded, so this ONE call — with the SAME timestamp sealed above — is the
         // durable write.
         self.seam.emit(ts, action, resource, outcome, principal);
+        placed
     }
 
     /// Export the retained ring, oldest first.
@@ -442,12 +505,20 @@ impl AuditLog {
         while q.len() > MAX_AUDIT_ENTRIES {
             q.pop_front();
         }
-        // Saturating, not `+ 1`: the highest position a `u64` can hold has no successor, and a
-        // snapshot carrying it must seed the ring rather than panic a booting node.
-        self.seq.fetch_max(
-            max_seq.saturating_add(1),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        // CHECKED, not `+ 1` and not saturating: the highest position a `u64` can hold has no
+        // successor, so a snapshot carrying it seeds the ring (never a panic on a booting node) and
+        // leaves the allocator EXHAUSTED — the next append is refused rather than handed the
+        // restored entry's own position. Never backwards, and an exhausted allocator stays so: the
+        // positions it already spent are spent whatever snapshot arrives. Under the entries lock,
+        // which is where every allocation happens, so the read and the write cannot interleave.
+        let resume = max_seq.checked_add(1).unwrap_or(EXHAUSTED);
+        let current = self.seq.load(std::sync::atomic::Ordering::Relaxed);
+        let next = if current == EXHAUSTED || resume == EXHAUSTED {
+            EXHAUSTED
+        } else {
+            current.max(resume)
+        };
+        self.seq.store(next, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Restore the ring from what a store persisted, verifying it first.

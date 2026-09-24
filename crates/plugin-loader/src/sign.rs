@@ -606,8 +606,9 @@ pub fn validate_structure(
     }
     if !KNOWN_KINDS.contains(&m.kind.as_str()) {
         return Err(format!(
-            "manifest kind '{}' is not one of {KNOWN_KINDS:?}",
-            m.kind
+            "manifest kind '{}' is not one of {KNOWN_KINDS:?}{}",
+            m.kind,
+            crate::registry::kind_refusal_note(&m.kind)
         ));
     }
     if !valid_semver(&m.version) {

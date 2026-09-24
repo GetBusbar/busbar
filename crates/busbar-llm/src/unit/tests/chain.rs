@@ -638,9 +638,8 @@ struct Metering {
     /// Whether the Meter step made the accrual itself, as opposed to sealing the one the walk's tap
     /// had already made.
     posted_here: bool,
-    /// The fee the step says posts, and the refund it says is owed.
+    /// The fee the step says posts. (The refund is the terminal door's, held on the ledger.)
     fee_count: u32,
-    refund: bool,
     /// What the METER step was bound to, as the Route step handed it over: the serving lane, the
     /// reported split, which is the charge on every end (#62). Empty while the answer was still in
     /// flight when the step ran, which is every stream.
@@ -659,7 +658,6 @@ impl Metering {
             reached: false,
             posted_here: false,
             fee_count: 0,
-            refund: false,
             bound: (None, None),
             finish: None,
             tap: None,
@@ -944,7 +942,7 @@ async fn drive(
     let lane = facts.lane.and_then(|i| tables.lanes().get(i));
     // The half the walk handed BACK where it never dispatched, and the reader's copy where it did.
     let meter_sink = meter_sink.or(meter_half);
-    let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts, charged);
+    let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts);
     // The rehearsal drives this plane's steps and keeps no books. The step names no price and works
     // out no amount: it assembles what the unit consumed and hands it back on its report, and what
     // the money actually comes to is the composition root's, proven where the card is.
@@ -959,7 +957,6 @@ async fn drive(
     // sealed, so it cannot be the instrument here: one-posting-per-unit is what this pins.
     metering.posted_here = metered.posted;
     metering.fee_count = metered.fee_count;
-    metering.refund = metered.refund;
     // What the step was actually BOUND to, read off the facts rather than off the response: the
     // three figures Route folds out of the tap where the tap had already finished.
     metering.bound = (facts.lane, split(facts.usage.as_ref()));
@@ -1355,16 +1352,56 @@ async fn the_meter_step_is_fed_from_the_route_steps_output() {
         );
     }
 
-    // The fee and the refund are the step's own answer over those facts, and they are read back
-    // here rather than assumed: a delivered 2xx from an upstream leg posts the flat fee and refunds
-    // nothing; a charged non-2xx posts none and refunds the fee base; and a candidate miss is a
-    // charged non-2xx that never dialled, so it posts no fee either.
+    // The fee is the step's own answer over those facts, read back here rather than assumed: a
+    // delivered 2xx from an upstream leg posts the flat fee; a charged non-2xx posts none; and a
+    // candidate miss is a charged non-2xx that never dialled, so it posts no fee either. The REFUND
+    // is not the step's — `the_refund_is_the_terminal_doors_and_it_lands_on_the_ledger` holds it.
     let (_, delivered) = leg_chain_metered(Fixture::BufferedOk).await;
-    assert_eq!((delivered.fee_count, delivered.refund), (1, false));
+    assert_eq!(delivered.fee_count, 1);
     let (_, failed) = leg_chain_metered(Fixture::UpstreamFailure).await;
-    assert_eq!((failed.fee_count, failed.refund), (0, true));
+    assert_eq!(failed.fee_count, 0);
     let (_, missed) = leg_chain_metered(Fixture::UnknownModel).await;
-    assert_eq!((missed.fee_count, missed.refund), (0, true));
+    assert_eq!(missed.fee_count, 0);
+}
+
+/// THE REFUND IS THE TERMINAL DOOR'S, AND IT LANDS ON THE LEDGER (item 366).
+///
+/// The fee base of a charged unit that did not deliver a 2xx comes back; the admission slot does
+/// not. There is ONE place that decides it — the admitted terminal door, handed the admit step's
+/// `charged` by the Audit step — and the Meter step no longer computes a second copy nobody read.
+/// So the rule is held HERE, on the money the door moved, rather than on a flag: the derived spend
+/// the budget cap reads is the fee on a delivered unit and nothing on a charged failure, while the
+/// admission count stays at one on both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_refund_is_the_terminal_doors_and_it_lands_on_the_ledger() {
+    fn field(o: &Observed, k: &str) -> String {
+        o.0.iter()
+            .find(|(f, _)| *f == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    }
+    // Delivered: one slot, one fee, not refunded.
+    let delivered = leg_chain(Fixture::BufferedOk).await;
+    assert_eq!(field(&delivered, "ledger_requests"), "1");
+    assert_eq!(
+        field(&delivered, "ledger_spend_cents"),
+        FEE_CENTS.to_string(),
+        "a delivered 2xx keeps its flat fee"
+    );
+    // A charged failed transfer and a charged candidate miss: the slot is kept, the fee is refunded.
+    for fixture in [Fixture::UpstreamFailure, Fixture::UnknownModel] {
+        let failed = leg_chain(fixture).await;
+        assert_eq!(
+            field(&failed, "ledger_requests"),
+            "1",
+            "{fixture:?}: the admission slot is never refunded"
+        );
+        assert_eq!(
+            field(&failed, "ledger_spend_cents"),
+            "0",
+            "{fixture:?}: the terminal door refunded the fee base the admission charged"
+        );
+    }
 }
 
 /// GAP 2, CLOSED — the walk's tap IS the METER step's body, and it fires once.

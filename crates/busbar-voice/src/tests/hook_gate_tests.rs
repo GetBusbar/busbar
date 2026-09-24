@@ -16,7 +16,7 @@
 //! RED before the wiring: `open_governed` never consulted the gate, so `reject-all` served the open.
 
 use crate::mount::{open_governed, GovernedOpen, Ingress};
-use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
+use crate::runtime::{EchoToolExecutor, VoiceRuntime};
 use crate::testkit::fixture_host::{FixtureHost, GateScript};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane_host::{EngineHost, GateOutcome};
@@ -43,7 +43,6 @@ fn gate(settings: serde_json::Value) -> GateScript {
 fn runtime() -> VoiceRuntime {
     VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
-        Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     )
 }

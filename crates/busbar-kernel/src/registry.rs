@@ -8,10 +8,16 @@
 //! it, calls it and consumes what it returns. This file is that list, plus two things that follow
 //! from it.
 //!
-//! **Generations.** Reloading configuration does not mutate the list a running unit is walking. A
-//! new generation is a new number; entries say which generations they are live for; a unit pins the
-//! generation it started at and keeps calling the same plugins all the way to its end, even while a
-//! replacement is being installed underneath it.
+//! **Generations.** The mechanism a plugin reload needs, built and proven but not yet driven. A new
+//! generation is a new number; entries say which generations they are live for; a unit pins the
+//! generation it started at and would keep calling the same plugins all the way to its end while a
+//! replacement was installed underneath it. Today NOTHING in production installs one: the node
+//! builds its registry once, at boot (`register` only), and the real configuration reload —
+//! `AppHandle::swap` — never touches a registry, so every unit pins [`Generation::FIRST`].
+//! [`Registry::replace`] and [`Registry::retire`] are exercised by the battery alone, and `entries`
+//! is push-only: a reload wired to `replace` would retain every replaced plugin for the process's
+//! life, with no compaction and no oldest-pinned-generation watermark to release it. Whoever wires a
+//! reload to this registry owes both.
 //!
 //! **Claims.** A claim says "these bytes are mine". The question is asked at boot, over every pair,
 //! and [`overlaps`] is deliberately CONSERVATIVE: where the shapes are not comparable it answers
@@ -136,10 +142,12 @@ impl Registry {
         Ok(self.generation)
     }
 
-    /// Swap a plugin for a new one, opening a new generation.
+    /// Swap a plugin for a new one, opening a new generation. No production caller (see the module
+    /// doc's "Generations").
     ///
     /// The old entry is not deleted: it stays reachable at every generation it was live for, so a
-    /// unit that started before the swap finishes against what it started with.
+    /// unit that started before the swap finishes against what it started with — and nothing ever
+    /// releases it.
     pub fn replace(&mut self, plugin: Arc<dyn Plugin>) -> Generation {
         let (key, kind) = (plugin.key(), plugin.kind());
         let next = self.generation.next();
@@ -159,7 +167,7 @@ impl Registry {
         next
     }
 
-    /// Retire a plugin as of the next generation.
+    /// Retire a plugin as of the next generation. No production caller, like [`Registry::replace`].
     pub fn retire(&mut self, kind: PluginKind, key: &str) -> Generation {
         let next = self.generation.next();
         for entry in &mut self.entries {
@@ -449,6 +457,16 @@ pub fn precedence_order(claims: &[PlaneClaim]) -> Vec<usize> {
 /// conservative direction: an operator sees it once, at boot, with both claims named.
 ///
 /// Reflexive and symmetric by construction, and both are asserted by the battery.
+///
+/// Path and transport forms are decided by the CONTRACT's rule, read here rather than spelled a
+/// second time. A transcription is exactly where a boot that proves two claims disjoint and the
+/// published rule a plugin author reasons with come apart: the kernel's copy of the transport arms
+/// folded ALPN case while the contract compares ALPN protocol ids byte-exactly (they are opaque byte
+/// strings, RFC 7301), so the two answered one question oppositely. The contract is what a plane
+/// writes its claims in, so its reading is the one the declaration means — SNI folds case there
+/// (a DNS name), ALPN, a certificate subject, a stream name and a port do not. What the kernel keeps
+/// is what the contract has no business knowing: the header rule below, and how specific one
+/// selector is against another, which is the precedence order and not part of what a selector IS.
 pub fn overlaps(left: &Selector, right: &Selector) -> bool {
     if crate::grammar::family(left) != crate::grammar::family(right) {
         // Different axes. Nothing here can prove they do not coincide, so they might.
@@ -456,8 +474,7 @@ pub fn overlaps(left: &Selector, right: &Selector) -> bool {
     }
     match crate::grammar::family(left) {
         SelectorFamily::Header => header_overlaps(left, right),
-        SelectorFamily::Path => path_overlaps(left, right),
-        SelectorFamily::Transport => transport_overlaps(left, right),
+        SelectorFamily::Path | SelectorFamily::Transport => left.overlaps(right),
     }
 }
 
@@ -476,42 +493,6 @@ fn header_overlaps(left: &Selector, right: &Selector) -> bool {
             a.starts_with(b) || b.starts_with(a)
         }
         // Presence matches every value of that header, so it overlaps anything on it.
-        _ => true,
-    }
-}
-
-/// Path forms, as the contract decides them.
-///
-/// The rule is READ here rather than spelled a second time. It used to be transcribed — the same
-/// arms, one crate down — and a transcription is exactly where a boot that proves two claims
-/// disjoint and a request that matches both come apart: the contract is what a plane writes its
-/// claims in, so the contract's reading is the one the declaration means. What the kernel keeps of
-/// the path question is what the contract has no business knowing: how specific one selector is
-/// against another, which is the precedence order and not part of what a selector IS.
-fn path_overlaps(left: &Selector, right: &Selector) -> bool {
-    left.overlaps(right)
-}
-
-/// Transport forms: same form compares its value, different forms coincide.
-///
-/// The case rule is per selector kind, not blanket over the function — the same principle
-/// [`header_overlaps`] already applies to a header NAME (`registry.rs:468`,
-/// `a.eq_ignore_ascii_case(b)`) rather than to a header VALUE. SNI is the name offered in a TLS
-/// handshake and ALPN is the protocol negotiated there; both are names, and DNS names — which is
-/// what a TLS server name IS — are case-insensitive, so `Example.com` and `example.com` are the
-/// SAME name and two claims naming them are the SAME claim fighting over one listener. Comparing
-/// them byte-wise let a boot's claim-disjointness proof clear that fight as "disjoint" when it is
-/// not. A client certificate's subject and a multiplexed stream's name are not DNS names — nothing
-/// here says they fold case — so they keep the exact comparison, and so does the port, which is a
-/// number and has no case at all.
-fn transport_overlaps(left: &Selector, right: &Selector) -> bool {
-    match (left, right) {
-        (Selector::Sni(a), Selector::Sni(b)) | (Selector::Alpn(a), Selector::Alpn(b)) => {
-            a.eq_ignore_ascii_case(b)
-        }
-        (Selector::ClientCertSubject(a), Selector::ClientCertSubject(b))
-        | (Selector::StreamName(a), Selector::StreamName(b)) => a == b,
-        (Selector::Port(a), Selector::Port(b)) => a == b,
         _ => true,
     }
 }

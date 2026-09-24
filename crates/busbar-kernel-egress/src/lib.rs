@@ -70,6 +70,7 @@ pub mod walk;
 pub mod wire;
 
 pub use arity::{on_primary_unavailable, Arity, PinnedRefusal, Reroute};
+pub use attempt::PlaneRef;
 pub use pool::{
     Failover, Member, OnExhausted, Pool, PoolTable, DEFAULT_FAILOVER_CAP,
     DEFAULT_FAILOVER_DEADLINE_SECS,

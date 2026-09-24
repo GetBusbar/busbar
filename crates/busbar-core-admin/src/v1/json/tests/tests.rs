@@ -294,6 +294,10 @@ fn openapi_error_enum_matches_admin_error_codes() {
         AdminError::Conflict(String::new()),
         AdminError::RateLimited,
         AdminError::Internal,
+        AdminError::UnpricedClass {
+            lane: String::new(),
+            class: None,
+        },
     ]
     .iter()
     .map(|e| e.code().to_string())

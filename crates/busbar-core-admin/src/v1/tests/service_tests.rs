@@ -2459,6 +2459,7 @@ mod dated_rate_card_history {
             busbar_api::Store::add_metering(
                 store.as_ref(),
                 &busbar_api::MeteringDelta {
+                    usage_units: Default::default(),
                     key_id: KEY.to_string(),
                     bucket: *bucket,
                     model: LANE.to_string(),
@@ -2586,6 +2587,41 @@ mod dated_rate_card_history {
             read(gov, src, prepaid).await.total.spend_micros,
             1_000,
             "the prepaid window prices at 1"
+        );
+    }
+
+    // ── PROOF 1b: a HOLE in the dated history REFUSES the read (#42, item 374) ───────────────
+
+    /// A history whose only entry starts at `monthly` leaves the PAYG window in a HOLE: no entry
+    /// covers the row's instant. That is `MoneyError::NoCardInForce`, a refusal like the other
+    /// three — the read fails rather than pricing the row at the CURRENT card (1 x 1_000 = 1_000,
+    /// the figure it served before), which is a card nobody put in force for that instant. The
+    /// covered window alongside it still prices, so the refusal is the hole's and not the fixture's.
+    #[tokio::test]
+    async fn a_hole_in_the_dated_history_refuses_rather_than_pricing_at_the_current_card() {
+        let (payg, monthly, _prepaid) = windows();
+        let mut history = History::new();
+        history.append(CardEntryDraft {
+            effective_from: monthly * 1_000,
+            effective_until: None,
+            card: card(5.0),
+            appended_at: monthly * 1_000,
+            author: Author::Config { policy_epoch: 0 },
+        });
+        let src = source(history);
+        let gov = gov_with_rows(&[(payg, 0), (monthly, monthly * 1_000)]);
+
+        assert_eq!(
+            read(gov.clone(), src, monthly).await.total.spend_micros,
+            5_000,
+            "the covered window prices at the entry in force (5 x 1_000 tokens)"
+        );
+        assert!(
+            matches!(
+                read_as_of(gov, src, payg, None).await,
+                Err(AdminError::Internal)
+            ),
+            "a row no history entry covers must REFUSE the read, never price at the current card"
         );
     }
 
@@ -2805,6 +2841,78 @@ mod dated_rate_card_history {
         assert_eq!(
             view.total.spend_micros, 750_090_000,
             "with no history installed the read is the published 1.5.5 figure"
+        );
+    }
+
+    // ── ITEM 404 (OWNER RULING Q9): an `adjust` of a unit's COUNTS reaches the served figure ──
+
+    /// **THE EXIT TEST FOR ITEM 404's USAGE HALF.** A unit of key `vk_adjust_404` metered 1,000
+    /// input tokens at 2.5 micro-units each: `GET /api/v1/admin/usage` serves 2,500 micro-units
+    /// (2,500,000 nano-units). A root `adjust` seals 800 on the node amendment journal — counts, no
+    /// money — and the same read serves 800 tokens and 2,000 micro-units (2,000,000 nano-units): the
+    /// read prices the counts AS CORRECTED. A correction for another key leaves the row alone.
+    #[tokio::test]
+    async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
+        use busbar_kernel::audit::amend::{correct_counts, ClassCounts, CountCorrection};
+        const ADJUSTED_KEY: &str = "vk_adjust_404";
+        let (bucket, _, _) = windows();
+        let store = Arc::new(MemoryStore::new());
+        busbar_api::Store::add_metering(
+            store.as_ref(),
+            &busbar_api::MeteringDelta {
+                key_id: ADJUSTED_KEY.to_string(),
+                bucket,
+                model: LANE.to_string(),
+                provider: PROVIDER.to_string(),
+                tokens_input: TOKENS,
+                tokens_output: 0,
+                tokens_cache_read: 0,
+                tokens_cache_write: 0,
+                requests: 1,
+                billable_requests: 1,
+                key_group_at_use: String::new(),
+                pricing_version: String::new(),
+                priced_from_ms: 0,
+                usage_units: Default::default(),
+            },
+        )
+        .expect("the memory store accepts a metering delta");
+        let gov = Arc::new(GovState::new(store, None).expect("governance builds"));
+        let src = source(History::opening(card(2.5), 0));
+
+        let before = read(gov.clone(), src, bucket).await.total;
+        assert_eq!((before.tokens_input, before.spend_micros), (1_000, 2_500));
+
+        let count = |n: i128| busbar_contract::count::Count::from_integer(n).expect("whole");
+        let was = ClassCounts::from([(busbar_api::UNIT_INPUT.to_string(), count(1_000))]);
+        let correct = |principal: &'static str, amends: &'static str| {
+            correct_counts(
+                busbar_contract::authz::Scope::Full,
+                &was,
+                CountCorrection {
+                    amends,
+                    principal: Some(principal),
+                    lane: LANE,
+                    card_epoch_ms: bucket * 1_000 + 5,
+                    now: ClassCounts::from([(busbar_api::UNIT_INPUT.to_string(), count(800))]),
+                    authorised_by: "admin",
+                    reason: "a retried request was metered twice",
+                },
+            )
+            .expect("a root correction with a reason is sealed")
+        };
+        correct("vk_someone_else_404", "item-404-other-unit");
+        assert_eq!(
+            read(gov.clone(), src, bucket).await.total.spend_micros,
+            2_500,
+            "a correction for another key does not reach this row"
+        );
+        correct(ADJUSTED_KEY, "item-404-usage-unit");
+        let after = read(gov, src, bucket).await.total;
+        assert_eq!(
+            (after.tokens_input, after.spend_micros),
+            (800, 2_000),
+            "the served figure prices the corrected counts: 800 x 2.5"
         );
     }
 }
@@ -3183,6 +3291,7 @@ mod one_recorded_usage_every_surface {
             busbar_api::Store::add_metering(
                 store.as_ref(),
                 &busbar_api::MeteringDelta {
+                    usage_units: Default::default(),
                     key_id: KEY.to_string(),
                     bucket,
                     model: LANE.to_string(),
@@ -3431,5 +3540,570 @@ mod one_recorded_usage_every_surface {
             19_000,
             "the dated book says {one_micros}; the enforcement surfaces say {served}"
         );
+    }
+}
+
+/// Item 375: a doc comment in this directory that names a backticked file under the workspace's
+/// scripts directory as the thing enforcing a rule must name a file that EXISTS. `service.rs` cited
+/// the settings-leak shell lint as the guard on admin settings redaction after that script was
+/// deleted (the rule lives on as `cargo xtask gate settings-leak`), so a reader looking for the
+/// guard found nothing. A citation of another repository's script is not this tree's and is
+/// skipped by the busbar-ui qualifier on the same line.
+#[test]
+fn every_scripts_path_cited_in_v1_exists() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("v1/ is readable") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest.join("../..");
+    let mut files = Vec::new();
+    walk(&manifest.join("src/v1"), &mut files);
+    assert!(
+        files.len() > 5,
+        "the walk found the v1 sources ({})",
+        files.len()
+    );
+    let mut stale = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).expect("a v1 source reads");
+        for (n, line) in text.lines().enumerate() {
+            if line.contains("busbar-ui") {
+                continue;
+            }
+            for cited in line.split("`scripts/").skip(1) {
+                let Some(end) = cited.find('`') else { continue };
+                let path = cited[..end].split("::").next().unwrap_or_default();
+                if !workspace.join("scripts").join(path).exists() {
+                    stale.push(format!("{}:{}: scripts/{path}", file.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "v1/ cites scripts that do not exist: {stale:#?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// PER-PLANE FEES ON `GET /admin/usage` (#47, OWNER RULING Q32)
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// `GET /admin/usage` prices each metering row's requests at the fee of the plane the row belongs
+/// to — the pools plane's flat `per_request_fee:` for a pools row, a plane's own
+/// `fees.per_request` for that plane's row, and nothing for a plane that configured no fees — and so
+/// answers the budget book's figure for the same traffic.
+///
+/// Before: a plane's metering row is keyed by its unqualified subject with the plane only in the
+/// provider column, and the read priced its requests at the flat fee — 25 where the budget book
+/// said 19, and 20 where a fee-less plane's book said 0.
+mod plane_fees_on_admin_usage {
+    use super::*;
+    use busbar_api::Store as _;
+    use busbar_kernel::plane::registry::{PlaneDecl, TestRegistryIsolation};
+    use busbar_kernel_ledger::cost::{PlaneFees, PLANE_LANE_SEP};
+
+    const KEY: &str = "vk_plane_fees";
+    const LLM_MODEL: &str = "m";
+    const LLM_PROVIDER: &str = "openai-chat";
+    /// The plane with `fees.per_request: 3`.
+    const FEE_PLANE: &str = "tp";
+    /// A plane that configured no fees.
+    const FREE_PLANE: &str = "np";
+    /// The pools plane (the fallback) — a row naming ITS key is a pools row.
+    const POOLS_PLANE: &str = "pools-test";
+    /// One minor unit of fee, in the micro-units `spend_micros` is served in.
+    const MICROS_PER_MINOR: i64 = 10_000;
+
+    macro_rules! decl {
+        ($key:expr, $fallback:expr, $section:expr) => {
+            PlaneDecl {
+                key: $key,
+                fallback: $fallback,
+                config_section: $section,
+                scope_kinds: &[],
+                subject_noun: $key,
+                admin_noun: $key,
+                audit_kind: $key,
+                wire_format_names: || &[],
+                claims: |_| Vec::new(),
+                admission: |_| None,
+                build: |_| None,
+                routes: None,
+                admin_routes: None,
+                openapi: None,
+                hydrate: None,
+                start: None,
+                config_validate: None,
+                card_signing_domain: None,
+                card_kid_prefix: None,
+                named_def_list: None,
+                named_def_get: None,
+                registry_contains: None,
+                reresolve_gates: None,
+                #[cfg(feature = "openapi-schema")]
+                openapi_schemas: None,
+                on_swap: None,
+                parse_section: None,
+                parse_endpoint: None,
+                lower_endpoint: None,
+                build_runtime: None,
+                viewer: None,
+                retain_verify_gates: None,
+                default_section: None,
+                owned_config_sections: &[],
+                billable_classes: &[],
+                fee_units: &[],
+                resolve_provider: None,
+            }
+        };
+    }
+    static POOLS: PlaneDecl = decl!(POOLS_PLANE, true, "pools");
+    static FEE: PlaneDecl = decl!(FEE_PLANE, false, "tools");
+    static FREE: PlaneDecl = decl!(FREE_PLANE, false, "streams");
+
+    /// Flat fee 5 (the pools plane's), `tools.fees.per_request: 3`, no card (billing off for
+    /// tokens) — the P2-fees before→after fixture.
+    fn cost() -> busbar_kernel::cost::CostModel {
+        let fees = busbar_kernel::config::PlaneFeesMap::from([(
+            FEE_PLANE.to_string(),
+            PlaneFees {
+                per_request: 3,
+                per_session: 0,
+            },
+        )]);
+        busbar_kernel::cost::CostModel::resolve_parts(None, 5, &std::collections::BTreeMap::new())
+            .with_plane_fees(&fees)
+    }
+
+    fn key() -> VirtualKey {
+        VirtualKey {
+            id: KEY.to_string(),
+            generation_hash: format!("h:{KEY}"),
+            name: "plane-fees".to_string(),
+            enabled: true,
+            revision: 1,
+            ..Default::default()
+        }
+    }
+
+    fn gov() -> Arc<GovState> {
+        let store = Arc::new(MemoryStore::new());
+        store.put_key(&key()).unwrap();
+        Arc::new(GovState::new(store, None).unwrap())
+    }
+
+    /// Serve `llm` pools calls and `plane` calls on `plane` exactly as the host does: the admission
+    /// (the budget book — the pools pool unqualified, the plane's pool qualified by its key) and
+    /// the metering row (the plane's subject in `model`, its key in `provider`). Returns the budget
+    /// book's spend (minor units) and `/admin/usage`'s total spend (micro-units).
+    ///
+    /// The app is built BEFORE the plane registry is seeded: building it registers the neutral test
+    /// plane, which would re-lock the registry an isolation already holds on this thread.
+    async fn serve(llm: usize, plane: &str, calls: usize) -> (i64, i64) {
+        let gov = gov();
+        let cost = cost();
+        let app = crate::new_test_app()
+            .governance(Arc::clone(&gov))
+            .cost(self::cost())
+            .build();
+        let _planes = TestRegistryIsolation::seeded(&[&POOLS, &FEE, &FREE]);
+        let now = busbar_kernel::store::now();
+        let key = key();
+        for _ in 0..llm {
+            assert!(gov.try_admit(&cost, &key, "", now).is_ok(), "a pools call");
+            gov.record_metering(KEY, LLM_MODEL, LLM_PROVIDER, None, now);
+        }
+        for _ in 0..calls {
+            let pool = format!("{plane}{PLANE_LANE_SEP}srv.read");
+            assert!(
+                gov.try_admit(&cost, &key, &pool, now).is_ok(),
+                "a plane call"
+            );
+            gov.record_metering(KEY, "srv.read", plane, None, now);
+        }
+        gov.flush_metering();
+        let book = gov
+            .usage_for(&cost, KEY, now)
+            .unwrap()
+            .expect("the key's usage")
+            .spend_cents;
+        let view = AdminService::new(app)
+            .get_usage(None, None)
+            .await
+            .expect("usage read");
+        (book, view.total.spend_micros)
+    }
+
+    #[tokio::test]
+    async fn a_planes_rows_price_at_its_own_fee_and_admin_usage_agrees_with_the_budget_book() {
+        let (book, admin) = serve(2, FEE_PLANE, 3).await;
+        assert_eq!(book, 19, "the budget book: 2 pools × 5 + 3 tools × 3");
+        assert_eq!(
+            admin,
+            19 * MICROS_PER_MINOR,
+            "/admin/usage prices the tools rows at tools.fees.per_request, not the flat fee \
+             (before: 25), and agrees with the budget book"
+        );
+        assert_eq!(admin, book * MICROS_PER_MINOR);
+    }
+
+    #[tokio::test]
+    async fn a_plane_without_fees_reads_zero_fee_on_admin_usage() {
+        let (book, admin) = serve(0, FREE_PLANE, 4).await;
+        assert_eq!(book, 0, "the budget book: a fee-less plane bills no fee");
+        assert_eq!(
+            admin, 0,
+            "/admin/usage: 4 calls on a fee-less plane (before: 20)"
+        );
+    }
+
+    /// THE DATED PATH (#79) prices a plane's row the same way: its requests on the plane's fee
+    /// lane at the plane's own fee, resolved through the history entry in force at the row's
+    /// instant — 3 tools calls at 3, 2 pools calls at the flat 5, 4 fee-less plane calls at 0.
+    #[test]
+    fn the_dated_read_prices_a_planes_row_at_its_own_fee() {
+        use busbar_kernel::admin::v1::contract::UsageBreakdown;
+        let cost = cost();
+        let history = busbar_kernel_ledger::cost::History::opening(cost.card().clone(), 0);
+        let view = history.current();
+        let (_, card) = view.card_at(0).expect("the opening card");
+        let price = |lane: &str, requests: u64| {
+            let b = UsageBreakdown {
+                requests,
+                ..Default::default()
+            };
+            crate::v1::service::derive_spend_micros_row_at_card(&view, 0, card, &cost, lane, &b)
+                .expect("priced")
+        };
+        let tools = format!("{FEE_PLANE}{PLANE_LANE_SEP}srv.read");
+        let free = format!("{FREE_PLANE}{PLANE_LANE_SEP}srv.read");
+        assert_eq!(price(&tools, 3), 9 * MICROS_PER_MINOR, "3 × tools fee 3");
+        assert_eq!(price(LLM_MODEL, 2), 10 * MICROS_PER_MINOR, "2 × flat fee 5");
+        assert_eq!(price(&free, 4), 0, "a fee-less plane bills no fee");
+        assert_eq!(
+            crate::v1::service::derive_spend_micros_row(
+                &cost,
+                &tools,
+                &UsageBreakdown {
+                    requests: 3,
+                    ..Default::default()
+                }
+            )
+            .expect("priced"),
+            9 * MICROS_PER_MINOR,
+            "the no-history fallback agrees"
+        );
+    }
+
+    /// A pools row — its provider an upstream provider, or the pools plane's own key — keeps the
+    /// flat fee: byte-identical to the previous release.
+    #[tokio::test]
+    async fn a_pools_row_keeps_the_flat_fee() {
+        let (book, admin) = serve(2, POOLS_PLANE, 0).await;
+        assert_eq!((book, admin), (10, 10 * MICROS_PER_MINOR));
+        let _planes = TestRegistryIsolation::seeded(&[&POOLS, &FEE, &FREE]);
+        assert_eq!(
+            crate::v1::service::row_lane(LLM_MODEL, POOLS_PLANE),
+            LLM_MODEL,
+            "the fallback plane's key is a pools row"
+        );
+        assert_eq!(
+            crate::v1::service::row_lane(LLM_MODEL, LLM_PROVIDER),
+            LLM_MODEL
+        );
+        assert_eq!(
+            crate::v1::service::row_lane("srv.read", FEE_PLANE),
+            format!("{FEE_PLANE}{PLANE_LANE_SEP}srv.read")
+        );
+    }
+
+    /// The pools plane's model and provider, as the rows above name them.
+    const POOLS_MODEL: &str = LLM_MODEL;
+    const POOLS_PROVIDER: &str = LLM_PROVIDER;
+
+    // ── THE CLASSES THE BUDGET BOOK HOLDS AND A METERING ROW DID NOT (P2-usagegaps) ──────────────
+    //
+    // Every count a plane ledgers through the budget book's accrual (`GovState::record_usage`, the
+    // kernel side of `meter_ledger`) is a count `/admin/usage` must price too: a session opened (one
+    // PER_SESSION on the plane's fee lane, `SessionAccount::count_open`), a tool call (a tools
+    // plane's `tool_calls`), a rerank's search units. Each case drives the host's own calls and
+    // asserts `/admin/usage` equals the budget book.
+
+    /// A card pricing the fee plane's `srv.read` lane's `tool_calls` at `per_call_micros`, the fee
+    /// plane at `per_request` / `per_session`, the pools plane's flat fee 5 and its model `m`
+    /// priced per token (1 micro-unit per input token, 2 per output) and per search unit (3).
+    fn carded_cost(
+        per_call_micros: u64,
+        per_request: i64,
+        per_session: i64,
+    ) -> busbar_kernel::cost::CostModel {
+        let entry = |units: &[(&str, u64)]| -> busbar_kernel::config::RateEntryCfg {
+            let units: serde_json::Map<String, serde_json::Value> = units
+                .iter()
+                .map(|(c, r)| (c.to_string(), serde_json::json!(r)))
+                .collect();
+            serde_json::from_value(serde_json::json!({ "units": units })).expect("a rate entry")
+        };
+        let mut pools = entry(&[("search_units", 3)]);
+        pools.input_utok = 1.0;
+        pools.output_utok = 2.0;
+        let card = std::collections::BTreeMap::from([
+            (POOLS_MODEL.to_string(), pools),
+            (PLANE_LANE_SEP.to_string(), Default::default()),
+            (format!("{FEE_PLANE}{PLANE_LANE_SEP}"), Default::default()),
+            (
+                format!("{FEE_PLANE}{PLANE_LANE_SEP}srv.read"),
+                entry(&[("tool_calls", per_call_micros)]),
+            ),
+        ]);
+        let fees = busbar_kernel::config::PlaneFeesMap::from([(
+            FEE_PLANE.to_string(),
+            PlaneFees {
+                per_request,
+                per_session,
+            },
+        )]);
+        busbar_kernel::cost::CostModel::resolve_parts(
+            Some(&card),
+            5,
+            &std::collections::BTreeMap::new(),
+        )
+        .with_plane_fees(&fees)
+    }
+
+    /// One served call as the host records it, in the budget book and on the metering series.
+    enum Call {
+        /// A pools call on `m`: its admission, its tokens ledgered, its metering row.
+        Tokens { input: u64, output: u64 },
+        /// A pools rerank on `m`: its admission, its search units ledgered, its metering row.
+        Rerank { search_units: u64 },
+        /// A session opened on the fee plane (`SessionAccount::count_open`).
+        Session,
+        /// A tool call on the fee plane (`charge_round` + `ledger_tool_call`).
+        Tool,
+    }
+
+    /// Serve `calls` through the host's own calls; the budget book's spend (minor units) and
+    /// `/admin/usage`'s total spend (micro-units).
+    async fn serve_calls(
+        cost: fn() -> busbar_kernel::cost::CostModel,
+        calls: &[Call],
+    ) -> (i64, i64) {
+        use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
+        let gov = gov();
+        let app = crate::new_test_app()
+            .governance(Arc::clone(&gov))
+            .cost(cost())
+            .build();
+        let cost = cost();
+        let _planes = TestRegistryIsolation::seeded(&[&POOLS, &FEE, &FREE]);
+        let now = busbar_kernel::store::now();
+        let key = key();
+        let units = |pairs: &[(&str, u64)]| -> std::collections::BTreeMap<String, u64> {
+            pairs.iter().map(|(c, n)| (c.to_string(), *n)).collect()
+        };
+        let tool_lane = format!("{FEE_PLANE}{PLANE_LANE_SEP}srv.read");
+        for call in calls {
+            match call {
+                Call::Tokens { input, output } => {
+                    assert!(gov.try_admit(&cost, &key, "", now).is_ok());
+                    let t = busbar_kernel::billing::TokenUsage {
+                        input: *input,
+                        output: *output,
+                        ..Default::default()
+                    };
+                    gov.record_usage(
+                        &cost,
+                        &key,
+                        "",
+                        POOLS_MODEL,
+                        &units(&[("input", *input), ("output", *output)]),
+                        now,
+                    );
+                    gov.record_metering(KEY, POOLS_MODEL, POOLS_PROVIDER, Some(&t), now);
+                }
+                Call::Rerank { search_units } => {
+                    assert!(gov.try_admit(&cost, &key, "", now).is_ok());
+                    gov.record_usage(
+                        &cost,
+                        &key,
+                        "",
+                        POOLS_MODEL,
+                        &units(&[("search_units", *search_units)]),
+                        now,
+                    );
+                    gov.record_metering(KEY, POOLS_MODEL, POOLS_PROVIDER, None, now);
+                }
+                Call::Session => {
+                    gov.record_usage(
+                        &cost,
+                        &key,
+                        "sessions",
+                        &plane_fee_lane(FEE_PLANE),
+                        &units(&[(PER_SESSION, 1)]),
+                        now,
+                    );
+                }
+                Call::Tool => {
+                    assert!(gov.try_admit(&cost, &key, &tool_lane, now).is_ok());
+                    gov.record_metering(KEY, "srv.read", FEE_PLANE, None, now);
+                    gov.record_usage(
+                        &cost,
+                        &key,
+                        "srv.read",
+                        &tool_lane,
+                        &units(&[("tool_calls", 1)]),
+                        now,
+                    );
+                }
+            }
+        }
+        gov.flush_metering();
+        let book = gov
+            .usage_for(&cost, KEY, now)
+            .unwrap()
+            .expect("the key's usage")
+            .spend_cents;
+        let view = AdminService::new(app)
+            .get_usage(None, None)
+            .await
+            .expect("usage read");
+        (book, view.total.spend_micros)
+    }
+
+    /// (a) Two sessions at `fees.per_session: 40`: the budget book charges 80, and so does
+    /// `/admin/usage` (before: 0 — no metering row carried the session count).
+    #[tokio::test]
+    async fn two_sessions_price_their_session_fee_on_admin_usage() {
+        let (book, admin) = serve_calls(
+            || carded_cost(70_000, 0, 40),
+            &[Call::Session, Call::Session],
+        )
+        .await;
+        assert_eq!(book, 80, "the budget book: 2 sessions × 40");
+        assert_eq!(
+            admin,
+            80 * MICROS_PER_MINOR,
+            "/admin/usage agrees (before: 0)"
+        );
+    }
+
+    /// (b) A tools card pricing `tool_calls` at 7 minor units, `tools.fees.per_request: 3`, three
+    /// tool calls: 3 × 3 + 3 × 7 = 30 on the budget book and on `/admin/usage` (before: 9 — the
+    /// fee alone; the `tool_calls` class never reached a metering row).
+    #[tokio::test]
+    async fn a_planes_ledgered_class_prices_on_admin_usage() {
+        let calls = [Call::Tool, Call::Tool, Call::Tool];
+        let (book, admin) = serve_calls(|| carded_cost(70_000, 3, 0), &calls).await;
+        assert_eq!(book, 30, "the budget book: 3 × fee 3 + 3 × tool_calls 7");
+        assert_eq!(
+            admin,
+            30 * MICROS_PER_MINOR,
+            "/admin/usage agrees (before: 9)"
+        );
+    }
+
+    /// A rerank's search units — the pools plane's own open class — price on `/admin/usage` as the
+    /// budget book prices them: 2 reranks of 1,000,000 units at 3 micro-units = 6,000,000 micro-units
+    /// plus 2 × the flat fee 5 (before: the fee alone).
+    #[tokio::test]
+    async fn a_pools_open_class_prices_on_admin_usage() {
+        let calls = [
+            Call::Rerank {
+                search_units: 1_000_000,
+            },
+            Call::Rerank {
+                search_units: 1_000_000,
+            },
+        ];
+        let (book, admin) = serve_calls(|| carded_cost(70_000, 3, 0), &calls).await;
+        assert_eq!(book, 610, "the budget book: 2 × 5 + 6,000,000 micro-units");
+        assert_eq!(
+            admin,
+            610 * MICROS_PER_MINOR,
+            "/admin/usage agrees (before: 10)"
+        );
+    }
+
+    /// (c) Pools-only token traffic is unchanged: the tokens ride the row's token columns, the fee
+    /// the flat `per_request_fee:`, and nothing is counted twice — 2 calls of 1,000,000 input and
+    /// 500,000 output at 1 / 2 micro-units: 4,000,000 micro-units + 2 × 5 = 410 on both books, the
+    /// figure this read served before the change.
+    #[tokio::test]
+    async fn pools_only_token_traffic_is_unchanged() {
+        let t = || Call::Tokens {
+            input: 1_000_000,
+            output: 500_000,
+        };
+        let (book, admin) = serve_calls(|| carded_cost(70_000, 3, 0), &[t(), t()]).await;
+        assert_eq!(book, 410);
+        assert_eq!(admin, 410 * MICROS_PER_MINOR);
+    }
+
+    /// THE DATED PATH (#79) prices a row's ledgered classes as the fallback does: a plane's fee row
+    /// carrying 2 sessions at 40, a tool row carrying 3 requests at fee 3 and 3 `tool_calls` at 7, a
+    /// pools row carrying 1,000,000 search units at 3 micro-units and 1 request at the flat 5.
+    #[test]
+    fn the_dated_read_prices_a_rows_classes_as_the_fallback_does() {
+        use busbar_kernel::admin::v1::contract::UsageBreakdown;
+        use busbar_kernel_ledger::cost::PER_SESSION;
+        let cost = carded_cost(70_000, 3, 40);
+        let history = busbar_kernel_ledger::cost::History::opening(cost.card().clone(), 0);
+        let view = history.current();
+        let (_, card) = view.card_at(0).expect("the opening card");
+        let classes = |pairs: &[(&str, u64)]| -> std::collections::BTreeMap<String, u64> {
+            pairs.iter().map(|(c, n)| (c.to_string(), *n)).collect()
+        };
+        let fee_row = format!("{FEE_PLANE}{PLANE_LANE_SEP}");
+        let tool_row = format!("{FEE_PLANE}{PLANE_LANE_SEP}srv.read");
+        for (lane, requests, units, minor) in [
+            (fee_row.as_str(), 0, classes(&[(PER_SESSION, 2)]), 80),
+            (tool_row.as_str(), 3, classes(&[("tool_calls", 3)]), 30),
+            (POOLS_MODEL, 1, classes(&[("search_units", 1_000_000)]), 305),
+        ] {
+            let b = UsageBreakdown {
+                requests,
+                ..Default::default()
+            };
+            let dated = crate::v1::service::derive_spend_micros_row_classes_at_card(
+                &view, 0, card, &cost, lane, &b, &units,
+            )
+            .expect("priced");
+            let fallback =
+                crate::v1::service::derive_spend_micros_row_classes(&cost, lane, &b, &units)
+                    .expect("priced");
+            assert_eq!(
+                (dated, fallback),
+                (minor * MICROS_PER_MINOR, minor * MICROS_PER_MINOR)
+            );
+        }
+    }
+
+    /// Everything at once: every lane's counts on one `/admin/usage` total, equal to the budget book.
+    #[tokio::test]
+    async fn mixed_traffic_agrees_with_the_budget_book() {
+        let calls = [
+            Call::Tokens {
+                input: 1_000_000,
+                output: 500_000,
+            },
+            Call::Rerank {
+                search_units: 1_000_000,
+            },
+            Call::Session,
+            Call::Tool,
+            Call::Tool,
+        ];
+        let (book, admin) = serve_calls(|| carded_cost(70_000, 3, 40), &calls).await;
+        assert_eq!(book, 200 + 5 + 300 + 5 + 40 + 2 * (3 + 7));
+        assert_eq!(admin, book * MICROS_PER_MINOR);
     }
 }

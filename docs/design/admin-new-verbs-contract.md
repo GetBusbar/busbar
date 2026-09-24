@@ -362,7 +362,7 @@ rendering a **decimal string** so no JSON consumer silently truncates at 2^53:
 | `CeilingView` | `set_overdraft_ceiling` | `bucket, dimension, scope, ceiling_nanos, previous_ceiling_nanos, window_cap_nanos, ceiling_bp_of_cap, unbounded: bool` |
 | `DisputeVerdictView` | `resolve_dispute` | `dispute_id, verdict, posted_amount_nanos, corrected_amount_nanos, delta_nanos: i128, above_threshold: bool, threshold_nanos, entry: EntryRef` |
 | `UnreconciledSliceView` | `resolve_slice` | `node, lease_epoch, bucket, dimension, scope, window_start, unreconciled_nanos, resolved_nanos, remaining_nanos, entry: EntryRef` |
-| `AdjustmentView` | `adjust` | `bucket, dimension, scope, window_start, amount_nanos: i128, headroom_released_nanos, pure_reversal: bool, above_threshold: bool, threshold_nanos, entry: EntryRef` |
+| `AdjustmentView` | `adjust` | `seq, hash, amends, lane, card_epoch_ms, now: { class: decimal-string }` — counts, never money (owner ruling Q9; §7.15) |
 
 `EntryRef { node, node_seq, hash }` is §4.1's `refs` triple. The twelve verbs not listed here name no
 figure at all, and their response schemas below carry none.
@@ -393,7 +393,7 @@ a cell that must change node state between requests (the ceremony, "refuses to s
 `exec` for the off-node CLI equivalents on a stopped node (§4.7:990 — `chain_break`, `store_restore`
 and `reseal_epoch_floor` "also exist as off-node CLI"); `concurrent` for the in-flight reservation.
 
-**107 cells** across the seventeen, listed per verb in §7 and totalled in §8. The 240 legacy cells are
+**106 cells** across the seventeen, listed per verb in §7 and totalled in §8. The 240 legacy cells are
 untouched; the five ledger views owe their own cells and are out of this document's scope (D-10).
 
 ---
@@ -821,37 +821,48 @@ audit · executing unit · money view · cells · citation.
 
 ### 7.15 `adjust` — `POST /api/v1/admin/adjust`
 
-- **Scope** `full`. **Irreducible ONLY above `adjust_threshold`** — same rule and same resolution as
-  `resolve_dispute` (D-8), against the request's own `amount_nanos`.
-- **Request** *proposed:*
+**OWNER RULING Q9 GOVERNS THIS VERB** (architect, 2026-09-24): `adjust` is new in 1.6.0 and never
+shipped, so its body is per-class **COUNTS**, never a money figure. Money is a read-time view on the
+ledger × the rate card; an adjustment that carried `amount_nanos` would be a second copy of that
+answer no card correction could reach. The corrected money is the one function (`cost::Tally`) over
+the corrected counts at the unit's own card epoch (#79).
+
+- **Scope** `full`. **Irreducible** — in `IRREDUCIBLE_VERBS`, so every `adjust` passes the operator
+  ceremony and dual control. D-8's `adjust_threshold` quantity does not exist for this verb: the body
+  carries no money figure to compare against a threshold, so no call is admitted below one.
+- **Request:**
   ```json
-  { "bucket": "string", "dimension": "string", "scope": "string", "window_start": 0,
-    "amount_nanos": "string", "reason": "string", "signature": "string|null" }
+  { "amends": "string", "now": { "<class>": "decimal-string", ... }, "reason": "string" }
   ```
-  `amount_nanos` is a **signed** decimal string (an adjustment can go either way; §4.2:777 calls a
-  closed-window adjustment a "pure ledger reversal").
-- **Success** `200`: an `AdjustmentView` (§5).
+  `amends` is the digest (64 hex characters) of the journal record of the unit being corrected — a
+  counts-era posting on the node's own chain. `now` is the unit's corrected count per billable class
+  (#71), each an exact decimal TEXT (#81), never below zero. The principal, the lane, the card epoch
+  and what the counts WERE are read from the book by that digest, never from the body, so a
+  correction cannot misstate what it corrects.
+- **Success** `200`:
+  `{ "seq": u64, "hash": "string", "amends": "string", "lane": "string", "card_epoch_ms": u64,
+  "now": { "<class>": "decimal-string" } }` — the sealed amendment's position and digest on the node
+  amendment journal, and the counts the unit now stands at. No money figure.
 - **Refusals** shared, plus
-  `400 invalid_request` — `amount_nanos must be a non-zero signed decimal` ·
-  `404 not_found` — ``bucket `<b>` not found`` ·
-  `400 invalid_request` — `reason is required` ·
-  `403 forbidden` `OperatorUnset` — only above the threshold ·
-  `403` signature required/invalid — only above the threshold ·
-  `403`/pending `ApprovalPending` · `409` in-flight · `503` store.
-- **Idempotency** MUST probe; header **required** above the threshold (D-3) — a retried large
-  adjustment applied twice is a money bug that the identity would then report as closing.
-- **Audit** `ADMIN_LOG` `action = adjust`. Journal class **`Adjust`** (§4.1:741 names the record).
-  Headroom is released to the store **only inside the open window**; outside it the entry is a pure
-  reversal (§4.2:776–777) — `AdjustmentView.pure_reversal` says which happened.
-- **Executes in** `busbar-unit-verbs` → `Governance::execute_new_verb`. **Money view** yes —
-  `AdjustmentView`.
-- **Cells (8)** `Adjust|ok-below-threshold` · `|ok-above-threshold-signed` ·
-  `|above-threshold-operator-unset` · `|above-threshold-unsigned` · `|zero-amount` · `|not-found` ·
-  `|open-window-releases-headroom` (script — `verify` after) ·
-  `|closed-window-pure-reversal` (script).
+  `400 invalid_request` — a malformed body, a count that is not an exact decimal, a count below zero,
+  or a missing/blank `reason` (the kernel half, `audit::amend::correct_counts`, refuses the last two) ·
+  `404 not_found` — the book holds no counts-era entry with that digest ·
+  `403 forbidden` — a credential below `full` (the verbs unit; the kernel half refuses the same scope
+  again) · `403 forbidden` `OperatorUnset` · `403`/pending `ApprovalPending` · `409` in-flight ·
+  `503` store.
+- **Idempotency** MUST probe; header **required** (D-3) — a retried adjustment applied twice is a
+  money bug. A second correction of the same entry names the first one's result as its `was`.
+- **Audit** `ADMIN_LOG` `action = adjust`. The correction is an **`Adjust`** amendment on the node
+  amendment journal (§4.1:741 names the record): `amends`, subject, lane, card epoch, `was` and `now`
+  counts per class, who authorised it and why. The recorded entry is never rewritten; a read applies
+  the latest correction (`counts_now`).
+- **Executes in** `busbar-unit-verbs` → `Governance::execute_new_verb` → the composition root's
+  effect (`root/units_admin/adjust.rs`) → the kernel half. **Money view** none on the answer; the
+  usage reads price `counts_now`.
+- **Cells (7)** `Adjust|ok` · `|negative-count` · `|no-reason` · `|read-only-scope` · `|not-found` ·
+  `|operator-unset` · `|second-correction-chains-was`.
 - **Cite** §4.1:741 (the `Adjust` record), §4.2:760 (Σ adjustments is a sealed checkpoint figure),
-  :770 (Δ adjustments is a term of the identity), :776–777 (headroom rule), §4.7:984, :1050,
-  §4.7:958.
+  :770 (Δ adjustments is a term of the identity), owner ruling Q9, #71, #79, #81.
 
 ---
 
@@ -946,14 +957,14 @@ audit · executing unit · money view · cells · citation.
 | 12 | `commit_upgrade` | POST | `/api/v1/admin/commit-upgrade` | full · irreducible | `busbar-unit-verbs` → `execute_new_verb` | — | 5 | §4.8:1068–1071 · §4.7:994 · §8.1:1209 |
 | 13 | `resolve_dispute` | POST | `/api/v1/admin/resolve-dispute` | full · irreducible **above `adjust_threshold`** | `busbar-unit-verbs` → `execute_new_verb` | `DisputeVerdictView` | 7 | §4.7:984,:990,:1050 |
 | 14 | `resolve_slice` | POST | `/api/v1/admin/resolve-slice` | full | `busbar-unit-verbs` → `execute_new_verb` | `UnreconciledSliceView` | 5 | §4.6:937 · §4.2:770–772 |
-| 15 | `adjust` | POST | `/api/v1/admin/adjust` | full · irreducible **above `adjust_threshold`** | `busbar-unit-verbs` → `execute_new_verb` | `AdjustmentView` | 8 | §4.1:741 · §4.2:776 · §4.7:984,:1050 |
+| 15 | `adjust` | POST | `/api/v1/admin/adjust` | full · irreducible (body is COUNTS, Q9) | `busbar-unit-verbs` → `execute_new_verb` | `AdjustmentView` | 7 | §4.1:741 · owner ruling Q9 |
 | 16 | `export_keyset` | POST | `/api/v1/admin/export-keyset` | full · irreducible · **unset-admitted** | `busbar-unit-verbs` → `execute_new_verb` | — | 6 | §4.7:987–990 · §4.8:1070 · §4.4:833 |
 | 17 | `approve` | POST | `/api/v1/admin/approve` | full · exempt from its own gate | `busbar-unit-verbs` → `execute_new_verb` | — | 6 | §4.7:955,:976,:999–1000 |
 
-**Totals.** 2 GET · 15 POST. 2 read-only · 15 full. 10 irreducible (2 of them only above
+**Totals.** 2 GET · 15 POST. 2 read-only · 15 full. 10 irreducible (1 of them only above
 `adjust_threshold`; 2 of them admitted under `operator: unset`). 3 execute against `Store`, 13
-against `Governance::execute_new_verb`, 1 (`plane_facts`) against the named plane through it. 5 name
-a figure, in 5 new `busbar-unit-cost` view types. **107 new `admin.ops` cells**; the 240 existing
+against `Governance::execute_new_verb`, 1 (`plane_facts`) against the named plane through it. 4 name
+a figure, in 4 new `busbar-unit-cost` view types (`adjust` names counts, never a figure — Q9). **106 new `admin.ops` cells**; the 240 existing
 cells are untouched.
 
 No row above is "ARCHITECTURE silent" on its **method or path** — CG-56 closed that. The silences
@@ -968,12 +979,12 @@ are collected below.
 |---|---|---|
 | **D-1** | **Is the `required`-posture "pending" a refusal or a response?** §4.7:976 calls it "the pending response … a named exception", and §8.1:1218 makes it the *only* named exception to byte-parity. `busbar-unit-verbs` returns `Refusal(Admit, ApprovalPending)` and the root maps it to `HookVeto`. Proposed: **`202 Accepted`** with `{"pending":{"key":"…","payload_hash":"…","approvers_needed":1}}`, so the maker learns the key a checker must `approve`. | It changes a status code on 13 verbs and is the one exception the effects spec allows |
 | **D-2** | **Add `ReasonCode::OperatorSignatureRequired` / `OperatorSignatureInvalid`?** §4.7:991 makes the signature a verb argument; the vocabulary has no arm for a bad one (§3.2). | A missing arm forces a wrong code (`Validation` 400 or `Unauthorized` 403) onto every irreducible verb |
-| **D-3** | **The sealed replay key shape and when the header is required.** Proposed `(actor, "<verb>:<idempotency-key>")`; header **required** for `set_operator_key`, `export_keyset`, `chain_break`, `store_restore`, `commit_upgrade` and for `adjust` above threshold. The shim's test helper keys `(verb, key)` and drops the actor. | Two principals sharing a key would replay each other's answer — one of which is a sealed keyset |
+| **D-3** | **The sealed replay key shape and when the header is required.** Proposed `(actor, "<verb>:<idempotency-key>")`; header **required** for `set_operator_key`, `export_keyset`, `chain_break`, `store_restore`, `commit_upgrade` and for `adjust` (every call — §7.15). The shim's test helper keys `(verb, key)` and drops the actor. | Two principals sharing a key would replay each other's answer — one of which is a sealed keyset |
 | **D-4** | **The replay TTL.** §4.4:834 says `min(dispute_max_age, max(600 s, longest finite cap window + max_unit_duration))`; `plugin-loader/src/store_adapter.rs:170` pins 600 s. | §8.1:1207's t = 500 s / t = 700 s cells are written against a specific window |
 | **D-5** | **CG-04 — does `plane_facts` carry a subject?** Decides whether `?subject=` is in the binding. | Two planes already decline to declare per-name projections because of it |
 | **D-6** | **CG-57 — rename `PlaneMeta::ADMIN_VERBS` to `INTROSPECTION_VERBS`.** The name collides with the admin surface's own 88-row table, which is what `plane_facts` reads *about*. | It has already confused one implementer |
 | **D-7** | **Which verbs carry the operator signature as a request argument?** §4.7:991 says "verbs carry the signature"; §4.7:1462 lists `set_overdraft_ceiling` and `set_dispute_max_age` as dual-controlled but **not** irreducible. Proposed: signature required for the 10 irreducible verbs only; the two knobs take dual control alone. | It decides four request schemas |
-| **D-8** | **Which quantity crosses `adjust_threshold`** for `adjust` and `resolve_dispute`. Proposed: the request's own `amount_nanos` (and the dispute's posted amount for `uphold`/`overturn`). `verb.rs:732–737` deliberately declines to decide it. | It decides whether an operator-unset fleet can resolve a given dispute |
+| **D-8** | **Which quantity crosses `adjust_threshold`** for `adjust` and `resolve_dispute`. Proposed: the request's own `amount_nanos` (and the dispute's posted amount for `uphold`/`overturn`). For `adjust` this is SETTLED by owner ruling Q9: its body is counts, it carries no amount, and it is irreducible on every call (§7.15). `verb.rs:732–737` deliberately declines to decide it. | It decides whether an operator-unset fleet can resolve a given dispute |
 | **D-9** | **Success statuses.** Proposed: `204` for the three recovery verbs (already shipped, `mod.rs:1701`) and `200` + body for the other fourteen; never `201`. | The 240 legacy cells pin 1.5.5's `201`-vs-`200` behaviour; the seventeen must not drift into it by accident |
 | **D-10** | **The five ledger views' cells** are owed too (`GET /api/v1/admin/ledger/{totals,checkpoints,reconciliation,migration,openapi.json}` — the paths are *not* a guess, §4.7). Out of this document's seventeen; ruling wanted on whether they land in the same wave. | 22 additive operations are currently pinned by nothing |
 | **D-11** | **Confirm the money views' home and shape.** New `busbar-unit-cost::view` module, five types, nano-units as decimal strings. `busbar-unit-cost` currently declares "NO WORKSPACE DEPENDENCIES BEYOND THE CAPABILITY CRATE" — bucket/dimension/scope arrive as `String`. | It is the owner's 2026-09-08 ruling made concrete; the crate ceiling and the dependency rule are both touched |

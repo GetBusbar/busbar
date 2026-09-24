@@ -426,6 +426,7 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
     let day = metering_bucket(1_700_000_123); // mid-day epoch floors to its bucket start
     assert_eq!(day % METERING_BUCKET_SECS, 0);
     let d = |model: &str, input: u64, output: u64| MeteringDelta {
+        usage_units: Default::default(),
         key_id: "vk_a".into(),
         bucket: day,
         model: model.into(),
@@ -1648,6 +1649,7 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         flushed_requests: 0,
         flushed_billable_requests: 0,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty,
         last_touch: now,
     };
@@ -1724,6 +1726,7 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
         flushed_requests: 0,
         flushed_billable_requests: 0,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch,
     };
@@ -1801,6 +1804,7 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         flushed_requests: 0,
         flushed_billable_requests: 0,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch: now,
     };
@@ -3332,6 +3336,7 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
         flushed_requests: requests,
         flushed_billable_requests: requests,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty,
         last_touch,
     };
@@ -4265,6 +4270,7 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         flushed_requests: 7,
         flushed_billable_requests: 7,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4327,6 +4333,7 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         flushed_requests: 1,
         flushed_billable_requests: 1,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch: now,
     };
@@ -4494,6 +4501,7 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
         flushed_requests: 7,
         flushed_billable_requests: 7,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4541,6 +4549,7 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
         flushed_requests: 1,
         flushed_billable_requests: 1,
         models: Vec::new(),
+        fee_eras: Default::default(),
         dirty: false,
         last_touch: now,
     };
@@ -5339,5 +5348,374 @@ fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
         !body.contains("saturating_mul(1_000)"),
         "the metering accrual is lifting a SECOND into milliseconds again — a card applied later \
          in the same second would sort after every response of that second (#79): {body}"
+    );
+}
+
+// ── PER-PLANE FEES (#47, OWNER RULING Q32): each plane's `fees` prices that plane's traffic ────────
+
+/// `per_request_fee: 5` (the pools plane's), `fees.per_request: 3` on plane `tp`,
+/// `fees.per_session: 40` on plane `sp`, no card, and a group `team` capped at `cap` minor units.
+/// Plane `np` configured no fees.
+fn plane_fee_cost(cap: i64) -> crate::cost::CostModel {
+    use busbar_kernel_ledger::cost::PlaneFees;
+    let fees = crate::config::PlaneFeesMap::from([
+        (
+            "tp".to_string(),
+            PlaneFees {
+                per_request: 3,
+                per_session: 0,
+            },
+        ),
+        (
+            "sp".to_string(),
+            PlaneFees {
+                per_request: 0,
+                per_session: 40,
+            },
+        ),
+    ]);
+    group_cost(5, &[("team", cap, "total", None)]).with_plane_fees(&fees)
+}
+
+/// An admission pool qualified by a plane's key, as that plane's admission sends it.
+fn plane_pool(plane: &str, pool: &str) -> String {
+    format!("{plane}{PLANE_LANE_SEP}{pool}")
+}
+
+fn team_gov() -> (Arc<MemoryStore>, GovState, VirtualKey) {
+    let store = Arc::new(MemoryStore::new());
+    let mut k = sample_key("k1", "h1");
+    k.group = Some("team".to_string());
+    store.put_key(&k).unwrap();
+    let gov = GovState::new(store.clone(), None).unwrap();
+    (store, gov, k)
+}
+
+const AT: u64 = 1_700_000_000;
+
+fn spend(gov: &GovState, cost: &crate::cost::CostModel) -> i64 {
+    gov.usage_for(cost, "k1", AT).unwrap().unwrap().spend_cents
+}
+
+#[test]
+fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools_plane() {
+    let (store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    for _ in 0..2 {
+        assert!(gov.try_admit(&cost, &k, "", AT).is_ok(), "a pools request");
+    }
+    for _ in 0..3 {
+        let pool = plane_pool("tp", "srv_read");
+        assert!(
+            gov.try_admit(&cost, &k, &pool, AT).is_ok(),
+            "a `tp` request"
+        );
+    }
+    // 2 pools × 5 + 3 `tp` × 3 — before: every request at the flat 5 (25).
+    assert_eq!(spend(&gov, &cost), 19);
+    let u = gov.usage_for(&cost, "k1", AT).unwrap().unwrap();
+    assert_eq!(
+        u.requests, 5,
+        "every admission still counts toward a requests cap"
+    );
+    assert_eq!(u.tokens, 0, "a fee unit is not a token");
+
+    // DURABLE: the `tp` requests are counted on the plane's fee lane, not in the flat fee base, and a
+    // node that hydrates from the store reads the same figure.
+    gov.flush_budgets();
+    let ledger = store.get_usage("k1", 0).unwrap();
+    assert_eq!(
+        ledger.billable_requests, 2,
+        "the flat fee base is the pools plane's"
+    );
+    let lane = busbar_kernel_ledger::cost::plane_fee_lane("tp");
+    let row = ledger
+        .models
+        .iter()
+        .find(|m| m.model == lane)
+        .expect("fee lane");
+    assert_eq!(row.usage_units[busbar_kernel_ledger::cost::PER_REQUEST], 3);
+    let restarted = GovState::new(store, None).unwrap();
+    restarted.hydrate_budgets(&cost, AT).unwrap();
+    assert_eq!(spend(&restarted, &cost), 19);
+}
+
+#[test]
+fn a_planes_session_fee_charges_one_per_session() {
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
+    let (_store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    let one = std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]);
+    for _ in 0..2 {
+        gov.record_usage(&cost, &k, "", &plane_fee_lane("sp"), &one, AT);
+    }
+    assert_eq!(spend(&gov, &cost), 80, "2 sessions × 40");
+}
+
+/// P2-usagegaps: THE METERING ROW CARRIES WHAT THE BUDGET BOOK HOLDS. Every class the book's accrual
+/// receives outside the token split lands on the key's metering row, keyed as the plane's own series
+/// row — a session count on `("", <plane>)`, a tool call on `(<tool>, <plane>)`, a pools open class
+/// on `(<model>, "")` — and a pools lane's four token tiers do NOT (the same response's
+/// `record_metering` carries them in the token columns; carrying them twice would double-bill).
+#[test]
+fn the_metering_row_carries_every_class_the_budget_book_holds() {
+    use busbar_api::Store as _;
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
+    let (store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    let map = |pairs: &[(&str, u64)]| -> std::collections::BTreeMap<String, u64> {
+        pairs.iter().map(|(c, n)| (c.to_string(), *n)).collect()
+    };
+    gov.record_usage(
+        &cost,
+        &k,
+        "",
+        &plane_fee_lane("sp"),
+        &map(&[(PER_SESSION, 1)]),
+        AT,
+    );
+    gov.record_usage(
+        &cost,
+        &k,
+        "",
+        &plane_fee_lane("sp"),
+        &map(&[(PER_SESSION, 1)]),
+        AT,
+    );
+    let tool = format!("tp{PLANE_LANE_SEP}srv.read");
+    gov.record_usage(&cost, &k, "srv.read", &tool, &map(&[("tool_calls", 3)]), AT);
+    gov.record_usage(
+        &cost,
+        &k,
+        "",
+        "m",
+        &map(&[("input", 7), ("search_units", 4)]),
+        AT,
+    );
+    gov.flush_metering();
+    let rows = store.list_metering(metering_bucket(AT)).unwrap();
+    let row = |model: &str, provider: &str| {
+        rows.iter()
+            .find(|r| r.key_id == k.id && r.model == model && r.provider == provider)
+            .map(|r| (r.requests, r.tokens_input, r.usage_units.clone()))
+    };
+    assert_eq!(
+        row("", "sp"),
+        Some((0, 0, map(&[(PER_SESSION, 2)]))),
+        "2 sessions"
+    );
+    assert_eq!(
+        row("srv.read", "tp"),
+        Some((0, 0, map(&[("tool_calls", 3)])))
+    );
+    assert_eq!(
+        row("m", ""),
+        Some((0, 0, map(&[("search_units", 4)]))),
+        "the open class, and not the input tier the token columns carry"
+    );
+    assert_eq!(rows.len(), 3, "nothing else was written");
+}
+
+#[test]
+fn a_plane_without_fees_bills_no_fee() {
+    let (_store, gov, k) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    for _ in 0..4 {
+        let pool = plane_pool("np", "agent");
+        assert!(gov.try_admit(&cost, &k, &pool, AT).is_ok());
+    }
+    // Before: 4 × the flat 5 = 20.
+    assert_eq!(spend(&gov, &cost), 0);
+    assert_eq!(gov.usage_for(&cost, "k1", AT).unwrap().unwrap().requests, 4);
+}
+
+#[test]
+fn budget_caps_include_each_planes_fees() {
+    let (_store, gov, k) = team_gov();
+    let cost = plane_fee_cost(10);
+    let tp = plane_pool("tp", "srv_read");
+    assert!(gov.try_admit(&cost, &k, "", AT).is_ok(), "pools: 5");
+    assert!(gov.try_admit(&cost, &k, &tp, AT).is_ok(), "`tp`: 5 + 3 = 8");
+    let blocked = |r: Result<AdmitGrant, LimitBlocked>| {
+        matches!(
+            r,
+            Err(LimitBlocked::Limit {
+                metric: "budget",
+                ..
+            })
+        )
+    };
+    assert!(blocked(gov.try_admit(&cost, &k, &tp, AT)), "8 + 3 > 10");
+    assert!(blocked(gov.try_admit(&cost, &k, "", AT)), "8 + 5 > 10");
+    let free = plane_pool("np", "agent");
+    assert!(gov.try_admit(&cost, &k, &free, AT).is_ok(), "8 + 0 fits");
+    // A session's fee counts toward the cap too: 8 + 40 is past it, so nothing further is admitted.
+    let one = std::collections::BTreeMap::from([(
+        busbar_kernel_ledger::cost::PER_SESSION.to_string(),
+        1,
+    )]);
+    let lane = busbar_kernel_ledger::cost::plane_fee_lane("sp");
+    gov.record_usage(&cost, &k, "", &lane, &one, AT);
+    assert_eq!(spend(&gov, &cost), 48);
+    assert!(
+        blocked(gov.try_admit(&cost, &k, &free, AT)),
+        "48 is past 10"
+    );
+}
+
+// ── ROLE-BOUND SUBSCRIPTIONS: a `Standing` re-checks a synthesized key through the LIVE bindings ──
+//
+// A key synthesized from `role_bindings` is never in the registry, so re-resolving it by id (the
+// registry path) answered `identity_not_live` on the first frame of every role-bound subscription.
+// The owner ruling (2026-09-24): the re-check re-runs the synthesis against the live bindings.
+
+fn bound_table(binding: crate::config::RoleBindingCfg) -> crate::config::RoleBindings {
+    let mut roles = std::collections::BTreeMap::new();
+    roles.insert("eng".to_string(), binding);
+    let mut rb = crate::config::RoleBindings::new();
+    rb.insert("idp".to_string(), roles);
+    rb
+}
+
+fn bound_principal() -> crate::auth::Principal {
+    crate::auth::Principal {
+        id: "alice@example.com".to_string(),
+        name: Some("Alice".to_string()),
+        roles: vec!["eng".to_string()],
+        ttl_secs: None,
+    }
+}
+
+/// A synthesized key records HOW it was admitted, and only the key it was minted for reads back as
+/// bound: a registry row (a `binding:` marker) never does.
+#[test]
+fn a_bound_key_records_its_admission_and_a_registry_key_does_not() {
+    let rb = bound_table(crate::config::RoleBindingCfg::default());
+    let key =
+        synthesize_bound_key("idp", &bound_principal(), &rb).expect("a bound role synthesizes");
+    assert!(key.generation_hash.starts_with(PRINCIPAL_MARKER_PREFIX));
+    let (module, p) = bound_admission(&key).expect("the admission reads back");
+    assert_eq!(module, "idp");
+    assert_eq!(p.id, "alice@example.com");
+    assert_eq!(p.roles, vec!["eng".to_string()]);
+
+    let registry = VirtualKey {
+        id: "vk_0123456789abcdef".to_string(),
+        generation_hash: binding_marker("vk_0123456789abcdef", "g1"),
+        ..Default::default()
+    };
+    assert!(bound_admission(&registry).is_none());
+    // A marker naming another id is not trusted to re-route the re-check.
+    let mut forged = (*key).clone();
+    forged.id = "someone-else".to_string();
+    assert!(bound_admission(&forged).is_none());
+}
+
+/// THE FIX, UNIT-LEVEL: a role-bound principal's standing STANDS while its binding does, hands back
+/// the principal AS IT IS NOW when the binding changes (pool / group), and LAPSES with
+/// `Lapsed::Identity` the moment the binding is removed — or narrowed to no pools.
+///
+/// RED at HEAD: the standing re-resolved by id against the registry, where a synthesized key never
+/// is, so the very first ask answered `identity_not_live`.
+#[test]
+fn a_role_bound_standing_follows_the_live_bindings_and_lapses_when_the_binding_goes() {
+    use crate::trust::validate::{GovResolve, Lapsed, Refusal, Snapshot, Standing};
+    let mut rb = bound_table(crate::config::RoleBindingCfg::default());
+    let key = synthesize_bound_key("idp", &bound_principal(), &rb).expect("bound");
+    let standing = Standing::opened(
+        Some(&key),
+        Snapshot::Watching,
+        std::time::Duration::from_secs(300),
+    );
+    let ask = |rb: &crate::config::RoleBindings| {
+        let live = LiveResolve {
+            governance: None,
+            role_bindings: rb,
+        };
+        standing.still_permitted(Some(&live as &dyn GovResolve), 1, 1_700_000_000)
+    };
+
+    // The binding stands: the principal is served, as bound (all pools, no group).
+    let now = ask(&rb)
+        .expect("a bound principal stands")
+        .expect("governed");
+    assert_eq!(now.id, "alice@example.com");
+    assert_eq!(now.allowed_scopes, None);
+    assert_eq!(now.group, None);
+
+    // The binding CHANGES (a narrower pool, a group): the principal comes back as it is now.
+    rb = bound_table(crate::config::RoleBindingCfg {
+        allowed_pools: Some(vec!["p2".to_string()]),
+        group: Some("finance".to_string()),
+        ..Default::default()
+    });
+    let now = ask(&rb).expect("still bound").expect("governed");
+    assert_eq!(
+        now.allowed_scopes,
+        Some(vec![busbar_api::ScopeRef::pool("p2")])
+    );
+    assert_eq!(now.group.as_deref(), Some("finance"));
+
+    // Narrowed to NO pools: nothing grants it any more — the stream ends.
+    let lapsed = Err(Lapsed::Identity(Refusal::IdentityNotLive {
+        principal: "alice@example.com".to_string(),
+    }));
+    rb = bound_table(crate::config::RoleBindingCfg {
+        allowed_pools: Some(vec![]),
+        ..Default::default()
+    });
+    assert_eq!(ask(&rb), lapsed);
+
+    // The binding REMOVED mid-stream: the next ask ends it.
+    rb = crate::config::RoleBindings::new();
+    assert_eq!(ask(&rb), lapsed);
+}
+
+/// THE CONTROL: a REGISTRY key through the same live resolver behaves exactly as before — it stands
+/// while its row is live, is never re-derived from bindings (even ones that would grant its id), and
+/// lapses the moment the row is disabled.
+#[test]
+fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
+    use crate::trust::validate::{GovResolve, Lapsed, Refusal, Snapshot, Standing};
+    let gov = GovState::new(Arc::new(MemoryStore::new()), None).expect("registry");
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "streamer".to_string(),
+                ..Default::default()
+            },
+            1_700_000_000,
+        )
+        .expect("mint");
+    let rb = bound_table(crate::config::RoleBindingCfg::default());
+    let standing = Standing::opened(
+        Some(&key),
+        Snapshot::Watching,
+        std::time::Duration::from_secs(300),
+    );
+    let ask = || {
+        let live = LiveResolve {
+            governance: Some(&gov),
+            role_bindings: &rb,
+        };
+        standing.still_permitted(Some(&live as &dyn GovResolve), 1, 1_700_000_000)
+    };
+    let now = ask()
+        .expect("a live registry key stands")
+        .expect("governed");
+    assert_eq!(now.id, key.id);
+    assert_eq!(
+        now.generation_hash, key.generation_hash,
+        "the registry row, not a synthesis"
+    );
+
+    gov.update_key(&key.id, Some(false), None)
+        .expect("the admin PATCH")
+        .expect("the key exists");
+    assert_eq!(
+        ask(),
+        Err(Lapsed::Identity(Refusal::IdentityNotLive {
+            principal: key.id.clone()
+        }))
     );
 }

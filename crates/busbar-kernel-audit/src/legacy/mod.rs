@@ -17,7 +17,7 @@ pub use chain::{
     ChainLabels, ChainedRecord, Digest, Framing,
 };
 pub use entry::{
-    AuditEntry, AuditInput, AuditLog, Clock, DurableSeam, NoSeam, ADMIN_LOG, AUDIT_ACTIONS,
-    AUDIT_SCHEME_LENGTH_PREFIXED, AUDIT_SCHEME_PIPE, MAX_AUDIT_ENTRIES, OUTCOME_APPLIED,
-    OUTCOME_DEGRADED, OUTCOME_REJECTED,
+    AuditEntry, AuditInput, AuditLog, Clock, DurableSeam, NoSeam, PositionsExhausted, ADMIN_LOG,
+    AUDIT_ACTIONS, AUDIT_SCHEME_LENGTH_PREFIXED, AUDIT_SCHEME_PIPE, MAX_AUDIT_ENTRIES,
+    OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED,
 };

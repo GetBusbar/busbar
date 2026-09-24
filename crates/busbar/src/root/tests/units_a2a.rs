@@ -5,39 +5,47 @@
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// **The metered line's direction is the side its quantity was measured on.**
+/// **The metered quantity is the payload relayed BOTH ways, under the plane's declared direction.**
 ///
-/// The quantity is the RESPONSE document's size — the draft's `response_bytes`, not its
-/// `request_bytes` — so the locator that carries it says `Response`. A direction is not a label
-/// on a line: it is the axis a class cap, a rate-card entry and the usage projection all
-/// partition on, so a line metered as ingress while the deployment capped egress is a line that
-/// is silently exempt from its own limit and still shows up on the bill.
+/// OWNER RULING Q30c/Q35: a billed A2A byte is the payload relayed both ways per hop — request
+/// plus response — under the one class `bytes`. The line used to carry the answer document alone,
+/// so the request half of every exchange was never metered (128 + 256 → 256 on this fixture; now
+/// 384). The two sides are asserted against ONE draft whose two byte counts differ, so a line that
+/// took only one side shows up here as a quantity mismatch rather than passing by coincidence.
 ///
-/// The two fields are asserted against ONE draft whose two byte counts differ, so a line that
-/// took its quantity from the other side would show up here as a quantity mismatch rather than
-/// pass by coincidence.
+/// The direction is the one the plane declares for that class (the response: the count is known
+/// once the agent has answered) — a direction is the axis a class cap, a rate-card entry and the
+/// usage projection partition on, so it is the declared one and no other.
 #[test]
-fn the_metered_lines_direction_is_the_side_its_quantity_came_from() {
+fn the_metered_bytes_are_the_payload_relayed_both_ways() {
     let draft = draft(ops::OP_MESSAGE_SEND);
     assert_ne!(
         draft.request_bytes, draft.response_bytes,
-        "the fixture's two sides differ, so the quantity below names one of them"
+        "the fixture's two sides differ, so the quantity below names both of them"
     );
 
     let located = bytes_located(&draft);
     assert_eq!(located.class, CLASS_BYTES, "the plane's one class");
     assert_eq!(
-        located.quantity, draft.response_bytes,
-        "the quantity is measured off the answer document"
+        located.quantity,
+        draft.request_bytes + draft.response_bytes,
+        "the quantity is the request document plus the answer document"
     );
+    assert_eq!(located.quantity, 384, "128 request + 256 response");
     match located.source {
         busbar_contract::caps::QuantitySource::Locator { direction, .. } => assert_eq!(
             direction,
             busbar_contract::ids::ClassDirection::Response,
-            "and the direction says so, rather than naming the side it did not come from"
+            "and the direction is the one the plane declares for its one class"
         ),
         other => panic!("this plane carries its quantity by locator, not {other:?}"),
     }
+
+    // A count is never a refusal: two sides that together overflow saturate.
+    let mut huge = draft;
+    huge.request_bytes = u64::MAX;
+    huge.response_bytes = 1;
+    assert_eq!(bytes_located(&huge).quantity, u64::MAX);
 }
 
 /// **The record's two clocks are two readings, and the monotonic one cannot be walked back.**
@@ -63,7 +71,7 @@ fn a_wall_clock_that_steps_backwards_does_not_reorder_the_audit_records() {
     let chain = deployment.resolve(&who, Some("a2a-team"));
     let record = |now| {
         deployment.calling_at(chain.as_ref(), now).audit_inputs(
-            &a2a_ctx(),
+            &unit_ctx(),
             Outcome::Completed,
             Some(&who),
         )
@@ -110,7 +118,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     let record = || {
         deployment
             .calling_at(chain.as_ref(), ONE_SECOND)
-            .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who))
+            .audit_inputs(&unit_ctx(), Outcome::Completed, Some(&who))
     };
 
     let first = record();
@@ -260,7 +268,7 @@ fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arr
     let seal = KernelSeal::acquire_for_kernel();
 
     // One slot, none held back: a table this plane can fill and then be measured against.
-    let table = InFlight::new(1, 0);
+    let table = InFlight::new(1);
     // What an a2a unit asks the table for. The data listener is the whole point — an a2a unit
     // that claimed the admin listener's exemption would be outside the cap the deployment set.
     let entering = |key: u64| Enter {
@@ -268,7 +276,6 @@ fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arr
         origin: OriginKind::Client,
         session: None,
         admin_listener: false,
-        provider_of_open_session: false,
         zero_hold_tick: false,
         now: 0,
         arrival: arrival_hold(&kernel, &door, PrincipalId::new("caller")),
@@ -726,6 +733,77 @@ fn every_ending_has_an_audited_spelling() {
     );
 }
 
+/// A unit whose answer arrives as a run of events is refused at decode (item 253).
+///
+/// The draft's run-of-events flag was read by nothing but its `Debug`: every step that prices the
+/// unit reads `response_bytes` as one reply, so a streamed answer would have been metered as its
+/// first event. The step that reads the shape now decides it, and the same draft answered once
+/// still proceeds — the refusal is the flag, not the operation.
+#[test]
+fn a_streamed_answer_is_refused_at_decode_and_a_single_reply_proceeds() {
+    use busbar_kernel::teller::Units as _;
+
+    let deployment = deployment(one_call_at_a_time("team"));
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    for (in_events, proceeds) in [(false, true), (true, false)] {
+        let mut shaped = draft(ops::OP_MESSAGE_SEND);
+        shaped.in_events = in_events;
+        let unit = deployment.calling_draft_at(None, 1_700_000_000, shaped);
+        let answered = unit
+            .decode(&busbar_contract::caps::Pass::mint(&seal), &unit_ctx())
+            .into_result(&seal);
+        assert_eq!(answered.is_ok(), proceeds, "in_events = {in_events}");
+        if let Err(refusal) = answered {
+            assert_eq!(refusal.reason(), ReasonCode::DecodeFailed);
+        }
+    }
+}
+
+/// The sentence that justifies the hand-written mapping states facts the tree bears out (item 265).
+///
+/// It used to say the two crates did not depend on each other and that the mapping was written
+/// once. The audit crate depends on the contract crate, and the root maps the two in three places;
+/// a reviewer deciding whether to look would have been told not to. This reads the manifest the
+/// claim is about, so the doc cannot drift back to a crate edge that is not there.
+#[test]
+fn the_finish_mapping_doc_matches_the_crate_edge_it_describes() {
+    // This module's own source, found from the path the compiler gives it.
+    let stem = module_path!()
+        .rsplit("::")
+        .nth(1)
+        .expect("a test module sits inside its parent");
+    let own = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/root")
+            .join(format!("{stem}.rs")),
+    )
+    .expect("the module's own source");
+    let at = own
+        .find("fn audit_finish(")
+        .expect("the mapping is in this module");
+    let doc: String = own[..at]
+        .lines()
+        .rev()
+        .take_while(|l| l.trim_start().starts_with("///"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let manifest = include_str!("../../../../busbar-kernel-audit/Cargo.toml");
+    assert!(
+        manifest.contains("busbar-contract"),
+        "the audit crate depends on the contract crate"
+    );
+    for false_claim in ["neither depends on the other", "written once"] {
+        assert!(
+            !doc.contains(false_claim),
+            "the mapping's doc still says {false_claim:?}"
+        );
+    }
+    assert!(
+        doc.contains("three places"),
+        "the doc names how many times the root maps the two"
+    );
+}
+
 /// A record leg has no address, so the guard has nothing to have judged and says so.
 #[test]
 fn a_record_leg_is_not_a_network_hop() {
@@ -1022,7 +1100,7 @@ fn draft(op: OpClassId) -> A2aDraft {
         request_bytes: 128,
         response_bytes: 256,
         finish: FinishClass::Complete,
-        streaming: false,
+        in_events: false,
         arrival: ArrivalRecord {
             source: "127.0.0.1:1".to_string(),
             port: 8080,
@@ -1746,10 +1824,10 @@ fn deployment_on_history(
 
 /// The same context, under a named unit key — the fact the audit record is supposed to file a
 /// row under, and the one a fixture varies to find out whether it does.
-fn a2a_ctx_keyed(key: u64) -> UnitCtx {
+fn unit_ctx_keyed(key: u64) -> UnitCtx {
     UnitCtx {
         key: busbar_contract::caps::UnitKey::new(key),
-        ..a2a_ctx()
+        ..unit_ctx()
     }
 }
 
@@ -1763,7 +1841,7 @@ fn accrued_by_route(unit: &A2aUnits<'_, busbar_kernel_budget::InMemoryCells>) ->
     let _ = Units::route(
         unit,
         &busbar_contract::caps::Pass::mint(&seal),
-        &a2a_ctx(),
+        &unit_ctx(),
         &meter,
         &[],
     );
@@ -1895,11 +1973,11 @@ impl Deployment {
     }
 }
 
-fn a2a_ctx() -> UnitCtx {
-    a2a_ctx_from(busbar_contract::caps::OriginKind::Client)
+fn unit_ctx() -> UnitCtx {
+    unit_ctx_from(busbar_contract::caps::OriginKind::Client)
 }
 
-fn a2a_ctx_from(origin: busbar_contract::caps::OriginKind) -> UnitCtx {
+fn unit_ctx_from(origin: busbar_contract::caps::OriginKind) -> UnitCtx {
     UnitCtx {
         key: busbar_contract::caps::UnitKey::new(1),
         origin,
@@ -1936,7 +2014,7 @@ fn ask_the_door_as(
         unit,
         &busbar_contract::caps::Pass::mint(&seal),
         &busbar_contract::caps::Grant::<busbar_contract::caps::Admittance>::mint(&seal),
-        &a2a_ctx_from(origin),
+        &unit_ctx_from(origin),
         who,
         &[],
         &slip,
@@ -1954,7 +2032,7 @@ fn ask_for_scope(
     let decision = Units::approve(
         unit,
         &busbar_contract::caps::Pass::mint(&seal),
-        &a2a_ctx(),
+        &unit_ctx(),
         who,
         &[],
     );
@@ -2353,8 +2431,8 @@ fn the_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
     let stamped = |now_secs: u64| {
         deployment
             .calling_at(chain.as_ref(), now_secs)
-            .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who))
-            .amount
+            .audit_inputs(&unit_ctx(), Outcome::Completed, Some(&who))
+            .usage
             .rate_card_version
     };
 
@@ -2395,7 +2473,7 @@ fn two_a2a_units_are_filed_under_two_different_keys() {
     let filed_under = |key: u64| {
         deployment
             .calling(chain.as_ref())
-            .audit_inputs(&a2a_ctx_keyed(key), Outcome::Completed, Some(&who))
+            .audit_inputs(&unit_ctx_keyed(key), Outcome::Completed, Some(&who))
             .what
             .unit_key
     };

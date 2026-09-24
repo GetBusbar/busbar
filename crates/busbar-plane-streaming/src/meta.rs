@@ -81,6 +81,15 @@ const CALLS_PER_UNIT: u32 = 1;
 /// separately, and model-emitted text prices under `text_tokens_out`, an OUTPUT class, never the
 /// input one. The class label is what selects the unit price, so a mislabelled direction is a
 /// mispriced turn rather than a cosmetic one.
+/// `cached_tokens` is deliberately NOT declared here (architect ruling #71, money-model integrity:
+/// a plane's declared billable classes must be pairwise DISJOINT, because money = Σ count(class) ×
+/// rate(class) only holds when no class is a subset of another). Both duplex dialects report
+/// `cached_tokens` as a SUBSET of the input token classes above, not a class beside them — OpenAI
+/// Realtime nests it inside `input_token_details`, Gemini Live inside `promptTokensDetails` — so a
+/// rate card that priced it too would bill the same cached input twice. The codec cannot split
+/// cached from uncached audio/text truthfully (there is no per-modality cache split reported), so no
+/// disjoint `*_cached`/`*_uncached` pair is declared either; the figure is carried unbilled instead,
+/// as the [`FACT_CACHED_TOKENS`] content fact — attribution, not a ledger class.
 const METER_CLASSES: &[MeterClassDecl] = &[
     MeterClassDecl {
         key: CLASS_AUDIO_TOKENS_IN,
@@ -104,12 +113,6 @@ const METER_CLASSES: &[MeterClassDecl] = &[
         key: CLASS_TEXT_TOKENS_OUT,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Response,
-        default_divisor: BYTES_PER_TOKEN,
-    },
-    MeterClassDecl {
-        key: CLASS_CACHED_TOKENS,
-        family: TOKEN_FAMILY,
-        direction: ClassDirection::CacheRead,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
@@ -157,11 +160,13 @@ pub const CLASS_TEXT_TOKENS_IN: MeterClassId = MeterClassId::new("text_tokens_in
 /// drift from the declaration above.
 pub const CLASS_TEXT_TOKENS_OUT: MeterClassId = MeterClassId::new("text_tokens_out");
 
-/// The class key a cache-read token is counted under.
-///
-/// Exported for the same reason as [`CLASS_AUDIO_TOKENS_OUT`]: the class label is what selects a
-/// unit price, and a root that spelled it out inline would be one more chance for that spelling to
-/// drift from the declaration above.
+/// The key that names a cache-read token count — NOT a billable class (see the comment on
+/// [`METER_CLASSES`]: `cached_tokens` is a subset of the input token classes, and pricing it beside
+/// them would double-bill the same cached input). Deliberately absent from `METER_CLASSES`, so no
+/// rate card can configure it and no `meter`/`class_counts` line ledgers it; the figure reaches
+/// money only via [`FACT_CACHED_TOKENS`], an unbilled attribution fact. Kept as a `MeterClassId`
+/// (rather than a bare string) because callers outside this crate that read the figure still
+/// identify it by the same typed key every billable class uses.
 pub const CLASS_CACHED_TOKENS: MeterClassId = MeterClassId::new("cached_tokens");
 
 /// The class key the seconds of inbound audio a turn consumed are counted under.

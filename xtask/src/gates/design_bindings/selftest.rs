@@ -388,8 +388,16 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // (h) REGEN-CLEAN's other arm: a ledger with one binding removed is REFUSED. Without this,
     //     a binding added to Appendix B and never re-derived is absent from everything the strict
     //     form reads — unmapped, unproven, and green.
+    //
+    //     PROVEN FROM A REGEN-CLEAN BASE. The row reads the committed artifacts against Appendix B,
+    //     so a committed ledger that has fallen behind the tree leaves it red before any plant, and
+    //     this case would prove nothing. The base is the fresh derivation laid over both artifacts;
+    //     the plant is that base with one binding removed. The control case above still reads the
+    //     committed ledger and stays red until it is regenerated.
+    let base = regen_clean_base(cx);
+    let base_cx = cx.with_overlay(base.clone());
     let mut ov = Overlay::new();
-    if let Ok(text) = cx.read(build::OUT_JSON_REL) {
+    if let Ok(text) = base_cx.read(build::OUT_JSON_REL) {
         if let Ok(mut doc) = json::parse(&text) {
             if let Some(J::Arr(bs)) = doc.get("bindings").cloned() {
                 doc.set("bindings", J::Arr(bs[1..].to_vec()));
@@ -398,11 +406,11 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         }
     }
     r.push(prove_red(
-        cx,
+        &base_cx,
         gate,
         "a committed ledger with one binding removed is not what Appendix B derives",
         &[ROW_REGEN],
-        ov,
+        base.layered(&ov),
         &["is NOT what Appendix B derives"],
     ));
 
@@ -619,6 +627,33 @@ fn binding_verdict_cases<'a>(
     r
 }
 
+/// A FIXTURE OVERLAY ON WHICH REGEN-CLEAN IS GREEN: both committed artifacts replaced by what
+/// Appendix B derives from this tree. The derivation reads the committed ledger as one of its
+/// inputs, so it is re-taken over its own output until it stops moving (twice is the most it has
+/// needed; four is the bound). Empty when the committed ledger is already clean, and empty if the
+/// derivation cannot be made at all — in which case the cases built on it report the tree's own
+/// red, which is the honest answer.
+fn regen_clean_base(cx: &Ctx) -> Overlay {
+    let mut base = Overlay::new();
+    for _ in 0..4 {
+        let here = cx.with_overlay(base.clone());
+        let Ok(inputs) = DesignBindingsGate::inputs(&here) else {
+            break;
+        };
+        let Ok((js, md)) = DesignBindingsGate::regenerate(&here, &inputs) else {
+            break;
+        };
+        let same_js = here.read(build::OUT_JSON_REL).ok().as_deref() == Some(js.as_str());
+        let same_md = here.read(build::OUT_MD_REL).ok().as_deref() == Some(md.as_str());
+        if same_js && same_md {
+            break;
+        }
+        base.set(build::OUT_JSON_REL, js);
+        base.set(build::OUT_MD_REL, md);
+    }
+    base
+}
+
 /// THE TWO REFUSALS THAT ARE NOT ABOUT A CITATION: the instrument could not read its ledger, and
 /// the derivation it compares that ledger against could not be made.
 fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
@@ -640,33 +675,34 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // AND THE DERIVATION ITSELF FAILING IS NOT A CLEAN REGEN. Appendix B is the source the committed
     // ledger is compared against; with it unreadable there is no comparison to pass, and the arm
     // that says so was the one arm of REGEN-CLEAN with no plant.
+    //
+    // Proven from the same regen-clean base as the stale-ledger case, for the same reason: the
+    // row must be green before the plant for the plant's red to be the plant's.
+    let base = regen_clean_base(cx);
+    let base_cx = cx.with_overlay(base.clone());
     let mut ov = Overlay::new();
     ov.remove(build::ARCH_REL);
     r.push(prove_rows_red(
-        cx,
+        &base_cx,
         gate,
         "the derivation from Appendix B failing is refused, never read as a clean regen",
         &[ROW_REGEN],
-        ov,
+        base.layered(&ov),
         &["the derivation from Appendix B FAILED"],
     ));
 
     // ── NOTE-WITNESS, BOTH ARMS ────────────────────────────────────────────────────────────────
     //
-    // THE SHIPPED TABLE IS RED, so neither arm may be read off it. `PB-58` names a witness that
-    // exists nowhere, which is the defect this rule was built for and is the owner's to route — so
-    // the rule is proven on PLANTED tables instead, and proven BOTH WAYS. A red arm alone would
-    // not distinguish this rule from one that is simply always red.
+    // THE RULE IS PROVEN ON PLANTED TABLES, BOTH WAYS, never read off the shipped table: a red arm
+    // alone would not distinguish this rule from one that is simply always red, and a green arm
+    // read off the real tree would move whenever the tree does.
     //
-    // THE RED ARM IS ASKED OVER A GREEN BASELINE, NOT OVER THE SHIPPED TREE (item 89). Asked over
-    // the real tree it scored IMPOSSIBLE: `design-bindings:note-witness` is standing RED there on
-    // PB-58, so no plant could be credited with the red. That red is real -- PB-58's witness
-    // `a_spend_past_the_reservation_is_carried_out_as_an_overdraft` has never been a fn in any
-    // commit (19d894261; M3 in 1.6.0-LEDGER.md) -- and it is the money owner's to route, so it
-    // STAYS red on `gate`. What moves is the proof: the case's baseline is the fixture below, a
-    // control ledger and a note table whose one witness RESOLVES, on which the row is GREEN; the
-    // plant is that same fixture with the witness swapped for one that never existed. GREEN ->
-    // RED on the one row, over two trees that differ by one symbol. DO NOT weaken the rule.
+    // THE RED ARM IS ASKED OVER A GREEN BASELINE, NOT OVER THE SHIPPED TREE (item 89). The case's
+    // baseline is the fixture below, a control ledger and a note table whose one witness RESOLVES,
+    // on which the row is GREEN; the plant is that same fixture with the witness swapped for one
+    // that never existed. GREEN -> RED on the one row, over two trees that differ by one symbol.
+    // (The shipped table's PB-58 once named a witness that did not exist, which is exactly the
+    // defect this rule catches; it now names a real test.) DO NOT weaken the rule.
     //
     // The note table goes through [`NOTE_TABLE_KEY`], which REPLACES the table wholesale, so
     // PB-58 is absent from both the baseline and the plant and cannot colour either run.

@@ -34,7 +34,7 @@ use busbar_kernel::state::AppHandle;
 
 /// The OpenAPI response-object key (`"responses"`). Named here ONCE and assembled from fragments so
 /// this neutral admin source carries no bare `responses` token: the OpenAPI keyword collides with a
-/// reserved dialect token the plane-purity lint (`scripts/plane-purity-lint.sh`) bans as vendor-API
+/// reserved dialect token the plane-purity gate (`cargo xtask gate plane-purity`) bans as vendor-API
 /// vocabulary, and the neutral crates must name no plane/dialect vocabulary. `concat!` folds to the identical
 /// `"responses"` &'static str at compile time, so every emitted OpenAPI document is byte-for-byte
 /// unchanged — this is a naming refactor, not a wire change. Only the OpenAPI document builders

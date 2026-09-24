@@ -522,17 +522,59 @@ tools:
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A ROLELESS admitted principal (no `role_bindings` for its module) serves UNGOVERNED — warned in
-/// so many words on stderr — the session speaks initialize/discover/subscription over the real
-/// pipes, and EOF with the subscription still open exits 0 promptly.
+/// A ROLELESS admitted principal — the chain identifies it, but no `role_bindings` row binds its
+/// role, so it earns NO enforcement key — is REFUSED at boot (item 144: an identified principal
+/// with no key is refused, never admitted ungoverned with spend booked to `anonymous`). The stdio
+/// spelling of the HTTP door's `403 insufficient_scope`: nonzero exit, the reason on stderr, and not
+/// one frame served first.
 #[test]
-fn a_roleless_session_serves_ungoverned_and_eof_with_a_live_subscription_exits_promptly() {
+fn a_roleless_admitted_credential_is_refused_without_serving_a_frame() {
     let dir = fixture_dir("roleless");
     if !install_static_auth_plugin(&dir) {
         return;
     }
     let token = jwt_with_aud(CANONICAL);
     write_configs(&dir, &governed_config(&dir, &token, ""));
+    let mut child = spawn(&dir, Some(&token));
+    let code = wait_bounded(&mut child.child, Duration::from_secs(120));
+    assert_ne!(code, 0, "an admitted credential that earned no key must not serve");
+    let stderr = child.stderr_so_far();
+    assert!(
+        stderr.contains("role_bindings") && stderr.contains("insufficient_scope"),
+        "the refusal names the missing binding and its HTTP twin: {stderr}"
+    );
+    assert!(
+        !stderr.contains("UNGOVERNED"),
+        "a keyless principal is refused, never served ungoverned: {stderr}"
+    );
+    assert!(
+        child.stdout.try_recv().is_err(),
+        "not one frame may be served before the refusal"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A GOVERNED session whose role is bound (all pools, no group) speaks initialize/discover/
+/// subscription over the real pipes, and EOF with the subscription still open exits 0 promptly
+/// (`STDIO.EXIT-ON-EOF`).
+#[test]
+fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
+    let dir = fixture_dir("bound");
+    if !install_static_auth_plugin(&dir) {
+        return;
+    }
+    let token = jwt_with_aud(CANONICAL);
+    write_configs(
+        &dir,
+        &governed_config(
+            &dir,
+            &token,
+            r#"  role_bindings:
+    statauth:
+      tester: {}
+"#,
+        ),
+    );
     let mut child = spawn(&dir, Some(&token));
 
     // A LEGACY-era opening: `initialize`, no `_meta` — the stdio dual-era negotiation.
@@ -573,8 +615,8 @@ fn a_roleless_session_serves_ungoverned_and_eof_with_a_live_subscription_exits_p
 
     let stderr = child.stderr_so_far();
     assert!(
-        stderr.contains("UNGOVERNED"),
-        "an ungoverned session says so on stderr: {stderr}"
+        !stderr.contains("UNGOVERNED"),
+        "a bound session is governed, and does not say otherwise: {stderr}"
     );
 
     let code = child.eof_and_wait();

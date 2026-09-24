@@ -14,7 +14,7 @@
 //! not evidence, which is the whole of why the recipe is published at all.
 //!
 //! So the check here rebuilds the digest preimage from the PUBLISHED ARTIFACTS ONLY: the field
-//! table in `docs/audit-chain-digest-v1.md`, and the worked example and key set that document
+//! table in `docs/audit-chain-digest-v2.md`, and the worked example and key set that document
 //! quotes. It frames them itself, hashes them itself, and compares against the digest the document
 //! and the build each claim.
 //!
@@ -38,9 +38,15 @@ use sha2::{Digest as _, Sha256};
 
 /// Where the published contract lives. The ONE input this check is allowed to trust.
 fn published_spec() -> String {
+    published_page("audit-chain-digest-v2.md")
+}
+
+/// One published recipe page, by file name.
+fn published_page(name: &str) -> String {
     std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/audit-chain-digest-v1.md"),
+            .join("../../docs")
+            .join(name),
     )
     .expect("the published digest spec is in the tree")
 }
@@ -218,6 +224,44 @@ fn the_published_table_reproduces_the_published_examples_digest() {
         published_hash,
         "the published field table does not reproduce the published example's own digest — the \
          page is not followable"
+    );
+}
+
+/// THE V1 PAGE STILL CHECKS OUT ON ITS OWN TERMS, AND IT STILL CARRIES THE PRICED FIELDS V2 DROPPED.
+///
+/// `v2` was published BESIDE `v1`, not over it: a `v1` body anybody pulled is checked by the `v1`
+/// page, so that page must stay followable — its table reproduces its own example's digest — and
+/// must still be the `v1` recipe, three priced fields and all. And the `v2` table is the `v1` table
+/// with exactly `pre_tier`, `priced` and `hooks[].priced_delta` taken out, in the same order and
+/// kinds: read off the two pages, never off the code.
+#[test]
+fn the_v1_page_is_kept_and_v2_is_v1_less_the_three_priced_fields() {
+    let v1 = published_page("audit-chain-digest-v1.md");
+    let v1_order = published_field_order(&v1);
+    let v1_record = &spec_json_block(&v1, 0)["records"][0];
+    assert_eq!(
+        digest_from_published(&v1_order, v1_record),
+        v1_record["hash"]
+            .as_str()
+            .expect("the v1 example carries its digest"),
+        "the v1 page no longer reproduces its own example — a v1 body could not be verified"
+    );
+    assert_eq!(
+        spec_json_block(&v1, 0)["recipe"].as_str(),
+        Some("busbar.audit.digest.v1")
+    );
+
+    let priced = ["pre_tier", "priced", "hooks[].priced_delta"];
+    let v1_less_priced: Vec<_> = v1_order
+        .iter()
+        .filter(|(name, _)| !priced.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    assert_eq!(v1_less_priced.len() + priced.len(), v1_order.len());
+    assert_eq!(
+        published_field_order(&published_spec()),
+        v1_less_priced,
+        "the v2 page is not the v1 page less exactly the three priced fields"
     );
 }
 

@@ -58,15 +58,14 @@
 //! posts its fee, because the caller got the value that was on the wire when the status was
 //! settled. The fee is a lookahead at the door and a posting here, and this step reports which.
 //!
-//! **The refund rule is one counter, not two.** A non-2xx end refunds the fee base
-//! (`billable_requests`) and never the admission count (`requests`). That asymmetry is the whole
-//! design: the caller is not billed a flat fee for a failure outside its control, and a thousand
-//! failed requests still consume a thousand slots, so a cap cannot be escaped by hammering
-//! failures. A refund is only ever issued for a request whose charge LANDED — the admit step's
-//! `charged` — because the refund is a blind decrement of a shared window counter, and issuing one
-//! for a request that never charged erodes some other request's spend in the same window. It lands
-//! in the window the pinned arrival epoch names, which is the window the charge landed in, so a
-//! request that straddles a boundary refunds where it charged.
+//! **The refund is not this step's.** A non-2xx end refunds the fee base (`billable_requests`) and
+//! never the admission count (`requests`), only where the admission charge LANDED, in the window the
+//! pinned arrival epoch names — and that decision is made in exactly ONE place: the admitted
+//! terminal door (`EngineHost::finish_admitted`, reached through the Audit step with the admit
+//! step's `charged`), which reads the client-facing status and refunds. This step used to compute a
+//! second copy of the same rule that nothing read; a second decision with no consumer is a decision
+//! that can drift from the one that is applied, so it is gone, and the rehearsal
+//! (`unit/tests/chain.rs`) holds the door's refund on the ledger itself.
 //!
 //! **A stream that ends in an error bills the tokens it streamed.** A terminal error, a translate
 //! abort, a transport cut or a timeout is an interruption, not a reversal of incurred cost: the
@@ -126,9 +125,6 @@ use busbar_kernel::plane_host::EngineHost;
 /// walk just before the Meter step binds — because the cell rides on the response and may fill in
 /// between. Folding takes the whole report or none of it, so the second fold rewrites the same three
 /// figures with themselves where the first already ran.
-// Built by the Route step and read by the chain that drives the two together; both are dark until
-// the composition root installs these steps, which is what this allow covers and what retires it.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub(crate) struct MeterFacts {
     /// The serving lane, as an index into the engine's lane table — the lane that actually answered
@@ -140,6 +136,10 @@ pub(crate) struct MeterFacts {
     /// usage frame has not arrived when Route returns, so the snapshot is empty and the cell is what
     /// answers later.
     pub(crate) usage: Option<busbar_substrate_values::billing::TokenUsage>,
+    /// Every OPEN class the response billed beside the token split (a rerank's search units), as
+    /// the tap reported it — the same map the governance ledger accrued. Same source and timing as
+    /// `usage`, and empty until the tap has reported.
+    pub(crate) open_units: std::collections::BTreeMap<String, u64>,
     /// The status the CLIENT saw — the fee basis, decided at the frame that carried it.
     pub(crate) status: u16,
     /// Whether the unit reached an upstream at all, which is what makes it a fee-bearing client
@@ -166,7 +166,32 @@ impl MeterFacts {
     pub(crate) fn fold(&mut self, report: &crate::engine::TapReport) {
         self.lane = Some(report.lane);
         self.usage = report.usage.clone();
+        self.open_units = report.open_units.clone();
     }
+}
+
+/// **EVERY CLASS THE UNIT BILLED**, as one neutral class map: the reserved token split and every
+/// open class beside it (#71: the ledger event is the raw counts per class — every class). Zero
+/// counts are left off, as the token projection leaves them.
+///
+/// The one reading both reports are built from — the Meter step's at step 6 and the late reading
+/// after the body drained — so a unit cannot report its search units at one and not the other. The
+/// token split is projected exactly as before; an open class never collides with a reserved one (a
+/// codec names its counted class, and none names a token tier), and if one ever did the TOKEN
+/// figure stands, so no token figure can move through this function.
+pub(crate) fn billed_classes(
+    usage: Option<&busbar_substrate_values::billing::TokenUsage>,
+    open_units: &std::collections::BTreeMap<String, u64>,
+) -> busbar_substrate_values::billing::Usage {
+    let mut billed = usage
+        .map(busbar_llm_codec::wire_shim::tier_usage)
+        .unwrap_or_default();
+    for (class, count) in open_units {
+        if *count > 0 {
+            billed.usage_units.entry(class.clone()).or_insert(*count);
+        }
+    }
+    billed
 }
 
 /// What the accrual needs that the step shape has nowhere to put.
@@ -179,8 +204,9 @@ pub struct MeterCtx<'a> {
     sink: Option<&'a crate::engine::UsageSink>,
     lane: Option<&'a crate::engine::Lane>,
     usage: Option<&'a busbar_substrate_values::billing::TokenUsage>,
+    /// The open classes beside the token split; `None` where nothing reported any.
+    open_units: Option<&'a std::collections::BTreeMap<String, u64>>,
     status: u16,
-    charged: bool,
     upstream_leg: bool,
     tap_posts: bool,
 }
@@ -189,22 +215,21 @@ impl<'a> MeterCtx<'a> {
     /// Bind the step to one response.
     ///
     /// `status` is the status the CLIENT saw, never the upstream's — the fee is decided from the
-    /// client-facing frame. `charged` is the admit step's: whether the admission charge landed, and
-    /// therefore whether there is anything a non-2xx could refund. `upstream_leg` says the unit
+    /// client-facing frame. `upstream_leg` says the unit
     /// routed to an upstream, which is what makes it a fee-bearing client request rather than a
     /// kernel verb or a delivery. How the response ENDED is not a parameter: a cut stream bills
     /// what it streamed (#62), so `usage` is the whole charge on every end.
     ///
-    /// `allow(dead_code)` while the module is dark: the Route step is what builds one of these on
-    /// the request path, and it does not exist yet.
-    #[allow(clippy::too_many_arguments, dead_code)]
+    /// TEST-ONLY: production binds through [`MeterCtx::bind`] from what the Route step observed;
+    /// this spelled-out form is what the step's own tests drive.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         host: &'a Arc<dyn EngineHost>,
         sink: Option<&'a crate::engine::UsageSink>,
         lane: Option<&'a crate::engine::Lane>,
         usage: Option<&'a busbar_substrate_values::billing::TokenUsage>,
         status: u16,
-        charged: bool,
         upstream_leg: bool,
     ) -> Self {
         MeterCtx {
@@ -212,8 +237,8 @@ impl<'a> MeterCtx<'a> {
             sink,
             lane,
             usage,
+            open_units: None,
             status,
-            charged,
             upstream_leg,
             // The step is the posting unless something before it says otherwise; `bind` is what
             // says otherwise.
@@ -224,29 +249,26 @@ impl<'a> MeterCtx<'a> {
     /// Bind the step to what the ROUTE step observed.
     ///
     /// The expression that did not exist: a [`MeterFacts`] plus the two things the facts cannot
-    /// own — the host seam and the borrowed lane the index names — is a context. `charged` is still
-    /// the admit step's, because whether the admission charge landed is not a fact about the walk.
-    #[allow(dead_code)]
+    /// own — the host seam and the borrowed lane the index names — is a context.
     pub(crate) fn bind(
         host: &'a Arc<dyn EngineHost>,
         sink: Option<&'a crate::engine::UsageSink>,
         lane: Option<&'a crate::engine::Lane>,
         facts: &'a MeterFacts,
-        charged: bool,
     ) -> Self {
         MeterCtx {
             host,
             sink,
             lane,
             usage: facts.usage.as_ref(),
+            open_units: Some(&facts.open_units),
             status: facts.status,
-            charged,
             upstream_leg: facts.upstream_leg,
             tap_posts: facts.tap_posts,
         }
     }
 
-    /// Whether the client saw a success. The one reading the fee and the refund both key off.
+    /// Whether the client saw a success. The one reading the fee keys off.
     #[must_use]
     pub fn delivered(&self) -> bool {
         matches!(self.status, 200..=299)
@@ -266,9 +288,6 @@ pub struct Metered {
     /// Whether the flat per-request fee posts: 1 on a delivered 2xx from an upstream leg, 0
     /// otherwise. Decided here, from the client-facing status, and never reversed later.
     pub fee_count: u32,
-    /// Whether the Audit step must refund the fee base. True exactly when the admission charge
-    /// landed and the client did not see a 2xx.
-    pub refund: bool,
     /// WHETHER THIS STEP MADE THE ACCRUAL, as opposed to sealing one the walk's tap already made.
     ///
     /// Set inside the accrual arm and nowhere else, so it is the arm's own report of itself rather
@@ -356,9 +375,12 @@ pub fn meter(
         // The tier split, projected once and read twice: the ledger accrues against it, and the
         // card prices the same counts. Hoisted out of the accrual arm so a unit the walk already
         // posted still prices what it delivered — sealing is not a reason to spend nothing.
-        let tier = reported
-            .map(busbar_llm_codec::wire_shim::tier_usage)
-            .unwrap_or_default();
+        //
+        // EVERY class the unit billed, the open ones included (a rerank's search units): the same
+        // map the walk's tap accrued, so a unit this step posts ledgers what a unit the tap posted
+        // ledgers, and the report hands the card every count (#71).
+        let no_open = std::collections::BTreeMap::new();
+        let tier = billed_classes(reported, ctx.open_units.unwrap_or(&no_open));
         if !ctx.tap_posts {
             crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
             posted = true;
@@ -409,9 +431,6 @@ pub fn meter(
         decision: Decision::proceed(unit_token, usage),
         row,
         fee_count,
-        // The refund is owed only where a charge landed and the client did not see a 2xx — and it
-        // is owed against the fee base alone.
-        refund: ctx.charged && !delivered,
         posted,
         report,
     }
@@ -453,6 +472,7 @@ fn metering_row(
     usage: Option<&busbar_substrate_values::billing::TokenUsage>,
 ) -> busbar_api::MeteringRow {
     busbar_api::MeteringRow {
+        usage_units: Default::default(),
         key_id: sink.key.id.clone(),
         model: lane.model.clone(),
         provider: lane.provider.clone(),

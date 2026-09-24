@@ -99,6 +99,19 @@ pub struct Settlement {
     pub overdraft: Option<Overdraft>,
 }
 
+/// What one posting moves the books by: its three figures and how many billable requests it is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Figures {
+    /// What had been reserved for the unit.
+    pub reserved: u64,
+    /// What was posted.
+    pub settled: u64,
+    /// How much of what was posted had no reservation behind it.
+    pub overdraft: u64,
+    /// How many billable requests the posting is.
+    pub fee_count: u64,
+}
+
 /// The ledger unit: the book it keeps, and the previous release's rows it also feeds.
 pub struct Ledger {
     book: Book,
@@ -206,13 +219,29 @@ impl Ledger {
     /// doors move the same three figures through this one function, because a second copy of that
     /// arithmetic is a second answer to the identity.
     pub fn post(&mut self, key: &TotalsKey, window: WindowStart, posted: Posted) -> Settlement {
+        self.post_counted(key, window, posted, 0)
+    }
+
+    /// [`Ledger::post`] for a posting that is `fee_count` billable requests: the count settles on
+    /// the balance beside the figure and reaches the previous release's row as its billable
+    /// requests, so the reconciliation's count half compares two real counts.
+    pub fn post_counted(
+        &mut self,
+        key: &TotalsKey,
+        window: WindowStart,
+        posted: Posted,
+        fee_count: u64,
+    ) -> Settlement {
         let (released, overdraft) = self.move_books(
             key,
             window,
             posted.principal().as_str(),
-            posted.reserved(),
-            posted.settled(),
-            posted.overdraft(),
+            Figures {
+                reserved: posted.reserved(),
+                settled: posted.settled(),
+                overdraft: posted.overdraft(),
+                fee_count,
+            },
         );
         Settlement {
             overdraft: (overdraft > 0).then(|| Overdraft {
@@ -243,12 +272,9 @@ impl Ledger {
         key: &TotalsKey,
         window: WindowStart,
         principal: &str,
-        reserved: u64,
-        settled: u64,
-        overdraft: u64,
+        figures: Figures,
     ) -> i128 {
-        self.move_books(key, window, principal, reserved, settled, overdraft)
-            .0
+        self.move_books(key, window, principal, figures).0
     }
 
     /// THE ONE BOOK-MOVING ARITHMETIC, for a live posting and a replayed one alike.
@@ -259,10 +285,14 @@ impl Ledger {
         key: &TotalsKey,
         window: WindowStart,
         principal: &str,
-        reserved: u64,
-        settled: u64,
-        overdraft: u64,
+        figures: Figures,
     ) -> (i128, i128) {
+        let Figures {
+            reserved,
+            settled,
+            overdraft,
+            fee_count,
+        } = figures;
         let legacy_reserved = reserved;
         let legacy_settled = settled;
         let legacy_overdraft = overdraft;
@@ -281,6 +311,7 @@ impl Ledger {
         figures.settled = figures.settled.saturating_add(settled);
         figures.open_slice_remainders = figures.open_slice_remainders.saturating_add(released);
         figures.overdraft_carried_out = figures.overdraft_carried_out.saturating_add(overdraft);
+        figures.fee_count = figures.fee_count.saturating_add(fee_count);
 
         if let Some(rows) = self.legacy.as_mut() {
             // Best effort by design: the previous release's rows are a parity obligation, not the
@@ -293,6 +324,7 @@ impl Ledger {
                 reserved: legacy_reserved,
                 settled: legacy_settled,
                 overdraft: legacy_overdraft,
+                fee_count,
             });
         }
         (released, overdraft)

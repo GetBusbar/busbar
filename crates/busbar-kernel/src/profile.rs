@@ -28,8 +28,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-/// The hot-path stages attributed by the profiler. Ordering here is the report order. Keep this in
-/// sync with the `start`/`record` call sites; a stage with no call site simply reports zero samples.
+/// The hot-path stages attributed by the profiler. The report order is [`dump`]'s list; a stage with
+/// no call site simply reports zero samples. Nothing counts these variants: a stage's bucket is made
+/// the first time it records (item 571), so adding one needs no second edit to stay safe.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     /// `auth_middleware` pre-handler work: carrier token extract + chain/cache verdict + extension
@@ -98,8 +99,7 @@ pub enum Stage {
 
 impl Stage {
     /// Stable report name (also the `BUSBAR_PROFILE stage=` value). Used only by [`dump`] (the
-    /// reporting half), which today runs from the `capture_latency_metrics` profiling driver.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// reporting half).
     fn name(self) -> &'static str {
         match self {
             Stage::MwAuth => "mw_auth",
@@ -126,15 +126,7 @@ impl Stage {
             Stage::PostSend => "post_send",
         }
     }
-
-    /// Dense bucket index, for the fixed-size bucket array.
-    fn idx(self) -> usize {
-        self as usize
-    }
 }
-
-/// Number of `Stage` variants (the bucket-array length). Must equal the number of enum arms above.
-const STAGE_COUNT: usize = 22;
 
 /// Per-stage sample CAP. Buckets are bounded so a long-lived enabled binary cannot grow them without
 /// limit (and re-sort an ever-larger `Vec` under the global `Mutex` on every [`dump`]). Once a bucket
@@ -210,13 +202,28 @@ fn next_rand() -> u64 {
     x.wrapping_mul(0x2545_F491_4F6C_DD1D)
 }
 
-/// Per-stage sample store. Behind a single `Mutex` - the profiler is a single-threaded measurement
-/// tool (the capture test drives one request at a time), so contention is nil; the lock is only ever
-/// taken on the enabled path. Buckets are bounded (see [`BUCKET_CAP`]) so a long-running enabled
-/// binary cannot grow them without limit.
-fn buckets() -> &'static Mutex<Vec<Bucket>> {
-    static BUCKETS: OnceLock<Mutex<Vec<Bucket>>> = OnceLock::new();
-    BUCKETS.get_or_init(|| Mutex::new((0..STAGE_COUNT).map(|_| Bucket::default()).collect()))
+/// Per-stage sample store, KEYED BY THE STAGE. Behind a single `Mutex` - the profiler is a
+/// single-threaded measurement tool, so contention is nil; the lock is only ever taken on the enabled
+/// path. Buckets are bounded (see [`BUCKET_CAP`]) so a long-running enabled binary cannot grow them.
+///
+/// It used to be an array sized by a hand-kept count of the enum's variants and indexed by a
+/// variant's position with no bound: a stage added without editing the count panicked the first
+/// sample of a profiling run, on the request path (item 571). There is no count to fall behind now.
+fn buckets() -> &'static Mutex<Vec<(Stage, Bucket)>> {
+    static BUCKETS: OnceLock<Mutex<Vec<(Stage, Bucket)>>> = OnceLock::new();
+    BUCKETS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// `stage`'s bucket in `store`, made the first time the stage records.
+fn bucket_for(store: &mut Vec<(Stage, Bucket)>, stage: Stage) -> &mut Bucket {
+    let at = match store.iter().position(|(s, _)| *s == stage) {
+        Some(at) => at,
+        None => {
+            store.push((stage, Bucket::default()));
+            store.len() - 1
+        }
+    };
+    &mut store[at].1
 }
 
 /// Record `nanos` into `stage`'s bucket. No-op when profiling is disabled.
@@ -227,7 +234,7 @@ pub(crate) fn record(stage: Stage, nanos: u64) {
     }
     let n = u32::try_from(nanos).unwrap_or(u32::MAX);
     let mut b = buckets().lock().unwrap_or_else(|p| p.into_inner());
-    b[stage.idx()].record(n);
+    bucket_for(&mut b, stage).record(n);
 }
 
 /// A running stage timer: records its elapsed time into `stage` when dropped. Cheap to construct even
@@ -237,16 +244,6 @@ pub(crate) fn record(stage: Stage, nanos: u64) {
 pub struct Timer {
     stage: Stage,
     start: Instant,
-}
-
-impl Timer {
-    #[inline]
-    fn new(stage: Stage) -> Self {
-        Self {
-            stage,
-            start: Instant::now(),
-        }
-    }
 }
 
 impl Drop for Timer {
@@ -261,28 +258,23 @@ impl Drop for Timer {
 /// (or `drop(_t)`) record the span.
 #[inline]
 pub fn start(stage: Stage) -> Option<Timer> {
-    if enabled() {
-        Some(Timer::new(stage))
-    } else {
-        None
-    }
+    let start = enabled().then(Instant::now)?;
+    Some(Timer { stage, start })
 }
 
 /// Print one `BUSBAR_PROFILE` line per stage that recorded samples, with count, mean, p50 and p99 in
 /// microseconds. Called by the profiling driver at the end of a run. No-op (and clears nothing) when
 /// disabled. Percentiles use nearest-rank on the sorted per-stage samples.
 ///
-/// The reporting half of the profiler — invoked today from the `capture_latency_metrics` driver
-/// (a `#[cfg(test)]` entry point); allowed dead in a non-test build so the tool stays permanently
-/// available without a warning.
-#[cfg_attr(not(test), allow(dead_code))]
+/// The reporting half of the profiler. A stage missing from the report order below is still
+/// reported, after the listed ones, so a new stage is never silently left out of the report.
 pub fn dump() {
     if !enabled() {
         return;
     }
     let mut b = buckets().lock().unwrap_or_else(|p| p.into_inner());
-    // Iterate in enum order for a stable, readable report.
-    let stages = [
+    // A stable, readable report order.
+    let order = [
         Stage::MwAuth,
         Stage::InboundParse,
         Stage::WrapSetup,
@@ -306,8 +298,8 @@ pub fn dump() {
         Stage::RbfBody,
         Stage::Finish,
     ];
-    for stage in stages {
-        let bucket = &mut b[stage.idx()];
+    b.sort_by_key(|(stage, _)| order.iter().position(|s| s == stage).unwrap_or(usize::MAX));
+    for (stage, bucket) in b.iter_mut() {
         let samples = &mut bucket.samples;
         if samples.is_empty() {
             continue;

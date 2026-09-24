@@ -12,11 +12,16 @@
 /// Which of the two operations a request was, as the wire spelled the path.
 pub const FACT_OP: &str = "op";
 
-/// The request identifier the caller or the provider's answer carried, where either did.
+/// The request identifier the provider's answer carried, where it did.
 ///
-/// jev correlates on `x-typesafe-request-id` where the transport surfaces it as a fact, or on a
-/// body-level `id`/`request_id` member — plain metadata, never the decision content.
+/// jev correlates on a body-level `id`/`request_id` member — plain metadata, never the decision
+/// content. It names ONE exchange, so it is a response fact and never a session fact.
 pub const FACT_REQUEST_ID: &str = "request_id";
+
+/// The configured provider a unit is dialled against — its operator-given id, the same name the
+/// scope unit judges. Written on every draft where exactly one provider resolves (`plane.rs`'s
+/// `provider`), and absent where none does.
+pub const FACT_PROVIDER: &str = "provider";
 
 /// Whether the response carried a top-level `error` member.
 ///
@@ -33,8 +38,9 @@ pub const FACT_USAGE_UNITS: &str = "usage_units";
 ///
 /// jev has no session-scoped identity of its own beyond the provider it was dialled against — the
 /// provider name IS the session-scoped fact, because a session's provider changing mid-flight would
-/// be a different priced thing.
-pub const SESSION_FACTS: &[&str] = &[FACT_REQUEST_ID];
+/// be a different priced thing, and the kernel sees that from the outside rather than inferring it.
+/// The request identifier is not here: it changes on every exchange.
+pub const SESSION_FACTS: &[&str] = &[FACT_PROVIDER];
 
 /// The content fact keys this plane produces.
 ///
@@ -46,7 +52,8 @@ pub const CONTENT_FACTS: &[&str] = &[FACT_OP, FACT_HAS_ERROR, FACT_USAGE_UNITS];
 /// The literal member names this plane forbids itself from ever resolving a pointer at.
 ///
 /// Not read anywhere in this crate's decode/encode path — listed here once, so the PII witness test
-/// (`tests/pii_witness.rs`) and a reviewer both have one place that names the two members a
+/// (`tests/jev.rs::pii_witness_never_surfaces_state_or_answers_in_any_fact`) and a reviewer both
+/// have one place that names the two members a
 /// `decision` plane's whole design exists to keep off the fact/record surface.
 pub const NEVER_READ_MEMBERS: &[&str] = &["state", "answers"];
 

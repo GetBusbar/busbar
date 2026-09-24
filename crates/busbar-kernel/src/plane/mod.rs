@@ -837,6 +837,8 @@ const fn neutral_sibling_decl(
         retain_verify_gates: None,
         default_section: None,
         owned_config_sections: &[],
+        billable_classes: &[],
+        fee_units: &[],
         resolve_provider: None,
     }
 }

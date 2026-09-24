@@ -4,7 +4,6 @@
 
 use super::*;
 use busbar_contract::caps::KernelSeal;
-use busbar_kernel_audit::{Clock, NoSeam};
 use busbar_kernel_ledger::legacy::RecordingRows;
 use busbar_kernel_wal::{decode_run, verify_journal, NullShipper};
 
@@ -100,6 +99,64 @@ fn marker(seq: u64, sealed_at: u64) -> MigrationMarker {
     }
 }
 
+/// The instant the test units arrive at, in milliseconds: the card epoch their counts price at.
+const ARRIVED_MS: u64 = 1_700_000_000_000;
+
+/// The lane the test card prices.
+const LANE: &str = "lane";
+
+/// A card pricing every reserved class on [`LANE`] at ONE nano-unit per unit — so a count of `n`
+/// derives a figure of `n` and a test can state both in one number.
+fn one_nano_card() -> busbar_kernel_ledger::cost::RateCard {
+    busbar_kernel_ledger::cost::RateCard::from_config(
+        Some([(
+            LANE,
+            busbar_kernel_ledger::cost::TierRates {
+                input: 0.001,
+                output: 0.001,
+                cache_read: 0.001,
+                cache_write: 0.001,
+            },
+        )]),
+        0,
+    )
+}
+
+/// A dated history holding `card` from instant zero, pinned at its head.
+fn pinned_history(
+    card: busbar_kernel_ledger::cost::RateCard,
+) -> crate::root::kernel::PinnedHistory {
+    let mut history = busbar_kernel_ledger::cost::History::new();
+    let seq = history.append(busbar_kernel_ledger::cost::CardEntryDraft {
+        effective_from: 0,
+        effective_until: None,
+        card,
+        appended_at: 0,
+        author: busbar_kernel_ledger::cost::Author::Opening,
+    });
+    crate::root::kernel::PinnedHistory::for_test(std::sync::Arc::new(history), seq)
+}
+
+/// The history source every money test's book prices its chain against: [`one_nano_card`].
+fn priced() -> HistorySource {
+    let pinned = pinned_history(one_nano_card());
+    Box::new(move || Some(pinned.clone()))
+}
+
+/// A book over `cfg` as node `node`, pricing against [`priced`].
+fn boot(cfg: &DurabilityConfig, node: u64) -> Result<Durability, OpenError> {
+    build_priced(cfg, node, Box::new(NullShipper::new()), rows(), priced())
+}
+
+/// `n` input units on [`LANE`] — `n` nano-units under [`one_nano_card`].
+fn inputs(n: u64) -> UnitCounts {
+    UnitCounts {
+        lane: LANE.to_string(),
+        fee_count: 0,
+        classes: std::collections::BTreeMap::from([("input".to_string(), n)]),
+    }
+}
+
 /// The unset branch, and the assertion that matters: the working directory the node was started
 /// in is untouched. Not "no journal was opened" — no FILE appeared, checked by listing.
 #[test]
@@ -182,11 +239,14 @@ fn posting() -> Posting {
         rate_card_version: 3,
         wall: 1_700_000_000,
         mono: 42,
+        arrived_ms: 0,
+        flags: PostingFlags::NONE,
         principal: "vk_a".to_string(),
         kind: PostingKind::Settlement,
         incarnation: 1,
         counts: None,
         refusal: None,
+        era: RecordEra::Counts,
     }
 }
 
@@ -194,7 +254,7 @@ fn posting() -> Posting {
 fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
     use busbar_contract::caps::{KernelSeal, Origin, OriginKind, Outcome, UnitKey};
     use busbar_kernel_audit::{
-        Amount, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, What,
+        AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
     };
     AuditInputs {
         subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
@@ -217,10 +277,8 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
             emission_delta: 0,
             stale_policy: false,
         },
-        amount: Amount {
+        usage: Usage {
             lines: Vec::new(),
-            pre_tier: 600,
-            priced: 540,
             tier_bp: 9_000,
             fee_count: 1,
             currency: "USD".into(),
@@ -274,11 +332,6 @@ fn a_sealed_audit_record_goes_on_the_journal() {
     // hashes, so a reader holding one can find the other.
     assert!(String::from_utf8_lossy(&record.body).contains(&sealed.hash));
     assert_eq!(durability.record.sealed(), 1);
-    assert_eq!(
-        durability.legacy.len(),
-        0,
-        "journalling a sealed record must not touch the previous release's chain"
-    );
 }
 
 /// The set branch: the operator asked for a journal on this node's disk, so one appears. The
@@ -325,7 +378,6 @@ fn both_branches_build_the_same_ledger_and_audit_streams() {
     // The audit chains start at the same place on both, because neither is a function of where
     // the journal lives.
     assert_eq!(buffered.record.next_seq(), on_disk.record.next_seq());
-    assert_eq!(buffered.legacy.len(), on_disk.legacy.len());
     assert!(buffered.ledger.is_dual_writing());
     assert!(on_disk.ledger.is_dual_writing());
     // And the journal starts at genesis on both.
@@ -476,15 +528,19 @@ fn with_a_data_dir_the_marker_survives_a_restart() {
     );
 }
 
-/// The previous release's administrative chain is UNTOUCHED by any of this.
+/// Journalling carries no administrative row, and the root holds no administrative ring (item 237).
 ///
-/// Said by building two logs and driving one of them through a node that is also journalling:
-/// every entry, including the digest that a deployment's whole history verifies against, is
-/// identical. A journal that had quietly become an input to that digest would report every
-/// deployed chain as tampered at the next boot, and that is the one change this release may not
-/// make.
+/// There is ONE administrative audit ring: the kernel's durable one, written by the core-admin
+/// handlers and served by `GET /api/v1/admin/audit`. The root used to hold a second, RAM-only copy
+/// behind a seam that persisted nothing and that no endpoint read. Two halves:
+///
+/// - a node journalling postings has only its own records on the journal — an administrative row
+///   never leaks onto it;
+/// - the durability stack's own source constructs no administrative ring: no `AuditLog`, no
+///   `NoSeam`. The end-to-end cell `the_served_audit_body_is_byte_identical_with_and_without_the_root`
+///   pins that the served body did not move.
 #[test]
-fn journalling_does_not_touch_the_legacy_admin_chain() {
+fn journalling_carries_no_admin_row_and_the_root_holds_no_second_admin_ring() {
     let mut durability = build_for_node(
         &DurabilityConfig { data_dir: None },
         4,
@@ -493,51 +549,11 @@ fn journalling_does_not_touch_the_legacy_admin_chain() {
     )
     .expect("memory-buffered cannot fail");
     let token = token();
-    // The digest covers the timestamp, so the two logs are put on one fixed clock: the claim is
-    // about what journalling does to the chain, and a wall clock ticking between two writes
-    // would make the comparison say nothing.
-    durability.legacy = AuditLog::with(Box::new(PinnedClock), Box::new(NoSeam));
-    let alone = AuditLog::with(Box::new(PinnedClock), Box::new(NoSeam));
-
-    let mutations = [
-        ("key.create", "vk_a"),
-        ("key.rotate", "vk_a"),
-        ("key.delete", "vk_b"),
-    ];
-
-    for (action, resource) in mutations {
-        // The node is journalling between administrative writes, exactly as it would be.
+    for _ in 0..3 {
         durability
             .journal_posting(&posting(), &token, StepName::Meter)
             .expect("the posting goes on the chain");
-        durability.legacy.record_by(
-            action,
-            resource,
-            busbar_kernel_audit::OUTCOME_APPLIED,
-            "admin",
-        );
-        alone.record_by(
-            action,
-            resource,
-            busbar_kernel_audit::OUTCOME_APPLIED,
-            "admin",
-        );
     }
-
-    // The WIRE, field for field, digest included: what an administrative read returns is what a
-    // node with no journal at all would have returned.
-    let on_the_wire = |log: &AuditLog| {
-        serde_json::to_string(&log.export()).expect("the previous release's record encodes")
-    };
-    assert_eq!(durability.legacy.len(), 3);
-    assert_eq!(
-        on_the_wire(&durability.legacy),
-        on_the_wire(&alone),
-        "the administrative chain differs from one written on a node with no journal at all"
-    );
-    assert!(durability.legacy.verify());
-    // And the journal has only its own records on it — the administrative entries did not leak
-    // onto it either, which is the other half of "the two do not merge".
     let replayed = durability
         .journal
         .replay()
@@ -545,15 +561,18 @@ fn journalling_does_not_touch_the_legacy_admin_chain() {
         .expect("verifies");
     assert_eq!(replayed.len(), 3);
     assert!(replayed.iter().all(|r| r.class == RecordClass::Transaction));
-}
 
-/// A clock that does not move, so two chains written independently are comparable.
-#[derive(Debug)]
-struct PinnedClock;
-
-impl Clock for PinnedClock {
-    fn now(&self) -> u64 {
-        1_700_000_000
+    let source = include_str!("../durability/mod.rs");
+    let code: String = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for needle in ["AuditLog", "NoSeam"] {
+        assert!(
+            !code.contains(needle),
+            "root/durability.rs builds a second administrative ring again: `{needle}`"
+        );
     }
 }
 
@@ -596,12 +615,7 @@ fn what_the_store_took_is_the_chain() {
 // ---------------------------------------------------------------------------------------
 
 fn memory_node() -> Durability {
-    build(
-        &DurabilityConfig { data_dir: None },
-        Box::new(NullShipper::new()),
-        rows(),
-    )
-    .expect("memory-buffered cannot fail")
+    boot(&DurabilityConfig { data_dir: None }, 0).expect("memory-buffered cannot fail")
 }
 
 fn totals_key(bucket: &str) -> TotalsKey {
@@ -924,11 +938,12 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
     assert_eq!(through_hold.journal.head(), through_posting.journal.head());
 }
 
-/// Settle one hold of `reserved` at `used` onto `durability`, through the one settle path, with a
-/// journal record — the arrival reading `mono` naming the unit.
+/// Settle one hold sized for `reserved` input units at `used` of them onto `durability`, through
+/// the one settle path, with a journal record — the arrival reading `mono` naming the unit. Under
+/// [`one_nano_card`] the figures are the counts.
 fn settle_one(durability: &mut Durability, key: &TotalsKey, reserved: u64, used: u64, mono: u64) {
     use busbar_contract::caps::{
-        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, PrincipalId,
+        Admittance, Consumption, Grant, Hold, KernelSeal, MeterClassId, Posted, PrincipalId,
         QuantitySource, Usage, UsageLine, WriteMoney,
     };
     let seal = KernelSeal::acquire_for_kernel();
@@ -937,28 +952,97 @@ fn settle_one(durability: &mut Durability, key: &TotalsKey, reserved: u64, used:
     let mut at = settling(key, &durability_token);
     at.stamp.mono = mono;
     durability
-        .open_hold(&at, &principal, reserved)
+        .open_hold(&at, &principal, &inputs(reserved), ARRIVED_MS)
         .expect("the journal takes the hold");
     let hold = Hold::open(&Grant::<Admittance>::mint(&seal), principal, reserved);
     let usage = Usage::report(
         &Grant::<Consumption>::mint(&seal),
         vec![UsageLine {
-            class: MeterClassId::new("nano_units"),
+            class: MeterClassId::new("input"),
             quantity: used,
             source: QuantitySource::Count,
             estimated: false,
         }],
     )
     .expect("one line");
+    let posted = Posted::settle(
+        hold,
+        u128::from(used),
+        &usage,
+        &Grant::<WriteMoney>::mint(&seal),
+    );
     durability
-        .settle(
-            &at,
-            hold,
-            u128::from(used),
-            &usage,
-            &Grant::<WriteMoney>::mint(&seal),
-        )
+        .settle_counted(&at, posted, &inputs(used), ARRIVED_MS)
         .expect("the journal takes the posting");
+}
+
+/// PB-58: A SPEND PAST THE RESERVATION IS CARRIED OUT AS AN OVERDRAFT — the unit runs to its end
+/// and settles, and the part nothing reserved is carried, DERIVED AT READ (#71).
+///
+/// A unit reserved 1,000 and spent 1,500. It is not ended for money: its hold closes by a
+/// settlement, like any other. The chain holds that settlement's counts and epoch and no figure,
+/// and the carry beside it holds no figure either. The node restarts, and the book it rebuilds
+/// from those counts carries 500 out as an overdraft — settled 1,500 against 1,000 reserved —
+/// and the chain read back through the one spend function says the same of the posting.
+#[test]
+fn a_spend_past_the_reservation_is_carried_out_as_an_overdraft() {
+    let scratch = ScratchDir::new("overdraft-carried-out");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_overdraft");
+    {
+        let mut durability = boot(&cfg, 8).expect("the directory is writable");
+        settle_one(&mut durability, &key, 1_000, 1_500, 1);
+        let records = durability
+            .journal
+            .replay()
+            .expect("reads")
+            .expect("verifies");
+        let on_chain: Vec<Posting> = records.iter().filter_map(Posting::from_record).collect();
+        assert_eq!(
+            on_chain.iter().map(|p| p.kind).collect::<Vec<_>>(),
+            vec![PostingKind::Settlement, PostingKind::Carry],
+            "the unit settled, and the carry sits beside its settlement"
+        );
+        for posting in &on_chain {
+            assert_eq!(
+                (posting.reserved, posting.settled, posting.overdraft),
+                (0, 0, 0),
+                "no record holds the overdraft: it is a derivation, not a fact on the chain"
+            );
+        }
+    }
+
+    let restarted = boot(&cfg, 8).expect("the journal reopens onto what it wrote");
+    let figures = restarted.ledger.book().get(&key, 86_400);
+    assert_eq!(figures.settled, 1_500, "the whole spend is posted");
+    assert_eq!(figures.open_holds, 0, "the hold closed by settling");
+    assert_eq!(
+        figures.overdraft_carried_out, 500,
+        "the part past the reservation is carried out, derived from the counts at read"
+    );
+    assert_eq!(restarted.recovered_holds, 0, "no unit was left unsettled");
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+
+    let settlement = restarted
+        .read_back()
+        .into_iter()
+        .find(|p| p.kind == PostingKind::Settlement)
+        .expect("the settlement reads back");
+    assert_eq!(
+        (
+            settlement.reserved,
+            settlement.settled,
+            settlement.overdraft
+        ),
+        (1_000, 1_500, 500),
+        "read through the one spend function, the posting carries the overdraft out"
+    );
 }
 
 /// ITEM 128: THE RESTART RECONCILIATION COMPARES THE REAL BOOK, and goes RED on a book that lost a
@@ -978,16 +1062,14 @@ fn the_restart_reconciliation_goes_red_on_a_book_that_lost_a_row() {
     let key = totals_key("vk_restart");
     let other = totals_key("vk_other");
     let before = {
-        let mut durability = build_for_node(&cfg, 7, Box::new(NullShipper::new()), rows())
-            .expect("the directory is writable");
+        let mut durability = boot(&cfg, 7).expect("the directory is writable");
         settle_one(&mut durability, &key, 5_000, 4_200, 1);
         settle_one(&mut durability, &other, 1_000, 1_500, 2);
         durability.ledger.book().snapshot()
     };
     assert_eq!(before.len(), 2);
 
-    let mut restarted = build_for_node(&cfg, 7, Box::new(NullShipper::new()), rows())
-        .expect("the journal reopens onto what it wrote");
+    let mut restarted = boot(&cfg, 7).expect("the journal reopens onto what it wrote");
     assert_eq!(
         restarted.ledger.book().snapshot(),
         before,
@@ -1066,8 +1148,7 @@ fn a_hold_survives_a_kill_9() {
     };
     let key = totals_key("vk_killed");
     {
-        let mut durability = build_for_node(&cfg, 9, Box::new(NullShipper::new()), rows())
-            .expect("the directory is writable");
+        let mut durability = boot(&cfg, 9).expect("the directory is writable");
         let durability_token = token();
         let mut at = settling(&key, &durability_token);
         at.stamp.mono = 77;
@@ -1075,7 +1156,8 @@ fn a_hold_survives_a_kill_9() {
             .open_hold(
                 &at,
                 &busbar_contract::caps::PrincipalId::new("vk_killed"),
-                2_000,
+                &inputs(2_000),
+                ARRIVED_MS,
             )
             .expect("the hold goes on the chain");
         assert_eq!(durability.ledger.book().get(&key, 86_400).open_holds, 2_000);
@@ -1083,8 +1165,7 @@ fn a_hold_survives_a_kill_9() {
         std::mem::forget(durability);
     }
 
-    let restarted = build_for_node(&cfg, 9, Box::new(NullShipper::new()), rows())
-        .expect("the journal reopens onto what it wrote");
+    let restarted = boot(&cfg, 9).expect("the journal reopens onto what it wrote");
     assert_eq!(
         restarted.recovered_holds, 1,
         "the hold survived the kill and was recovered"
@@ -1123,8 +1204,7 @@ fn a_hold_survives_a_kill_9() {
     assert_eq!(posting.mono, 77, "and under the unit's own arrival reading");
     drop(restarted);
 
-    let third = build_for_node(&cfg, 9, Box::new(NullShipper::new()), rows())
-        .expect("the journal reopens again");
+    let third = boot(&cfg, 9).expect("the journal reopens again");
     assert_eq!(
         third.recovered_holds, 0,
         "a recovered hold is not recovered twice"
@@ -1161,10 +1241,12 @@ fn a_posting_the_journal_lost_is_unreconciled_until_the_log_confirms_it() {
         }
     }
     let down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mut durability = build(
+    let mut durability = build_priced(
         &DurabilityConfig { data_dir: None },
+        0,
         Box::new(Flaky(std::sync::Arc::clone(&down))),
         rows(),
+        priced(),
     )
     .expect("memory-buffered");
     let key = totals_key("vk_flaky");
@@ -1234,9 +1316,11 @@ fn unit_counts() -> UnitCounts {
     }
 }
 
-/// THE BODY A POSTING HAD BEFORE THE COUNTS TAIL — spelled out field by field, not by calling
-/// [`Posting::body`], so the replay below is judged against the bytes an earlier build wrote.
-fn pre_counts_body(p: &Posting) -> Vec<u8> {
+/// THE BODY A POSTING HAD WHILE THE CHAIN CARRIED FIGURES — spelled out field by field, not by
+/// calling [`Posting::body`], so the replay below is judged against the bytes an earlier build
+/// wrote: the balance display, the window, reserved / settled / overdraft as figures, the card
+/// version, and the tail that places it.
+fn figures_era_body(p: &Posting) -> Vec<u8> {
     let mut body = BodyWriter::new();
     body.text(&p.key.to_string());
     body.num(p.window);
@@ -1252,73 +1336,72 @@ fn pre_counts_body(p: &Posting) -> Vec<u8> {
     body.finish()
 }
 
-/// REPLAY COMPATIBILITY: a journal written before the counts tail existed rebuilds the same book.
+/// THE BODY A HOLD HAD WHILE THE CHAIN CARRIED FIGURES: the reserved figure itself.
+fn figures_era_hold(p: &Posting, reserved: u64) -> Vec<u8> {
+    let mut body = BodyWriter::new();
+    body.text("hold.open");
+    body.num(p.incarnation);
+    body.text(&p.principal);
+    write_key(&mut body, &p.key);
+    body.num(p.window);
+    body.num(reserved);
+    body.finish()
+}
+
+/// MIGRATE ON READ: a chain written while postings carried money figures still loads, and rebuilds
+/// the book those records describe — no finding, no recovered hold, no counts invented.
 ///
-/// The chain is written with the PRE-CHANGE bodies (a hold, and the settlement that closes it), the
-/// node restarts over it, and the book is the book those records describe — no finding, no
-/// recovered hold, no counts invented. A node that writes the same unit through the counted path
-/// rebuilds the same figures: the counts are a fact beside the money and move no balance.
+/// The chain is written with the FIGURES-ERA bodies (a hold holding its reserved figure, and the
+/// settlement that closes it holding its three figures), the node restarts over it, and the book is
+/// the book those records say. Nothing is rewritten: the figure is the fact that record holds, and
+/// there are no counts to derive another from.
 #[test]
-fn a_journal_written_before_the_counts_tail_rebuilds_the_same_book() {
-    let scratch = ScratchDir::new("pre-counts-replay");
+fn a_chain_written_while_postings_carried_figures_still_loads() {
+    let scratch = ScratchDir::new("figures-era-replay");
     let cfg = DurabilityConfig {
         data_dir: Some(scratch.path.clone()),
     };
     let key = totals_key("vk_a");
     let old = posting();
-    // A record with no counts writes the pre-change bytes exactly: nothing another plane writes moved.
-    assert_eq!(
-        old.body(),
-        pre_counts_body(&old),
-        "a count-less body is byte-identical"
-    );
+    // The record this build writes is not the figures-era body, and carries no figure at all.
+    assert_ne!(old.body(), figures_era_body(&old));
     {
-        let mut durability = build_for_node(&cfg, 5, Box::new(NullShipper::new()), rows())
-            .expect("the directory is writable");
+        let mut durability = boot(&cfg, 5).expect("the directory is writable");
         let token = token();
-        let hold = HoldOpened {
-            key: key.clone(),
-            window: old.window,
-            principal: old.principal.clone(),
-            reserved: 5_000,
-            incarnation: 1,
-            wall: old.wall,
-            mono: old.mono,
-        };
         let entries = [
-            Entry::new(RecordClass::Transaction, hold.body()).at(old.wall, old.mono),
-            Entry::new(RecordClass::Transaction, pre_counts_body(&old)).at(old.wall, old.mono),
+            Entry::new(RecordClass::Transaction, figures_era_hold(&old, 5_000))
+                .at(old.wall, old.mono),
+            Entry::new(RecordClass::Transaction, figures_era_body(&old)).at(old.wall, old.mono),
         ];
         durability
             .journal
             .append(&token, StepName::Meter, &entries)
-            .expect("the journal takes the pre-change records");
+            .expect("the journal takes the figures-era records");
     }
-    let restarted =
-        build_for_node(&cfg, 5, Box::new(NullShipper::new()), rows()).expect("the journal reopens");
+    let restarted = boot(&cfg, 5).expect("the journal reopens");
     assert!(
         restarted.restart_findings.is_empty(),
-        "a pre-change chain reconciles clean: {:?}",
+        "a figures-era chain reconciles clean: {:?}",
         restarted.restart_findings
     );
     assert_eq!(
         restarted.recovered_holds, 0,
-        "the pre-change posting closed its hold"
+        "the figures-era posting closed its figures-era hold"
     );
     let figures = restarted.ledger.book().get(&key, 86_400);
     assert_eq!(figures.settled, 4_200);
     assert_eq!(figures.drawn, 5_000);
     assert_eq!(figures.open_holds, 0);
     assert!(restarted.refused_rows().is_empty());
-    let replayed = restarted
+    let read_back = restarted
         .journal
         .replay()
         .expect("reads")
-        .expect("verifies");
-    let read_back = replayed
+        .expect("verifies")
         .iter()
         .find_map(Posting::from_record)
-        .expect("the pre-change posting reads back");
+        .expect("the figures-era posting reads back");
+    assert_eq!(read_back.era, RecordEra::Figures);
     assert_eq!(
         read_back.counts, None,
         "no counts are invented for an old record"
@@ -1326,8 +1409,9 @@ fn a_journal_written_before_the_counts_tail_rebuilds_the_same_book() {
     assert_eq!(read_back.settled, 4_200);
     drop(restarted);
 
-    // The SAME unit written through the counted path, and its record re-spelled as the pre-change
-    // body: the two chains rebuild the same book, and only the counted one carries the counts.
+    // The SAME unit written through the counted path, and its record re-spelled as the figures-era
+    // body: the two chains rebuild the same book — one from the figure it holds, the other from the
+    // counts it holds, priced at their epoch.
     let scratch_counted = ScratchDir::new("counted-replay");
     let scratch_old = ScratchDir::new("counted-replay-old");
     let counted_cfg = DurabilityConfig {
@@ -1337,25 +1421,21 @@ fn a_journal_written_before_the_counts_tail_rebuilds_the_same_book() {
         data_dir: Some(scratch_old.path.clone()),
     };
     let written = {
-        let mut durability = build_for_node(&counted_cfg, 5, Box::new(NullShipper::new()), rows())
-            .expect("the directory is writable");
-        late_counted(&mut durability, &key, 4_200, &unit_counts())
+        let mut durability = boot(&counted_cfg, 5).expect("the directory is writable");
+        late_counted(&mut durability, &key, 4_200, &inputs(4_200))
     };
-    assert_eq!(written.counts, Some(unit_counts()));
+    assert_eq!(written.counts, Some(inputs(4_200)));
     {
-        let mut durability = build_for_node(&old_cfg, 5, Box::new(NullShipper::new()), rows())
-            .expect("the directory is writable");
-        let entry = Entry::new(RecordClass::Transaction, pre_counts_body(&written))
+        let mut durability = boot(&old_cfg, 5).expect("the directory is writable");
+        let entry = Entry::new(RecordClass::Transaction, figures_era_body(&written))
             .at(written.wall, written.mono);
         durability
             .journal
             .append(&token(), StepName::Meter, &[entry])
-            .expect("the journal takes the pre-change record");
+            .expect("the journal takes the figures-era record");
     }
-    let counted = build_for_node(&counted_cfg, 5, Box::new(NullShipper::new()), rows())
-        .expect("the journal reopens");
-    let old_chain = build_for_node(&old_cfg, 5, Box::new(NullShipper::new()), rows())
-        .expect("the journal reopens");
+    let counted = boot(&counted_cfg, 5).expect("the journal reopens");
+    let old_chain = boot(&old_cfg, 5).expect("the journal reopens");
     assert!(
         counted.restart_findings.is_empty(),
         "{:?}",
@@ -1369,33 +1449,152 @@ fn a_journal_written_before_the_counts_tail_rebuilds_the_same_book() {
     assert_eq!(
         counted.ledger.book().snapshot(),
         old_chain.ledger.book().snapshot(),
-        "a pre-change body rebuilds the same book as the counted one"
+        "a figures-era body rebuilds the same book as the counted one"
     );
     assert_eq!(counted.ledger.book().get(&key, 86_400).settled, 4_200);
     let read = |d: &Durability| {
-        d.journal
-            .replay()
-            .expect("reads")
-            .expect("verifies")
-            .iter()
-            .filter_map(Posting::from_record)
+        d.read_back()
+            .into_iter()
             .find(|p| p.kind == PostingKind::Settlement)
             .expect("the settlement reads back")
     };
-    assert_eq!(
-        read(&counted).counts,
-        Some(unit_counts()),
-        "every class cell, the open one included"
-    );
+    assert_eq!(read(&counted).counts, Some(inputs(4_200)));
+    assert_eq!(read(&counted).era, RecordEra::Counts);
+    assert_eq!(read(&counted).settled, 4_200, "derived, at the epoch");
     assert_eq!(read(&old_chain).counts, None);
+    assert_eq!(read(&old_chain).settled, 4_200, "read as written");
 }
 
-/// A late settlement of `amount` (no hold behind it, as the LLM late arm posts), with its counts.
+/// **THE CHAIN STORES COUNTS AND THE CARD EPOCH, NEVER MONEY — the money is a view (#71, #79).**
+///
+/// A counted unit settles at 4,200 nano-units under the card in force at its arrival. Its record
+/// carries its counts and that instant and NO figure: read straight off the chain it holds nothing
+/// priced. Then the operator's sanctioned repair for "the ratecard was wrong" lands — a back-dated
+/// correction whose window covers the unit's arrival, doubling the rate — and the node restarts.
+/// The rebuilt book prices the SAME counts at the card now in force for that instant: 8,400. A
+/// chain that stored the settled figure would rebuild 4,200 forever, which is a stored price.
+///
+/// And where the card did not change, the figure does not move: a unit arriving outside the
+/// correction's window rebuilds at exactly what it settled at.
+#[test]
+fn the_chain_holds_counts_and_an_epoch_and_the_rebuilt_book_prices_them() {
+    let scratch = ScratchDir::new("counts-are-the-record");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let inside = totals_key("vk_inside");
+    let outside = totals_key("vk_outside");
+    const CORRECTED_FROM: u64 = ARRIVED_MS - 1_000;
+    const CORRECTED_UNTIL: u64 = ARRIVED_MS + 1_000;
+    {
+        let mut durability = boot(&cfg, 3).expect("the directory is writable");
+        late_counted(&mut durability, &inside, 4_200, &inputs(4_200));
+        late_counted_at(
+            &mut durability,
+            &outside,
+            700,
+            &inputs(700),
+            CORRECTED_UNTIL + 1,
+        );
+        let records = durability
+            .journal
+            .replay()
+            .expect("reads")
+            .expect("verifies");
+        let on_chain: Vec<Posting> = records
+            .iter()
+            .filter_map(Posting::from_record)
+            .filter(|p| p.kind == PostingKind::Settlement)
+            .collect();
+        assert_eq!(on_chain.len(), 2);
+        for posting in &on_chain {
+            assert_eq!(posting.era, RecordEra::Counts);
+            assert!(posting.counts.is_some(), "the record carries the counts");
+            assert_ne!(posting.arrived_ms, 0, "and the instant they price at");
+            assert_eq!(
+                (posting.reserved, posting.settled, posting.overdraft),
+                (0, 0, 0),
+                "and no figure: nothing priced is read off the chain"
+            );
+        }
+    }
+
+    // THE CORRECTION: the same lane at TWO nano-units per unit, over a window covering `inside`.
+    let doubled = busbar_kernel_ledger::cost::RateCard::from_config(
+        Some([(
+            LANE,
+            busbar_kernel_ledger::cost::TierRates {
+                input: 0.002,
+                output: 0.002,
+                cache_read: 0.002,
+                cache_write: 0.002,
+            },
+        )]),
+        0,
+    );
+    let mut history = busbar_kernel_ledger::cost::History::new();
+    history.append(busbar_kernel_ledger::cost::CardEntryDraft {
+        effective_from: 0,
+        effective_until: None,
+        card: one_nano_card(),
+        appended_at: 0,
+        author: busbar_kernel_ledger::cost::Author::Opening,
+    });
+    let head = history.append(busbar_kernel_ledger::cost::CardEntryDraft {
+        effective_from: CORRECTED_FROM,
+        effective_until: Some(CORRECTED_UNTIL),
+        card: doubled,
+        appended_at: ARRIVED_MS + 10_000,
+        author: busbar_kernel_ledger::cost::Author::Amend {
+            operator_fingerprint: "op".to_string(),
+            reason_hash: [0; 32],
+        },
+    });
+    let corrected =
+        crate::root::kernel::PinnedHistory::for_test(std::sync::Arc::new(history), head);
+    let restarted = build_priced(
+        &cfg,
+        3,
+        Box::new(NullShipper::new()),
+        rows(),
+        Box::new(move || Some(corrected.clone())),
+    )
+    .expect("the journal reopens");
+    assert_eq!(
+        restarted.ledger.book().get(&inside, 86_400).settled,
+        8_400,
+        "the rebuilt book prices the unit's counts at the card in force for its arrival"
+    );
+    assert_eq!(
+        restarted.ledger.book().get(&outside, 86_400).settled,
+        700,
+        "where the card did not change, the figure does not move"
+    );
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+}
+
+/// A late settlement of `amount` (no hold behind it, as the LLM late arm posts), with its counts,
+/// arriving at [`ARRIVED_MS`].
 fn late_counted(
     durability: &mut Durability,
     key: &TotalsKey,
     amount: u64,
     counts: &UnitCounts,
+) -> Posting {
+    late_counted_at(durability, key, amount, counts, ARRIVED_MS)
+}
+
+/// [`late_counted`], arriving at `arrived_ms`.
+fn late_counted_at(
+    durability: &mut Durability,
+    key: &TotalsKey,
+    amount: u64,
+    counts: &UnitCounts,
+    arrived_ms: u64,
 ) -> Posting {
     use busbar_contract::caps::{Grant, HoldAccrual, KernelSeal, Posted, PrincipalId, WriteMoney};
     let seal = KernelSeal::acquire_for_kernel();
@@ -1405,7 +1604,12 @@ fn late_counted(
     let posted = Posted::settle_late(accrual, &ledger);
     let durability_token = token();
     durability
-        .settle_counted(&settling(key, &durability_token), posted, counts)
+        .settle_counted(
+            &settling(key, &durability_token),
+            posted,
+            counts,
+            arrived_ms,
+        )
         .expect("the journal takes the posting")
         .posting
 }
@@ -1421,14 +1625,14 @@ fn a_refused_counts_row_survives_a_restart_and_the_read_refuses() {
     let key = totals_key("vk_refused");
     let principal = busbar_contract::caps::PrincipalId::new("vk_refused");
     {
-        let mut durability = build_for_node(&cfg, 6, Box::new(NullShipper::new()), rows())
-            .expect("the directory is writable");
+        let mut durability = boot(&cfg, 6).expect("the directory is writable");
         let durability_token = token();
         let row = durability
             .post_counts(
                 &settling(&key, &durability_token),
                 &principal,
                 &unit_counts(),
+                ARRIVED_MS,
                 Some("ClassUnpriced search_units".to_string()),
             )
             .expect("the journal takes the counts row");
@@ -1445,8 +1649,7 @@ fn a_refused_counts_row_survives_a_restart_and_the_read_refuses() {
         assert_eq!(refused.lane, "lane");
         assert!(durability.reconcile_with_journal().is_empty());
     }
-    let restarted =
-        build_for_node(&cfg, 6, Box::new(NullShipper::new()), rows()).expect("the journal reopens");
+    let restarted = boot(&cfg, 6).expect("the journal reopens");
     assert!(
         restarted.restart_findings.is_empty(),
         "{:?}",
@@ -1481,6 +1684,7 @@ fn the_reconciliation_names_a_refused_row_the_node_lost() {
             &settling(&key, &durability_token),
             &busbar_contract::caps::PrincipalId::new("vk_lost_row"),
             &unit_counts(),
+            ARRIVED_MS,
             Some("LaneUnpriced".to_string()),
         )
         .expect("taken");
@@ -1493,4 +1697,241 @@ fn the_reconciliation_names_a_refused_row_the_node_lost() {
             book: 0
         }]
     );
+}
+
+/// A HOLD WHOSE UNIT DISPATCHED IS RECOVERED AT ITS LAST ACCRUAL CHECKPOINT, MARKED RECOVERED — and
+/// one whose unit never dispatched is recovered at nothing, marked VOIDED.
+///
+/// Two units open holds on a node with a data directory. The first records that it dispatched and
+/// checkpoints an accrual of 300 input units; the second dispatches nothing. The process is killed
+/// with both holds open. The next boot reads the dispatch and the checkpoint back off the chain,
+/// and the recovery table posts what they support: 300 for the unit that sent something, marked
+/// recovered, and zero for the one that did not, marked void. Before the dispatch and the checkpoint
+/// were on the chain the boot could only ever post zero, marked void, for a unit killed after its
+/// answer was relayed.
+#[test]
+fn a_unit_killed_after_it_dispatched_is_recovered_at_its_checkpoint_and_not_voided() {
+    use busbar_contract::caps::PrincipalId;
+    let scratch = ScratchDir::new("recovered-not-voided");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let sent = totals_key("vk_sent");
+    let idle = totals_key("vk_idle");
+    {
+        let mut durability = boot(&cfg, 11).expect("the directory is writable");
+        let durability_token = token();
+        let mut at = settling(&sent, &durability_token);
+        at.stamp.mono = 77;
+        durability
+            .open_hold(
+                &at,
+                &PrincipalId::new("vk_sent"),
+                &inputs(2_000),
+                ARRIVED_MS,
+            )
+            .expect("the hold goes on the chain");
+        durability
+            .journal_dispatch(&at)
+            .expect("the dispatch goes on the chain");
+        durability
+            .checkpoint_accrual(&at, &inputs(300), ARRIVED_MS)
+            .expect("the checkpoint goes on the chain");
+        let mut quiet = settling(&idle, &durability_token);
+        quiet.stamp.mono = 78;
+        durability
+            .open_hold(
+                &quiet,
+                &PrincipalId::new("vk_idle"),
+                &inputs(500),
+                ARRIVED_MS,
+            )
+            .expect("the hold goes on the chain");
+        // kill -9: no settle, no destructor, nothing flushed on the way out.
+        std::mem::forget(durability);
+    }
+
+    let restarted = boot(&cfg, 11).expect("the journal reopens");
+    assert_eq!(restarted.recovered_holds, 2);
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+    let posted = restarted.read_back();
+    let of = |key: &TotalsKey| {
+        posted
+            .iter()
+            .find(|p| p.kind == PostingKind::Settlement && p.key == *key)
+            .cloned()
+            .expect("the recovery posted onto the chain")
+    };
+    let recovered = of(&sent);
+    assert!(
+        recovered.flags.contains(PostingFlags::RECOVERED),
+        "a unit that dispatched is recovered, not voided: {:?}",
+        recovered.flags
+    );
+    assert!(!recovered.flags.contains(PostingFlags::VOIDED));
+    assert_eq!(
+        recovered.settled, 300,
+        "the last checkpoint, priced at its epoch"
+    );
+    assert_eq!(recovered.counts, Some(inputs(300)));
+    let voided = of(&idle);
+    assert!(
+        voided.flags.contains(PostingFlags::VOIDED),
+        "a unit that never dispatched owes nothing: {:?}",
+        voided.flags
+    );
+    assert_eq!(voided.settled, 0);
+
+    let figures = restarted.ledger.book().get(&sent, 86_400);
+    assert_eq!(figures.settled, 300);
+    assert_eq!(figures.open_holds, 0, "the recovered hold is closed");
+    assert_eq!(
+        figures.open_slice_remainders, 1_700,
+        "the unconsumed reservation went back"
+    );
+    assert_eq!(restarted.ledger.book().get(&idle, 86_400).settled, 0);
+    let before = restarted.ledger.book().snapshot();
+    drop(restarted);
+
+    let third = boot(&cfg, 11).expect("the journal reopens again");
+    assert_eq!(
+        third.recovered_holds, 0,
+        "a recovered hold is not recovered twice"
+    );
+    assert_eq!(
+        third.ledger.book().snapshot(),
+        before,
+        "the recovered postings rebuild the same book"
+    );
+    assert!(
+        third.restart_findings.is_empty(),
+        "{:?}",
+        third.restart_findings
+    );
+}
+
+/// AN IDEMPOTENCY CLAIM TAKEN WITH NO HOLD MADE DURABLE BEHIND IT IS VOIDED AT RECOVERY — once — and
+/// a claim whose hold was made durable is not.
+///
+/// The kill point between the claim and the hold is the one at which the recovery table voids the
+/// claim: kept, it is a key that would answer the client's retry with a unit that never ran. The
+/// void goes on the chain, so the boot after does not void it again.
+#[test]
+fn an_idempotency_claim_with_no_hold_behind_it_is_voided_at_recovery() {
+    use busbar_contract::caps::PrincipalId;
+    let scratch = ScratchDir::new("claim-voided");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_claims");
+    {
+        let mut durability = boot(&cfg, 12).expect("the directory is writable");
+        let durability_token = token();
+        let mut orphan = settling(&key, &durability_token);
+        orphan.stamp.mono = 5;
+        durability
+            .journal_claim(&orphan, "idem-orphan")
+            .expect("the claim goes on the chain");
+        let mut backed = settling(&key, &durability_token);
+        backed.stamp.mono = 6;
+        durability
+            .journal_claim(&backed, "idem-backed")
+            .expect("the claim goes on the chain");
+        durability
+            .open_hold(
+                &backed,
+                &PrincipalId::new("vk_claims"),
+                &inputs(10),
+                ARRIVED_MS,
+            )
+            .expect("the hold goes on the chain");
+        std::mem::forget(durability);
+    }
+
+    let restarted = boot(&cfg, 12).expect("the journal reopens");
+    assert_eq!(
+        restarted.voided_claims,
+        vec!["idem-orphan".to_string()],
+        "the claim with no hold behind it is voided; the backed one is not"
+    );
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+    drop(restarted);
+
+    let third = boot(&cfg, 12).expect("the journal reopens again");
+    assert!(
+        third.voided_claims.is_empty(),
+        "a voided claim is not voided twice: {:?}",
+        third.voided_claims
+    );
+}
+
+/// A JOURNAL SEGMENT CORRUPTED MID-LOG DOES NOT STOP THE BOOT, AND IS NOT SILENT: the book opens over
+/// the records before the damage, the damaged remainder is in a quarantine file beside the segment,
+/// the verdict names the file, the offset and the byte count, and a durable `ChainBreak` record of
+/// it goes on the chain.
+#[test]
+fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
+    use busbar_kernel_wal::{Entry, Journal, QuarantineKept, RecordClass, FRAME_BYTES};
+
+    let dir = ScratchDir::new("quarantine");
+    {
+        let mut journal = Journal::in_directory(
+            0,
+            &dir.path,
+            Box::new(NullShipper::new()),
+            busbar_substrate_values::store::now_ms,
+        )
+        .expect("opens");
+        for i in 0..4u8 {
+            journal
+                .append(
+                    &token(),
+                    StepName::Meter,
+                    &[Entry::new(RecordClass::Load, vec![i; 8]).at(1, 0)],
+                )
+                .expect("appends");
+        }
+    }
+    let segment = dir.path.join("0000000000000000.wal");
+    let mut bytes = std::fs::read(&segment).expect("the segment is there");
+    bytes[FRAME_BYTES + 200] ^= 0xFF;
+    std::fs::write(&segment, &bytes).expect("damaged");
+
+    let mut durability = build_for_node(
+        &DurabilityConfig {
+            data_dir: Some(dir.path.clone()),
+        },
+        0,
+        Box::new(NullShipper::new()),
+        rows(),
+    )
+    .expect("a corrupt journal does not stop the boot");
+
+    assert_eq!(durability.quarantined.len(), 1);
+    let q = durability.quarantined[0].clone();
+    assert_eq!(q.segment_file.as_deref(), Some(segment.as_path()));
+    assert_eq!(q.offset, FRAME_BYTES as u64);
+    assert_eq!(q.bytes, 3 * FRAME_BYTES as u64);
+    let QuarantineKept::File(file) = &q.kept else {
+        panic!("an on-disk journal quarantines to a file");
+    };
+    assert_eq!(
+        std::fs::read(file).expect("the quarantine file is there"),
+        bytes[FRAME_BYTES..4 * FRAME_BYTES].to_vec()
+    );
+
+    let ack = durability
+        .journal_quarantines(&token(), StepName::Meter, 1_758_700_000)
+        .expect("appends")
+        .expect("a quarantine is recorded");
+    assert_eq!(ack.sealed.len(), 1);
+    assert_eq!(ack.sealed[0].class, RecordClass::ChainBreak);
 }

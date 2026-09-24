@@ -568,6 +568,7 @@ dependencies = [
  "busbar-auth-admin-tokens",
  "busbar-contract",
  "busbar-hooks-ranking",
+ "busbar-kernel-audit",
  "busbar-kernel-egress",
  "busbar-kernel-ledger",
  "busbar-llm",

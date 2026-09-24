@@ -261,7 +261,13 @@ const SCAN_FLOOR: usize = 18;
 /// this gate does not scan. The card-build boundary in the binary is NOT here, on purpose (see the
 /// module header).
 const BINARY_MONEY_FILES: &[&str] = &[
-    "crates/busbar/src/root/durability.rs",
+    // `847c22f98` split this file (structure-lint oversized) into `durability/mod.rs` (the seam,
+    // the journal writers, the money-book impl) and `durability/replay.rs` (the book-rebuild
+    // replay it split out). Both halves are the money path the single file used to be, so both are
+    // named — a rename that dropped either one silently is exactly the scan-set integrity failure
+    // this list exists to catch, so BOTH stay named rather than the ban following only one half.
+    "crates/busbar/src/root/durability/mod.rs",
+    "crates/busbar/src/root/durability/replay.rs",
     "crates/busbar/src/root/ledger_identity.rs",
     "crates/busbar/src/root/money_book.rs",
     "crates/busbar/src/root/migration.rs",

@@ -184,10 +184,12 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# THE ENTRIES THAT STAND ON THIS BRANCH: **NONE.**
+# NO ENTRY STANDS ON THIS BRANCH. The last two (items 376 and 381, Q11/Q32, owner ruling
+# 2026-09-24) expired when their commit reached the base and are struck below, with the record of
+# what they declared.
 #
-# All twelve were struck on 2026-09-22 in the re-baseline below, for two reasons, both of which are
-# this section's own rules:
+# All twelve of the earlier set were struck on 2026-09-22 in the re-baseline below, for two
+# reasons, both of which are this section's own rules:
 #
 # 1. EVERY ONE OF THEM HAD EXPIRED. `ceiling-rose` reported seven declared raises that are "not a
 #    raise at the base" — the commits they described had landed, the base carried the new numbers,
@@ -204,6 +206,20 @@ busbar-voice = ["busbar-voice-codec"]
 #
 # The re-baseline that struck them changed no ceiling upward, so nothing below needs a declaration.
 
+# ── ITEMS 376 + 381 (Q11/Q32, OWNER-SIGNED 2026-09-24) — EXPIRED AND STRUCK ──────────────────────
+#
+# 6493bed3f re-pinned two needle repairs at their TRUE counts under an owner signature and declared
+# the ten raises here: `rules.ports-only.max_per_crate.{busbar-llm 0->265, busbar-mcp 0->288,
+# busbar-a2a 0->252, busbar-voice 0->91}`, `rules.ports-only-tests.max_per_crate.{busbar-llm
+# 0->1045, busbar-mcp 0->204, busbar-a2a 0->99, busbar-voice 0->45}` (item 376: the needle
+# `busbar_core::` named a crate 673ecdaaa absorbed into busbar-kernel, a false zero; repointed at
+# `busbar_kernel::`), `rules.legacy-reach.ceiling 17->37` and `gate.census.legacy_reach_prefixes
+# 3->4` (item 381: the two dead prefixes struck, the three live retiring engines counted). That
+# commit reached the base: every one of the ten paths already reads its `to` value there, so
+# `ceiling-rose` reported all ten as "a declared raise ... that is not a raise at the base". This
+# is the commit after. Nothing here moved a ceiling; the numbers live in their rules and did not
+# change.
+
 # ── THE P0 RE-BASELINE OF qa/kind-isolation.toml, 2026-09-22 — EXPIRED AND STRUCK ───────────────
 #
 # Ten `[[cell]]` ceilings in qa/kind-isolation.toml were raised here as ten named transactions
@@ -212,7 +228,7 @@ busbar-voice = ["busbar-voice-codec"]
 # plane 3294->3877, secret 13->14}, busbar-plane-a2a x {plane 77->90, transport 103->110},
 # busbar-plane-mcp x plane 37->49. Each said it "expires by itself the moment this commit reaches
 # the base, and the commit after that strikes it". It reached the base: at origin/predev
-# (b7200b496) every one of the ten cells already reads its `to` value, so `ceiling-rose` reported
+# every one of the ten cells already reads its `to` value, so `ceiling-rose` reported
 # all ten as "a declared raise ... that is not a raise at the base". This is the commit after.
 # Nothing here moved a ceiling; the numbers live in qa/kind-isolation.toml and did not change.
 
@@ -308,25 +324,32 @@ top = 10
 
 # ── 3. ports-only / ports-only-tests ─────────────────────────────────────────────────────────────
 [rules.ports-only]
-why = """A plane crate talks to the kernel through the substrate/api ABI only. Every `busbar_core::` \
+why = """A plane crate talks to the kernel through the substrate/api ABI only. Every `busbar_kernel::` \
 it names is a hole in that wall: the plane cannot be compiled out, cannot be replaced by a plugin, \
 and breaks whenever core moves. This is the production residue, counted per crate."""
-needle = "busbar_core::"
+needle = "busbar_kernel::"
+# item 376 (Q11/Q32, owner-signed 2026-09-24): the needle was `busbar_core::`, a crate 673ecdaaa
+# absorbed into busbar-kernel -- so this row measured 0 against 0 whatever the plane reached, a
+# false zero over real production reach. Repointed at `busbar_kernel::` and pinned at TODAY's
+# measurement on the committed tree (HEAD b091b4e83), a raise the owner ruled is a needle repair
+# arming the true count, not a relaxation of what the instrument ever saw. Downward only from here.
 [rules.ports-only.max_per_crate]
-busbar-llm = 0
-busbar-mcp = 0
-busbar-a2a = 0
-busbar-voice = 0
+busbar-llm = 264
+busbar-mcp = 287
+busbar-a2a = 236
+busbar-voice = 89
 
 [rules.ports-only-tests]
 why = """The same reach from test code. Tests that name core internals pin the plane to core's \
 private shape just as surely as production code does; they are reported separately so both \
 counts can trend to zero at their own pace."""
+# item 376 (Q11/Q32, owner-signed 2026-09-24): same needle repair as ports-only above, pinned at
+# TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
 [rules.ports-only-tests.max_per_crate]
-busbar-llm = 0
-busbar-mcp = 0
-busbar-a2a = 0
-busbar-voice = 0
+busbar-llm = 1045
+busbar-mcp = 199
+busbar-a2a = 98
+busbar-voice = 43
 
 # ── 4. no-uninstalled-seam ───────────────────────────────────────────────────────────────────────
 [rules.no-uninstalled-seam]
@@ -841,13 +864,13 @@ ceiling = 659
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
 patterns = ["pump.rs"]
-ceiling = 453
+ceiling = 450
 
 [rules.loc-ceilings.kernel_files.inflight]
 label = "in-flight/sessions"
 patterns = ["inflight.rs"]
 # RE-BASELINED 2026-09-22: 575 -> 572, the measurement.
-ceiling = 572
+ceiling = 552
 
 [rules.loc-ceilings.kernel_files.recovery]
 label = "recovery"
@@ -869,7 +892,7 @@ patterns = ["registry.rs"]
 # RE-BASELINED 2026-09-22: 887 -> 724, the measurement. The pattern still matches three files by
 # basename — `registry.rs` 314, `plane/registry.rs` 389, `proto/registry.rs` 21 — and all three
 # have drained since the ceiling was last pinned.
-ceiling = 724
+ceiling = 715
 
 [rules.loc-ceilings.kernel_files.grammars]
 label = "grammars incl. JSON span scanner"
@@ -887,7 +910,7 @@ ceiling = 61
 # item 130 took the sweep's named-grant line out (the take now mints its grant in the argument).
 label = "tick: session tick, node tick and the drain sweep"
 patterns = ["tick.rs"]
-ceiling = 192
+ceiling = 191
 
 # ── REPOINTED 2026-09-22, the same repair `ticks` above already had. ───────────────────────────
 # Neither `arena.rs` nor `masking.rs` exists anywhere in the tree, so this row measured the empty
@@ -1084,9 +1107,9 @@ max_hits = 0
 # call this rule's cleanup gets to make unilaterally.
 known_sites = [
   "crates/busbar-kernel/src/appbuild.rs:240",
-  "crates/busbar-kernel/src/appbuild.rs:619",
-  "crates/busbar-kernel/src/appbuild.rs:693",
-  "crates/busbar-kernel/src/appbuild.rs:795",
+  "crates/busbar-kernel/src/appbuild.rs:685",
+  "crates/busbar-kernel/src/appbuild.rs:759",
+  "crates/busbar-kernel/src/appbuild.rs:861",
   "crates/busbar-kernel/src/config/migrate.rs:302",
   "crates/busbar-kernel/src/config/migrate.rs:1481",
   "crates/busbar-kernel/src/config/migrate.rs:1826",
@@ -1097,23 +1120,23 @@ known_sites = [
   "crates/busbar-kernel/src/config/prepass.rs:123",
   "crates/busbar-kernel/src/config/providers.rs:75",
   "crates/busbar-kernel/src/config/transaction.rs:365",
-  "crates/busbar-kernel/src/config_validate/mod.rs:111",
-  "crates/busbar-kernel/src/config_validate/mod.rs:119",
-  "crates/busbar-kernel/src/config_validate/mod.rs:131",
-  "crates/busbar-kernel/src/config_validate/mod.rs:160",
-  "crates/busbar-kernel/src/config_validate/mod.rs:171",
-  "crates/busbar-kernel/src/config_validate/mod.rs:181",
-  "crates/busbar-kernel/src/config_validate/mod.rs:200",
-  "crates/busbar-kernel/src/config_validate/mod.rs:206",
-  "crates/busbar-kernel/src/config_validate/mod.rs:228",
-  "crates/busbar-kernel/src/config_validate/mod.rs:274",
-  "crates/busbar-kernel/src/config_validate/mod.rs:280",
-  "crates/busbar-kernel/src/config_validate/mod.rs:341",
-  "crates/busbar-kernel/src/config_validate/mod.rs:362",
-  "crates/busbar-kernel/src/config_validate/mod.rs:367",
-  "crates/busbar-kernel/src/config_validate/mod.rs:1220",
+  "crates/busbar-kernel/src/config_validate/mod.rs:126",
+  "crates/busbar-kernel/src/config_validate/mod.rs:134",
+  "crates/busbar-kernel/src/config_validate/mod.rs:146",
+  "crates/busbar-kernel/src/config_validate/mod.rs:175",
+  "crates/busbar-kernel/src/config_validate/mod.rs:186",
+  "crates/busbar-kernel/src/config_validate/mod.rs:207",
+  "crates/busbar-kernel/src/config_validate/mod.rs:226",
+  "crates/busbar-kernel/src/config_validate/mod.rs:232",
+  "crates/busbar-kernel/src/config_validate/mod.rs:254",
+  "crates/busbar-kernel/src/config_validate/mod.rs:300",
+  "crates/busbar-kernel/src/config_validate/mod.rs:306",
+  "crates/busbar-kernel/src/config_validate/mod.rs:387",
+  "crates/busbar-kernel/src/config_validate/mod.rs:416",
+  "crates/busbar-kernel/src/config_validate/mod.rs:421",
+  "crates/busbar-kernel/src/config_validate/mod.rs:1266",
   "crates/busbar-kernel/src/config_validate/mod.rs:1984",
-  "crates/busbar-kernel/src/endpoints.rs:108",
+  "crates/busbar-kernel/src/endpoints.rs:109",
   "crates/busbar-kernel/src/ingress/mod.rs:417",
   "crates/busbar-kernel/src/ingress/mod.rs:422",
   "crates/busbar-kernel/src/ingress/mod.rs:768",
@@ -1122,9 +1145,9 @@ known_sites = [
   "crates/busbar-kernel/src/metrics/money.rs:224",
   "crates/busbar-kernel/src/plane/config.rs:368",
   "crates/busbar-kernel/src/plane_host/build_input.rs:149",
-  "crates/busbar-kernel/src/router.rs:419",
+  "crates/busbar-kernel/src/router.rs:425",
   "crates/busbar-kernel/src/store/vocab.rs:136",
-  "crates/busbar-kernel/src/test_support/mod.rs:235",
+  "crates/busbar-kernel/src/test_support/mod.rs:220",
 ]
 
 # ── 18. no-default-bodies (ARCHITECTURE.md section 3.7) ─────────────────────────────────────────────────────
@@ -1956,19 +1979,13 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 17
-
-# Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
-# MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
-# a drift marker nothing could fail on -- and what that bought was `busbar_substrate` sitting
-# twenty-one over its figure, passing, for as long as the gating total held. The intermediate step
-# the WARN posture existed to permit (a symbol moving off one retiring crate onto another) is now a
-# re-pin of two figures in the commit that makes it, which is a diff a reviewer can read.
-[rules.legacy-reach.prefixes.busbar_core]
-prefix = "busbar_core::"
-exclude = []
-because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 0
+# item 381 (Q11/Q32, owner-signed 2026-09-24): the total gains the three live retiring engines the
+# root still names by prefix (busbar_mcp 5, busbar_a2a 3, busbar_voice 12 distinct symbols) and
+# loses busbar_core/busbar_substrate, both of which measure 0 hits forever (busbar_core is a
+# deleted crate; busbar_substrate's root reach was already fully retired). 17 (busbar_llm,
+# unchanged) + 5 + 3 + 12 = 37, the same root reach, now counted instead of a false zero. Pinned at
+# TODAY's measurement on the committed tree (HEAD b091b4e83). Downward only from here.
+ceiling = 37
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
@@ -1977,19 +1994,23 @@ exclude = ["busbar_llm::unit"]
 because = "the llm engine's non-unit paths: arrival parsing, proto codecs, the stream translator"
 figure = 17
 
-[rules.legacy-reach.prefixes.busbar_substrate]
-prefix = "busbar_substrate::"
+[rules.legacy-reach.prefixes.busbar_mcp]
+prefix = "busbar_mcp::"
 exclude = []
-because = "the substrate seams the root installs; each moves onto the ABI as the kernel takes them"
-# ONE-TIME CALIBRATION, 26 -> 47 (integrator ruling, 2026-09-09). This figure was written when the
-# row was INFORMATIONAL -- PASS whatever it measured -- and the root's substrate reach grew to 47
-# underneath it while core's fell from 49 to 27, which is the retirement working as designed and is
-# exactly the sideways move the WARN posture existed to permit. The commit that makes the row GATE
-# cannot also be the commit that declares a twenty-one-symbol regression, because there was no
-# regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
-# today, and it ratchets down from here like every other figure in this file. It may only go down;
-# `ceiling-slack` holds it from below and this row holds it from above.
-figure = 0
+because = "item 381 (Q11/Q32): the retiring mcp engine, the root still names by prefix"
+figure = 5
+
+[rules.legacy-reach.prefixes.busbar_a2a]
+prefix = "busbar_a2a::"
+exclude = []
+because = "item 381 (Q11/Q32): the retiring a2a engine, the root still names by prefix"
+figure = 3
+
+[rules.legacy-reach.prefixes.busbar_voice]
+prefix = "busbar_voice::"
+exclude = []
+because = "item 381 (Q11/Q32): the retiring voice engine, the root still names by prefix"
+figure = 12
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
@@ -2058,13 +2079,13 @@ verdict = "real"
 because = "this is where the unbound posture is declared; declaring it is not composing a node out of it"
 
 [rules.no-test-doubles-in-production.known_sites.node-book-rows]
-file = "crates/busbar/src/root/durability.rs"
+file = "crates/busbar/src/root/durability/mod.rs"
 symbol = "RecordingRows"
 verdict = "real"
 because = "the one book a process settles onto keeps the previous release's rows, and a view reads that same value"
 
 [rules.no-test-doubles-in-production.known_sites.node-book-shipper]
-file = "crates/busbar/src/root/durability.rs"
+file = "crates/busbar/src/root/durability/mod.rs"
 symbol = "NullShipper"
 verdict = "real"
 because = "no peer is configured, so shipping nowhere is what this node's journal really does"
@@ -2136,7 +2157,7 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 # named decrement the rule above asks for; the base comparison reports it until this commit is the
 # base, and then it is quiet.
 loc_ceilings_kernel_files = 8
-legacy_reach_prefixes = 3
+legacy_reach_prefixes = 4
 plane_crates = 4
 
 # HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.

@@ -129,6 +129,9 @@ const AWS_SECRET_ACCESS_KEY_LEN: usize = 40;
 #[derive(Clone)]
 struct ModelCell {
     model: std::sync::Arc<str>,
+    /// The card era these counts were earned under (Q14, #79): the `effective_from` in force at
+    /// accrual, `0` undated. One cell per (model, era), so an edit mid-window opens a second one.
+    era: u64,
     /// (1.6.0 M1b) The name-keyed CURRENT unit counters — the reserved four
     /// (`input`/`output`/`cache_read`/`cache_write`) are ordinary keys beside any open unit, the
     /// sole representation now that `TierTokens` is dissolved. Sparse (a zero unit is absent).
@@ -139,9 +142,11 @@ struct ModelCell {
 
 /// In-memory TOKEN-LEDGER cell for a bucket's CURRENT window - the AUTHORITATIVE hot-path
 /// enforcement state. A bucket is a key's own budget bucket OR a budget-group bucket (same shape).
-/// NO SPEND FIELD: dollars are derived at check time as `cell tokens x rate card` (+ the flat fee
-/// x requests on the key bucket) - tokens are the only stored truth, so a rate-card correction
-/// reprices everything on the next read with no data fix. The durable store is a write-behind
+/// NO SPEND FIELD: money is derived at check time as `cell tokens x the card IN FORCE WHEN EACH WAS
+/// EARNED` (+ the flat fee x requests per admission era) - OWNER RULING Q14 / #79. The counts are
+/// segmented by card era and each era prices at the card the dated history resolves for it, so an
+/// edit prices what follows it and a signed back-dated correction reprices the window it names,
+/// with no data fix either way. The durable store is a write-behind
 /// layer flushed off the request path. One cell per bucket (current window only; reset on
 /// rollover), so growth is bucket-count-bounded (keys + group-window buckets).
 #[derive(Clone, Default)]
@@ -165,9 +170,12 @@ struct BudgetCell {
     flushed_requests: u64,
     /// The billable-request flush baseline (twin of `flushed_requests` for the fee-base counter).
     flushed_billable_requests: u64,
-    /// Per-(model, tier) token counters + flush baselines. Small Vec (the models this bucket
+    /// Per-(model, era, tier) token counters + flush baselines. Small Vec (the models this bucket
     /// actually used), scanned linearly.
     models: Vec<ModelCell>,
+    /// The fee base split by the card era each billable request was admitted under, so each fee
+    /// prices at the card in force when that request was admitted.
+    fee_eras: busbar_kernel_ledger::usage::FeeEras,
     dirty: bool,
     /// Wall-clock of the last accrual or admission charge. The eviction sweep ages cells by
     /// `window_start`, but a key's own bucket and a synthesized SSO principal's bucket both live in
@@ -186,15 +194,20 @@ impl BudgetCell {
         }
     }
 
-    /// Accrue one response's keyed units under `model`, interning the model name on first sight and
-    /// each unit key on first sight of that (model, unit) pair.
-    fn accrue(&mut self, model: &str, units: &std::collections::BTreeMap<String, u64>) {
-        let cell = match self.models.iter_mut().find(|m| &*m.model == model) {
-            Some(m) => m,
+    /// Accrue one response's keyed units under `model` in card era `era`, interning the pair on
+    /// first sight and each unit key on first sight of that (model, era, unit).
+    fn accrue(&mut self, model: &str, era: u64, units: &std::collections::BTreeMap<String, u64>) {
+        let at = self
+            .models
+            .iter()
+            .position(|m| &*m.model == model && m.era == era);
+        let cell = match at {
+            Some(i) => &mut self.models[i],
             None => {
-                // Allocate ONLY on the first sight of a (bucket, model) pair.
+                // Allocate ONLY on the first sight of a (bucket, model, era).
                 self.models.push(ModelCell {
                     model: std::sync::Arc::from(model),
+                    era,
                     cur: std::collections::BTreeMap::new(),
                     flushed: std::collections::BTreeMap::new(),
                 });
@@ -210,12 +223,23 @@ impl BudgetCell {
         }
     }
 
-    /// Borrowed (model, current units) view for the spend derivation - the few multiply-adds the
-    /// admission check runs.
-    fn model_views(
+    /// THE CELL, PRICED, each era at the card in force when it was earned: every (model, era)
+    /// segment and — with `include_fee` — the fee base per era, each at the card its era resolves to
+    /// in the installed dated history (none: the live card), through the one function. A present
+    /// card silent about a held class, or an overflow, REFUSES — never a silent 0.
+    fn spend(
         &self,
-    ) -> impl Iterator<Item = (&str, &std::collections::BTreeMap<String, u64>)> {
-        self.models.iter().map(|m| (&*m.model, &m.cur))
+        cost: &crate::cost::CostModel,
+        include_fee: bool,
+    ) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
+        use busbar_kernel_ledger::usage::{price_dated, DatedHistory};
+        let history = crate::rate_apply::dated_history();
+        let now_ms = crate::store::now_ms();
+        let dated = history.as_deref().map(|h| DatedHistory::of(h, now_ms));
+        let fees = (self.fee_eras.split(self.billable_requests)).filter(|_| include_fee);
+        let rows = self.models.iter().map(|m| (&*m.model, m.era, &m.cur));
+        let start_ms = self.window_start.saturating_mul(1_000);
+        price_dated(rows, fees, start_ms, cost.card(), dated)
     }
 
     /// Drop DEAD `ModelCell`s so the `models` Vec cannot grow without bound in a long-lived,
@@ -232,13 +256,11 @@ impl BudgetCell {
             .retain(|m| units_total(&m.cur) != 0 || units_total(&m.flushed) != 0);
     }
 
-    /// Total current TOKENS across models — the reserved token classes only (the legacy scalar view
-    /// for admin reads and the `tokens:` cap). An open class (a rerank's `search_units`, item 123)
-    /// rides the same map to be PRICED, but it is not a token and never counts as one.
+    /// Total current TOKENS across models — every token-family class (the scalar view for admin
+    /// reads and the `tokens:` cap). A class in another family (a rerank's `search_units`, audio
+    /// seconds) rides the same map to be PRICED, but it is not a token and never counts as one.
     fn total_tokens(&self) -> u64 {
-        busbar_api::RESERVED_UNITS
-            .iter()
-            .fold(0u64, |acc, u| acc.saturating_add(self.total_tier(u)))
+        token_total(self.models.iter().map(|m| &m.cur))
     }
 
     /// Current summed count of one reserved tier across models — a per-tier cap's counter.
@@ -247,27 +269,24 @@ impl BudgetCell {
             acc.saturating_add(m.cur.get(unit).copied().unwrap_or(0))
         })
     }
+}
 
-    /// Current UNCACHED-INPUT tokens across models — the `tokens_input` per-tier cap's counter.
-    fn total_input(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_INPUT)
-    }
+/// Whether `class` counts toward a `tokens:` cap: a reserved token tier, or a class an installed
+/// plane declares in the token family (a streaming plane's `audio_tokens_in` is as much a token as
+/// an LLM's `input`). The one predicate every token total in this module reads.
+pub fn is_token_class(class: &str) -> bool {
+    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    busbar_api::RESERVED_UNITS.contains(&class)
+        || plane_decls().iter().any(|d| {
+            (d.billable_classes.iter()).any(|c| c.family == TOKEN_FAMILY && c.class == class)
+        })
+}
 
-    /// Current OUTPUT tokens across models — the `tokens_output` per-tier cap's counter.
-    fn total_output(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_OUTPUT)
-    }
-
-    /// Current CACHE-READ tokens across models — the `tokens_cache_read` per-tier cap's counter.
-    fn total_cache_read(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_CACHE_READ)
-    }
-
-    /// Current CACHE-WRITE (cache_creation) tokens across models — the `tokens_cache_write`
-    /// per-tier cap's counter.
-    fn total_cache_write(&self) -> u64 {
-        self.total_tier(busbar_api::UNIT_CACHE_WRITE)
-    }
+/// Saturating sum of the token-family counts across name-keyed unit maps.
+fn token_total<'a>(maps: impl Iterator<Item = &'a std::collections::BTreeMap<String, u64>>) -> u64 {
+    maps.flat_map(|m| m.iter())
+        .filter(|(k, _)| is_token_class(k))
+        .fold(0u64, |acc, (_, v)| acc.saturating_add(*v))
 }
 
 /// Saturating sum of every count in a name-keyed unit map — the scalar "total tokens" view over the
@@ -340,7 +359,8 @@ impl std::fmt::Debug for AdmitGrant {
 }
 
 // A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
-// the token ledger x the current rate card at the moment of the read - never stored.
+// the token ledger, each era at the card in force when it was earned, at the moment of the read -
+// never stored.
 //
 // Re-export BY IDENTITY of its canonical home, `busbar_kernel::governance::DerivedUsage`: the
 // figure is three integers with no engine dependency, so it belongs to the neutral governance
@@ -421,8 +441,7 @@ impl<V> Sharded<V> {
     /// which is irrelevant to correctness (the maps are ephemeral) but keeps behaviour deterministic.
     #[inline]
     fn shard_for(&self, key_id: &str) -> &MapShard<V> {
-        let h = busbar_kernel::store::fnv1a_u64(key_id) as usize;
-        &self.shards[h & (GOV_SHARDS - 1)]
+        &self.shards[self.shard_index(key_id)]
     }
 
     /// The shard INDEX owning `key_id` - for the budget-chain charge, which must acquire SEVERAL
@@ -721,6 +740,87 @@ pub fn synthesize_principal_key(
     principal: &crate::auth::Principal,
     bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
 ) -> Option<Arc<VirtualKey>> {
+    synthesize_key(principal, bindings).map(Arc::new)
+}
+
+/// The `generation_hash` prefix of a key SYNTHESIZED from `role_bindings` (never a registry row:
+/// every registry key carries [`BINDING_MARKER_PREFIX`]). Like that marker it authenticates nothing;
+/// it records HOW the key was admitted, so a long-lived response can re-check it the same way.
+pub const PRINCIPAL_MARKER_PREFIX: &str = "principal:";
+
+/// THE DATA-PLANE RE-KEY THROUGH A MODULE'S BINDINGS: [`synthesize_principal_key`] over
+/// `role_bindings.<module>`, with the key's marker recording the admission — the identifying
+/// `module` and the principal's `roles` — so [`bound_admission`] can read it back and a
+/// `Standing` opened on this key re-checks it against the LIVE bindings rather than the registry
+/// (which a synthesized key is never in). Same grant, same fail-closed `None`, as the bare synthesis.
+pub fn synthesize_bound_key(
+    module: &str,
+    principal: &crate::auth::Principal,
+    role_bindings: &crate::config::RoleBindings,
+) -> Option<Arc<VirtualKey>> {
+    let mut key = synthesize_key(principal, role_bindings.get(module))?;
+    key.generation_hash = format!(
+        "{PRINCIPAL_MARKER_PREFIX}{}",
+        serde_json::json!({ "id": principal.id, "module": module, "roles": principal.roles })
+    );
+    Some(Arc::new(key))
+}
+
+/// HOW A BOUND KEY WAS ADMITTED, read back off a key [`synthesize_bound_key`] minted: the
+/// identifying module and the principal as the verdict asserted it (id, the key's display name, its
+/// roles). `None` for every other key — a registry row, or a marker whose recorded id is not the
+/// key's own (a stamp this function did not write is not trusted to re-route the re-check).
+pub fn bound_admission(key: &VirtualKey) -> Option<(String, crate::auth::Principal)> {
+    #[derive(serde::Deserialize)]
+    struct Marker {
+        id: String,
+        module: String,
+        roles: Vec<String>,
+    }
+    let json = key.generation_hash.strip_prefix(PRINCIPAL_MARKER_PREFIX)?;
+    let m: Marker = serde_json::from_str(json).ok()?;
+    if m.id != key.id {
+        return None;
+    }
+    Some((
+        m.module,
+        crate::auth::Principal {
+            id: m.id,
+            name: Some(key.name.clone()),
+            roles: m.roles,
+            ttl_secs: None,
+        },
+    ))
+}
+
+/// The LIVE re-resolution a `Standing` needs on the host: the governance registry for a registry
+/// key, and the CURRENT `role_bindings` for a bound one. Built per re-ask from the live snapshot,
+/// so a binding removed or narrowed by a config apply is what the next frame is judged against.
+pub struct LiveResolve<'a> {
+    /// The live registry; `None` where governance is disabled (a registry key then lapses).
+    pub governance: Option<&'a GovState>,
+    /// The live `auth.role_bindings` table.
+    pub role_bindings: &'a crate::config::RoleBindings,
+}
+
+impl crate::trust::validate::GovResolve for LiveResolve<'_> {
+    fn resolve_by_sub(&self, sub: &str) -> Option<Arc<VirtualKey>> {
+        self.governance.and_then(|g| g.lookup_by_sub(sub))
+    }
+
+    fn resolve_bound(
+        &self,
+        module: &str,
+        principal: &crate::auth::Principal,
+    ) -> Option<Arc<VirtualKey>> {
+        synthesize_bound_key(module, principal, self.role_bindings)
+    }
+}
+
+fn synthesize_key(
+    principal: &crate::auth::Principal,
+    bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
+) -> Option<VirtualKey> {
     // BUCKET-NAMESPACE GUARD: the synthesized key's `id` becomes its LEDGER
     // BUCKET id, and group buckets live in the same store namespace as `group:<name>`. A
     // principal id (attacker-influenced at the IdP) literally starting with `group:` would alias a
@@ -779,7 +879,7 @@ pub fn synthesize_principal_key(
     // The bound group (first in role order). Group limits are enforced through the group chain;
     // the key itself carries NO inline caps (keys are pure auth).
     let group = granting.iter().find_map(|b| b.group.clone());
-    Some(Arc::new(VirtualKey {
+    Some(VirtualKey {
         id: principal.id.clone(),
         // NOT a credential hash — a marker. The synthetic key never authenticates anything (the
         // auth module already did); it exists purely to carry grants through enforcement.
@@ -798,7 +898,7 @@ pub fn synthesize_principal_key(
         deleted_at: None,
         revision: 0,
         ..Default::default()
-    }))
+    })
 }
 
 /// The per-request context a plane handler receives: the resolved caller identity attached to each
@@ -995,15 +1095,19 @@ pub use busbar_kernel_ledger::cost::PLANE_LANE_SEP;
 // `pub`: the canonical public spelling is the substrate's own, and nothing outside
 // busbar-core reaches this path.
 
-/// One `pending_metering` entry: the same five counters `MeteringDelta` carries, accumulated
-/// in-memory across every `record_metering` call that lands on this key before the next flush.
-#[derive(Default, Clone, Copy)]
+/// One `pending_metering` entry: the counters `MeteringDelta` carries, accumulated in-memory across
+/// every `record_metering` (and, for [`Self::usage_units`], every `record_usage`) call that lands on
+/// this key before the next flush.
+#[derive(Default, Clone)]
 pub struct MeterCounts {
     pub requests: u64,
     pub tokens_input: u64,
     pub tokens_output: u64,
     pub tokens_cache_read: u64,
     pub tokens_cache_write: u64,
+    /// The ledgered classes the token columns do not hold, by class — the budget book's own counts
+    /// (see `busbar_api::MeteringDelta::usage_units`).
+    pub usage_units: std::collections::BTreeMap<String, u64>,
 }
 
 impl MeterCounts {
@@ -1019,6 +1123,20 @@ impl MeterCounts {
         self.tokens_cache_write = self
             .tokens_cache_write
             .saturating_add(other.tokens_cache_write);
+        for (class, n) in other.usage_units {
+            let cur = self.usage_units.entry(class).or_insert(0);
+            *cur = cur.saturating_add(n);
+        }
+    }
+
+    /// Nothing counted at all — a cell the flush has nothing to write for.
+    pub fn is_zero(&self) -> bool {
+        self.requests == 0
+            && self.tokens_input == 0
+            && self.tokens_output == 0
+            && self.tokens_cache_read == 0
+            && self.tokens_cache_write == 0
+            && self.usage_units.values().all(|n| *n == 0)
     }
 }
 
@@ -1192,7 +1310,7 @@ impl PendingMetering {
             let map = shard.lock().unwrap_or_else(|e| e.into_inner());
             len += map.len();
             for counts in map.values() {
-                sum.merge(*counts);
+                sum.merge(counts.clone());
             }
         }
         (len, sum)
@@ -1350,7 +1468,8 @@ pub fn metering_bucket(now: u64) -> u64 {
 }
 
 /// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
-/// the token ledger x the current rate card at the moment of the read - never stored.
+/// the token ledger, each era at the card in force when it was earned, at the moment of the
+/// read - never stored.
 ///
 /// A pure three-field figure with no engine dependency at all, so it lives HERE (the neutral
 /// governance vocabulary) rather than in the engine: a plane's tests read it back off the neutral
@@ -1358,7 +1477,8 @@ pub fn metering_bucket(now: u64) -> u64 {
 /// type as `busbar_kernel::governance::DerivedUsage` — the same type, one home.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DerivedUsage {
-    /// The spend derived from the token ledger at the CURRENT card, truncated to whole cents.
+    /// The spend derived from the token ledger at the card in force per era, truncated to whole
+    /// cents.
     pub spend_cents: i64,
     /// The token count the ledger holds for the bucket.
     pub tokens: u64,

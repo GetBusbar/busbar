@@ -1132,6 +1132,14 @@ impl ProtocolWriter for GeminiWriter {
                         serde_json::json!(tool_use_prompt),
                     );
                 }
+                // `usageMetadata.trafficType` — informational billing-lane marker, re-emitted on the
+                // streaming terminal chunk too when the IR carried it (OWNER RULING Q1).
+                if let Some(traffic_type) = &usage.detail.traffic_type {
+                    usage_metadata.insert(
+                        FIELD_TRAFFIC_TYPE.to_string(),
+                        serde_json::json!(traffic_type),
+                    );
+                }
                 let mut candidate_obj = serde_json::Map::new();
                 candidate_obj.insert(
                     FIELD_FINISH_REASON.to_string(),
@@ -1146,6 +1154,14 @@ impl ProtocolWriter for GeminiWriter {
                     FIELD_USAGE_METADATA.to_string(),
                     serde_json::Value::Object(usage_metadata),
                 );
+                // Vertex's top-level `createTime`, re-emitted on the streaming terminal chunk too
+                // (buffered twin above), when the IR carried it (OWNER RULING Q1).
+                if let Some(create_time) = &usage.detail.create_time {
+                    out_obj.insert(
+                        FIELD_CREATE_TIME.to_string(),
+                        serde_json::json!(create_time),
+                    );
+                }
                 Some(("".to_string(), serde_json::Value::Object(out_obj)))
             }
 
@@ -1346,6 +1362,15 @@ impl ProtocolWriter for GeminiWriter {
                 serde_json::json!(tool_use_prompt),
             );
         }
+        // `usageMetadata.trafficType` — informational billing-lane marker (OWNER RULING Q1,
+        // docs/design/1.6.0-QUESTIONS.md Q36). Only emitted when the IR carried one, so an ordinary
+        // response stays byte-identical.
+        if let Some(traffic_type) = &resp.usage.detail.traffic_type {
+            usage_metadata.insert(
+                FIELD_TRAFFIC_TYPE.to_string(),
+                serde_json::json!(traffic_type),
+            );
+        }
         if resp.created.is_some() || resp.model.is_some() {
             // Four additive terms, exactly as Google states them: prompt (cache-inclusive) +
             // candidates + the tool-use prompt term. Thinking is already inside `output_tokens`.
@@ -1384,6 +1409,13 @@ impl ProtocolWriter for GeminiWriter {
         // model that served the response (preserved across cross-protocol translation)
         if let Some(ref model) = resp.model {
             out[FIELD_MODEL_VERSION] = serde_json::json!(model);
+        }
+        // Vertex's top-level `createTime` (RFC3339). Only the Gemini reader ever populates
+        // `usage.detail.create_time`, so this is a no-op for every foreign-backend egress and a
+        // same-protocol Gemini/Vertex read→write reproduces the field verbatim (OWNER RULING Q1,
+        // docs/design/1.6.0-QUESTIONS.md Q36).
+        if let Some(ref create_time) = resp.usage.detail.create_time {
+            out[FIELD_CREATE_TIME] = serde_json::json!(create_time);
         }
         // Response identity. This mirrors the Anthropic writer's id rule, keying synthesis off
         // "did we cross a protocol boundary" (proxied by `created` being populated) rather than off

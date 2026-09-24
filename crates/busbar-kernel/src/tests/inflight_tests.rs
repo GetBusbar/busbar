@@ -42,7 +42,6 @@ fn enter(key: UnitKey, kernel: &Kernel) -> Enter {
         origin: OriginKind::Client,
         session: None,
         admin_listener: false,
-        provider_of_open_session: false,
         zero_hold_tick: false,
         arrival: arrival_hold(kernel, &TestDoor, principal()),
         now: 0,
@@ -52,7 +51,7 @@ fn enter(key: UnitKey, kernel: &Kernel) -> Enter {
 #[test]
 fn a_duplicate_key_is_refused_and_the_original_entry_is_untouched() {
     let kernel = Kernel::new();
-    let table = InFlight::new(64, 0);
+    let table = InFlight::new(64);
     let key = UnitKey::new(1);
 
     let first = table
@@ -111,7 +110,7 @@ fn two_distinct_keys_both_enter_normally() {
     // The base case the fix must not break: two units with DIFFERENT keys both admit, and the
     // count reflects both.
     let kernel = Kernel::new();
-    let table = InFlight::new(64, 0);
+    let table = InFlight::new(64);
 
     let a = table
         .insert(enter(UnitKey::new(1), &kernel))
@@ -122,4 +121,39 @@ fn two_distinct_keys_both_enter_normally() {
 
     assert_eq!(table.len(), 2);
     assert!(!Arc::ptr_eq(&a, &b));
+}
+
+/// THE HEADER'S TAKE COUNT IS THE TREE'S (item 291).
+///
+/// The module doc tells a reader how many callers can take a hold out of a slot's cell, and a reader
+/// auditing that every take settles stops counting at the number it states. It said two while the
+/// tree held three (the exit path, a child's end into its parent, and the sweep). The count here is
+/// every take off a slot's cell in the two files that hold the exit grant — whatever the grant is
+/// spelled as — so the header and the code can no longer disagree without this going red.
+#[test]
+fn the_header_states_the_take_count_the_tree_holds() {
+    let takes = [include_str!("../teller.rs"), include_str!("../tick.rs")]
+        .iter()
+        .map(|src| {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .filter(|l| l.contains(".cell.take(&") || l.contains(".cell().take(&"))
+                .count()
+        })
+        .sum::<usize>();
+    let header: String = include_str!("../inflight.rs")
+        .lines()
+        .take_while(|l| l.starts_with("//") || l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words = ["zero", "one", "two", "three", "four", "five", "six"];
+    let stated = words
+        .iter()
+        .position(|w| header.contains(&format!("exactly {w} callers ever take the hold")))
+        .expect("the header states how many callers take the hold");
+    assert_eq!(
+        stated, takes,
+        "the in-flight header says {} callers take the hold; the tree has {takes}",
+        words[stated]
+    );
 }

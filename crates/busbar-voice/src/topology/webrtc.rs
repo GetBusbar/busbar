@@ -14,8 +14,8 @@ use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{SessionCore, VoiceSession};
-use crate::runtime::{LeaseCloseGuard, VoiceRuntime};
-use crate::topology::{begin_session, SessionBudget, StartError};
+use crate::runtime::VoiceRuntime;
+use crate::topology::{begin_session, StartError};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -89,16 +89,10 @@ pub struct Attached<C> {
     pub core: Arc<SessionCore<C>>,
     /// The durable session binding to close at teardown.
     pub handle: SessionHandle,
-    /// The by-value D2 lease close guard the caller HOLDS for the session lifetime (drop-only): closing
-    /// the reserve deterministically when this `Attached` is dropped. The sideband has no `run()` loop,
-    /// so the guard lives here so the reserve is never orphaned even if a detached `Arc<SessionCore>`
-    /// clone lingers. Keep it alive as long as the sideband session is served; dropping it closes the D2
-    /// lease.
-    pub guard: LeaseCloseGuard,
 }
 
 /// ATTACH a browser WebRTC sideband session: lock the plane's `instructions` + `tools` into the
-/// [`SessionConfig`], begin the governed session (lease + durable handle), and mint the ephemeral token
+/// [`SessionConfig`], begin the governed session (kernel account + durable handle), and mint the ephemeral token
 /// scoped to that locked config. The returned [`Attached::session`] is served over the persistent WSS;
 /// media never transits busbar (the sideband carrier relays no audio).
 #[allow(clippy::too_many_arguments)]
@@ -109,7 +103,6 @@ pub async fn attach<C, M>(
     owner: impl Into<String>,
     call_id: impl Into<String>,
     locked_config: SessionConfig,
-    budget: SessionBudget,
     meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
 ) -> Result<Attached<C>, AttachError>
@@ -118,26 +111,25 @@ where
     M: TokenMinter,
 {
     // GOVERN FIRST, MINT SECOND (verify-strictly-before-charge, and before any credential is issued):
-    // begin_session runs the shared open-pass gauntlet gate + reserves the D2 lease + opens the durable
+    // begin_session runs the shared open-pass gauntlet gate + opens the kernel account + the durable
     // handle. NOTHING is minted on a denied or budget-refused session — a refused open costs zero bytes,
     // zero charge, and hands the browser NO ephemeral secret. The mint runs ONLY past a clean open.
     // A sideband carrier: no downlink media relay — the browser's media path is peer-to-peer.
     let carrier = Carrier::sideband();
-    let (core, handle, guard) = begin_session(
+    let (core, handle) = begin_session(
         rt,
         codec,
         owner,
         call_id,
         Some(locked_config.clone()),
         carrier,
-        budget,
         meter,
         now,
     )
     .map_err(AttachError::Start)?;
 
     // Only past the governed open: mint the ephemeral secret scoped to the SAME config busbar locked and
-    // re-applies. A mint failure tears the just-opened session down through the returned guard/handle
+    // re-applies. A mint failure tears the just-opened session down through the returned handle
     // drop rather than leaking a governed-but-unusable session.
     let token = minter
         .mint(&locked_config)
@@ -150,6 +142,5 @@ where
         session,
         core,
         handle,
-        guard,
     })
 }

@@ -530,8 +530,8 @@ run    = "cargo xtask gate teller-steps --selftest && cargo xtask gate teller-st
 id     = "plane-config-noun"
 status = "active"   # ARMED (item 87d/97): the stated blocker ("-> active when the gate's own
 # self-test passes") is satisfied — measured, not assumed. `bash scripts/plane-config-noun-gate.sh
-# --selftest` is ALL GREEN on the tip (and was already green at the 1.6.0 phase-start sha fd3455e53,
-# so the old "RED on the tip" comment was stale before this phase even began): `section_nouns` DOES
+# --selftest` is ALL GREEN on the tip (and was already green well before this segment was armed,
+# so the old "RED on the tip" comment was stale): `section_nouns` DOES
 # resolve all four section nouns today — `pools tools agents streams` — the old comment's claim that
 # the `agents` noun's declaring crate "carries no matching config_section: literal" no longer holds.
 tier   = "fast"
@@ -541,7 +541,7 @@ tier   = "fast"
 # future hard gate rather than enforcing it today. It is `active` (no longer an inert manifest slot)
 # because it now EXECUTES and REPORTS on every umbrella run, exactly as `plane-grep` does.
 #
-# TODAY'S MEASURED BASELINE (arming a ceiling for the first time, not relaxing one — §9.4): `--check`
+# TODAY'S MEASURED BASELINE (arming a ceiling for the first time, not relaxing one): `--check`
 # reports FOUR-NOUN CONFIG-PARSE DEBT = 17 distinct parse-target lines across 8 files under
 # crates/busbar-kernel/src (pools 5, tools 3, agents 2, streams 7; the busiest files are config/mod.rs
 # (6) and config/prepass.rs (3)). This is the pre-Stage-A floor this meter measures from, not a value

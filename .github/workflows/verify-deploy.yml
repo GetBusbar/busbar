@@ -678,14 +678,21 @@ jobs:
     runs-on: latchkey-small
     outputs:
       version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
     # Every check below talks to a THIRD-PARTY host (registry-1.docker.io, ghcr.io,
-    # registry.terraform.io, getbusbar.github.io, getbusbar.com, raw.githubusercontent.com). A TCP
-    # connect that is accepted and then never answered does not fail — it hangs, and with no job
-    # timeout GitHub's 360-minute default applies: a stalled registry would burn six hours of runner
-    # time and, on the daily schedule, still be "in progress" when the NEXT day's run starts.
-    # Budget: the retry loops are the floor — (a) runs two 20x15s loops (~10m) and (b)(c)(e)(f)(g)(j)
-    # one each (~5m), plus image pulls, the brew install and the two quickstart boots. ~45m worst
-    # case when things are merely slow, so 60 leaves headroom without hiding a true hang.
+    # registry.terraform.io, getbusbar.github.io, raw.githubusercontent.com). A TCP connect that is
+    # accepted and then never answered does not fail — it hangs, and with no job timeout GitHub's
+    # 360-minute default applies: a stalled registry would burn six hours of runner time and, on the
+    # daily schedule, still be "in progress" when the NEXT day's run starts.
+    # getbusbar.com ITSELF IS NOT CHECKED HERE. OWNER RULING Q5 (Q36; docs/design/1.6.0-QUESTIONS.md):
+    # getbusbar.com's Cloudflare edge answers this runner's label 403/429, so every check that reads
+    # the live site — (g), (h), (i), (k), (l.1), (n) — moved to the `verify-site` job below, on the
+    # self-hosted runner label Cloudflare trusts. This job keeps every check that does NOT read
+    # getbusbar.com: the registries, the Release, terraform, helm, homebrew, the docker quickstart
+    # half of (l), and the attestation check.
+    # Budget: the retry loops are the floor — (a) runs two 20x15s loops (~10m) and (b)(c)(e)(f)(j)
+    # one each (~5m), plus image pulls and the docker quickstart boot. ~30m worst case when things
+    # are merely slow, so 60 leaves headroom without hiding a true hang.
     timeout-minutes: 60
     # The 3-hourly cron drives the CHEAP `pointers` job only. Running this 45-minute sweep (image
     # pulls, a real install.sh, a brew install, two container boots) eight times a day would burn
@@ -1258,12 +1265,266 @@ jobs:
           fi
           [ "$fail" = 0 ]
 
-      - name: "(g) getbusbar.com is serving vX.Y.Z, and its download buttons actually resolve"
-        if: ${{ !cancelled() && steps.ver.outputs.version != '' && steps.helpers.outcome == 'success' && inputs.stage != 'staging' }}  # downstream channel; only moves after publication
+
+      - name: "(j) Homebrew: getbusbar/busbar tap installs vX.Y.Z"
+        if: ${{ !cancelled() && steps.ver.outputs.version != '' && steps.helpers.outcome == 'success' && inputs.stage != 'staging' }}  # the tap bumps off the published release
+        # `brew install` builds/downloads and has no timeout of its own.
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
           TAG="${{ steps.ver.outputs.tag }}"
+          fail=0
+          formula=""
+          # Read the formula the tap actually serves (raw.githubusercontent, unauthenticated — the
+          # same bytes `brew` fetches), not a copy in this repo.
+          for i in $(seq 1 20); do
+            formula="$(curl -fsSL --max-time 30 "https://raw.githubusercontent.com/GetBusbar/homebrew-busbar/main/Formula/busbar.rb" 2>/dev/null || true)"
+            [ -n "$formula" ] && echo "$formula" | grep -qE "^ *version \"${V}\"" && break
+            echo "  ...tap formula not yet at version ${V} (attempt $i/20), retrying in 15s"
+            sleep 15
+          done
+          if [ -z "$formula" ]; then
+            echo "FAIL: could not fetch Formula/busbar.rb from GetBusbar/homebrew-busbar"
+            echo "::error::(j) the Homebrew tap formula is unreachable — \`brew install getbusbar/busbar/busbar\` is dead for every user. Fix: confirm GetBusbar/homebrew-busbar is public and Formula/busbar.rb exists on main."
+            exit 1
+          fi
+          fver="$(printf '%s' "$formula" | grep -m1 -E '^ *version "' | sed -E 's/.*version "([^"]+)".*/\1/')"
+          if [ "$fver" = "$V" ]; then
+            echo "PASS: tap formula version == ${V}"
+          else
+            echo "FAIL: tap formula version == '${fver:-<none>}', expected '${V}'"
+            echo "::error::(j) the Homebrew tap is STALE: Formula/busbar.rb pins '${fver:-<none>}' but the release under test is ${V}, so \`brew install getbusbar/busbar/busbar\` gives users an old binary. Fix: run/repair the tap's bump.yml workflow (it should bump version + all four sha256s on each release)."
+            fail=1
+          fi
+
+          # Every platform's download URL must actually be live at this version — a formula that
+          # points at a missing asset installs for nobody.
+          assets="$(printf '%s' "$formula" | grep -oE 'busbar-[A-Za-z0-9_]+-[A-Za-z0-9.-]+\.(tar\.gz|zip)' | sort -u)"
+          [ -n "$assets" ] || { echo "::error::(j) could not parse any asset filenames out of the tap formula. Fix: check Formula/busbar.rb's url lines."; exit 1; }
+          while IFS= read -r a; do
+            [ -n "$a" ] || continue
+            u="https://github.com/GetBusbar/busbar/releases/download/${TAG}/${a}"
+            code="$(curl -sSL --max-time 30 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
+            case "$code" in
+              200|206) echo "PASS: tap download URL is live (${code}): ${a}" ;;
+              *)
+                echo "FAIL: tap download URL returned ${code}: ${u}"
+                echo "::error::(j) the Homebrew formula points at ${u} which returns ${code}. \`brew install\` fails on that platform. Fix: publish the missing asset on Release ${TAG}, or correct the formula's url."
+                fail=1
+                ;;
+            esac
+          done <<< "$assets"
+
+          # The published checksum must match the real bytes, or brew aborts with a checksum
+          # mismatch even though the URL is fine.
+          want_sha="$(printf '%s' "$formula" | awk '/on_linux do/{l=1} l&&/on_intel do/{i=1} l&&i&&/sha256/{gsub(/[",]/,"");print $2;exit}')"
+          if [ -n "$want_sha" ]; then
+            # Longer bound than the metadata calls: this is a real multi-MB binary download.
+            curl -fsSL --max-time 300 "https://github.com/GetBusbar/busbar/releases/download/${TAG}/busbar-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/brew-asset.tar.gz
+            got_sha="$(sha256sum /tmp/brew-asset.tar.gz | awk '{print $1}')"
+            if [ "$got_sha" = "$want_sha" ]; then
+              echo "PASS: tap sha256 for busbar-x86_64-unknown-linux-gnu.tar.gz matches the published asset"
+            else
+              echo "FAIL: tap sha256 mismatch (formula ${want_sha}, actual ${got_sha})"
+              echo "::error::(j) the Homebrew formula's sha256 for busbar-x86_64-unknown-linux-gnu.tar.gz does not match the asset on Release ${TAG}. \`brew install getbusbar/busbar/busbar\` aborts with a checksum mismatch. Fix: re-run the tap's bump workflow to recompute the checksums."
+              fail=1
+            fi
+          else
+            echo "FAIL: could not parse the linux/intel sha256 out of the tap formula"
+            echo "::error::(j) Formula/busbar.rb has no parseable on_linux/on_intel sha256 — brew cannot verify the download. Fix: restore the sha256 lines in the formula."
+            fail=1
+          fi
+
+          # And finally the documented command itself. Scrubbed of GitHub credentials: users do not
+          # have HOMEBREW_GITHUB_API_TOKEN/GH_TOKEN set, and brew's tap+API calls are rate-limited
+          # the same way install.sh's were.
+          if command -v brew >/dev/null 2>&1; then
+            if env -u GITHUB_TOKEN -u GH_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
+                 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 \
+                 brew install getbusbar/busbar/busbar; then
+              bver="$("$(brew --prefix busbar)/bin/busbar" --version 2>/dev/null || true)"
+              if [ "$bver" = "busbar ${V}" ]; then
+                echo "PASS: \`brew install getbusbar/busbar/busbar\` installs busbar ${V}"
+              else
+                echo "FAIL: brew-installed \`busbar --version\` == '${bver:-<none>}', expected 'busbar ${V}'"
+                echo "::error::(j) \`brew install getbusbar/busbar/busbar\` resolved and installed, but the resulting binary reports '${bver:-<none>}' instead of 'busbar ${V}'. Fix: the tap formula's url/version pair does not match the binary inside the tarball — re-run the tap bump workflow."
+                fail=1
+              fi
+            else
+              echo "FAIL: \`brew install getbusbar/busbar/busbar\` did not succeed"
+              echo "::error::(j) the DOCUMENTED Homebrew command \`brew install getbusbar/busbar/busbar\` fails without GitHub credentials — exactly what a user runs. Fix: see the brew output above; usually a bad tap ref, a private tap repo, or a formula syntax error."
+              fail=1
+            fi
+          else
+            # NOT EXERCISED IS RED. The formula version, live URLs and checksum assertions above
+            # ran and report their own verdicts, but the documented command itself did not run, and
+            # the check's name promises that it did.
+            echo "NOT EXERCISED (RED): Homebrew is not installed on this runner image, so the end-to-end \`brew install\` half of (j) did not run. The formula version / URL / checksum assertions above DID run."
+            echo "::error::(j) NOT EXERCISED: no \`brew\` on the runner, so the end-to-end \`brew install getbusbar/busbar/busbar\` was not exercised (formula version, download URLs and sha256 WERE verified). Fix: pin a runner image that ships Homebrew, or move this half to a macos-latest job."
+            { echo "### (j) Homebrew: NOT EXERCISED — no \`brew\` on the runner, end-to-end install did not run"; } >> "$GITHUB_STEP_SUMMARY"
+            fail=1
+          fi
+          [ "$fail" = 0 ]
+
+
+      - name: "(l.2) the documented docker quickstart actually runs"
+        # l.1, the BINARY quickstart, moved to the `verify-site` job: it boots the binary (h)
+        # installs from the live install.sh, which now runs on the self-hosted runner Cloudflare
+        # trusts (OWNER RULING Q5). l.2 needs nothing from getbusbar.com — only the published
+        # image — so it stays here.
+        if: ${{ !cancelled() && steps.ver.outputs.version != '' && steps.helpers.outcome == 'success' }}
+        # Boots one server; a busbar that starts but never binds would otherwise hang the job.
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          fail=0
+          work=/tmp/busbar-quickstart
+          rm -rf "$work"; mkdir -p "$work"
+          # The exact minimal config from docs/getting-started.md Step 2. `listen` is omitted so it
+          # takes the documented default (0.0.0.0:8080) — that default is part of what we verify.
+          cat > "$work/config.yaml" <<'YAML'
+          providers:
+            anthropic:
+              api_key: { env: ANTHROPIC_KEY }
+          models:
+            claude-sonnet:
+              provider: anthropic
+          YAML
+          # Step 3's env var. A syntactically-valid dummy: the quickstart asserts BOOT + /healthz,
+          # which are provider-independent; it deliberately does NOT spend a real provider call.
+          export ANTHROPIC_KEY=sk-ant-verify-deploy-dummy
+
+          probe() {  # probe <url> <label> -> 0 if it answers "ok"
+            for _ in $(seq 1 30); do
+              b="$(curl -fsS -m 5 "$1" 2>/dev/null || true)"
+              [ "$b" = "ok" ] && { echo "PASS: $2 answers 200 'ok' on /healthz"; return 0; }
+              sleep 2
+            done
+            echo "FAIL: $2 never answered 'ok' on /healthz (last body: '${b:-<none>}')"
+            return 1
+          }
+
+          # l.2: the docker one-liner from docs/getting-started.md, verbatim except that the
+          # image is pinned (check (a) already proves :latest == :${V} in public mode, so pinning
+          # tests the same bytes while making a failure unambiguous about WHICH release broke).
+          # In staging mode the pin is the throwaway tag, so this boots the exact digest that
+          # will be promoted -- the promote copies manifests and rebuilds nothing.
+          IMG="${IMAGE_REF:-${DOCKERHUB_IMAGE}:${V}}"
+          # FRESH, NOT CACHED. (d) ran in this same job on this same runner and left the image in
+          # the local daemon; booting that copy would prove the local cache boots. Remove and re-pull
+          # so the container under test came off the registry.
+          docker rm -f busbar-quickstart >/dev/null 2>&1 || true
+          docker rmi -f "$IMG" >/dev/null 2>&1 || true
+          docker pull "$IMG"
+          docker run -d --name busbar-quickstart -p 8080:8080 \
+            -e ANTHROPIC_KEY \
+            -v "$work/config.yaml:/etc/busbar/config.yaml:ro" \
+            "$IMG" >/dev/null
+          if probe "http://127.0.0.1:8080/healthz" "the documented docker one-liner"; then
+            :
+          else
+            echo "--- docker logs ---"; docker logs busbar-quickstart 2>&1 || true; echo "-------------------"
+            echo "::error::(l.2) the documented docker one-liner (docs/getting-started.md Step 1) does NOT work for ${IMG}: the container never served /healthz with the documented minimal config mounted at /etc/busbar/config.yaml. Fix: see the container log above. Usually the bundled /etc/busbar/providers.yaml is missing from the image, or the documented mount path changed."
+            fail=1
+          fi
+          docker rm -f busbar-quickstart >/dev/null 2>&1 || true
+          [ "$fail" = 0 ]
+
+      # (m) BUILD PROVENANCE ACTUALLY VERIFIES. The staging path records a keyless Sigstore
+      # attestation for every archive, and docs tell users to check it with `gh attestation verify`.
+      # Nothing has ever run that command against a published asset, so "the release is attested"
+      # was a claim about a workflow step succeeding, not about what a user can verify. A user who
+      # runs the documented command and gets a failure concludes the artifact is tampered with; that
+      # has to be tested from the outside, on the real downloaded bytes, like everything else here.
+      #
+      # `--signer-workflow` IS PART OF THE CHECK, NOT DECORATION. `--repo` alone asserts only that
+      # SOME workflow in GetBusbar/busbar signed these bytes, which every workflow in the repository
+      # that can hold `id-token: write` + `attestations: write` satisfies equally -- including one
+      # introduced by a PR on a branch. Pinning the signer makes this "the stager built it", which
+      # is the claim the release actually wants to make.
+      #
+      # THE SIGNER IS THE REUSABLE WORKFLOW, NOT ITS CALLER. `gh attestation verify --help`: "if
+      # your attestation was generated via a reusable workflow then that reusable workflow is the
+      # signer whose identity needs to be validated." The Fulcio SAN is the `job_workflow_ref`, the
+      # file holding the job that requested the OIDC token. `actions/attest-build-provenance` runs
+      # inside `build-artifact.yml`, which release-stage.yml calls per target -- so build-artifact.yml
+      # is the signer, and release-stage.yml (the caller) would never match.
+      #
+      # BOUNDARY, STATED SO IT IS NOT DISCOVERED AT 2AM: archives published BEFORE build-artifact.yml
+      # was split out of release.yml were signed by `release.yml` itself -- the real v1.5.5 asset
+      # attestation decodes to `.../workflows/release.yml@refs/tags/v1.5.5`. Dispatching this
+      # workflow at a tag from that era will therefore fail (m) on the SIGNER, not on the bytes. That
+      # is the correct verdict for a pin: it says the old releases were minted by a path that no
+      # longer exists. Re-point it only if the current staging path's signer changes.
+      - name: (m) the documented attestation check passes on the real published assets
+        if: ${{ !cancelled() && steps.ver.outputs.version != '' && steps.helpers.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          fail=0
+          work="$(mktemp -d)"
+          # Two platforms rather than all five: attestation is a property of the release run, not of
+          # the target, so a second one is a cheap independent sample and five is just slower.
+          for a in "busbar-x86_64-unknown-linux-gnu.tar.gz" "busbar-aarch64-apple-darwin.tar.gz"; do
+            if ! gh release download "$TAG" --repo GetBusbar/busbar --pattern "$a" --dir "$work" --clobber; then
+              echo "FAIL: (m) could not download $a to verify its attestation"
+              fail=1; continue
+            fi
+            if gh attestation verify "$work/$a" --repo GetBusbar/busbar \
+                 --signer-workflow GetBusbar/busbar/.github/workflows/build-artifact.yml; then
+              echo "PASS: (m) $a verifies against its build provenance, signed by the stager's build-artifact.yml"
+            else
+              echo "::error::(m) 'gh attestation verify $a --repo GetBusbar/busbar --signer-workflow GetBusbar/busbar/.github/workflows/build-artifact.yml' FAILED for ${TAG}. This is the exact command the docs tell users to run before trusting a download, so every user who follows that advice sees a tamper warning. Fix: confirm build-artifact.yml's attest-build-provenance step ran for this target and that the uploaded bytes are the attested ones (a re-upload after attestation breaks the digest binding)."
+              fail=1
+            fi
+          done
+          rm -rf "$work"
+          [ "$fail" = 0 ]
+
+  # -- SITE-FACING CHECKS: getbusbar.com only, on the self-hosted runner Cloudflare trusts ----------
+  # OWNER RULING Q5 (Q36; docs/design/1.6.0-QUESTIONS.md): getbusbar.com's Cloudflare edge answers
+  # GitHub-hosted runners 403/429, so every check below was RED daily -- item 333 already made that
+  # red HONEST (NOT EXERCISED, never a green no-op), but honest red is still red. The owner's fix:
+  # move these checks to a self-hosted runner. `latchkey-small` is that label -- this repo's own
+  # self-hosted convention (declared alongside `busbar-xl` in .github/actionlint.yaml's
+  # `self-hosted-runner` list; sized labels used throughout ci.yml, qa-conformance-a2a.yml,
+  # gate-mutants.yml). No new label is introduced here.
+  #
+  # WHY A SEPARATE JOB AND NOT JUST LEFT WHERE IT WAS: the registry/terraform/helm/homebrew/
+  # attestation checks in `verify` have nothing to do with the Cloudflare block and do not need to
+  # move; splitting keeps them where they were and puts ONLY the checks that read getbusbar.com --
+  # (g), (h), (i), (k), (l.1), (n) -- in their own job.
+  #
+  # `needs: [verify]` for the resolved version/tag (no second resolution, no second race against
+  # github.com/releases/latest), but `if: always() && ...` so a failure in `verify`'s OTHER checks
+  # (registries, terraform, helm...) never skips these -- items 332/333's "no check masks another"
+  # holds across the job boundary the same way it holds across steps within one job.
+  verify-site:
+    needs: [verify]
+    runs-on: latchkey-small
+    timeout-minutes: 45
+    if: >-
+      always() &&
+      github.event.schedule != '23 */3 * * *' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'schedule' ||
+       github.event_name == 'release' ||
+       inputs.version != '' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        startsWith(github.event.workflow_run.head_branch, 'v')))
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      STAGE: ${{ inputs.stage || 'public' }}
+    steps:
+      - name: "(g) getbusbar.com is serving vX.Y.Z, and its download buttons actually resolve"
+        if: ${{ !cancelled() && needs.verify.outputs.version != '' && inputs.stage != 'staging' }}  # downstream channel; only moves after publication
+        run: |
+          set -euo pipefail
+          V="${{ needs.verify.outputs.version }}"
+          TAG="${{ needs.verify.outputs.tag }}"
           fail=0
           found=0
           # WHY THE MATCH IS ANCHORED: this used to be `grep -qF "v${V}"`, an unanchored SUBSTRING
@@ -1382,12 +1643,12 @@ jobs:
         # not resolve as. (c2) below is the staging-mode substitute: it downloads the same tarball
         # from the draft and EXECUTES it, so the binary is proven runnable before promotion even
         # though the install PATH cannot be.
-        if: ${{ !cancelled() && steps.ver.outputs.version != '' && steps.helpers.outcome == 'success' && inputs.stage != 'staging' }}
+        if: ${{ !cancelled() && needs.verify.outputs.version != '' && inputs.stage != 'staging' }}
         # Bounds the 10-attempt install loop plus the tarball download it performs.
         timeout-minutes: 20
         run: |
           set -euo pipefail
-          V="${{ steps.ver.outputs.version }}"
+          V="${{ needs.verify.outputs.version }}"
           fail=0
 
           # THE LIVE SCRIPT, not the repo working copy. A fix that is merged but never deployed to
@@ -1511,7 +1772,7 @@ jobs:
           [ "$fail" = 0 ]
 
       - name: "(i) install.sh must NOT depend on api.github.com (the 403 that broke it)"
-        if: ${{ !cancelled() && steps.ver.outputs.version != '' && steps.helpers.outcome == 'success' && inputs.stage != 'staging' }}  # reads the LIVE served script; unrelated to the artifacts
+        if: ${{ !cancelled() && needs.verify.outputs.version != '' && inputs.stage != 'staging' }}  # reads the LIVE served script; unrelated to the artifacts
         run: |
           set -euo pipefail
           # WHY THIS EXISTS SEPARATELY FROM (h): (h) can pass on a runner while failing on every
@@ -1547,109 +1808,8 @@ jobs:
           fi
           echo "PASS: the live install.sh has NO api.github.com dependency (immune to the unauthenticated 403 rate limit)"
 
-      - name: "(j) Homebrew: getbusbar/busbar tap installs vX.Y.Z"
-        if: ${{ !cancelled() && steps.ver.outputs.version != '' && steps.helpers.outcome == 'success' && inputs.stage != 'staging' }}  # the tap bumps off the published release
-        # `brew install` builds/downloads and has no timeout of its own.
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          V="${{ steps.ver.outputs.version }}"
-          TAG="${{ steps.ver.outputs.tag }}"
-          fail=0
-          formula=""
-          # Read the formula the tap actually serves (raw.githubusercontent, unauthenticated — the
-          # same bytes `brew` fetches), not a copy in this repo.
-          for i in $(seq 1 20); do
-            formula="$(curl -fsSL --max-time 30 "https://raw.githubusercontent.com/GetBusbar/homebrew-busbar/main/Formula/busbar.rb" 2>/dev/null || true)"
-            [ -n "$formula" ] && echo "$formula" | grep -qE "^ *version \"${V}\"" && break
-            echo "  ...tap formula not yet at version ${V} (attempt $i/20), retrying in 15s"
-            sleep 15
-          done
-          if [ -z "$formula" ]; then
-            echo "FAIL: could not fetch Formula/busbar.rb from GetBusbar/homebrew-busbar"
-            echo "::error::(j) the Homebrew tap formula is unreachable — \`brew install getbusbar/busbar/busbar\` is dead for every user. Fix: confirm GetBusbar/homebrew-busbar is public and Formula/busbar.rb exists on main."
-            exit 1
-          fi
-          fver="$(printf '%s' "$formula" | grep -m1 -E '^ *version "' | sed -E 's/.*version "([^"]+)".*/\1/')"
-          if [ "$fver" = "$V" ]; then
-            echo "PASS: tap formula version == ${V}"
-          else
-            echo "FAIL: tap formula version == '${fver:-<none>}', expected '${V}'"
-            echo "::error::(j) the Homebrew tap is STALE: Formula/busbar.rb pins '${fver:-<none>}' but the release under test is ${V}, so \`brew install getbusbar/busbar/busbar\` gives users an old binary. Fix: run/repair the tap's bump.yml workflow (it should bump version + all four sha256s on each release)."
-            fail=1
-          fi
-
-          # Every platform's download URL must actually be live at this version — a formula that
-          # points at a missing asset installs for nobody.
-          assets="$(printf '%s' "$formula" | grep -oE 'busbar-[A-Za-z0-9_]+-[A-Za-z0-9.-]+\.(tar\.gz|zip)' | sort -u)"
-          [ -n "$assets" ] || { echo "::error::(j) could not parse any asset filenames out of the tap formula. Fix: check Formula/busbar.rb's url lines."; exit 1; }
-          while IFS= read -r a; do
-            [ -n "$a" ] || continue
-            u="https://github.com/GetBusbar/busbar/releases/download/${TAG}/${a}"
-            code="$(curl -sSL --max-time 30 --range 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)"
-            case "$code" in
-              200|206) echo "PASS: tap download URL is live (${code}): ${a}" ;;
-              *)
-                echo "FAIL: tap download URL returned ${code}: ${u}"
-                echo "::error::(j) the Homebrew formula points at ${u} which returns ${code}. \`brew install\` fails on that platform. Fix: publish the missing asset on Release ${TAG}, or correct the formula's url."
-                fail=1
-                ;;
-            esac
-          done <<< "$assets"
-
-          # The published checksum must match the real bytes, or brew aborts with a checksum
-          # mismatch even though the URL is fine.
-          want_sha="$(printf '%s' "$formula" | awk '/on_linux do/{l=1} l&&/on_intel do/{i=1} l&&i&&/sha256/{gsub(/[",]/,"");print $2;exit}')"
-          if [ -n "$want_sha" ]; then
-            # Longer bound than the metadata calls: this is a real multi-MB binary download.
-            curl -fsSL --max-time 300 "https://github.com/GetBusbar/busbar/releases/download/${TAG}/busbar-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/brew-asset.tar.gz
-            got_sha="$(sha256sum /tmp/brew-asset.tar.gz | awk '{print $1}')"
-            if [ "$got_sha" = "$want_sha" ]; then
-              echo "PASS: tap sha256 for busbar-x86_64-unknown-linux-gnu.tar.gz matches the published asset"
-            else
-              echo "FAIL: tap sha256 mismatch (formula ${want_sha}, actual ${got_sha})"
-              echo "::error::(j) the Homebrew formula's sha256 for busbar-x86_64-unknown-linux-gnu.tar.gz does not match the asset on Release ${TAG}. \`brew install getbusbar/busbar/busbar\` aborts with a checksum mismatch. Fix: re-run the tap's bump workflow to recompute the checksums."
-              fail=1
-            fi
-          else
-            echo "FAIL: could not parse the linux/intel sha256 out of the tap formula"
-            echo "::error::(j) Formula/busbar.rb has no parseable on_linux/on_intel sha256 — brew cannot verify the download. Fix: restore the sha256 lines in the formula."
-            fail=1
-          fi
-
-          # And finally the documented command itself. Scrubbed of GitHub credentials: users do not
-          # have HOMEBREW_GITHUB_API_TOKEN/GH_TOKEN set, and brew's tap+API calls are rate-limited
-          # the same way install.sh's were.
-          if command -v brew >/dev/null 2>&1; then
-            if env -u GITHUB_TOKEN -u GH_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
-                 HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 \
-                 brew install getbusbar/busbar/busbar; then
-              bver="$("$(brew --prefix busbar)/bin/busbar" --version 2>/dev/null || true)"
-              if [ "$bver" = "busbar ${V}" ]; then
-                echo "PASS: \`brew install getbusbar/busbar/busbar\` installs busbar ${V}"
-              else
-                echo "FAIL: brew-installed \`busbar --version\` == '${bver:-<none>}', expected 'busbar ${V}'"
-                echo "::error::(j) \`brew install getbusbar/busbar/busbar\` resolved and installed, but the resulting binary reports '${bver:-<none>}' instead of 'busbar ${V}'. Fix: the tap formula's url/version pair does not match the binary inside the tarball — re-run the tap bump workflow."
-                fail=1
-              fi
-            else
-              echo "FAIL: \`brew install getbusbar/busbar/busbar\` did not succeed"
-              echo "::error::(j) the DOCUMENTED Homebrew command \`brew install getbusbar/busbar/busbar\` fails without GitHub credentials — exactly what a user runs. Fix: see the brew output above; usually a bad tap ref, a private tap repo, or a formula syntax error."
-              fail=1
-            fi
-          else
-            # NOT EXERCISED IS RED. The formula version, live URLs and checksum assertions above
-            # ran and report their own verdicts, but the documented command itself did not run, and
-            # the check's name promises that it did.
-            echo "NOT EXERCISED (RED): Homebrew is not installed on this runner image, so the end-to-end \`brew install\` half of (j) did not run. The formula version / URL / checksum assertions above DID run."
-            echo "::error::(j) NOT EXERCISED: no \`brew\` on the runner, so the end-to-end \`brew install getbusbar/busbar/busbar\` was not exercised (formula version, download URLs and sha256 WERE verified). Fix: pin a runner image that ships Homebrew, or move this half to a macos-latest job."
-            { echo "### (j) Homebrew: NOT EXERCISED — no \`brew\` on the runner, end-to-end install did not run"; } >> "$GITHUB_STEP_SUMMARY"
-            fail=1
-          fi
-          [ "$fail" = 0 ]
-
       - name: "(k) getbusbar.com's own API endpoints answer with real numbers"
-        if: ${{ !cancelled() && steps.ver.outputs.version != '' && steps.helpers.outcome == 'success' && inputs.stage != 'staging' }}  # site-side, independent of the release under test
+        if: ${{ !cancelled() && needs.verify.outputs.version != '' && inputs.stage != 'staging' }}  # site-side, independent of the release under test
         run: |
           set -euo pipefail
           fail=0
@@ -1698,14 +1858,16 @@ jobs:
           check_api "/api/pulls" '.pull_count // .count // .pulls' \
             "Fix is MARKETING-SIDE, in the Cloudflare Worker: /api/pulls must default the repo to getbusbar/busbar when no ?repo= is supplied, exactly as /api/stars does." || fail=1
           [ "$fail" = 0 ]
-
-      - name: "(l) the documented quickstart actually runs (binary + docker one-liner)"
-        if: ${{ !cancelled() && steps.ver.outputs.version != '' && steps.helpers.outcome == 'success' }}
-        # Boots two servers; a busbar that starts but never binds would otherwise hang the job.
-        timeout-minutes: 15
+      - name: "(l.1) the documented quickstart actually runs (binary from the live install.sh)"
+        # l.2, the docker one-liner, needs nothing from getbusbar.com and stays in the `verify`
+        # job. l.1 boots the binary (h) installed above, in THIS job, on THIS runner -- moving it
+        # anywhere else would mean reading /tmp/busbar-e2e/bin/busbar off a different machine's
+        # disk, which does not exist.
+        if: ${{ !cancelled() && needs.verify.outputs.version != '' }}
+        timeout-minutes: 10
         run: |
           set -euo pipefail
-          V="${{ steps.ver.outputs.version }}"
+          V="${{ needs.verify.outputs.version }}"
           fail=0
           work=/tmp/busbar-quickstart
           rm -rf "$work"; mkdir -p "$work"
@@ -1733,8 +1895,8 @@ jobs:
             return 1
           }
 
-          # --- l.1: the binary quickstart from the README / getting-started. Docs promise:
-          # --- `curl -s localhost:8080/healthz` -> ok
+          # l.1: the binary quickstart from the README / getting-started. Docs promise:
+          # `curl -s localhost:8080/healthz` -> ok
           #
           # WHERE THE BINARY COMES FROM DEPENDS ON THE MODE, AND IT HAS TO. In public mode it is the
           # binary the LIVE install.sh produced in (h), because the point is to verify the quickstart
@@ -1745,7 +1907,7 @@ jobs:
           # config boots this release and answers /healthz.
           if [ "$STAGE" = "staging" ]; then
             a="busbar-x86_64-unknown-linux-gnu.tar.gz"
-            gh release download "${{ steps.ver.outputs.tag }}" --repo GetBusbar/busbar \
+            gh release download "${{ needs.verify.outputs.tag }}" --repo GetBusbar/busbar \
               --pattern "$a" --dir "$work" --clobber
             tar -xzf "$work/$a" -C "$work"
             chmod +x "$work/busbar"
@@ -1765,7 +1927,7 @@ jobs:
             :
           else
             echo "--- busbar log ---"; cat "$work/busbar.log" || true; echo "------------------"
-            echo "::error::(l) the quickstart printed in the README and docs/getting-started.md does NOT work for the ${V} DRAFT binary: it did not boot and serve /healthz with the documented minimal config.yaml. A new user's first five minutes would fail. Nothing is public and no tag exists, so fix it and re-run."
+            echo "::error::(l.1) the quickstart printed in the README and docs/getting-started.md does NOT work for the ${V} DRAFT binary: it did not boot and serve /healthz with the documented minimal config.yaml. A new user's first five minutes would fail. Nothing is public and no tag exists, so fix it and re-run."
             fail=1
           fi
           kill "$bpid" 2>/dev/null || true
@@ -1776,12 +1938,12 @@ jobs:
           elif [ -f /tmp/site-blocked ] || [ ! -x /tmp/busbar-e2e/bin/busbar ]; then
             # l.1 runs the binary that (h) installed FROM THE LIVE install.sh, on purpose - it
             # verifies the documented quickstart against the artifact a user actually ends up with.
-            # When (h) could not run (getbusbar.com refuses this runner) there is no such binary, and
-            # substituting one from the Release would quietly change what this check means. Skip it
-            # instead; l.2, the docker one-liner, needs nothing from the site and still runs. The
-            # half that did not run is RED, not a pass.
-            echo "NOT EXERCISED (RED): (l.1) the binary quickstart could not run - (h) never obtained a binary from the live install.sh (getbusbar.com refuses this runner). The docker one-liner half (l.2) still runs."
-            echo "::error::(l) NOT EXERCISED: the binary quickstart was not exercised because the live install.sh was unreachable from this runner. Same marketing-side fix as (h)."
+            # When (h) could not run (getbusbar.com refuses this runner too) there is no such binary,
+            # and substituting one from the Release would quietly change what this check means. Skip
+            # it instead; l.2, the docker one-liner, needs nothing from the site and still runs in
+            # the `verify` job. The half that did not run is RED, not a pass.
+            echo "NOT EXERCISED (RED): (l.1) the binary quickstart could not run - (h) never obtained a binary from the live install.sh. The docker one-liner half (l.2) runs separately in the verify job."
+            echo "::error::(l.1) NOT EXERCISED: the binary quickstart was not exercised because the live install.sh was unreachable from this runner. Same fix as (h)."
             fail=1
           else
           cp /tmp/busbar-e2e/bin/busbar "$work/busbar"
@@ -1794,89 +1956,12 @@ jobs:
             :
           else
             echo "--- busbar log ---"; cat "$work/busbar.log" || true; echo "------------------"
-            echo "::error::(l) the quickstart printed in the README and docs/getting-started.md does NOT work: the installed busbar ${V} did not boot and serve /healthz with the documented minimal config.yaml. A new user's first five minutes fail. Fix: see the busbar log above — either the minimal config in the docs is no longer valid for this release, or the release binary fails to boot."
+            echo "::error::(l.1) the quickstart printed in the README and docs/getting-started.md does NOT work: the installed busbar ${V} did not boot and serve /healthz with the documented minimal config.yaml. A new user's first five minutes fail. Fix: see the busbar log above — either the minimal config in the docs is no longer valid for this release, or the release binary fails to boot."
             fail=1
           fi
           kill "$bpid" 2>/dev/null || true
           for _ in $(seq 1 15); do curl -fsS -m 2 http://127.0.0.1:8080/healthz >/dev/null 2>&1 || break; sleep 1; done
           fi
-
-          # --- l.2: the docker one-liner from docs/getting-started.md, verbatim except that the
-          # --- image is pinned (check (a) already proves :latest == :${V} in public mode, so pinning
-          # --- tests the same bytes while making a failure unambiguous about WHICH release broke).
-          # --- In staging mode the pin is the throwaway tag, so this boots the exact digest that
-          # --- will be promoted -- the promote copies manifests and rebuilds nothing.
-          IMG="${IMAGE_REF:-${DOCKERHUB_IMAGE}:${V}}"
-          # FRESH, NOT CACHED. (d) ran in this same job on this same runner and left the image in
-          # the local daemon; booting that copy would prove the local cache boots. Remove and re-pull
-          # so the container under test came off the registry.
-          docker rm -f busbar-quickstart >/dev/null 2>&1 || true
-          docker rmi -f "$IMG" >/dev/null 2>&1 || true
-          docker pull "$IMG"
-          docker run -d --name busbar-quickstart -p 8080:8080 \
-            -e ANTHROPIC_KEY \
-            -v "$work/config.yaml:/etc/busbar/config.yaml:ro" \
-            "$IMG" >/dev/null
-          if probe "http://127.0.0.1:8080/healthz" "the documented docker one-liner"; then
-            :
-          else
-            echo "--- docker logs ---"; docker logs busbar-quickstart 2>&1 || true; echo "-------------------"
-            echo "::error::(l) the documented docker one-liner (docs/getting-started.md Step 1) does NOT work for ${IMG}: the container never served /healthz with the documented minimal config mounted at /etc/busbar/config.yaml. Fix: see the container log above. Usually the bundled /etc/busbar/providers.yaml is missing from the image, or the documented mount path changed."
-            fail=1
-          fi
-          docker rm -f busbar-quickstart >/dev/null 2>&1 || true
-          [ "$fail" = 0 ]
-
-      # (m) BUILD PROVENANCE ACTUALLY VERIFIES. The staging path records a keyless Sigstore
-      # attestation for every archive, and docs tell users to check it with `gh attestation verify`.
-      # Nothing has ever run that command against a published asset, so "the release is attested"
-      # was a claim about a workflow step succeeding, not about what a user can verify. A user who
-      # runs the documented command and gets a failure concludes the artifact is tampered with; that
-      # has to be tested from the outside, on the real downloaded bytes, like everything else here.
-      #
-      # `--signer-workflow` IS PART OF THE CHECK, NOT DECORATION. `--repo` alone asserts only that
-      # SOME workflow in GetBusbar/busbar signed these bytes, which every workflow in the repository
-      # that can hold `id-token: write` + `attestations: write` satisfies equally -- including one
-      # introduced by a PR on a branch. Pinning the signer makes this "the stager built it", which
-      # is the claim the release actually wants to make.
-      #
-      # THE SIGNER IS THE REUSABLE WORKFLOW, NOT ITS CALLER. `gh attestation verify --help`: "if
-      # your attestation was generated via a reusable workflow then that reusable workflow is the
-      # signer whose identity needs to be validated." The Fulcio SAN is the `job_workflow_ref`, the
-      # file holding the job that requested the OIDC token. `actions/attest-build-provenance` runs
-      # inside `build-artifact.yml`, which release-stage.yml calls per target -- so build-artifact.yml
-      # is the signer, and release-stage.yml (the caller) would never match.
-      #
-      # BOUNDARY, STATED SO IT IS NOT DISCOVERED AT 2AM: archives published BEFORE build-artifact.yml
-      # was split out of release.yml were signed by `release.yml` itself -- the real v1.5.5 asset
-      # attestation decodes to `.../workflows/release.yml@refs/tags/v1.5.5`. Dispatching this
-      # workflow at a tag from that era will therefore fail (m) on the SIGNER, not on the bytes. That
-      # is the correct verdict for a pin: it says the old releases were minted by a path that no
-      # longer exists. Re-point it only if the current staging path's signer changes.
-      - name: (m) the documented attestation check passes on the real published assets
-        if: ${{ !cancelled() && steps.ver.outputs.version != '' && steps.helpers.outcome == 'success' }}
-        timeout-minutes: 10
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.ver.outputs.tag }}"
-          fail=0
-          work="$(mktemp -d)"
-          # Two platforms rather than all five: attestation is a property of the release run, not of
-          # the target, so a second one is a cheap independent sample and five is just slower.
-          for a in "busbar-x86_64-unknown-linux-gnu.tar.gz" "busbar-aarch64-apple-darwin.tar.gz"; do
-            if ! gh release download "$TAG" --repo GetBusbar/busbar --pattern "$a" --dir "$work" --clobber; then
-              echo "FAIL: (m) could not download $a to verify its attestation"
-              fail=1; continue
-            fi
-            if gh attestation verify "$work/$a" --repo GetBusbar/busbar \
-                 --signer-workflow GetBusbar/busbar/.github/workflows/build-artifact.yml; then
-              echo "PASS: (m) $a verifies against its build provenance, signed by the stager's build-artifact.yml"
-            else
-              echo "::error::(m) 'gh attestation verify $a --repo GetBusbar/busbar --signer-workflow GetBusbar/busbar/.github/workflows/build-artifact.yml' FAILED for ${TAG}. This is the exact command the docs tell users to run before trusting a download, so every user who follows that advice sees a tamper warning. Fix: confirm build-artifact.yml's attest-build-provenance step ran for this target and that the uploaded bytes are the attested ones (a re-upload after attestation breaks the digest binding)."
-              fail=1
-            fi
-          done
-          rm -rf "$work"
           [ "$fail" = 0 ]
 
       # (n) NUMBERS THE SITE PRESENTS AS LIVE MUST BE LIVE. Four defects in the 1.5.3 release were
@@ -1913,7 +1998,7 @@ jobs:
       # catch a frozen number and nothing looser. Expect this check to be RED until the Worker is
       # actually deployed. That is the check doing its job, not a miscalibration.
       - name: (n) the live numbers on getbusbar.com really are live
-        if: ${{ !cancelled() && steps.ver.outputs.version != '' && steps.helpers.outcome == 'success' && inputs.stage != 'staging' }}  # site-side, independent of the release under test
+        if: ${{ !cancelled() && needs.verify.outputs.version != '' && inputs.stage != 'staging' }}  # site-side, independent of the release under test
         timeout-minutes: 10
         run: |
           set -euo pipefail
@@ -2009,11 +2094,13 @@ jobs:
   # issue — it blocks, it is attached to the run that produced it, and it cannot be triaged away.
   alert:
     name: alert (fail the run loudly — never file an issue)
-    needs: [pointers, verify]
+    needs: [pointers, verify, verify-site]
     # `always()` because `needs` on a failed job skips the dependent by default - the exact shape
     # that made release.yml's own `verify-assets` get skipped precisely when the release was broken.
-    # A notifier that only runs when nothing failed is not a notifier. Also fires when `verify` was
-    # skipped (the 3-hourly pointer cron) and `pointers` alone failed.
+    # A notifier that only runs when nothing failed is not a notifier. Also fires when `verify` and
+    # `verify-site` were skipped (the 3-hourly pointer cron) and `pointers` alone failed, and when
+    # `verify-site` alone fails while `verify` is green (the getbusbar.com checks are their own job
+    # now; a red there must alert exactly like a red in `verify` always did).
     #
     # NOT IN STAGING MODE, AND THIS IS NOT AN OVERSIGHT. This issue says "a published release is
     # broken and users are affected". A staging failure means the opposite: the gate WORKED, nothing
@@ -2023,7 +2110,8 @@ jobs:
     # none. The signal for a staging failure is release.yml's own run going red at the gate.
     if: >-
       ${{ always() && inputs.stage != 'staging' &&
-          (needs.pointers.result == 'failure' || needs.verify.result == 'failure') }}
+          (needs.pointers.result == 'failure' || needs.verify.result == 'failure' ||
+           needs.verify-site.result == 'failure') }}
     runs-on: latchkey-small
     timeout-minutes: 10
     permissions:

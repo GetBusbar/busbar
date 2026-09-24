@@ -388,8 +388,8 @@ pub const RELEASE_COMMIT_KEY: &str = "conformance-release-commit";
 /// THE RELEASE COMMIT — the sha of the checkout under judgement (`git rev-parse HEAD`), resolved
 /// from OUTSIDE the verdicts it judges. The release pipeline drops the verdicts it downloaded into
 /// a checkout OF the release sha before running this gate, so there `HEAD` is the release commit;
-/// on any other commit every carried-over pass is stale, which is the rule (KICKOFF §7.3: every
-/// commit invalidates every conformance pass). An unresolvable commit is an error, never a pass —
+/// on any other commit every carried-over pass is stale, which is the rule: every commit
+/// invalidates every conformance pass. An unresolvable commit is an error, never a pass —
 /// an empty anchor would make "stale" unanswerable.
 pub fn release_commit(cx: &Ctx) -> Result<String, String> {
     let sha = match cx.overlay_command(RELEASE_COMMIT_KEY) {

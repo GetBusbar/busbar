@@ -14,6 +14,7 @@
 //! request-log line to [`deliver_logs`], which fans it out to whichever webhook sinks the operator
 //! configured.
 
+use crate::config::sections::EXPORT_MODULE_REQUEST_LOG_WEBHOOK;
 use crate::config::ExportCfg;
 use crate::export::projection::Projection;
 use crate::export::PayloadCache;
@@ -147,6 +148,8 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
         // THIS sink's payload, built to THIS sink's projection (shared with any sibling holding the
         // identical projection). The build happens here, per sink — never once and broadcast.
         let payload = cache.get(target.projection);
+        let op = cache.facts.ingress_protocol;
+        crate::audit::amend::export_read(EXPORT_MODULE_REQUEST_LOG_WEBHOOK, op, &payload);
         busbar_kernel::detached::spawn_detached(async move {
             let _permit = permit; // slot releases on task end via the owned permit's Drop.
             let Ok(uri) = url.as_str().parse::<http::Uri>() else {

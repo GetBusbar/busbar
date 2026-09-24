@@ -19,11 +19,11 @@ fn prune_dead_models_drops_only_zero_token_fully_flushed_entries() {
         m
     };
     let mut cell = BudgetCell::fresh(0); // the all-time cell that the sweep never ages out
-    cell.accrue("live-model", &tok(10)); // real tokens → must be KEPT
-    cell.accrue("dead-model", &tok(0)); // interned with zero tokens → dead, must be DROPPED
-                                        // An entry that was charged then FLUSHED (cur == flushed, both non-zero) still carries the
-                                        // window's enforcement total, so it must be KEPT.
-    cell.accrue("flushed-model", &tok(5));
+    cell.accrue("live-model", 0, &tok(10)); // real tokens → must be KEPT
+    cell.accrue("dead-model", 0, &tok(0)); // interned with zero tokens → dead, must be DROPPED
+                                           // An entry that was charged then FLUSHED (cur == flushed, both non-zero) still carries the
+                                           // window's enforcement total, so it must be KEPT.
+    cell.accrue("flushed-model", 0, &tok(5));
     if let Some(m) = cell
         .models
         .iter_mut()
@@ -48,6 +48,6 @@ fn prune_dead_models_drops_only_zero_token_fully_flushed_entries() {
     assert_eq!(cell.models.len(), 2);
 
     // A re-appearing model is re-interned on the next accrue (prune is not permanent).
-    cell.accrue("dead-model", &tok(3));
+    cell.accrue("dead-model", 0, &tok(3));
     assert!(cell.models.iter().any(|m| &*m.model == "dead-model"));
 }

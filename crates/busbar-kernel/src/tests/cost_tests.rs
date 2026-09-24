@@ -542,7 +542,7 @@ fn flat_fee_refuses_an_overflow_and_is_gated_by_the_flag() {
 #[test]
 fn negative_per_request_fee_clamps_to_zero() {
     let cm = resolve_card_fee(None, -5);
-    assert_eq!(cm.price_per_request_cents(), 0);
+    assert_eq!(cm.request_fee_on(""), 0);
     assert_eq!(
         cm.derive_spend_cents([("m", &toks(0, 0))].into_iter(), 100, true),
         Ok(0),

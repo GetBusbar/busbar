@@ -116,10 +116,9 @@ tracing = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }
-# The neutral telemetry recorder the front-door session-open counter emits into
-# (`busbar_plane_requests_total`, plane = voice) — the SAME `metrics` crate the substrate's
-# `upstream_attempt_on` emit names, so voice counts on the family without reaching into `busbar-core`.
-# OPTIONAL, pulled only by `runtime` (the mount that emits is runtime-gated).
+# The neutral telemetry recorder the testkit's in-memory capture installs (`testkit::metrics_capture`).
+# The front door itself reports through the host's `request_finished` seam (count + duration, item
+# 566) and emits nothing by hand. OPTIONAL, pulled only by `runtime`.
 metrics = { workspace = true, optional = true }
 # THE PURE HALF OF THIS PLANE. Named for two things now, which is why it is NO LONGER OPTIONAL.
 # (1) The conformance harness and the governed-binding cells pin the tool-reply deadline

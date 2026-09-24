@@ -76,7 +76,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::record::Record;
 use crate::ship::Shipper;
-use crate::wal::{BatchAck, Mode, OpenError, Wal};
+use crate::wal::{BatchAck, Clock, Mode, OpenError, Wal};
 
 /// The four bytes every journal record's header opens with.
 pub const JOURNAL_MAGIC: [u8; 4] = *b"BJRN";
@@ -730,15 +730,15 @@ impl std::fmt::Debug for Journal {
 impl Journal {
     /// A journal over a memory-buffered log that ships nowhere and touches no disk.
     #[must_use]
-    pub fn memory_buffered(node: u64) -> Self {
-        Journal::over(Wal::memory_buffered(), node)
+    pub fn memory_buffered(node: u64, clock: Clock) -> Self {
+        Journal::over(Wal::memory_buffered(clock), node)
     }
 
     /// A journal over a memory-buffered log shipping through `shipper` — the shape a deployment that
     /// names a store but no data directory runs.
     #[must_use]
-    pub fn memory_buffered_to(node: u64, shipper: Box<dyn Shipper>) -> Self {
-        Journal::over(Wal::memory_buffered_to(shipper), node)
+    pub fn memory_buffered_to(node: u64, shipper: Box<dyn Shipper>, clock: Clock) -> Self {
+        Journal::over(Wal::memory_buffered_to(shipper, clock), node)
     }
 
     /// A journal whose log keeps its segments as files under `dir`, resuming from whatever chain is
@@ -751,8 +751,9 @@ impl Journal {
         node: u64,
         dir: impl AsRef<std::path::Path>,
         shipper: Box<dyn Shipper>,
+        clock: Clock,
     ) -> Result<Self, OpenError> {
-        Ok(Journal::over(Wal::in_directory(dir, shipper)?, node))
+        Ok(Journal::over(Wal::in_directory(dir, shipper, clock)?, node))
     }
 
     /// A journal over an already-open log, resuming from the tail the log recovered.
@@ -814,6 +815,35 @@ impl Journal {
         // success. The floor is what keeps that from being a settlement lost behind an `Ok`.
         journal.floor_seq_to_the_log();
         journal
+    }
+
+    /// Put every quarantine the log made at open on the chain, as one `ChainBreak` record each —
+    /// the durable statement of what recovery set aside: the segment file, the byte offset, the
+    /// byte count and where the bytes went. See [`crate::recover::Quarantine::body`].
+    ///
+    /// Called once, by the composition root, right after a boot that found corruption: this crate
+    /// holds no token and reads no clock, so the root supplies both. `wall` is seconds since the
+    /// Unix epoch. Nothing is appended when the log set nothing aside.
+    ///
+    /// # Errors
+    ///
+    /// The journal could not make the records durable.
+    pub fn record_quarantines(
+        &mut self,
+        token: &Grant<DurableWrite>,
+        at: StepName,
+        wall: u64,
+    ) -> Result<Option<JournalAck>, DurabilityLost> {
+        let entries: Vec<Entry> = self
+            .log
+            .quarantined()
+            .iter()
+            .map(|q| Entry::new(RecordClass::ChainBreak, q.body()).at(wall, 0))
+            .collect();
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        self.append(token, at, &entries).map(Some)
     }
 
     /// The same journal with a different buffer bound. For batteries that need to reach the bound

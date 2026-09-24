@@ -328,8 +328,7 @@ impl Plane for StreamingPlane {
                     twilio::TwilioEvent::Media { payload, .. } => {
                         // Priced from the raw carrier payload, before the transform below widens
                         // it: what the caller spoke is µ-law on this dialect's wire.
-                        let ms = AudioFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
-                        state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
+                        state.turn.admit_audio(AudioFormat::G711Ulaw, payload.len());
                         let pcm = ulaw::decode_frame(&payload);
                         IrClientEvent::AudioFrame(IrAudioFrame {
                             dir: UpDown::Up,
@@ -372,8 +371,7 @@ impl Plane for StreamingPlane {
         if client_dialect != Dialect::TwilioMediaStreams {
             if let IrClientEvent::AudioFrame(f) = &client_event {
                 // See the module doc comment: the uplink format is assumed PCM16 for this estimate.
-                let ms = AudioFormat::Pcm16.bytes_to_ms(f.media.len() as u64);
-                state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
+                state.turn.admit_audio(AudioFormat::Pcm16, f.media.len());
             }
         }
 
@@ -585,12 +583,15 @@ impl Plane for StreamingPlane {
         // the plane DECLARED are one value the compiler checks — not two strings that agree today.
         // A typo in a literal here emits a count under a class no card can name: silently unpriced,
         // or a boot refusal under #77(5), and in neither case anything that points at this line.
+        // `cached_tokens` is NOT here: it is a subset of the input token classes above, not a
+        // billable class beside them (architect ruling #71 — see `meta::CLASS_CACHED_TOKENS`'s doc).
+        // Pricing it too would double-bill the same cached input; the figure is attribution only,
+        // carried on the `cached_tokens` fact, never on a meter line.
         let classes = [
             (meta::FACT_AUDIO_TOKENS_IN, meta::CLASS_AUDIO_TOKENS_IN),
             (meta::FACT_AUDIO_TOKENS_OUT, meta::CLASS_AUDIO_TOKENS_OUT),
             (meta::FACT_TEXT_TOKENS_IN, meta::CLASS_TEXT_TOKENS_IN),
             (meta::FACT_TEXT_TOKENS_OUT, meta::CLASS_TEXT_TOKENS_OUT),
-            (meta::FACT_CACHED_TOKENS, meta::CLASS_CACHED_TOKENS),
         ];
         // A duplex turn's figures all come off the upstream's usage report, which is the answer. A
         // one-shot request's input figure comes off the request, which decode read and put on the
@@ -1217,7 +1218,7 @@ fn progress_from_server_event<'u>(
             // arguments — a call dispatched with no arguments is a different call, which is what the
             // old open-mints-empty path did. Announcing opens nothing on its own; the name is
             // remembered so `CallClose` (which carries none) can name the executor call.
-            state.turn.tool_calls = state.turn.tool_calls.saturating_add(1);
+            state.turn.open_tool_call();
             state.codec.remember_call_name(&call_id, &name);
             Ok(Progress::Discard {
                 reason: DiscardCode::Unsupported,

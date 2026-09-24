@@ -8,13 +8,11 @@
 use crate::ir::codec::OpenAiRealtimeCodec;
 use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
-use crate::runtime::metering::{HostMeteringPort, MockMeteringHost};
+use crate::runtime::metering::TurnMeter;
 use crate::runtime::VoiceRuntime;
 use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::webrtc::{attach, EphemeralToken, MintError, TokenMinter};
-use crate::topology::SessionBudget;
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
-use busbar_kernel::plane_host::MeteringHost;
 use futures::channel::mpsc::unbounded;
 use futures::StreamExt;
 use std::sync::Arc;
@@ -22,7 +20,6 @@ use std::sync::Arc;
 // loopback EchoProvider. These symbols are used ONLY by the `#[cfg(feature = "test-support")]` dial
 // tests, so gate the imports to match — otherwise a `runtime`-without-`test-support` build (the
 // workspace clippy default now that voice ships default-on) sees them as unused.
-#[cfg(feature = "test-support")]
 use crate::testkit::fixture_host::FixtureHost;
 #[cfg(feature = "test-support")]
 use crate::topology::dial_provider;
@@ -36,13 +33,22 @@ use busbar_kernel::net_guard::GuardPolicy;
 use futures::SinkExt;
 
 fn runtime() -> VoiceRuntime {
-    // The PRODUCTION money hop: a host lease + host pricing over the mock host (prices every reserved
-    // unit at 1 nano), so metering is real over both topologies.
-    let host = Arc::new(MockMeteringHost::default()) as Arc<dyn MeteringHost>;
     VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
-        Arc::new(HostMeteringPort::new(host)),
         Arc::new(crate::runtime::tools::EchoToolExecutor),
+    )
+}
+
+/// A presenting key's meter over a governed fixture host whose budget view is capped at `cap` counts.
+fn meter_capped(cap: i64) -> TurnMeter {
+    TurnMeter::new(
+        Arc::new(FixtureHost::new().governed().with_count_cap(cap)),
+        busbar_api::VirtualKey {
+            id: "vk".to_string(),
+            ..Default::default()
+        },
+        "voice-server",
+        crate::OPENAI_REALTIME,
     )
 }
 
@@ -55,28 +61,14 @@ fn json_frame(v: serde_json::Value) -> Vec<u8> {
 #[tokio::test]
 async fn telephony_proxy_relays_both_directions() {
     let rt = runtime();
-    let budget = SessionBudget {
-        estimate_nanos: 1_000,
-        fee_nanos: 0,
-        cap_nanos: None,
-    };
     // g711 end-to-end: 8 kHz µ-law passes straight through, no resample.
     let cfg = g711_config();
     assert_eq!(
         cfg.output_audio_format,
         Some(crate::ir::media::AudioFormat::G711Ulaw)
     );
-    let proxy = begin_telephony(
-        &rt,
-        OpenAiRealtimeCodec,
-        "acct-1",
-        "call-9",
-        cfg,
-        budget,
-        None,
-        1,
-    )
-    .expect("telephony begins");
+    let proxy = begin_telephony(&rt, OpenAiRealtimeCodec, "acct-1", "call-9", cfg, None, 1)
+        .expect("telephony begins");
 
     let (prov_in_tx, prov_in_rx) = unbounded::<Vec<u8>>();
     let (prov_out_tx, mut prov_out_rx) = unbounded::<Vec<u8>>();
@@ -140,11 +132,6 @@ async fn a_finished_telephony_call_settles_and_evicts_its_durable_row() {
         "acct-1",
         "call-ended",
         g711_config(),
-        SessionBudget {
-            estimate_nanos: 1_000,
-            fee_nanos: 0,
-            cap_nanos: None,
-        },
         None,
         1,
     )
@@ -281,11 +268,6 @@ async fn webrtc_sideband_mints_token_locks_config_and_relays_no_media() {
         ..SessionConfig::default()
     };
     locked.tools = vec![serde_json::json!({"type":"function","name":"lookup"})];
-    let budget = SessionBudget {
-        estimate_nanos: 500,
-        fee_nanos: 10,
-        cap_nanos: Some(3),
-    };
 
     let attached = attach(
         &rt,
@@ -294,8 +276,7 @@ async fn webrtc_sideband_mints_token_locks_config_and_relays_no_media() {
         "acct-2",
         "call-42",
         locked,
-        budget,
-        None,
+        Some(meter_capped(3)),
         1,
     )
     .await
@@ -308,7 +289,7 @@ async fn webrtc_sideband_mints_token_locks_config_and_relays_no_media() {
         "sideband relays no downlink media"
     );
 
-    // Metering is real over the sideband too: settle past the cap of 3 hard-closes.
+    // Metering is real over the sideband too: a turn that dries a chain of 3 hard-closes.
     let usage = crate::ir::codec::WireEvent(bytes::Bytes::from(json_frame(serde_json::json!({
         "type":"response.done",
         "response": { "usage": { "output_token_details": { "audio_tokens": 5 } } },
@@ -323,24 +304,12 @@ async fn webrtc_sideband_mints_token_locks_config_and_relays_no_media() {
 #[test]
 fn begin_session_refuses_a_denied_destination_before_any_charge() {
     // The D3 call-site witness: `begin_session` ACTUALLY calls `run_gauntlet_session` at the top, so a
-    // denied upstream destination is refused BEFORE the lease/durable open — zero bytes, zero charge.
-    let host = Arc::new(MockMeteringHost::default());
-    let rt = VoiceRuntime::new(
-        Arc::new(DurableHandleEngine::new()),
-        Arc::new(HostMeteringPort::new(
-            Arc::clone(&host) as Arc<dyn MeteringHost>
-        )),
-        Arc::new(crate::runtime::tools::EchoToolExecutor),
-    )
-    .with_denied_destinations(["blocked-model"]);
+    // denied upstream destination is refused BEFORE the kernel account's budget check — the caller
+    // below has a dry chain, and the answer is still the destination refusal, not the budget one.
+    let rt = runtime().with_denied_destinations(["blocked-model"]);
     let locked = SessionConfig {
         model: Some("blocked-model".into()),
         ..SessionConfig::default()
-    };
-    let budget = SessionBudget {
-        estimate_nanos: 1_000,
-        fee_nanos: 0,
-        cap_nanos: Some(10_000),
     };
     let started = crate::topology::begin_session(
         &rt,
@@ -349,8 +318,7 @@ fn begin_session_refuses_a_denied_destination_before_any_charge() {
         "call-denied",
         Some(locked),
         Carrier::sideband(),
-        budget,
-        None,
+        Some(meter_capped(0)),
         1,
     );
     assert!(
@@ -358,110 +326,79 @@ fn begin_session_refuses_a_denied_destination_before_any_charge() {
             started,
             Err(crate::topology::StartError::DestinationRefused)
         ),
-        "a denied destination is refused at the open-pass gate"
-    );
-    // The refusal landed BEFORE any charge: NO lease was ever minted (open_lease never ran).
-    assert_eq!(
-        host.minted_count(),
-        0,
-        "a refused session opens no lease — zero bytes, zero charge"
+        "a denied destination is refused at the open-pass gate, before the budget is asked"
     );
 
-    // A NON-denied destination on the same runtime proceeds past the gate and DOES open a lease.
+    // A NON-denied destination proceeds past the gate to the budget check: a dry chain is refused
+    // there, and a chain with room opens.
     let ok_cfg = SessionConfig {
         model: Some("allowed-model".into()),
         ..SessionConfig::default()
     };
-    let (_core, _handle, _guard) = crate::topology::begin_session(
-        &rt,
-        OpenAiRealtimeCodec,
-        "acct",
-        "call-ok",
-        Some(ok_cfg),
-        Carrier::sideband(),
-        budget,
-        None,
-        1,
-    )
-    .expect("an allowed destination opens the session");
-    assert_eq!(
-        host.minted_count(),
-        1,
-        "the admitted session opened exactly one lease past the gate"
+    let open = |call: &str, cap| {
+        crate::topology::begin_session(
+            &rt,
+            OpenAiRealtimeCodec,
+            "acct",
+            call,
+            Some(ok_cfg.clone()),
+            Carrier::sideband(),
+            Some(meter_capped(cap)),
+            1,
+        )
+    };
+    assert!(matches!(
+        open("call-dry", 0),
+        Err(crate::topology::StartError::BudgetRefused)
+    ));
+    assert!(
+        open("call-ok", 10).is_ok(),
+        "an allowed destination with room opens"
     );
 }
 
-// ── THE D2 LEASE-LEAK WITNESS: the by-value close guard releases the reserve on abnormal close ───────
+// ── A SESSION HOLDS NOTHING OPEN (the D2 lease-leak witness, retired with the lease) ─────────────────
 
-#[test]
-fn abnormal_close_releases_the_reserve_via_the_by_value_guard() {
-    // The session-drop leak (§SEAM 1): a per-frame handler PARKED at an `.await` during the hard-close
-    // race keeps an `Arc<SessionCore>` alive detached, so the settle handle's own refcount-gated `Drop`
-    // close NEVER fires while that clone lives — the reserve LEAKS. The by-value `LeaseCloseGuard` the
-    // topology `run()` frame owns is DECOUPLED from that refcount: it closes the lease deterministically
-    // the instant it drops on run() exit. This drives that exact decoupling: a pinned `Arc<SessionCore>`
-    // stands in for the parked handler.
-    let host = Arc::new(MockMeteringHost::default());
-    let rt = VoiceRuntime::new(
-        Arc::new(DurableHandleEngine::new()),
-        Arc::new(HostMeteringPort::new(
-            Arc::clone(&host) as Arc<dyn MeteringHost>
-        )),
-        Arc::new(crate::runtime::tools::EchoToolExecutor),
+/// The lease this replaced held a reserve that only a by-value guard could release when a parked
+/// handler pinned the core. A session now holds no reserve at all: each turn's counts reach the ledger
+/// as the turn closes, so a pinned core has nothing left to release and nothing waits on its drop.
+#[tokio::test]
+async fn a_pinned_core_holds_nothing_open() {
+    let host = Arc::new(FixtureHost::new().governed());
+    let meter = TurnMeter::new(
+        Arc::clone(&host) as Arc<dyn busbar_kernel::plane_host::EngineHost>,
+        busbar_api::VirtualKey {
+            id: "vk-pin".to_string(),
+            ..Default::default()
+        },
+        "voice-server",
+        crate::OPENAI_REALTIME,
     );
-    let budget = SessionBudget {
-        estimate_nanos: 100,
-        fee_nanos: 0,
-        cap_nanos: Some(1_000),
-    };
-    // begin_session hands back the core, the durable handle, AND the by-value close guard the topology
-    // run() frame owns. A sideband carrier keeps the fixture minimal (no downlink plumbing).
-    let (core, _handle, guard) = crate::topology::begin_session(
-        &rt,
+    let (core, _handle) = crate::topology::begin_session(
+        &runtime(),
         OpenAiRealtimeCodec,
         "acct",
-        "call-leak",
+        "call-pin",
         None,
         Carrier::sideband(),
-        budget,
-        None,
+        Some(meter),
         1,
     )
     .expect("session begins");
-    assert_eq!(
-        host.closed_ids(),
-        Vec::<u64>::new(),
-        "no close before teardown"
-    );
-
-    // Pin an `Arc<SessionCore>` clone — the parked-handler stand-in holding the settle handle (`HostLease`),
-    // whose refcount-gated `Drop` close therefore CANNOT fire while the clone lives.
+    let usage = crate::ir::codec::WireEvent(bytes::Bytes::from(json_frame(serde_json::json!({
+        "type":"response.done",
+        "response": { "usage": { "output_token_details": { "audio_tokens": 4 } } },
+    }))));
+    let _ = core.on_server_frame(usage).await;
     let pinned = Arc::clone(&core);
-    drop(core); // the run() frame's own core ref goes away…
-                // …yet the reserve is NOT released: the pinned clone still gates the settle handle's close. THIS is the
-                // leak (red state) the guard exists to fix — without a guard, teardown would end here with 0 closes.
+    drop(core);
     assert_eq!(
-        host.closed_ids(),
-        Vec::<u64>::new(),
-        "the settle handle is refcount-gated by the pinned clone — the reserve would leak"
+        host.ledger_usage("vk-pin").map(|u| u.tokens),
+        Some(4),
+        "the turn is ledgered as it closed — nothing waits on the core's drop"
     );
-
-    // Dropping the by-value guard (exactly as run() does on exit) closes the lease DETERMINISTICALLY,
-    // despite the pin — the green state.
-    drop(guard);
-    assert_eq!(
-        host.closed_ids(),
-        vec![1],
-        "the by-value guard closed the lease exactly once, despite the pinned Arc<SessionCore>"
-    );
-
-    // The lingering settle handle's eventual drop is a harmless idempotent second close (no double refund).
     drop(pinned);
-    assert_eq!(
-        host.closed_ids(),
-        vec![1],
-        "the lingering settle handle's later close is a harmless no-op (no double refund)"
-    );
+    assert_eq!(host.ledger_usage("vk-pin").map(|u| u.tokens), Some(4));
 }
 
 /// A minter that RECORDS whether it was ever asked to mint — the witness for the ordering fix: on a
@@ -481,33 +418,20 @@ impl TokenMinter for RecordingMinter {
     }
 }
 
-/// THE ORDERING FIX: `attach` runs the gauntlet + D2 lease FIRST and mints the ephemeral secret
+/// THE ORDERING FIX: `attach` runs the gauntlet + the budget check FIRST and mints the ephemeral secret
 /// only past a clean open. A session whose destination the plane denies is refused at the gate BEFORE
 /// any mint — so the browser is handed NO `ek_` on a denied session (zero bytes, zero charge, zero
 /// credential). RED before the reorder: the mint ran before `begin_session`, so a denied session still
 /// minted a secret.
 #[tokio::test]
 async fn the_gauntlet_refuses_before_the_mint_on_a_denied_destination() {
-    let host = Arc::new(MockMeteringHost::default());
-    let rt = VoiceRuntime::new(
-        Arc::new(DurableHandleEngine::new()),
-        Arc::new(HostMeteringPort::new(
-            Arc::clone(&host) as Arc<dyn MeteringHost>
-        )),
-        Arc::new(crate::runtime::tools::EchoToolExecutor),
-    )
-    .with_denied_destinations(["blocked-model"]);
+    let rt = runtime().with_denied_destinations(["blocked-model"]);
     let minter = RecordingMinter {
         minted: std::sync::atomic::AtomicBool::new(false),
     };
     let locked = SessionConfig {
         model: Some("blocked-model".into()),
         ..SessionConfig::default()
-    };
-    let budget = SessionBudget {
-        estimate_nanos: 1_000,
-        fee_nanos: 0,
-        cap_nanos: None,
     };
     let r = attach(
         &rt,
@@ -516,23 +440,22 @@ async fn the_gauntlet_refuses_before_the_mint_on_a_denied_destination() {
         "acct",
         "call-denied",
         locked,
-        budget,
-        None,
+        Some(meter_capped(0)),
         1,
     )
     .await;
     assert!(
-        matches!(r, Err(crate::topology::webrtc::AttachError::Start(_))),
-        "a denied destination is refused at the open-pass gate before the mint"
+        matches!(
+            r,
+            Err(crate::topology::webrtc::AttachError::Start(
+                crate::topology::StartError::DestinationRefused
+            ))
+        ),
+        "a denied destination is refused at the open-pass gate, before the mint and the budget"
     );
     assert!(
         !minter.minted.load(std::sync::atomic::Ordering::SeqCst),
-        "NOTHING mints on a refused session — the gauntlet/lease run before the mint"
-    );
-    assert_eq!(
-        host.minted_count(),
-        0,
-        "no lease opened on the refused session either — zero charge"
+        "NOTHING mints on a refused session — the gauntlet runs before the mint"
     );
 }
 
@@ -540,11 +463,6 @@ async fn the_gauntlet_refuses_before_the_mint_on_a_denied_destination() {
 async fn webrtc_attach_fails_closed_when_mint_fails() {
     let rt = runtime();
     let minter = FakeMinter { fail: true };
-    let budget = SessionBudget {
-        estimate_nanos: 1,
-        fee_nanos: 0,
-        cap_nanos: None,
-    };
     let r = attach(
         &rt,
         &minter,
@@ -552,7 +470,6 @@ async fn webrtc_attach_fails_closed_when_mint_fails() {
         "acct-3",
         "call-x",
         SessionConfig::default(),
-        budget,
         None,
         1,
     )

@@ -393,17 +393,13 @@ fn test_lane_state_healthy_is_zero() {
     );
 }
 
-/// A pool-scoped cell that is Open with a live cooldown, while the SAME underlying lane stays
-/// usable via a SIBLING pool's untouched (Closed) cell, must render `busbar_lane_state = 1`
-/// (HalfOpen) for the tripped pool — not 0 (would require `pool_cooldown == 0`) and not 2
-/// (would require the lane itself being unusable everywhere). This is the ONLY reachable path
-/// to state 1 for a pool-routed lane: `cell_ready_breaker` reports HALF_OPEN itself as NOT
-/// ready, so "cooldown>0 but usable" only happens when a *different* cell for the same lane is
-/// what makes `lane_usable_any_cell` true. Proves the `pool_cooldown > 0 && !snap.usable`
-/// guard and the by-model twin distinguish state 1 from state 2 for real, not just "some
-/// non-zero value".
+/// SHARED LANE, one pool's OWN cell Open, the other pool's cell healthy: the tripped pool reads
+/// `busbar_lane_state = 2` and the healthy pool reads `0`. The gauge reads each pool's own breaker
+/// cell; a sibling pool's healthy cell on the same lane never softens a trip into `1` (that value
+/// is reserved for a real half-open probe on the pool's own cell). The tripped pool's
+/// `busbar_lane_available` on the same label pair reads 0, so the two gauges agree.
 #[test]
-fn test_lane_state_half_open_via_sibling_pool_cell() {
+fn test_lane_state_tripped_pool_reads_two_despite_healthy_sibling_pool() {
     register_planes();
     init();
 
@@ -414,56 +410,37 @@ fn test_lane_state_half_open_via_sibling_pool_cell() {
         .build_with_store();
 
     let t = now();
-    // Materialize the sibling pool's cell fresh (Closed, cooldown=0, ready) BEFORE tripping the
-    // other pool — `lane_usable_any_cell` only sees cells that have been touched at least once.
-    // `cooldown_remaining_in` reads through the SAME lazy `cell()` lookup `force_open_in` writes
-    // through, so this materializes the cell exactly as the crate-internal `store.cell(...)` call
-    // the unit-test twin of this file used — without naming the `pub(crate)` accessor directly.
+    // Materialize the sibling pool's cell (Closed, no cooldown) so the lane is genuinely usable
+    // through it, then trip the other pool's cell Open with a cooldown well into the future.
     let _ = store.cooldown_remaining_in("pool-sibling", 0, t);
-    // Trip pool-tripped's cell Open with a cooldown well into the future.
     store.force_open_in("pool-tripped", 0, t + 600);
 
     refresh_scrape_gauges(&app);
     let out = render();
 
-    let tripped_line = out.lines().find(|l| {
-        l.contains(LANE_STATE) && l.contains("pool=\"pool-tripped\"") && !l.starts_with('#')
-    });
-    assert!(
-        tripped_line.is_some(),
-        "lane_state for pool-tripped must be present; got:\n{out}"
+    assert_eq!(
+        gauge_value(&out, LANE_STATE, "pool-tripped"),
+        Some(2.0),
+        "a pool whose own cell is Open reads 2 (tripped) whatever a sibling pool's cell on the \
+         same lane says; got:\n{out}"
     );
-    let line = tripped_line.unwrap();
-    assert!(
-        line.ends_with(" 1") || line.ends_with(" 1.0"),
-        "a cell with cooldown>0 but a usable sibling cell must report state 1 (HalfOpen), \
-             not 0 (would need cooldown==0) or 2 (would need the lane unusable everywhere); \
-             got:\n{line}"
+    assert_eq!(
+        gauge_value(&out, LANE_AVAILABLE, "pool-tripped"),
+        Some(0.0),
+        "the tripped pool admits nothing; got:\n{out}"
     );
-
-    // The untouched sibling pool's OWN cell is genuinely Closed/healthy — state 0 — proving
-    // this isn't just "every pool on a partially-tripped lane reports 1".
-    let sibling_line = out.lines().find(|l| {
-        l.contains(LANE_STATE) && l.contains("pool=\"pool-sibling\"") && !l.starts_with('#')
-    });
-    assert!(
-        sibling_line.is_some(),
-        "lane_state for pool-sibling must be present; got:\n{out}"
-    );
-    let sline = sibling_line.unwrap();
-    assert!(
-        sline.ends_with(" 0") || sline.ends_with(" 0.0"),
-        "the sibling pool's own untouched cell must report state 0; got:\n{sline}"
+    assert_eq!(
+        gauge_value(&out, LANE_STATE, "pool-sibling"),
+        Some(0.0),
+        "the sibling pool's own healthy cell reads 0; got:\n{out}"
     );
 }
 
-/// The `by_model` (direct/no-pool routing) twin of the HalfOpen test above: the DEFAULT (`""`)
-/// cell tripped Open with a cooldown, while a SIBLING per-pool cell for the same lane stays
-/// fresh/Closed, must still report state 1 for the model-labeled gauge. Every `TestApp` lane is
-/// auto-registered in `by_model` regardless of pool membership, so adding a pool here (to
-/// materialize a per-pool cell) doesn't remove the lane from the by_model gauge loop.
+/// The `by_model` (direct/no-pool routing) twin: the DEFAULT (`""`) cell tripped Open while a
+/// per-pool cell for the same lane stays Closed must read 2 for the model-labeled gauge — the
+/// direct path's own cell is tripped, and the pool cell it does not route through cannot mask it.
 #[test]
-fn test_lane_state_half_open_by_model_via_sibling_pool_cell() {
+fn test_lane_state_by_model_tripped_default_cell_reads_two_despite_healthy_pool_cell() {
     register_planes();
     init();
 
@@ -473,41 +450,128 @@ fn test_lane_state_half_open_by_model_via_sibling_pool_cell() {
         .build_with_store();
 
     let t = now();
-    // Materialize a per-pool cell fresh/Closed so `lane_usable_any_cell` has a ready cell to
-    // find (without this, it would fall back to the default cell itself, which we're about to
-    // trip — making usable/cooldown check the SAME cell and state 1 unreachable).
     let _ = store.cooldown_remaining_in("some-pool", 0, t);
-    // Trip the DEFAULT ("") cell — the one `cooldown_remaining_in("", lane_idx, now)` reads in
-    // the by_model loop.
     store.force_open_in("", 0, t + 600);
 
     refresh_scrape_gauges(&app);
     let out = render();
 
-    let model_line = out
-        .lines()
-        .find(|l| l.contains(LANE_STATE) && l.contains("pool=\"model-by\"") && !l.starts_with('#'));
-    assert!(
-        model_line.is_some(),
-        "lane_state for the by_model entry (pool label = model name) must be present; \
-             got:\n{out}"
+    assert_eq!(
+        gauge_value(&out, LANE_STATE, "model-by"),
+        Some(2.0),
+        "the direct path's own default cell is Open: the by_model gauge reads 2; got:\n{out}"
     );
-    let line = model_line.unwrap();
-    assert!(
-        line.ends_with(" 1") || line.ends_with(" 1.0"),
-        "default cell cooling down but the lane usable via a sibling per-pool cell must \
-             report state 1 (HalfOpen) in the by_model gauge loop too; got:\n{line}"
+    assert_eq!(
+        gauge_value(&out, LANE_STATE, "some-pool"),
+        Some(0.0),
+        "the untouched pool cell reads 0; got:\n{out}"
     );
 }
 
-/// The `>` boundary in the by_model guard's `cooldown > 0 && !snap.usable` check specifically: with
-/// the DEFAULT (`""`) cell UNTOUCHED (cooldown reads exactly 0, `by_model`'s direct-routing path
-/// never went through it) while every per-pool cell for the SAME lane is Open/unusable, the
-/// by_model gauge must report state 0 (the direct path's own cell is genuinely healthy — pool
-/// brokenness on a completely separate traffic path is irrelevant to it), not 2. A mutated
-/// `cooldown == 0` would flip this specific case to 2, since `0 == 0` is true where `0 > 0` is
-/// false — the two operators only diverge exactly at cooldown == 0, which the other HalfOpen
-/// tests (cooldown = 600) can never reach.
+/// `1` is reachable, and ONLY through a real half-open probe on the pool's own cell: an Open cell
+/// whose cooldown has elapsed reads 0 (the next request through it is the probe), and once a
+/// dispatch wins that probe the cell is HalfOpen and the gauge reads 1. A sibling pool on the same
+/// lane is untouched and reads 0 throughout.
+#[test]
+fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
+    register_planes();
+    init();
+
+    let (app, store) = TestApp::new()
+        .lane(LaneSpec::new("model-probe", PROTO_OPENAI, "http://probe"))
+        .pool("pool-probe", &[(0, 1)])
+        .pool("pool-probe-sib", &[(0, 1)])
+        .build_with_store();
+
+    let t = now();
+    let _ = store.cooldown_remaining_in("pool-probe-sib", 0, t);
+    // Open with a cooldown that has already elapsed: the next dispatch through this cell probes.
+    store.force_open_in("pool-probe", 0, t.saturating_sub(1));
+
+    refresh_scrape_gauges(&app);
+    let out = render();
+    assert_eq!(
+        gauge_value(&out, LANE_STATE, "pool-probe"),
+        Some(0.0),
+        "an Open cell whose cooldown elapsed admits the next request as its probe: reads 0; \
+         got:\n{out}"
+    );
+
+    // A dispatch wins the single-flight probe: the pool's own cell is now HalfOpen.
+    let probe = store
+        .try_admit_breaker("pool-probe", 0, now())
+        .expect("an elapsed Open cell admits the probe");
+    assert!(
+        probe.is_some(),
+        "the admit must have WON the recovery probe"
+    );
+
+    refresh_scrape_gauges(&app);
+    let out = render();
+    assert_eq!(
+        gauge_value(&out, LANE_STATE, "pool-probe"),
+        Some(1.0),
+        "a half-open probe in flight on the pool's own cell reads 1; got:\n{out}"
+    );
+    assert_eq!(
+        gauge_value(&out, LANE_STATE, "pool-probe-sib"),
+        Some(0.0),
+        "the sibling pool's own cell is not probing and reads 0; got:\n{out}"
+    );
+}
+
+/// The gauge is PLANE-AGNOSTIC: the plane-neutral breaker cells every other plane dispatches
+/// through get `busbar_lane_state` samples too, read from each cell alone — a tripped
+/// destination reads 2, a healthy one 0 — with no plane named by the emitter.
+#[test]
+fn test_lane_state_emitted_for_plane_neutral_breaker_cells() {
+    register_planes();
+    init();
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new("model-pn", PROTO_OPENAI, "http://pn"))
+        .pool("pool-pn", &[(0, 1)])
+        .build();
+
+    let down = busbar_kernel::store::tool_key("t281-down");
+    let up = busbar_kernel::store::agent_key("t281-up");
+    let t = now();
+    app.plane_breakers.force_open(&down, 0, t + 600);
+    app.plane_breakers.record_success(&up, 0);
+
+    refresh_scrape_gauges(&app);
+    let out = render();
+
+    assert_eq!(
+        gauge_value(&out, LANE_STATE, &down),
+        Some(2.0),
+        "a tripped plane-neutral destination reads 2; got:\n{out}"
+    );
+    assert_eq!(
+        gauge_value(&out, LANE_STATE, &up),
+        Some(0.0),
+        "a healthy plane-neutral destination reads 0; got:\n{out}"
+    );
+    let line = out
+        .lines()
+        .find(|l| {
+            !l.starts_with('#')
+                && l.starts_with(&format!("{LANE_STATE}{{"))
+                && l.contains(&format!("pool=\"{down}\""))
+        })
+        .expect("sample present");
+    assert!(
+        line.contains("lane=\"0\""),
+        "a single registered target is member position 0; got:\n{line}"
+    );
+}
+
+/// The `cooldown > 0` boundary on the by_model gauge: with the DEFAULT (`""`) cell UNTOUCHED
+/// (cooldown reads exactly 0 — `by_model`'s direct-routing path never went through it) while every
+/// per-pool cell for the SAME lane is Open, the by_model gauge must report state 0 (the direct
+/// path's own cell is genuinely healthy — pool cells on a separate traffic path are irrelevant to
+/// it), not 2. A mutated `cooldown >= 0` would flip this case to 2; the tests with a 600s cooldown
+/// can never reach that boundary.
 #[test]
 fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy() {
     register_planes();

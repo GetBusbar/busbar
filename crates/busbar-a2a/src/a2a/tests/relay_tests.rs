@@ -390,7 +390,7 @@ async fn the_hop_is_metered_and_the_callees_own_reported_spend_is_not() {
         .gov
         .store()
         .list_metering(busbar_kernel::governance::metering_bucket(
-            busbar_kernel::store::now(),
+            busbar_substrate_values::store::now(),
         ))
         .expect("metering reads back");
     let mine: Vec<_> = rows.iter().filter(|r| r.provider == "a2a").collect();
@@ -911,6 +911,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
             host: None,
             host_scope: None,
             admission: busbar_plugin::hot::AdmissionId::NONE,
+            bytes: None,
         },
         &Seam,
         1_000,
@@ -1109,6 +1110,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
             host: None,
             host_scope: None,
             admission: busbar_plugin::hot::AdmissionId::NONE,
+            bytes: None,
         },
         &Seam,
         1_000,
@@ -1137,6 +1139,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
             host: None,
             host_scope: None,
             admission: busbar_plugin::hot::AdmissionId::NONE,
+            bytes: None,
         },
         &Seam,
         1_000,

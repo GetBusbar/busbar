@@ -4,15 +4,6 @@
 
 use super::*;
 
-/// The legacy ring binds no clock of its own; a pinned one keeps records comparable.
-#[derive(Debug)]
-struct PinnedClock;
-impl busbar_kernel_audit::Clock for PinnedClock {
-    fn now(&self) -> u64 {
-        1_700_000_000
-    }
-}
-
 /// A key no other request in this binary is walking. The unit key names one live unit, so two
 /// fixtures sharing a literal would be two requests claiming one entry in the units table.
 fn a_fresh_unit() -> u64 {
@@ -341,26 +332,18 @@ fn a_header_count_larger_than_the_frame_is_refused_not_reserved() {
     assert_eq!(header_capacity(2, 4_096), 2);
 }
 
-/// A mutation's record names the caller, and never the bytes the caller presented.
+/// Neither audit door carries the presented credential into what it seals.
 ///
-/// Both doors are walked, because both write a row and either one leaking is the whole leak: the
-/// completed mutation and the refused one. The credential in the fixture is deliberately not a
-/// substring of the identity, so "the row does not contain the credential" and "the row is the
-/// identity" are two independent assertions rather than one restated.
-///
-/// The chain this writes to is the one an operator's audit page reads and a store persists, so a
-/// row carrying a live bearer token publishes it to everybody entitled to read history — a wider
-/// set than the set entitled to hold the token.
+/// Both doors are walked, completed and refused, with a live-looking credential on the request.
+/// The facts they seal are the operation class and the finish, and nothing the caller presented;
+/// the administrative ring that names a principal is the kernel's one ring (item 237), written by
+/// the core-admin handler, not by this step.
 #[test]
-fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
+fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
     let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
     let binding = AdminBinding::new(Arc::new(RefusingDispatch));
 
-    let rows = |completed: bool| -> Vec<busbar_kernel_audit::legacy::AuditEntry> {
-        let log = busbar_kernel_audit::AuditLog::with(
-            Box::new(PinnedClock),
-            Box::new(busbar_kernel_audit::NoSeam),
-        );
+    for completed in [true, false] {
         let key = UnitKey::new(1);
         let mut request = a_request();
         request.method = "PUT".to_string();
@@ -387,35 +370,22 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
         .into_result(&seal);
 
         let audit_token: Pass<Audit> = Pass::mint(&seal);
-        if completed {
-            let _ =
-                audit(&binding, &log, &audit_token, &ctx, &Outcome::Completed).into_result(&seal);
+        let facts = if completed {
+            audit(&binding, &audit_token, &ctx, &Outcome::Completed).into_result(&seal)
         } else {
-            let _ = audit_refused(
+            audit_refused(
                 &binding,
-                &log,
                 &audit_token,
                 &ctx,
                 &Refusal::new(ReasonCode::ScopeDenied),
             )
-            .into_result(&seal);
+            .into_result(&seal)
         }
+        .expect("the door seals the mutation");
         binding.units.close(key);
-        log.export()
-    };
-
-    for completed in [true, false] {
-        let entries = rows(completed);
-        assert_eq!(entries.len(), 1, "the mutation was not recorded");
-        assert_eq!(
-            entries[0].principal, "key_operator_7",
-            "the record does not name the identity the auth step resolved"
-        );
         assert!(
-            !entries[0]
-                .principal
-                .contains("sk-live-the-presented-secret"),
-            "the presented credential reached the administrative chain"
+            !format!("{facts:?}").contains("sk-live-the-presented-secret"),
+            "the presented credential reached the sealed facts"
         );
     }
 }
@@ -1208,7 +1178,6 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
         origin: OriginKind::Client,
         session: None,
         admin_listener: false,
-        provider_of_open_session: false,
         zero_hold_tick: false,
         now: 0,
         arrival: arrival_hold(
@@ -1300,65 +1269,161 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
     );
 }
 
-/// One admin unit seals exactly one entry on the chain, and a read seals none.
+/// The audit step seals the resolved operation class and its finish, and keeps no ring of its own.
 ///
-/// THE audit STEP, over the loop. The rig column reads the fresh four-op chain from the outside;
-/// this reads the same chain from the step that writes it, which is where "exactly one" is
-/// actually decided. Three answers, and each is a different way the step could be wrong:
+/// Item 237: there is ONE administrative audit ring, the kernel's durable one, written by the
+/// core-admin handler as a mutation applies (the end-to-end cell in
+/// `admin_path_without_plane_face.rs` reads it back over the served `/audit`); a root-only verb's
+/// row is written onto that same ring by this step, and is asserted there too. The step used to
+/// append a second copy onto a RAM-only root ring; it now holds no ring at all, so what is left to
+/// assert here is what it still decides — the facts the audit unit seals:
 ///
-/// - a mutating verb appends exactly ONE entry, under the operation's own name and the applied
-///   outcome — not zero, and not one per step that ran;
-/// - a READ appends none, because the chain is a record of what changed and a listing changed
-///   nothing. A chain that grew on every GET would bury the mutations an operator came to find;
-/// - a unit refused before Admit still appends one, under the rejected outcome, because the
-///   attempt happened and a chain that recorded only successes is the one an attacker wants —
-///   PROVIDED an identity was resolved for it. A unit refused before that has nobody to
-///   attribute to, and the fourth answer below is that it appends nothing rather than
-///   attributing an anonymous caller's refused mutation to the configured administrator.
-///
-/// The chain is verified after each, so the entries are linked rather than merely counted.
+/// - a mutating verb completes under its own write class and a complete finish;
+/// - a READ completes under its read class;
+/// - a refused mutation, attributed or not, seals an error finish under its write class.
 #[cfg(feature = "root-admin")]
 #[test]
-fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
-    let legacy = busbar_kernel_audit::AuditLog::with(
-        Box::new(PinnedClock),
-        Box::new(busbar_kernel_audit::NoSeam),
-    );
-
-    // A mutation: an operator-key write, on the mutating side of the closed split.
+fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
     let mut mutating = a_request();
     mutating.method = "POST".to_string();
     mutating.path = "/api/v1/admin/operator-key".to_string();
-    let (binding, ctx, seal) = a_bound_unit(mutating);
+    let (binding, ctx, seal) = a_bound_unit(mutating.clone());
     let resolved = binding
         .units
         .verb(ctx.key)
         .expect("the operator-key write is a row the table names");
     assert!(!resolved.read_only, "the fixture must be a mutation");
-    // Verify is what keeps the resolved identity, and the fixture stands in for it: a unit that
-    // reaches the audit door having been authenticated has one, and that is what the record is
-    // attributed to.
     binding
         .units
         .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
+    let facts = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed)
+        .into_result(&seal)
+        .expect("the door seals a completed mutation");
+    assert_eq!(facts.op_class, resolved.op_class());
+    assert_eq!(facts.finish, busbar_contract::FinishClass::Complete);
 
-    let before = legacy.len();
-    let _ = audit(
-        &binding,
-        &legacy,
-        &Pass::mint(&seal),
-        &ctx,
-        &Outcome::Completed,
+    // A read.
+    let (binding, ctx, seal) = a_bound_unit(a_request());
+    let read = binding
+        .units
+        .verb(ctx.key)
+        .expect("the audit listing is a row the table names");
+    assert!(read.read_only, "the fixture must be a read");
+    let facts = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed)
+        .into_result(&seal)
+        .expect("the door seals a read");
+    assert_eq!(facts.op_class, read.op_class());
+    assert_ne!(
+        facts.op_class,
+        resolved.op_class(),
+        "a read and a write seal under two classes"
     );
-    assert_eq!(legacy.len(), before + 1, "one unit, one entry");
-    let entry = legacy.list(1).pop().expect("the entry just sealed");
-    assert_eq!(entry.action, resolved.verb);
-    assert_eq!(entry.outcome, busbar_kernel_audit::OUTCOME_APPLIED);
-    // The record names the identity Verify resolved -- never the credential the request
-    // presented, which is a secret and stays out of the chain.
-    assert_eq!(entry.principal, AN_IDENTIFIED_OPERATOR);
-    assert!(!entry.principal.contains("admin-token"));
-    assert!(legacy.verify(), "the chain is linked");
+
+    // A refused mutation, by somebody the node identified and by nobody.
+    for identified in [true, false] {
+        let (binding, ctx, seal) = a_bound_unit(mutating.clone());
+        if identified {
+            binding
+                .units
+                .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
+        }
+        let facts = audit_refused(
+            &binding,
+            &Pass::mint(&seal),
+            &ctx,
+            &Refusal::new(ReasonCode::OverBudget),
+        )
+        .into_result(&seal)
+        .expect("the refused door seals the attempt");
+        assert_eq!(facts.op_class, resolved.op_class());
+        assert_eq!(facts.finish, busbar_contract::FinishClass::Error);
+    }
+}
+
+/// The rows the kernel's one administrative ring holds for `principal`, newest first.
+///
+/// The ring is process-wide, so a cell that counts on it counts only rows attributed to an
+/// identity no other cell in this binary uses.
+#[cfg(feature = "root-admin")]
+fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::AuditEntry> {
+    busbar_kernel::audit_ring::AUDIT
+        .list_filtered(0, usize::MAX, None, None)
+        .into_iter()
+        .filter(|entry| entry.principal == principal)
+        .collect()
+}
+
+/// ONE ADMIN UNIT SEALS EXACTLY ONE ENTRY, AND A READ SEALS NONE — THE audit STEP, OVER THE LOOP.
+///
+/// The rig column reads the fresh four-op chain from the outside; this reads the ONE ring (item
+/// 237) from the step that writes it, which is where "exactly one" is decided for every verb the
+/// core-admin handler does not write itself. Four answers, each a different way the step could be
+/// wrong:
+///
+/// - a root-only mutating verb that applied appends exactly ONE entry, under the operation's own
+///   name and `applied`, attributed to the identity Verify resolved — not zero, not one per step;
+/// - a READ appends none: the chain records what changed, and a listing changed nothing;
+/// - a 1.5.5 mutating verb appends none AT THIS STEP, because its one row is the core-admin
+///   handler's (`admin_path_without_plane_face.rs` reads that one row back over the served
+///   `/audit`) and a second here is the doubled row item 237 deleted;
+/// - a unit refused before Admit, by somebody the node identified, still appends one under
+///   `rejected` — a chain that recorded only successes is the one an attacker wants.
+///
+/// Each appended entry is checked against the entry the ring holds directly before it, so the
+/// entries are linked rather than merely counted.
+#[cfg(feature = "root-admin")]
+#[test]
+fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none() {
+    const WHO: &str = "operator-cifollow-one-entry";
+    let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
+        let ring = busbar_kernel::audit_ring::AUDIT.list_filtered(0, usize::MAX, None, None);
+        let at = ring
+            .iter()
+            .position(|e| e.seq == entry.seq)
+            .expect("the entry just sealed is on the ring");
+        assert!(!entry.hash.is_empty(), "the entry carries its digest");
+        if let Some(before) = ring.get(at + 1) {
+            assert_eq!(
+                entry.prev_hash, before.hash,
+                "the entry is chained to the one before it"
+            );
+        }
+    };
+    let mutating = |path: &str| {
+        let mut request = a_request();
+        request.method = "POST".to_string();
+        request.path = path.to_string();
+        request
+    };
+
+    // A root-only mutation that applied: exactly one row, under its own name, `applied`.
+    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/operator-key"));
+    let resolved = binding
+        .units
+        .verb(ctx.key)
+        .expect("the operator-key write is a row the table names");
+    assert!(!resolved.read_only, "the fixture must be a mutation");
+    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
+    binding.units.set_answer(
+        ctx.key,
+        AdminAnswer {
+            status: 204,
+            headers: Vec::new(),
+            body: Vec::new(),
+        },
+    );
+    let before = the_one_rings_rows_by(WHO).len();
+    let _ = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed).into_result(&seal);
+    let rows = the_one_rings_rows_by(WHO);
+    assert_eq!(rows.len(), before + 1, "one unit, one entry");
+    assert_eq!(rows[0].action, resolved.verb);
+    assert_eq!(rows[0].outcome, busbar_kernel::audit_ring::OUTCOME_APPLIED);
+    assert!(
+        !rows[0].principal.contains("admin-token"),
+        "the entry names the identity, never the presented credential"
+    );
+    linked(&rows[0]);
+    binding.units.close(ctx.key);
 
     // A read changes nothing and records nothing.
     let (binding, ctx, seal) = a_bound_unit(a_request());
@@ -1370,65 +1435,53 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
             .read_only,
         "the fixture must be a read"
     );
-    let before = legacy.len();
-    let _ = audit(
-        &binding,
-        &legacy,
-        &Pass::mint(&seal),
-        &ctx,
-        &Outcome::Completed,
+    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
+    let before = the_one_rings_rows_by(WHO).len();
+    let _ = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed).into_result(&seal);
+    assert_eq!(
+        the_one_rings_rows_by(WHO).len(),
+        before,
+        "a read is not a mutation"
     );
-    assert_eq!(legacy.len(), before, "a read is not a mutation");
+    binding.units.close(ctx.key);
+
+    // A 1.5.5 mutation: its one row is the handler's, so the step adds none.
+    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/keys"));
+    assert!(
+        !binding
+            .units
+            .verb(ctx.key)
+            .expect("the key mint is a row the table names")
+            .read_only,
+        "the fixture must be a mutation"
+    );
+    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
+    let before = the_one_rings_rows_by(WHO).len();
+    let _ = audit(&binding, &Pass::mint(&seal), &ctx, &Outcome::Completed).into_result(&seal);
+    assert_eq!(
+        the_one_rings_rows_by(WHO).len(),
+        before,
+        "the handler's row is the one row; the step writes no second copy"
+    );
+    binding.units.close(ctx.key);
 
     // A refused mutation by somebody the node identified is recorded as an attempt, not dropped.
-    let mut mutating = a_request();
-    mutating.method = "POST".to_string();
-    mutating.path = "/api/v1/admin/operator-key".to_string();
-    let (binding, ctx, seal) = a_bound_unit(mutating);
-    binding
-        .units
-        .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
-    let before = legacy.len();
+    let (binding, ctx, seal) = a_bound_unit(mutating("/api/v1/admin/operator-key"));
+    binding.units.set_principal(ctx.key, PrincipalId::new(WHO));
+    let before = the_one_rings_rows_by(WHO).len();
     let _ = audit_refused(
         &binding,
-        &legacy,
         &Pass::mint(&seal),
         &ctx,
         &Refusal::new(ReasonCode::OverBudget),
-    );
-    assert_eq!(legacy.len(), before + 1, "the attempt is on the chain");
-    let entry = legacy.list(1).pop().expect("the entry just sealed");
-    assert_eq!(entry.outcome, busbar_kernel_audit::OUTCOME_REJECTED);
-    assert_eq!(entry.principal, AN_IDENTIFIED_OPERATOR);
-    assert!(legacy.verify(), "the chain is still linked");
-
-    // AND THE SAME MUTATION BY NOBODY IS NOT. No principal was ever set on this unit, which is
-    // the state of every request refused at or before Authenticate. The previous release's
-    // chain holds no row for one, and neither does this: a record naming the configured
-    // administrator for a request that administrator never made would let an anonymous caller
-    // grow that operator's history one refused write at a time.
-    let mut mutating = a_request();
-    mutating.method = "POST".to_string();
-    mutating.path = "/api/v1/admin/operator-key".to_string();
-    let (binding, ctx, seal) = a_bound_unit(mutating);
-    assert!(
-        binding.units.principal(ctx.key).is_none(),
-        "the fixture must be a unit no identity was resolved for"
-    );
-    let before = legacy.len();
-    let _ = audit_refused(
-        &binding,
-        &legacy,
-        &Pass::mint(&seal),
-        &ctx,
-        &Refusal::new(ReasonCode::Unauthenticated),
-    );
-    assert_eq!(
-        legacy.len(),
-        before,
-        "an unattributable refusal appends nothing"
-    );
-    assert!(legacy.verify(), "the chain is still linked");
+    )
+    .into_result(&seal);
+    let rows = the_one_rings_rows_by(WHO);
+    assert_eq!(rows.len(), before + 1, "the attempt is on the chain");
+    assert_eq!(rows[0].action, resolved.verb);
+    assert_eq!(rows[0].outcome, busbar_kernel::audit_ring::OUTCOME_REJECTED);
+    linked(&rows[0]);
+    binding.units.close(ctx.key);
 }
 
 /// The identity a fixture stands Verify's answer in for. Deliberately NOT the word the
@@ -1795,10 +1848,6 @@ fn an_unresolved_unit_is_sealed_by_the_method_it_asked_with() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_refused_door_seals_the_refusal_that_happened() {
-    let legacy = busbar_kernel_audit::AuditLog::with(
-        Box::new(PinnedClock),
-        Box::new(busbar_kernel_audit::NoSeam),
-    );
     // A path the plane's table does not declare, so the verb never resolves and the door takes
     // its unresolved arm — the one that used to fabricate.
     let mut unrouted = a_request();
@@ -1812,7 +1861,6 @@ fn the_refused_door_seals_the_refusal_that_happened() {
 
     let facts = audit_refused(
         &binding,
-        &legacy,
         &Pass::mint(&seal),
         &ctx,
         &Refusal::new(ReasonCode::Unauthenticated),
@@ -1825,7 +1873,6 @@ fn the_refused_door_seals_the_refusal_that_happened() {
         "the DELETE it asked with, not the read it used to be sealed as"
     );
     assert_eq!(facts.finish, busbar_contract::FinishClass::Error);
-    assert_eq!(legacy.len(), 0, "and nobody was attributed for it");
 }
 
 // ── the five ledger views ───────────────────────────────────────────────────────────────────
@@ -2518,12 +2565,16 @@ fn the_reconciliation_names_a_row_this_nodes_dual_write_lost() {
 /// lives only in [`crate::root::durability::Durability::refused_rows`].
 #[cfg(feature = "root-admin")]
 fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bucket: &str) {
+    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
     use busbar_contract::caps::{Grant, KernelSeal, PrincipalId};
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
-    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
 
     let seal = KernelSeal::acquire_for_kernel();
-    let key = TotalsKey::new(BucketId::new(bucket), CapDimension::NanoUnits, BucketScope::All);
+    let key = TotalsKey::new(
+        BucketId::new(bucket),
+        CapDimension::NanoUnits,
+        BucketScope::All,
+    );
     let token = Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
     let mut classes = std::collections::BTreeMap::new();
     classes.insert("cache_read".to_string(), 10_000_000u64);
@@ -2549,6 +2600,7 @@ fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bu
             },
             &PrincipalId::new(bucket),
             &counts,
+            1_700_000_000_000,
             Some("ClassUnpriced(cache_read)".to_string()),
         )
         .expect("the memory-buffered journal takes it");
@@ -2585,7 +2637,10 @@ fn a_refused_counts_row_fails_the_totals_and_reconciliation_reads_a_clean_book_i
     let totals_a = node_a.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
     let recon_a = node_a.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
     assert_eq!(totals_a.status, 200, "a clean book must still serve totals");
-    assert_eq!(recon_a.status, 200, "a clean book must still serve reconciliation");
+    assert_eq!(
+        recon_a.status, 200,
+        "a clean book must still serve reconciliation"
+    );
 
     let clean_b = a_node_that_settled(None);
     let node_b = AdminNode::new(crate::root::kernel::new_kernel(), clean_b);
@@ -3002,7 +3057,7 @@ fn a_sealed_chain() -> SealedChain {
         Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome as UnitOutcome, Pass, UnitKey,
     };
     use busbar_kernel_audit::{
-        Amount, Audit as _, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject,
+        Audit as _, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage,
         What,
     };
 
@@ -3036,10 +3091,8 @@ fn a_sealed_chain() -> SealedChain {
                     emission_delta: 0,
                     stale_policy: false,
                 },
-                amount: Amount {
+                usage: Usage {
                     lines: Vec::new(),
-                    pre_tier: 600,
-                    priced: 540,
                     tier_bp: 9_000,
                     fee_count: 1,
                     currency: "USD".into(),
@@ -3821,7 +3874,7 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
     assert_eq!(record.sealed_fee, 5);
     assert_eq!(
         record.rates,
-        vec![("gpt".to_string(), "input".to_string(), 1_500)],
+        vec![("gpt".to_string(), "input".to_string(), Some(1_500))],
         "1.5 micro per unit is sealed as 1500 nano per unit"
     );
     assert_eq!(record.operator_fingerprint, a_test_operator_fingerprint());
@@ -3841,6 +3894,88 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
             &ed25519_dalek::Signature::from_bytes(&signature),
         )
         .expect("the recorded signature verifies over the recorded payload");
+}
+
+/// **A CELL THE SEALED CARD REFUSED STILL REFUSES AFTER A RESTART** (#42).
+///
+/// A correction naming a sub-quantum rate (`0.0001` micro-units a token, below the half-nano-unit
+/// quantum) seals a card on which that cell is UNPRICED: a hit on it refuses. The record used to
+/// write that cell as nanos 0, so the entry a restart rebuilt from the chain priced the class at
+/// ZERO where the live card refused it — a silent 0 after every restart. The rebuilt entry must
+/// refuse exactly the cell the live one refuses, and price the one it prices.
+#[test]
+fn a_refused_cell_of_a_sealed_amendment_still_refuses_after_a_restart() {
+    let scratch = AmendScratch::new("refused-cell");
+    let live = {
+        let book = scratch.book();
+        let history = a_seeded_history();
+        amend_rate_history_effect(
+            &history,
+            Some(&a_journal_over(&book)),
+            &signed_correction(serde_json::json!({
+                "effective_from": 4_000,
+                "effective_until": 9_000,
+                "per_request_fee": 0,
+                "rates": [
+                    { "lane": "gpt", "class": "input", "micro_per_unit": 1.5 },
+                    { "lane": "gpt", "class": "output", "micro_per_unit": 0.0001 },
+                ],
+                "reason": "a sub-quantum output rate",
+                "operator_fingerprint": a_test_operator_fingerprint(),
+            })),
+            6,
+            a_sealed_operator(),
+            &an_attribution(),
+        )
+        .expect("the correction applies");
+        let history = history.history().expect("a history");
+        let (_, card) = history
+            .current()
+            .card_at(5_000)
+            .map(|(seq, card)| (seq, card.clone()))
+            .expect("the correction covers its window");
+        card
+    };
+    let live_rates = live
+        .lane_rates("gpt")
+        .expect("the live card names the lane");
+    assert!(
+        !live_rates.class_priced("output"),
+        "the live card refuses the sub-quantum cell"
+    );
+
+    // RESTART: the entry the boot rebuilds from the chain.
+    let restarted = scratch.book();
+    let records = restarted
+        .lock()
+        .unwrap()
+        .journal
+        .replay()
+        .expect("the journal reads back")
+        .expect("the journal verifies");
+    let rebuilt = crate::root::kernel::journalled_cards(&records)
+        .into_iter()
+        .find_map(|card| match card {
+            crate::root::kernel::JournalledCard::Amended(draft) => Some(draft.card),
+            crate::root::kernel::JournalledCard::Applied(_) => None,
+        })
+        .expect("the amendment is on the chain");
+    let rebuilt_rates = rebuilt
+        .lane_rates("gpt")
+        .expect("the rebuilt card names the lane");
+    assert!(
+        !rebuilt_rates.class_priced("output"),
+        "after a restart the sub-quantum cell priced at {} nanos where the live card refused it",
+        rebuilt_rates.nanos_per_unit("output")
+    );
+    assert_eq!(
+        (
+            rebuilt_rates.class_priced("input"),
+            rebuilt_rates.nanos_per_unit("input")
+        ),
+        (true, live_rates.nanos_per_unit("input")),
+        "the priced cell still prices at its sealed figure"
+    );
 }
 
 /// **VOLUME DOES NOT ERASE AN AMENDMENT** (item 30). The legacy ring prunes at a thousand entries;
@@ -3884,7 +4019,7 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
     );
     assert_eq!(
         records[0].rates,
-        vec![("gpt".to_string(), "input".to_string(), 2_000)]
+        vec![("gpt".to_string(), "input".to_string(), Some(2_000))]
     );
     assert_eq!(records[0].amended_at_ms, 6_000);
 }
@@ -4476,8 +4611,8 @@ fn a_forward_dated_card_leaves_an_earlier_postings_total_byte_identical() {
 /// **PROOF THREE — THE TOTALS VIEW AND `GET /api/v1/admin/usage` AGREE ON THE SAME DATA.**
 ///
 /// Two endpoints, one ruling (#79), and they must not become two implementations of it. The usage
-/// read resolves a posting's card at `card_at(arrived_ms)` and sums `LaneRates::nanos` over the
-/// lines, projects ONCE with `micros_of`, and adds the flat fee in micro-units after the divide
+/// read resolves a posting's card at `card_at(arrived_ms)` and prices the lines through the one spend
+/// fold (`Tally`), projects ONCE, and adds the flat fee in micro-units after the divide
 /// (`busbar-core-admin/src/v1/service.rs`, `resolve_row_spend_micros`). That arithmetic is spelled
 /// out here against the same card and the same quantities, and the totals view's own figure is
 /// asserted to equal it.
@@ -4500,18 +4635,25 @@ fn the_totals_view_and_the_usage_read_derive_the_same_figure() {
     let card = a_card_at(2.5, FEE_MINOR);
     view.history.apply(card.clone(), 1_000);
 
-    // THE USAGE READ'S ARITHMETIC, on the same card and the same quantities.
-    let lines = [busbar_contract::caps::UsageLine {
-        class: busbar_contract::caps::MeterClassId::new(busbar_kernel_ledger::cost::CLASS_INPUT),
-        quantity: QUANTITY,
-        source: busbar_contract::caps::QuantitySource::Count,
-        estimated: false,
-    }];
-    let rates = card
-        .lane_rates(A_LANE)
-        .expect("the fixture's card names the lane");
+    // THE USAGE READ'S ARITHMETIC, on the same card and the same quantities: the one spend fold
+    // at that card (`CostModel::derive_spend_micros` is `Tally` at the current card), the tokens
+    // projected once and the flat fee added in micro-units after the divide.
+    let mut tokens = busbar_kernel_ledger::cost::Tally::at_card(&card);
+    tokens
+        .row(
+            A_LANE,
+            A_LINE_MS,
+            busbar_kernel_ledger::cost::STANDARD_TIER_BP,
+            [(
+                busbar_kernel_ledger::cost::CLASS_INPUT,
+                busbar_kernel_ledger::cost::whole(QUANTITY),
+            )],
+            busbar_kernel_ledger::cost::whole(0),
+        )
+        .expect("the fixture's card prices the lane and the class");
     // The CHECKED projection (item 28) — the fixture is in range, and a pinned figure is not one.
-    let usage_micros = busbar_kernel_ledger::cost::Money::of_nanos(rates.nanos(&lines))
+    let usage_micros = tokens
+        .money()
         .and_then(busbar_kernel_ledger::cost::Money::micros_i64)
         .expect("the fixture's figure is in range")
         .saturating_add(
@@ -4570,7 +4712,7 @@ fn the_derived_figure_equals_the_settled_balance_while_the_history_has_not_moved
     );
 }
 
-/// Item 28, the replacing behaviour (§15.3), at the served surface: a ledger row whose micro-unit
+/// The replacing behaviour, at the served surface: a ledger row whose micro-unit
 /// figure is past the `i64` it is served in FAILS the totals and reconciliation reads (`Store`, the
 /// 500 the other money reads answer with) — it was served as `"priced_micros":"9223372036854775807"`
 /// by the pinning projection. A legacy side that cannot project refuses the reconciliation the same
@@ -4631,4 +4773,522 @@ fn a_ledger_figure_past_the_served_range_fails_the_read_and_is_never_served_pinn
     let totals = render_ledger_view(KernelVerb::GetLedgerTotals, &legacy_past).expect("projects");
     let doc: serde_json::Value = serde_json::from_slice(&totals).expect("valid JSON");
     assert_eq!(doc["rows"][0]["priced_micros"], "1");
+}
+
+/// The day the fee-count proof settles in.
+#[cfg(feature = "root-admin")]
+const FEE_DAY: u64 = 1_767_225_600;
+
+/// Settle one late unit onto `durability` the way the LLM late arm does: `amount` nano-units, with
+/// its counts — `fee_count` billable requests among them.
+#[cfg(feature = "root-admin")]
+fn settle_late_unit_with_fees(
+    durability: &mut crate::root::durability::Durability,
+    bucket: &str,
+    amount: u64,
+    fee_count: u64,
+) {
+    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
+    use busbar_contract::caps::{
+        DurableWrite, Grant, HoldAccrual, KernelSeal, Posted, PrincipalId, WriteMoney,
+    };
+    let seal = KernelSeal::acquire_for_kernel();
+    let ledger = Grant::<WriteMoney>::mint(&seal);
+    let token = Grant::<DurableWrite>::mint(&seal);
+    let posted = Posted::settle_late(
+        HoldAccrual::after_terminal(PrincipalId::new(bucket), amount, &ledger),
+        &ledger,
+    );
+    let counts = UnitCounts {
+        lane: "lane-a".to_string(),
+        fee_count,
+        classes: std::collections::BTreeMap::from([
+            ("input".to_string(), 11),
+            ("output".to_string(), 7),
+        ]),
+    };
+    durability
+        .settle_counted(
+            &Settling {
+                key: &busbar_kernel_ledger::totals::TotalsKey::new(
+                    busbar_kernel_ledger::totals::BucketId::new(bucket),
+                    busbar_kernel_ledger::totals::CapDimension::NanoUnits,
+                    busbar_kernel_ledger::totals::BucketScope::All,
+                ),
+                window: FEE_DAY,
+                durability: &token,
+                step: busbar_contract::caps::StepName::Meter,
+                stamp: PostingStamp {
+                    rate_card_version: 0,
+                    wall: FEE_DAY,
+                    mono: 1,
+                },
+            },
+            posted,
+            &counts,
+            FEE_DAY * 1_000,
+        )
+        .expect("the memory-buffered journal takes it");
+}
+
+/// **THE COUNT HALF OF THE NODE'S OWN RECONCILIATION COMPARES TWO REAL COUNTS.**
+///
+/// A unit that is a billable request settles its fee count onto the balance beside its figure,
+/// and the dual write carries the same count onto the previous release's row as that row's
+/// billable requests. Both sides of the served identity therefore read the count the postings
+/// made — three billable requests over two units here, on each side — and a previous-release side
+/// that lost one is a row that is OUT on the count half, where two sides fixed at zero compared
+/// `0 == 0` on every row of every node and could never say so.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_node_books_carry_the_fee_count_on_both_sides_and_a_lost_count_is_out() {
+    use crate::root::ledger_identity::{reconcile, RowKey};
+    use crate::root::units_admin::{LedgerView, LegacyRowsRead, NodeLedger};
+
+    let book = crate::root::durability::node_book();
+    {
+        let mut durability = book.durability.lock().expect("unpoisoned");
+        settle_late_unit_with_fees(&mut durability, "key-1", 1_250_000, 1);
+        settle_late_unit_with_fees(&mut durability, "key-1", 3_500_000, 2);
+    }
+    let legacy: std::sync::Arc<dyn LegacyRowsRead> = book.rows.clone();
+    let view = NodeLedger::new(std::sync::Arc::clone(&book.durability), legacy);
+    let (ledger, legacy) = view.identity_snapshot().expect("every row projects");
+
+    let key = RowKey::new("key-1", FEE_DAY, "", "");
+    assert_eq!(
+        ledger.get(&key).map(|row| row.fee_count),
+        Some(3),
+        "the books carry the fee count the postings settled"
+    );
+    assert_eq!(
+        legacy.get(&key).map(|row| row.billable_requests),
+        Some(3),
+        "the previous release's row carries the same count as its billable requests"
+    );
+    assert_eq!(reconcile(&ledger, &legacy), Ok(Vec::new()));
+
+    // A previous-release side that lost one billable request is out, on the count half alone.
+    let mut short = legacy.clone();
+    if let Some(row) = short.get_mut(&key) {
+        row.billable_requests = 2;
+    }
+    let out = reconcile(&ledger, &short).expect("every row projects");
+    assert_eq!(out.len(), 1, "the lost count is named: {out:?}");
+    assert!(out[0].fees_disagree());
+}
+
+// ── `adjust` (item 404, OWNER RULING Q9) and the claim journal (item 271) ──────────────────────────
+
+/// The posture of a fleet that ran the operator ceremony under single control: the irreducible
+/// `adjust` is admitted.
+#[cfg(feature = "root-admin")]
+struct CeremonyRun;
+
+#[cfg(feature = "root-admin")]
+impl PostureView for CeremonyRun {
+    fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
+        Some((
+            PostureCtx {
+                operator: busbar_core_admin::OperatorState::Set([0u8; 32]),
+                dual_control: busbar_core_admin::DualControl::Single,
+            },
+            ApprovalState::NotYetApproved,
+        ))
+    }
+}
+
+/// A node book holding ONE counts posting for `principal`: 1,000 `input` units on `lane`, arrived
+/// at `ADJUST_ARRIVED_MS`. Answers the book and the digest of the posting's journal record — the
+/// entry an `adjust` names.
+#[cfg(feature = "root-admin")]
+fn a_book_with_one_recorded_unit(
+    principal: &str,
+    lane: &str,
+) -> (crate::root::durability::NodeBook, String) {
+    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
+    use busbar_contract::caps::{DurableWrite, KernelSeal, PrincipalId};
+    let book = crate::root::durability::node_book();
+    let token = Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel());
+    let key = busbar_kernel_ledger::totals::TotalsKey::new(
+        busbar_kernel_ledger::totals::BucketId::new(principal),
+        busbar_kernel_ledger::totals::CapDimension::NanoUnits,
+        busbar_kernel_ledger::totals::BucketScope::All,
+    );
+    let counts = UnitCounts {
+        lane: lane.to_string(),
+        fee_count: 0,
+        classes: std::collections::BTreeMap::from([(
+            busbar_kernel_ledger::cost::CLASS_INPUT.to_string(),
+            1_000,
+        )]),
+    };
+    let mut durability = book.durability.lock().expect("unpoisoned");
+    durability
+        .post_counts(
+            &Settling {
+                key: &key,
+                window: A_DAY,
+                durability: &token,
+                step: busbar_contract::caps::StepName::Meter,
+                stamp: PostingStamp {
+                    rate_card_version: 0,
+                    wall: ADJUST_ARRIVED_MS / 1_000,
+                    mono: 7,
+                },
+            },
+            &PrincipalId::new(principal),
+            &counts,
+            ADJUST_ARRIVED_MS,
+            None,
+        )
+        .expect("the memory-buffered journal takes it");
+    let records = durability
+        .journal
+        .replay()
+        .expect("the journal reads back")
+        .expect("the journal verifies");
+    let digest = hex::encode(records.last().expect("the posting is on the chain").hash);
+    drop(durability);
+    (book, digest)
+}
+
+/// The instant the adjusted unit arrived: its card epoch.
+#[cfg(feature = "root-admin")]
+const ADJUST_ARRIVED_MS: u64 = 1_700_000_000_000;
+
+/// Walk one `POST /api/v1/admin/adjust` through decode and route over `binding`, admitted at
+/// `granted`. Answers the unit's answer, or the reason it was refused.
+#[cfg(feature = "root-admin")]
+fn adjust_through_route(
+    binding: &AdminBinding,
+    granted: VerbScope,
+    body: serde_json::Value,
+) -> Result<AdminAnswer, ReasonCode> {
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let admin = crate::root::kernel::new_kernel().admin_token();
+    let key = UnitKey::new(a_fresh_unit());
+    let mut request = a_request();
+    request.method = "POST".to_string();
+    request.path = "/api/v1/admin/adjust".to_string();
+    request.body = serde_json::to_vec(&body).expect("the body serialises");
+    binding.units.open(key, request);
+    let ctx = UnitCtx {
+        key,
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: true,
+        kernel_verb_only: true,
+    };
+    decode(binding, &Pass::<Decode>::mint(&seal), &ctx)
+        .into_result(&seal)
+        .expect("the plane's table declares adjust");
+    binding.units.set_granted(key, granted);
+    let outcome = route(
+        binding,
+        Arc::new(crate::root::kernel::RefusingStore),
+        &admin,
+        &Pass::<Route>::mint(&seal),
+        &ctx,
+        &busbar_kernel::teller::AccrualMeter::new(),
+    )
+    .into_result(&seal);
+    let answer = binding.units.answer(key);
+    binding.units.close(key);
+    outcome
+        .map(|_| answer.expect("an admitted unit leaves an answer"))
+        .map_err(|refusal| refusal.reason())
+}
+
+/// A binding over `book`'s node ledger, under a fleet that ran the ceremony.
+#[cfg(feature = "root-admin")]
+fn an_adjusting_binding(book: &crate::root::durability::NodeBook) -> AdminBinding {
+    let legacy: Arc<dyn LegacyRowsRead> = book.rows.clone();
+    AdminBinding::new(Arc::new(AnsweringDispatch))
+        .with_ledger_view(Arc::new(NodeLedger::new(
+            Arc::clone(&book.durability),
+            legacy,
+        )))
+        .with_posture_view(Arc::new(CeremonyRun))
+}
+
+/// What the recorded unit costs at its card epoch over the counts the node journal stands it at
+/// NOW — `counts_now`, then the one function. 2.5 micro-units per `input` unit on `lane`.
+#[cfg(feature = "root-admin")]
+fn priced_now_at_two_and_a_half_micro(lane: &str, digest: &str, recorded: &RecordedCounts) -> u128 {
+    let card = busbar_kernel_ledger::cost::RateCard::from_micro_rates(
+        [(
+            busbar_kernel_ledger::cost::LaneClass::new(
+                lane,
+                busbar_kernel_ledger::cost::CLASS_INPUT,
+            ),
+            2.5,
+        )],
+        0,
+    );
+    let mut history = busbar_kernel_ledger::cost::History::new();
+    let seq = history.append(busbar_kernel_ledger::cost::CardEntryDraft {
+        effective_from: 0,
+        effective_until: None,
+        card,
+        appended_at: 0,
+        author: busbar_kernel_ledger::cost::Author::Opening,
+    });
+    let pinned = crate::root::kernel::PinnedHistory::for_test(Arc::new(history), seq);
+    let entry = busbar_kernel::audit::amend::counts_now(digest, &recorded.classes)
+        .into_iter()
+        .fold(
+            busbar_kernel_ledger::cost::LedgerEntry::new(lane, recorded.card_epoch_ms),
+            |entry, (class, count)| entry.with_count(class, count),
+        )
+        .with_fee_count(recorded.fee_count);
+    let exact = busbar_kernel_ledger::cost::price_exact(&[entry], &pinned.view())
+        .expect("the card prices the lane's input");
+    busbar_kernel_ledger::cost::nanos_of_exact(exact).expect("in range")
+}
+
+/// **THE EXIT TEST FOR ITEM 404's ADMIN HALF.** An `adjust` of a recorded unit's 1,000 `input`
+/// units to 800, walked through the admin route under a fleet that ran the ceremony, is sealed on
+/// the node amendment journal with what the BOOK recorded (principal, lane, card epoch, 1,000) as
+/// its `was` — never the body's word — and the unit's money, the one function over `counts_now` at
+/// 2.5 micro-units, moves 2,500,000 → 2,000,000 nano-units. The book's own record is untouched.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_admin_adjust_corrects_a_recorded_units_counts_and_its_money_follows() {
+    let lane = "adjust-404-money";
+    let (book, digest) = a_book_with_one_recorded_unit("vk_adjust_money", lane);
+    let binding = an_adjusting_binding(&book);
+    let recorded = binding
+        .ledger
+        .recorded_counts(&digest)
+        .expect("the book holds the posting the digest names");
+    assert_eq!(recorded.principal, "vk_adjust_money");
+    assert_eq!(recorded.lane, lane);
+    assert_eq!(recorded.card_epoch_ms, ADJUST_ARRIVED_MS);
+    assert_eq!(
+        priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
+        2_500_000,
+        "before: 1,000 input units at 2.5 micro-units"
+    );
+
+    let answer = adjust_through_route(
+        &binding,
+        VerbScope::Full,
+        serde_json::json!({
+            "amends": digest,
+            "now": { "input": "800" },
+            "reason": "a retried request was metered twice",
+        }),
+    )
+    .expect("a root correction with a reason and a non-negative count is admitted");
+    assert_eq!(answer.status, 200);
+    let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
+    assert_eq!(body["amends"], serde_json::json!(digest));
+    assert_eq!(body["now"]["input"], serde_json::json!("800"));
+    assert_eq!(body["card_epoch_ms"], serde_json::json!(ADJUST_ARRIVED_MS));
+    assert!(
+        body.get("amount_nanos").is_none(),
+        "the answer carries counts, never money (Q9)"
+    );
+
+    let sealed: Vec<_> = busbar_kernel::audit::amend::node_corrections()
+        .into_iter()
+        .filter_map(|a| match a.body {
+            busbar_kernel::audit::amend::AmendBody::Adjust(adj) if adj.amends_hash == digest => {
+                Some(adj)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sealed.len(), 1, "exactly one correction sealed");
+    assert_eq!(
+        sealed[0].was.get("input").map(|c| c.to_decimal_string()),
+        Some("1000".to_string()),
+        "`was` is what the book recorded"
+    );
+    assert_eq!(sealed[0].authorised_by, "admin");
+    assert_eq!(
+        priced_now_at_two_and_a_half_micro(lane, &digest, &recorded),
+        2_000_000,
+        "after: 800 input units at 2.5 micro-units"
+    );
+    assert_eq!(
+        binding.ledger.recorded_counts(&digest),
+        Some(recorded),
+        "the book's record is never rewritten"
+    );
+}
+
+/// A NEGATIVE, A REASONLESS AND A NON-ROOT `adjust` ARE REFUSED END TO END, and none seals
+/// anything. The count below zero and the blank reason are refused by the kernel half (a 400 on the
+/// wire); a read-only credential is refused by the verbs unit before the effect is reached, and the
+/// kernel half refuses the same scope again if it ever is. A digest the book does not hold is a
+/// `NotFound`.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
+    let (book, digest) = a_book_with_one_recorded_unit("vk_adjust_refusals", "adjust-404-refusals");
+    let binding = an_adjusting_binding(&book);
+    let adjust = |granted, now: &str, reason: serde_json::Value| {
+        let mut body = serde_json::json!({ "amends": digest, "now": { "input": now } });
+        if !reason.is_null() {
+            body["reason"] = reason;
+        }
+        adjust_through_route(&binding, granted, body).map(|a| a.status)
+    };
+    let why = serde_json::json!("duplicate metering");
+
+    assert_eq!(
+        adjust(VerbScope::Full, "-1", why.clone()),
+        Err(ReasonCode::DecodeFailed),
+        "a count below zero"
+    );
+    assert_eq!(
+        adjust(VerbScope::Full, "800", serde_json::Value::Null),
+        Err(ReasonCode::DecodeFailed),
+        "no reason"
+    );
+    assert_eq!(
+        adjust(VerbScope::Full, "800", serde_json::json!("   ")),
+        Err(ReasonCode::DecodeFailed),
+        "a blank reason"
+    );
+    assert_eq!(
+        adjust(VerbScope::ReadOnly, "800", why.clone()),
+        Err(ReasonCode::ScopeDenied),
+        "a read-only credential"
+    );
+    assert_eq!(
+        adjust_through_route(
+            &binding,
+            VerbScope::Full,
+            serde_json::json!({ "amends": "00".repeat(32), "now": { "input": "1" }, "reason": "x" }),
+        )
+        .map(|a| a.status),
+        Err(ReasonCode::NoDestination),
+        "an entry the book does not hold"
+    );
+    // The kernel half's own scope check, reached directly: below `full` corrects nothing.
+    assert!(matches!(
+        adjust::adjust_effect(
+            br#"{"amends":"x","now":{"input":"1"},"reason":"y"}"#,
+            busbar_contract::authz::Scope::ReadOnly,
+            "admin",
+            |_| binding.ledger.recorded_counts(&digest),
+        ),
+        Err(busbar_core_admin::GovernanceError::Validation)
+    ));
+    assert!(
+        busbar_kernel::audit::amend::node_corrections()
+            .iter()
+            .all(|a| !matches!(
+                &a.body,
+                busbar_kernel::audit::amend::AmendBody::Adjust(adj)
+                    if adj.amends_hash == digest || adj.amends_hash == "x"
+            )),
+        "no refused correction was sealed"
+    );
+}
+
+/// **THE EXIT TEST FOR ITEM 271's WRITER SIDE, AT THE ROOT.** An admin idempotency cache bound to
+/// [`RootClaimJournal`] over a node with a data directory journals EXACTLY ONE claim for a key it
+/// sees first and then sees again in flight: the restart's recovery finds that one claim, with no
+/// hold behind it, and voids it — once.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_idempotency_key_on_a_durable_node_journals_exactly_one_claim() {
+    use busbar_core_admin::idempotency::{ClaimJournal, IdempotencyCache, Probe};
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-units-admin-claims-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let cfg = crate::root::durability::DurabilityConfig {
+        data_dir: Some(dir.clone()),
+    };
+    let boot = || {
+        crate::root::durability::build_priced(
+            &cfg,
+            3,
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+            Box::new(|| None),
+        )
+        .expect("the directory is writable")
+    };
+    {
+        let book = Arc::new(Mutex::new(boot()));
+        let journal: Arc<dyn ClaimJournal> = Arc::new(RootClaimJournal::new(
+            Arc::clone(&book),
+            Grant::<busbar_contract::caps::DurableWrite>::mint(
+                &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+            ),
+        ));
+        let cache: IdempotencyCache<Vec<u8>> = IdempotencyCache::with_journal(journal);
+        let key = ("admin".to_string(), "create_key:idem-271".to_string());
+        let first = cache.probe(key.clone(), 1_700_000_000);
+        assert!(matches!(first, Probe::Reserved(_)), "a first sighting");
+        assert!(
+            matches!(cache.probe(key, 1_700_000_001), Probe::InFlight),
+            "the same key in flight is refused and takes no second claim"
+        );
+        drop(first);
+    }
+    let restarted = boot();
+    assert_eq!(
+        restarted.voided_claims,
+        vec!["admin:create_key:idem-271".to_string()],
+        "exactly one claim was journalled, and the restart voids it"
+    );
+    assert!(
+        restarted.restart_findings.is_empty(),
+        "{:?}",
+        restarted.restart_findings
+    );
+    drop(restarted);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **THE EXIT TEST FOR ITEM 271's PRODUCTION HOOKUP.** The composition `main.rs` boots the admin
+/// listener through ([`crate::root::kernel::ProductionUnits::admin_only_sharing`]) binds the admin
+/// unit's idempotency claims to the node journal on a node WITH a data directory, and binds nothing
+/// on a memory-buffered node — which keeps the previous release's shape and ships nothing new to its
+/// store.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
+    let compose = |data_dir: Option<std::path::PathBuf>| {
+        let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
+        let durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir },
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(rows.clone()),
+        )
+        .expect("the journal opens");
+        crate::root::kernel::ProductionUnits::admin_only_sharing(
+            Arc::new(AnsweringDispatch),
+            Arc::new(Mutex::new(durability)),
+            Arc::new(rows),
+        )
+    };
+    assert!(
+        compose(None).admin.claims.is_none(),
+        "a memory-buffered node binds no claim journal"
+    );
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-units-admin-claims-bound-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let bound = compose(Some(dir.clone())).admin.claims.is_some();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        bound,
+        "a node with a data directory binds the admin claims to its journal"
+    );
 }

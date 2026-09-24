@@ -808,3 +808,43 @@ fn naming_the_legs_over_a_pool_interns_nothing_and_allocates_only_the_plan() {
         "naming the legs of a planned walk allocates the plan's own leg buffer and nothing else"
     );
 }
+
+/// NO STEP FILE CALLS ITSELF DARK, AND NONE SILENCES DEAD CODE FILE-WIDE (item 368).
+///
+/// These steps are LIVE: the default build's `root-llm` turns `teller-waist` on and
+/// `busbar/src/root/units_llm.rs` drives every one of them on every LLM request. A step file that
+/// says "BUILT DARK ... no production caller" under a file-scoped `#![allow(dead_code)]` tells a
+/// reviewer to skip the money path and tells the compiler to stop saying what is genuinely unused —
+/// so neither may come back. A test-only item is `#[cfg(test)]`, not an allow.
+#[test]
+fn no_step_file_claims_to_be_dark_or_silences_dead_code_file_wide() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/unit");
+    let mut offenders = Vec::new();
+    let mut scanned = 0usize;
+    for entry in std::fs::read_dir(&dir).expect("the unit directory is readable") {
+        let path = entry.expect("a directory entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        scanned += 1;
+        let src = std::fs::read_to_string(&path).expect("a step file is readable");
+        for (n, line) in src.lines().enumerate() {
+            let t = line.trim();
+            if t.starts_with("#![allow(") && t.contains("dead_code") {
+                offenders.push(format!("{}:{}: {t}", path.display(), n + 1));
+            }
+            if t.contains("BUILT DARK") {
+                offenders.push(format!("{}:{}: {t}", path.display(), n + 1));
+            }
+        }
+    }
+    assert!(
+        scanned >= 10,
+        "the scan must see the step files ({scanned} seen)"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a live step file claims to be dark or silences dead code file-wide:\n{}",
+        offenders.join("\n")
+    );
+}

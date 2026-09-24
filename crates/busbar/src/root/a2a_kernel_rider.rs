@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DORMANT A2A KERNEL-LOOP RIDER — the second WITNESS on the generic bridge, after MCP.
+//! THE TEST-ONLY A2A KERNEL-LOOP RIDER — the second WITNESS on the generic bridge, after MCP.
 //!
 //! This module onboards the A2A invoke plane onto the unified kernel loop the SAME way MCP did:
 //! as a THIN VERBATIM RIDER over the plane-neutral bridge
@@ -20,10 +20,10 @@
 //! 125). The money stays where it was because the bridge opens a `ZeroHold` and reports no
 //! evidence; this rider's shadow proof is what shows the two paths byte-identical.
 //!
-//! WHY `#[cfg(test)]`. The rider is a re-point of an existing call, not a new production surface: the
-//! only production entry to the kernel bridge stays the shipped substrate gauntlet until the flip.
-//! Compiling the rider (and its shadow proof) test-only keeps zero ship surface AND zero dead-code
-//! while the authority is dormant — the module is the flip's rehearsal, held one line away.
+//! WHY `#[cfg(test)]`. The rider is a re-point of an existing call, not a new production surface:
+//! production already reaches the kernel bridge through `run_gauntlet`'s registered runner, so a
+//! second production entry would be a second name for the same path. Compiling the rider (and its
+//! shadow proof) test-only keeps zero ship surface AND zero dead code.
 //!
 //! PLANE-NEUTRALITY. The bridge names no plane: `run_gauntlet_via_kernel`, `GauntletPlane`,
 //! `PlaneAnswer` and `PlaneInFlight` carry no `a2a` noun. This module is the ONLY place the A2A
@@ -35,13 +35,13 @@ use busbar_kernel::plane_host::{GauntletPlane, GauntletRequest};
 use crate::root::gauntlet_kernel::run_gauntlet_via_kernel;
 
 /// Run one A2A invoke request through the UNIFIED kernel loop and return the plane's response
-/// verbatim — the dormant kernel-loop twin of the shipped `run_gauntlet` call at
-/// `busbar-a2a/src/a2a/receive.rs:892`.
+/// verbatim — the test-only direct call of the bridge the shipped `run_gauntlet` call in
+/// `busbar-a2a/src/a2a/receive.rs` already dispatches to through its registered runner.
 ///
 /// A one-line delegation to the plane-neutral bridge: the A2A plane rides it with ZERO new bridge
-/// code, exactly as the module header promises. The flip is re-pointing `receive.rs:892` from
-/// `busbar_kernel::plane_host::run_gauntlet(req, plane)` to this function — nothing else changes,
-/// because A2A's `drive` (and its metering) is byte-identical on both loops.
+/// code, exactly as the module header promises. Calling it and calling
+/// `busbar_kernel::plane_host::run_gauntlet(req, plane)` with A2A's runner registered reach the same
+/// bridge, which is what the shadow proof compares.
 pub(crate) async fn run_a2a_via_kernel(
     req: GauntletRequest<'_>,
     plane: Box<dyn GauntletPlane + '_>,

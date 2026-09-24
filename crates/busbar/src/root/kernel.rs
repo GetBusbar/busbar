@@ -188,6 +188,36 @@ pub struct RootHistory {
     /// about which generation of the deployment's configuration produced the entry. The day the seam
     /// carries the engine's own epoch, this counter is what it replaces.
     resolutions: std::sync::atomic::AtomicU64,
+    /// **WHERE AN APPLIED CARD IS MADE DURABLE** (#79, OWNER RULING Q14 "date everything"). A
+    /// history that lives only in memory is rebuilt at the next boot as the boot card from instant
+    /// zero, and every posting a restart replays is then priced at a card that was not in force when
+    /// it arrived. So every config-applied card is journalled on the node's one book with its
+    /// `effective_from`, and a boot rebuilds the history from the chain before it rebuilds the book.
+    /// Off — the default, and every holder but the one a production boot arms — journals nothing.
+    journal: Mutex<CardJournal>,
+    /// One config apply at a time, so an entry's number on the history and its record's position
+    /// on the chain are the same order.
+    applying: Mutex<()>,
+}
+
+/// Where a holder's applied cards go (see [`RootHistory::arm_journal`]).
+#[derive(Default)]
+enum CardJournal {
+    /// Nothing is journalled: a build with no root ledger, a test's holder, or a node with no data
+    /// directory — the previous release's no-persistence shape, whose history is the boot card.
+    #[default]
+    Off,
+    /// Armed at boot, before the book exists: applies are held until the boot's book rebuilds the
+    /// history from its chain ([`RootHistory::restore`]).
+    Armed(Vec<CardApplied>),
+    /// The history was rebuilt from the chain; applies are held until the book's shared handle is
+    /// bound ([`RootHistory::bind_journal`]).
+    Restored(Vec<CardApplied>),
+    /// Every apply goes on this book's journal as it lands.
+    Bound {
+        book: Arc<Mutex<crate::root::durability::Durability>>,
+        token: Grant<busbar_contract::caps::DurableWrite>,
+    },
 }
 
 impl std::fmt::Debug for RootHistory {
@@ -248,30 +278,243 @@ impl RootHistory {
         card: busbar_kernel_ledger::cost::RateCard,
         now_ms: u64,
     ) -> busbar_kernel_ledger::cost::HistorySeq {
+        self.append_config(card, now_ms).0
+    }
+
+    /// [`Self::apply`], answering the entry's number, its `effective_from` and its policy epoch —
+    /// the three facts a journalled record of the apply carries.
+    fn append_config(
+        &self,
+        card: busbar_kernel_ledger::cost::RateCard,
+        now_ms: u64,
+    ) -> (busbar_kernel_ledger::cost::HistorySeq, u64, u64) {
         let policy_epoch = self
             .resolutions
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let appended = self.history.rcu(|current| {
+        let mut appended = (busbar_kernel_ledger::cost::HistorySeq::OPENING, 0);
+        self.history.rcu(|current| {
             let mut next = match current {
                 Some(history) => busbar_kernel_ledger::cost::History::clone(history),
                 None => busbar_kernel_ledger::cost::History::new(),
             };
             let effective_from = if next.is_empty() { 0 } else { now_ms };
-            next.append(busbar_kernel_ledger::cost::CardEntryDraft {
+            let seq = next.append(busbar_kernel_ledger::cost::CardEntryDraft {
                 effective_from,
                 effective_until: None,
                 card: card.clone(),
                 appended_at: now_ms,
                 author: busbar_kernel_ledger::cost::Author::Config { policy_epoch },
             });
+            // The closure may run more than once; the run whose swap lands is the last one.
+            appended = (seq, effective_from);
             Some(Arc::new(next))
         });
-        let _ = appended;
-        self.history
-            .load()
-            .as_ref()
-            .and_then(|h| h.head())
-            .unwrap_or(busbar_kernel_ledger::cost::HistorySeq::OPENING)
+        (appended.0, appended.1, policy_epoch)
+    }
+
+    /// **THE APPLY THE RATE-APPLY SEAM MAKES**: build the card from the configured figures, append
+    /// it (as [`Self::apply`]), and put the same entry on the node's journal — so a restart rebuilds
+    /// the history the node priced under rather than dating the boot card from instant zero (#79).
+    pub fn apply_rates(
+        &self,
+        rates: &busbar_kernel::rate_apply::RawRates<'_>,
+        now_ms: u64,
+    ) -> busbar_kernel_ledger::cost::HistorySeq {
+        let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
+        let card = card_from_raw(rates);
+        let form = CardForm::of(rates, &card);
+        let (seq, effective_from, policy_epoch) = self.append_config(card, now_ms);
+        self.journal_applied(CardApplied {
+            effective_from,
+            appended_at: now_ms,
+            policy_epoch,
+            form,
+        });
+        seq
+    }
+
+    /// ARM THE JOURNAL: from here on every apply is recorded — held until the boot's book has
+    /// rebuilt the history ([`Self::restore`]) and its handle is bound ([`Self::bind_journal`]),
+    /// then written as it lands. The production boot arms the process holder before its first
+    /// resolution; nothing else does, so a test's holder and a build with no root ledger journal
+    /// nothing.
+    pub fn arm_journal(&self) {
+        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(*journal, CardJournal::Off) {
+            *journal = CardJournal::Armed(Vec::new());
+        }
+    }
+
+    /// THE NO-PERSISTENCE SHAPE: a boot with no data directory keeps no chain to rebuild from, so
+    /// the history is the boot card from instant zero exactly as it always was, and nothing is held.
+    pub(crate) fn disarm_journal(&self) {
+        *self.journal.lock().unwrap_or_else(|p| p.into_inner()) = CardJournal::Off;
+    }
+
+    /// Record one apply wherever this holder's journal stands.
+    fn journal_applied(&self, applied: CardApplied) {
+        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
+        match &mut *journal {
+            CardJournal::Off => {}
+            CardJournal::Armed(held) | CardJournal::Restored(held) => held.push(applied),
+            CardJournal::Bound { book, token } => {
+                let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+                if let Err(lost) = journal_card(&mut durability, &applied, token) {
+                    tracing::error!(
+                        step = lost.step().as_str(),
+                        effective_from = applied.effective_from,
+                        "the journal lost an applied rate card: a restart will not reproduce this \
+                         entry of the dated history"
+                    );
+                }
+            }
+        }
+    }
+
+    /// **THE BOOT'S REBUILD OF THE DATED HISTORY FROM THE CHAIN**, run by the book before it prices
+    /// a single replayed posting. Answers the records the book must now write, or `None` when this
+    /// holder was not armed (nothing is rebuilt and nothing is written).
+    ///
+    /// - A chain with NO config card on it (a fresh node, or a journal written before cards were
+    ///   journalled): the history stays what the boot resolved — its card from instant zero, the
+    ///   previous release's reading — and that opening entry is written, dated from zero.
+    /// - Otherwise the history IS the chain's: every journalled entry, in the order it was written,
+    ///   each with the `effective_from` it was applied at — the opening entry first. The boot's own
+    ///   resolution is appended, dated at the instant it landed, ONLY where it differs from the
+    ///   newest journalled config card: a restart that changed no price appends nothing and moves
+    ///   nothing; a restart that did prices what happens after the boot and nothing before it.
+    pub(crate) fn restore(&self, journalled: Vec<JournalledCard>) -> Option<Vec<CardApplied>> {
+        use busbar_kernel_ledger::cost::{CardEntryDraft, History};
+        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
+        let CardJournal::Armed(held) = &mut *journal else {
+            return None;
+        };
+        let held = std::mem::take(held);
+        let mut opening: Option<CardEntryDraft> = None;
+        let mut rest: Vec<CardEntryDraft> = Vec::new();
+        let mut newest: Option<CardForm> = None;
+        let mut next_epoch = 0u64;
+        for card in journalled {
+            match card {
+                JournalledCard::Applied(applied) => {
+                    next_epoch = next_epoch.max(applied.policy_epoch.saturating_add(1));
+                    newest = Some(applied.form.clone());
+                    let draft = applied.draft();
+                    if applied.effective_from == 0 && opening.is_none() {
+                        opening = Some(draft);
+                    } else {
+                        rest.push(draft);
+                    }
+                }
+                JournalledCard::Amended(draft) => rest.push(draft),
+            }
+        }
+        let mut write = Vec::new();
+        for mut applied in held {
+            if opening.is_none() {
+                // Nothing configured was ever journalled: the boot card opens the history from
+                // instant zero, as it always has.
+                applied.effective_from = 0;
+                opening = Some(applied.draft());
+            } else if newest.as_ref() == Some(&applied.form) {
+                // The configuration did not change a price: no new generation of the card.
+                continue;
+            } else {
+                applied.effective_from = applied.appended_at;
+                applied.policy_epoch = next_epoch;
+                next_epoch = next_epoch.saturating_add(1);
+                rest.push(applied.draft());
+            }
+            newest = Some(applied.form.clone());
+            write.push(applied);
+        }
+        let mut history = History::new();
+        for draft in opening.into_iter().chain(rest) {
+            history.append(draft);
+        }
+        if !history.is_empty() {
+            self.history.store(Some(Arc::new(history)));
+        }
+        self.resolutions
+            .fetch_max(next_epoch, std::sync::atomic::Ordering::Relaxed);
+        *journal = CardJournal::Restored(Vec::new());
+        Some(write)
+    }
+
+    /// **THE BOOT'S REBUILD, RUN BY THE BOOK** before it prices a replayed posting: `records` is the
+    /// chain it read, or `None` for a node with no data directory (the previous release's
+    /// no-persistence shape: the history stays the boot card from instant zero and nothing is
+    /// held) or a chain that could not be read (rebuilt from nothing, journalled nothing).
+    ///
+    /// A chain written before applied cards were journalled holds none: its history starts at the
+    /// boot card from instant zero, exactly as it did, and that opening entry is journalled now.
+    pub(crate) fn rebuild_from_chain(
+        &'static self,
+        durability: &mut crate::root::durability::Durability,
+        records: Option<&[busbar_kernel_wal::JournalRecord]>,
+    ) {
+        let Some(records) = records else {
+            self.disarm_journal();
+            return;
+        };
+        let Some(write) = self.restore(journalled_cards(records)) else {
+            return;
+        };
+        let token = new_kernel().durability_token();
+        for applied in &write {
+            if let Err(lost) = journal_card(durability, applied, &token) {
+                tracing::error!(
+                    step = lost.step().as_str(),
+                    effective_from = applied.effective_from,
+                    "the journal lost an applied rate card: a restart will not reproduce this \
+                     entry of the dated history"
+                );
+            }
+        }
+        durability.cards_from = Some(self);
+    }
+
+    /// **BIND THE BOOK THE HISTORY WAS REBUILT FROM**: write what was applied since the rebuild and
+    /// journal every apply after it as it lands. A no-op for any other book and for a holder whose
+    /// history was not rebuilt from a chain — which is every holder but the production boot's.
+    pub fn bind_journal(&self, book: &Arc<Mutex<crate::root::durability::Durability>>) {
+        if !matches!(
+            *self.journal.lock().unwrap_or_else(|p| p.into_inner()),
+            CardJournal::Restored(_)
+        ) {
+            return;
+        }
+        let ours = book
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cards_from
+            .is_some_and(|holder| std::ptr::eq(holder, self));
+        if !ours {
+            return;
+        }
+        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
+        let CardJournal::Restored(held) = &mut *journal else {
+            return;
+        };
+        let held = std::mem::take(held);
+        let token = new_kernel().durability_token();
+        {
+            let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+            for applied in &held {
+                if let Err(lost) = journal_card(&mut durability, applied, &token) {
+                    tracing::error!(
+                        step = lost.step().as_str(),
+                        effective_from = applied.effective_from,
+                        "the journal lost an applied rate card: a restart will not reproduce this \
+                         entry of the dated history"
+                    );
+                }
+            }
+        }
+        *journal = CardJournal::Bound {
+            book: Arc::clone(book),
+            token,
+        };
     }
 
     /// **THE SIGNED, BACK-DATED CORRECTION** — the effect half of the `amend_rate_history` verb.
@@ -421,15 +664,373 @@ pub struct CardRepricer;
 
 impl busbar_kernel::rate_apply::RateApply for CardRepricer {
     fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
-        ROOT_CARD.apply(
-            card_from_config(
-                rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
-                rates.flat_minor,
-                rates.present,
-            ),
-            busbar_kernel::store::now_ms(),
-        );
+        ROOT_CARD.apply_rates(rates, busbar_kernel::store::now_ms());
     }
+}
+
+/// The card one rate apply builds, and so the card every DATED history entry holds: the reserved
+/// four and the flat figure through [`card_from_config`], then every open-class rate the lanes'
+/// `units:` name (item 123) — the same two steps, in the same order, the live card is built by
+/// (`CostModel::resolve_parts`). Without the second step an older era holding open-class usage
+/// (a rerank's `search_units`) resolved to a card with no such cell and REFUSED where the live
+/// card priced it.
+pub(crate) fn card_from_raw(
+    rates: &busbar_kernel::rate_apply::RawRates<'_>,
+) -> busbar_kernel_ledger::cost::RateCard {
+    card_from_config(
+        rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
+        rates.flat_minor,
+        rates.present,
+    )
+    .with_unit_rates(rates.units.iter().map(|(lane, class, nanos)| {
+        (
+            busbar_kernel_ledger::cost::LaneClass::new(lane.as_str(), class.as_str()),
+            *nanos,
+        )
+    }))
+    // Each plane's own fees (#47), dated with the card they were configured beside.
+    .with_plane_fees(rates.plane_fees.iter().map(|(p, f)| (p.as_str(), *f)))
+}
+
+// ---------------------------------------------------------------------------------------------
+// An applied card, as the journal keeps it
+// ---------------------------------------------------------------------------------------------
+
+/// The tag a journalled config-applied card's body opens with. A `Policy`-class record, beside the
+/// signed amendment's (`units_admin::AMENDMENT_RECORD_TAG`): both are entries of the dated history.
+pub const CARD_APPLIED_TAG: &str = "busbar/rate-card-applied/v1";
+
+/// The four reserved classes every configured lane carries a rate for.
+const RESERVED_CLASSES: [&str; 4] = [
+    busbar_kernel_ledger::cost::CLASS_INPUT,
+    busbar_kernel_ledger::cost::CLASS_OUTPUT,
+    busbar_kernel_ledger::cost::CLASS_CACHE_READ,
+    busbar_kernel_ledger::cost::CLASS_CACHE_WRITE,
+];
+
+/// **ONE APPLIED CARD, IN INTEGERS** — what the card priced, read off the card the apply built, so a
+/// restart rebuilds the same card without a configured decimal ever crossing the journal (#44: the
+/// float-to-integer conversion happens once, at the intake, and never again).
+///
+/// Every PLANE's card is in it (#47): its lanes are the plane-qualified keys, its presence is its
+/// `"<plane>\u{1f}"` key, and its fees are its own. Two forms are equal exactly when they build the
+/// same card — which is what lets a boot tell a restart that changed a price from one that did not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardForm {
+    /// Whether a rate card was configured at all (absent: every class reads 0, the flat figure posts).
+    present: bool,
+    /// The flat per-request figure, clamped as the card holds it.
+    flat: u64,
+    /// Every configured lane key, in the deployment's order.
+    lanes: Vec<String>,
+    /// `(lane, reserved class, nano-units per unit)` for each configured lane's four reserved
+    /// classes, as the card holds them; `None` is a cell the card could not represent (UNPRICED).
+    cells: Vec<(String, String, Option<u64>)>,
+    /// `(lane, open class, nano-units per unit)`, as configured (item 123).
+    units: Vec<(String, String, u64)>,
+    /// `(plane, per request, per session)`, clamped as the card holds them.
+    planes: Vec<(String, u64, u64)>,
+}
+
+impl CardForm {
+    /// The integer form of `card`, which the apply built from `rates` ([`card_from_raw`]).
+    #[must_use]
+    pub fn of(
+        rates: &busbar_kernel::rate_apply::RawRates<'_>,
+        card: &busbar_kernel_ledger::cost::RateCard,
+    ) -> Self {
+        let lanes: Vec<String> = rates.lanes.iter().map(|(lane, _)| lane.clone()).collect();
+        let cells = if rates.present {
+            lanes
+                .iter()
+                .filter(|key| {
+                    !busbar_kernel_ledger::cost::split_plane_lane(key)
+                        .1
+                        .is_empty()
+                })
+                .flat_map(|key| {
+                    RESERVED_CLASSES.iter().map(move |class| {
+                        let nanos = card
+                            .lane_rates(key)
+                            .filter(|rates| rates.class_priced(class))
+                            .map(|rates| rates.nanos_per_unit(class));
+                        (key.clone(), (*class).to_string(), nanos)
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let clamp = |figure: i64| u64::try_from(figure.max(0)).unwrap_or(0);
+        CardForm {
+            present: rates.present,
+            flat: clamp(card.fee()),
+            lanes,
+            cells,
+            units: rates.units.to_vec(),
+            planes: rates
+                .plane_fees
+                .iter()
+                .map(|(plane, fees)| {
+                    (
+                        plane.clone(),
+                        clamp(fees.per_request),
+                        clamp(fees.per_session),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// The card this form holds — built through the same constructors, in the same order, the
+    /// apply built it through: the lanes' presence, then every cell's integer rate, then each
+    /// plane's fees.
+    ///
+    /// A cell the applied card could not represent was UNPRICED on it. The rebuild cannot spell an
+    /// unpriced reserved cell without a decimal, so it leaves that whole LANE off the card, which
+    /// REFUSES every class on it (#42) rather than pricing any at a zero nobody configured. Config
+    /// validation refuses such a rate before a card is ever built, so no admitted card has one.
+    #[must_use]
+    pub fn card(&self) -> busbar_kernel_ledger::cost::RateCard {
+        use busbar_kernel_ledger::cost::{LaneClass, PlaneFees, RateCard, TierRates};
+        let unpriced: std::collections::BTreeSet<&str> = self
+            .cells
+            .iter()
+            .filter(|(_, _, nanos)| nanos.is_none())
+            .map(|(lane, _, _)| lane.as_str())
+            .collect();
+        let kept = |lane: &str| !unpriced.contains(lane);
+        let figure = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+        let base = if self.present {
+            RateCard::from_config(
+                Some(
+                    self.lanes
+                        .iter()
+                        .filter(|lane| kept(lane))
+                        .map(|lane| (lane.as_str(), TierRates::default())),
+                ),
+                figure(self.flat),
+            )
+        } else {
+            RateCard::absent(figure(self.flat))
+        };
+        base.with_unit_rates(
+            self.cells
+                .iter()
+                .filter_map(|(lane, class, nanos)| nanos.map(|n| (lane, class, n)))
+                .chain(self.units.iter().map(|(lane, class, n)| (lane, class, *n)))
+                .filter(|(lane, _, _)| kept(lane))
+                .map(|(lane, class, n)| (LaneClass::new(lane.as_str(), class.as_str()), n)),
+        )
+        .with_plane_fees(self.planes.iter().map(|(plane, request, session)| {
+            (
+                plane.as_str(),
+                PlaneFees {
+                    per_request: figure(*request),
+                    per_session: figure(*session),
+                },
+            )
+        }))
+    }
+}
+
+/// **ONE CONFIG APPLY, JOURNALLED**: the card and the instant it took effect from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardApplied {
+    /// The first instant the entry prices, in wall-clock milliseconds: zero for the opening entry,
+    /// the apply's own instant for every later one.
+    pub effective_from: u64,
+    /// When the apply landed, in wall-clock milliseconds.
+    pub appended_at: u64,
+    /// The configuration generation that produced it.
+    pub policy_epoch: u64,
+    /// The card.
+    pub form: CardForm,
+}
+
+impl CardApplied {
+    /// The history entry this record is.
+    fn draft(&self) -> busbar_kernel_ledger::cost::CardEntryDraft {
+        busbar_kernel_ledger::cost::CardEntryDraft {
+            effective_from: self.effective_from,
+            effective_until: None,
+            card: self.form.card(),
+            appended_at: self.appended_at,
+            author: busbar_kernel_ledger::cost::Author::Config {
+                policy_epoch: self.policy_epoch,
+            },
+        }
+    }
+
+    /// The record's body.
+    #[must_use]
+    pub fn body(&self) -> Vec<u8> {
+        let form = &self.form;
+        let mut body = busbar_kernel_wal::BodyWriter::new();
+        body.text(CARD_APPLIED_TAG)
+            .num(self.effective_from)
+            .num(self.appended_at)
+            .num(self.policy_epoch)
+            .num(u64::from(form.present))
+            .num(form.flat)
+            .num(form.lanes.len() as u64);
+        for lane in &form.lanes {
+            body.text(lane);
+        }
+        body.num(form.cells.len() as u64);
+        for (lane, class, nanos) in &form.cells {
+            body.text(lane)
+                .text(class)
+                .num(u64::from(nanos.is_some()))
+                .num(nanos.unwrap_or(0));
+        }
+        body.num(form.units.len() as u64);
+        for (lane, class, nanos) in &form.units {
+            body.text(lane).text(class).num(*nanos);
+        }
+        body.num(form.planes.len() as u64);
+        for (plane, request, session) in &form.planes {
+            body.text(plane).num(*request).num(*session);
+        }
+        body.finish()
+    }
+
+    /// Read one back; `None` for a body that is not one (another `Policy` record) or is malformed.
+    #[must_use]
+    pub fn from_body(bytes: &[u8]) -> Option<CardApplied> {
+        let mut body = busbar_kernel_wal::BodyReader::new(bytes);
+        if body.text()? != CARD_APPLIED_TAG {
+            return None;
+        }
+        let effective_from = body.num()?;
+        let appended_at = body.num()?;
+        let policy_epoch = body.num()?;
+        let present = match body.num()? {
+            0 => false,
+            1 => true,
+            _ => return None,
+        };
+        let flat = body.num()?;
+        let mut lanes = Vec::new();
+        for _ in 0..body.num()? {
+            lanes.push(body.text()?.to_string());
+        }
+        let mut cells = Vec::new();
+        for _ in 0..body.num()? {
+            let (lane, class) = (body.text()?.to_string(), body.text()?.to_string());
+            let priced = body.num()?;
+            let nanos = body.num()?;
+            cells.push((lane, class, (priced == 1).then_some(nanos)));
+        }
+        let mut units = Vec::new();
+        for _ in 0..body.num()? {
+            units.push((
+                body.text()?.to_string(),
+                body.text()?.to_string(),
+                body.num()?,
+            ));
+        }
+        let mut planes = Vec::new();
+        for _ in 0..body.num()? {
+            planes.push((body.text()?.to_string(), body.num()?, body.num()?));
+        }
+        body.is_done().then_some(CardApplied {
+            effective_from,
+            appended_at,
+            policy_epoch,
+            form: CardForm {
+                present,
+                flat,
+                lanes,
+                cells,
+                units,
+                planes,
+            },
+        })
+    }
+}
+
+/// Put one config-applied card on `durability`'s journal (#79): a `Policy` record carrying the card
+/// and the instant it took effect from, which a boot reads back to rebuild the dated history before
+/// it prices a replayed posting. A price LIST, not a unit's money: the chain's postings still carry
+/// counts and an arrival instant only.
+fn journal_card(
+    durability: &mut crate::root::durability::Durability,
+    applied: &CardApplied,
+    token: &Grant<busbar_contract::caps::DurableWrite>,
+) -> Result<busbar_kernel_wal::JournalAck, busbar_contract::caps::DurabilityLost> {
+    let entry =
+        busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Policy, applied.body())
+            .at(applied.appended_at / 1_000, 0);
+    durability
+        .journal
+        .append(token, busbar_contract::caps::StepName::Route, &[entry])
+}
+
+/// One entry of the dated history as the chain holds it.
+pub(crate) enum JournalledCard {
+    /// A config apply ([`CardApplied`]).
+    Applied(CardApplied),
+    /// A signed back-dated correction, as `amend_rate_history` journalled it ahead of its append
+    /// (item 30) — its window, its sealed card, its signer. Without it a restart dropped the
+    /// correction and its window repriced at the card it had corrected.
+    Amended(busbar_kernel_ledger::cost::CardEntryDraft),
+}
+
+/// Every entry of the dated history on `records`, in the order the chain holds them.
+pub(crate) fn journalled_cards(
+    records: &[busbar_kernel_wal::JournalRecord],
+) -> Vec<JournalledCard> {
+    records
+        .iter()
+        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
+        .filter_map(|r| {
+            CardApplied::from_body(&r.body)
+                .map(JournalledCard::Applied)
+                .or_else(|| journalled_amendment(&r.body))
+        })
+        .collect()
+}
+
+/// A journalled signed correction, as the history entry its effect appended: the window it named,
+/// the card it sealed (every named cell at the integer rate the card held, and the fee), appended
+/// at its admission instant, authored by its signer.
+#[cfg(feature = "root-admin")]
+fn journalled_amendment(body: &[u8]) -> Option<JournalledCard> {
+    let amendment = crate::root::units_admin::amendment_from_body(body)?;
+    Some(JournalledCard::Amended(
+        busbar_kernel_ledger::cost::CardEntryDraft {
+            effective_from: amendment.effective_from,
+            effective_until: amendment.effective_until,
+            // An UNPRICED cell (`None`) is left off the rebuilt card, so a hit on it refuses (#42)
+            // exactly as it did on the card the correction sealed — never priced at a zero.
+            card: busbar_kernel_ledger::cost::RateCard::from_nano_rates(
+                amendment.rates.iter().filter_map(|(lane, class, nanos)| {
+                    nanos.map(|nanos| {
+                        (
+                            busbar_kernel_ledger::cost::LaneClass::new(
+                                lane.as_str(),
+                                class.as_str(),
+                            ),
+                            nanos,
+                        )
+                    })
+                }),
+                amendment.sealed_fee,
+            ),
+            appended_at: amendment.amended_at_ms,
+            author: busbar_kernel_ledger::cost::Author::Amend {
+                operator_fingerprint: amendment.operator_fingerprint,
+                reason_hash: amendment.reason_hash,
+            },
+        },
+    ))
+}
+
+/// A build without the admin plane has no correction verb, so its chain holds no correction.
+#[cfg(not(feature = "root-admin"))]
+fn journalled_amendment(_body: &[u8]) -> Option<JournalledCard> {
+    None
 }
 
 /// **THE ROOT, DATING A PRICE** — the read-side twin of the apply above.
@@ -454,6 +1055,13 @@ impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {
             .current()
             .entry_at(at_ms)
             .map_or(0, busbar_kernel_ledger::cost::CardEntry::effective_from)
+    }
+
+    /// THE SAME HISTORY, handed to the budget ledger (OWNER RULING Q14): its reads and its gate
+    /// price each era of a budget cell at the card this history resolves for it, so `/keys` and
+    /// `/groups` usage, the `/metrics` spend gauges and the gate agree with `GET /admin/usage`.
+    fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
+        ROOT_CARD.history()
     }
 }
 
@@ -488,6 +1096,9 @@ impl busbar_core_admin::v1::service::UsageRateHistory for RootUsageHistory {
 /// third is a node that dates its prices and then reports them off the newest card anyway, which
 /// is the defect #79 names.
 pub fn install_card_repricer() {
+    // Armed BEFORE the boot resolution, so the opening entry is held for the book to journal: the
+    // boot's book rebuilds the dated history from its chain (#79) before it prices a posting.
+    ROOT_CARD.arm_journal();
     busbar_kernel::rate_apply::install_rate_apply(&CardRepricer);
     busbar_kernel::rate_apply::install_rate_epoch(&CardRepricer);
     busbar_core_admin::v1::service::install_usage_rate_history(&RootUsageHistory);
@@ -582,19 +1193,16 @@ pub struct ProductionUnits {
     pub breaker: crate::root::adapters::BreakerAdapter,
     /// The authentication chain, resolved from configuration at boot.
     pub auth: Auth,
-    /// The three seams the authenticate step is handed beside the request: the credential cache, the
-    /// signed-key verifier and the revocation view.
-    ///
-    /// One per node rather than one per plane, for the reason the cache's own documentation gives
-    /// about a flush: two caches would be two answers to "has this credential been seen", and an
-    /// operator who flushed one would leave the other serving a verdict the flush was meant to have
-    /// killed.
+    /// The seams the authenticate step is handed beside the request: the signed-key verifier and the
+    /// revocation view — and NO credential cache. The node's one flushable cache is the kernel's; a
+    /// second one here would be a second answer to "has this credential been seen" that an
+    /// operator's flush could not reach (item 249).
     pub auth_bindings: auth_bindings::AuthBindings,
     /// The trust unit. Stateless: it is handed the pool view and the kind facts per call.
     pub trust: Trust,
     /// The arrival door, bound to the admission unit and to nothing else.
     pub arrival_door: AdmissionDoor,
-    /// The journal, the ledger and the audit unit's two chains.
+    /// The journal, the ledger and the audit record chain.
     ///
     /// Behind one lock because all four are append-only and a unit's settlement touches more than
     /// one of them: the record is sealed, the ledger moves and the journal takes the batch, and a
@@ -607,9 +1215,6 @@ pub struct ProductionUnits {
     /// no read can see a unit half-settled, and no reader can write, because what crosses the seam
     /// is a value and never the ledger.
     pub durability: Arc<Mutex<crate::root::durability::Durability>>,
-    /// What the usage unit meters against — built from the configured rate cards, never from the
-    /// unit's own default, because an empty lane expansion disputes every pooled posting.
-    pub meter_policy: crate::root::policy::MeterPolicyHandle,
     /// What the scope unit reads at Approve. Silence is a refusal.
     pub scope_policy: crate::root::policy::ScopePolicy,
     /// The admin plane's bindings: the seam an operation's body is reached through, and the table
@@ -651,8 +1256,10 @@ impl ProductionUnits {
     // The argument list IS the point, and shortening it would cost the property the doc comment
     // above claims. Every parameter is one decision configuration made; bundling them into a struct
     // would give that struct a `Default`, and a `Default` is exactly how a deployment ends up with a
-    // metering policy it never read its rate cards for. A long list that cannot be built wrong beats
-    // a short one that can.
+    // value it never read its configuration for. A long list that cannot be built wrong beats a
+    // short one that can. There is no metering policy among them (items 239/246): nothing the loop
+    // reaches prices through one — what prices is the rate card, through the one function Tally
+    // governs.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
@@ -660,7 +1267,6 @@ impl ProductionUnits {
         auth_chain: AuthChain,
         durability: crate::root::durability::Durability,
         breaker_policy: crate::root::adapters::BreakerPolicy,
-        meter_policy: crate::root::policy::MeterPolicyHandle,
         scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
@@ -670,7 +1276,6 @@ impl ProductionUnits {
             auth_chain,
             Arc::new(Mutex::new(durability)),
             breaker_policy,
-            meter_policy,
             scope_policy,
             #[cfg(feature = "root-admin")]
             admin,
@@ -691,7 +1296,6 @@ impl ProductionUnits {
         auth_chain: AuthChain,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
         breaker_policy: crate::root::adapters::BreakerPolicy,
-        meter_policy: crate::root::policy::MeterPolicyHandle,
         scope_policy: crate::root::policy::ScopePolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: Arc<dyn busbar_contract::verb_store::Store + Send + Sync>,
@@ -718,7 +1322,6 @@ impl ProductionUnits {
             trust: Trust,
             arrival_door: AdmissionDoor,
             durability,
-            meter_policy,
             scope_policy,
             #[cfg(feature = "root-admin")]
             admin,
@@ -745,9 +1348,8 @@ impl ProductionUnits {
     ///
     /// One plane has been switched onto the loop, and this is the composition for it: the journal is
     /// memory-buffered because the administrative surface writes no money and probes no directory,
-    /// the metering policy is the empty one because the plane declares no meter classes to price
-    /// against, and the store is the unconfigured one because no admin operation this root drives
-    /// reaches the disaster-recovery subset. Every one of those is a decision this constructor
+    /// and the store is the unconfigured one because no admin operation this root drives reaches
+    /// the disaster-recovery subset. Both of those is a decision this constructor
     /// MAKES rather than defaults into, and each is the reason the corresponding argument of
     /// [`ProductionUnits::new`] is not asked for here.
     ///
@@ -812,7 +1414,6 @@ impl ProductionUnits {
             AuthChain::new(Vec::new(), false),
             Arc::clone(&durability),
             crate::root::adapters::BreakerPolicy::new(),
-            crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
             crate::root::policy::ScopePolicy::new(),
             crate::root::units_admin::AdminBinding::new(dispatch),
             Arc::new(RefusingStore),
@@ -836,10 +1437,27 @@ impl ProductionUnits {
         // before it touches the history (item 30). Without this binding `amend_rate_history`
         // refuses: the only trail it used to leave was the legacy admin ring, a volatile thousand
         // entries behind a seam that does nothing.
+        //
+        // And every config-applied card goes on the same journal (#79): the process holder binds
+        // the book its boot rebuilt the dated history from, and journals nothing for any other.
+        ROOT_CARD.bind_journal(&durability);
         units.admin.amendments = Some(Arc::new(crate::root::units_admin::AmendmentJournal::new(
             Arc::clone(&durability),
             kernel.durability_token(),
         )));
+        // Item 271: an idempotency claim the admin plane's replay cache takes goes on this SAME
+        // journal — on a node with a data directory only. A memory-buffered node keeps the
+        // previous release's shape: nothing extra is shipped to its store.
+        let on_disk = durability
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .on_disk();
+        if on_disk {
+            units.admin.claims = Some(Arc::new(crate::root::units_admin::RootClaimJournal::new(
+                Arc::clone(&durability),
+                kernel.durability_token(),
+            )));
+        }
         units.admin.audit = Some(Arc::new(crate::root::units_admin::NodeAudit::new(
             durability,
         )));

@@ -54,3 +54,33 @@ fn reservoir_stays_representative_of_the_range() {
              first-N cap would freeze the retained max near BUCKET_CAP"
     );
 }
+
+/// ITEM 571: the bucket store keeps no count of the `Stage` enum, so a stage it has never seen takes
+/// a bucket instead of indexing past the end of one.
+///
+/// The store was an array sized by a hand-kept literal and indexed by a variant's position with no
+/// bound; a stage added without editing the literal panicked the first sample of a profiling run, on
+/// the request path. Here the LAST declared variant records into a store holding nothing, which is
+/// exactly the index the old array had no room for once the enum outgrew its count.
+#[test]
+fn a_stage_the_store_has_never_seen_takes_a_bucket_instead_of_indexing_past_the_end() {
+    let mut store = Vec::new();
+    bucket_for(&mut store, Stage::PostSend).record(7);
+    bucket_for(&mut store, Stage::MwAuth).record(9);
+    bucket_for(&mut store, Stage::PostSend).record(11);
+    assert_eq!(
+        store.len(),
+        2,
+        "one bucket per stage that recorded, and no more"
+    );
+    let (_, post) = store
+        .iter()
+        .find(|(stage, _)| *stage == Stage::PostSend)
+        .expect("the stage that recorded has a bucket");
+    assert_eq!(
+        post.samples,
+        vec![7, 11],
+        "both samples land in the same bucket"
+    );
+    assert_eq!(post.seen, 2);
+}

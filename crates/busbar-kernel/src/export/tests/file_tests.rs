@@ -187,3 +187,54 @@ async fn wait_for_line(path: &std::path::Path, needle: &str) {
     }
     panic!("timed out waiting for {path:?} to contain {needle:?}");
 }
+
+/// AN EXPORT SINK HANDED A RECORD LEAVES EXACTLY ONE AMENDMENT (item 404): the dispatch records who
+/// read (the export module), and exactly the fields that crossed — the keys of the payload built to
+/// the sink's projection — never their values.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivered_export_leaves_exactly_one_access_amendment() {
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-file-export-amend-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("req.jsonl");
+    // One sink owned by THIS test, never the process-global `SINKS` (see the shed test above).
+    let sinks: &'static [FileSink] = Box::leak(Box::new([FileSink {
+        path: path.to_string_lossy().to_string(),
+        rotate_bytes: None,
+        lock: Mutex::new(()),
+        gate: AdmissionGate::new(MAX_INFLIGHT_FILE_APPENDS, "amend-test"),
+        projection: test_logs_projection(),
+    }]));
+    let facts = crate::export::RequestLogFacts {
+        ts: 1,
+        ingress_protocol: "p2-404-export-read",
+        pool: "pool-a",
+        outcome: "ok",
+        latency_ms: 3,
+    };
+    let mut cache = PayloadCache::new(&facts);
+    deliver_to(sinks, &mut cache);
+    let payload = cache.get(test_logs_projection());
+    wait_for_line(&path, "p2-404-export-read").await;
+
+    use crate::audit::amend;
+    let rows: Vec<_> = amend::node_recent()
+        .into_iter()
+        .filter_map(|a| match a.body {
+            amend::AmendBody::Access(x) if x.op_class.as_str() == "p2-404-export-read" => Some(x),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows.len(), 1, "one delivery, one amendment: {rows:?}");
+    assert_eq!(rows[0].reader, amend::Reader::Export);
+    assert_eq!(rows[0].name, EXPORT_MODULE_REQUEST_LOG_FILE);
+    let crossed: Vec<String> = payload.as_object().unwrap().keys().cloned().collect();
+    assert!(!crossed.is_empty());
+    assert_eq!(rows[0].fields, crossed);
+    let _ = std::fs::remove_dir_all(&dir);
+}

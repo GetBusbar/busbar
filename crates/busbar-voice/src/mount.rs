@@ -35,13 +35,13 @@ use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{serve_to_teardown, serve_with_sweep, UplinkForwarder, VoiceSession};
-use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
+use crate::runtime::{EchoToolExecutor, VoiceRuntime};
 use crate::topology::minter_https::HttpsTokenMinter;
 use crate::topology::telephony::{begin_telephony, g711_config, open_admitted_telephony};
 use crate::topology::webrtc::TokenMinter;
 use crate::topology::{
-    begin_session, dial_provider, open_admitted_session, stream_breaker_key, SessionBudget,
-    SessionGauntlet, StartError,
+    begin_session, dial_provider, open_admitted_session, stream_breaker_key, SessionGauntlet,
+    StartError,
 };
 use busbar_kernel::egress::engine::{send_bounded, EngineClient};
 use busbar_kernel::ingress::byte_duplex::serve_messages;
@@ -60,13 +60,6 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use std::any::Any;
 use std::sync::Arc;
-
-/// The `busbar_plane_requests_total` family name (labels: plane, ingress_protocol, pool, outcome) —
-/// the neutral per-mounted-plane request counter the core `/metrics` scrape exposes. Named by literal
-/// so the voice plane emits into the SAME family without reaching into `busbar-core` (which owns the
-/// constant); a `Counted` marker on the answer stands the core `plane::observe` middleware down so the
-/// front-door series is never double-counted.
-const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total";
 
 /// The bounded `pool` label the voice FRONT DOOR (the voice-server cell) emits under — a constant, not
 /// a caller value, so the series count stays bounded. The outbound provider dial (the voice-client
@@ -109,7 +102,7 @@ pub fn session_scope_allowed(key: &busbar_api::VirtualKey) -> bool {
 }
 
 /// The refusal a key without session scope gets: the plane's own fail-closed answer, in the same
-/// plain-text shape every other voice refusal takes, and BEFORE any hook, lease, durable row or dial.
+/// plain-text shape every other voice refusal takes, and BEFORE any hook, account, durable row or dial.
 fn session_scope_refusal() -> axum::response::Response {
     refusal(
         axum::http::StatusCode::FORBIDDEN,
@@ -360,9 +353,8 @@ pub struct VoiceMount {
     /// The absolute RFC 9728 metadata URL quoted into a refused caller's `WWW-Authenticate` challenge.
     resource_metadata: String,
     /// The per-generation session runtime every route opens governed sessions from, carrying the
-    /// operator's own `streams:` posture and ceilings. Its metering port is only the PRE-HOST default:
-    /// each route rebinds the money hop onto the live host lease (`build_runtime_hosted`) once a
-    /// request hands it an engine host, so a served session reserves against the caller's real grant.
+    /// operator's own `streams:` posture and ceilings. Each route binds the live host onto it
+    /// (`build_runtime_hosted`) once a request hands it an engine host.
     runtime: Arc<VoiceRuntime>,
     /// A per-slot provider endpoint override — `None` in every built slot, because the composition
     /// root composes the provider process-wide ([`install_provider`]) AFTER the slot is built. Kept as
@@ -498,12 +490,11 @@ pub fn voice_build(ctx: &BuildCtx) -> Option<Arc<dyn Any + Send + Sync>> {
 /// The per-generation session runtime the dispatch slot carries. Seeded with the operator's own
 /// `streams:` posture (the section the plane parsed — see `crate::config::configured`), so the locked
 /// session config a mint carries and the ceilings the pump enforces are the ones the deployment wrote
-/// rather than the plane's dev defaults. Its metering port is the pre-host default; every route
-/// rebinds it onto the live host lease (see [`VoiceMount::runtime`]).
+/// rather than the plane's dev defaults. Every route binds the live host onto it (see
+/// [`VoiceMount::runtime`]).
 fn dispatch_runtime() -> VoiceRuntime {
     VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
-        Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     )
     .with_streams(&crate::config::configured())
@@ -673,6 +664,8 @@ pub(crate) struct GovernedOpen<'a> {
 /// The front-door request is COUNTED on `busbar_plane_requests_total` (plane = voice), and the answer
 /// carries a [`Counted`] marker so the core `plane::observe` middleware stands down (no double count).
 pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Response {
+    // The front door's own clock: the duration `finish` reports is this request's, end to end.
+    let started = std::time::Instant::now();
     let GovernedOpen {
         rt,
         host,
@@ -687,18 +680,20 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
     } = req;
     // (0) AUTHORIZATION — may this key open a session here at all? Asked FIRST, of the caller's own
     // grant, so a key that is valid for this plane's audience but was never granted session scope is
-    // refused before any hook fires, any lease is reserved, any durable row exists or any provider is
+    // refused before any hook fires, any account is opened, any durable row exists or any provider is
     // dialed. An ungoverned deployment resolves no key and has no grant to consult, so it proceeds
     // exactly as it did before — the refusal is a narrowing of governed callers only.
     if let Some(k) = vkey.as_ref() {
         if !session_scope_allowed(k) {
-            return finish(session_scope_refusal());
+            return finish(&host, started, session_scope_refusal());
         }
     }
     // The `(id, name)` the hook gate reads — derived from the resolved key (or `None` ungoverned).
     let key = vkey.as_ref().map(|k| (k.id.clone(), k.name.clone()));
-    // THE METER STEP's attribution: land each turn's usage on the presenting key's ledger through the
-    // core seam (the same seam every plane meters through). `None` ungoverned — nothing to attribute.
+    // THE METER STEP's attribution: each closed turn's counts per class go to the presenting key's
+    // kernel account, which ledgers them through the one metering path and answers whether the carrier
+    // stays open; the same account refuses the open when the key's chain is already dry. `None`
+    // ungoverned — nothing to attribute, nothing to close on.
     let meter = vkey.as_ref().map(|k| {
         crate::runtime::metering::TurnMeter::new(
             Arc::clone(&host),
@@ -707,14 +702,8 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
             crate::OPENAI_REALTIME,
         )
     });
-    // THE MONEY HOP, bound to the LIVE host: a served session reserves and settles against the host's
-    // own cost lease, not an in-process cell. The ceiling is the presenting key's REAL budget chain —
-    // the tightest remaining bucket — so an exhausted caller is denied at the reserve and a live
-    // session hard-closes the moment its settles reach that ceiling. An unbudgeted (or ungoverned)
-    // caller has no ceiling to impose, and stays uncapped exactly as an unbudgeted model call is.
     let hosted = crate::runtime::build_runtime_hosted(rt, Arc::clone(&host));
     let rt = &hosted;
-    let budget = SessionBudget::for_principal(&*host, vkey.as_ref(), now);
     // The session-open params the hooks screen and (maybe) rewrite: the g711 lock for telephony, the
     // plane-default session posture otherwise. One projection both the gate and the tap read.
     let mut session_cfg = match ingress {
@@ -726,14 +715,14 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
 
     // (1) HOOKS-GATE — refuse before any lease/mint/dial. Zero-cost / byte-identical when unattached.
     if let Err(refused) = hook_gate(&host, key.clone(), &call_id, now, &session_cfg).await {
-        return finish(*refused);
+        return finish(&host, started, *refused);
     }
     // (2) HOOKS-TAP — rewrite the session-open params before the credential is leased. Byte-identical
     // (params untouched) when no rewrite hook is attached or the chain abstains.
     match hook_tap(&host, key, &owner, &call_id, now, &session_cfg).await {
         Ok(Some(rewritten)) => session_cfg = rewritten,
         Ok(None) => {}
-        Err(refused) => return finish(*refused),
+        Err(refused) => return finish(&host, started, *refused),
     }
 
     // (3) THE GOVERNED OPEN. Telephony has no durable handle to correlate; the sideband topologies keep
@@ -747,7 +736,6 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
             owner,
             call_id,
             session_cfg,
-            budget,
             meter,
             now,
         ) {
@@ -762,12 +750,11 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
             call_id,
             Some(session_cfg.clone()),
             Carrier::sideband(),
-            budget,
             meter,
             now,
         ) {
             // (4) THE SERVING LEG, past a clean governed open.
-            Ok((_core, handle, _guard)) => match ingress {
+            Ok((_core, handle)) => match ingress {
                 Ingress::Mint => serve_mint(provider, handle.owner(), &session_cfg).await,
                 Ingress::Sdp => serve_sdp(provider, &headers, body, &handle, now).await,
                 // The inbound WS-accept seam (browser sideband) lands separately — no bare on_upgrade.
@@ -776,23 +763,28 @@ pub(crate) async fn open_governed(req: GovernedOpen<'_>) -> axum::response::Resp
             Err(e) => start_refusal(&e),
         },
     };
-    finish(resp)
+    finish(&host, started, resp)
 }
 
-/// EMIT the front-door session-open count and MARK the answer counted. The plane-labelled counter
-/// (`plane = voice`, the voice-server cell) lands on the neutral `busbar_plane_requests_total` family;
-/// the [`Counted`] marker on the response tells the core `plane::observe` middleware this request was
-/// already counted, so the front-door series is never double-counted at the boundary.
-fn finish(mut resp: axum::response::Response) -> axum::response::Response {
-    let outcome = busbar_kernel::telemetry::outcome_of(resp.status().as_u16());
-    metrics::counter!(
-        PLANE_REQUESTS_TOTAL,
-        "plane" => "voice",
-        "ingress_protocol" => crate::OPENAI_REALTIME,
-        "pool" => FRONT_DOOR_POOL,
-        "outcome" => outcome,
-    )
-    .increment(1);
+/// REPORT the front-door session-open through the host's `request_finished` seam — its count AND its
+/// duration since `started` — and MARK the answer counted. On the engine's host that is the
+/// plane-labelled `busbar_plane_requests_total` series (`plane = voice`, the voice-server cell; the
+/// same family and labels this door emitted by hand) plus the `busbar_plane_request_duration_seconds`
+/// sample the hand emit never recorded (item 566) — the same call the A2A door makes. The [`Counted`]
+/// marker tells the core `plane::observe` middleware the request was already reported, so the
+/// front-door series is never double-counted at the boundary.
+fn finish(
+    host: &Arc<dyn EngineHost>,
+    started: std::time::Instant,
+    mut resp: axum::response::Response,
+) -> axum::response::Response {
+    host.request_finished(
+        crate::PLANE_KEY,
+        crate::OPENAI_REALTIME,
+        FRONT_DOOR_POOL,
+        busbar_kernel::telemetry::outcome_of(resp.status().as_u16()),
+        started.elapsed().as_secs_f64(),
+    );
     resp.extensions_mut().insert(Counted);
     resp
 }
@@ -1334,7 +1326,7 @@ fn redact_url_credentials(msg: &str) -> String {
 /// refused destination, returns the gate's own `403` WITHOUT upgrading a socket, spawning a task, or
 /// opening a durable row. Only on admit is the socket upgraded and `on_socket` spawned.
 ///
-/// VERIFY-BEFORE-CHARGE, NO ORPHANED ROW: the D2 lease reserve + durable session open happen INSIDE
+/// VERIFY-BEFORE-CHARGE, NO ORPHANED ROW: the kernel account's budget check + durable session open happen INSIDE
 /// `on_socket` — AFTER the gauntlet admitted and BEFORE the pump reads a byte — through the gauntlet-
 /// free [`open_admitted_session`] / [`open_admitted_telephony`] (the gauntlet already ran; re-running
 /// it would double the gate). A refused accept opens nothing; a post-admit budget/durable refusal
@@ -1344,8 +1336,8 @@ fn redact_url_credentials(msg: &str) -> String {
 /// THE PROVIDER DIAL (the provider-dial leg): for `Telephony` and `Gemini`, when the ingress's dialect has a COMPOSED
 /// provider, the leg opens a [`crate::topology::telephony::TelephonyProxy`] (the same thin-duplex
 /// shape for both) and dials the provider through [`dial_provider`] — the net-guarded, breaker-admitted
-/// path — before pumping either socket. A dial failure drops the just-admitted session (the proxy's
-/// lease-close guard closes the reserve on drop) rather than serving a client socket with nowhere to
+/// path — before pumping either socket. A dial failure drops the just-admitted session rather than
+/// serving a client socket with nowhere to
 /// relay to. With NO provider composed, both legs fall back to serving the client socket only (the
 /// documented "governed but not yet dialing" posture) exactly as before.
 ///
@@ -1390,8 +1382,7 @@ where
             return session_scope_refusal();
         }
     }
-    // The per-generation runtime, its money hop rebound onto the live host lease so this session
-    // reserves and settles against the caller's real grant rather than an in-process cell.
+    // The per-generation runtime, bound to the live host this session journals through.
     let rt = Arc::new(crate::runtime::build_runtime_hosted(
         &mount.runtime,
         Arc::clone(&host),
@@ -1446,10 +1437,6 @@ where
     let gate: Box<dyn GauntletPlane> = Box::new(SessionGauntlet {
         deny: rt.destination_denied(&destination),
     });
-    // The session budget: the coarse over-estimate at reserve, no flat fee, and the presenting key's
-    // REAL remaining budget as the ceiling — the SAME shape `open_governed` uses for the one-shot
-    // passes, so both doors meter a session identically.
-    let budget = SessionBudget::for_principal(&*host, vkey.as_ref(), now);
     // THE METER STEP's attribution for this WS session — the presenting key each turn's usage is
     // landed on through the core seam, under THIS LEG'S OWN dialect label (K4: no longer a plane-wide
     // constant). Built from the resolved key (or `None` ungoverned) and moved into the post-upgrade
@@ -1484,7 +1471,6 @@ where
                         owner,
                         call_id,
                         session_cfg,
-                        budget,
                         meter,
                         now,
                         served_governed_session(),
@@ -1512,8 +1498,7 @@ where
                                 Err(e) => {
                                     // The dial failed: nothing to relay client frames to. Settle the
                                     // just-opened durable row terminal and evict it, then drop the
-                                    // proxy (its lease-close guard closes the D2 reserve) rather than
-                                    // serve a client socket with no upstream — fail closed, no
+                                    // proxy rather than serve a client socket with no upstream — fail closed, no
                                     // orphaned row. The handle has no drop path of its own.
                                     proxy.handle.finish(unix_secs(&*teardown_clock));
                                     tracing::warn!(
@@ -1533,14 +1518,13 @@ where
                     // frame is discarded with ZERO buffering — client uplink is decoded + metered with
                     // no upstream to funnel to, and no unbounded queue grows for the session's life.
                     None => {
-                        if let Ok((core, handle, _guard)) = open_admitted_session(
+                        if let Ok((core, handle)) = open_admitted_session(
                             &rt,
                             codec,
                             owner,
                             call_id,
                             Some(session_cfg),
                             Carrier::sideband(),
-                            budget,
                             meter,
                             now,
                             served_governed_session(),
@@ -1563,14 +1547,13 @@ where
                 // BROWSER-WEBRTC SIDEBAND: media is peer-to-peer by design (see `crate::topology::webrtc`
                 // docs) — this socket is control-only, so there is no provider leg to dial here.
                 Ingress::Sideband => {
-                    if let Ok((core, handle, _guard)) = open_admitted_session(
+                    if let Ok((core, handle)) = open_admitted_session(
                         &rt,
                         codec,
                         owner,
                         call_id,
                         Some(session_cfg),
                         Carrier::sideband(),
-                        budget,
                         meter,
                         now,
                         served_governed_session(),

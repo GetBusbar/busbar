@@ -161,10 +161,10 @@ jobs:
         run: |
           ref="$(sed -n 's/^SDK_REF="\(.*\)"$/\1/p' scripts/mcp-conformance.sh)"
           suite="$(sed -n 's/^CONFORMANCE_PIN="\(.*\)"$/\1/p' scripts/mcp-conformance.sh)"
-          [ -n "$ref" ] && [ -n "$suite" ] || {
+          if [ -z "$ref" ] || [ -z "$suite" ]; then
             echo "could not read SDK_REF/CONFORMANCE_PIN from scripts/mcp-conformance.sh" >&2
             exit 1
-          }
+          fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "suite=$(printf '%s' "$suite" | tr -c 'A-Za-z0-9._-' '-')" >> "$GITHUB_OUTPUT"
       - name: Cache the pinned control peer (restore)

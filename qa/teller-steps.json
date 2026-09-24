@@ -640,7 +640,7 @@
         "root": {
           "state": "proven",
           "leg": "root-admin",
-          "test": "crates/busbar/src/root/units_admin/tests/units_admin.rs::one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none",
+          "test": "crates/busbar/src/root/units_admin/tests/units_admin.rs::one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none",
           "note": "the same chain the rig column reads from outside, read from the step that writes it: a mutating verb appends exactly one entry under its own name and the applied outcome, a read appends none because the chain records what changed, and a unit refused before Admit still appends one under the rejected outcome. The chain is verified after each, so the entries are linked and not merely counted"
         }
       },

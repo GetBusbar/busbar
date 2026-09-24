@@ -75,8 +75,11 @@ groups:
       - { concurrent: 5 }                                   # no `per` = in-flight cap
 
 # ── PRICING: the ONE cost source ──
+# Every billable class the plane declares must be configured on the card, on any entry (0 = free;
+# a token tier an entry omits is 0): the LLM plane also bills a rerank's `search_units`.
 rate_card:
-  sonnet-anthropic: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75 }
+  sonnet-anthropic: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75,
+                      units: { search_units: 0 } }
   sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0 }
 per_request_fee: 0
 

@@ -147,8 +147,6 @@ impl AppSlots {
         // routing tables, and the caller is the only place that knows whose. Assuming it would make
         // this function silently wrong the day a second plane grows a bounded routing table worth
         // banking, which is exactly the direction the plane spine is going.
-        let banked_plane = plane;
-
         // Ingress pool labels: configured pools, model-routed labels, and the pre-routing sentinel.
         let mut ingress_labels: Vec<&str> = pools.iter().map(|(pool, _)| *pool).collect();
         ingress_labels.extend(by_model.iter().map(|(model, _)| *model));
@@ -183,13 +181,11 @@ impl AppSlots {
         // Engine labels: named pools walk their members; model-routed traffic is labeled by the
         // lane's model string (`metric_pool_label` resolves the empty cell key to the model).
         let mut lane_map: HashMap<Box<str>, HashMap<usize, LaneFamily>> = HashMap::new();
-        let mut engine_labels: Vec<(&str, Vec<usize>)> = Vec::new();
-        for (pool, member_idxs) in pools {
-            engine_labels.push((*pool, member_idxs.clone()));
-        }
-        for (model, idx) in by_model {
-            engine_labels.push((*model, vec![*idx]));
-        }
+        let engine_labels: Vec<(&str, Vec<usize>)> = pools
+            .iter()
+            .map(|(pool, member_idxs)| (*pool, member_idxs.clone()))
+            .chain(by_model.iter().map(|(model, idx)| (*model, vec![*idx])))
+            .collect();
 
         let mut failover = HashMap::with_capacity(engine_labels.len());
         for (pool, member_idxs) in &engine_labels {
@@ -234,7 +230,7 @@ impl AppSlots {
         }
 
         AppSlots {
-            banked_plane,
+            banked_plane: plane,
             request,
             lane: lane_map,
             failover,
@@ -672,8 +668,15 @@ impl ThreadBank {
 
 thread_local! {
     /// This thread's bank. Created on first emission; the registry keeps a second `Arc` so the
-    /// aggregator can keep summing a dead thread's final totals (counters are cumulative — dropping
-    /// a dead thread's cells would make the exposed totals REGRESS, which Prometheus rejects).
+    /// aggregator can read a dead thread's final totals (counters are cumulative — dropping a dead
+    /// thread's cells unread would make the exposed totals REGRESS, which Prometheus rejects).
+    ///
+    /// A bank whose thread has exited is RELEASED at the next flush, not kept: its counters are
+    /// folded into each slot's `retired` base and its histogram buffers drained, and then the
+    /// registry lets go (item 567). Tokio reaps idle blocking threads and spawns fresh ones on the
+    /// next burst, and banked emission is reachable from them (`translation`, via a cross-protocol
+    /// body large enough to be offloaded) — a registry that only grew kept one bank per thread that
+    /// ever emitted, for the process's life, and walked every one of them on every flush.
     static BANK: Arc<ThreadBank> = {
         let bank = Arc::new(ThreadBank::new());
         registry()
@@ -696,6 +699,9 @@ struct SlotDesc<H> {
     /// Counters only: the total already pushed into the recorder. Guarded by `flush_lock` (single
     /// writer); atomic so the cold-path reader needs no lock.
     flushed: AtomicU64,
+    /// Counters only: the final totals of released banks (threads that exited), which no live bank
+    /// holds any more. Guarded by `flush_lock`, like `flushed`.
+    retired: AtomicU64,
 }
 
 struct SlotTable<H> {
@@ -753,6 +759,7 @@ impl<H> SlotTable<H> {
             labels: labels.iter().map(|(k, v)| (*k, (*v).to_string())).collect(),
             handle: OnceLock::new(),
             flushed: AtomicU64::new(0),
+            retired: AtomicU64::new(0),
         }));
         index.insert(key, id);
         Some(id)
@@ -810,24 +817,21 @@ pub fn histogram_slot(name: &'static str, labels: &[(&'static str, &str)]) -> Hi
 static METADATA: metrics::Metadata<'static> =
     metrics::Metadata::new(module_path!(), metrics::Level::INFO, Some(module_path!()));
 
-fn mint_counter(desc: &SlotDesc<metrics::Counter>) -> metrics::Counter {
-    let labels: Vec<metrics::Label> = desc
+/// The recorder key a slot's handle is minted under: its name and its label set, in order.
+fn key_of<H>(desc: &SlotDesc<H>) -> metrics::Key {
+    let labels = desc
         .labels
         .iter()
-        .map(|(k, v)| metrics::Label::new(*k, v.clone()))
-        .collect();
-    let key = metrics::Key::from_parts(desc.name, labels);
-    metrics::with_recorder(|r| r.register_counter(&key, &METADATA))
+        .map(|(k, v)| metrics::Label::new(*k, v.clone()));
+    metrics::Key::from_parts(desc.name, labels.collect::<Vec<_>>())
+}
+
+fn mint_counter(desc: &SlotDesc<metrics::Counter>) -> metrics::Counter {
+    metrics::with_recorder(|r| r.register_counter(&key_of(desc), &METADATA))
 }
 
 fn mint_histogram(desc: &SlotDesc<metrics::Histogram>) -> metrics::Histogram {
-    let labels: Vec<metrics::Label> = desc
-        .labels
-        .iter()
-        .map(|(k, v)| metrics::Label::new(*k, v.clone()))
-        .collect();
-    let key = metrics::Key::from_parts(desc.name, labels);
-    metrics::with_recorder(|r| r.register_histogram(&key, &METADATA))
+    metrics::with_recorder(|r| r.register_histogram(&key_of(desc), &METADATA))
 }
 
 /// Overflow drain for a histogram buffer that outgrew [`HIST_DRAIN_THRESHOLD`]: push the samples
@@ -922,11 +926,17 @@ pub fn flush_to_recorder() {
     }
     let reg = registry();
     let _guard = reg.flush_lock.lock().unwrap_or_else(|p| p.into_inner());
-    let threads: Vec<Arc<ThreadBank>> = reg
-        .threads
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
+    // A bank only the registry still holds belongs to a thread that has exited (its thread-local
+    // `Arc` dropped with the thread), so nothing can write to it again: it is read one last time
+    // below and then released. The acquire fence pairs with that `Arc` drop, so the dead thread's
+    // final writes are visible to the read.
+    let mut banks = reg.threads.lock().unwrap_or_else(|p| p.into_inner());
+    let exited: Vec<_> = banks
+        .extract_if(.., |b| Arc::strong_count(b) == 1)
+        .collect();
+    let threads = banks.clone();
+    drop(banks);
+    std::sync::atomic::fence(Ordering::Acquire);
 
     // Counters: sum → delta → increment. A slot whose lifetime total is still zero is SKIPPED
     // (no handle minted), so registering slots does not surface zero-valued series that the macro
@@ -934,12 +944,16 @@ pub fn flush_to_recorder() {
     let counter_descs = reg.counters.descs.read().unwrap_or_else(|p| p.into_inner());
     for (i, desc) in counter_descs.iter().enumerate() {
         let (chunk_i, off) = (i / COUNTER_CHUNK, i % COUNTER_CHUNK);
-        let mut sum: u64 = 0;
-        for bank in &threads {
+        let mut sum: u64 = desc.retired.load(Ordering::Relaxed);
+        for bank in threads.iter().chain(&exited) {
             if let Some(chunk) = bank.counters[chunk_i].get() {
                 sum = sum.wrapping_add(chunk[off].load(Ordering::Relaxed));
             }
         }
+        // A released bank's final cells join the slot's retired base, which outlives the bank.
+        let gone = exited.iter().filter_map(|b| b.counters[chunk_i].get());
+        let gone = gone.fold(0u64, |t, c| t.wrapping_add(c[off].load(Ordering::Relaxed)));
+        desc.retired.fetch_add(gone, Ordering::Relaxed);
         let prev = desc.flushed.load(Ordering::Relaxed);
         if sum > prev {
             let handle = desc.handle.get_or_init(|| mint_counter(desc));
@@ -955,7 +969,7 @@ pub fn flush_to_recorder() {
     let hist_descs = reg.hists.descs.read().unwrap_or_else(|p| p.into_inner());
     for (i, desc) in hist_descs.iter().enumerate() {
         let (chunk_i, off) = (i / HIST_CHUNK, i % HIST_CHUNK);
-        for bank in &threads {
+        for bank in threads.iter().chain(&exited) {
             let Some(chunk) = bank.hists[chunk_i].get() else {
                 continue;
             };
@@ -972,6 +986,16 @@ pub fn flush_to_recorder() {
             }
         }
     }
+}
+
+/// THIS thread's bank as a weak handle, for the test that proves an exited thread's bank is released
+/// rather than kept for the process's life (item 567). Test build only.
+#[cfg(test)]
+pub(crate) fn this_threads_bank() -> std::sync::Weak<dyn std::any::Any + Send + Sync> {
+    BANK.with(|bank| {
+        let bank: Arc<dyn std::any::Any + Send + Sync> = bank.clone();
+        Arc::downgrade(&bank)
+    })
 }
 
 /// THE BANK'S INTERNALS, revealed to a TEST BUILD ONLY.

@@ -778,3 +778,171 @@ fn gemini_response_provider_specific_fields_drop_cross_proto_without_corruption(
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RESPONSE — the three Vertex-only fields OWNER RULING Q1 carries in the IR
+// (docs/design/1.6.0-QUESTIONS.md Q36) rather than declares as gaps:
+// `usageMetadata.trafficType`, top-level `createTime`, `groundingChunks[].web.domain`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `usageMetadata.trafficType` (ON_DEMAND vs PROVISIONED) reaches the IR's usage-detail attribution
+/// bucket and is re-emitted on write. INFORMATIONAL only — it must never move a billed total.
+#[test]
+fn gemini_vertex_traffic_type_survives() {
+    let body = json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [{"text": "the answer"}]},
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 18,
+            "candidatesTokenCount": 6,
+            "totalTokenCount": 24,
+            "trafficType": "ON_DEMAND"
+        }
+    });
+    let ir = Protocol::gemini()
+        .reader()
+        .read_response(&body)
+        .expect("read");
+    assert_eq!(
+        ir.usage.detail.traffic_type.as_deref(),
+        Some("ON_DEMAND"),
+        "usageMetadata.trafficType must reach the IR usage-detail carrier"
+    );
+    // INFORMATIONAL, not a count: billable_tokens must not move because of it.
+    assert_eq!(
+        ir.usage.input_tokens, 18,
+        "trafficType must not perturb the billed input total"
+    );
+    assert_eq!(
+        ir.usage.output_tokens, 6,
+        "trafficType must not perturb the billed output total"
+    );
+
+    let out = Protocol::gemini().writer().write_response(&ir);
+    assert_eq!(
+        out["usageMetadata"]["trafficType"], "ON_DEMAND",
+        "trafficType must be re-emitted: {out}"
+    );
+}
+
+/// The top-level `createTime` (RFC3339) reaches the IR's usage-detail carrier (see
+/// `IrUsageDetail::create_time`'s doc comment for why it rides there rather than `IrResponse`) and
+/// is re-emitted verbatim — not folded into `created` (Unix epoch), which has no Gemini analogue.
+#[test]
+fn gemini_vertex_create_time_survives() {
+    let body = json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [{"text": "the answer"}]},
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4, "totalTokenCount": 7},
+        "createTime": "2026-09-07T16:54:20.179017Z",
+        "responseId": "POyeasn2CreNtPUP6qaJwQg"
+    });
+    let ir = Protocol::gemini()
+        .reader()
+        .read_response(&body)
+        .expect("read");
+    assert_eq!(
+        ir.usage.detail.create_time.as_deref(),
+        Some("2026-09-07T16:54:20.179017Z"),
+        "createTime must reach the IR's dedicated carrier"
+    );
+
+    let out = Protocol::gemini().writer().write_response(&ir);
+    assert_eq!(
+        out["createTime"], "2026-09-07T16:54:20.179017Z",
+        "createTime must be re-emitted verbatim: {out}"
+    );
+}
+
+/// `groundingMetadata.groundingChunks[].web.domain` reaches the IR (stashed in `IrCitation::raw` —
+/// there is no dedicated typed field; see `read_gemini_grounding_citations`'s `chunk_source` doc
+/// comment for why) and survives a write back out — a plain `citationSources[]` entry (no grounding
+/// origin) carries no `domain` at all, so an ordinary citation stays untouched.
+#[test]
+fn gemini_vertex_grounding_chunk_domain_survives() {
+    let body = json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [{"text": "Paris is the capital."}]},
+            "finishReason": "STOP",
+            "groundingMetadata": {
+                "groundingChunks": [{
+                    "web": {"uri": "https://atlas", "title": "Atlas", "domain": "atlas.example"}
+                }],
+                "groundingSupports": [{
+                    "segment": {"startIndex": 0, "endIndex": 5, "text": "Paris"},
+                    "groundingChunkIndices": [0]
+                }]
+            }
+        }],
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4, "totalTokenCount": 7}
+    });
+    let ir = Protocol::gemini()
+        .reader()
+        .read_response(&body)
+        .expect("read");
+    let crate::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
+        panic!("expected a Text block, got {:?}", ir.content[0]);
+    };
+    assert_eq!(citations.len(), 1, "the grounding chunk must reach the IR");
+    let carried_domain = citations[0]
+        .raw
+        .as_ref()
+        .and_then(|r| r.get("web"))
+        .and_then(|w| w.get("domain"))
+        .and_then(|d| d.as_str());
+    assert_eq!(
+        carried_domain,
+        Some("atlas.example"),
+        "groundingChunks[].web.domain must reach the IR (via the stashed raw chunk)"
+    );
+
+    let out = Protocol::gemini().writer().write_response(&ir);
+    let sources = out["candidates"][0]["citationMetadata"]["citationSources"]
+        .as_array()
+        .expect("citationSources array");
+    assert!(
+        sources
+            .iter()
+            .any(|s| s.get("domain").and_then(|d| d.as_str()) == Some("atlas.example")),
+        "domain must survive the write: {out}"
+    );
+
+    // An ordinary (non-grounding) citationSources entry carries no domain — must stay untouched.
+    let cited = json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [{"text": "Paris is the capital."}]},
+            "finishReason": "STOP",
+            "citationMetadata": {"citationSources": [
+                {"startIndex": 0, "endIndex": 5, "uri": "https://atlas", "title": "Atlas"}
+            ]}
+        }],
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4, "totalTokenCount": 7}
+    });
+    let ir2 = Protocol::gemini()
+        .reader()
+        .read_response(&cited)
+        .expect("read");
+    let crate::ir::IrBlock::Text { citations, .. } = &ir2.content[0] else {
+        panic!("expected a Text block, got {:?}", ir2.content[0]);
+    };
+    assert!(
+        citations[0]
+            .raw
+            .as_ref()
+            .and_then(|r| r.get("domain"))
+            .is_none(),
+        "a plain citationSources entry must not fabricate a domain"
+    );
+    let out2 = Protocol::gemini().writer().write_response(&ir2);
+    let sources2 = out2["candidates"][0]["citationMetadata"]["citationSources"]
+        .as_array()
+        .expect("citationSources array");
+    assert!(
+        sources2[0].get("domain").is_none(),
+        "no domain must be fabricated: {out2}"
+    );
+}

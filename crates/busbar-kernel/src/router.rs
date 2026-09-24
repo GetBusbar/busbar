@@ -215,8 +215,9 @@ pub(crate) async fn server_timing(
 
 /// Pure reshaping step of [`reshape_body_limit_413`], split out so it is unit-testable without
 /// constructing a `Next`. Returns `resp` unchanged unless it is axum's OWN body-limit 413 —
-/// identified by status 413 with a non-JSON content-type AND a body exactly equal to
-/// [`AXUM_BODY_LIMIT_413_MARKER`] — in which case it is replaced by the inferred ingress protocol's
+/// identified by status 413 with a non-JSON content-type AND a body that CONTAINS
+/// [`AXUM_BODY_LIMIT_413_MARKER`] (a substring match, not byte-equality: see the marker's own doc for
+/// why equality is the bug) — in which case it is replaced by the inferred ingress protocol's
 /// native JSON `request_too_large` envelope. A 413 a real ingress handler already shaped as
 /// `application/json`, or any forward-relayed UPSTREAM 413 (different/non-marker body), is passed
 /// through verbatim (the body is buffered to inspect the sentinel, then re-attached unchanged).
@@ -269,15 +270,16 @@ pub(crate) async fn reshape_oversized_413(
 }
 
 /// Build the busbar HTTP router for a given `App` state with default limits. Factored out so the
-/// full route table + auth middleware can be exercised end-to-end in tests; production (`main`) calls
-/// `build_router_with_limits` with the operator-configured values, so this convenience wrapper is
-/// reached only from the test harness.
+/// full route table + auth middleware can be exercised end-to-end in tests, and reached only from the
+/// test harness. Production calls NEITHER this nor `build_router_with_limits`: it serves admin on its
+/// OWN listener through `build_split_routers_with_limits`, so the combined router built here — admin
+/// and data on one listener — is never constructed at runtime.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     // Convenience builder for tests / callers without an explicit limits handle: the historical 32
     // MiB body cap (via the installed `limits`, falling back to the default when uninstalled) and NO
     // inbound-concurrency layer (`0` = unlimited) — byte-for-byte today's behavior. Production goes
-    // through `build_router_with_limits` with the operator-configured values.
+    // through `build_split_routers_with_limits` with the operator-configured values.
     build_router_with_limits(
         app,
         busbar_kernel::proxy::max_translate_body_bytes(),
@@ -1068,17 +1070,6 @@ pub fn build_split_routers_with_limits(
     (data, admin, handle)
 }
 
-/// OUTERMOST inbound-concurrency cap. `max_inbound_concurrent == 0` disables the layer entirely (a
-/// true no-op) — but `0` is NOT the default; `DEFAULT_MAX_INBOUND_CONCURRENT` is `8192`, so the layer
-/// IS installed out of the box and an operator opts OUT with `0`, not in. When `> 0` (including the
-/// default), [`limits::admission::InboundAdmissionLayer`] (one `AdmissionGate`, shared across ALL
-/// requests) bounds in-flight inbound work: a request that arrives with the cap FULL is SHED
-/// immediately with a static 503 (`Retry-After: 1`) rather than parked waiting for a slot — see
-/// `limits::admission` for why shedding, not queueing, is the caller-facing contract. `poll_ready`
-/// never blocks either, so a shed on one request cannot head-of-line-block another sharing the
-/// connection. Applied as the last `.layer()` so it is outermost (it must admission-control before
-/// any inner work, including body buffering — a shed arrival never buffered a body). Factored out
-/// so the add-only-when-`>0` rule is unit-testable in isolation.
 /// Project the resolved `auth:` block onto [`state::App::auth_scope_caps`] — the per-PROVIDER admin
 /// trust CEILING (`max_admin_scope:`) the admin authorization step floors every non-`admin-tokens`
 /// verdict against.
@@ -1106,6 +1097,17 @@ pub(crate) fn project_auth_scope_caps(
         .collect()
 }
 
+/// OUTERMOST inbound-concurrency cap. `max_inbound_concurrent == 0` disables the layer entirely (a
+/// true no-op) — but `0` is NOT the default; `DEFAULT_MAX_INBOUND_CONCURRENT` is `8192`, so the layer
+/// IS installed out of the box and an operator opts OUT with `0`, not in. When `> 0` (including the
+/// default), [`limits::admission::InboundAdmissionLayer`] (one `AdmissionGate`, shared across ALL
+/// requests) bounds in-flight inbound work: a request that arrives with the cap FULL is SHED
+/// immediately with a static 503 (`Retry-After: 1`) rather than parked waiting for a slot — see
+/// `limits::admission` for why shedding, not queueing, is the caller-facing contract. `poll_ready`
+/// never blocks either, so a shed on one request cannot head-of-line-block another sharing the
+/// connection. Applied as the last `.layer()` so it is outermost (it must admission-control before
+/// any inner work, including body buffering — a shed arrival never buffered a body). Factored out
+/// so the add-only-when-`>0` rule is unit-testable in isolation.
 pub(crate) fn apply_inbound_concurrency_limit(
     router: Router,
     max_inbound_concurrent: usize,
@@ -1118,3 +1120,7 @@ pub(crate) fn apply_inbound_concurrency_limit(
         router
     }
 }
+
+#[cfg(test)]
+#[path = "tests/router_doc_tests.rs"]
+mod router_doc_tests;

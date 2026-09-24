@@ -89,6 +89,13 @@ pub(crate) struct TapReport {
     /// cut is an interruption, not a reversal of incurred cost, so what streamed before it bills
     /// (#62). A transfer that delivered nothing has nothing read here, which is what bills it zero.
     pub(crate) usage: Option<busbar_substrate_values::billing::TokenUsage>,
+    /// EVERY OPEN CLASS the response billed beside the token split — a rerank's search units
+    /// (item 134) — as the class map the governance ledger accrued them under
+    /// ([`crate::engine::usage::open_units_of`], the one projection both books read). Empty where the
+    /// response billed tokens only or nothing. It used to be absent: the governance ledger held a
+    /// rerank's search units and the late reading handed the durable book none (#71: the ledger event
+    /// is the raw counts per class, every class).
+    pub(crate) open_units: std::collections::BTreeMap<String, u64>,
     /// How the response ENDED, as the plane says it.
     pub(crate) finish: TapFinish,
 }
@@ -280,6 +287,12 @@ pub(crate) struct FirstByteBody<S, P> {
     /// otherwise reliably fail to parse a fragment). Also gates the truncation counter/warn to fire
     /// ONCE per response rather than once per over-cap chunk.
     nonstream_buf_truncated: bool,
+    /// THE STOP-REASON SCAN of a SAME-PROTOCOL NON-STREAM relay (owner ruling Q31 follow-up): the
+    /// dialect reader's stop-reason key, located INCREMENTALLY in the chunks as they pass through —
+    /// governed or not, and without a copy of the body. Its state is inline and bounded (the partial
+    /// key across a chunk boundary, then the token), so it allocates nothing. `None` where there is
+    /// no such relay or the dialect's stop vocabulary cannot say the generation failed.
+    stop_scan: Option<crate::usage_tail::StopKeyScanner>,
     /// Every upstream byte this body has read, counted on the one arm every chunk passes through.
     /// It exists for ONE figure: when the stream's reader REFUSED a count it could not read (the
     /// terminal error is `ir_parse`), no usage was recovered, and the request bills the SAME floor
@@ -336,6 +349,15 @@ where
         // Arm the stream ceiling on the CALLER's per-attempt deadline — see the `ceiling` field
         // docs for the one-envelope exactness argument.
         let ceiling = Box::pin(tokio::time::sleep_until(ceiling_deadline));
+        // Only the raw same-protocol non-stream relay (no translator, not a stream) is scanned; a
+        // dialect whose reader names no stop-reason key is not.
+        let stop_scan = (!is_sse && translate.is_none())
+            .then(|| {
+                crate::proto_codec::with_reader(ingress_protocol, |r| r.stop_reason_key())
+                    .flatten()
+                    .and_then(crate::usage_tail::StopKeyScanner::new)
+            })
+            .flatten();
         Self {
             inner,
             first_byte_sent: false,
@@ -362,6 +384,7 @@ where
             ended: false,
             nonstream_buf: Vec::new(),
             nonstream_buf_truncated: false,
+            stop_scan,
             upstream_bytes: 0,
             ceiling,
             tap,
@@ -441,6 +464,11 @@ where
                             continue; // only a partial frame buffered; poll inner again
                         }
                         return Poll::Ready(Some(Ok(out_bytes)));
+                    }
+                    // The relayed body's stop-reason field, located as the bytes go by (the
+                    // client's bytes are untouched): see `stop_scan`.
+                    if let Some(scan) = this.stop_scan.as_mut() {
+                        scan.feed(&chunk);
                     }
                     // Passthrough: the raw chunk is already in the client's shape. This branch is reached
                     // only for (a) a SAME-PROTOCOL NON-STREAM (`!is_sse`) `application/json` body — the
@@ -554,6 +582,8 @@ where
                         this.tap.report(TapReport {
                             lane: this.lane_idx,
                             usage: this.translate.as_ref().and_then(|t| t.usage()),
+                            // This end reads usage through a TOKEN reader only, so no counted class reaches it.
+                            open_units: Default::default(),
                             finish: TapFinish::Partial,
                         });
                         // The raw reqwest/transport error (`e`) must NEVER reach the client body: its
@@ -673,7 +703,11 @@ where
                         // before the first byte fed no reader and so bills nothing.
                         this.tap.report(TapReport {
                             lane: this.lane_idx,
-                            usage: this.translate.as_ref().and_then(|t| t.usage()),
+                            // The figure the Drop bills for this cut — a same-protocol non-stream
+                            // prefix included (item 367) — so the report and the accrual agree.
+                            usage: this.incurred_usage(),
+                            // This end reads usage through a TOKEN reader only, so no counted class reaches it.
+                            open_units: Default::default(),
                             finish: if had_first {
                                 TapFinish::Partial
                             } else {
@@ -813,10 +847,31 @@ where
                     // recovery, `op.extract_usage`) still hand back the concrete `IrUsage`, projected
                     // here. Either way the billing consumers below speak token totals and name zero
                     // concrete IR. Byte-identical (the projection carries the four billed totals).
+                    // A SAME-PROTOCOL NON-STREAM body whose own stop reason says the generation
+                    // FAILED (owner ruling Q31 follow-up), governed or not: the token the
+                    // incremental scan found in the relayed bytes, mapped by the dialect's reader
+                    // exactly as `read_response` maps it. No copy of the body, no document parse.
+                    // It decides the breaker and the end, never the charge. A body whose field never
+                    // arrived (cut, absent) reads no reason and is not a fault.
+                    let nonstream_generation_failed = this
+                        .stop_scan
+                        .as_ref()
+                        .and_then(|scan| scan.token())
+                        .and_then(|token| {
+                            crate::proto_codec::with_reader(this.ingress_protocol, |r| {
+                                r.stop_reason_of_token(token)
+                            })
+                            .flatten()
+                        })
+                        == Some(crate::ir::IrStopReason::Error);
+                    // The NON-TOKEN billing the same body reported beside its tokens — a rerank's
+                    // counted search units (item 134) — read by the same producer as the tokens.
+                    let mut open_billing: Option<busbar_substrate_values::billing::Billing> = None;
                     let token_usage: Option<busbar_substrate_values::billing::TokenUsage> =
                         if this.usage_sink.is_none() {
                             None
                         } else if let Some(t) = this.translate.as_ref() {
+                            open_billing = t.open_billing();
                             // A reader that REFUSED a count it could not read ends the stream in an
                             // `ir_parse` error — after the body was delivered. That is NO usage
                             // recovered, so it bills the floor the truncated-tail path bills, never
@@ -862,19 +917,27 @@ where
                                 // could not read, item 133) was already delivered: that is no usage
                                 // recovered, billed exactly as the truncated arm above bills it. A body
                                 // that READ cleanly and simply carries no token usage (an image op)
-                                // still bills nothing — `read_response` is the one that decides.
+                                // still bills nothing — `read_response` is the one that decides —
+                                // but what it billed beside tokens (a rerank's search units) is kept.
                                 this.op
                                     .extract_usage(this.ingress_protocol, &buf)
-                                    .or_else(|| {
-                                        this.op.op_handler.read_response(&buf).is_err().then(|| {
+                                    .or_else(|| match this.op.op_handler.read_response(&buf) {
+                                        Ok(read) => {
+                                            open_billing = read.billing();
+                                            None
+                                        }
+                                        Err(_) => {
                                             fault_unreadable(this.ingress_protocol, buf.len());
-                                            unrecovered_usage(this.ingress_protocol, &buf)
-                                        })
+                                            Some(unrecovered_usage(this.ingress_protocol, &buf))
+                                        }
                                     })
                             }
                         } else {
                             None
                         };
+                    // ONE projection of the open classes, ledgered below and reported to the durable
+                    // book, so both books hold the same counts (#71).
+                    let open_units = crate::engine::usage::open_units_of(&open_billing);
                     // Charge this request's token usage to the virtual key's budget (once), on EVERY
                     // end this arm reaches — a clean one, and one whose stream carried a reader-emitted
                     // terminal ERROR event (`translate.terminal_error()`) or whose cross-protocol
@@ -892,7 +955,27 @@ where
                         .as_ref()
                         .and_then(|t| t.terminal_error())
                         .is_some()
-                        || translate_aborted;
+                        || translate_aborted
+                        || nonstream_generation_failed;
+                    // The same-protocol non-stream failed generation's BREAKER FAULT (owner ruling
+                    // Q31 follow-up). The streamed ends record theirs above from the translator's
+                    // terminal error; this relay has no translator, so its fault is recorded here,
+                    // compensating the optimistic success recorded at headers time — exactly as
+                    // the buffered arm's failed-generation exit does, under the same reason.
+                    if nonstream_generation_failed {
+                        if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
+                            let tripped = host.lane_store().record_transient_in(
+                                &this.pool,
+                                this.lane_idx,
+                                "upstream-generation-failed",
+                                &this.breaker_cfg,
+                                None,
+                            );
+                            if tripped {
+                                emit_breaker_trip(host, rt, &this.pool, this.lane_idx);
+                            }
+                        }
+                    }
                     if let Some(sink) = this.usage_sink.take() {
                         // Ledger + meter the SERVING lane (`lane_idx` is the lane that
                         // actually answered, post-failover) through the one accrual seam.
@@ -915,6 +998,12 @@ where
                                 token_usage.as_ref(),
                                 &tier,
                             );
+                            crate::engine::usage::ledger_open_units(
+                                host,
+                                &sink,
+                                lane,
+                                open_units.clone(),
+                            );
                         }
                     }
                     // THE REPORT-BACK, on the end that actually arrived, and after the accrual so the
@@ -928,6 +1017,7 @@ where
                     this.tap.report(TapReport {
                         lane: this.lane_idx,
                         usage: token_usage,
+                        open_units,
                         finish: if stream_failed {
                             TapFinish::Error
                         } else {
@@ -967,11 +1057,18 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         // the guard makes that a fact about this file rather than about the cell.
         //
         // The tokens below were really generated and really delivered before the caller went away,
-        // and the arm underneath bills them — as it bills a cut's (#62).
+        // and the arm underneath bills them — as it bills a cut's (#62). ONE reading serves both.
+        let usage = if !self.ended || self.usage_sink.is_some() {
+            self.incurred_usage()
+        } else {
+            None
+        };
         if !self.ended {
             self.tap.report(TapReport {
                 lane: self.lane_idx,
-                usage: self.translate.as_ref().and_then(|t| t.usage()),
+                usage: usage.clone(),
+                // This end reads usage through a TOKEN reader only, so no counted class reaches it.
+                open_units: Default::default(),
                 finish: TapFinish::Partial,
             });
         }
@@ -981,14 +1078,15 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         // (client disconnect / cancellation), or CUT by an upstream transport error or the stream
         // ceiling (both transport arms set `ended` and leave the sink in place for this site). Either
         // way the natural-end site never ran, and the tokens already generated + delivered would go
-        // unbilled. Bill the tokens the readers accumulated up to the cut point instead: a
-        // mid-stream cut is an interruption, not a reversal of incurred cost (#62, owner-locked).
+        // unbilled. Bill the tokens incurred up to the cut point instead: a mid-stream cut is an
+        // interruption, not a reversal of incurred cost (#62, owner-locked).
         //
-        // Best-effort: the provider's terminal usage frame may not have arrived before the cancel, so
-        // `translate.usage()` may be partial or absent — partial/zero usage bills partial/zero
-        // (`record_tokens` no-ops on 0 tokens). Only the streaming `translate.usage()` source is
-        // consulted; a partially-buffered same-proto non-stream body cannot be reliably parsed for
-        // usage, so it is not billed on a mid-buffer drop.
+        // Best-effort on a STREAM: the provider's terminal usage frame may not have arrived before the
+        // cancel, so `translate.usage()` may be partial or absent — partial/zero usage bills
+        // partial/zero (`record_tokens` no-ops on 0 tokens). A SAME-PROTOCOL NON-STREAM body dropped
+        // mid-relay is NOT zero: the completion was generated whole before its first byte, so it bills
+        // the usage recovered from the bytes in hand, else the floor over them (`incurred_usage`, item
+        // 367). It used to bill nothing here, on the one delivery path whose tokens were all spent.
         let Some(sink) = self.usage_sink.take() else {
             return;
         };
@@ -996,7 +1094,6 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         // readers were fed only the frames that arrived before it, so their usage is what streamed
         // (`test_mid_stream_transport_error_does_not_bill_partial_usage`, whose name PB-27 still binds). Nothing streamed
         // before the first byte, so a cut there has no reader usage and accrues nothing below.
-        let usage = self.translate.as_ref().and_then(|t| t.usage());
         let tier = usage
             .as_ref()
             .map(crate::engine::usage::tier_usage)
@@ -1017,6 +1114,25 @@ impl<S, P> Drop for FirstByteBody<S, P> {
 }
 
 impl<S, P> FirstByteBody<S, P> {
+    /// THE USAGE A BODY THAT ENDED EARLY HAD ALREADY INCURRED — the one figure both the cut's
+    /// report-back and the drop-time accrual read, so the two books are handed one number (#71).
+    ///
+    /// A streaming body (same- or cross-protocol) reads what its readers accumulated up to the end
+    /// (`translate.usage()`, #62). A SAME-PROTOCOL NON-STREAM body (`translate == None`, `!is_sse`)
+    /// has no incremental reader, but its bounded copy (`nonstream_buf`) holds the bytes relayed so
+    /// far — and a non-streamed completion is generated WHOLE before its first byte is sent, so a body
+    /// that was cut or dropped mid-relay was paid for upstream in full. It bills exactly what the
+    /// truncated-tail path bills when it cannot read the whole document: the dialect's own `usage`
+    /// scan over the bytes in hand, else the conservative floor over them (`unrecovered_usage`), never
+    /// 0 (item 367). An empty copy — nothing relayed, a flat-fee op, or no sink to bill — is `None`.
+    fn incurred_usage(&self) -> Option<busbar_substrate_values::billing::TokenUsage> {
+        match self.translate.as_ref() {
+            Some(t) => t.usage(),
+            None => (!self.is_sse && !self.nonstream_buf.is_empty())
+                .then(|| unrecovered_usage(self.ingress_protocol, &self.nonstream_buf)),
+        }
+    }
+
     pub(crate) fn into_body(self) -> Body
     where
         S: Stream<Item = Result<Bytes, hyper::Error>> + Unpin + Send + 'static,
@@ -1029,3 +1145,7 @@ impl<S, P> FirstByteBody<S, P> {
 #[cfg(test)]
 #[path = "tests/unreadable_usage_floor_tests.rs"]
 mod unreadable_usage_floor_tests;
+
+#[cfg(test)]
+#[path = "engine_tests/nonstream_drop_billing_tests.rs"]
+mod nonstream_drop_billing_tests;

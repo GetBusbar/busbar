@@ -264,22 +264,7 @@ impl Checkpoint {
         secret: Option<&dyn CheckpointSecret>,
     ) -> Result<Self, SignError> {
         heads.sort();
-        let body = encode_body(
-            checkpoint_seq,
-            node,
-            wall,
-            &heads,
-            &totals,
-            backup_watermark,
-            store_seq_high_water,
-            history_seq,
-        );
-        let body_hash = crate::digest::sha256(&body);
-        let signature = match secret {
-            Some(secret) => Some(secret.sign(&body)?),
-            None => None,
-        };
-        Ok(Checkpoint {
+        let mut checkpoint = Checkpoint {
             checkpoint_seq,
             node,
             wall,
@@ -288,9 +273,15 @@ impl Checkpoint {
             backup_watermark,
             store_seq_high_water,
             history_seq,
-            body_hash,
-            signature,
-        })
+            body_hash: [0u8; 32],
+            signature: None,
+        };
+        // Sealed from the SAME preimage and the same digest call the verifier uses, so the seal and
+        // the check cannot drift apart: there is one `signed_body` and one `body_digest` (item 438).
+        let body = checkpoint.signed_body();
+        checkpoint.body_hash = checkpoint.body_digest();
+        checkpoint.signature = secret.map(|secret| secret.sign(&body)).transpose()?;
+        Ok(checkpoint)
     }
 
     /// The totals this checkpoint sealed for one balance, zeros if it sealed none.
@@ -304,7 +295,13 @@ impl Checkpoint {
     /// Recompute the body digest and compare it to the stored one. This is what catches a
     /// checkpoint whose figures were edited after it was sealed.
     pub fn body_hash_verifies(&self) -> bool {
-        crate::digest::sha256(&self.signed_body()) == self.body_hash
+        self.body_digest() == self.body_hash
+    }
+
+    /// The digest of [`Checkpoint::signed_body`] — the one place a checkpoint body is hashed, for
+    /// the seal and the verify alike.
+    fn body_digest(&self) -> [u8; 32] {
+        crate::digest::sha256(&self.signed_body())
     }
 
     /// The exact bytes that were signed, so a verifier can hand them to the same secret plugin.

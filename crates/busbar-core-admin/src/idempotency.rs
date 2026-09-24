@@ -18,7 +18,7 @@
 //! integrator's codec supplies whatever already-encoded response type it wants replayed.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 // The replay window (600 s) is the store face's own constant now — pulled forward to the ONE ABI
 // crate (DECISIONS #38/#40) so `busbar-plugin-loader`'s sealed store cache and this in-process
@@ -45,10 +45,33 @@ pub trait ReplayEncoder<T> {
 /// requiring a JSON value type).
 type Slot<V> = (u64, Option<V>);
 
+/// The durability seam this crate exposes for an idempotency claim (item 271's writer side).
+///
+/// This crate has no dependency on `busbar` (the composition root that owns `Durability` — naming
+/// it here would be the cycle `busbar` -> `busbar-core-admin` -> `busbar` that Cargo already
+/// refuses) and no dependency on `busbar-kernel-audit`. So the record itself is never this crate's
+/// shape: the root binds an impl that closes over ITS OWN `Durability`/`Settling` plumbing and
+/// calls `Durability::journal_claim` from inside [`journal_claim`](ClaimJournal::journal_claim). A
+/// node with no data dir binds nothing (`IdempotencyCache::new`, no journal), so it behaves exactly
+/// as it did before this seam existed — the whole reason [`IdempotencyCache::with_journal`] is an
+/// opt-in constructor rather than a mandatory argument.
+pub trait ClaimJournal: Send + Sync {
+    /// A reservation was just taken for `key` at `now` (unix seconds) — the same instant
+    /// [`IdempotencyCache::probe`] used to insert the in-flight sentinel. Called exactly once per
+    /// first sighting of a key (never on a replay, never on an in-flight refusal, never a second
+    /// time for the same reservation), and under the cache's own lock hold has already been
+    /// released — a slow or failing journal write never holds up the next probe.
+    fn journal_claim(&self, key: &(String, String), now: u64);
+}
+
 /// The cache itself. `(String, String)` is `(actor, header)` for a mint or `(actor, <framed id and
 /// header>)` for a rotate — the caller builds the key, this type only stores it.
 pub struct IdempotencyCache<V> {
     slots: Mutex<HashMap<(String, String), Slot<V>>>,
+    /// `None` on a node with no data dir (or any composition root that never bound one): the cache
+    /// then behaves exactly as it did before this seam existed. `Some` on a durable node, bound by
+    /// the composition root through [`IdempotencyCache::with_journal`].
+    journal: Option<Arc<dyn ClaimJournal>>,
 }
 
 /// The result of probing the cache before starting a mutating verb.
@@ -69,10 +92,23 @@ pub enum Probe<'a, V: Clone> {
 }
 
 impl<V: Clone> IdempotencyCache<V> {
-    /// A fresh, empty cache.
+    /// A fresh, empty cache with no claim journal bound — a node with no data dir, or any caller
+    /// that has not opted into durable claim records, behaves exactly as before this seam existed.
     pub fn new() -> Self {
         IdempotencyCache {
             slots: Mutex::new(HashMap::new()),
+            journal: None,
+        }
+    }
+
+    /// A fresh, empty cache that journals every claim it takes through `journal` (item 271's
+    /// writer side). The composition root calls this instead of [`IdempotencyCache::new`] on a
+    /// durable node; a node with no data dir keeps calling `new` and this cache never differs from
+    /// today's.
+    pub fn with_journal(journal: Arc<dyn ClaimJournal>) -> Self {
+        IdempotencyCache {
+            slots: Mutex::new(HashMap::new()),
+            journal: Some(journal),
         }
     }
 
@@ -104,6 +140,14 @@ impl<V: Clone> IdempotencyCache<V> {
             None => {
                 guard.insert(key.clone(), (now, None));
                 drop(guard);
+                // The claim is taken (a durable record of it — never a replay, an in-flight
+                // refusal, or a second sighting of the same key) exactly here, outside the lock:
+                // the sentinel is already visible to every other prober, so a slow or failing
+                // journal write never holds up the next probe. A node with no journal bound (no
+                // data dir) takes this branch every time it does today — nothing calls out.
+                if let Some(journal) = &self.journal {
+                    journal.journal_claim(&key, now);
+                }
                 Probe::Reserved(Reservation {
                     cache: self,
                     key,

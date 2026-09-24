@@ -697,113 +697,129 @@ fn a_committed_invoke_rewrite_installs_any_json_object_verbatim() {
     );
 }
 
-/// A PLANE-SIDE `BudgetHost` — and THE COMPILE-LEVEL PROOF of item 35's seam (#43): the plane-facing
-/// budget slice is implementable naming NO cost or price type. This impl names no `CostHandle`,
-/// `CostLeaseId`, `SettleOutcome`, `MeteringHost` or a pricing method; the counts-and-verdicts surface
-/// is all a plane-side host ever writes. (Before item 35 this impl had to write `cost()`,
-/// `cost_pricing_enabled`, `cost_price_usage` and `&CostHandle` parameters, or it did not compile.)
-/// It counts the metering rows it is asked to write; every other seam is unreachable here.
-struct BillingProbe {
-    rows: AtomicUsize,
-}
-
-impl BudgetHost for BillingProbe {
-    fn governance_enabled(&self) -> bool {
-        unreachable!()
-    }
-    fn meter_charge(&self, _: &DispatchScope, _: &busbar_plugin::hot::Usage) {
-        unreachable!()
-    }
-    fn rate_headroom(
-        &self,
-        _: &MeterPin,
-        _: &busbar_api::VirtualKey,
-        _: Option<&str>,
-        _: u64,
-    ) -> Option<f64> {
-        unreachable!()
-    }
-    fn budget_state(
-        &self,
-        _: &MeterPin,
-        _: &busbar_api::VirtualKey,
-        _: u64,
-    ) -> Vec<busbar_api::BudgetBucketState> {
-        unreachable!()
-    }
-    fn governance(&self) -> Option<GovHandle> {
-        Some(GovHandle(Arc::new(())))
-    }
-    fn cost_model_unpriced(&self, _: &str) -> bool {
-        false
-    }
-    fn session_meter(&self) -> Arc<dyn session_meter::SessionMeter> {
-        Arc::new(session_meter::LocalMeteringPort)
-    }
-    fn meter_ledger(
-        &self,
-        _: &MeterPin,
-        _: &busbar_api::VirtualKey,
-        _: &str,
-        _: &str,
-        _: &crate::billing::Usage,
-        _: u64,
-    ) {
-        unreachable!()
-    }
-    fn meter_series(
-        &self,
-        _: &GovHandle,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: Option<&crate::billing::TokenUsage>,
-        _: u64,
-    ) {
-        self.rows.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
-/// ITEM 35 / DECISION #43 — THE BILLING SWITCH IS THE KERNEL'S, READ OFF THE PIN. A plane hands its
-/// counts to `meter_series_billed` unconditionally; the kernel writes the metering row iff the card
-/// the request was PINNED under is present (#42). A plane-side host's own pin carries no card, so it
-/// writes none.
+/// THE HOST RE-ASK READS THE BINDINGS IN FORCE NOW. `role_bindings` is per-snapshot (rebuilt from
+/// the applied config on every apply), so a host that re-checked against the snapshot it was minted
+/// on would keep a role-bound subscription alive after its binding was removed. Stands before the
+/// swap (the binding is there), lapses after it (the binding is gone).
+///
+/// RED at HEAD: the re-ask re-resolved the synthesized key by id against the registry, so the FIRST
+/// ask already lapsed — the "stands" half fails.
 #[test]
-fn the_kernel_not_the_plane_decides_whether_a_metering_row_is_written() {
-    let gov = || GovHandle(Arc::new(()));
-    let card = |present: bool| {
-        let mut rates = std::collections::BTreeMap::new();
-        rates.insert(
-            "m".to_string(),
-            crate::config::RateEntryCfg {
-                input_utok: 1.0,
-                ..Default::default()
-            },
-        );
-        let cost = crate::cost::CostModel::resolve_parts(
-            present.then_some(&rates),
-            1,
-            &std::collections::BTreeMap::new(),
-        );
-        CostHandle(Arc::new(cost))
+fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
+    use crate::trust::validate::{Lapsed, Refusal, Snapshot, Standing};
+    let mut roles = std::collections::BTreeMap::new();
+    roles.insert("eng".to_string(), crate::config::RoleBindingCfg::default());
+    let mut rb = crate::config::RoleBindings::new();
+    rb.insert("idp".to_string(), roles);
+    let principal = crate::auth::Principal {
+        id: "alice@example.com".to_string(),
+        name: None,
+        roles: vec!["eng".to_string()],
+        ttl_secs: None,
     };
-    let probe = BillingProbe {
-        rows: AtomicUsize::new(0),
-    };
-    let plane_side_pin = probe
-        .meter_pin()
-        .expect("governed: the default pins no card");
-    for (pin, want) in [
-        (MeterPin::new(gov(), card(true)), 1),
-        (MeterPin::new(gov(), card(false)), 0),
-        (plane_side_pin, 0),
-    ] {
-        probe.rows.store(0, Ordering::SeqCst);
-        meter_series_billed(&probe, &pin, "key", "m", "provider", None, 0);
-        assert_eq!(
-            probe.rows.load(Ordering::SeqCst),
-            want,
-            "#42 writes a metering row iff the pinned card is present"
-        );
+    let key = crate::governance::synthesize_bound_key("idp", &principal, &rb).expect("bound");
+    let handle = Arc::new(crate::state::AppHandle::new(
+        crate::test_support::TestApp::new()
+            .role_bindings(rb)
+            .build(),
+    ));
+    let host = EngineHostImpl::from_handle(Arc::clone(&handle));
+    let standing = Standing::opened(
+        Some(&key),
+        Snapshot::Watching,
+        std::time::Duration::from_secs(300),
+    );
+
+    let now = host
+        .principal_standing(&standing, 1, 1_700_000_000)
+        .expect("the binding stands")
+        .expect("governed");
+    assert_eq!(now.id, "alice@example.com");
+
+    // A config apply that removes the binding swaps in a snapshot without it.
+    handle.swap(crate::test_support::TestApp::new().build());
+    assert_eq!(
+        host.principal_standing(&standing, 1, 1_700_000_000),
+        Err(Lapsed::Identity(Refusal::IdentityNotLive {
+            principal: "alice@example.com".to_string()
+        }))
+    );
+}
+
+/// The hook accesses the node journal holds under one ingress label, oldest first. The journal is
+/// process-wide, so each test below uses a label no other test uses.
+fn hook_accesses_under(op: &str) -> Vec<crate::audit::amend::Access> {
+    crate::audit::amend::node_recent()
+        .into_iter()
+        .filter_map(|a| match a.body {
+            crate::audit::amend::AmendBody::Access(x) if x.op_class.as_str() == op => Some(x),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A rewrite hook that abstains: only what it was handed matters.
+struct AbstainingRewrite;
+
+#[async_trait::async_trait]
+impl crate::hooks::RoutingPolicy for AbstainingRewrite {
+    async fn decide(
+        &self,
+        _req: &busbar_api::RoutingRequest<'_>,
+        _candidates: &[busbar_api::Candidate<'_>],
+        _ctx: &busbar_api::RoutingContext<'_>,
+        _budget: std::time::Duration,
+    ) -> busbar_api::PolicyResult {
+        Ok(busbar_api::RoutingDecision::Abstain)
     }
+    fn name(&self) -> &'static str {
+        "abstaining-rewrite"
+    }
+}
+
+/// THE REWRITE LEG EVERY NON-LLM PLANE FIRES (`host.transform_over`, reached by the tool, agent and
+/// session planes alike) hands the hook the call's arguments, and leaves exactly one access
+/// amendment naming the hook — the same record the gate seam leaves.
+#[test]
+fn the_plane_rewrite_leg_leaves_one_access_amendment_per_hook_handed_the_arguments() {
+    const PLANE: &str = "access-rewrite-leg";
+    let mut app = crate::test_support::TestApp::new().build();
+    let mut containers = crate::state::ContainerRewriteMap::new();
+    containers.insert(
+        "c".to_string(),
+        vec![(
+            std::time::Duration::from_millis(500),
+            Arc::new(AbstainingRewrite) as Arc<dyn crate::hooks::RoutingPolicy>,
+        )],
+    );
+    Arc::get_mut(&mut app)
+        .expect("sole owner")
+        .plane_rewrites
+        .insert(PLANE, containers);
+    let verdict = transform_over_over(&app, PLANE, "c", 1, "tool", br#"{"path":"/x"}"#);
+    assert!(matches!(verdict, TransformVerdict::Proceed { .. }));
+    let seen = hook_accesses_under(PLANE);
+    assert_eq!(seen.len(), 1, "one access per hand-over: {seen:?}");
+    assert_eq!(seen[0].name, "abstaining-rewrite");
+}
+
+/// THE PORT A PLANE'S OWN HOOK CALL SITES RECORD THROUGH: the host's provided `hook_read` seals the
+/// access on the node journal, naming the hook, the caller and the fields that crossed.
+#[test]
+fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal() {
+    const OP: &str = "access-host-port";
+    let app = crate::test_support::TestApp::new().build();
+    let host = crate::test_support::engine_host(&app);
+    host.hook_read("port-hook", Some("key-1"), OP, true);
+    let seen = hook_accesses_under(OP);
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0].name, "port-hook");
+    assert_eq!(
+        seen[0].subject,
+        crate::audit::amend::Subject::PrincipalId("key-1".to_string())
+    );
+    assert_eq!(
+        seen[0].fields,
+        vec!["content".to_string(), "identity".to_string()]
+    );
 }

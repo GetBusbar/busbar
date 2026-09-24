@@ -423,6 +423,32 @@ pub trait GovResolve {
     /// Re-resolve the principal with subject id `sub` against the LIVE registry, or `None` when it is
     /// gone. An in-memory index read — no store round trip, nothing to await.
     fn resolve_by_sub(&self, sub: &str) -> Option<std::sync::Arc<VirtualKey>>;
+
+    /// Re-derive a ROLE-BOUND principal's key from the LIVE `role_bindings.<module>`, or `None` when
+    /// no binding grants it any more (removed, or narrowed to no pools). A synthesized key is never
+    /// in the registry, so [`resolve_by_sub`](Self::resolve_by_sub) cannot re-check it. The default
+    /// answers `None`: a resolver that cannot see the bindings fails a bound principal CLOSED.
+    fn resolve_bound(
+        &self,
+        _module: &str,
+        _principal: &busbar_api::Principal,
+    ) -> Option<std::sync::Arc<VirtualKey>> {
+        None
+    }
+}
+
+/// HOW the principal a [`Standing`] re-asks was admitted — which decides where it is re-checked.
+#[derive(Clone, Debug)]
+enum Admitted {
+    /// A registry key (a virtual key / signed-token binding): re-resolved by id.
+    Registry(String),
+    /// A key SYNTHESIZED from the identifying module's `role_bindings` for an IdP principal: re-run
+    /// through the LIVE bindings, since the registry never held it. IdP-side revocation of the
+    /// principal itself is not re-checkable here and stays bounded by the lifetime.
+    Bound {
+        module: String,
+        principal: busbar_api::Principal,
+    },
 }
 
 /// A DECISION MADE AT OPEN AND TRUSTED WHILE OPEN — the standing-permission primitive.
@@ -442,8 +468,9 @@ pub trait GovResolve {
 /// their own hard cap so the two numbers are provably the same one.
 #[derive(Clone, Debug)]
 pub struct Standing {
-    /// The principal ID, NOT the principal. `None` only where governance is disabled.
-    principal: Option<String>,
+    /// HOW the principal was admitted (its ID, NOT the principal). `None` only where governance is
+    /// disabled.
+    principal: Option<Admitted>,
     snapshot: Snapshot,
     opened_at: std::time::Instant,
     lifetime: std::time::Duration,
@@ -484,7 +511,10 @@ impl Standing {
         lifetime: std::time::Duration,
     ) -> Self {
         Self {
-            principal: principal.map(|p| p.id.clone()),
+            principal: principal.map(|p| match crate::governance::bound_admission(p) {
+                Some((module, principal)) => Admitted::Bound { module, principal },
+                None => Admitted::Registry(p.id.clone()),
+            }),
             snapshot,
             opened_at: std::time::Instant::now(),
             lifetime,
@@ -516,20 +546,27 @@ impl Standing {
                 }));
             }
         }
-        let Some(id) = self.principal.as_deref() else {
+        let Some(admitted) = self.principal.as_ref() else {
             // Governance is off, so there is no principal and nothing to re-resolve.
             return Ok(None);
         };
         // Fail CLOSED on a governance runtime that has gone away underneath an open response: a
         // principal that was enforced at open and cannot be re-resolved now is not a principal this
-        // frame may be written under.
-        let resolved = governance
-            .and_then(|g| g.resolve_by_sub(id))
-            .ok_or_else(|| {
-                Lapsed::Identity(Refusal::IdentityNotLive {
-                    principal: id.to_string(),
-                })
-            })?;
+        // frame may be written under. A registry key re-resolves by id; a role-bound key re-runs
+        // through the live bindings (a binding removed or narrowed to nothing ends it here, and a
+        // changed pool/group comes back as the principal as it is now).
+        let (id, resolved) = match admitted {
+            Admitted::Registry(id) => (id, governance.and_then(|g| g.resolve_by_sub(id))),
+            Admitted::Bound { module, principal } => (
+                &principal.id,
+                governance.and_then(|g| g.resolve_bound(module, principal)),
+            ),
+        };
+        let resolved = resolved.ok_or_else(|| {
+            Lapsed::Identity(Refusal::IdentityNotLive {
+                principal: id.to_string(),
+            })
+        })?;
         if !resolved.is_live()
             || !resolved.enabled
             || resolved.expires_at.is_some_and(|exp| now >= exp)

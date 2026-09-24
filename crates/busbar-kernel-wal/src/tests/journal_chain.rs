@@ -49,7 +49,7 @@ fn the_record_header_is_fixed() {
     assert_eq!(JOURNAL_MAGIC, *b"BJRN");
     assert_eq!(JOURNAL_VERSION, 1);
 
-    let mut journal = Journal::memory_buffered(7);
+    let mut journal = Journal::memory_buffered(7, crate::tests::fixtures::wall_ms);
     let token = durability_token();
     let ack = journal
         .append(
@@ -105,7 +105,7 @@ fn every_class_is_pinned_to_its_byte() {
 /// Every unit's records go on ONE chain, in the order they were sealed, and the run verifies.
 #[test]
 fn one_chain_carries_every_unit() {
-    let mut journal = Journal::memory_buffered(1);
+    let mut journal = Journal::memory_buffered(1, crate::tests::fixtures::wall_ms);
     let token = durability_token();
     for class in [
         RecordClass::Transaction,
@@ -136,7 +136,7 @@ fn one_chain_carries_every_unit() {
 /// The chain catches a record whose BODY was edited, at that record.
 #[test]
 fn chain_verification_catches_a_mutated_body() {
-    let mut journal = Journal::memory_buffered(2);
+    let mut journal = Journal::memory_buffered(2, crate::tests::fixtures::wall_ms);
     let token = durability_token();
     let ack = journal
         .append(
@@ -158,7 +158,7 @@ fn chain_verification_catches_a_mutated_body() {
 /// and not only the identity and the two digests.
 #[test]
 fn chain_verification_catches_a_mutated_header() {
-    let mut journal = Journal::memory_buffered(2);
+    let mut journal = Journal::memory_buffered(2, crate::tests::fixtures::wall_ms);
     let token = durability_token();
     let mut run = journal
         .append(
@@ -212,7 +212,11 @@ fn chain_verification_catches_a_gap_in_the_numbering() {
     let shipper = BufferShipper::new();
     let token = durability_token();
 
-    let mut journal = Journal::memory_buffered_to(5, Box::new(shipper.clone()));
+    let mut journal = Journal::memory_buffered_to(
+        5,
+        Box::new(shipper.clone()),
+        crate::tests::fixtures::wall_ms,
+    );
     let first = journal
         .append(
             &token,
@@ -225,7 +229,10 @@ fn chain_verification_catches_a_gap_in_the_numbering() {
 
     // A node coming back up from the right head but at the wrong number: it skips 4 and 5.
     let mut resumed = Journal::resuming(
-        Wal::memory_buffered_to(Box::new(BufferShipper::new())),
+        Wal::memory_buffered_to(
+            Box::new(BufferShipper::new()),
+            crate::tests::fixtures::wall_ms,
+        ),
         5,
         journal.head(),
         6,
@@ -267,7 +274,7 @@ fn chain_verification_catches_a_gap_in_the_numbering() {
 /// A record REMOVED from the middle breaks the link rather than passing as a shorter history.
 #[test]
 fn chain_verification_catches_a_removed_record() {
-    let mut journal = Journal::memory_buffered(2);
+    let mut journal = Journal::memory_buffered(2, crate::tests::fixtures::wall_ms);
     let token = durability_token();
     let mut run = journal
         .append(
@@ -293,7 +300,11 @@ fn without_a_data_dir_the_journal_creates_no_file() {
     let cwd_before = super::fixtures::cwd_segment_names();
 
     let shipper = BufferShipper::new();
-    let mut journal = Journal::memory_buffered_to(3, Box::new(shipper.clone()));
+    let mut journal = Journal::memory_buffered_to(
+        3,
+        Box::new(shipper.clone()),
+        crate::tests::fixtures::wall_ms,
+    );
     assert_eq!(journal.mode(), Mode::MemoryBuffered);
     let token = durability_token();
     for round in 0..6 {
@@ -330,7 +341,11 @@ fn a_restart_without_a_data_dir_loses_nothing_that_was_shipped() {
     let token = durability_token();
 
     let (head_before, next_before) = {
-        let mut journal = Journal::memory_buffered_to(9, Box::new(shipper.clone()));
+        let mut journal = Journal::memory_buffered_to(
+            9,
+            Box::new(shipper.clone()),
+            crate::tests::fixtures::wall_ms,
+        );
         for round in 0..3 {
             journal
                 .append(
@@ -353,7 +368,7 @@ fn a_restart_without_a_data_dir_loses_nothing_that_was_shipped() {
 
     // And a node coming back up continues that chain rather than starting a second one.
     let mut restarted = Journal::resuming(
-        Wal::memory_buffered_to(Box::new(shipper.clone())),
+        Wal::memory_buffered_to(Box::new(shipper.clone()), crate::tests::fixtures::wall_ms),
         9,
         head,
         next_seq,
@@ -382,8 +397,13 @@ fn with_a_data_dir_the_journal_replays_to_the_same_head() {
     let token = durability_token();
 
     let (head_before, next_before) = {
-        let mut journal = Journal::in_directory(5, &inner, Box::new(NullShipper::new()))
-            .expect("the directory is writable");
+        let mut journal = Journal::in_directory(
+            5,
+            &inner,
+            Box::new(NullShipper::new()),
+            crate::tests::fixtures::wall_ms,
+        )
+        .expect("the directory is writable");
         assert_eq!(journal.mode(), Mode::OnDisk);
         for round in 0..4 {
             journal
@@ -397,8 +417,13 @@ fn with_a_data_dir_the_journal_replays_to_the_same_head() {
         (journal.head(), journal.next_seq())
     };
 
-    let reopened = Journal::in_directory(5, &inner, Box::new(NullShipper::new()))
-        .expect("the journal reopens onto what it wrote");
+    let reopened = Journal::in_directory(
+        5,
+        &inner,
+        Box::new(NullShipper::new()),
+        crate::tests::fixtures::wall_ms,
+    )
+    .expect("the journal reopens onto what it wrote");
     assert_eq!(
         reopened.head(),
         head_before,
@@ -417,7 +442,12 @@ fn with_a_data_dir_the_journal_replays_to_the_same_head() {
 /// drop, and never a refusal.
 #[test]
 fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
-    let mut journal = Journal::memory_buffered_to(4, Box::new(RefusingShipper)).with_capacity(4);
+    let mut journal = Journal::memory_buffered_to(
+        4,
+        Box::new(RefusingShipper),
+        crate::tests::fixtures::wall_ms,
+    )
+    .with_capacity(4);
     assert_eq!(journal.capacity(), 4);
     let token = durability_token();
 
@@ -489,7 +519,12 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
 /// outlives it; a break dated to 1970 does not.
 #[test]
 fn the_overflow_break_is_dated_so_a_retention_pass_does_not_delete_the_evidence() {
-    let mut journal = Journal::memory_buffered_to(4, Box::new(RefusingShipper)).with_capacity(4);
+    let mut journal = Journal::memory_buffered_to(
+        4,
+        Box::new(RefusingShipper),
+        crate::tests::fixtures::wall_ms,
+    )
+    .with_capacity(4);
     let token = durability_token();
 
     // The store refuses, so the batch is retained. That is the buffer filling toward the bound.
@@ -557,7 +592,12 @@ fn the_overflow_break_is_dated_so_a_retention_pass_does_not_delete_the_evidence(
 /// the bound for as long as the outage lasts.
 #[test]
 fn a_batch_bigger_than_the_capacity_still_seals_a_chain_break() {
-    let mut journal = Journal::memory_buffered_to(4, Box::new(RefusingShipper)).with_capacity(4);
+    let mut journal = Journal::memory_buffered_to(
+        4,
+        Box::new(RefusingShipper),
+        crate::tests::fixtures::wall_ms,
+    )
+    .with_capacity(4);
     let token = durability_token();
 
     journal
@@ -598,7 +638,12 @@ fn a_batch_bigger_than_the_capacity_still_seals_a_chain_break() {
 /// record, which is where it was always the durable answer.
 #[test]
 fn overflow_history_is_a_window_while_the_dropped_total_keeps_rising() {
-    let mut journal = Journal::memory_buffered_to(4, Box::new(RefusingShipper)).with_capacity(4);
+    let mut journal = Journal::memory_buffered_to(
+        4,
+        Box::new(RefusingShipper),
+        crate::tests::fixtures::wall_ms,
+    )
+    .with_capacity(4);
     let token = durability_token();
 
     for round in 0..80u8 {
@@ -682,6 +727,7 @@ fn a_tail_this_build_cannot_read_does_not_make_the_next_record_vanish() {
             Box::new(NullShipper::new()),
             Mode::OnDisk,
             CEILING,
+            crate::tests::fixtures::wall_ms,
         )
         .expect("a memory segment cannot fail to open")
     };
@@ -748,7 +794,7 @@ fn a_tail_this_build_cannot_read_does_not_make_the_next_record_vanish() {
 fn the_bound_is_pinned() {
     assert_eq!(MEMORY_BUFFER_RECORDS, 8192);
     assert_eq!(
-        Journal::memory_buffered(1).capacity(),
+        Journal::memory_buffered(1, crate::tests::fixtures::wall_ms).capacity(),
         MEMORY_BUFFER_RECORDS
     );
 }

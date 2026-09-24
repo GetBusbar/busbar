@@ -871,7 +871,7 @@ jobs:
           KID1=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key_id',''))")
           RESP2=$(curl -sS -X POST "http://127.0.0.1:8080/auth/token" -H "Authorization: Bearer $JWT")
           KID2=$(echo "$RESP2" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key_id',''))")
-          [ -n "$KID2" ] && [ "$KID1" = "$KID2" ] || { echo "one-key idempotency broken: $KID1 vs $KID2" >&2; exit 1; }
+          if [ -z "$KID2" ] || [ "$KID1" != "$KID2" ]; then echo "one-key idempotency broken: $KID1 vs $KID2" >&2; exit 1; fi
           echo "  one-key idempotency: second POST returned the SAME key_id"
 
           # Drive a real chat-completion with the issued key.

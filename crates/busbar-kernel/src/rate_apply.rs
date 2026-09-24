@@ -34,11 +34,17 @@ use crate::billing::RawTierRates;
 pub struct RawRates<'r> {
     /// `(lane, its four raw micro-per-token tier rates)`, as configured.
     pub lanes: &'r [(String, RawTierRates)],
+    /// `(lane, open class, nano-units per unit)` for every open-class rate a lane's `units:` names
+    /// (item 123) — so a card rebuilt from this view prices the open classes the live one does.
+    pub units: &'r [(String, String, u64)],
     /// The flat per-request figure, in abstract minor units — a neutral rate-carrier value the
     /// holder reads as the per-request fee. Never interpreted here.
     pub flat_minor: i64,
     /// Whether the deployment configured a rate card at all.
     pub present: bool,
+    /// Each other plane's own fees (#47), by plane registry key — dated with the card, like the flat
+    /// figure, so an era before a fee edit prices at the fees in force then.
+    pub plane_fees: &'r crate::config::PlaneFeesMap,
 }
 
 /// A holder of rates that a live apply must reach.
@@ -83,6 +89,14 @@ pub trait RateEpoch: Send + Sync {
     /// therefore the reading that covers everything — never a refusal, because an accrual that
     /// could not be dated must still be recorded.
     fn effective_from_at(&self, at_ms: u64) -> u64;
+
+    /// THE HISTORY ITSELF, for the budget ledger's reads and its gate (OWNER RULING Q14): a budget
+    /// cell's counts are dated by [`Self::effective_from_at`] and priced at the card each era
+    /// resolves to. `None` — the default, and a build with no root ledger — prices every era at
+    /// the live card, the undated derivation.
+    fn history(&self) -> Option<std::sync::Arc<busbar_kernel_ledger::cost::History>> {
+        None
+    }
 }
 
 /// THE PROCESS-WIDE rate DATER, installed once by the composition root ([`install_rate_epoch`]).
@@ -101,9 +115,13 @@ pub fn install_rate_epoch(holder: &'static dyn RateEpoch) {
 /// deployment opened with rather than to whatever is newest.
 #[must_use]
 pub fn effective_from_at(at_ms: u64) -> u64 {
-    EPOCH
-        .get()
-        .map_or(0, |holder| holder.effective_from_at(at_ms))
+    EPOCH.get().map_or(0, |h| h.effective_from_at(at_ms))
+}
+
+/// The installed holder's dated history, if it holds one — see [`RateEpoch::history`].
+#[must_use]
+pub fn dated_history() -> Option<std::sync::Arc<busbar_kernel_ledger::cost::History>> {
+    EPOCH.get().and_then(|holder| holder.history())
 }
 
 /// Raise the seam: the configured rates are now `rates`.
@@ -111,9 +129,7 @@ pub fn effective_from_at(at_ms: u64) -> u64 {
 /// A no-op in a build that installed no holder, which is the honest answer for a binary with no root
 /// ledger in it — not a swap quietly dropped.
 pub fn rates_applied(rates: &RawRates<'_>) {
-    if let Some(holder) = APPLY.get() {
-        holder.rates_applied(rates);
-    }
+    APPLY.get().into_iter().for_each(|h| h.rates_applied(rates));
 }
 
 #[cfg(test)]

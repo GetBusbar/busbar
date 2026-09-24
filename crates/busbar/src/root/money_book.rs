@@ -200,6 +200,7 @@ impl MoneyBook for PassThroughBook {
 
     fn metering_row(&self, facts: &MeteringFacts) -> MeteringRow {
         MeteringRow {
+            usage_units: Default::default(),
             key_id: facts.key_id.clone(),
             model: facts.model.clone(),
             provider: facts.provider.clone(),

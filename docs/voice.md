@@ -75,7 +75,7 @@ this never fires.
 | Key | Type | Required | Default | What it is |
 |---|---|---|---|---|
 | `session` | object | no | the locked session defaults below | The session posture every session opens with: model, modalities, instructions, voice, input/output audio format, `turn_detection` (VAD), the tool set, tool-choice policy, and the per-response output-token ceiling. Its shape **is** the GA `session` wire object (`SessionConfig`) — there is no second, plane-private copy of the VAD/media grammar to drift from the wire one. |
-| `session_max_secs` | u32 | no | `3600` (60 min) | Hard session wall-clock ceiling. |
+| `session_max_secs` | u32 | no | none — unlimited | Hard session wall-clock ceiling. An OPTIONAL setting in this plane's own config (owner ruling Q21a): no default, no code constant; absent means no limit, and the plane enforces and settles on close only when configured. |
 | `context_window_tokens` | u32 | no | `32768` | Context-window ceiling. |
 | `max_output_tokens` | u32 | no | `4096` | Per-response output-token ceiling. |
 

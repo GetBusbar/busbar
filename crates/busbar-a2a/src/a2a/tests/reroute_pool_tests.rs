@@ -234,7 +234,7 @@ async fn an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_t
     h.app.breaker_force_open(
         "agent:planner",
         1,
-        busbar_kernel::store::now().saturating_add(600),
+        busbar_substrate_values::store::now().saturating_add(600),
     );
     let a_hits = hits(&h, "backend.agent.test");
     let b_hits = hits(&h, "backend-b.agent.test");

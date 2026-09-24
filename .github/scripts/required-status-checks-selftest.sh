@@ -12,8 +12,8 @@
 #      on main/dev/qa today (the pre-#78-rename `security.yml` job, with no ` + cargo-audit` suffix)
 #      — not just against predev's renamed qa-security.yml.
 #
-# 454 follow-up: item 121 (9beaba082) added the `tool-reply` leg (and job) to the Voice verdict's
-# `needs:` list, making the doc's hardcoded "8 legs" / "9-job battery" counts stale. The doc's leg
+# Adding a leg (and job) to the Voice verdict's `needs:` list makes the doc's hardcoded "8 legs" /
+# "9-job battery" counts stale. The doc's leg
 # list is now DERIVED from `verdict`'s `needs:` at selftest time instead of being a fixed number —
 # every leg named there must appear in the doc's Voice row, and the doc must not spell a fixed leg
 # count that can drift out from under it again.

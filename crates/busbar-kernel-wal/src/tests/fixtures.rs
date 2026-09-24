@@ -6,7 +6,7 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{DurableWrite, Grant, KernelSeal};
+use busbar_contract::caps::{DurableWrite, Grant, KernelSeal, StepName};
 
 use crate::backend::{MemoryFactory, SegmentBackend, SegmentFactory};
 use crate::record::Record;
@@ -16,6 +16,9 @@ use crate::record::Record;
 pub fn durability_token() -> Grant<DurableWrite> {
     Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel())
 }
+
+/// The step a battery commits at. Any step will do; the log does not read it.
+pub const METER: StepName = StepName::Meter;
 
 /// What a failing disk should do on its next operation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -153,6 +156,20 @@ impl SegmentFactory for FaultyFactory {
     fn is_durable(&self) -> bool {
         true
     }
+
+    fn segment_file(&self, index: u64) -> Option<std::path::PathBuf> {
+        self.inner.segment_file(index)
+    }
+
+    fn quarantine(
+        &mut self,
+        index: u64,
+        offset: u64,
+        unix_ms: u64,
+        bytes: &[u8],
+    ) -> io::Result<Option<std::path::PathBuf>> {
+        self.inner.quarantine(index, offset, unix_ms, bytes)
+    }
 }
 
 /// `n` records with bodies of the given length, numbered from `first_seq`.
@@ -259,4 +276,12 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+/// The wall clock a test hands a log, in unix milliseconds — the reading the composition root
+/// hands a production one. A test may read a clock; the crate under test may not.
+pub fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }

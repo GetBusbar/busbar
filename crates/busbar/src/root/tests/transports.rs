@@ -7,6 +7,8 @@ use busbar_unit_transport_key::AccessPurpose;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use busbar_transport_tls::TlsTransport as SecuredTransport;
+
 /// A secret source over an in-memory map. The deployment's real resolver is the secret plugin;
 /// what matters for these tests is that it is A source and the unit reads through it.
 struct MapSource(HashMap<String, Vec<u8>>);
@@ -252,7 +254,7 @@ fn a_listener_binds_through_the_transport_it_was_provisioned_into() {
         ("key-ref".to_string(), key_pem),
     ]));
     let journal = RecordingJournal::default();
-    let tls = busbar_transport_tls::TlsTransport::new();
+    let tls = SecuredTransport::new();
     let token = crate::root::kernel::new_kernel().transport_key_token();
 
     let listeners = vec![ListenerConfig {
@@ -443,4 +445,160 @@ fn a_plain_boot_with_no_tls_configured_journals_nothing() {
             .all(|r| r.class != busbar_kernel_wal::RecordClass::Access),
         "no secret was read, so no Access entry may exist: {records:?}"
     );
+}
+
+/// A self-signed pair naming the loopback address as well as `localhost`, so a client dialling a
+/// bound `127.0.0.1:<port>` validates the name — plus the trust store that trusts exactly it.
+fn self_signed_for_loopback() -> (Vec<u8>, Vec<u8>, Arc<rustls::ClientConfig>) {
+    busbar_unit_transport_key::install_crypto_provider();
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .expect("a self-signed pair");
+    let cert_pem = cert.pem().into_bytes();
+    let key_pem = signing_key.serialize_pem().into_bytes();
+
+    use rustls::pki_types::pem::PemObject;
+    let mut roots = rustls::RootCertStore::empty();
+    for der in rustls::pki_types::CertificateDer::pem_slice_iter(&cert_pem) {
+        roots.add(der.expect("a certificate")).expect("a root");
+    }
+    let client = Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    );
+    (cert_pem, key_pem, client)
+}
+
+/// TWO SECURED LISTENERS, EACH SERVED ITS OWN CERTIFICATE (item 252).
+///
+/// This module's doc used to name a live hazard: the transport's `accept` read slot 0, so the
+/// administrative listener this allocation puts in slot 1 would be mis-served. The transport fixed
+/// `accept` and the warning stayed, sending a reader to avoid a deployment shape that is safe. The
+/// doc now states what the transport does; this pins that statement through THIS module's
+/// provisioning: the data and administrative listeners get two different certificates, and a
+/// client trusting ONLY the administrative one completes a handshake against the administrative
+/// listener — which it could not if `accept` served slot 0's certificate there.
+#[test]
+fn two_secured_listeners_are_each_served_the_certificate_provisioned_for_them() {
+    let module = include_str!("../transports.rs");
+    let doc: String = module
+        .lines()
+        .take_while(|l| l.starts_with("//") || l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for stale in ["reads slot 0 directly", "two TLS listeners is exposed"] {
+        assert!(
+            !doc.contains(stale),
+            "the module doc still names a hazard the transport no longer has: {stale:?}"
+        );
+    }
+
+    let (data_cert, data_key, data_trust) = self_signed_for_loopback();
+    let (admin_cert, admin_key, admin_trust) = self_signed_for_loopback();
+    let source = MapSource(HashMap::from([
+        ("data-cert".to_string(), data_cert),
+        ("data-key".to_string(), data_key),
+        ("admin-cert".to_string(), admin_cert),
+        ("admin-key".to_string(), admin_key),
+    ]));
+    let listeners = vec![
+        ListenerConfig {
+            role: ListenerRole::Data,
+            bind: "127.0.0.1:0".into(),
+            tls: Some(TlsMaterialRefs {
+                cert: "data-cert".into(),
+                key: "data-key".into(),
+                client_ca: None,
+            }),
+            fingerprint: "data-listener",
+        },
+        ListenerConfig {
+            role: ListenerRole::Admin,
+            bind: "127.0.0.1:0".into(),
+            tls: Some(TlsMaterialRefs {
+                cert: "admin-cert".into(),
+                key: "admin-key".into(),
+                client_ca: None,
+            }),
+            fingerprint: "admin-listener",
+        },
+    ];
+    let server = SecuredTransport::new();
+    let token = crate::root::kernel::new_kernel().transport_key_token();
+    let provisioned = provision_servers(
+        &listeners,
+        &source,
+        &RecordingJournal::default(),
+        &server,
+        &token,
+    )
+    .expect("two self-signed pairs resolve and parse");
+    assert_eq!(
+        provisioned
+            .iter()
+            .map(|p| p.handle.slot())
+            .collect::<Vec<_>>(),
+        vec![0, 1],
+        "the administrative listener is the one in slot 1"
+    );
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    runtime.block_on(async {
+        let bound = listen_all(&server, &provisioned, 1024)
+            .await
+            .expect("both listeners bind against their own slots");
+        let trust = busbar_contract::caps::Grant::<busbar_contract::caps::Dial>::mint(
+            &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+        );
+        // (listener, the trust store a client dials it with, the slot that store is kept in,
+        // whether the handshake completes). The dial side is the same transport: its client
+        // configs are a map of their own, so one object serves both ends of the loopback.
+        let cases = [
+            (&bound[1], &admin_trust, ListenerRole::Data, true),
+            (&bound[0], &data_trust, ListenerRole::Admin, true),
+            (&bound[1], &data_trust, ListenerRole::Additional(0), false),
+        ];
+        for (listener, trust_store, dial_slot, completes) in cases {
+            let dial_key = provision_dial(
+                &server,
+                &token,
+                dial_slot,
+                "the-listener-roots",
+                Arc::clone(trust_store),
+            );
+            let addr: &'static str = Box::leak(listener.local_addr().into_boxed_str());
+            let dest = busbar_contract::VerifiedDestination::seal(
+                &trust,
+                busbar_contract::DestinationFacts::Upstream {
+                    transport: "stream",
+                    address: busbar_contract::transport::dest::UpstreamAddress::socket(addr),
+                    lane: busbar_contract::LaneId::new("the-listener"),
+                },
+                "stream",
+                None,
+            );
+            let accepted = {
+                let server = &server;
+                async move { server.accept(listener).await }
+            };
+            let (dialled, accepted) = tokio::join!(server.dial(&dest, &dial_key), accepted);
+            assert_eq!(
+                dialled.is_ok(),
+                completes,
+                "a client trusting one listener's certificate against {addr}: expected the \
+                 handshake to {}",
+                if completes { "complete" } else { "fail" }
+            );
+            if completes {
+                assert!(
+                    accepted.is_ok(),
+                    "the listener accepted the connection it served"
+                );
+            }
+        }
+    });
 }

@@ -554,7 +554,6 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
         "audio_tokens_out",
         "text_tokens_in",
         "text_tokens_out",
-        "cached_tokens",
         "audio_seconds_in",
     ] {
         assert!(
@@ -562,6 +561,13 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
             "expected meter class {expected} in {classes:?}"
         );
     }
+    // #71: cached_tokens is a SUBSET of audio_tokens_in/text_tokens_in, not a class beside them, so
+    // the usage report naming it must NOT produce a meter line for it — pricing it too would
+    // double-bill the same cached input.
+    assert!(
+        !classes.contains(&"cached_tokens"),
+        "cached_tokens must never be a meter class (#71); got {classes:?}"
+    );
 
     // The point of the split, asserted as a quantity and not just as a label: the fixture reports
     // three text tokens consumed and four emitted, and the two land on different classes at their
@@ -583,9 +589,9 @@ fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
     // than a label that still reads as present.
     assert_eq!(quantity("audio_tokens_in"), Some(10));
     assert_eq!(quantity("audio_tokens_out"), Some(20));
-    // The cached figure is a DISCOUNT, so a class reported at the wrong figure overcharges a caller
-    // for input it was already billed for.
-    assert_eq!(quantity("cached_tokens"), Some(1));
+    // The cached figure is a SUBSET of the input figure above, not a class beside it (#71): pricing
+    // it too would double-bill the same cached input, so it never reaches the meter as its own line.
+    assert_eq!(quantity("cached_tokens"), None);
 }
 
 #[test]
@@ -1651,4 +1657,107 @@ fn a_barge_in_bills_what_the_interrupted_turn_served() {
         "the second the caller spoke before barging in was served and must be metered"
     );
     assert_eq!(metered(&locators, "tool_calls"), Some(1));
+}
+
+/// ONE READING OF A TURN (item 138: "one pipeline, or a proof they agree"). A host that drives the
+/// session itself — the voice runtime, which serves every live session in production — ledgers
+/// [`crate::session::class_counts`]; the unit loop ledgers what `meter` emits. Over the same turn
+/// (one second of uplink audio, one tool call opened, a usage report naming all five token classes)
+/// the two are the same set of `(class, count)` pairs.
+#[test]
+fn class_counts_are_the_lines_meter_emits_for_the_same_turn() {
+    let plane = openai_plane();
+    let arena = LeakPlaneAlloc;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut state = open_client_session(&plane, &c);
+
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(first) = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the turn opens")
+    else {
+        panic!("the first client event opens a turn");
+    };
+    let turn = crate::tests::harness::unit(first.op, first.body_ir, first.facts);
+    let append = serde_json::to_vec(&json!({
+        "type": "input_audio_buffer.append",
+        "audio": base64_of(&vec![0u8; 48_000]),
+    }))
+    .unwrap();
+    let frames = [frame(&append)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("audio decodes");
+    plane
+        .encode_ingress_frame(&turn, &frames[0], &dest, Some(&mut state), &c)
+        .expect("audio relays");
+    let opened = serde_json::to_vec(&json!({
+        "type": "response.output_item.added",
+        "item": { "type": "function_call", "call_id": "call_1", "name": "lookup" },
+    }))
+    .unwrap();
+    let frames = [frame(&opened)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_response(&mut cursor, &dest, Some(&mut state), &c)
+        .expect("a tool-call open decodes");
+    let done = serde_json::to_vec(&json!({
+        "type": "response.done",
+        "response": {
+            "usage": {
+                "input_token_details": { "audio_tokens": 10, "text_tokens": 3, "cached_tokens": 1 },
+                "output_token_details": { "audio_tokens": 20, "text_tokens": 4 },
+            }
+        }
+    }))
+    .unwrap();
+    let frames = [frame(&done)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::Terminal { r, .. } = plane
+        .decode_response(&mut cursor, &dest, Some(&mut state), &c)
+        .expect("the usage report decodes")
+    else {
+        panic!("a usage report ends the turn");
+    };
+    let mut emitted: Vec<(String, u64)> = plane
+        .meter(&turn, &r, &c)
+        .lines
+        .as_slice()
+        .iter()
+        .filter_map(|l| {
+            Some((
+                l.class.as_str().to_string(),
+                l.quantity.filter(|n| *n != 0)?,
+            ))
+        })
+        .collect();
+    emitted.sort();
+
+    let usage = busbar_voice_codec::ir::IrDuplexUsage {
+        audio_in: 10,
+        audio_out: 20,
+        text_in: 3,
+        text_out: 4,
+        cached: 1,
+    };
+    let mut counters = crate::session::TurnCounters::default();
+    counters.admit_audio(busbar_voice_codec::ir::AudioFormat::Pcm16, 48_000);
+    counters.open_tool_call();
+    let mut counted: Vec<(String, u64)> = crate::session::class_counts(Some(&usage), counters)
+        .into_iter()
+        .map(|(class, n)| (class.as_str().to_string(), n))
+        .collect();
+    counted.sort();
+
+    assert_eq!(counted, emitted, "one reading of one turn");
+    // Six, not seven: cached_tokens is a SUBSET of audio_tokens_in/text_tokens_in, not a class beside
+    // them (#71), so it carries no line of its own even though this turn's usage report names it.
+    assert_eq!(counted.len(), 6, "every declared class carried a count");
 }

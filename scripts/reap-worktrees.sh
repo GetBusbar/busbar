@@ -134,13 +134,13 @@ if [ "${SELFTEST:-0}" = "1" ]; then
   fx=$(mktemp "${TMPDIR:-/tmp}/reap-selftest.XXXXXX")
 
   echo "S1 (item 522) -- the cargo-clean guard counts every load: column"
-  printf '/Users/x/busbar/target/debug/xtask\n' > "$fx"
+  printf '/srv/busbar/target/debug/xtask\n' > "$fx"
   REAP_PS_FIXTURE="$fx" load_counts
   [ "$n_tools" = 1 ] && st ok "S1.pre tool-bins column sees target/debug/xtask ($n_tools)" \
                      || st fail "S1.pre tool-bins column sees target/debug/xtask ($n_tools)"
   [ "$n_busy" -gt 0 ] && st ok "S1 guard busy with only a tool binary live (n_busy=$n_busy)" \
                       || st fail "S1 guard busy with only a tool binary live (n_busy=$n_busy)"
-  printf '/Users/x/busbar/target/release/busbar serve --port 1\n' > "$fx"
+  printf '/srv/busbar/target/release/busbar serve --port 1\n' > "$fx"
   REAP_PS_FIXTURE="$fx" load_counts
   [ "$n_busy" -gt 0 ] && st ok "S1 guard busy with only the product live (n_busy=$n_busy)" \
                       || st fail "S1 guard busy with only the product live (n_busy=$n_busy)"
@@ -154,7 +154,7 @@ if [ "${SELFTEST:-0}" = "1" ]; then
   REAP_PS_FIXTURE="$fx" load_counts
   [ "$n_product" = 0 ] && st ok "S2 a shell that NAMES release/busbar is not the product ($n_product)" \
                        || st fail "S2 a shell that NAMES release/busbar is not the product ($n_product)"
-  printf '/Users/x/busbar/target/release/busbar serve\n' > "$fx"
+  printf '/srv/busbar/target/release/busbar serve\n' > "$fx"
   REAP_PS_FIXTURE="$fx" load_counts
   [ "$n_product" = 1 ] && st ok "S2 positive control: the product executable counts ($n_product)" \
                        || st fail "S2 positive control: the product executable counts ($n_product)"

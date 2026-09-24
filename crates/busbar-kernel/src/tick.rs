@@ -60,10 +60,17 @@ pub enum SessionTick {
         /// the first still owes the second, and the checkpoint is what a crash pays out on.
         checkpoint: Option<u64>,
     },
-    /// Close the session.
+    /// Close the session — and settle what it still owes on the way out. A close is an end, not a
+    /// pardon: the two jobs a tick does are not skipped because this tick is the last one.
     Close {
         /// Why.
         reason: ReasonCode,
+        /// The priced session time since the last SETTLED tick, clipped at the idle bound exactly as
+        /// [`SessionTick::Accrue`] clips it; zero where session time is not priced.
+        elapsed: Millis,
+        /// What to write down as accrued, where it changed since the last tick: the checkpoint a
+        /// crash pays out on.
+        checkpoint: Option<u64>,
     },
 }
 
@@ -80,24 +87,25 @@ pub fn session_tick(
     budget_dry: bool,
     revoked: bool,
 ) -> SessionTick {
+    // Priced time is owed on every branch that prices, the closing ones included (item 284), and
+    // it is clipped at the idle bound on all of them alike. Unpriced session time owes nothing.
+    let owed = since_settled.min(SESSION_IDLE_MAX_MS) * Millis::from(priced_seconds);
+    let close = |reason| SessionTick::Close {
+        reason,
+        elapsed: owed,
+        checkpoint: accrued_changed,
+    };
     if revoked {
-        SessionTick::Close {
-            reason: ReasonCode::Revoked,
-        }
+        close(ReasonCode::Revoked)
     } else if budget_dry {
-        SessionTick::Close {
-            reason: ReasonCode::OverBudget,
-        }
+        close(ReasonCode::OverBudget)
     } else if idle_for >= SESSION_IDLE_MAX_MS {
-        SessionTick::Close {
-            reason: ReasonCode::DeadlineExceeded,
-        }
+        close(ReasonCode::DeadlineExceeded)
     } else if priced_seconds {
-        let clipped = since_settled > SESSION_IDLE_MAX_MS;
         SessionTick::Accrue {
-            elapsed: since_settled.min(SESSION_IDLE_MAX_MS),
+            elapsed: owed,
             late: since_settled > interval,
-            clipped,
+            clipped: since_settled > SESSION_IDLE_MAX_MS,
             checkpoint: accrued_changed,
         }
     } else {
@@ -143,14 +151,12 @@ pub fn sweep(
 ) -> Sweep {
     if slot.is_marked() {
         Sweep::TaskLost { at }
-    } else if slot.idle_for(now) >= max_unit_duration {
-        if idle_bound_applies {
-            Sweep::Stalled { at }
-        } else {
-            Sweep::AlarmOnly
-        }
-    } else {
+    } else if slot.idle_for(now) < max_unit_duration {
         Sweep::Running
+    } else if idle_bound_applies {
+        Sweep::Stalled { at }
+    } else {
+        Sweep::AlarmOnly
     }
 }
 
@@ -327,3 +333,7 @@ pub fn sweep_settle(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/tick_tests.rs"]
+mod tick_tests;

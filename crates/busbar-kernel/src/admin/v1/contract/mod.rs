@@ -156,6 +156,11 @@ pub enum AdminError {
     /// scan is taking too long") — this is a timeout/backpressure signal the caller can retry, not an
     /// internal defect. First user: `GET /plugins?type=store`'s `CATALOG_SCAN_GATE` wait.
     Unavailable(String),
+    /// A usage read over a class the rate card in force does not price (#42: a card is PRESENT, so
+    /// an unpriced class refuses rather than reading 0). `code = unpriced_class`, 409: the state
+    /// of the card, not the request, is what a retry cannot fix. `class` is `None` when the card
+    /// names no entry for the lane at all (then no class of it is priced).
+    UnpricedClass { lane: String, class: Option<String> },
 }
 
 impl AdminError {
@@ -189,6 +194,7 @@ impl AdminError {
             AdminError::RateLimited => "rate_limited",
             AdminError::Internal => "internal",
             AdminError::Unavailable(_) => "unavailable",
+            AdminError::UnpricedClass { .. } => "unpriced_class",
         }
     }
 
@@ -205,6 +211,7 @@ impl AdminError {
             AdminError::RateLimited => 429,
             AdminError::Internal => 500,
             AdminError::Unavailable(_) => 503,
+            AdminError::UnpricedClass { .. } => 409,
         }
     }
 
@@ -234,6 +241,15 @@ impl AdminError {
             }
             AdminError::Internal => "internal error".to_string(),
             AdminError::Unavailable(msg) => msg.clone(),
+            AdminError::UnpricedClass { lane, class } => match class {
+                Some(class) => format!(
+                    "usage cannot be priced: the rate card in force names no price for class \
+                     `{class}` of `{lane}`"
+                ),
+                None => format!(
+                    "usage cannot be priced: the rate card in force names no price for `{lane}`"
+                ),
+            },
         }
     }
 }

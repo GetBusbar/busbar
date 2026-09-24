@@ -1326,3 +1326,135 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── DECISION PLANE CONFIG CROSS-REFERENCES (P2-243 / P2-decvalidate) ───────────────────────────
+//
+// Three refusals that did not exist before this change (verified RED at HEAD): a
+// `decisions.models.<m>.provider` naming a provider `providers:` does not define booted; a
+// `decisions.hooks` entry naming an undefined hook booted; and a model whose provider resolves to
+// a dialect this plane does not speak (non-`jev`) booted instead of failing closed
+// (BUSBAR-1.6.0.md #51, OWNER-LOCKED: "the decisions plane (only jev) handed `anthropic` fails").
+// All three now refuse at `config::resolve` — the ONE function both `--validate` (`root/cli.rs`)
+// and real boot (`main.rs`) call — so these `--validate` runs stand in for both call sites without
+// this file needing a boot-and-kill harness; `validate_ok_on_valid_config_without_plugins` above
+// already establishes that `--validate` mirrors boot for every other refusal in this file.
+//
+// `providers.yaml`'s `protocol:` selects the WIRE dialect (`anthropic`/`openai`/…/`jev`); a `mock`
+// provider on `protocol: jev` is what a genuine decisions deployment configures — the decision
+// plane's own `PlaneCfg::known_dialects` (`root/plane_decision.rs`) is unioned into the provider
+// wire-codec check (`config_validate::validate_providers_with`) for exactly this reason, so `jev`
+// is a legal `protocol:` value even though no `busbar-llm-codec` dialect module translates it.
+
+/// A config whose sole provider speaks `protocol` and whose `decisions:` block is `decisions_yaml`
+/// verbatim. Mirrors `write_configs_with_api_key`'s shape (own `providers.yaml` + `config.yaml`,
+/// not the shared `write_configs` helper) because these tests vary the provider's `protocol:`,
+/// which `write_configs` hard-codes to `anthropic`.
+fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
+    std::fs::write(
+        dir.join("providers.yaml"),
+        format!(
+            r#"mock:
+  protocol: {protocol}
+  base_url: "http://127.0.0.1:9"
+  api_key_env: MOCK_KEY
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            r#"listen: "127.0.0.1:0"
+providers:
+  mock:
+    api_key: {{ env: MOCK_KEY }}
+models: {{}}
+{decisions_yaml}"#
+        ),
+    )
+    .unwrap();
+}
+
+/// CONTROL: a `decisions:` block naming a real `jev`-protocol provider validates clean. Proves the
+/// three refusals below are each triggered by their OWN defect, not by the mere presence of a
+/// `decisions:` section or by `protocol: jev` itself.
+#[cfg(feature = "plane-decision")]
+#[test]
+fn validate_ok_on_a_good_decisions_config() {
+    let dir = fixture_dir("decisions-ok");
+    write_decisions_configs(
+        &dir,
+        "jev",
+        "decisions:\n  models:\n    jev:\n      provider: mock\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "a good decisions config validates: stdout={stdout} stderr={stderr}");
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// DEFECT 1: `decisions.models.<m>.provider` names a provider absent from `providers:`.
+#[cfg(feature = "plane-decision")]
+#[test]
+fn validate_refuses_a_decisions_model_naming_an_undefined_provider() {
+    let dir = fixture_dir("decisions-badprovider");
+    write_decisions_configs(
+        &dir,
+        "jev",
+        "decisions:\n  models:\n    jev:\n      provider: ghost\n",
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "an undefined provider reference fails validate: {stderr}");
+    assert!(
+        stderr.contains("decisions.models.jev.provider"),
+        "the refusal names the key path: {stderr}"
+    );
+    assert!(stderr.contains("ghost"), "the refusal names the bad value: {stderr}");
+    assert!(stderr.contains("mock"), "the refusal names the valid choices: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// DEFECT 2: `decisions.hooks` names a hook absent from the top-level `hooks:` registry.
+#[cfg(feature = "plane-decision")]
+#[test]
+fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
+    let dir = fixture_dir("decisions-badhook");
+    write_decisions_configs(
+        &dir,
+        "jev",
+        "decisions:\n  models:\n    jev:\n      provider: mock\n  hooks: [ghost-hook]\n",
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "an undefined hook reference fails validate: {stderr}");
+    assert!(
+        stderr.contains("decisions.hooks"),
+        "the refusal names the key path: {stderr}"
+    );
+    assert!(stderr.contains("ghost-hook"), "the refusal names the bad value: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// DEFECT 3 (#51, OWNER-LOCKED): a model whose provider resolves to a dialect the decision plane
+/// does not speak must FAIL CLOSED — the exact row #51 cites: "the decisions plane (only jev)
+/// handed `anthropic` fails". `write_decisions_configs`'s default catalog protocol IS `anthropic`
+/// (the shipped default, `providers.rs::DEFAULT_PROTOCOL`), so this is also the config an operator
+/// gets by simply OMITTING `protocol:` on a provider meant for the decisions plane.
+#[cfg(feature = "plane-decision")]
+#[test]
+fn validate_refuses_a_decisions_model_whose_provider_speaks_a_non_jev_dialect() {
+    let dir = fixture_dir("decisions-baddialect");
+    write_decisions_configs(
+        &dir,
+        "anthropic",
+        "decisions:\n  models:\n    jev:\n      provider: mock\n",
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "a non-jev dialect fails closed: {stderr}");
+    assert!(
+        stderr.contains("decisions.models.jev.provider"),
+        "the refusal names the key path: {stderr}"
+    );
+    assert!(stderr.contains("anthropic"), "the refusal names the resolved dialect: {stderr}");
+    assert!(stderr.contains("jev"), "the refusal names the dialect the plane speaks: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

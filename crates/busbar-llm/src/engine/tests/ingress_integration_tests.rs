@@ -3394,8 +3394,10 @@ async fn finish_admitted_does_not_refund_an_uncharged_admit() {
 
     // A SECOND request admitted WITHOUT charge (charged=false) then fails (non-2xx). The refund
     // path must never even be entered (`refund_on_non_2xx` is false), so the first request's
-    // spend is DETERMINISTICALLY untouched — no blind decrement. (The positive charged=true
-    // refund is offloaded/async and is covered by the flat-fee refund tests.)
+    // spend is DETERMINISTICALLY untouched — no blind decrement. The positive charged=true
+    // refund is the SAME synchronous in-memory decrement `refund_request` performs for `finish`
+    // (no store offload — see `test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx`), so it is
+    // asserted below, on the very next line after the call, with no await in between.
     let non2xx = (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response();
     let out = finish_admitted(
         &app,
@@ -3412,6 +3414,27 @@ async fn finish_admitted_does_not_refund_an_uncharged_admit() {
         key_spend(&app, &key.id),
         30,
         "an uncharged admit must not refund — the prior request's spend is untouched"
+    );
+
+    // The positive control: the SAME non-2xx end on the CHARGED admit (charged=true) refunds that
+    // admit's one flat fee, and the refund is visible synchronously — 30 -> 0 with no yield. Were
+    // the refund offloaded/async, this read would still see 30.
+    let non2xx = (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response();
+    let out = finish_admitted(
+        &app,
+        &gov,
+        "openai",
+        "allowed-only",
+        Instant::now(),
+        at,
+        non2xx,
+        true,
+    );
+    assert_eq!(out.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        key_spend(&app, &key.id),
+        0,
+        "a charged admit's non-2xx end refunds its flat fee synchronously (30 -> 0)"
     );
 }
 

@@ -37,7 +37,9 @@
 //! boundary-safe handle it adapts.
 
 use crate::stage;
-use busbar_plugin::hot::decl::{BuildFn, ConfigValidateFn, DispatchFn, HydrateFn, StartFn};
+use busbar_plugin::hot::decl::{
+    AdminRoutesFn, BuildFn, ConfigValidateFn, DispatchFn, HydrateFn, OpenApiFn, StartFn,
+};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::{OpaqueState, RawStatus, StatusClass, POD_VERSION};
 use busbar_plugin::hot::{
@@ -61,7 +63,8 @@ use std::path::Path;
 pub struct DynPlane {
     /// The plane's own `PlaneDecl`, pointing into the mapped image. Read only through the sized guard.
     decl: *const PlaneDecl,
-    /// The honoured decl `size` (peer-attested, clamped to this build's `size_of::<PlaneDecl>()`).
+    /// The honoured decl `size` (peer-attested; an attestation past this build's
+    /// `size_of::<PlaneDecl>()` is refused at load, never clamped).
     honoured_size: u32,
     /// The plane's canonical name (owned copy of the borrowed vocabulary).
     name: String,
@@ -164,9 +167,28 @@ impl DynPlane {
         busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, dispatch)
             .flatten()
     }
+    fn slot_admin_routes(&self) -> Option<AdminRoutesFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, admin_routes)
+            .flatten()
+    }
+    fn slot_openapi(&self) -> Option<OpenApiFn> {
+        busbar_plugin::read_sized_field!(self.decl, self.honoured_size, PlaneDecl, openapi)
+            .flatten()
+    }
+
+    /// [`config_validate`](Self::config_validate), with the parsed handle OWNED: it is freed through
+    /// the plane's own `free` when the returned [`PlaneState`] drops, and it cannot outlive this
+    /// plane (the borrow), so it can never be freed into an unmapped image.
+    pub fn config_validate_owned(&self, raw: &[u8]) -> (StatusClass, Option<PlaneState<'_>>) {
+        let (class, state) = self.config_validate(raw);
+        (class, state.map(|raw| PlaneState { plane: self, raw }))
+    }
 
     /// Drive the plane's `config_validate` over raw config bytes, catching any panic across the seam.
     /// Returns the plane-produced [`StatusClass`] and, on `Ok`, the parsed [`OpaqueState`] handle.
+    ///
+    /// The raw handle is the CALLER's to free, through its own `free`, before this plane drops;
+    /// [`config_validate_owned`](Self::config_validate_owned) does that for you.
     pub fn config_validate(&self, raw: &[u8]) -> (StatusClass, Option<OpaqueState>) {
         let Some(f) = self.slot_config_validate() else {
             return (StatusClass::Unsupported, None);
@@ -175,7 +197,10 @@ impl DynPlane {
         let raw_ptr = raw.as_ptr();
         let raw_len = raw.len();
         let out_ptr: *mut MaybeUninit<OpaqueState> = &mut out;
-        match crate::ffi_guard(&self.path, "plane_config_validate", || {
+        // Confined: a per-LOAD crossing, the parse half of the plane's constructor (see `build`).
+        match crate::ffi_guard_confined(&self.path, "plane_config_validate", || {
+            #[cfg(test)]
+            tests_decl::note_thread();
             f(raw_ptr, raw_len, out_ptr)
         }) {
             Ok(status) => {
@@ -191,10 +216,29 @@ impl DynPlane {
         }
     }
 
+    /// [`build`](Self::build), with the plane state OWNED: freed through the plane's own `free` when
+    /// the returned [`PlaneState`] drops, and borrow-bound to this plane so it can never outlive the
+    /// mapped image its `ptr` and `free` point into.
+    ///
+    /// # Safety
+    /// As [`build`](Self::build).
+    pub unsafe fn build_owned(
+        &self,
+        host: *const PlaneHostVtable,
+        host_ctx: HostCtx,
+        config: &[u8],
+        resolved_refs: &[u64],
+    ) -> (StatusClass, Option<PlaneState<'_>>) {
+        // SAFETY: forwarded from this fn's own contract.
+        let (class, state) = unsafe { self.build(host, host_ctx, config, resolved_refs) };
+        (class, state.map(|raw| PlaneState { plane: self, raw }))
+    }
+
     /// BUILD the plane from `config` + PRE-RESOLVED secret `resolved_refs`, threading `host` +
     /// `host_ctx` (the [`PlaneHostVtable`] the built plane calls back through). Returns the plane's
     /// [`StatusClass`] and, on `Ok`, the opaque plane [`OpaqueState`] handle core stores and never
-    /// downcasts. A caught panic fails closed (`Fault`, no handle).
+    /// downcasts. A caught panic fails closed (`Fault`, no handle). The raw handle is the CALLER's to
+    /// free before this plane drops; [`build_owned`](Self::build_owned) does that for you.
     ///
     /// # Safety
     /// `host`, when non-null, must point at a live [`PlaneHostVtable`] that outlives the built plane
@@ -224,7 +268,17 @@ impl DynPlane {
         let mut out = MaybeUninit::<OpaqueState>::uninit();
         let ctx_ptr: *const BuildCtx = &ctx;
         let out_ptr: *mut MaybeUninit<OpaqueState> = &mut out;
-        match crate::ffi_guard(&self.path, "plane_build", || f(ctx_ptr, out_ptr)) {
+        // CONFINED, like the cold lane's `busbar_open`: `build` is the plane's CONSTRUCTOR, the
+        // per-load crossing where a plane first arms a thread_local with a destructor. Run inline, it
+        // would arm it on a caller thread that may retire after this image is unmapped (`ffi_thread`).
+        // `hydrate`/`start`/`dispatch` stay on the caller's thread: they run against the BUILT plane,
+        // whose host calls are recovered through a `HostCtx` generation that is live only on the
+        // thread that minted it, so moving them to a worker would refuse every host crossing.
+        match crate::ffi_guard_confined(&self.path, "plane_build", || {
+            #[cfg(test)]
+            tests_decl::note_thread();
+            f(ctx_ptr, out_ptr)
+        }) {
             Ok(status) => {
                 let class = status.class();
                 if class == StatusClass::Ok {
@@ -276,6 +330,72 @@ impl DynPlane {
         }
     }
 
+    /// The plane's ADMIN-ROUTE contribution, read through its `admin_routes` slot. `Ok(None)` = the
+    /// plane declares no admin surface (slot absent). A present slot must honour the decl's
+    /// non-vacuity invariant: an empty answer, a non-`Ok` status, a caught panic or a claimed length
+    /// past the buffer is refused, never read as "no routes".
+    ///
+    /// # Safety
+    /// `state` must be a live plane state pointer this plane's `build` produced and not yet freed.
+    pub unsafe fn admin_routes(
+        &self,
+        state: *mut std::os::raw::c_void,
+    ) -> Result<Option<Vec<u8>>, String> {
+        match self.slot_admin_routes() {
+            None => Ok(None),
+            Some(f) => self.contribution("plane_admin_routes", state, f).map(Some),
+        }
+    }
+
+    /// The plane's OPENAPI contribution, read through its `openapi` slot — the same contract as
+    /// [`admin_routes`](Self::admin_routes).
+    ///
+    /// # Safety
+    /// As [`admin_routes`](Self::admin_routes).
+    pub unsafe fn openapi(
+        &self,
+        state: *mut std::os::raw::c_void,
+    ) -> Result<Option<Vec<u8>>, String> {
+        match self.slot_openapi() {
+            None => Ok(None),
+            Some(f) => self.contribution("plane_openapi", state, f).map(Some),
+        }
+    }
+
+    /// Shared body of the two serialize-into-a-caller-buffer slots (`AdminRoutesFn` and `OpenApiFn`
+    /// share one signature).
+    fn contribution(
+        &self,
+        op: &str,
+        state: *mut std::os::raw::c_void,
+        f: AdminRoutesFn,
+    ) -> Result<Vec<u8>, String> {
+        let mut buf = vec![0u8; MAX_PLANE_CONTRIBUTION_LEN];
+        let mut written = 0usize;
+        let (buf_ptr, cap) = (buf.as_mut_ptr(), buf.len());
+        let written_ptr: *mut usize = &mut written;
+        let status =
+            crate::ffi_guard_confined(&self.path, op, || f(state, buf_ptr, cap, written_ptr))?
+                .class();
+        let path = &self.path;
+        if status != StatusClass::Ok {
+            return Err(format!("plane '{path}' {op} answered {status:?}"));
+        }
+        if written == 0 {
+            return Err(format!(
+                "plane '{path}' {op} slot is present but wrote nothing — a declared contribution \
+                 must be non-vacuous"
+            ));
+        }
+        if written > cap {
+            return Err(format!(
+                "plane '{path}' {op} claims {written} bytes written into a {cap}-byte buffer"
+            ));
+        }
+        buf.truncate(written);
+        Ok(buf)
+    }
+
     /// Shared shape for the two `fn(*mut c_void) -> RawStatus` boot hooks (`hydrate`/`start`).
     unsafe fn drive_state(
         &self,
@@ -292,6 +412,55 @@ impl DynPlane {
         }
     }
 }
+
+/// A plane handle (`config_validate`'s parsed config or `build`'s plane state) OWNED by the host.
+///
+/// Borrows the [`DynPlane`] it came from, so it cannot outlive the mapped image its `ptr` and `free`
+/// point into; on drop it runs the plane's own `free` — confined like every other per-load teardown
+/// crossing (`busbar_close`) and guarded, so a panicking `free` leaks the state rather than aborting.
+pub struct PlaneState<'p> {
+    plane: &'p DynPlane,
+    raw: OpaqueState,
+}
+
+impl PlaneState<'_> {
+    /// The plane state pointer, to pass to `hydrate`/`start`/`dispatch`/`admin_routes`/`openapi`.
+    #[must_use]
+    pub fn ptr(&self) -> *mut std::os::raw::c_void {
+        self.raw.ptr
+    }
+}
+
+impl std::fmt::Debug for PlaneState<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlaneState")
+            .field("plane", &self.plane.name)
+            .field("ptr", &self.raw.ptr)
+            .finish()
+    }
+}
+
+impl Drop for PlaneState<'_> {
+    fn drop(&mut self) {
+        let (Some(free), ptr) = (self.raw.free, self.raw.ptr) else {
+            return;
+        };
+        if ptr.is_null() {
+            return;
+        }
+        if crate::ffi_guard_confined(&self.plane.path, "plane_free", || free(ptr)).is_err() {
+            tracing::warn!(
+                plugin = %self.plane.path,
+                "plane state free panicked; leaking the state to keep the engine alive"
+            );
+        }
+    }
+}
+
+/// Cap on one `admin_routes`/`openapi` contribution: the buffer the host hands the slot. A route
+/// table or an OpenAPI fragment is kilobytes; a plane that needs more than this is refused rather
+/// than handed an unbounded allocation.
+const MAX_PLANE_CONTRIBUTION_LEN: usize = 1024 * 1024;
 
 /// Load a plane from EXACTLY the verified library `bytes` (the TOCTOU-safe entrypoint; see
 /// [`load_store_from_bytes`](crate::load_store_from_bytes) for the staging contract). `manifest_kind`
@@ -361,13 +530,25 @@ fn wire_up_plane(
             .map_err(|_| format!("plane '{display}' missing busbar_plane_decl symbol"))?;
         crate::ffi_guard_confined(&display, "plane_decl", || unsafe { (*f)() })?
     };
+    assemble(decl_ptr, display, Some(lib), backing)
+}
+
+/// Admit a plane's decl and materialise it: refuse a null pointer, check the FROZEN preamble and the
+/// attested size, copy the vocabulary out. Everything `wire_up_plane` does after it has the decl
+/// pointer, split out so the admission rules are testable over an in-memory decl.
+fn assemble(
+    decl_ptr: *const PlaneDecl,
+    display: String,
+    lib: Option<Library>,
+    backing: Option<stage::Staged>,
+) -> Result<DynPlane, String> {
     if decl_ptr.is_null() {
         return Err(format!("plane '{display}' returned a null PlaneDecl"));
     }
 
-    // ── 4. AIRLOCK: check the FROZEN preamble WITHOUT forming a `&PlaneDecl` over a possibly-shorter
+    // ── AIRLOCK: check the FROZEN preamble WITHOUT forming a `&PlaneDecl` over a possibly-shorter
     //    peer allocation (read `abi` + `size` unaligned by address, exactly as `PlaneHostVtable::check`
-    //    does), then clamp the honoured size to this build's own struct. ──
+    //    does), then bound the attested size on BOTH sides. ──
     // SAFETY: `decl_ptr` is a non-null pointer to at least the leading prefix of a `PlaneDecl` (the
     // plane's `'static` decl); `addr_of!` computes addresses only and `read_unaligned` assumes no
     // alignment the peer did not promise.
@@ -393,9 +574,20 @@ fn wire_up_plane(
              header — it cannot describe a PlaneDecl"
         ));
     }
-    let honoured_size = busbar_plugin::honoured_size(advertised, ours as usize);
+    // REFUSED, not clamped — the same answer `PlaneHostVtable::check` gives the host table
+    // (`VtableRefusal::SizeOverBuild`). The decl's trailing members are fn-pointer SLOTS this side
+    // CALLS, and a size claim past this build's struct is unverifiable: a decl that really ends
+    // early but stamps a wild size would have its missing slots read from whatever follows it.
+    if advertised > ours {
+        return Err(format!(
+            "plane '{display}' decl attests size {advertised}, exceeding this build's own \
+             PlaneDecl ({ours} bytes); this build has no definition for the extra bytes and will \
+             not call a slot it cannot describe — rebuild the plane against this busbar ABI minor"
+        ));
+    }
+    let honoured_size = advertised;
 
-    // ── 5. Materialise the borrowed vocabulary into owned strings (read through the sized guard). ──
+    // ── Materialise the borrowed vocabulary into owned strings (read through the sized guard). ──
     let name = read_vocab(decl_ptr, honoured_size, Vocab::Name, &display)?;
     let section_key = read_vocab(decl_ptr, honoured_size, Vocab::SectionKey, &display)?;
     let scope = read_vocab(decl_ptr, honoured_size, Vocab::Scope, &display)?;
@@ -413,7 +605,7 @@ fn wire_up_plane(
         label,
         provided_carriers,
         path: display,
-        _lib: Some(lib),
+        _lib: lib,
         _backing: backing,
     })
 }
@@ -503,3 +695,9 @@ impl FlattenPtr for Option<*const u8> {
 #[cfg(test)]
 #[path = "tests/plane_conformance_tests.rs"]
 mod tests;
+
+/// The decl-side seams over an IN-MEMORY decl: size admission, the owned plane state, the
+/// admin/OpenAPI slot readers, and which thread the constructor crossings run on.
+#[cfg(test)]
+#[path = "tests/plane_decl_tests.rs"]
+mod tests_decl;

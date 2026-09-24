@@ -1,6 +1,17 @@
 use super::*;
 
 impl ProtocolReader for GeminiReader {
+    /// The FIRST `finishReason` is the first candidate's — the one `read_response` reads its stop
+    /// reason from. `FIELD_FINISH_REASON`, quoted, spelled as bytes so the lookup allocates nothing.
+    fn stop_reason_key(&self) -> Option<&'static [u8]> {
+        Some(b"\"finishReason\"")
+    }
+
+    /// The same `map_gemini_finish_reason` `read_response` maps it through.
+    fn stop_reason_of_token(&self, token: &str) -> Option<crate::ir::IrStopReason> {
+        Some(map_gemini_finish_reason(token))
+    }
+
     fn recover_truncated_usage(
         &self,
         tail: &[u8],
@@ -1328,6 +1339,26 @@ impl ProtocolReader for GeminiReader {
                     }
                 };
 
+                // A FAILED GENERATION ENDS AS AN ERROR (owner ruling Q31). `MALFORMED_FUNCTION_CALL`
+                // maps to `IrStopReason::Error`, and no cross-protocol writer has a native error
+                // token for that reason, so on its own the terminal MessageDelta renders as a SUCCESS
+                // terminator (`stop` / `end_turn`), `terminal_error()` stays None and the breaker
+                // records no fault. Push the Error event as well — the shape Cohere's generic `ERROR`
+                // already has — so the failure reaches the breaker and a cross-protocol client gets a
+                // real error frame. The MessageDelta/MessageStop below still ride along: the stream
+                // stays properly terminated and its usage is still folded and charged (#62 — the
+                // charge is keyed off usage, never off this event).
+                if stop_reason == crate::ir::IrStopReason::Error {
+                    out.push(IrStreamEvent::Error(IrError {
+                        // Gemini gives no code or message beside the finish token, so classify it
+                        // as a TRANSIENT server fault: the lane recovers via cooldown rather than
+                        // being permanently penalized.
+                        class: busbar_substrate_values::breaker::StatusClass::ServerError,
+                        provider_signal: Some(finish_reason_val.to_string()),
+                        retry_after: None,
+                    }));
+                }
+
                 out.push(IrStreamEvent::MessageDelta {
                     stop_reason: Some(stop_reason),
                     // Gemini has no stop_sequence analog in its stream.
@@ -1588,10 +1619,13 @@ impl ProtocolReader for GeminiReader {
         // Capture the upstream response identity so same-protocol (Gemini→Gemini) passthrough
         // preserves it byte-for-byte. The native generateContent body carries an opaque
         // `responseId` (surfaced by the official `google-genai` SDK as
-        // `GenerateContentResponse.response_id`); Gemini bodies carry NO `created`/timestamp field,
-        // so `created` stays `None` here and the writer omits it (synthesizing one would be a
-        // fabricated field a native client never sees). `system_fingerprint`/`stop_sequence` have
-        // no Gemini analogue and remain `None`.
+        // `GenerateContentResponse.response_id`); Gemini bodies carry NO OpenAI-style `created`
+        // epoch field, so `created` stays `None` here and the writer omits it (synthesizing one
+        // would be a fabricated field a native client never sees). `system_fingerprint`/
+        // `stop_sequence` have no Gemini analogue and remain `None`. A Vertex body DOES carry its
+        // own top-level timestamp, `createTime` (RFC3339, not a Unix epoch) — read into
+        // `usage.detail.create_time` by `gemini_billed_usage` below (OWNER RULING Q1; see that
+        // field's doc comment for why it rides the usage-detail bag rather than this struct).
         let id = obj
             .get(FIELD_RESPONSE_ID)
             .and_then(|i| i.as_str())

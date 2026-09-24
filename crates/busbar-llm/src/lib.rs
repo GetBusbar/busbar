@@ -192,6 +192,8 @@ pub mod testkit;
 // binary by the codec crate's `test-support` dev edge in the manifest. Nothing in this crate names
 // it directly, so there is no re-export here.
 
+use busbar_kernel::plane::registry::{BillableClass, PER_REQUEST, TOKEN_FAMILY};
+
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
 /// THE ORDER IS LOAD-BEARING AND IT IS NOT ALPHABETICAL. The composition root hands this slice to
@@ -277,10 +279,37 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         default_section: None,
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
+        // THE CLASSES THIS PLANE LEDGERS (#71): the four reserved token tiers every dialect reports,
+        // and a rerank's billed search units (the one open class a codec counts). A present card
+        // must configure all five (Q29/Q35).
+        billable_classes: &[
+            BillableClass {
+                class: busbar_api::UNIT_INPUT,
+                family: TOKEN_FAMILY,
+            },
+            BillableClass {
+                class: busbar_api::UNIT_OUTPUT,
+                family: TOKEN_FAMILY,
+            },
+            BillableClass {
+                class: busbar_api::UNIT_CACHE_READ,
+                family: TOKEN_FAMILY,
+            },
+            BillableClass {
+                class: busbar_api::UNIT_CACHE_WRITE,
+                family: TOKEN_FAMILY,
+            },
+            BillableClass {
+                class: busbar_llm_codec::ir::rerank::SEARCH_UNITS_CLASS,
+                family: "count",
+            },
+        ],
         // 1.6.0 pools stage-B: the providers/models/pools LOGIC seam. `providers`/`pools` stay
         // CORE-OWNED-CONCRETE (never listed in `owned_config_sections` — see that field's doc), but
         // the per-provider catalog/deployment MERGE logic now lives here; core calls it at the exact
         // point the old inline merge ran.
+        // The fee unit this plane counts: one per admitted request, priced at `per_request_fee:`.
+        fee_units: &[PER_REQUEST],
         resolve_provider: Some(crate::engine::build_runtime::resolve_provider),
     };
 

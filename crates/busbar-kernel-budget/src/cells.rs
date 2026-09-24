@@ -21,9 +21,24 @@
 //! eviction); what it must guarantee is that no other admission can interleave between the two
 //! passes for the same buckets.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::price::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
+
+/// The class set a `tokens:` cap sums: the reserved token tiers, plus every class the caller names.
+///
+/// The door carries no plane vocabulary of its own — this crate names no plane and no plane class.
+/// The root hands it the classes the installed planes declare in the token family, and this is
+/// where they join the reserved four (which every plane's token total includes, exactly as the
+/// kernel door's `is_token_class` does). With nothing handed in, the set is the reserved four.
+pub fn token_classes<'a>(declared: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
+    crate::price::RESERVED_UNITS
+        .iter()
+        .copied()
+        .chain(declared)
+        .map(str::to_string)
+        .collect()
+}
 
 /// The most models one cell interns before the coldest one is evicted.
 ///
@@ -131,14 +146,15 @@ impl LedgerCell {
         self.models.iter().map(|m| (m.model.as_str(), &m.units))
     }
 
-    /// Total current tokens across every model and every unit key — the counter the total-token
-    /// cap reads. The evicted tally counts here too, so the cap sees every token ever accrued into
-    /// this cell whether or not the name that carried it is still interned.
+    /// Total current tokens across every model — the counter the total-token cap reads: the sum of
+    /// exactly `token_classes`, the set the door was handed at construction (see
+    /// [`token_classes`]). The evicted tally counts here too, so the cap sees every token ever
+    /// accrued into this cell whether or not the name that carried it is still interned.
     ///
-    /// TOKENS ONLY: the reserved token classes. An open class (item 123) rides the same map to be
-    /// priced, but is not a token and never counts toward a token cap.
-    pub fn total_tokens(&self) -> u64 {
-        crate::price::RESERVED_UNITS
+    /// TOKENS ONLY: a class outside the set (a duration, a count, an open class, item 123) rides
+    /// the same map to be priced, but is not a token and never counts toward a token cap.
+    pub fn total_tokens(&self, token_classes: &BTreeSet<String>) -> u64 {
+        token_classes
             .iter()
             .fold(0u64, |acc, u| acc.saturating_add(self.total_tier(u)))
     }

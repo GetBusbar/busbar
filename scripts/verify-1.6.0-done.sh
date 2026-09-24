@@ -342,7 +342,7 @@ voice_legs_all_ready() {  # $1 = runner ; $2 = legs dir (selftest fixture) or em
 
 # EVERY `cargo xtask gate <name>` THIS FILE RUNS IS A REGISTERED GATE, per the registry's own
 # `--list` (the instrument, not a grep of its source). The AUDIT-LEDGER group ran
-# `cargo xtask gate audit-ledger --selftest` for a gate deleted with its register (647f2fae9); it
+# `cargo xtask gate audit-ledger --selftest` for a gate deleted with its register; it
 # was masked only because the `if` around it guarded on that deleted register too, so a restored
 # register would have met a step that can only fail. Flags (`--all`, `--list`) are not gate names.
 xtask_gates_invoked_are_registered() {  # $1 = file to scan
@@ -1178,7 +1178,7 @@ if [ -f qa/audit-ledger.json ]; then
   # REGISTER (is the instrument believable); `--check` below judges those five plus the two about
   # the AUDIT (is coverage complete, is anything still open at HIGH/MEDIUM) — which are the ones
   # that are red until the audit finishes, and this DONE claim is where that red belongs.
-  # The `audit-ledger` GATE was deleted with the old register (647f2fae9); what survives, and what
+  # The `audit-ledger` GATE was deleted with the old register; what survives, and what
   # judges a restored register, is `cargo xtask ledger`. Its rules' own RED proofs are its unit
   # tests, declared by count so a filter that drifts off them is RED rather than vacuously green.
   step "audit ledger rules (xtask audit + audit_cmd tests)" filtered_cargo_test 20 cargo test -p xtask --lib audit

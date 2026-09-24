@@ -23,17 +23,16 @@ const BYTE_FAMILY: &str = "byte";
 /// class and calls it bytes, and that is what is declared: a unit of this plane is one exchange with
 /// an agent, and what an exchange costs is what it moved.
 ///
-/// The direction says which side of the exchange the class is sized from, and it says the ANSWER,
-/// because the answer is what the metering step measures: the one quantity this plane reports under
-/// this class is the length of the document it just read back. It used to say the request, described
-/// as an estimate from one side settled from the other — which is not the shape the other planes
-/// have (their input class settles input and their response class settles response) and which left a
-/// rate card reading the declaration pricing a caller's request at the size of an agent's answer.
+/// WHAT ONE UNIT OF IT IS — THE OWNER'S BILLED-BYTE RULING (the design's A2A accrual section,
+/// answered in the questions log): *a billed A2A byte = payload bytes relayed BOTH ways per hop
+/// (request + response), priced by `agents.rate_card`; no card → 0.*
+/// The quantity a hop reports is the request body bytes it put on the wire PLUS the response body
+/// bytes the agent answered (every chunk, on a stream); headers are not payload.
 ///
-/// One observation worth recording rather than smoothing over: a single byte class cannot separate
-/// what a caller sent from what an agent returned, so a deployment that wanted to price those
-/// differently cannot express it. That is a property of the declared vocabulary, not of this
-/// adapter, and changing it is a design decision rather than a code change here.
+/// The direction says the ANSWER because that is when the quantity is known: a hop's count settles
+/// once the agent has answered, never from an estimate made before the socket. A single byte class
+/// cannot separate what a caller sent from what an agent returned, so a deployment cannot price the
+/// two differently — the owner's ruling makes that the product: one class, both ways.
 const METER_CLASSES: &[MeterClassDecl] = &[MeterClassDecl {
     key: MeterClassId::new("bytes"),
     family: BYTE_FAMILY,

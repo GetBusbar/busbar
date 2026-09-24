@@ -522,6 +522,12 @@ pub struct PlaneCallLog {
     /// store-resume all live host-side in the registered DurableStream now; this wrapper keeps only the
     /// RECORD (the call record), the operator vocabulary, and the read surface.
     kind_id: u32,
+    /// The principals whose stored TAIL would not decode at restore. Their chain position cannot be
+    /// resumed past a row nobody can read, so an append for one is REFUSED rather than minted below
+    /// the store's real tail — which would put a second record at a sequence the store still holds,
+    /// the forked log this module exists to prevent. The refusal reaches [`emit`] as a write failure,
+    /// raised at `error!` like any other, so the lost evidence is loud and the chain is never forked.
+    unresumable: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl Default for PlaneCallLog {
@@ -539,17 +545,17 @@ pub static CALLS: std::sync::LazyLock<PlaneCallLog> = std::sync::LazyLock::new(P
 
 impl PlaneCallLog {
     pub(crate) fn new() -> Self {
-        Self {
-            kind_id: KIND_ID_CALL,
-        }
+        Self::with_kind_id(KIND_ID_CALL)
     }
 
     /// TEST ONLY: a log whose per-principal chain is addressed by a specific host-side stream id, so
     /// parallel tests never share one process-global chain. Production uses the default
     /// [`KIND_ID_CALL`] via [`PlaneCallLog::new`].
-    #[cfg(test)]
     pub(crate) fn with_kind_id(kind_id: u32) -> Self {
-        Self { kind_id }
+        Self {
+            kind_id,
+            unresumable: Default::default(),
+        }
     }
 
     /// BOOT REHYDRATE. Enumerate the principals the store holds records for, resume each chain from
@@ -589,8 +595,11 @@ impl PlaneCallLog {
             // `PLANE_CALLLOG_EMPTY_CHAIN`/`PLANE_CALLLOG_CHAIN_VERIFY_FAILED` this restore already
             // emits at ERROR, and it fires per skipped row regardless of the wrapper's aggregate.
             let mut bodies: Vec<Vec<u8>> = Vec::with_capacity(raw.len());
+            let mut tail_unreadable = false;
             for body in raw {
-                match reframe_call(principal, &body) {
+                let decoded = reframe_call(principal, &body);
+                tail_unreadable = decoded.is_err();
+                match decoded {
                     Ok(_) => bodies.push(body),
                     Err(e) => {
                         out.unreadable += 1;
@@ -621,6 +630,13 @@ impl PlaneCallLog {
                      for it; the chain is being reopened at seq 1 and the discrepancy is reported \
                      rather than skipped silently"
                 );
+            }
+            // The decodable records are still seeded and still readable. What a tail nobody can read
+            // takes away is the POSITION: the store's real tail sits somewhere past the last row that
+            // decoded, so an append seeded from the survivors would land on a sequence the store
+            // already holds. Such a principal is marked, and its appends are refused (see `record`).
+            if tail_unreadable {
+                self.unresumable_lock().insert(principal.clone());
             }
             if let Some(brk) = self.seed_chain(host, principal, &bodies)? {
                 // REPORTED, and the records stay restored. See the module header: refusing here would
@@ -679,6 +695,51 @@ impl PlaneCallLog {
         principal: &str,
         input: CallInput,
     ) -> Result<CallRecorded, CallLogError> {
+        self.chained(principal, input, |content| {
+            crate::plane_host::journal::journal_append_scoped_full(
+                host,
+                self.kind_id,
+                principal,
+                content,
+            )
+        })
+    }
+
+    /// RECORD one call WITHOUT a host — the deferred client-leg path (a plane's async client verb), which
+    /// is `async` (a `HostCtx` is `!Send`) and reaches no `App` to open one. Same chain, same store,
+    /// same typed record as [`PlaneCallLog::record`]; only the host-recovery step (which the append
+    /// never uses) is skipped. This is the hostless in-core emit the cleave keeps for that one site.
+    pub(crate) fn record_hostless(
+        &self,
+        principal: &str,
+        input: CallInput,
+    ) -> Result<CallRecorded, CallLogError> {
+        self.chained(principal, input, |content| {
+            crate::plane_host::journal::journal_append_scoped_full_hostless(
+                self.kind_id,
+                principal,
+                content,
+            )
+        })
+    }
+
+    /// The one body both recorders share: refuse a principal whose tail would not decode at restore,
+    /// frame the call, hand it to `append` (which mints the link), and return the neutral record —
+    /// the chain's seq/prev_hash/hash plus the caller's own fields (including `request_id`, which the
+    /// neutral body deliberately drops).
+    fn chained(
+        &self,
+        principal: &str,
+        input: CallInput,
+        append: impl FnOnce(&[u8]) -> StoreResult<(u64, String, String)>,
+    ) -> Result<CallRecorded, CallLogError> {
+        if self.unresumable_lock().contains(principal) {
+            return Err(CallLogError::Store(StoreError(
+                "this principal's stored per-call tail did not decode at restore, so its chain \
+                 position is unknown; the append is refused rather than forking the durable log"
+                    .to_string(),
+            )));
+        }
         let content = call_suffix(
             input.ts,
             &input.server,
@@ -688,17 +749,7 @@ impl PlaneCallLog {
             &input.tool_digest,
             input.pin_generation,
         );
-        // The full append returns the chain's minted `(seq, prev_hash, hash)` — the `Seq`-only ABI
-        // append does not surface the link, which the neutral `CallRecorded` carries.
-        let (seq, prev_hash, hash) = crate::plane_host::journal::journal_append_scoped_full(
-            host,
-            self.kind_id,
-            principal,
-            &content,
-        )
-        .map_err(CallLogError::Store)?;
-        // Return the NEUTRAL record for the caller: the chain's minted seq/prev_hash/hash plus the
-        // caller's own fields (including `request_id`, which the neutral body deliberately drops).
+        let (seq, prev_hash, hash) = append(&content).map_err(CallLogError::Store)?;
         Ok(CallRecorded {
             principal: principal.to_string(),
             seq,
@@ -715,45 +766,15 @@ impl PlaneCallLog {
         })
     }
 
-    /// RECORD one call WITHOUT a host — the deferred client-leg path (a plane's async client verb), which
-    /// is `async` (a `HostCtx` is `!Send`) and reaches no `App` to open one. Same chain, same store,
-    /// same typed record as [`PlaneCallLog::record`]; only the host-recovery step (which the append
-    /// never uses) is skipped. This is the hostless in-core emit the cleave keeps for that one site.
-    pub(crate) fn record_hostless(
-        &self,
-        principal: &str,
-        input: CallInput,
-    ) -> Result<CallRecorded, CallLogError> {
-        let content = call_suffix(
-            input.ts,
-            &input.server,
-            &input.tool,
-            input.outcome,
-            &input.reason,
-            &input.tool_digest,
-            input.pin_generation,
-        );
-        let (seq, prev_hash, hash) =
-            crate::plane_host::journal::journal_append_scoped_full_hostless(
-                self.kind_id,
-                principal,
-                &content,
-            )
-            .map_err(CallLogError::Store)?;
-        Ok(CallRecorded {
-            principal: principal.to_string(),
-            seq,
-            ts: input.ts,
-            server: input.server,
-            tool: input.tool,
-            outcome: input.outcome.to_string(),
-            reason: input.reason,
-            tool_digest: input.tool_digest,
-            pin_generation: input.pin_generation,
-            request_id: input.request_id,
-            prev_hash,
-            hash,
-        })
+    fn unresumable_lock(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+        self.unresumable.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// TEST ONLY: mark `principal` as a restore that met an unreadable tail would, so a test can drive
+    /// the refusal through the process-wide log without a restore of its own.
+    #[cfg(test)]
+    pub(crate) fn mark_unresumable_for_test(&self, principal: &str) {
+        self.unresumable_lock().insert(principal.to_string());
     }
 
     /// The sequence the next record for `principal` will carry. 1 for a principal with no chain.
@@ -863,19 +884,33 @@ impl PlaneCallLog {
 /// one place joins nothing. That line is what lets an operator holding a request id find the durable
 /// record, and holding a durable record find the request.
 pub fn emit(host: HostCtx, principal: &str, input: CallInput) {
-    let (server, tool, outcome, request_id) = (
-        input.server.clone(),
-        input.tool.clone(),
-        input.outcome,
-        input.request_id.clone(),
-    );
-    // Transition latch: a durable-store write failure here recurs per served call during an outage,
-    // so surface the ERROR only on the TRANSITION into the failing state and hold subsequent
-    // failures at debug. A successful write clears the latch so a future outage re-errors. (Same
-    // shape as the metrics scrape's `KEY_GAUGE_LIMIT_WARNED` latch.)
+    let echo = input.clone();
+    report(principal, &echo, CALLS.record(host, principal, input));
+}
+
+/// THE DEFERRED-SITE EMITTER: the hostless twin of [`emit`] for a plane's client-leg verb path
+/// that has no `HostCtx` to open (see [`PlaneCallLog::record_hostless`]). It reports through the SAME
+/// [`report`] as [`emit`] — the same `error!` on the transition into failing, the same latch, the
+/// same success line carrying the `request_id` join key — so the deferred path's behaviour matches
+/// the production emitter but for the host it never had.
+pub fn emit_hostless(principal: &str, input: CallInput) {
+    let echo = input.clone();
+    report(principal, &echo, CALLS.record_hostless(principal, input));
+}
+
+/// What both emitters do with a write's result, so neither can be quieter than the other.
+///
+/// Transition latch: a durable-store write failure recurs per served call during an outage, so the
+/// ERROR is raised only on the TRANSITION into the failing state and subsequent failures are held
+/// at debug. A successful write clears the latch so a future outage re-errors. (Same shape as the
+/// metrics scrape's `KEY_GAUGE_LIMIT_WARNED` latch.) One latch for both emitters: they write the
+/// same stream to the same store, so an outage is one transition whichever path meets it first.
+fn report(principal: &str, call: &CallInput, written: Result<CallRecorded, CallLogError>) {
     static WRITE_FAILED_LATCHED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
-    match CALLS.record(host, principal, input) {
+    let (server, tool, outcome, request_id) =
+        (&call.server, &call.tool, call.outcome, &call.request_id);
+    match written {
         Ok(record) => {
             WRITE_FAILED_LATCHED.store(false, std::sync::atomic::Ordering::Relaxed);
             tracing::debug!(
@@ -917,32 +952,6 @@ pub fn emit(host: HostCtx, principal: &str, input: CallInput) {
                 );
             }
         }
-    }
-}
-
-/// THE DEFERRED-SITE EMITTER: the hostless twin of [`emit`] for a plane's client-leg verb path
-/// that has no `HostCtx` to open (see [`PlaneCallLog::record_hostless`]). It
-/// swallows a durable-write failure the same way [`emit`] does (evidence, not admission), so the
-/// deferred path's behaviour matches the production emitter but for the host it never had.
-pub fn emit_hostless(principal: &str, input: CallInput) {
-    let (server, tool, outcome, request_id) = (
-        input.server.clone(),
-        input.tool.clone(),
-        input.outcome,
-        input.request_id.clone(),
-    );
-    if let Err(e) = CALLS.record_hostless(principal, input) {
-        crate::diagnostics::diag_debug!(
-            crate::diagnostics::PLANE_CALLLOG_WRITE_FAILED,
-            principal = %principal,
-            request_id = %request_id,
-            server = %server,
-            tool = %tool,
-            outcome = %outcome,
-            error = %e,
-            "the durable per-call record could NOT be written on the client-leg path; its \
-             evidence is being LOST. The chain position is unchanged, so the chain stays contiguous."
-        );
     }
 }
 

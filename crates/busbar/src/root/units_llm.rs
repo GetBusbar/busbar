@@ -321,7 +321,7 @@ impl std::fmt::Debug for LlmNode {
 
 impl Default for LlmNode {
     fn default() -> Self {
-        LlmNode::new()
+        Self::new()
     }
 }
 
@@ -331,7 +331,7 @@ impl LlmNode {
     pub fn new() -> Self {
         let lanes = Arc::new(Mutex::new(crate::root::kernel::new_registration()));
         let kernel = crate::root::kernel::new_kernel();
-        LlmNode {
+        Self {
             durability_token: kernel.durability_token(),
             usage_token: kernel.usage_token(),
             book: std::sync::OnceLock::new(),
@@ -344,7 +344,7 @@ impl LlmNode {
             // table, because a hold still has to live somewhere, and it is still the thing the sweep
             // walks — what it is not is a second cap answering a question the listener already
             // answered.
-            inflight: busbar_kernel::inflight::InFlight::new(usize::MAX, 0),
+            inflight: busbar_kernel::inflight::InFlight::new(usize::MAX),
             gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
             canary: busbar_contract::caps::Canary::new(),
             door: crate::root::kernel::AdmissionDoor,
@@ -455,7 +455,11 @@ impl LlmNode {
     /// will settle it with ([`settle`]), so the posting that ends the unit closes this record on the
     /// chain. A journal that will not take it is not a refusal: the log retains the record and
     /// offers it again, and the previous release served through a store hiccup.
-    fn open_on_book(&self, principal: &PrincipalId, arrived: Arrived, reserved: u64) {
+    ///
+    /// The record carries the COUNTS the reservation was sized for, never a figure (#71): the door
+    /// on this plane reserves nothing (its arrival hold opens at zero and no step sizes it), so the
+    /// counts are none and the book derives a reservation of nothing from them.
+    fn open_on_book(&self, principal: &PrincipalId, arrived: Arrived) {
         let Some(book) = self.book.get() else {
             return;
         };
@@ -475,7 +479,42 @@ impl LlmNode {
             },
         };
         let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-        let _opened = durability.open_hold(&at, principal, reserved);
+        let _opened = durability.open_hold(
+            &at,
+            principal,
+            &crate::root::durability::UnitCounts::default(),
+            arrived.ms(),
+        );
+    }
+
+    /// Record on the book that this unit DISPATCHED, before its leg leaves the node.
+    ///
+    /// On the balance, window and arrival reading its hold was opened under ([`Self::open_on_book`]),
+    /// so the record names that hold: a node killed after this is durable recovers the hold as a
+    /// unit that sent something — posted at its last accrual checkpoint and marked recovered —
+    /// rather than voiding it as a unit that never left. A journal that will not take it is not a
+    /// refusal of the dispatch: the log retains the record and offers it again.
+    fn dispatch_on_book(&self, principal: &PrincipalId, arrived: Arrived) {
+        let Some(book) = self.book.get() else {
+            return;
+        };
+        let key = balance(principal);
+        let at = crate::root::durability::Settling {
+            key: &key,
+            window: busbar_kernel_budget::budget_window(
+                busbar_kernel_budget::window::WINDOW_DAY,
+                arrived.secs(),
+            ),
+            durability: &self.durability_token,
+            step: busbar_contract::caps::StepName::Route,
+            stamp: crate::root::durability::PostingStamp {
+                rate_card_version: 0,
+                wall: arrived.secs(),
+                mono: arrived.mono(),
+            },
+        };
+        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let _dispatched = durability.journal_dispatch(&at);
     }
 
     /// THE SWEEP: the second holder of a key to every unit's hold cell, run over the slots the drop
@@ -661,17 +700,11 @@ impl LlmNode {
 
         let hold =
             busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
-        // What this unit reserves, read off the hold it enters the table with. The door on this
-        // plane has its hold opened at ZERO (this file's `Units::admit` row), so the arrival hold's
-        // figure is the unit's reservation for its whole life; a door that reserved would be the
-        // place to journal the difference.
-        let reserved = hold.reserved();
         let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: hold,
             // THE SAME READING the charge above is pinned from, in the units this table keeps. A
@@ -693,7 +726,7 @@ impl LlmNode {
                 // THE HOLD, ON THE JOURNAL, before the unit runs (item 127): what this unit holds
                 // is written down now, so a node killed mid-unit leaves a record the next boot
                 // recovers and posts rather than a hold that only ever existed in memory.
-                self.open_on_book(&principal, arrived, reserved);
+                self.open_on_book(&principal, arrived);
                 let mut occupied = Occupied {
                     node: self,
                     slot: Arc::clone(&slot),
@@ -1111,12 +1144,18 @@ fn post_late(
                 "late accrual refused at settlement: the card cannot price these counts; \
                  the counts row is posted with no figure"
             );
-            let _row = book.post_counts(&at, principal, &counts, Some(format!("{refusal:?}")));
+            let _row = book.post_counts(
+                &at,
+                principal,
+                &counts,
+                arrived.ms(),
+                Some(format!("{refusal:?}")),
+            );
             return;
         }
     };
     if amount == 0 {
-        let _row = book.post_counts(&at, principal, &counts, None);
+        let _row = book.post_counts(&at, principal, &counts, arrived.ms(), None);
         return;
     }
     let accrual = busbar_contract::caps::HoldAccrual::after_terminal(
@@ -1127,7 +1166,7 @@ fn post_late(
     let posted = busbar_contract::caps::Posted::settle_late(accrual, tokens.ledger);
     // Through the money-book seam, as the terminal exit arm does — the same shared book, the same
     // posting, the lock taken and released behind the seam — with the counts on the record.
-    let _settled = book.settle_counted(&at, posted, &counts);
+    let _settled = book.settle_counted(&at, posted, &counts, arrived.ms());
 }
 
 /// The answer's body, with the late arm riding on it.
@@ -1810,6 +1849,9 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
         // A unit refused at Authenticate, Verify, Approve or Admit never reaches Route, so it never
         // reaches this line, and the count says so rather than a rendered refusal having to be told
         // apart from an upstream's own.
+        // THE DISPATCH, ON THE JOURNAL, before the leg leaves: what a recovery reads to tell a unit
+        // that sent something from one that never did.
+        self.node.dispatch_on_book(&self.principal, self.arrived);
         self.node.dispatch.execute(
             self.op_class,
             Box::pin(async move { self.walk.route(token, &destination).await }),
@@ -1955,8 +1997,24 @@ static NODE: LazyLock<LlmNode> = LazyLock::new(LlmNode::new);
 /// Called by the composition root at boot, with the same handle the administrative views were bound
 /// to. Without it the exit arm settles nothing and the root's ledger stays empty — which reads as a
 /// node that has posted nothing rather than as a node whose postings had nowhere to go.
+///
+/// The process's dated rate-card history is bound to the SAME book here (#79): every applied card
+/// goes on its journal, so a restart rebuilds the history this node priced under. The admin
+/// assembly binds it too, and the second binding is a no-op; binding it only there left a build
+/// with this plane and no admin surface pricing against a history no restart could rebuild.
 pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
-    NODE.bind_book(book);
+    bind_node_book(&NODE, &crate::root::kernel::ROOT_CARD, book);
+}
+
+/// [`bind_book`] for a named node and card holder: the holder's journal first, then the node's
+/// exit arm, both on the one book.
+fn bind_node_book(
+    node: &LlmNode,
+    cards: &crate::root::kernel::RootHistory,
+    book: Arc<Mutex<crate::root::durability::Durability>>,
+) {
+    cards.bind_journal(&book);
+    node.bind_book(book);
 }
 
 /// One body-model arrival, driven through the loop.
@@ -2206,41 +2264,38 @@ pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)]
 ];
 
 // ---------------------------------------------------------------------------------------------
-// THE LLM-NATIVE RESOLVED-OP RIDER, DORMANT
+// THE LLM-NATIVE RESOLVED-OP RIDER, TEST-ONLY
 // ---------------------------------------------------------------------------------------------
 
-/// THE DORMANT KERNEL-LOOP SIBLING OF THE SHIPPED MONEY AUTHORITY, at the resolved-op entry.
+/// THE TEST-ONLY KERNEL-LOOP DRIVE OF THE RESOLVED-OP ENTRY, beside the shipped money authority.
 ///
-/// `busbar_llm::native_ingress::run` (native_ingress.rs:592) is the LIVE money authority: from the
-/// same resolved-op arrival — a known `model`, the dialect's already-resolved `operation`, the
-/// caller's headers and body — it builds a `NativePlane`/`GauntletRequest` and settles per-token
-/// billing through `busbar_kernel::plane_host::run_gauntlet` (the SUBSTRATE loop), late-accruing
-/// against the admission-pinned `ROOT_CARD` snapshot. Every resolved-op arrival funnels through it:
-/// `operation_ingress` (once the body's model is read), `ingress_path_model` (once the URL's is), and
-/// the MCP-sampling re-entry `synthesize_completion`.
+/// `busbar_llm::native_ingress::run` is the shipped money authority for a resolved-op arrival — a
+/// known `model`, the dialect's already-resolved `operation`, the caller's headers and body: it
+/// builds a `NativePlane`/`GauntletRequest` and settles per-token billing through
+/// `busbar_kernel::plane_host::run_gauntlet`, late-accruing against the admission-pinned
+/// `ROOT_CARD` snapshot. `run_gauntlet` dispatches to the kernel-loop runner
+/// `gauntlet_install::install()` registers for the LLM capability key at boot (item 125), and that
+/// runner is money-neutral (a `ZeroHold`, no evidence), so the plane's own metering inside `drive`
+/// stays what settles. Every resolved-op arrival funnels through `run()`: `operation_ingress` (once
+/// the body's model is read), `ingress_path_model` (once the URL's is), and the MCP-sampling
+/// re-entry `synthesize_completion`. On a default build (`root-llm` on) the body- and path-model
+/// arrivals do not reach `run()` at all: they are driven through [`LlmNode`] and this module's late
+/// accrual. Measured (item 125, 2026-09-24): `root-llm` OFF returns
+/// `billing|rate-card|history-mid-window` to its 1.5.5 figures; the `install()` flips do not move it.
 ///
-/// This is that SAME resolved-op arrival driven through the KERNEL loop instead —
-/// `answer_arriving_at` → `busbar_kernel::teller::run_unit_async` (units_llm.rs:471), settling onto
-/// the same Durability money-book the composition root bound via [`bind_book`] (main.rs:1460). The
-/// resolved `model` is carried as the loop's `model_hint`, exactly as `run()` carries its resolved
-/// `model`; `path: None`, because a native arrival's model rides its body.
+/// This is that SAME resolved-op arrival driven through [`LlmNode`] instead —
+/// `answer_arriving_at` → `busbar_kernel::teller::run_unit_async`, settling onto the same Durability
+/// money-book the composition root bound via [`bind_book`]. The resolved `model` is carried as the
+/// loop's `model_hint`, exactly as `run()` carries its resolved `model`; `path: None`, because a
+/// native arrival's model rides its body.
 ///
-/// CORRECTION (item 125, measured 2026-09-24): `run_gauntlet` is no longer "the SUBSTRATE loop" —
-/// `gauntlet_install::install()` registers the kernel-loop runner for the LLM capability key at
-/// boot, money-neutrally (a `ZeroHold`, no evidence). And on a default build (`root-llm` on) the
-/// body- and path-model arrivals do not reach `run()` at all: they are driven through [`LlmNode`]
-/// and this module's late accrual. Measured: `root-llm` OFF returns
-/// `billing|rate-card|history-mid-window` to its 1.5.5 figures; the `install()` flips do not move
-/// it.
-///
-/// THIS FUNCTION is test-only. Nothing mounts it, and it is NOT the shipped authority: the shipped
-/// `run()` still calls `run_gauntlet`. DECISION #28 unified the loop plane-neutrally; DECISION #29 gates the
-/// money-authority flip on the fleet-box oracle — the flip is thrown only once loop==legacy is proven
-/// byte-identical on that box (`bin/oracle` record+replay), never here. This entry exists so the
-/// entry-level shadow proof can drive it beside `run()` on the same fixtures and prove exactly that
-/// (see `the_loop_matches_native_ingress_run_at_the_resolved_op_entry`). When #29 authorizes the
-/// flip, this graduates — behind the `root-llm` composition-root switch — into the funnel `run()`'s
-/// three callers reach, replacing the `run_gauntlet` call at native_ingress.rs:592.
+/// THIS FUNCTION is test-only. Nothing mounts it: the shipped `run()` keeps its own call, and
+/// DECISION #29 gates moving the resolved-op money authority onto [`LlmNode`] on the fleet-box oracle
+/// — proven byte-identical on that box (`bin/oracle` record+replay), never here. This entry exists so
+/// the entry-level shadow proof can drive it beside `run()` on the same fixtures and prove exactly
+/// that (see `the_loop_matches_native_ingress_run_at_the_resolved_op_entry`). When #29 authorizes the
+/// move, this graduates — behind the `root-llm` composition-root switch — into the funnel `run()`'s
+/// three callers reach.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn native_run_via_loop(

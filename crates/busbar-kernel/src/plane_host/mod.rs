@@ -47,7 +47,6 @@ pub mod journal;
 pub mod pipe;
 pub mod scope;
 pub mod session_meter;
-pub mod testkit;
 pub mod trust;
 pub mod vtable;
 
@@ -883,10 +882,6 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         self.app.cost.model_unpriced(model)
     }
 
-    fn session_meter(&self) -> Arc<dyn session_meter::SessionMeter> {
-        Arc::new(session_meter::HostMeteringPort::new(Arc::new(self.clone())))
-    }
-
     fn meter_ledger(
         &self,
         pin: &busbar_kernel::plane_host::MeterPin,
@@ -1003,13 +998,19 @@ impl busbar_kernel::plane_host::IdentityHost for EngineHostImpl {
         live_gen: u64,
         now: u64,
     ) -> Result<Option<Arc<busbar_api::VirtualKey>>, busbar_kernel::trust::validate::Lapsed> {
-        // Inject the host's live `GovState` through the `GovResolve` seam so the plane holds only the
-        // `Standing`. Byte-identical to the pre-relocation `Standing::still_permitted(app.governance, …)`.
+        // Inject the host's live `GovState` AND the live `role_bindings` through the `GovResolve` seam
+        // so the plane holds only the `Standing`. The bindings are per-snapshot (rebuilt on every
+        // config apply), so they are read off the CURRENT snapshot when the host retains the live
+        // handle: a role-bound principal is re-checked against the bindings in force now, never the
+        // ones it was admitted under. A registry key re-resolves exactly as before.
+        let live = self.handle.as_ref().map(|h| h.load());
+        let app = live.as_ref().unwrap_or(&self.app);
+        let resolve = crate::governance::LiveResolve {
+            governance: app.governance.as_deref(),
+            role_bindings: &app.role_bindings,
+        };
         standing.still_permitted(
-            self.app
-                .governance
-                .as_deref()
-                .map(|g| g as &dyn busbar_kernel::trust::validate::GovResolve),
+            Some(&resolve as &dyn busbar_kernel::trust::validate::GovResolve),
             live_gen,
             now,
         )
@@ -1481,6 +1482,7 @@ pub fn transform_over_over(
             extra: Default::default(),
         };
         let req = build_invoke_rewrite_request(&facts, ingress, request_id);
+        crate::audit::amend::hook_read(hook.name(), None, ingress, false);
         let outcome = rt.block_on(hook.transform(&req, *timeout));
         drop(req); // end the immutable borrow of `facts` before the next iteration reuses `arguments`
         match outcome {
@@ -2409,7 +2411,11 @@ pub struct CostHandle(pub Arc<dyn std::any::Any + Send + Sync>);
 /// carries its request's pricing context without naming a cost or price type (#43: a plane is
 /// PRICING-BLIND; #71: its money obligation is one raw count per class). The plane hands the pin BACK
 /// to the metering seams ([`BudgetHost::meter_ledger`], [`BudgetHost::rate_headroom`],
-/// [`BudgetHost::budget_state`], [`meter_series_billed`]), which read it kernel-side.
+/// [`BudgetHost::budget_state`], [`BudgetHost::meter_series`]), which read it kernel-side. A plane
+/// calls [`BudgetHost::meter_series`] UNCONDITIONALLY with the counts it observed (#43: no branch, no
+/// knowledge of billing state) — #42's billing-off posture is the VIEW's job (the served figure reads
+/// zero), not the write's; nothing kernel-side gates the row on the pinned card any more (that gate,
+/// `meter_series_billed`, was dead code with no production caller after d09c2e0b0 and is gone).
 ///
 /// A plane-side host (a test double) pins NO card: its pin answers the no-card posture everywhere.
 #[derive(Clone)]
@@ -2562,10 +2568,9 @@ pub struct SettleOutcome {
 /// THE KERNEL'S PRICING SIDE of a live carrier — the reserve-then-settle cost lease and the rate card
 /// that prices each increment. KERNEL-INTERNAL (#43: "a plane plugin NEVER sees its rate card or
 /// fees"): it is NOT a supertrait of [`EngineHost`], so no plane-side host implements it and no plane
-/// names it. A plane meters a live carrier through the count-only
-/// [`SessionMeter`](session_meter::SessionMeter) its host hands out
-/// ([`BudgetHost::session_meter`]); the kernel's [`HostMeteringPort`](session_meter::HostMeteringPort)
-/// drives this trait underneath it.
+/// names it. A plane meters a live carrier through the kernel's count-only
+/// [`SessionAccount`](session_meter::SessionAccount), which prices nothing (Q21b); what drives this
+/// trait is the hot-ABI cost slots.
 ///
 /// The lease legs DEFAULT to the kernel's own host-owned `CostHold` registry ([`cost_host`]) — the SAME
 /// registry the hot-ABI `cost_reserve`/`cost_settle` slots fill, so every lease is one ledger. An
@@ -2842,6 +2847,14 @@ pub trait HookConfigHost: Send + Sync {
     /// zero-cost-when-off property.
     fn any_content_hook(&self) -> bool;
 
+    /// A hook was handed a unit's content (and the caller's identity, when `identity`): leave the
+    /// one access amendment the kernel's own gate and rewrite seams leave, on the node journal.
+    /// `principal` is whose content it was; `op` the ingress label — data, never branched on.
+    /// PROVIDED, so a plane's own hook call sites record through the same seam as the kernel's.
+    fn hook_read(&self, name: &str, principal: Option<&str>, op: &str, identity: bool) {
+        crate::audit::amend::hook_read(name, principal, op, identity);
+    }
+
     /// The GLOBAL request-stage `kind: tap` observers — the borrow of `App::tap_hooks`. Each
     /// [`TapEntry`](crate::hooks::TapEntry) is a neutral `(deadline, prompt-grant, transport, groups)`
     /// tuple. Held BY REF across the forward await-loop (the tap-fire pass reads it after each hop), so
@@ -2886,8 +2899,8 @@ pub trait HookConfigHost: Send + Sync {
 
 /// The BUDGET/METERING slice: the money-path seams a plane drives — COUNTS in, VERDICTS out. The
 /// governance handle and [`MeterPin`] mints, the record-usage / record-metering accruals, the
-/// reserve-then-charge meter, the live-carrier [`SessionMeter`](session_meter::SessionMeter), and the
-/// pure headroom/budget projections. No method names a cost or price type: pricing is the kernel's
+/// reserve-then-charge meter, and the pure headroom/budget projections (a live carrier's
+/// [`SessionAccount`](session_meter::SessionAccount) is built over them). No method names a cost or price type: pricing is the kernel's
 /// ([`MeteringHost`], #43), so a plane-side host implements this slice without naming one. Split off
 /// `EngineHost` as a supertrait; the accrual seams read the pin kernel-side, no `HostCtx`.
 pub trait BudgetHost: Send + Sync {
@@ -2945,11 +2958,6 @@ pub trait BudgetHost: Send + Sync {
     /// rate: the plane fails the request closed on `true` and never learns a figure.
     fn cost_model_unpriced(&self, model: &str) -> bool;
 
-    /// The count-only [`SessionMeter`](session_meter::SessionMeter) a live carrier reports its turns
-    /// to: open over a kernel-derived budget, raw counts per turn, [`TurnVerdict`](session_meter::TurnVerdict)
-    /// back. The kernel's host binds it over its own lease registry and rate card.
-    fn session_meter(&self) -> Arc<dyn session_meter::SessionMeter>;
-
     /// LEDGER one delivered response's tier-split counts against the key's budget chain — the
     /// host-driven form of `sink.gov.record_usage(&sink.cost, key, pool, model, tokens, now)` over the
     /// governance state and card `pin` carries. A no-op on an all-zero tier, exactly as
@@ -2978,29 +2986,6 @@ pub trait BudgetHost: Send + Sync {
         usage: Option<&crate::billing::TokenUsage>,
         now: u64,
     );
-}
-
-/// THE BILLING SWITCH, KERNEL-SIDE — DECISION #42 read where #43 puts it.
-///
-/// Record one delivered response's raw metering row ONLY when a rate card is present: with no
-/// `rate_card:` the node is a free failover/routing proxy and emits no per-model usage row (#42). A
-/// plane calls this UNCONDITIONALLY with the counts it observed and never asks whether billing is on
-/// — #43: "a plane appends its counts unconditionally — no branch, no knowledge of billing state".
-/// The switch is a property of the card the plane's [`MeterPin`] carries — the card in force when the
-/// request was admitted — so it is answered here and never in plane code; a pin with no card writes
-/// no row. The row itself is the unchanged [`BudgetHost::meter_series`].
-pub fn meter_series_billed<H: BudgetHost + ?Sized>(
-    host: &H,
-    pin: &MeterPin,
-    key_id: &str,
-    model: &str,
-    provider: &str,
-    usage: Option<&crate::billing::TokenUsage>,
-    now: u64,
-) {
-    if cost_model(&pin.cost).is_some_and(|c| c.pricing_enabled()) {
-        host.meter_series(&pin.gov, key_id, model, provider, usage, now);
-    }
 }
 
 /// The IDENTITY/TRUST slice: inbound identity resolution + the trust/approval seams around it — the

@@ -899,8 +899,16 @@ impl AuthModule for TestGroupsModule {
 /// TEST-ONLY data-plane module standing in for an operator's OIDC auth plugin: it identifies ANY
 /// non-empty credential and asks nothing about audience, exactly as the plugin ABI forces a real one
 /// to. See the `test-idp-module` chain arm for why the tree needs one.
+///
+/// The principal carries the role [`TEST_IDP_ROLE`], because an identified principal earns data-plane
+/// access ONLY through a key (no key, refuse) — a stand-in for a DEPLOYED IdP is one whose
+/// role the operator bound under `role_bindings`, which is what `TestApp::idp_chain` installs.
 #[cfg(any(test, feature = "test-support"))]
 struct TestIdpModule;
+
+/// The role the [`TestIdpModule`] stand-in asserts for every principal it identifies.
+#[cfg(any(test, feature = "test-support"))]
+pub const TEST_IDP_ROLE: &str = "idp-user";
 
 #[cfg(any(test, feature = "test-support"))]
 impl AuthModule for TestIdpModule {
@@ -909,7 +917,11 @@ impl AuthModule for TestIdpModule {
     }
     fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
         match candidate.filter(|c| !c.is_empty()) {
-            Some(_) => AuthOutcome::Identify(Principal::from_id("idp:subject".to_string())),
+            Some(_) => {
+                let mut p = Principal::from_id("idp:subject".to_string());
+                p.roles = vec![TEST_IDP_ROLE.to_string()];
+                AuthOutcome::Identify(p)
+            }
             None => AuthOutcome::Pass,
         }
     }
@@ -1862,9 +1874,11 @@ pub fn resolve_data_plane_identity(
             principal,
             resolved,
         } => {
-            let bindings = app.role_bindings.get(&module);
-            let gov_key = resolved
-                .or_else(|| crate::governance::synthesize_principal_key(&principal, bindings));
+            // Synthesized through `synthesize_bound_key` so the key records its admission (module +
+            // roles): a long-lived response's `Standing` then re-checks it against the LIVE bindings.
+            let gov_key = resolved.or_else(|| {
+                crate::governance::synthesize_bound_key(&module, &principal, &app.role_bindings)
+            });
             let Some(key) = gov_key else {
                 return Err(IdentityRefusal::NoGrant);
             };

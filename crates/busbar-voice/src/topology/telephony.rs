@@ -21,8 +21,8 @@ use crate::ir::media::AudioFormat;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
 use crate::runtime::session::{SessionCore, UplinkForwarder, VoiceSession};
-use crate::runtime::{LeaseCloseGuard, VoiceRuntime};
-use crate::topology::{begin_session, SessionBudget, StartError};
+use crate::runtime::VoiceRuntime;
+use crate::topology::{begin_session, StartError};
 use busbar_kernel::ingress::byte_duplex::serve_messages;
 use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use futures::{Sink, Stream, StreamExt};
@@ -48,9 +48,6 @@ pub struct TelephonyProxy<C> {
     pub core: Arc<SessionCore<C>>,
     /// The durable session binding to close at teardown.
     pub handle: SessionHandle,
-    /// The by-value D2 lease close guard — moved into [`TelephonyProxy::run`]'s frame so the reserve is
-    /// closed deterministically on any exit, even when a parked handler pins `Arc<SessionCore>`.
-    guard: LeaseCloseGuard,
     /// The downlink-facing plane — serve it over the PROVIDER socket.
     downlink_plane: Arc<VoiceSession<C>>,
     /// The uplink-facing plane — serve it over the CLIENT socket.
@@ -63,8 +60,8 @@ pub struct TelephonyProxy<C> {
     downlink_rx: UnboundedReceiver<Vec<u8>>,
 }
 
-/// BEGIN a telephony proxy: lock the `g711`-based config, open the governed session (lease + durable
-/// handle), and build the two planes + the funnels between them. The provider/client sockets are bound
+/// BEGIN a telephony proxy: lock the `g711`-based config, open the governed session (kernel account +
+/// durable handle), and build the two planes + the funnels between them. The provider/client sockets are bound
 /// later by [`TelephonyProxy::run`].
 #[allow(clippy::too_many_arguments)]
 pub fn begin_telephony<C>(
@@ -73,7 +70,6 @@ pub fn begin_telephony<C>(
     owner: impl Into<String>,
     call_id: impl Into<String>,
     locked_config: SessionConfig,
-    budget: SessionBudget,
     meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
 ) -> Result<TelephonyProxy<C>, StartError>
@@ -84,14 +80,13 @@ where
     let (downlink_tx, downlink_rx) = unbounded::<Vec<u8>>();
     let carrier = Carrier::with_downlink(downlink_tx);
 
-    let (core, handle, guard) = begin_session(
+    let (core, handle) = begin_session(
         rt,
         codec,
         owner,
         call_id,
         Some(locked_config),
         carrier,
-        budget,
         meter,
         now,
     )?;
@@ -104,7 +99,6 @@ where
     Ok(TelephonyProxy {
         core,
         handle,
-        guard,
         downlink_plane,
         uplink_plane,
         upstream_rx,
@@ -130,7 +124,6 @@ pub(crate) fn open_admitted_telephony<C>(
     owner: impl Into<String>,
     call_id: impl Into<String>,
     locked_config: SessionConfig,
-    budget: SessionBudget,
     meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
     governed: Option<crate::runtime::GovernedSession>,
@@ -141,14 +134,13 @@ where
     let (downlink_tx, downlink_rx) = unbounded::<Vec<u8>>();
     let carrier = Carrier::with_downlink(downlink_tx);
 
-    let (core, handle, guard) = crate::topology::open_admitted_session(
+    let (core, handle) = crate::topology::open_admitted_session(
         rt,
         codec,
         owner,
         call_id,
         Some(locked_config),
         carrier,
-        budget,
         meter,
         now,
         governed,
@@ -161,7 +153,6 @@ where
     Ok(TelephonyProxy {
         core,
         handle,
-        guard,
         downlink_plane,
         uplink_plane,
         upstream_rx,
@@ -180,7 +171,7 @@ where
         &self.core
     }
 
-    /// RUN the proxy until either socket ends OR the metering lease hard-closes the carrier. Binds the
+    /// RUN the proxy until either socket ends OR the kernel's budget verdict hard-closes the carrier. Binds the
     /// four socket halves — the PROVIDER pair is opened THROUGH the neutral guarded WS transport
     /// ([`crate::topology::dial_provider`], which resolves-then-pins-then-guards the upstream `wss://`),
     /// and the CLIENT pair is the telephony leg; the plane holds no socket plumbing, only these
@@ -207,19 +198,12 @@ where
         let TelephonyProxy {
             core,
             handle,
-            guard,
             downlink_plane,
             uplink_plane,
             upstream_rx,
             upstream_tx,
             downlink_rx,
         } = self;
-
-        // OWN the close guard in this frame: it drops when `run()` returns on ANY path — EOF, the
-        // hard-close `select!` race below, or a panic unwinding through here — closing the D2 lease's
-        // reserve deterministically, even if a parked-at-await handler still pins `Arc<SessionCore>`
-        // (which would refcount-gate the settle handle's own `Drop` close and leak the reserve).
-        let _lease_guard = guard;
 
         let carrier = core.carrier().clone();
 
@@ -255,6 +239,8 @@ where
         // Release the session so the downlink funnel's last sender (the carrier) drops and its drain
         // completes; then await both drains so queued frames are flushed to the sockets before return.
         drop(carrier);
+        // A turn the call ended in the middle of was served all the same: its counts are ledgered now.
+        core.settle_open_turn();
         drop(core);
         let _ = up_drain.await;
         let _ = down_drain.await;

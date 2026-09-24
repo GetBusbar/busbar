@@ -463,10 +463,13 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         .unwrap_or_default();
     let mut ov = on(base);
     for p in &planes {
+        // item 376 (Q11/Q32): the needle moved from `busbar_core::` (a deleted crate, absorbed
+        // into busbar-kernel) to `busbar_kernel::`, so the plant must name the live needle or it
+        // adds zero hits and the row it is proving red stays green.
         ov.set(
             format!("crates/{p}/src/zz_planted_ports.rs"),
             (0..40)
-                .map(|i| format!("pub fn planted_reach_{i}() {{ busbar_core::internals(); }}\n"))
+                .map(|i| format!("pub fn planted_reach_{i}() {{ busbar_kernel::internals(); }}\n"))
                 .collect::<String>(),
         );
         ov.set(
@@ -474,7 +477,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             format!(
                 "#[cfg(test)]\nmod tests {{\n{}}}\n",
                 (0..40)
-                    .map(|i| format!("    fn planted_{i}() {{ busbar_core::internals(); }}\n"))
+                    .map(|i| format!("    fn planted_{i}() {{ busbar_kernel::internals(); }}\n"))
                     .collect::<String>()
             ),
         );
@@ -773,7 +776,7 @@ fn ceiling_cases<'a>(
 
     // THE CONTRACT CRATE, READ FROM THE KEY THE ROW READS. This planted into `caps_crate`, falling
     // back to `busbar-caps` — a key struck from the ceilings file and a crate folded into
-    // busbar-contract (2c9eddecf) — so the plant landed in a crate no row measures, and
+    // busbar-contract — so the plant landed in a crate no row measures, and
     // `loc-ceilings:caps-contract` looked proven only because it was already over its ceiling.
     // On the green fixture it is at its ceiling, and this plant is what has to move it.
     let contract = cfg
@@ -1657,13 +1660,18 @@ fn money_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             format!("{basetext}\npub fn planted_extra_double() {{ let _ = NullShipper; }}\n"),
         );
     }
+    // item 381 (Q11/Q32): `rules.legacy-reach.prefixes` struck the two dead prefixes
+    // (busbar_core, busbar_substrate — 0 hits forever) and added the three live retiring engines
+    // the root still names (busbar_mcp, busbar_a2a, busbar_voice). The plant must name every
+    // CURRENT prefix or the rows for the ones it misses stay green.
     ov.set(
         "crates/busbar/src/root/zz_planted_reach.rs",
         (0..200)
             .map(|i| {
                 format!(
-                    "pub fn planted_{i}() {{ busbar_core::planted_{i}(); \
-                     busbar_llm::planted_{i}(); busbar_substrate::planted_{i}(); }}\n"
+                    "pub fn planted_{i}() {{ busbar_llm::planted_{i}(); \
+                     busbar_mcp::planted_{i}(); busbar_a2a::planted_{i}(); \
+                     busbar_voice::planted_{i}(); }}\n"
                 )
             })
             .collect::<String>(),
@@ -1679,10 +1687,9 @@ fn money_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
                 "no-test-doubles-in-production:doubles",
                 "legacy-reach",
             ]);
-            // EVERY PER-CRATE REACH ROW TOO. The plant names all three retiring prefixes, 200
-            // symbols each, so every `legacy-reach:<key>` measurement moves past its figure —
-            // including the two at 0, which the figure plant in `ceiling_ratchet_cases` cannot
-            // move.
+            // EVERY PER-CRATE REACH ROW TOO. The plant names all four live prefixes (item 381,
+            // Q11/Q32: busbar_core and busbar_substrate struck, 0 hits forever), 200 symbols
+            // each, so every `legacy-reach:<key>` measurement moves past its figure.
             if let Some(c) = cfg.as_ref() {
                 cover.extend(
                     c.doc

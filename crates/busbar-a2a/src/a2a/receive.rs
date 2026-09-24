@@ -47,6 +47,7 @@ use crate::diagnostics::{
     A2A_RELAYED_OUTCOME_UNRECORDED, A2A_RELAYED_STREAM_REFUSED, A2A_RELAYED_SUBMISSION_FAILED,
     A2A_RELAY_THREAD_INCOMPLETE, A2A_STREAM_EMPTY, A2A_STREAM_RELAY_INCOMPLETE,
 };
+use busbar_kernel::plane_host::EngineHost;
 use busbar_kernel::{diag_debug, diag_error, diag_warn};
 
 /// The audit action every inbound call on this plane records under.
@@ -69,13 +70,24 @@ pub(super) const AUDIT_ACTION: &str = "agent.call";
 /// therefore distinguishable in one ledger, which is the whole reason the prefix rule exists.
 const PLANE_POOL: &str = busbar_plane_a2a::CONFIG_SECTION;
 
+/// An admission's pool qualified by THIS plane's key, as its ledger lane is: the kernel charges the
+/// call to the A2A plane — `agents.fees`, never the llm plane's fee (#47) — and reads the pool
+/// predicate off the unqualified `pool`.
+fn admission_pool(pool: &str) -> String {
+    format!(
+        "{}{}{pool}",
+        crate::PLANE_KEY,
+        busbar_kernel::governance::PLANE_LANE_SEP
+    )
+}
+
 /// THE CREDENTIAL KIND THIS MOUNT CONFERS. `a2a_inbound` only when the plane is audience-bound;
 /// otherwise the empty string, which [`super::inbound::authorize`] refuses.
 ///
 /// See the module doc for why this is derived rather than asserted. In one line: an audience-bound
 /// mount is the only place a token can have been checked against this plane's resource indicator,
 /// so it is the only place the presented credential is an A2A inbound credential.
-fn credential_kind_of(engine_host: &dyn busbar_kernel::plane_host::EngineHost) -> &'static str {
+fn credential_kind_of(engine_host: &dyn EngineHost) -> &'static str {
     let bound = engine_host.plane_audience_bound(crate::PLANE_DECL.key);
     if bound {
         CREDENTIAL_KIND_A2A_INBOUND
@@ -191,7 +203,7 @@ pub(super) struct Admitted {
 /// allocation on a request that is being turned away is cheaper than widening every `Result` on the
 /// admitted path by the size of a response nobody on it will ever carry.
 fn admit(
-    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    host: &Arc<dyn EngineHost>,
     key: &busbar_api::VirtualKey,
     agent_id: &str,
     shape: &super::registry::TaskShape,
@@ -300,7 +312,7 @@ fn admit(
 /// several agents that can all serve one shape has a caller who must say which — and that caller
 /// has an unambiguous address for it, `POST /a2a/agents/{id}`, which the refusal names.
 fn select(
-    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    host: &Arc<dyn EngineHost>,
     key: &busbar_api::VirtualKey,
     shape: &super::registry::TaskShape,
 ) -> Result<String, Box<Response>> {
@@ -719,7 +731,7 @@ fn governance_required() -> Response {
 /// locally-answered verbs, and the pre-selection card — and a fourth spelled slightly differently
 /// is how one verb quietly stops appearing in a deployment's ledger.
 fn meter_request(
-    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
+    engine_host: &dyn EngineHost,
     cap_scope: &busbar_kernel::plane_host::DispatchScope,
     billed_key_id: &str,
     resource: &str,
@@ -813,7 +825,7 @@ use Target::{FromCatalogue, Named};
 /// structural `Proceed`. Riding the seam expresses verify-before-admit + the audit-correlation join
 /// on the ONE shared path, making all three planes siblings.
 struct A2aInvokePlane {
-    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    engine_host: Arc<dyn EngineHost>,
     principal: busbar_api::AuthPrincipal,
     target: Target,
     wire: Wire,
@@ -874,7 +886,7 @@ impl busbar_kernel::plane_host::GauntletPlane for A2aInvokePlane {
 /// only from a conformance suite's stdout.
 #[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
 pub(super) async fn invoke(
-    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    engine_host: Arc<dyn EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
@@ -932,7 +944,7 @@ pub(super) async fn invoke(
 /// there are a dozen early returns below, and a metric emitted at each of them is a metric that
 /// will one day be missing from the thirteenth.
 async fn invoke_inner(
-    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    engine_host: Arc<dyn EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
@@ -1136,7 +1148,7 @@ pub(super) fn tap_join_verdict(
 // that convergence deletes.
 #[allow(clippy::too_many_arguments)]
 async fn admitted(
-    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    engine_host: Arc<dyn EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
@@ -1207,7 +1219,7 @@ async fn admitted(
         if matches!(
             engine_host.govern_admit_reason(
                 &cap_scope,
-                PLANE_POOL.as_bytes(),
+                admission_pool(PLANE_POOL).as_bytes(),
                 key.id.as_bytes(),
                 key.group.as_deref().map(str::as_bytes),
             ),
@@ -1522,7 +1534,7 @@ async fn admitted(
     // `Deny` is behavior-identical.
     let admitted_budget = engine_host.govern_admit_reason(
         &cap_scope,
-        resource.as_bytes(),
+        admission_pool(&resource).as_bytes(),
         key.id.as_bytes(),
         key.group.as_deref().map(str::as_bytes),
     );
@@ -2085,6 +2097,9 @@ async fn admitted(
     //    left — every refusal before that is audited `rejected` and metered nothing.
     let charge = HopCharge {
         billed_key_id: hop.billed_key_id.clone(),
+        // The PRESENTING key `hop.billed_key_id` names (`inbound::admit` copies `key.id` into it), as
+        // the value the budget chain is walked from — its group is what a `budget:` cap sits on.
+        key: Arc::clone(key),
         resource: resource.clone(),
         actor: actor.clone(),
     };
@@ -2349,7 +2364,7 @@ struct HopContext {
     /// the durable `task_event` seam through the same `EngineHost` methods (`task_journal_write` /
     /// `task_record_push_delivery`), which mint the transient `HostCtx` internally. Cloned by the writes
     /// that run AFTER the hop; `Send + Sync`, so it rides onto a detached task or a blocking thread.
-    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    engine_host: Arc<dyn EngineHost>,
     /// THE PLANE'S OUTBOUND SEAM, carried so the code that records a task's outcome can also
     /// DELIVER it. A push notification is the same fact as the state transition and belongs at the
     /// same instant; reaching for the plane again from `record_state` would be reading the world
@@ -2406,7 +2421,7 @@ struct HopContext {
 /// THE HOP'S ONE CHARGE AND ITS ONE AUDIT RECORD, SETTLED ONLY ONCE THE HOP'S FATE IS KNOWN.
 ///
 /// A hop is billed if busbar ATTEMPTED it — the call reached the transport — and not otherwise. The
-/// ledger is what the plane did (§8.4): a hop the breaker refused, the SSRF guard refused, a
+/// ledger is what the plane did: a hop the breaker refused, the SSRF guard refused, a
 /// demotion or an unleasable credential stopped before the socket, was never made, so it writes no
 /// metering row and is audited `rejected`, never `applied`. A hop that left is billed whatever the
 /// backend then answered, exactly as before.
@@ -2417,6 +2432,8 @@ struct HopContext {
 #[derive(Clone)]
 struct HopCharge {
     billed_key_id: String,
+    /// The key whose budget chain the hop's `bytes` are ledgered on — the one `billed_key_id` names.
+    key: Arc<busbar_api::VirtualKey>,
     resource: String,
     actor: String,
 }
@@ -2424,18 +2441,21 @@ struct HopCharge {
 impl HopCharge {
     /// Settle the charge for a hop whose relay outcome is `left`. Metered through the same
     /// [`meter_request`] every other admitted call on this plane uses; the scope is the hop's own
-    /// shared scope, which the amount-0 request charge registers nothing into.
+    /// shared scope, which the amount-0 request charge registers nothing into. AND the hop's payload
+    /// bytes, both ways, are ledgered under the plane's declared `bytes` class ([`ledger_hop_bytes`]).
     fn settle(
         &self,
-        engine_host: &dyn busbar_kernel::plane_host::EngineHost,
+        engine_host: &dyn EngineHost,
         scope: &busbar_kernel::plane_host::DispatchScope,
         left: bool,
+        bytes: &super::relay::HopBytes,
     ) {
         if !left {
             self.refused(engine_host);
             return;
         }
         meter_request(engine_host, scope, &self.billed_key_id, &self.resource);
+        ledger_hop_bytes(engine_host, &self.key, &self.resource, bytes.total());
         engine_host.audit_emit(
             AUDIT_ACTION,
             &self.resource,
@@ -2445,7 +2465,7 @@ impl HopCharge {
     }
 
     /// A hop refused before it left: one `rejected` record, and nothing metered.
-    fn refused(&self, engine_host: &dyn busbar_kernel::plane_host::EngineHost) {
+    fn refused(&self, engine_host: &dyn EngineHost) {
         engine_host.audit_emit(
             AUDIT_ACTION,
             &self.resource,
@@ -2453,6 +2473,56 @@ impl HopCharge {
             &self.actor,
         );
     }
+}
+
+/// LEDGER ONE HOP'S PAYLOAD BYTES under the plane's one declared class, `bytes`: a billed A2A byte
+/// is payload bytes relayed BOTH ways per hop (request + response), class `bytes`, priced by
+/// `agents.rate_card`; no card → 0. What a payload byte is,
+/// exactly, is [`super::relay::HopBytes`]'s doc.
+///
+/// The plane's whole money obligation, and the MCP plane's `ledger_tool_call` twin: one raw count on
+/// the class it declares ([`busbar_plane_a2a::meta::CLASS_BYTES`]), appended to the caller's budget
+/// chain through the SAME host `meter_ledger` seam every other plane ledgers through. The card is
+/// never consulted here (#43), and the write does not depend on one. The view prices the row with
+/// the A2A plane's OWN card — the lane is plane-qualified — which is the operator's
+/// `agents.rate_card`, lifted off the section by core before this plane parses it: present, it
+/// prices `bytes` on the named agent or REFUSES an agent it is silent about (#42); absent, A2A
+/// billing is OFF and the count reads 0, the row still there for a count cap.
+///
+/// Called only for a hop that LEFT ([`HopCharge::settle`], 135): a hop refused before the socket
+/// moved no byte and ledgers nothing. A hop that left and moved nothing measurable (a transport
+/// failure) writes no row — a zero count is not an event. Keyed exactly as the admission was:
+/// `pool` is the admitted resource (`agent:<id>`, so pool-scoped buckets see the predicate the door
+/// judged), and the lane is that resource qualified by the plane, so the card entry an operator
+/// writes is the same `agent:<id>` the usage rows already name.
+fn ledger_hop_bytes(
+    engine_host: &dyn EngineHost,
+    key: &busbar_api::VirtualKey,
+    resource: &str,
+    bytes: u64,
+) {
+    if bytes == 0 {
+        return;
+    }
+    // No governance: nothing to ledger against — the plane refuses to admit without it anyway.
+    let Some(pin) = engine_host.meter_pin() else {
+        return;
+    };
+    let usage = busbar_substrate_values::billing::Usage {
+        usage_units: std::collections::BTreeMap::from([(
+            busbar_plane_a2a::meta::CLASS_BYTES.as_str().to_string(),
+            bytes,
+        )]),
+    };
+    let lane = admission_pool(resource);
+    engine_host.meter_ledger(
+        &pin,
+        key,
+        resource,
+        &lane,
+        &usage,
+        engine_host.clock_now_secs(),
+    );
 }
 
 /// WHETHER A RELAY OUTCOME MEANS THE CALL LEFT BUSBAR. An answer did; so did every refusal that is
@@ -2503,7 +2573,7 @@ fn fold_reverify_join(
 }
 
 async fn verify_agent_on_call(
-    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    host: &Arc<dyn EngineHost>,
     plane: &Arc<super::plane::A2aPlane>,
     agent_id: &str,
 ) {
@@ -2566,7 +2636,7 @@ async fn unary_hop(
     // The hop's neutral `EngineHost` and the ONE bare shared scope, moved into the `spawn_blocking`
     // closure below so `relay`'s breaker admit/settle/record reach the host seam over the same arena
     // the walk registered its probe into — no `!Send` `HostCtx` crosses the task boundary.
-    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    engine_host: Arc<dyn EngineHost>,
     hop_scope: busbar_kernel::plane_host::DispatchScope,
 ) -> Response {
     let agent_id = ctx.agent_id.clone();
@@ -2585,6 +2655,8 @@ async fn unary_hop(
     let walk_admission_id = ctx.walk_admission_id;
     let charge = ctx.charge.clone();
     let relayed = tokio::task::spawn_blocking(move || {
+        // What this hop moved, both ways — counted by the relay, billed by the settle below.
+        let bytes = super::relay::HopBytes::default();
         // The ONE bare shared scope rides onto the blocking thread; its arena reclaims when this
         // closure ends (reclaim at HOP end, after the outcome was recorded). Both the walk admit
         // (already registered) and `prepare`'s un-pooled admit settle by a host AdmissionId here.
@@ -2605,11 +2677,12 @@ async fn unary_hop(
                 host: Some(engine_host.as_ref()),
                 host_scope: Some(&hop_scope),
                 admission: walk_admission_id,
+                bytes: Some(&bytes),
             },
             seam.as_ref(),
             now_ms,
         );
-        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out));
+        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out), &bytes);
         out
     })
     .await;
@@ -2771,7 +2844,7 @@ async fn stream_hop(
     // durable-journal writes (state transition, artifact-cursor advance, push delivery) ride this same
     // `EngineHost` now — its methods mint the transient `HostCtx` internally, so no separate
     // `Send + 'static` route is threaded for them.
-    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    engine_host: Arc<dyn EngineHost>,
     hop_scope: busbar_kernel::plane_host::DispatchScope,
 ) -> Response {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
@@ -2815,6 +2888,8 @@ async fn stream_hop(
         // `prepare`'s un-pooled admit settle by a host AdmissionId here. The durable journal writes
         // ride the neutral `engine_host` (moved in below), which mints its own transient host per call.
         let hop_scope = hop_scope;
+        // What this hop moved, both ways — every streamed chunk included. See `relay::HopBytes`.
+        let bytes = super::relay::HopBytes::default();
         let mut sink = |ev: super::relay::RelayEvent| -> super::relay::ChunkFlow {
             // THE PAIRING, off the stream too. A streaming submission is the one case where the
             // caller is MOST likely to follow up by id - a resubscribe, a cancel - and a mapping
@@ -2941,6 +3016,7 @@ async fn stream_hop(
                 host: Some(engine_host.as_ref()),
                 host_scope: Some(&hop_scope),
                 admission: walk_admission_id,
+                bytes: Some(&bytes),
             },
             seam.as_ref(),
             &task_id,
@@ -2949,7 +3025,7 @@ async fn stream_hop(
             now_ms,
             &mut sink,
         );
-        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out));
+        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out), &bytes);
         out
     });
 
@@ -3154,7 +3230,7 @@ fn record_state(ctx: &HopContext, state: super::task::TaskState) {
 /// A task with no callback never spawns anything: the overwhelmingly common case costs one
 /// `Option` test.
 pub(super) fn notify_push(
-    engine_host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    engine_host: Arc<dyn EngineHost>,
     seam: &Arc<dyn super::relay::RelaySeam>,
     task: super::task::Task,
 ) {
@@ -3394,7 +3470,7 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
 /// about the RECORD rather than about the answer, split out because a refusal that carries the
 /// backend's own error code renders its answer differently and must still end the task identically.
 fn end_task(
-    engine_host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    engine_host: &Arc<dyn EngineHost>,
     seam: &Arc<dyn super::relay::RelaySeam>,
     task_id: &str,
     request_id: &str,
@@ -3428,7 +3504,7 @@ fn end_task(
 }
 
 fn fail_task(
-    engine_host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    engine_host: &Arc<dyn EngineHost>,
     seam: &Arc<dyn super::relay::RelaySeam>,
     rpc_id: &serde_json::Value,
     task_id: &str,
@@ -3555,7 +3631,7 @@ pub(crate) async fn validate_callback(
 /// The member names are [`super::idmap`]'s, because they are the same fact: the ids this reads are
 /// exactly the ids that translation rewrites.
 fn addressed_task(
-    _engine_host: &dyn busbar_kernel::plane_host::EngineHost,
+    _engine_host: &dyn EngineHost,
     envelope: &serde_json::Value,
     principal: &str,
 ) -> Option<super::task::Task> {

@@ -163,6 +163,29 @@ fn row_a_lost_settle_record_keeps_the_amount_and_marks_it_unposted() {
     assert!(flags.contains(PostingFlags::UNPOSTED));
 }
 
+/// A lost settle record is a MARK on the row that applied, never a row of its own: a completed unit
+/// whose destination reported nothing bills nothing whether or not its record survived, and the
+/// floor stays evidence. (Item 436: a second, unreachable table billed this unit at the floor.)
+#[test]
+fn row_a_lost_settle_record_on_a_completed_unlocated_unit_still_bills_nothing() {
+    let evidence = Evidence {
+        located: None,
+        accrued_floor: 120,
+        locator_required: true,
+        settle_record_lost: true,
+        ..Evidence::default()
+    };
+    assert_eq!(
+        settle_amount(&Outcome::Completed, &evidence),
+        (
+            0,
+            PostingFlags::ESTIMATED
+                .with(PostingFlags::METER_DISPUTED)
+                .with(PostingFlags::UNPOSTED)
+        )
+    );
+}
+
 #[test]
 fn no_row_ever_resolves_upward() {
     // Whatever the evidence, the amount posted is never more than the highest figure any source

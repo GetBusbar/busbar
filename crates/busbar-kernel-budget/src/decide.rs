@@ -38,7 +38,7 @@
 //!
 //! Synchronous and infallible: in-memory cells, no store round-trip, no await.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -221,15 +221,31 @@ impl Gauges {
 pub struct Door<S: CellStore> {
     cells: S,
     gauges: Gauges,
+    /// The classes a `tokens:` cap sums — fixed at construction, because what counts as a token is
+    /// what the installed planes declare, and that does not change under a running node.
+    token_classes: BTreeSet<String>,
 }
 
 impl<S: CellStore> Door<S> {
-    /// A door over a cell store.
+    /// A door over a cell store whose `tokens:` caps count the reserved token tiers alone.
     pub fn new(cells: S) -> Self {
+        Self::with_token_classes(cells, std::iter::empty())
+    }
+
+    /// A door over a cell store whose `tokens:` caps count the reserved token tiers AND every class
+    /// in `declared` — the classes the installed planes declare in the token family, handed in by
+    /// the root so this crate names no plane's vocabulary.
+    pub fn with_token_classes<'a>(cells: S, declared: impl IntoIterator<Item = &'a str>) -> Self {
         Door {
             cells,
             gauges: Gauges::new(),
+            token_classes: crate::cells::token_classes(declared),
         }
+    }
+
+    /// The classes this door's `tokens:` caps sum.
+    pub fn token_classes(&self) -> &BTreeSet<String> {
+        &self.token_classes
     }
 
     /// The cell store, for the ledger's own reads.
@@ -331,7 +347,7 @@ impl<S: CellStore> Door<S> {
                     Some(cell) if cell.window_start >= window => (
                         cell.requests,
                         if bucket.tokens_cap.is_some() {
-                            cell.total_tokens()
+                            cell.total_tokens(&self.token_classes)
                         } else {
                             0
                         },

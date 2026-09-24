@@ -21,9 +21,8 @@ use super::Ingress;
 #[cfg(feature = "test-support")]
 use crate::mount::open_governed;
 use crate::runtime::scope::rehydrate_sessions;
-use crate::runtime::{EchoToolExecutor, LocalMeteringPort, SessionHandle, VoiceRuntime};
+use crate::runtime::{EchoToolExecutor, SessionHandle, VoiceRuntime};
 use crate::topology::telephony::{begin_telephony, g711_config};
-use crate::topology::SessionBudget;
 use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
 use busbar_kernel::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};
@@ -155,13 +154,12 @@ fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::An
     voice_build(&ctx)
 }
 
-/// A session runtime with no live money hop — the in-process `LocalMeteringPort` — used to drive
+/// A session runtime with no metered caller behind it — used to drive
 /// `open_governed` without any provider. `model` seeds the gauntlet destination; `deny` is the plane's
 /// open-pass denial set.
 fn runtime_for(model: &str, deny: &[&str]) -> VoiceRuntime {
     let mut rt = VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
-        Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     )
     .with_denied_destinations(deny.iter().copied());
@@ -402,20 +400,14 @@ async fn duplex_session_runs_in_process_through_the_gauntlet_after_hydrate() {
     assert!(voice_hydrate(&FakeBootCtx { store: None }).is_ok());
 
     // (2) ARRIVAL: begin_telephony opens the session THROUGH `run_gauntlet_session` (verify strictly
-    // before the D2 lease reserve). g711 carries no model, so the destination is unset and admitted.
+    // before the kernel account's budget check). g711 carries no model, so the destination is unset and admitted.
     let rt = runtime_for("", &[]);
-    let budget = SessionBudget {
-        estimate_nanos: 1_000,
-        fee_nanos: 0,
-        cap_nanos: None,
-    };
     let proxy = begin_telephony(
         &rt,
         OpenAiRealtimeCodec,
         "acct",
         "call-x",
         g711_config(),
-        budget,
         None,
         1,
     )
@@ -530,4 +522,34 @@ fn redaction_leaves_a_message_that_carries_no_query_credential_alone() {
         super::redact_url_credentials("wss://h/p?key=abc&alt=sse"),
         "wss://h/p?key=<redacted>&alt=sse"
     );
+}
+
+/// #71 EXIT TEST (money-model integrity, P2-voicefix, architect ruling): a plane's DECLARED
+/// BILLABLE CLASSES must be pairwise DISJOINT, because money = Σ count(class) × rate(class) only
+/// holds when no class is a subset of another. The upstream `cached_tokens` figure both duplex
+/// dialects report is a SUBSET of the input token classes (nested inside
+/// `input_token_details`/`promptTokensDetails`, never a sibling count), so it must not appear in
+/// `PLANE_DECL.billable_classes` — a streams card that priced it too would double-bill the same
+/// cached input. This asserts the declared list excludes it and stays pairwise distinct.
+#[test]
+fn billable_classes_are_pairwise_disjoint_and_exclude_cached_tokens() {
+    let classes: Vec<&str> = crate::PLANE_DECL
+        .billable_classes
+        .iter()
+        .map(|c| c.class)
+        .collect();
+    assert!(
+        !classes.contains(&"cached_tokens"),
+        "cached_tokens is a subset of audio_tokens_in/text_tokens_in, not a billable class beside \
+         them (#71) — declaring it would double-bill the same cached input; declared classes: \
+         {classes:?}"
+    );
+    let mut seen = std::collections::BTreeSet::new();
+    for class in &classes {
+        assert!(
+            seen.insert(*class),
+            "declared billable classes must be pairwise disjoint (#71) — {class:?} repeats in \
+             {classes:?}"
+        );
+    }
 }

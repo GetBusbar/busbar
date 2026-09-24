@@ -787,3 +787,56 @@ async fn incremental_scan_reclears_across_principal_and_generation() {
         "a policy-generation bump must invalidate the clearance (stale-clearance fix)"
     );
 }
+
+use crate::audit::amend;
+
+/// The access amendments sealed for one operation label, oldest first. The journal is
+/// process-wide, so each test below fires under a label no other test uses and reads only its own.
+fn accesses_under(op: &str) -> Vec<amend::Access> {
+    amend::node_recent()
+        .into_iter()
+        .filter_map(|a| match a.body {
+            amend::AmendBody::Access(x) if x.op_class.as_str() == op => Some(x),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A HOOK THAT IS HANDED CONTENT LEAVES EXACTLY ONE AMENDMENT (item 404): who read it (the hook, by
+/// name), whose it was (the caller's key) and which fields — never what they said. A shape-only
+/// gate (`prompt: no`) is handed no content, so it leaves none.
+#[tokio::test]
+async fn a_gate_handed_content_leaves_exactly_one_access_amendment() {
+    let facts = tool_call();
+    let k = key();
+    for (op, send_prompt) in [("p2-404-shape-only", false), ("p2-404-hook-read", true)] {
+        let spy = Arc::new(Spy {
+            reply: RoutingDecision::Abstain,
+            seen: Mutex::new(None),
+        });
+        let gates = gate(spy, crate::config::PolicyOnError::Reject, send_prompt, true);
+        let subject = GateSubject {
+            facts: &facts,
+            container: "filesystem",
+            ingress_protocol: op,
+            request_id: 1,
+            key: Some(&k),
+            incremental: None,
+        };
+        assert!(matches!(
+            decide(&gates, &subject).await,
+            GateVerdict::Proceed
+        ));
+    }
+    assert!(accesses_under("p2-404-shape-only").is_empty());
+
+    let rows = accesses_under("p2-404-hook-read");
+    assert_eq!(rows.len(), 1, "one content read, one amendment: {rows:?}");
+    assert_eq!(rows[0].reader, amend::Reader::Hook);
+    assert_eq!(rows[0].name, "spy");
+    assert_eq!(rows[0].subject, amend::Subject::PrincipalId("k-1".into()));
+    assert_eq!(
+        rows[0].fields,
+        vec!["content".to_string(), "identity".into()]
+    );
+}

@@ -359,6 +359,58 @@ fn it_equals_the_posting_lookup_on_the_same_quantities() {
     assert_eq!(i128::from(super::micros(&lookup)), one.micros());
 }
 
+/// **ITEM 437 — THE SAME CERTIFICATE AT THE TIERS WHERE THE TWO COULD DISAGREE.** The case above is
+/// pinned to [`STANDARD_TIER_BP`] with whole counts, the one input where a nano-scale tier and an
+/// exact-scale tier cannot answer differently. This one asks at half price over an ODD nano-unit
+/// pre-tier sum — the exact half the tier rule has to decide:
+///
+/// one class, 1,999 units at 0.001 micro-units (1 nano-unit) a unit, tier 5,000 bp.
+/// - A lookup that tiered at NANO scale (half-to-even over 999.5 → 1,000 nano-units) billed
+///   `1` micro-unit.
+/// - The one function tiers at the exact scale (999.5 nano-units, exact) and truncates once:
+///   `999` nano-units, `0` micro-units.
+///
+/// Settlement and every read are one tier rule (item 27), so the posting lookup and the view must
+/// answer the same figure at EVERY tier, in nano-units and in micro-units, and a lookup that grew
+/// its own tier call back would go red here.
+#[test]
+fn it_equals_the_posting_lookup_at_every_tier_including_an_exact_half() {
+    let card = RateCard::from_micro_rates([(LaneClass::new(LANE, INPUT), 0.001)], 0);
+    let history = History::opening(card, 0);
+    let view = history.current();
+    for tier in [5_000u32, 3_333, 7_500, STANDARD_TIER_BP, 15_000] {
+        for quantity in [1u64, 999, 1_999, 2_001, 1_000_001] {
+            let usage = super::usage(&[(INPUT, quantity)]);
+            let posting = crate::cost::Posting::from_usage(LANE, &usage, 0, tier, 0, 0);
+            let lookup = crate::cost::price(&view, &posting).expect("the lookup prices");
+            let slice = vec![LedgerEntry::new(LANE, 0)
+                .with_whole(INPUT, quantity)
+                .with_tier(tier)];
+            let exact = price_exact(&slice, &view).expect("the view prices");
+            assert_eq!(
+                lookup.priced_nanos,
+                crate::cost::nanos_of_exact(exact).expect("in range"),
+                "tier {tier} bp, {quantity} units: the settlement lookup and the view are one \
+                 tier rule and must answer one nano-unit figure"
+            );
+            assert_eq!(
+                i128::from(super::micros(&lookup)),
+                price_in_view(&slice, &view)
+                    .expect("the view prices")
+                    .micros(),
+                "tier {tier} bp, {quantity} units: one micro-unit figure"
+            );
+        }
+    }
+    // Stated as absolutes, so a change that moved BOTH sides identically still fails.
+    let usage = super::usage(&[(INPUT, 1_999)]);
+    let posting = crate::cost::Posting::from_usage(LANE, &usage, 0, 5_000, 0, 0);
+    let lookup = crate::cost::price(&view, &posting).expect("the lookup prices");
+    assert_eq!(lookup.pre_tier_nanos, 1_999);
+    assert_eq!(lookup.priced_nanos, 999, "999.5 exact, one truncation");
+    assert_eq!(super::micros(&lookup), 0, "never the nano-scale tier's 1");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE PROPERTIES THE ONE FUNCTION IS SUPPOSED TO HAVE
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -444,4 +496,240 @@ fn money_spells_itself_without_a_float() {
     );
     assert_eq!(Money::from_micros(-1).to_decimal_string(), "-0.000001");
     assert_eq!(Money::ZERO.to_decimal_string(), "0.000000");
+}
+
+// ── ONE CARD PER PLANE (#42 "scoped per plane", #47): the row's plane key picks its card ──────────
+
+/// A composed card: the flat (llm) card prices `gpt-4o` input at 3; the plane `p` prices its own
+/// lane `gpt-4o` (the SAME lane name, on purpose) at 7 a `calls` unit and nothing else. Built through
+/// the config path — [`crate::cost::compose_plane_cards`] then [`RateCard::from_config`] and
+/// [`RateCard::with_unit_rates`] — exactly as the node builds it.
+fn per_plane_card(flat: bool, plane: bool) -> RateCard {
+    use crate::cost::{compose_plane_cards, TierRates};
+    use std::collections::BTreeMap;
+    let flat_card = BTreeMap::from([(
+        LANE.to_string(),
+        (
+            TierRates {
+                input: 3.0,
+                ..TierRates::default()
+            },
+            None,
+        ),
+    )]);
+    let plane_card = BTreeMap::from([(LANE.to_string(), (TierRates::default(), Some(7_000)))]);
+    let planes = if plane {
+        BTreeMap::from([("p".to_string(), plane_card)])
+    } else {
+        BTreeMap::new()
+    };
+    let map = compose_plane_cards(flat.then_some(&flat_card), &planes);
+    let card = RateCard::from_config(
+        map.as_ref()
+            .map(|m| m.iter().map(|(lane, (tiers, _))| (lane.as_str(), *tiers))),
+        0,
+    );
+    card.with_unit_rates(map.iter().flatten().filter_map(|(lane, (_, calls))| {
+        calls.map(|nanos| (LaneClass::new(lane.as_str(), "calls"), nanos))
+    }))
+}
+
+fn plane_row(lane: &str, class: &str, n: u64) -> Result<Money, MoneyError> {
+    let card = per_plane_card(true, true);
+    price_ledger(
+        &[LedgerEntry::new(lane, 0).with_whole(class, n)],
+        &History::opening(card, 0),
+    )
+}
+
+#[test]
+fn a_plane_card_prices_its_own_lane_and_the_flat_card_never_does() {
+    let q = format!("p{}{LANE}", crate::cost::PLANE_LANE_SEP);
+    // 5 calls × 7 micro-units: THE PLANE's card, although the flat card names the same lane.
+    assert_eq!(plane_row(&q, "calls", 5), Ok(Money::from_micros(35)));
+    // The flat card prices the unqualified lane, and never the plane's `calls` class.
+    assert_eq!(plane_row(LANE, INPUT, 5), Ok(Money::from_micros(15)));
+    assert!(matches!(
+        plane_row(LANE, "calls", 5),
+        Err(MoneyError::ClassUnpriced { .. })
+    ));
+    // …and the plane's lane is never priced at the flat card's `input` rate (3): it reads the plane
+    // entry's own tier, which a config entry leaves at its explicit default of 0.
+    assert_eq!(plane_row(&q, INPUT, 5), Ok(Money::ZERO));
+}
+
+#[test]
+fn a_present_plane_card_silent_about_a_lane_refuses() {
+    let q = format!("p{}other", crate::cost::PLANE_LANE_SEP);
+    assert!(matches!(
+        plane_row(&q, "calls", 1),
+        Err(MoneyError::LaneUnpriced { .. })
+    ));
+}
+
+#[test]
+fn each_plane_card_is_its_own_switch() {
+    let q = format!("p{}{LANE}", crate::cost::PLANE_LANE_SEP);
+    let price = |card: RateCard, lane: &str, class: &str| {
+        price_ledger(
+            &[LedgerEntry::new(lane, 0).with_whole(class, 5)],
+            &History::opening(card, 0),
+        )
+    };
+    // No plane card beside a present flat card: the plane is billing OFF, reads 0 (#42).
+    assert_eq!(
+        price(per_plane_card(true, false), &q, "calls"),
+        Ok(Money::ZERO)
+    );
+    // A plane card and NO flat card: the flat plane reads 0, the plane still prices.
+    let plane_only = per_plane_card(false, true);
+    assert!(!plane_only.pricing_enabled(), "the flat card is absent");
+    assert_eq!(price(plane_only.clone(), LANE, INPUT), Ok(Money::ZERO));
+    assert_eq!(price(plane_only, &q, "calls"), Ok(Money::from_micros(35)));
+    // A present plane card with no entry at all is still ON: its every lane refuses.
+    let empty = crate::cost::compose_plane_cards::<TierPair>(
+        None,
+        &std::collections::BTreeMap::from([("p".to_string(), Default::default())]),
+    );
+    let card = RateCard::from_config(
+        empty
+            .as_ref()
+            .map(|m| m.iter().map(|(lane, (tiers, _))| (lane.as_str(), *tiers))),
+        0,
+    );
+    assert!(matches!(
+        price(card, &q, "calls"),
+        Err(MoneyError::LaneUnpriced { .. })
+    ));
+}
+
+type TierPair = (crate::cost::TierRates, Option<u64>);
+
+/// With no plane card the composed map IS the flat map, byte-identical (1.5.5 `rate_card:` loads as
+/// the llm plane's card) — including the present-but-empty `rate_card: {}`.
+#[test]
+fn a_flat_card_alone_composes_to_itself() {
+    use std::collections::BTreeMap;
+    let none: BTreeMap<String, BTreeMap<String, u8>> = BTreeMap::new();
+    let flat = BTreeMap::from([("m".to_string(), 1u8)]);
+    assert_eq!(
+        crate::cost::compose_plane_cards(Some(&flat), &none),
+        Some(flat)
+    );
+    let empty: BTreeMap<String, u8> = BTreeMap::new();
+    let card = RateCard::from_config(
+        crate::cost::compose_plane_cards(Some(&empty), &none)
+            .as_ref()
+            .map(|m| {
+                m.keys()
+                    .map(|k| (k.as_str(), crate::cost::TierRates::default()))
+            }),
+        0,
+    );
+    assert!(
+        card.pricing_enabled(),
+        "`rate_card: {{}}` stays a present card"
+    );
+}
+
+// ── PER-PLANE FEES (#47, OWNER RULING Q32): each plane's `fees` prices that plane's fee units ──────
+
+/// The composed card with fees: the flat (pools) card's `per_request_fee:` is 5; plane `t` charges
+/// 3 a request; plane `s` (a plane with sessions) 40 a session and NO rate card; plane `p`
+/// (the priced plane above) configured no fees at all.
+fn fee_card() -> RateCard {
+    use crate::cost::PlaneFees;
+    let mut card = per_plane_card(true, true);
+    card.set_fee(5);
+    card.with_plane_fees([
+        (
+            "t",
+            PlaneFees {
+                per_request: 3,
+                per_session: 0,
+            },
+        ),
+        (
+            "s",
+            PlaneFees {
+                per_request: 0,
+                per_session: 40,
+            },
+        ),
+    ])
+}
+
+fn fee_row(entry: LedgerEntry) -> Result<Money, MoneyError> {
+    price_ledger(&[entry], &History::opening(fee_card(), 0))
+}
+
+/// One minor unit, in micro-units.
+const MINOR: i128 = 10_000;
+
+#[test]
+fn a_planes_request_fee_charges_its_calls_and_the_flat_fee_charges_the_pools_plane() {
+    use crate::cost::{plane_fee_lane, PER_REQUEST};
+    // 4 tool calls on the tools plane's fee lane: 4 × 3 — its OWN fee, not the flat 5.
+    let tools = LedgerEntry::new(plane_fee_lane("t"), 0).with_whole(PER_REQUEST, 4);
+    assert_eq!(fee_row(tools), Ok(Money::from_micros(12 * MINOR)));
+    // 2 pools requests (the flat fee count on an unqualified lane): 2 × 5, as 1.5.5 billed them.
+    let pools = LedgerEntry::new(LANE, 0).with_fee_count(2);
+    assert_eq!(fee_row(pools), Ok(Money::from_micros(10 * MINOR)));
+    // A fee count on a QUALIFIED lane is its plane's: 2 × 3 on `t`.
+    let q = format!("t{}srv_read", crate::cost::PLANE_LANE_SEP);
+    let tools_posting = LedgerEntry::new(q, 0).with_fee_count(2);
+    assert_eq!(fee_row(tools_posting), Ok(Money::from_micros(6 * MINOR)));
+}
+
+#[test]
+fn a_planes_session_fee_charges_one_per_session() {
+    use crate::cost::{plane_fee_lane, PER_SESSION};
+    let sessions = LedgerEntry::new(plane_fee_lane("s"), 0).with_whole(PER_SESSION, 3);
+    assert_eq!(fee_row(sessions), Ok(Money::from_micros(120 * MINOR)));
+}
+
+#[test]
+fn a_plane_without_fees_bills_no_fee() {
+    use crate::cost::{plane_fee_lane, PER_REQUEST, PER_SESSION};
+    // `p` has a present card and no fees: its fee units read 0 and never borrow the flat 5.
+    let p = LedgerEntry::new(plane_fee_lane("p"), 0)
+        .with_whole(PER_REQUEST, 7)
+        .with_whole(PER_SESSION, 7);
+    assert_eq!(fee_row(p), Ok(Money::ZERO));
+    let q = format!("p{}{LANE}", crate::cost::PLANE_LANE_SEP);
+    assert_eq!(
+        fee_row(LedgerEntry::new(q, 0).with_fee_count(9)),
+        Ok(Money::ZERO)
+    );
+    // A plane the deployment never configured at all: 0 too.
+    let none = LedgerEntry::new(plane_fee_lane("x"), 0).with_whole(PER_REQUEST, 7);
+    assert_eq!(fee_row(none), Ok(Money::ZERO));
+}
+
+#[test]
+fn a_fee_lane_carries_only_the_fee_classes() {
+    use crate::cost::plane_fee_lane;
+    // `p`'s card is present: any other class on its fee lane is a hit it cannot price — REFUSED.
+    let stray = LedgerEntry::new(plane_fee_lane("p"), 0).with_whole("calls", 1);
+    assert!(matches!(
+        fee_row(stray),
+        Err(MoneyError::ClassUnpriced { .. })
+    ));
+    // With no card on `s`, billing is off for its classes: a stray class reads 0, never refused.
+    let off = LedgerEntry::new(plane_fee_lane("s"), 0).with_whole("calls", 1);
+    assert_eq!(fee_row(off), Ok(Money::ZERO));
+}
+
+#[test]
+fn plane_fees_leave_the_flat_card_byte_identical() {
+    // 1.5.5: a flat card and a flat fee. Adding plane fees moves no unqualified row by a micro-unit.
+    let row = LedgerEntry::new(LANE, 0)
+        .with_whole(INPUT, 1_000)
+        .with_fee_count(3);
+    let mut flat = per_plane_card(true, true);
+    flat.set_fee(5);
+    assert_eq!(
+        price_ledger(std::slice::from_ref(&row), &History::opening(flat, 0)),
+        fee_row(row)
+    );
 }

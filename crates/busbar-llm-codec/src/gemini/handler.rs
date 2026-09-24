@@ -996,11 +996,10 @@ pub fn read_embeddings_response(
             ),
         );
     }
-    let usage = v
-        .get("usageMetadata")
-        .and_then(|u| u.get("promptTokenCount"))
-        // BILLED COUNT: through the one seam — see `usage_count::read_count_u64`.
-        .and_then(crate::usage_count::read_count_u64)
+    // BILLED COUNT (item 133): absent or `null` is no usage (unchanged); a present-but-UNREADABLE
+    // count REFUSES rather than reading as "no usage reported".
+    let usage = crate::usage_count::billed_count_opt(v.get("usageMetadata"), "promptTokenCount")
+        .map_err(|e| CodecError::Malformed(e.to_string()))?
         .map(|n| busbar_substrate_values::billing::TokenUsage {
             input: n,
             ..Default::default()

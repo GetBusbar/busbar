@@ -722,6 +722,131 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     handle.abort();
 }
 
+/// OWNER RULING Q25b (#42): with a rate card PRESENT, a usage read over a class the card does not
+/// price answers a NAMED `409 unpriced_class` whose message names the lane and the class — on all
+/// three usage reads — instead of the bare `500 internal` they answered after 789d55a78.
+///
+/// The card prices lane `m`'s `input` class and holds its `output` class UNPRICED (a negative
+/// rate is not a rate the card can represent, item 22). One response of 700 input + 200 output
+/// tokens is accrued to key `k` (bucket `k`, window total) and its group `team` (budget, total),
+/// and metered into today's `/usage` bucket. Returns `(path, status, body)` for each read, and
+/// is the witness the declared-error audit drives for the three `unpriced_class` declarations.
+async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let card: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
+        std::collections::BTreeMap::from([(
+            "m".to_string(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 500.0,
+                output_utok: -1.0,
+                ..Default::default()
+            },
+        )]);
+    let groups = std::collections::BTreeMap::from([(
+        "team".to_string(),
+        busbar_kernel::config::GroupCfg {
+            enabled: true,
+            limits: vec![busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
+                amount: 1_000_000,
+                per: Some(busbar_kernel::config::groups::LimitWindow::Total),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = busbar_kernel::cost::CostModel::resolve_parts(Some(&card), 0, &groups);
+    let now = busbar_kernel::store::now();
+    let (minted, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                ..Default::default()
+            },
+            now,
+        )
+        .unwrap();
+    // Accrue through the group chain the way the engine does (the chain reads `key.group`).
+    let mut in_team = minted.clone();
+    in_team.group = Some("team".to_string());
+    let units = std::collections::BTreeMap::from([
+        (busbar_api::UNIT_INPUT.to_string(), 700u64),
+        (busbar_api::UNIT_OUTPUT.to_string(), 200u64),
+    ]);
+    gov.record_usage(&cost, &in_team, "", "m", &units, now);
+    let usage = busbar_kernel::billing::TokenUsage {
+        input: 700,
+        output: 200,
+        ..Default::default()
+    };
+    gov.record_metering(&minted.id, "m", "vendor", Some(&usage), now);
+    gov.flush_metering();
+    let app = crate::new_test_app().governance(gov).cost(cost).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let mut out = Vec::new();
+    for path in [
+        format!("/api/v1/admin/keys/{}/usage", minted.id),
+        "/api/v1/admin/groups/team/usage".to_string(),
+        "/api/v1/admin/usage".to_string(),
+    ] {
+        let resp = client
+            .get(format!("http://{addr}{path}"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        out.push((path, status, body));
+    }
+    handle.abort();
+    out
+}
+
+/// The read of [`drive_unpriced_usage_reads`] whose path starts with `prefix`, asserted: `409`, `code = unpriced_class`, and a
+/// message naming the lane `m` and the class `output`.
+async fn assert_unpriced_usage_read_is_named(prefix: &str) {
+    let reads = drive_unpriced_usage_reads().await;
+    let (path, status, body) = reads
+        .iter()
+        .find(|(p, _, _)| p.starts_with(prefix))
+        .expect("the driver reads every usage path");
+    assert_eq!(
+        *status, 409,
+        "{path}: an unpriced class under a present rate card is a NAMED 409 (Q25b), not a bare \
+         500: {body}"
+    );
+    assert_eq!(body["error"]["code"], "unpriced_class", "{path}: {body}");
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("`m`") && message.contains("`output`"),
+        "{path}: the refusal names the lane and the class: {body}"
+    );
+}
+
+#[tokio::test]
+async fn key_usage_over_an_unpriced_class_answers_named_409() {
+    assert_unpriced_usage_read_is_named("/api/v1/admin/keys/").await;
+}
+
+#[tokio::test]
+async fn group_usage_over_an_unpriced_class_answers_named_409() {
+    assert_unpriced_usage_read_is_named("/api/v1/admin/groups/").await;
+}
+
+#[tokio::test]
+async fn admin_usage_over_an_unpriced_class_answers_named_409() {
+    assert_unpriced_usage_read_is_named("/api/v1/admin/usage").await;
+}
+
 /// END-TO-END config apply: `POST /api/v1/admin/hooks` registers a hook at runtime (201), and a
 /// subsequent `GET /api/v1/admin/hooks` SEES it — proving the AppHandle swap took effect AND the
 /// per-request service reads the CURRENT snapshot. Invalid definitions reject with invalid_request.
@@ -5411,6 +5536,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
                 axum::extract::State(handle.clone()),
                 axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
+                None,
                 body1,
             )
             .await;
@@ -5428,6 +5554,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
                 axum::extract::State(handle),
                 axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
+                None,
                 body2,
             )
             .await;
@@ -5512,6 +5639,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal.clone()))),
             axum::http::HeaderMap::new(),
+            None,
             body,
         )
         .await;
@@ -5573,6 +5701,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(None)),
             axum::http::HeaderMap::new(),
+            None,
             axum::body::Bytes::from(body.to_string()),
         )
         .await;
@@ -5675,6 +5804,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
             axum::extract::State(handle),
             axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal.clone()))),
             axum::http::HeaderMap::new(),
+            None,
             axum::body::Bytes::from(body.to_string()),
         )
         .await;
@@ -9877,6 +10007,12 @@ async fn test_admin_v1_overlay_reset_named_map_refuses_a_dangling_reference() {
 /// Build an overlay-backed app wired to on-disk config files (the `write_reset_fixture` truth), spin
 /// up an HTTP server, and return everything the `/config/settings` tests need. The app starts on base
 /// config (no root overlay), so a `PUT /config/settings` is the first root mutation.
+///
+/// The returned guard holds `LIMITS_TEST_LOCK` for the caller's whole test: an ACCEPTED settings
+/// apply installs the resolved operational limits into a PROCESS-GLOBAL slot, and
+/// `test_admin_v1_config_settings_persist_failure_does_not_install_limits` brackets that slot with a
+/// before/after read — a sibling's accepted apply landing inside the bracket reads as the rejected
+/// apply leaking its limits.
 async fn settings_test_app(
     tag: &str,
 ) -> (
@@ -9884,7 +10020,9 @@ async fn settings_test_app(
     std::path::PathBuf,   // overlay path
     std::net::SocketAddr, // server addr
     tokio::task::JoinHandle<()>,
+    tokio::sync::MutexGuard<'static, ()>, // the process-wide limits slot, held for the test
 ) {
+    let limits_lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     busbar_kernel::metrics::init();
     // A per-test tag keeps parallel `/config/settings` tests on DISTINCT temp dirs (the fixture dir
     // is keyed on pid + coarse timestamp, which collides for same-second parallel starts).
@@ -9905,7 +10043,7 @@ async fn settings_test_app(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (dir, overlay, addr, handle)
+    (dir, overlay, addr, handle, limits_lock)
 }
 
 /// ROUND-TRIP + RESTART SURVIVAL: a `PUT /config/settings` with LIVE-swappable sections (rate_card +
@@ -9914,7 +10052,7 @@ async fn settings_test_app(
 /// `POST /config/reload` (the restart-equivalent disk re-read). Audited + version-logged.
 #[tokio::test]
 async fn test_admin_v1_config_settings_round_trip_survives_reload() {
-    let (dir, overlay, addr, handle) = settings_test_app("roundtrip").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("roundtrip").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -9927,13 +10065,17 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         .unwrap();
     let v_before = before["config_version"].as_u64().unwrap();
 
-    // PUT live-swappable sections only.
+    // PUT live-swappable sections only. The card configures EVERY billable class the pools plane
+    // declares: `search_units` has no reserved tier, so it is
+    // named under `units:` — 0 makes it free — or the whole PUT is refused 400.
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
                 "per_request_fee": 7,
-                "rate_card": { "m0": { "input_utok": 1.5, "output_utok": 2.0 } },
+                "rate_card": { "m0": {
+                    "input_utok": 1.5, "output_utok": 2.0, "units": { "search_units": 0 }
+                } },
                 "limits": { "tls_handshake_timeout_secs": 30 }
             })
             .to_string(),
@@ -10106,7 +10248,7 @@ async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_ov
 /// live-swappable field in the SAME request is not flagged. The note explains the split.
 #[tokio::test]
 async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
-    let (dir, overlay, addr, handle) = settings_test_app("proclevel").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("proclevel").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10165,7 +10307,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
 /// wrongly also mark the genuinely-live `request_body_max_bytes` as restart-scoped).
 #[tokio::test]
 async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_apply() {
-    let (dir, _overlay, addr, handle) = settings_test_app("bootscopedlimits").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("bootscopedlimits").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10210,7 +10352,8 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
 /// `UpstreamClients` test above).
 #[tokio::test]
 async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_apply() {
-    let (dir, _overlay, addr, handle) = settings_test_app("maxinboundconcurrent").await;
+    let (dir, _overlay, addr, handle, _limits_lock) =
+        settings_test_app("maxinboundconcurrent").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10249,7 +10392,7 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
 /// must be flagged reload-to-apply (dotted, same reasoning as `limits.*`).
 #[tokio::test]
 async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_to_apply() {
-    let (dir, _overlay, addr, handle) = settings_test_app("bootscopedobs").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("bootscopedobs").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10308,7 +10451,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
 /// un-PUT-able.
 #[tokio::test]
 async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects() {
-    let (dir, overlay, addr, handle) = settings_test_app("storesecret").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("storesecret").await;
     let client = reqwest::Client::new();
     let var = format!("BUSBAR_TEST_STORE_SECRET_MISSING_{}", std::process::id());
     std::env::remove_var(&var);
@@ -10350,22 +10493,32 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
 /// override (partial-merge semantics, like a group PATCH).
 #[tokio::test]
 async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
-    let (dir, _overlay, addr, handle) = settings_test_app("partial").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("partial").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
-    admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+    // Both PUTs must APPLY — an unchecked refusal of the first one made the preservation assertion
+    // below fail for a reason it never named. The card configures every billable class the pools
+    // plane declares: `search_units` under `units:`, 0 = free.
+    let first = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "rate_card": { "m0": { "input_utok": 9.0 } } }).to_string())
+        .body(
+            serde_json::json!({ "rate_card": { "m0": {
+                "input_utok": 9.0, "units": { "search_units": 0 }
+            } } })
+            .to_string(),
+        )
         .send()
         .await
         .unwrap();
-    admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+    assert_eq!(first.status().as_u16(), 200, "{:?}", first.text().await);
+    let second = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(serde_json::json!({ "per_request_fee": 5 }).to_string())
         .send()
         .await
         .unwrap();
+    assert_eq!(second.status().as_u16(), 200, "{:?}", second.text().await);
     let body: serde_json::Value =
         admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
             .send()
@@ -10411,7 +10564,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
     // only the readers was not enough: the writer has to be inside the same critical section, or it
     // simply writes while a reader is mid-window.
     let _audit_guard = OVERLAY_ROOT_AUDIT.lock().await;
-    let (dir, overlay, addr, handle) = settings_test_app("reset").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("reset").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10487,7 +10640,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
 #[tokio::test]
 async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     let _audit_guard = OVERLAY_ROOT_AUDIT.lock().await;
-    let (dir, overlay, addr, handle) = settings_test_app("reset-corrupt").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("reset-corrupt").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10565,7 +10718,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
     // as good at landing an `applied` row inside a reader's window as an unguarded reader is at
     // seeing one -- which is exactly what it did, as `seq: 4, outcome: "applied"`.
     let _audit_guard = OVERLAY_ROOT_AUDIT.lock().await;
-    let (dir, overlay, addr, handle) = settings_test_app("reset-too-new").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("reset-too-new").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10589,6 +10742,80 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         400,
         "a reset probe over a too-new overlay must refuse: {:?}",
         reset.text().await
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The SAME promise as the rotation test below, for the OTHER process-wide object a build touches:
+/// the resolved operational LIMITS. `build_app_from_config` installs the candidate limits at the top
+/// (the build reads them) behind a guard that rolls them back on any failure — but the persist step
+/// runs AFTER the build returns, so committing the guard inside the build left a REJECTED config's
+/// limits installed process-wide while the handler told the operator "nothing was changed" and the
+/// old `App` kept serving. Forces the persist failure the same deterministic way its sibling does (a
+/// corrupt overlay `load_for_rmw` refuses to read-modify-write) and asserts the live cap afterwards.
+#[tokio::test]
+async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits() {
+    busbar_kernel::metrics::init();
+    // The installed limits are a PROCESS-GLOBAL slot; hold the lock every mutating test holds so a
+    // sibling's install cannot land mid-assertion here.
+    let _limits_lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let (dir, config_path, providers_path) = write_reset_fixture("limits-persist-fail");
+    let overlay = dir.join("overlay.json");
+    // Corrupt from the start, so the apply's persist step (`overlay::persist_root`, which
+    // read-modify-writes through `load_for_rmw`) fails deterministically every time.
+    std::fs::write(&overlay, b"{ not json").unwrap();
+
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut app = crate::new_test_app()
+        .governance(gov)
+        .overlay_path(overlay.clone())
+        .build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.config_path = Some(config_path.clone());
+        inner.providers_path = Some(providers_path.clone());
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let before = busbar_kernel::config::limits::installed();
+    // A cap nothing else in this binary uses, so its presence afterwards can only come from THIS
+    // rejected apply.
+    let rejected_cap: usize = 7_654_321;
+    let put = reqwest::Client::new()
+        .put(format!("http://{addr}/api/v1/admin/config/settings"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({ "limits": { "request_body_max_bytes": rejected_cap } }).to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        put.status().as_u16(),
+        400,
+        "the corrupt overlay must fail the persist step: {:?}",
+        put.text().await
+    );
+
+    let after = busbar_kernel::config::limits::installed();
+    assert_ne!(
+        after.as_ref().map(|l| l.request_body_max_bytes),
+        Some(rejected_cap),
+        "a persist failure must leave the REJECTED config's limits uninstalled — the response just \
+         claimed nothing was changed, and these are process-wide values the old (still-serving) App \
+         reads through"
+    );
+    assert_eq!(
+        after.map(|l| l.request_body_max_bytes),
+        before.map(|l| l.request_body_max_bytes),
+        "the limits installed before the rejected apply are the ones still installed after it"
     );
 
     handle.abort();
@@ -10771,7 +10998,7 @@ fn test_get_config_settings_warns_when_overlay_is_unreadable() {
 /// ETAG / If-Match: a stale `If-Match` on the PUT is a 409 version_conflict that changes nothing.
 #[tokio::test]
 async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
-    let (dir, _overlay, addr, handle) = settings_test_app("ifmatch").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("ifmatch").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10805,7 +11032,7 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
 /// no-op. An invalid config after merge would likewise 400 and change nothing.
 #[tokio::test]
 async fn test_admin_v1_config_settings_unknown_field_400() {
-    let (dir, _overlay, addr, handle) = settings_test_app("badfield").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("badfield").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -10919,7 +11146,7 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
 /// exactly as an implicit persist does today.
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when_overlay_exists() {
-    let (dir, overlay, addr, handle) = settings_test_app("persist-true").await;
+    let (dir, overlay, addr, handle, _limits_lock) = settings_test_app("persist-true").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -12792,6 +13019,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_plugin_inspect_errors().await;
     drive_key_cap_and_delegation_errors().await;
     drive_named_map_errors().await;
+    drive_unpriced_usage_reads().await;
     // The MCP trust verbs' own drivers, called here for the same reason as every line above it: a
     // condition witnessed only by a sibling test is witnessed nowhere.
     busbar_mcp::mcp::admin_view::adminverbs_tests::drive_mcp_verb_errors().await;
@@ -15033,7 +15261,7 @@ async fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
 /// credential (keys, budgets, the hash-chained audit log) entirely out of band of busbar.
 #[tokio::test]
 async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
-    let (dir, _overlay, addr, handle) = settings_test_app("secretbag").await;
+    let (dir, _overlay, addr, handle, _limits_lock) = settings_test_app("secretbag").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
@@ -15083,4 +15311,130 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **THE EXIT TEST FOR ITEM 271's PRODUCTION HOOKUP, AT THE LIVE CACHE.** Item 271's writer side
+/// (`RootClaimJournal`, `IdempotencyCache::with_journal`) was fully proven in isolation
+/// (`units_admin.rs`'s `an_idempotency_key_on_a_durable_node_journals_exactly_one_claim`), and the
+/// root's binding of it onto `AdminBinding::claims` was proven too
+/// (`the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only`) — but NEITHER exercises the
+/// surface a real `POST /keys` actually reaches. `keys::create_key`/`rotate_key` replay against
+/// `App::idempotency_cache` (a bare `HashMap`, not `IdempotencyCache`), which carried no journal hook
+/// at all until this change threaded one through as a request extension (`admin_mount.rs`'s
+/// `ClaimJournalCell`, set from `AdminBinding::claims` before any real request can observe it).
+///
+/// This is the seam's production shape, reproduced directly: the extension the composition root's
+/// wrap inserts on every request when a claim journal is bound (see `RouterDispatch::call`) is
+/// layered here the identical way — a `POST /keys` with a repeated `Idempotency-Key` journals the
+/// claim exactly once (first sighting only — never on the replay) and the replayed response is
+/// byte-for-byte the first, exactly as v1.5.5.
+#[tokio::test]
+async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys() {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov).build();
+    let router = crate::build_router(app);
+
+    #[derive(Default, Clone)]
+    struct RecordingJournal {
+        calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    }
+    impl RecordingJournal {
+        fn calls(&self) -> Vec<(String, String)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    impl crate::idempotency::ClaimJournal for RecordingJournal {
+        fn journal_claim(&self, key: &(String, String), _now: u64) {
+            self.calls.lock().unwrap().push(key.clone());
+        }
+    }
+    let journal = RecordingJournal::default();
+    let ext: Arc<dyn crate::idempotency::ClaimJournal> = Arc::new(journal.clone());
+    // The SAME wiring `RouterDispatch::call` performs on a durable node: an `Arc<dyn ClaimJournal>`
+    // riding as a request extension, which `create_key`'s `Option<axum::Extension<_>>` parameter
+    // reads. `Router::layer` inserts it on every request the same way `http::Request::builder()
+    // .extension(..)` does at the root — this is not a stand-in for the production seam, it is the
+    // same extension slot the production seam fills.
+    let router = router.layer(axum::Extension(ext));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let mint = || {
+        client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .header("idempotency-key", "durable-271")
+            .body(serde_json::json!({"name": "k"}).to_string())
+            .send()
+    };
+
+    let first = mint().await.unwrap();
+    assert_eq!(first.status().as_u16(), 201);
+    let first_body = first.bytes().await.unwrap();
+
+    let second = mint().await.unwrap();
+    assert_eq!(second.status().as_u16(), 201);
+    let second_body = second.bytes().await.unwrap();
+
+    assert_eq!(
+        first_body, second_body,
+        "a replay must return the first response byte for byte, exactly as v1.5.5"
+    );
+    assert_eq!(
+        journal.calls(),
+        vec![("admin".to_string(), "durable-271".to_string())],
+        "exactly one claim journalled — the first sighting only, never the replay"
+    );
+
+    handle.abort();
+}
+
+/// **THE MEMORY-ONLY HALF OF THE SAME EXIT TEST.** A node with no data directory binds no claim
+/// journal (`the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only`), so
+/// `ClaimJournalCell` is set to `None` and `RouterDispatch::call` never inserts the extension at
+/// all — the exact shape every OTHER admin test in this file already exercises (none of them layers
+/// the extension), and `create_key`'s `Option<axum::Extension<_>>` parameter reads that absence as
+/// `None`. This test pins it explicitly: a repeated-key `POST /keys` through an UNWRAPPED router
+/// still replays correctly (byte-identical, 1.5.5 behaviour is unchanged either way) and journals
+/// nothing, because there is nothing here for it to journal to.
+#[tokio::test]
+async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov).build();
+    // NO `.layer(Extension(..))` here — the memory-buffered-node shape: `create_key` sees `None`.
+    let router = crate::build_router(app);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let mint = || {
+        client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .header("idempotency-key", "memory-271")
+            .body(serde_json::json!({"name": "k"}).to_string())
+            .send()
+    };
+
+    let first = mint().await.unwrap();
+    assert_eq!(first.status().as_u16(), 201);
+    let first_body = first.bytes().await.unwrap();
+    let second = mint().await.unwrap();
+    assert_eq!(second.status().as_u16(), 201);
+    let second_body = second.bytes().await.unwrap();
+    assert_eq!(
+        first_body, second_body,
+        "replay is unaffected by the absent journal — 1.5.5 behaviour, unchanged"
+    );
+
+    handle.abort();
 }

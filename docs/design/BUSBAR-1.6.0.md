@@ -1850,7 +1850,22 @@ money assertion in a rig, the second leg falls and only the first stands.
 **Corollary for every agent report:** a NEUTRAL oracle on a post-1.5.5 plane must be reported as
 "the oracle cannot see this", never as "no divergence". Those are different claims.
 
-### 13. PARKED — the a2a accrual semantics need a billed-byte sign-off (#10/#59)
+### 13. ~~PARKED~~ RULED — the a2a billed byte (#10/#59; OWNER RULING Q30c, recorded as Q35)
+
+**RULED 2026-09-24 by the owner (`1.6.0-QUESTIONS.md` Q35, answering Q30c): a billed A2A byte =
+payload bytes relayed BOTH ways per hop (request + response), class `bytes`, priced by
+`agents.rate_card`; no card → 0.** What follows is the parked analysis the ruling answered, kept as
+the record. As executed on the serving path (`busbar-a2a/src/a2a/receive.rs`, `ledger_hop_bytes`):
+for every hop that LEFT (135: settled only once the relay says it left), the plane ledgers ONE raw
+count under `bytes` — the request body bytes busbar put on the hop's wire plus the response body
+bytes the backend answered (for a stream, the sum of every chunk received). A payload byte is a BODY
+byte: request/status lines, headers, TLS and TCP are excluded (`relay::HopBytes` states it
+precisely). The count rides the kernel's one metering path (`meter_ledger` over the request's
+`MeterPin`), unconditionally (#43/#71), on the lane `a2a\u{1f}agent:<id>` — so the view prices it
+with the A2A plane's own card, `agents.rate_card` keyed by that same `agent:<id>` (#47): present, it
+prices `bytes` or REFUSES an agent it is silent about (#42); absent, it reads 0. A hop refused before
+the socket moves no byte and ledgers none. The flat fee (#44) and the one request accrual are
+unchanged. Figure 1 below is the defect this closes.
 
 B09's fix changes what an a2a unit accrues against its hold from `request_bytes` to
 `request_bytes × bytes_nanos`. **No observable byte moves today** (the module is unreachable, above),
@@ -1879,7 +1894,9 @@ that bought, and what it exposed, was measured end-to-end against the release bi
    only because the class term is zero, which is agreement by absence. This is the same sign-off
    this section already parks: until the plane reports the byte it billed, "approve the billed-byte
    semantics" is approving an arithmetic nobody can observe. `scripts/{a2a,mcp}-subject/h2-class-price.sh`
-   is now the gating witness and is RED on exactly this.
+   is now the gating witness and is RED on exactly this. **A2A half CLOSED by the Q35 ruling
+   (above):** a hop now ledgers its payload bytes both ways under `bytes`, and `agents.rate_card`
+   prices them.
 2. **No card can name a plane's declared class, so the product has an unsettable factor.** `rate_card:`
    is keyed by CONFIG MODEL NAME and every key is validated against `models:`
    (`busbar-kernel/src/config_validate/mod.rs:1465-1472`), and an entry's only members are the four

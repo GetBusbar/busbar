@@ -45,31 +45,65 @@ fn a_directory() -> Arc<Directory> {
     })
 }
 
-/// The cache digests with the node's own hex SHA-256, which is what makes one credential one row
-/// wherever in the tree it is named. Asserted against the published function rather than against
-/// a literal, because the property is that the two are the same function and not that either is
-/// a particular string.
+/// NO SECOND CREDENTIAL CACHE (item 249): the bindings hand the chain none, so a verdict the
+/// operator's flush was meant to kill is never served from a cache the flush cannot reach.
+///
+/// The root used to build its own cache here, a port of the kernel's, while the admin flush
+/// endpoint reaches only the kernel's. Driven through the chain with a CACHEABLE module that
+/// identifies a credential and is then told the credential is revoked: with a cache held here the
+/// second run answered the first verdict out of it; with none, the module is asked again and its
+/// refusal stands.
 #[test]
-fn the_cache_digests_with_the_nodes_own_hex_sha256() {
-    let bindings = AuthBindings::without_directory();
-    let cache = bindings.cache().expect("a cache is always bound");
-    cache.put(
-        "provider",
-        "credential-a",
-        &AuthOutcome::Pass,
-        0,
-        cache.generation(),
-    );
+fn a_revoked_credential_is_never_answered_from_a_cache_no_flush_reaches() {
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    // The row is reachable under the same credential, which it can only be if the digest the
-    // insert used and the digest the read uses are one function.
-    assert!(cache.get("provider", "credential-a", 0).is_some());
-    assert!(cache.get("provider", "credential-b", 0).is_none());
-    assert_eq!(
-        busbar_api::sha256_hex(b"credential-a").len(),
-        64,
-        "the bound digest is the 32-byte SHA-256 rendered as lower-case hex"
-    );
+    struct Revocable(Arc<AtomicBool>);
+    impl busbar_kernel_identity::module::AuthModule for Revocable {
+        fn name(&self) -> &'static str {
+            "revocable"
+        }
+        fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
+            match candidate {
+                Some(_) if self.0.load(Ordering::SeqCst) => AuthOutcome::Reject,
+                Some(id) => {
+                    AuthOutcome::Identify(busbar_kernel_identity::principal::Principal::from_id(id))
+                }
+                None => AuthOutcome::Pass,
+            }
+        }
+        fn cacheable(&self) -> bool {
+            true
+        }
+    }
+
+    for bindings in [
+        AuthBindings::without_directory(),
+        AuthBindings::new(a_directory() as Arc<dyn VirtualKeyDirectory>),
+    ] {
+        assert!(
+            bindings.cache().is_none(),
+            "the bindings hold a credential cache the admin flush cannot reach"
+        );
+        let revoked = Arc::new(AtomicBool::new(false));
+        let chain = busbar_kernel_identity::AuthChain::new(
+            vec![busbar_kernel_identity::chain::ChainEntry {
+                provider: "revocable".to_string(),
+                module: Box::new(Revocable(Arc::clone(&revoked))),
+            }],
+            false,
+        );
+        let first = chain.run_chain_cached(Some("vk_live"), bindings.cache(), None, 10, None);
+        assert!(matches!(
+            first,
+            busbar_kernel_identity::chain::ChainVerdict::Identified { .. }
+        ));
+        revoked.store(true, Ordering::SeqCst);
+        let second = chain.run_chain_cached(Some("vk_live"), bindings.cache(), None, 11, None);
+        assert!(
+            matches!(second, busbar_kernel_identity::chain::ChainVerdict::Denied),
+            "the revoked credential was answered out of a cache: {second:?}"
+        );
+    }
 }
 
 /// The verifier the root binds resolves through the directory and hands back the unit's own
@@ -107,13 +141,49 @@ fn the_revocation_view_reads_the_same_directory() {
     assert!(!revocations.is_revoked("vk_1"));
 }
 
-/// An unbound node binds a cache and no authority, which is a posture rather than a gap: the
-/// chain's own answer with no verifier is to deny, and the gate that never runs would have had
-/// nothing to refuse that the denial had not already refused.
+/// An unbound node binds no authority, which is a posture rather than a gap: the chain's own answer
+/// with no verifier is to deny, and the gate that never runs would have had nothing to refuse that
+/// the denial had not already refused.
 #[test]
-fn an_unbound_node_binds_a_cache_and_no_authority() {
+fn an_unbound_node_binds_no_authority() {
     let bindings = AuthBindings::without_directory();
-    assert!(bindings.cache().is_some());
+    assert!(bindings.cache().is_none());
     assert!(bindings.keys().is_none());
     assert!(bindings.revocations().is_none());
+}
+
+/// THE FACADE DOES NOT DOCUMENT A SWAP THAT ALREADY HAPPENED ELSEWHERE (item 289).
+///
+/// The header used to describe relocating the authenticate step as a pending one-line edit here
+/// ("swap `pub use crate::auth;` for `pub use busbar_kernel_identity;`") and to call itself the
+/// target consumers migrate onto. The relocated crate was already live in the composition root and
+/// its consumers went around the facade, so a maintainer reading it concluded the step had not moved
+/// and fixed only `crate::auth`. While the binary depends on the relocated crate, the facade must say
+/// so and must not present that swap as still to come.
+///
+/// It lives here, in the binary, because the premise is the binary's own manifest: the kernel has
+/// no dependency edge on `busbar` and may not read its files (kind-isolation build-inputs), while
+/// `busbar` depends on `busbar-kernel` and reads the facade through that edge.
+#[test]
+fn the_facade_names_the_relocated_authenticate_step_it_does_not_point_at() {
+    let binary = include_str!("../../../Cargo.toml");
+    let facade = include_str!("../../../../busbar-kernel/src/drain.rs");
+    let relocated_is_live = binary
+        .lines()
+        .any(|l| l.trim_start().starts_with("busbar-kernel-identity"));
+    if !relocated_is_live {
+        return;
+    }
+    assert!(
+        !facade.contains("for `pub use busbar_kernel_identity;`"),
+        "drain.rs still presents the authenticate swap as pending while the binary runs the relocated crate"
+    );
+    assert!(
+        !facade.contains("stable target consumers migrate ONTO"),
+        "drain.rs still claims consumers migrate onto it; they migrated around it"
+    );
+    assert!(
+        facade.contains("ALREADY RELOCATED") && facade.contains("`busbar-kernel-identity`"),
+        "drain.rs's authenticate step must say it already runs from `busbar-kernel-identity`"
+    );
 }

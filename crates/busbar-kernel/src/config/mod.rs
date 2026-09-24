@@ -51,6 +51,7 @@ use crate::diagnostics::{
 };
 use crate::plane::config::McpEndpointSection;
 use crate::plane::config::{AgentsSection, DecisionsSection, StreamsSection, ToolsSection};
+use busbar_kernel_ledger::cost::compose_plane_cards;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
@@ -460,10 +461,14 @@ pub struct RootCfg {
     pub admin_auth: Vec<String>,
     /// The top-level `groups:` limit tree.
     pub groups: std::collections::BTreeMap<String, GroupCfg>,
-    /// The top-level `rate_card:` - the ONLY cost source. See `DeployCfg::rate_card`.
+    /// The top-level `rate_card:` - the ONLY cost source. See `DeployCfg::rate_card`. Every other
+    /// plane's own card rides in it under plane-qualified keys
+    /// (`busbar_kernel_ledger::cost::compose_plane_cards`); with none, it is `rate_card:` verbatim.
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
     /// Flat cents charged per request (default 0).
     pub per_request_fee: i64,
+    /// Every other plane's own fees, by plane registry key. See `DeployCfg::plane_fees`.
+    pub plane_fees: PlaneFeesMap,
     /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
     /// presence-driven governance stays off unless another governance signal is present).
     pub store: Option<StoreCfg>,
@@ -1116,6 +1121,24 @@ pub fn bind_is_loopback(addr: &str) -> bool {
     }
 }
 
+/// Each non-fallback plane's own card (#47): plane registry key → lane → rate entry.
+pub type PlaneRateCards =
+    std::collections::BTreeMap<String, std::collections::BTreeMap<String, RateEntryCfg>>;
+
+/// Each non-fallback plane's own fees (#47): plane registry key → its fees, in minor units.
+pub type PlaneFeesMap = std::collections::BTreeMap<String, busbar_kernel_ledger::cost::PlaneFees>;
+
+/// A plane section's reserved `fees:` (#44: `{ per_request | per_session }`), in minor units; an
+/// absent key is a fee of 0. Never rounded, never divided — each is one flat fee per unit.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PlaneFeesCfg {
+    /// Charged once per billable request of the plane.
+    pub per_request: u32,
+    /// Charged once per session the plane opens.
+    pub per_session: u32,
+}
+
 /// Deployment configuration - operator-owned config.yaml structure.
 // deny_unknown_fields: a typo'd or unknown TOP-LEVEL key (e.g. `plugin:` for `plugins:`) must be a
 // loud startup error, not a silently-ignored block - the fail-closed posture every nested
@@ -1239,6 +1262,15 @@ pub struct DeployCfg {
     /// Flat cents (abstract minor units) charged per request for budget accounting. Default 0.
     #[serde(default = "default_per_request_fee")]
     pub per_request_fee: i64,
+    /// Every OTHER plane's own card (#47), keyed by plane registry key: the reserved `rate_card:`
+    /// sub-key of that plane's section, stripped off it before the plane parses the rest (#43).
+    /// A lifted CARRIER, like the plane sections below; [`resolve`] composes it beside `rate_card:`.
+    #[serde(skip)]
+    pub plane_rate_cards: PlaneRateCards,
+    /// Every OTHER plane's own fees (#47): the reserved `fees:` sub-key of that plane's section,
+    /// lifted like its card. The pools plane's fee is `per_request_fee:`.
+    #[serde(skip)]
+    pub plane_fees: PlaneFeesMap,
     /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
     #[serde(default)]
     pub store: Option<StoreCfg>,
@@ -2165,15 +2197,12 @@ pub fn resolve(
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
         // Look up the provider definition by name
-        let def = match defs.get(deploy_name) {
-            Some(d) => d,
-            None => {
-                errors.push(format!(
-                    "provider '{}' referenced in config.yaml not found in providers.yaml",
-                    deploy_name
-                ));
-                continue;
-            }
+        let Some(def) = defs.get(deploy_name) else {
+            errors.push(format!(
+                "provider '{}' referenced in config.yaml not found in providers.yaml",
+                deploy_name
+            ));
+            continue;
         };
 
         let merged = match resolve_provider_hook {
@@ -2211,14 +2240,8 @@ pub fn resolve(
     // An UNRESOLVABLE member is deliberately NOT refused here — see the `None` arm below for the
     // two checks that own it and why the refusal stays where 1.5.5 put it. This is the ONLY place a
     // pool's plane is decided.
-    let mut tool_pools_derived: std::collections::BTreeMap<
-        String,
-        crate::failover::CandidatePoolCfg,
-    > = std::collections::BTreeMap::new();
-    let mut agent_pools_derived: std::collections::BTreeMap<
-        String,
-        crate::failover::CandidatePoolCfg,
-    > = std::collections::BTreeMap::new();
+    let mut tool_pools_derived = std::collections::BTreeMap::new();
+    let mut agent_pools_derived = std::collections::BTreeMap::new();
     {
         // A pool's KIND discriminant is its members' shared CONFIG SECTION — the plane-declared
         // grammar key, used as OPAQUE DATA. The router never names a plane: `tools:` routes to the
@@ -2285,9 +2308,7 @@ pub fn resolve(
                     Some(k) => match kind {
                         None => kind = Some(k),
                         Some(prev) if prev == k => {}
-                        Some(_) => {
-                            homogeneous = false;
-                        }
+                        Some(_) => homogeneous = false,
                     },
                 }
             }
@@ -2299,31 +2320,21 @@ pub fn resolve(
                 ));
                 continue;
             }
-            match kind {
-                Some(k) if k == tools_section => {
-                    tool_pools_derived.insert(
-                        pool_name.clone(),
-                        crate::failover::CandidatePoolCfg {
-                            members: pool.members.iter().map(|m| m.model.clone()).collect(),
-                            repeatable: pool.repeatable.clone(),
-                        },
-                    );
-                    non_llm.push(pool_name.clone());
-                }
-                Some(k) if k == agents_section => {
-                    agent_pools_derived.insert(
-                        pool_name.clone(),
-                        crate::failover::CandidatePoolCfg {
-                            members: pool.members.iter().map(|m| m.model.clone()).collect(),
-                            repeatable: pool.repeatable.clone(),
-                        },
-                    );
-                    non_llm.push(pool_name.clone());
-                }
-                // Fallback-lane pools — and an all-unresolvable pool, which `config_validate` refuses
-                // member by member once it is resolved — stay in `pools`.
-                _ => {}
-            }
+            // Fallback-lane pools — and an all-unresolvable pool, which `config_validate` refuses
+            // member by member once it is resolved — stay in `pools`.
+            let derived = match kind {
+                Some(k) if k == tools_section => &mut tool_pools_derived,
+                Some(k) if k == agents_section => &mut agent_pools_derived,
+                _ => continue,
+            };
+            let members = pool.members.iter().map(|m| m.model.clone()).collect();
+            let repeatable = pool.repeatable.clone();
+            let candidates = crate::failover::CandidatePoolCfg {
+                members,
+                repeatable,
+            };
+            derived.insert(pool_name.clone(), candidates);
+            non_llm.push(pool_name.clone());
         }
         // A pool that is NOT a fallback-lane pool must not remain in the fallback `pools` map (its
         // bare members do not resolve to `models:` and would fail the fallback-lane build). Remove
@@ -2504,6 +2515,71 @@ pub fn resolve(
         }
     }
 
+    // THE `decisions:` PLANE's OWN reserved-attach hook reference (P2-243/P2-decvalidate — this
+    // section carries no per-registration containers, only the section-wide `decisions.hooks:`
+    // list, read through the SAME always-present `container_gates` seam the `tools:` block above
+    // reads). A `decisions.hooks` entry naming an undefined hook booted silently before this.
+    {
+        let g = deploy.decisions.0.container_gates();
+        for hook in &g.section_hooks {
+            if !deploy.hooks.contains_key(hook) {
+                errors.push(format!(
+                    "decisions.hooks: names `{hook}`, which is not defined in the top-level `hooks:` \
+                     map. Define it there, or remove the reference."
+                ));
+            }
+        }
+    }
+
+    // GENERIC MODEL → `providers:` CROSS-REFERENCE CHECK (P2-243/P2-decvalidate), the model-serving
+    // twin of the hook blocks above: every plane-owned section's own `PlaneCfg::model_provider_refs`
+    // lists its `models:`-shaped provider references, fully qualified — today only `decisions:`
+    // answers non-empty (`tools:`/`agents:`/`streams:` inherit the trait's empty default, so this is
+    // a no-op for them) — checked for EXISTENCE against the RESOLVED `providers:` catalog, and, when
+    // it exists, its resolved protocol checked against the plane's own `PlaneCfg::known_dialects`
+    // (BUSBAR-1.6.0.md #51, OWNER-LOCKED: an unknown dialect fails closed — "the decisions plane
+    // (only jev) handed `anthropic` fails"). Dialect validation stays the PLANE's answer (`#49`: core
+    // spells no protocol literal); this loop only compares strings the plane itself supplied.
+    for section in [
+        deploy.tools.0.as_ref(),
+        deploy.agents.0.as_ref(),
+        deploy.streams.0.as_ref(),
+        deploy.decisions.0.as_ref(),
+    ] {
+        for (path, provider_name) in section.model_provider_refs() {
+            match resolved_providers.get(&provider_name) {
+                None => {
+                    let mut names: Vec<&str> =
+                        resolved_providers.keys().map(String::as_str).collect();
+                    names.sort_unstable();
+                    errors.push(format!(
+                        "{path} names '{provider_name}', which is not defined in the top-level \
+                         `providers:` map. Valid providers: {}. Define it there, or fix the \
+                         reference.",
+                        if names.is_empty() {
+                            "(none configured)".to_string()
+                        } else {
+                            names.join(", ")
+                        }
+                    ));
+                }
+                Some(p) => {
+                    if let Some(known) = section.known_dialects() {
+                        if !known.contains(&p.protocol.as_str()) {
+                            errors.push(format!(
+                                "{path} '{provider_name}' resolves to protocol '{}', but this plane \
+                                 speaks only: {}. Point it at a provider whose protocol resolves to \
+                                 one of those, or remove the reference.",
+                                p.protocol,
+                                known.join(", ")
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // THE `tools:` PLANE's PUBLISHED-NAME UNIQUENESS, and it has to run HERE rather than inside
     // `validate_server` because it is the one registry rule that is not about one entry: a
     // `publish_as:` override on one registration can collide with the `{server}_{tool}` default of
@@ -2624,73 +2700,49 @@ pub fn resolve(
     // names a plane this build does not carry, so it is refused (the config deletion-gate leg) with
     // the same wording.
     let endpoint_block = deploy.mcp.0.as_ref();
-    let lowered_endpoint: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
-        match endpoint_block {
-            None => None,
-            Some(ep) => {
-                // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns
-                // the `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the
-                // deletion-gate refusal below.
-                match crate::plane::registry::plane_decl_for_config_section(
-                    busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-                )
-                .and_then(|d| d.lower_endpoint)
-                {
-                    Some(lower) => match lower(&**ep) {
-                        Ok(resource) => Some(resource),
-                        Err(e) => {
-                            errors.push(e);
-                            None
-                        }
-                    },
-                    None => {
-                        if ep.is_present() {
-                            errors.push(
-                            "an endpoint block is configured for a plane this build was compiled \
-                             without, so busbar cannot serve it. Rebuild with that plane's feature \
-                             enabled, or remove the block."
-                                .to_string(),
-                        );
-                        }
-                        None
-                    }
-                }
+    // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
+    // `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the deletion-gate refusal.
+    let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
+        .and_then(|d| d.lower_endpoint);
+    let lowered_endpoint = match (endpoint_block, lower) {
+        (None, _) => None,
+        (Some(ep), Some(lower)) => lower(&**ep).map_err(|e| errors.push(e)).ok(),
+        (Some(ep), None) => {
+            if ep.is_present() {
+                errors.push(
+                    "an endpoint block is configured for a plane this build was compiled without, \
+                     so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
+                     remove the block."
+                        .to_string(),
+                );
             }
-        };
+            None
+        }
+    };
 
     // The lowered endpoint resource, if any, keyed by its owning plane's config SECTION — the
     // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring
     // `tool_defs`/`agent_defs` beside it). The `tools:` plane owns the endpoint door, so its section
     // key is the map key; a build compiled without that plane produced no resource and inserts none.
-    let mut endpoint_resources: std::collections::HashMap<
-        &'static str,
-        std::sync::Arc<dyn std::any::Any + Send + Sync>,
-    > = std::collections::HashMap::new();
-    if let Some(resource) = lowered_endpoint {
-        endpoint_resources.insert(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            resource,
-        );
-    }
+    let endpoint_resources: std::collections::HashMap<_, _> = lowered_endpoint
+        .map(|resource| (endpoint_section, resource))
+        .into_iter()
+        .collect();
 
     // The `oauth_as:` block, validated HERE for the same reason the endpoint block is: an authorization server
     // whose issuer is malformed advertises endpoints at paths it does not serve, and every
     // conforming client discovers them and fails. A boot refusal names the field; a runtime one is
     // found by an agent that cannot log in and cannot say why.
-    let oauth_as = match deploy
+    let oauth_as = deploy
         .oauth_as
         .as_ref()
         .map(crate::oauth_as::config::AsIdentity::from_cfg)
-    {
-        None => None,
-        Some(Ok(identity)) => Some(identity),
-        Some(Err(e)) => {
-            errors.push(e.to_string());
-            None
-        }
-    };
+        .and_then(|identity| identity.map_err(|e| errors.push(e.to_string())).ok());
 
     if errors.is_empty() {
+        // An absent `security:` block is the all-default one: no extra hosts, no allow-all.
+        let security = deploy.security.clone().unwrap_or_default();
         Ok(RootCfg {
             listen: deploy.listen.clone(),
             public_url: deploy.public_url.clone(),
@@ -2716,26 +2768,15 @@ pub fn resolve(
             // entry is its provider NAME (what `role_bindings.<name>` binds), not its module.
             admin_auth: admin_auth_names,
             groups: deploy.groups.clone(),
-            rate_card: deploy.rate_card.clone(),
+            rate_card: compose_plane_cards(deploy.rate_card.as_ref(), &deploy.plane_rate_cards),
             per_request_fee: deploy.per_request_fee,
+            plane_fees: deploy.plane_fees.clone(),
             store: deploy.store.clone(),
             secrets: deploy.secrets.clone(),
             global_hooks: global_hook_names,
-            blocked_metadata_hosts: deploy
-                .security
-                .as_ref()
-                .map(|s| s.blocked_metadata_hosts.clone())
-                .unwrap_or_default(),
-            allow_metadata_hosts: deploy
-                .security
-                .as_ref()
-                .map(|s| s.allow_metadata_hosts.clone())
-                .unwrap_or_default(),
-            allow_all_metadata: deploy
-                .security
-                .as_ref()
-                .map(|s| s.allow_all_metadata)
-                .unwrap_or(false),
+            blocked_metadata_hosts: security.blocked_metadata_hosts,
+            allow_metadata_hosts: security.allow_metadata_hosts,
+            allow_all_metadata: security.allow_all_metadata,
             // Project the operational-limit sections onto a flat resolved struct. The `advanced:` /
             // `export:` blocks are optional; absent ⇒ their section defaults (the historical
             // hardcoded values, via the manual `Default` impls).

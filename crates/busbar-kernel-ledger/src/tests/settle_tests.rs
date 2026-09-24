@@ -104,6 +104,7 @@ fn every_settlement_reaches_the_previous_releases_rows() {
             reserved: 700,
             settled: 690,
             overdraft: 0,
+            fee_count: 0,
         }]
     );
 }

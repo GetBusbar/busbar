@@ -27,42 +27,6 @@ use busbar_kernel::store::LaneRuntime;
 // re-export line, itself repointed here. Nothing outside core names them.
 pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 
-/// The subset of resolved limits that FEEDS the upstream reqwest client build — every setting
-/// whose change must produce a different client. On a config apply the prior client is reused (for
-/// its warm connection pool) ONLY when this snapshot is UNCHANGED; if any field here changed, the
-/// client is REBUILT so the new setting actually takes effect (a reused client would silently pin
-/// the old timeout / pool sizing / protocol posture until a full process restart). Every OTHER
-/// input to the builder (`connect_timeout`, `tcp_keepalive`, `tcp_nodelay`, the h2 keep-alive
-/// timers, and the `redirect: none` SSRF posture) is a compile-time constant, so this snapshot is
-/// exhaustive over the client-affecting configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UpstreamClientSettings {
-    /// Overall streaming request timeout (`limits.upstream_request_timeout_secs`). Security-relevant:
-    /// a looser timeout is a resource-exhaustion surface, so a change here MUST rebuild.
-    pub upstream_request_timeout_secs: u64,
-    /// Per-host idle keep-alive socket budget (`limits.pool_max_idle_per_host`).
-    pub pool_max_idle_per_host: usize,
-    /// Idle keep-alive lifetime (`limits.pool_idle_timeout_secs`).
-    pub pool_idle_timeout_secs: u64,
-    /// Pin to HTTP/1.1 (`advanced.upstream_http1_only`).
-    pub upstream_http1_only: bool,
-    /// Force cleartext h2 prior-knowledge (`advanced.upstream_h2_prior_knowledge`).
-    pub upstream_h2_prior_knowledge: bool,
-}
-
-impl UpstreamClientSettings {
-    /// Project the client-affecting subset out of the fully-resolved limits.
-    pub fn from_limits(limits: &crate::config::LimitsResolved) -> Self {
-        Self {
-            upstream_request_timeout_secs: limits.upstream_request_timeout_secs,
-            pool_max_idle_per_host: limits.pool_max_idle_per_host,
-            pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
-            upstream_http1_only: limits.upstream_http1_only,
-            upstream_h2_prior_knowledge: limits.upstream_h2_prior_knowledge,
-        }
-    }
-}
-
 /// Re-export the neutral companion-slot key DERIVER: a plane's ALWAYS-PRESENT per-generation runtime
 /// object is carried in [`App::plane_slots`] under `runtime_slot_key(plane_key)` — the neutral
 /// `"<key>:runtime"` convention — DISTINCT from the plane's own decl key, under which the
@@ -95,7 +59,7 @@ pub type ContainerRewriteMap =
 pub type PlaneRewriteMap = std::collections::BTreeMap<&'static str, ContainerRewriteMap>;
 
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
-/// governance, client — the things that must SURVIVE a config change) and deep-copies the
+/// governance — the things that must SURVIVE a config change) and deep-copies the
 /// config-derived collections (lanes, pools, hooks, …). So `apply` builds the next snapshot as
 /// `let mut next = (*current).clone(); /* mutate config-derived fields */` and `AppHandle::swap`s it,
 /// while in-flight requests keep serving on the old snapshot and the SAME breaker/latency state.
@@ -134,17 +98,11 @@ pub struct App {
     /// (the default) ⇒ every gate screens the full projection every turn, byte-identical to 1.5.4; the
     /// firing sites pass `incremental: None`. Env-driven, not config, so activating it does not touch
     /// the frozen `config-schema.snapshot.json` / config-stability gate.
-    // Read only by the plane request gate's incremental-scan tenant; with BOTH planes compiled out
-    // nothing fires that gate, so the field goes unread in that config alone.
-    #[allow(dead_code)]
     pub incremental_scan: bool,
     /// A single container plane's failover pools — operator-declared interchangeable member sets,
     /// carried resolved-verbatim onto the snapshot so that plane's own dispatch route builder
     /// reads the SAME generation the request was admitted on. Empty ⇒ every
     /// member keeps its degenerate single-member cell and no reroute exists to be had.
-    // Owned by, and read only through, that one plane's own dispatch route builder; with that plane's
-    // feature off (and another plane's on) it is carried on the snapshot but never read.
-    #[allow(dead_code)]
     pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// THE PER-PLANE FAILOVER POOL MAPS reached through the GENERIC pool-member seam
     /// ([`busbar_kernel::plane_host::LanePoolHost::plane_pool_members`]), keyed by the plane's stable
@@ -161,10 +119,6 @@ pub struct App {
         &'static str,
         std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     >,
-    /// The client-affecting resolved-limits snapshot THIS `client` was built from. Carried so the
-    /// next config apply can tell whether reusing `client` (warm pool) is safe: reuse only when this
-    /// is unchanged, else rebuild so a changed timeout / pool sizing / protocol posture takes effect.
-    pub client_settings: UpstreamClientSettings,
     pub auth: Arc<crate::auth::AuthMiddleware>,
     /// GLOBAL rewrite hooks — the `prompt: rw` gates named in `global_hooks`, resolved to their
     /// transports and sorted by ascending `priority` (the transform-chain order). Fired before
@@ -242,17 +196,17 @@ pub struct App {
     // the map goes unread in that config alone.
     #[allow(dead_code)]
     pub plane_rewrites: PlaneRewriteMap,
-    /// The raw `hooks:` registry (name → definition) as configured, for the Admin API v1 hooks READ
-    /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set, distinct
-    /// from the RESOLVED transports in `rewrite_hooks`/`tap_hooks` (which the request path fires). Empty
-    /// when no hooks are configured. Read-only after construction; the config-plane mutation surface
-    /// swaps a new `App` snapshot rather than mutating this in place.
     /// The plugin-resolution environment for hooks: the validated plugin registry + the shared
     /// projectors. Threaded to the admin control-plane reads/writes (configure/status/schema) and the
     /// Prometheus scrape so they open a hook's `kind: hook` plugin the same way the request path's
     /// resolved transports did. Cheap to clone (Arc-backed). Replaces the retired webhook client the
     /// out-of-process transport needed.
     pub hook_env: crate::hooks::HookEnv,
+    /// The raw `hooks:` registry (name → definition) as configured, for the Admin API v1 hooks READ
+    /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set, distinct
+    /// from the RESOLVED transports in `rewrite_hooks`/`tap_hooks` (which the request path fires). Empty
+    /// when no hooks are configured. Read-only after construction; the config-plane mutation surface
+    /// swaps a new `App` snapshot rather than mutating this in place.
     pub hook_registry: HashMap<String, crate::config::HookCfg>,
     /// The "decision observability" signal catalog's config-generation
     /// `RequestedSignals` bitmask — the UNION of every hook's declared `signals:` — built ONCE
@@ -622,10 +576,6 @@ impl App {
     /// THE SEAM EVERY PLANE READS THROUGH: each container plane reads its runtime object through
     /// this accessor via its own module-local downcast, having deleted its own typed `App` field in
     /// the D4 step.
-    // Reached unconditionally through the `PlaneSlots` trait impl below (`App::plane_slot`), so the
-    // inherent fn is never truly dead; the `allow(dead_code)` gate is legacy from when only one plane
-    // was its only direct reader.
-    #[allow(dead_code)]
     pub fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slots.get(key)
     }
@@ -635,7 +585,6 @@ impl App {
     /// names none of it. A plane's relocated tests reach their own runtime through this neutral seam:
     /// `Arc::get_mut(app.plane_slot_mut(key)?).downcast_mut::<TheirRuntime>()`. Returns the slot's
     /// `Arc` mutably so the caller can `Arc::get_mut` it (uniquely-owned in a sole-owner test `App`).
-    #[allow(dead_code)]
     pub fn plane_slot_mut(
         &mut self,
         key: &str,
@@ -656,7 +605,6 @@ impl App {
     /// [`App::plane_gates`](Self::plane_gates) map read, reached through the key instead of a
     /// plane-named field. The dispatch/admission gate paths read it; `None` and an empty inner map are
     /// both "no gate attached" (the zero-cost `Proceed` early-out).
-    #[allow(dead_code)]
     pub fn plane_gates(&self, plane_key: &str) -> Option<&ContainerGateMap> {
         self.plane_gates.get(plane_key)
     }
@@ -665,7 +613,6 @@ impl App {
     /// or `None` when the plane attached no rewrite hook this generation — the tap/transform twin of
     /// [`App::plane_gates`](Self::plane_gates). The transform firing site reads it; `None` and an empty
     /// inner map are both "no rewrite attached" (the zero-cost / byte-identical no-op).
-    #[allow(dead_code)]
     pub fn plane_rewrites(&self, plane_key: &str) -> Option<&ContainerRewriteMap> {
         self.plane_rewrites.get(plane_key)
     }
@@ -708,7 +655,6 @@ impl App {
     /// The failover pool map for the plane identified by the opaque registry `plane_key`, or `None`
     /// when the plane declared no pools this generation — a pure [`App::plane_pools`](Self::plane_pools)
     /// map read, reached through the key instead of a plane-named field.
-    #[allow(dead_code)]
     pub fn plane_pools(
         &self,
         plane_key: &str,
@@ -722,9 +668,6 @@ impl App {
     /// list across, and gets back the keyed gate map to store in its own gate field, so the plane
     /// names no `crate::hooks::resolve_container_gates`. Same resolution as `appbuild`'s build-time
     /// pass.
-    // Called only from a container plane's gate rebuild; with every container plane compiled out it
-    // has no caller, exactly like the `crate::hooks::resolve_container_gates` it wraps.
-    #[allow(dead_code)]
     pub fn resolve_container_gates<'a>(
         &self,
         containers: impl Iterator<Item = (&'a str, &'a [String])>,
@@ -744,7 +687,6 @@ impl App {
     /// [`App::resolve_container_gates`], the core-side of a container plane's config-swap rewrite
     /// rebuild. Same inputs, same zero-cost absence, so the plane names no
     /// `crate::hooks::resolve_container_rewrites`.
-    #[allow(dead_code)]
     #[allow(clippy::type_complexity)]
     pub fn resolve_container_rewrites<'a>(
         &self,
@@ -844,6 +786,10 @@ pub struct AppHandle {
     /// holds an `Arc<App>` clone of its generation — dropping it on swap releases that reference so the
     /// old `App` frees once its in-flight requests drain, exactly as the old `Weak<App>` prober did.
     snapshot_host: std::sync::Mutex<Option<Arc<dyn busbar_kernel::plane_host::EngineHost>>>,
+    /// What re-attaches the per-generation workers (the active health probers) to a NEW generation's
+    /// host. Bound once by the composition root ([`attach_on_swap`](Self::attach_on_swap)), which is
+    /// the one place allowed to name the plane that owns them; unbound, a swap re-attaches nothing.
+    attach: std::sync::OnceLock<fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)>,
 }
 
 impl AppHandle {
@@ -853,7 +799,16 @@ impl AppHandle {
             #[cfg(debug_assertions)]
             swapping: std::sync::atomic::AtomicBool::new(false),
             snapshot_host: std::sync::Mutex::new(None),
+            attach: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Bind what every [`swap`](Self::swap) runs against the incoming generation's host before the
+    /// outgoing one is dropped — the composition root passes the plane's prober spawner, so the
+    /// probers the swap retires are replaced by probers on the snapshot that replaced them. First
+    /// binding wins: there is one set of per-generation workers per process.
+    pub fn attach_on_swap(&self, attach: fn(&Arc<dyn busbar_kernel::plane_host::EngineHost>)) {
+        let _ = self.attach.set(attach);
     }
 
     /// Bind the composition-root-owned ENGINE HOST for the CURRENT generation — the host the active
@@ -880,8 +835,9 @@ impl AppHandle {
     }
 
     /// Atomically replace the current snapshot (the admin config-mutation seam: reload, apply, and every
-    /// hook/auth mutation). Re-spawns the health probers against `next`: probers hold a `Weak<App>` and
-    /// exit once the App they were spawned against drops, so EVERY swap must re-attach them —
+    /// hook/auth mutation). Re-spawns the health probers against `next`, through the spawner the
+    /// composition root bound with [`attach_on_swap`](Self::attach_on_swap): probers hold a `Weak` to
+    /// their generation's host and exit once it drops, so EVERY swap must re-attach them —
     /// otherwise the first admin mutation replaces the boot App, the boot App drops as in-flight requests
     /// drain, its probers exit, and active/dead health probing silently STOPS even though lanes/health are
     /// unchanged (before 1.4.0 only reload/apply re-spawned; the six hook/auth-mutation swaps did not).
@@ -938,10 +894,15 @@ impl AppHandle {
         // spawned against; dropping it here makes their `Weak::upgrade` fail, so they exit rather than
         // probe a retired snapshot — the SAME no-strong-ref-across-reload guarantee the old `Weak<App>`
         // gave, now anchored on the host holder. We re-bind the host for `next` so the invariant "the
-        // handle owns a host per current generation" holds; RE-SPAWNING the probers against `next` is
-        // the fallback plane's own concern (its `PlaneDecl::on_swap` seam — wired in the wedge-3
-        // engine thread), so core still names no `crate::health::spawn_probers`.
-        self.set_snapshot_host(crate::plane_host::engine_host(&next));
+        // handle owns a host per current generation" holds, and RE-SPAWN the probers against it first
+        // (item 552: no plane's `on_swap` did, so the first admin mutation stopped health probing for
+        // the life of the process). The spawner is the composition root's binding, so core still
+        // names no plane's `spawn_probers`.
+        let host = crate::plane_host::engine_host(&next);
+        if let Some(attach) = self.attach.get() {
+            attach(&host);
+        }
+        self.set_snapshot_host(host);
     }
 
     /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to
@@ -1001,3 +962,7 @@ where
 // (`set_worker_detached`, `set_worker_shutdown`, `DetachedTasks`, `DETACHED_DRAIN_GRACE`) had no
 // caller left anywhere, and the fifth (`spawn_detached`) had exactly one — `export/webhook.rs` —
 // which now names the substrate directly.
+
+#[cfg(test)]
+#[path = "tests/state_tests.rs"]
+mod state_tests;

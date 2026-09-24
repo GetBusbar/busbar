@@ -268,6 +268,12 @@ impl OperationHandler for CohereRerank {
     ) -> busbar_substrate_values::breaker::RawUpstreamError {
         super::super::proto_codec::protocol_error("cohere", status, body)
     }
+    // Search-unit metered: buffer the same-protocol non-stream 2xx body so the tap reads the
+    // `meta.billed_units.search_units` it billed onto both books, as the cross-protocol path does
+    // (item 134). Without it the verbatim relay kept no copy and the units reached neither book.
+    fn taps_usage(&self) -> bool {
+        true
+    }
     fn read_request(
         &self,
         body: &[u8],
@@ -472,15 +478,17 @@ pub fn read_embeddings_response(
             item
         })
         .collect();
-    let usage = v
-        .get("meta")
-        .and_then(|m| m.get("billed_units"))
-        .and_then(|b| b.get("input_tokens"))
-        .and_then(crate::usage_count::read_count_u64)
-        .map(|n| busbar_substrate_values::billing::TokenUsage {
-            input: n,
-            ..Default::default()
-        });
+    // BILLED COUNT (item 133): absent or `null` is no usage (unchanged); a present-but-UNREADABLE
+    // count REFUSES rather than reading as "no usage reported".
+    let usage = crate::usage_count::billed_count_opt(
+        v.get("meta").and_then(|m| m.get("billed_units")),
+        "input_tokens",
+    )
+    .map_err(|e| CodecError::Malformed(e.to_string()))?
+    .map(|n| busbar_substrate_values::billing::TokenUsage {
+        input: n,
+        ..Default::default()
+    });
     Ok(EmbeddingsResp {
         id: v.get("id").and_then(Value::as_str).map(str::to_string),
         embeddings,
@@ -539,11 +547,14 @@ pub fn read_rerank_response(wire: &[u8]) -> Result<crate::ir::rerank::RerankResp
     Ok(crate::ir::rerank::RerankResp {
         id: v.get("id").and_then(Value::as_str).map(str::to_string),
         results: read_rerank_results(v.get("results")),
-        search_units: v
-            .get("meta")
-            .and_then(|m| m.get("billed_units"))
-            .and_then(|b| b.get("search_units"))
-            .and_then(crate::usage_count::read_count_u64),
+        // The PRICED quantity (item 134, `RerankResp::billing`). Absent or `null` stays `None` (the
+        // flat marker); a present-but-UNREADABLE count REFUSES (item 133) — the lenient read made
+        // it `None`, so `"search_units":"3"` billed the flat marker instead of 3 counted units.
+        search_units: crate::usage_count::billed_count_opt(
+            v.get("meta").and_then(|m| m.get("billed_units")),
+            "search_units",
+        )
+        .map_err(|e| CodecError::Malformed(e.to_string()))?,
         ..Default::default()
     })
 }

@@ -12,8 +12,6 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::caps::UsageLine;
-
 /// Convert one configured rate — micro-units per unit of quantity — into the integer nano-unit
 /// rate all later arithmetic uses.
 ///
@@ -88,27 +86,31 @@ pub fn representable_nano_rate(micro_per_unit: f64) -> Option<u64> {
 }
 
 /// Fold quantity-and-rate pairs into one nano-unit total: multiply each pair, sum the products,
-/// and SATURATE at both steps.
+/// and SATURATE at both steps. **A SIZING fold, not a spend fold.**
 ///
-/// THE ONLY MULTIPLY-AND-SUM ON THE MONEY PATH, now. It used to be three: this crate's own lane
-/// fold, the admission unit's reserved-four fold, and a third in the kernel's cost projection that
-/// nobody had counted — and the third one guarded nothing. Two copies of a rounding rule drift
-/// (which is the incident [`nano_rate`] narrates); three copies of an OVERFLOW rule had already
-/// drifted, because the two written down saturated and the one nobody had written down did not.
+/// THE TREE HAS TWO MULTIPLY-AND-SUMS ON THE MONEY PATH, AND THEY ARE TWO NOUNS (item 434). This
+/// doc used to claim this was the only one, while the settlement lookup, the read and the kernel's
+/// projection each carried their own — one of them CHECKED, so the in-crate copies had already
+/// drifted on overflow policy (one pinned, one refused). Today:
+///
+/// - **every SPEND figure** — a bill, a read, a cap comparison, a settlement posting — is
+///   [`crate::cost::Tally`]'s fold (`Tally::row`), and it is CHECKED: an overflow is
+///   [`crate::cost::MoneyError::Overflow`], a refusal, never a pin (item 28). There is no spend
+///   figure on this fold.
+/// - **this fold** sizes a RESERVATION: the budget door's hold (`busbar-kernel-budget`
+///   `Estimate::pre_tier_nanos`), released at settlement and paid by nobody. For a hold, pinning at
+///   the top is the safe reading of an over-the-top size — it can only reserve too much, which the
+///   unit gives straight back — and a refusal would be wrong, because the hold is accounting and
+///   never refuses a unit the decision admitted. It has no other caller: a lane's rates size no
+///   usage report here, because pricing a report is a spend and a spend is `Tally`'s.
+///
+/// A change to overflow or rounding here moves no bill; a change to a bill belongs in `Tally`.
 ///
 /// BOTH OPERATIONS ARE GUARDED, AND THE SECOND IS THE ONE THAT MATTERS. A single product cannot
 /// overflow the accumulator — a `u64` quantity times a `u64` rate is inside a `u128` by a whole bit
-/// — and a comment that says only that is TRUE AND BESIDE THE POINT, which is exactly how the
-/// unguarded copy read and exactly why it survived review. It is the SUM that overflows: four
-/// maximal products reach about 2^130 against a 2^128 ceiling. A plain `+` panics on overflow in a
-/// debug build and WRAPS in a release one, and the wrap is the dangerous half because it is silent
-/// — a total one past the ceiling wraps to ONE nano-unit, so an astronomical ledger derives as very
-/// nearly free and clears every budget cap on the way past. Pinning at the top is the only reading
-/// of an over-the-top bill that cannot UNDER-bill, and it is what the caller above then pins into
-/// cents.
-///
-/// Below the ceiling this is ordinary exact integer arithmetic: saturation changes no answer that
-/// the unguarded sum was able to give, so every bill a deployment actually produces is unmoved.
+/// — and it is the SUM that overflows: four maximal products reach about 2^130 against a 2^128
+/// ceiling. A plain `+` panics on overflow in a debug build and WRAPS in a release one, and the
+/// wrap would size a hold of very nearly nothing for an astronomical estimate.
 ///
 /// #81 keeps this integer: no `f32`/`f64` touches a quantity or a rate here. The only decimal on
 /// the money path is the one [`nano_rate`] converts, once, at card-build time.
@@ -238,6 +240,13 @@ impl CellPrices {
 /// A card has no version field. Which card this is, is the number of the history entry that holds
 /// it, and that number belongs to the history rather than to the card — a card carrying its own name
 /// is a second identity that can disagree with the first.
+///
+/// **ONE CARD PER PLANE** (#42 "scoped per plane", #47). The card an unqualified lane is priced by is
+/// the FLAT card — the llm (`pools`) plane's, which is where 1.5.5's top-level `rate_card:` loads,
+/// byte-identically. Every other plane's card rides in `planes`, keyed by its plane key, and a lane
+/// qualified `"<plane>\u{1f}<lane>"` ([`crate::cost::PLANE_LANE_SEP`]) is priced by THAT plane's card
+/// alone ([`Self::plane_lane`]). A plane with no card of its own is billing OFF for that plane (#42:
+/// reads 0), whatever any other plane's card says; each plane's presence is its own switch.
 #[derive(Debug, Clone)]
 pub struct RateCard {
     present: bool,
@@ -247,6 +256,93 @@ pub struct RateCard {
     /// is on the card as an UNPRICED cell of a named lane, so a hit on it refuses; the list is kept
     /// so card-build validation can refuse the whole configuration at boot (#77(5)).
     refused: Vec<LaneClass>,
+    /// The other planes' cards, by plane key. Each carries ITS OWN fees (#47: `fees` is a reserved
+    /// sub-key of every plane's section) and none of the node's: a plane that configured no fees
+    /// bills a fee of nothing, whatever another plane charges.
+    planes: BTreeMap<String, RateCard>,
+    /// The flat fee per opened SESSION, in minor units (#44 `fees.per_session`). Zero on the flat
+    /// card, whose one fee is 1.5.5's `per_request_fee:`.
+    session_fee: i64,
+}
+
+/// The card a plane with no card of its own resolves to: ABSENT, so its every class reads 0 (#42),
+/// and fee-less, so it bills no fee.
+static NO_CARD: RateCard = RateCard {
+    present: false,
+    prices: BTreeMap::new(),
+    fee: 0,
+    refused: Vec::new(),
+    planes: BTreeMap::new(),
+    session_fee: 0,
+};
+
+/// The reserved class a plane's REQUEST fee units are counted under, on its fee lane
+/// ([`plane_fee_lane`]) — one per billable request (#44 `fees.per_request`).
+pub const PER_REQUEST: &str = "per_request";
+/// The reserved class a plane's SESSION fee units are counted under — one per opened session (#44
+/// `fees.per_session`).
+pub const PER_SESSION: &str = "per_session";
+
+/// **A PLANE'S FEE LANE**, `"<plane>\u{1f}"`: the lane its fee units ([`PER_REQUEST`],
+/// [`PER_SESSION`]) are counted on, and priced at that plane's own fees. The lane part is empty, so
+/// it is never a lane traffic is served on.
+pub fn plane_fee_lane(plane: &str) -> String {
+    format!("{plane}{}", crate::cost::PLANE_LANE_SEP)
+}
+
+/// One plane's configured fees, in minor units (#44: `fees = { per_request | per_session }`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PlaneFees {
+    /// The fee per billable request.
+    pub per_request: i64,
+    /// The fee per opened session.
+    pub per_session: i64,
+}
+
+/// Split a card key (or a ledger row's lane) into `(plane key, lane)`. An unqualified key is the
+/// flat card's, spelt here as the empty plane key; `"<plane>\u{1f}"` with no lane is that plane's
+/// PRESENCE — a card configured with no entry yet, which still turns its plane's billing on.
+pub fn split_plane_lane(key: &str) -> (&str, &str) {
+    key.split_once(crate::cost::PLANE_LANE_SEP)
+        .unwrap_or(("", key))
+}
+
+/// Whether the flat card is present, given the PLANE KEY of every key in a composed card map (see
+/// [`split_plane_lane`]): a map naming no key at all is the 1.5.5 `rate_card: {}` (present), and
+/// otherwise the flat card is present only when some key is the flat plane's (the empty plane key).
+/// [`RateCard::from_config`] and the config validator both ask this, so they cannot disagree about
+/// which card is on.
+pub fn flat_card_present<'k>(mut planes: impl Iterator<Item = &'k str>) -> bool {
+    let mut none = true;
+    planes.any(|plane| {
+        none = false;
+        plane.is_empty()
+    }) || none
+}
+
+/// COMPOSE one card map from the flat card and each plane's own card: a plane's lanes are qualified
+/// by its key and each present plane card leaves its presence key (see [`split_plane_lane`]). With no
+/// plane card this is the flat card, untouched — the 1.5.5 map, byte-identical.
+pub fn compose_plane_cards<E: Clone + Default>(
+    flat: Option<&BTreeMap<String, E>>,
+    planes: &BTreeMap<String, BTreeMap<String, E>>,
+) -> Option<BTreeMap<String, E>> {
+    if planes.is_empty() {
+        return flat.cloned();
+    }
+    let sep = crate::cost::PLANE_LANE_SEP;
+    let mut out = flat.cloned().unwrap_or_default();
+    if flat.is_some() {
+        out.insert(sep.to_string(), E::default());
+    }
+    for (plane, card) in planes {
+        out.insert(format!("{plane}{sep}"), E::default());
+        out.extend(
+            card.iter()
+                .map(|(lane, e)| (format!("{plane}{sep}{lane}"), e.clone())),
+        );
+    }
+    Some(out)
 }
 
 impl RateCard {
@@ -262,6 +358,8 @@ impl RateCard {
             // amount, which would credit a budget back toward headroom.
             fee: per_request_fee.max(0),
             refused: Vec::new(),
+            planes: BTreeMap::new(),
+            session_fee: 0,
         }
     }
 
@@ -280,6 +378,8 @@ impl RateCard {
             prices: BTreeMap::new(),
             fee: per_request_fee.max(0),
             refused: Vec::new(),
+            planes: BTreeMap::new(),
+            session_fee: 0,
         };
         for (cell, micro) in entries {
             card.place_rate(cell, micro);
@@ -308,6 +408,8 @@ impl RateCard {
             prices,
             fee: per_request_fee.max(0),
             refused: Vec::new(),
+            planes: BTreeMap::new(),
+            session_fee: 0,
         }
     }
 
@@ -337,6 +439,10 @@ impl RateCard {
     /// same spellings, so no name is translated between the line and the entry that prices it. The
     /// two agreeing is not left to inspection: a card keyed by names a report does not use prices
     /// every line at zero, which the ledger identity reads as a node that delivered value for free.
+    ///
+    /// ONE CARD PER PLANE: a key qualified by a plane key lands on THAT plane's card (see
+    /// [`compose_plane_cards`]); the unqualified keys are the flat card, present by
+    /// [`flat_card_present`]'s rule. A map naming no plane builds exactly the card it always did.
     pub fn from_config<'a>(
         lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
         per_request_fee: i64,
@@ -344,13 +450,30 @@ impl RateCard {
         let Some(lanes) = lanes else {
             return RateCard::absent(per_request_fee);
         };
-        let entries = lanes.into_iter().flat_map(|(lane, tiers)| {
-            tiers
-                .by_class()
-                .into_iter()
-                .map(move |(class, micro)| (LaneClass::new(lane, class), micro))
-        });
-        RateCard::from_micro_rates(entries, per_request_fee)
+        let mut by_plane: BTreeMap<&str, Vec<(LaneClass, f64)>> = BTreeMap::new();
+        for (key, tiers) in lanes {
+            let (plane, lane) = split_plane_lane(key);
+            let cells = by_plane.entry(plane).or_default();
+            if !lane.is_empty() {
+                cells.extend(
+                    tiers
+                        .by_class()
+                        .map(|(class, micro)| (LaneClass::new(lane, class), micro)),
+                );
+            }
+        }
+        let flat_present = flat_card_present(by_plane.keys().copied());
+        let flat = by_plane.remove("").unwrap_or_default();
+        let mut card = if flat_present {
+            RateCard::from_micro_rates(flat, per_request_fee)
+        } else {
+            RateCard::absent(per_request_fee)
+        };
+        card.planes = by_plane
+            .into_iter()
+            .map(|(plane, cells)| (plane.to_string(), RateCard::from_micro_rates(cells, 0)))
+            .collect();
+        card
     }
 
     /// **THE OPEN CLASSES a deployment configured** (item 123): each `(lane, class)` cell set to an
@@ -362,11 +485,22 @@ impl RateCard {
     /// open rates configured nowhere have nowhere to land and are ignored rather than switching
     /// billing on by the back door. A card that is PRESENT carries them, and a class the traffic
     /// hits that no cell prices still REFUSES in the one function — never a silent 0.
+    ///
+    /// A plane-qualified lane lands on that plane's card, under the same rule: a plane with no card
+    /// of its own has nowhere for the rate to land.
     pub fn with_unit_rates(mut self, cells: impl IntoIterator<Item = (LaneClass, u64)>) -> Self {
-        if self.present {
-            for (cell, nanos) in cells {
-                self.prices
-                    .entry(cell.lane)
+        for (cell, nanos) in cells {
+            let (plane, lane) = split_plane_lane(&cell.lane);
+            let card = match plane {
+                "" => &mut self,
+                plane => match self.planes.get_mut(plane) {
+                    Some(card) => card,
+                    None => continue,
+                },
+            };
+            if card.present && !lane.is_empty() {
+                card.prices
+                    .entry(lane.to_string())
                     .or_default()
                     .entry(cell.class)
                     .or_default()
@@ -374,6 +508,45 @@ impl RateCard {
             }
         }
         self
+    }
+
+    /// **EACH PLANE'S OWN FEES** (#47), by plane key: set on that plane's card, or on an ABSENT card
+    /// for a plane that configured fees and no rates — its classes read 0 (#42) and its fees post.
+    /// Negative figures clamp to zero, as the flat fee does.
+    pub fn with_plane_fees<'p>(
+        mut self,
+        fees: impl IntoIterator<Item = (&'p str, PlaneFees)>,
+    ) -> Self {
+        for (plane, f) in fees {
+            let card = self
+                .planes
+                .entry(plane.to_string())
+                .or_insert_with(|| RateCard::absent(0));
+            card.fee = f.per_request.max(0);
+            card.session_fee = f.per_session.max(0);
+        }
+        self
+    }
+
+    /// The fee a reserved fee class ([`PER_REQUEST`], [`PER_SESSION`]) prices at on this card, in
+    /// minor units; `None` for any other class.
+    pub fn fee_of(&self, class: &str) -> Option<i64> {
+        match class {
+            PER_REQUEST => Some(self.fee),
+            PER_SESSION => Some(self.session_fee),
+            _ => None,
+        }
+    }
+
+    /// **THE CARD A LANE IS PRICED BY, and the lane as that card keys it** (#42 "scoped per plane",
+    /// #47). An unqualified lane is this (the flat) card's; `"<plane>\u{1f}<lane>"` is that plane's
+    /// own card's — ABSENT when the plane configured none, so it reads 0 and never borrows another
+    /// plane's card, present or not.
+    pub fn plane_lane<'l>(&self, lane: &'l str) -> (&RateCard, &'l str) {
+        match split_plane_lane(lane) {
+            ("", _) => (self, lane),
+            (plane, lane) => (self.planes.get(plane).unwrap_or(&NO_CARD), lane),
+        }
     }
 
     /// Set one cell's rate.
@@ -458,7 +631,8 @@ impl RateCard {
     /// Whether a request on this lane must be refused because a card is present and has no entry
     /// for it. With no card nothing is unpriced, because there is nothing to be missing from.
     pub fn lane_unpriced(&self, lane: &str) -> bool {
-        self.present && !self.prices.contains_key(lane)
+        let (card, lane) = self.plane_lane(lane);
+        card.present && !card.prices.contains_key(lane)
     }
 
     /// The rates for one lane. Three outcomes, and they are the whole of the pricing posture:
@@ -467,10 +641,11 @@ impl RateCard {
     /// - card present and the lane is named: that lane's rates;
     /// - card present and the lane is unknown: nothing at all, so the caller fails closed.
     pub fn lane_rates(&self, lane: &str) -> Option<LaneRates<'_>> {
-        if !self.present {
+        let (card, lane) = self.plane_lane(lane);
+        if !card.present {
             return Some(LaneRates { classes: None });
         }
-        self.prices.get(lane).map(|classes| LaneRates {
+        card.prices.get(lane).map(|classes| LaneRates {
             classes: Some(classes),
         })
     }
@@ -510,18 +685,5 @@ impl LaneRates<'_> {
                 .get(class)
                 .is_some_and(|cell| cell.nanos_per_unit().is_some()),
         }
-    }
-
-    /// The nano-unit cost of a whole usage report at this lane's rates: one multiply-add per line.
-    ///
-    /// The arithmetic is [`nanos_sum`]'s rather than a copy of it — this lane view's job is to say
-    /// which rate each line prices at, and the multiply, the sum and the saturation at both steps
-    /// belong to the one fold every money path shares.
-    pub fn nanos(&self, lines: &[UsageLine]) -> u128 {
-        nanos_sum(
-            lines
-                .iter()
-                .map(|l| (l.quantity, self.nanos_per_unit(l.class.as_str()))),
-        )
     }
 }

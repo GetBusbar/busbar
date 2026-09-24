@@ -8,6 +8,10 @@ use crate::diagnostics::{
     diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
     CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
+use crate::plane::registry::plane_decl_for;
+use busbar_kernel_ledger::cost::{
+    flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
+};
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
 /// over-long name is rejected at boot so a bad value cannot silently disable affinity at header
@@ -320,8 +324,28 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // app-boot fixture that never hit a request path), and an unseeded read would spuriously see an
     // empty codec set and refuse a valid provider. Production is unaffected — there `registry()` is
     // the direct substrate re-export and the composition root installed the protocols in `main`.
+    //
+    // UNIONED with every registered plane's OWN declared dialects (`PlaneCfg::known_dialects`,
+    // P2-243/P2-decvalidate) — a plane like the decision plane speaks a dialect with no translating
+    // IR (jev), so it is never a `busbar-llm-codec` wire codec and would otherwise be an "unknown
+    // protocol" here on the very config `resolve`'s own `known_dialects` cross-check (below) just
+    // accepted. Read from the STATIC plane registry via each decl's `default_section` hook — a
+    // plane's own dialect restriction is a declared CONSTANT, not something that varies with what a
+    // deployment configured, so a throwaway default instance answers it with no `DeployCfg` in
+    // scope. `default_section` is `None` only for a plane owning no registry section at all (the
+    // residual `proto` plane); such a plane declares no dialect restriction either.
+    let mut known_protocols: Vec<&str> = crate::proto::registry::registry()
+        .codec_protocols()
+        .to_vec();
+    for decl in crate::plane::registry::plane_decls() {
+        if let Some(default_section) = decl.default_section {
+            if let Some(dialects) = default_section().known_dialects() {
+                known_protocols.extend(dialects.iter().copied());
+            }
+        }
+    }
     validate_providers_with(
-        crate::proto::registry::registry().codec_protocols(),
+        &known_protocols,
         cfg,
         unset_env_vars,
         &mut errors,
@@ -429,14 +453,12 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             // fields to >= 1 with max >= base.)
             if breaker.base_cooldown_secs == 0 {
                 errors.push(format!(
-                    "pool '{}' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off",
-                    pool_name
+                    "pool '{pool_name}' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
                 ));
             }
             if breaker.max_cooldown_secs == 0 {
                 errors.push(format!(
-                    "pool '{}' breaker max_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off",
-                    pool_name
+                    "pool '{pool_name}' breaker max_cooldown_secs must be >= 1 (got 0); a zero cooldown re-admits a tripped backend immediately, defeating the breaker's back-off"
                 ));
             }
             // The escalating cooldown clamps at max_cooldown_secs, so a max below the base would
@@ -478,8 +500,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                         // always true so the lane trips on every evaluation.
                         if trip.consecutive_n == 0 {
                             errors.push(format!(
-                                "pool '{}' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)",
-                                pool_name
+                                "pool '{pool_name}' breaker trip.consecutive_n must be >= 1 for consecutive mode (got 0)"
                             ));
                         }
                     }
@@ -498,8 +519,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         if let Some(failover) = &pool_cfg.failover {
             if failover.timeout_secs == 0 {
                 errors.push(format!(
-                    "pool '{}' failover.timeout_secs must be >= 1; a 0 budget rejects the primary attempt before it runs (every request 503s)",
-                    pool_name
+                    "pool '{pool_name}' failover.timeout_secs must be >= 1; a 0 budget rejects the primary attempt before it runs (every request 503s)"
                 ));
             } else if failover.timeout_secs > crate::config::MAX_FAILOVER_DEADLINE_SECS {
                 // Upper bound: an operator-controlled `timeout_secs` feeds `RequestCtx::new`, which
@@ -530,8 +550,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 for excluded in exclusions {
                     if !member_targets.contains(excluded.as_str()) {
                         errors.push(format!(
-                            "pool '{}' failover.exclusions references '{}', which is not a member of the pool; an exclusion must name one of the pool's members (otherwise it silently benches nothing)",
-                            pool_name, excluded
+                            "pool '{pool_name}' failover.exclusions references '{excluded}', which is not a member of the pool; an exclusion must name one of the pool's members (otherwise it silently benches nothing)"
                         ));
                     }
                 }
@@ -551,8 +570,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         if let Some(crate::config::OnExhaustedCfg::FallbackPool(target)) = &pool_cfg.on_exhausted {
             if !cfg.pools.contains_key(target) {
                 errors.push(format!(
-                    "pool '{}' on_exhausted references unknown fallback pool '{}'",
-                    pool_name, target
+                    "pool '{pool_name}' on_exhausted references unknown fallback pool '{target}'"
                 ));
             } else if target == pool_name {
                 // Self-referential fallback (pool A -> fallback A): the runtime loop guard
@@ -564,8 +582,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 // no diagnostic. (This is the length-1 case the general cycle walk below would
                 // also catch, called out explicitly for a precise diagnostic.)
                 errors.push(format!(
-                    "pool '{}' on_exhausted references itself as its fallback pool ('{}'); a self-referential fallback never engages (the runtime loop guard terminates it on re-entry) so it 503s exactly as having no fallback would. Point it at a different pool or remove on_exhausted",
-                    pool_name, target
+                    "pool '{pool_name}' on_exhausted references itself as its fallback pool ('{target}'); a self-referential fallback never engages (the runtime loop guard terminates it on re-entry) so it 503s exactly as having no fallback would. Point it at a different pool or remove on_exhausted"
                 ));
             }
         }
@@ -586,13 +603,11 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             let budget_ms = resolved_timeout_secs.saturating_mul(1000);
             if *max_ms == 0 {
                 errors.push(format!(
-                    "pool '{}' on_exhausted.queue.max_ms must be > 0; a 0 wait never queues (it is just `reject` with extra machinery)",
-                    pool_name
+                    "pool '{pool_name}' on_exhausted.queue.max_ms must be > 0; a 0 wait never queues (it is just `reject` with extra machinery)"
                 ));
             } else if *max_ms > budget_ms {
                 errors.push(format!(
-                    "pool '{}' on_exhausted.queue.max_ms ({} ms) exceeds the resolved failover budget ({} s = {} ms); a queue longer than the whole failover budget is clamped to it at runtime and never reaches its ceiling. Lower max_ms to <= {} ms or raise failover.timeout_secs",
-                    pool_name, max_ms, resolved_timeout_secs, budget_ms, budget_ms
+                    "pool '{pool_name}' on_exhausted.queue.max_ms ({max_ms} ms) exceeds the resolved failover budget ({resolved_timeout_secs} s = {budget_ms} ms); a queue longer than the whole failover budget is clamped to it at runtime and never reaches its ceiling. Lower max_ms to <= {budget_ms} ms or raise failover.timeout_secs"
                 ));
             }
         }
@@ -613,14 +628,12 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 // catch.
                 if header_name.is_empty() {
                     errors.push(format!(
-                        "pool '{}' affinity.header_name must not be empty (an empty HTTP header field-name silently disables session affinity)",
-                        pool_name
+                        "pool '{pool_name}' affinity.header_name must not be empty (an empty HTTP header field-name silently disables session affinity)"
                     ));
                 }
                 if !header_name.is_ascii() {
                     errors.push(format!(
-                        "pool '{}' affinity.header_name '{}' must be ASCII (an HTTP header field-name cannot contain non-ASCII bytes)",
-                        pool_name, header_name
+                        "pool '{pool_name}' affinity.header_name '{header_name}' must be ASCII (an HTTP header field-name cannot contain non-ASCII bytes)"
                     ));
                 }
                 if header_name.len() > MAX_AFFINITY_HEADER_NAME_LEN {
@@ -1530,8 +1543,18 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 /// by boot and `--validate` so the two cannot drift.
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     if let Some(card) = &cfg.rate_card {
-        // Well-formed rates: every tier finite and >= 0 (names the exact config path).
-        for (model, r) in card {
+        // Well-formed rates: every tier finite and >= 0 (names the exact config path). A non-fallback
+        // plane's card rides in the same map under plane-qualified keys (#47) and is held to the
+        // same shape; its path reads back as the plane section the operator wrote it under.
+        for (key, r) in card {
+            // `lane` is the whole key on the flat card; empty on a plane card's presence key.
+            let (plane, lane) = split_plane_lane(key);
+            let at =
+                crate::plane::registry::plane_decl_for(plane).map_or(plane, |d| d.config_section);
+            let path = format!(
+                "{at}{}rate_card['{lane}']",
+                if at.is_empty() { "" } else { "." }
+            );
             let tiers = [
                 ("input_utok", r.input_utok),
                 ("output_utok", r.output_utok),
@@ -1541,7 +1564,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             for (tier, v) in tiers {
                 if !v.is_finite() || v < 0.0 {
                     errors.push(format!(
-                        "rate_card['{model}'].{tier} must be a finite, non-negative \
+                        "{path}.{tier} must be a finite, non-negative \
                          number of micro-units per token (got {v})"
                     ));
                 } else if busbar_kernel_ledger::cost::representable_nano_rate(v).is_none() {
@@ -1549,7 +1572,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                     // cannot hold lands on it as an UNPRICED cell (`RateCard::refused_cells`) that
                     // refuses every hit; a configuration carrying one is refused here, whole.
                     errors.push(format!(
-                        "rate_card['{model}'].{tier} = {v} micro-units per token is a rate the card \
+                        "{path}.{tier} = {v} micro-units per token is a rate the card \
                          cannot hold (non-zero rates run from 0.0005 to about 1.8e16), so the class \
                          would bill as unpriced; configure 0 to make it free, or a rate in range"
                     ));
@@ -1571,13 +1594,18 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 .keys()
                 .filter(|c| busbar_api::RESERVED_UNITS.contains(&c.as_str()))
             {
-                errors.push(format!("rate_card['{model}'].units.{class} names a reserved class; price it with {class}_utok"));
+                errors.push(format!(
+                    "{path}.units.{class} names a reserved class; price it with {class}_utok"
+                ));
             }
-            if tiers.iter().all(|(_, v)| v.is_finite() && *v == 0.0) && r.units.is_empty() {
+            if !lane.is_empty()
+                && tiers.iter().all(|(_, v)| v.is_finite() && *v == 0.0)
+                && r.units.is_empty()
+            {
                 diag_warn!(
                     CONFIG_RATE_CARD_ALL_ZERO,
-                    model = %model,
-                    "rate_card entry for model '{model}' prices every tier at zero: its token usage \
+                    model = %key,
+                    "rate_card entry for model '{key}' prices every tier at zero: its token usage \
                      meters as FREE and is uncapped by any budget: limit. If intentional, ignore; \
                      otherwise fill in the model's rate_card rates."
                 );
@@ -1586,12 +1614,14 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // COMPLETENESS (all-or-nothing): rate_card present => EVERY configured model (by CONFIG
         // name - two providers serving one upstream are two `models:` entries with two card
         // entries) has an entry, or boot/--validate FAIL with a COPY-PASTEABLE zeroed stub of
-        // exactly the missing models.
+        // exactly the missing models. The flat plane's card only (#42 "scoped per plane"): another
+        // plane's card beside an absent `rate_card:` leaves the flat plane billing OFF.
+        let flat_card = flat_card_present(card.keys().map(|k| split_plane_lane(k).0));
         let mut model_names: Vec<&String> = cfg.models.keys().collect();
         model_names.sort();
         let missing: Vec<&str> = model_names
             .iter()
-            .filter(|name| !card.contains_key(name.as_str()))
+            .filter(|name| flat_card && !card.contains_key(name.as_str()))
             .map(|name| name.as_str())
             .collect();
         if !missing.is_empty() {
@@ -1601,8 +1631,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 .map(|m| {
                     format!(
                         "    {:width$} {{ input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }}\n",
-                        format!("{m}:"),
-                        width = width
+                        format!("{m}:")
                     )
                 })
                 .collect();
@@ -1615,8 +1644,10 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             ));
         }
         // Card entries for models that do not exist are dead config - almost always a typo of a
-        // real model name. Fail loud (the completeness stub above covers the other direction).
-        for model in card.keys() {
+        // real model name. Fail loud (the completeness stub above covers the other direction). A
+        // plane-qualified key is another plane's lane, which that plane names at run time; a lane
+        // that plane never serves is never hit, and a hit its card is silent about REFUSES (#42).
+        for model in card.keys().filter(|k| !k.contains(PLANE_LANE_SEP)) {
             if !cfg.models.contains_key(model) {
                 errors.push(format!(
                     "rate_card names model '{model}', which is not defined under models: \
@@ -1625,50 +1656,55 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             }
         }
 
-        // COMPLETENESS ACROSS PLANES, not just across models (#42,
-        // `docs/design/BUSBAR-1.6.0.md:370`): *"rate_card PRESENT => billed: a hit class not priced
-        // => REFUSE (money-sacred, never a silent 0)"*, and #77(5) (`:423`): *"Unpriced class =
-        // BOOT REFUSAL when billing is on"*.
-        //
-        // THE GUARD AND THE GAP ARE THE SAME CODE. The loop above is the whole of the completeness
-        // rule, and it is written against `models:` because the key immediately above it is: a
-        // rate entry is keyed by a CONFIG MODEL NAME and an entry naming anything else is refused
-        // as dead config. `models:` is the LLM plane's lane table. So the card can price LLM token
-        // tiers and NOTHING ELSE — there is no spelling in today's grammar for an `mcp` call, an
-        // `a2a` hop or a streamed audio-second, and therefore nothing for the completeness walk to
-        // find missing. That is not "those planes are unbilled": #42 makes `rate_card` PRESENCE the
-        // switch, and the switch is one global top-level key, so a present card turns billing ON
-        // for the whole node, including the planes whose every metered class it cannot name. The
-        // only reason that was not already a refusal is that the check had no class to miss.
-        //
-        // So it is stated here directly, against the fact the grammar CAN express: a configured
-        // registration on a plane the card cannot price, while the card is present. The section
-        // nouns are read through the same type-erased `PlaneCfg` seam `validate_unified_pool_names`
-        // reads them through, so no plane crate is named and a compiled-out plane (whose raw
-        // capture still reports the section the operator wrote) answers identically.
-        //
-        // WHAT THIS IS NOT. It is not #47's per-plane `rate_card`/`fees` sub-keys
-        // (`docs/design/BUSBAR-1.6.0.md:376`, OWNER-LOCKED) — that ruling moves `rate_card` and
-        // `fees` INSIDE each plane's section and nests `models:` under `pools:`, at which point a
-        // plane could be billed or unbilled on its own and this refusal would narrow to "this
-        // plane's card does not price this plane's class". None of that structure exists. Until it
-        // does, billing-on is a whole-node fact and an unpriceable plane on a billed node is a
-        // refusal rather than a silent zero.
-        for (section, defs) in [("tools", &cfg.tool_defs), ("agents", &cfg.agent_defs)] {
-            if !defs.is_present() {
-                continue;
+        // EVERY DECLARED CLASS IS CONFIGURED (owner ruling Q29/Q35, generic): a plane whose section
+        // carries a card (#42 "scoped per plane", #47 — the flat card is the fallback plane's) must
+        // configure every billable class the plane declares, on any entry; an explicit 0 counts, and
+        // a reserved tier omitted in YAML is 0 by the 1.5.5 grammar. The kernel asks the plane and
+        // names each class missing. A per-lane gap stays the run-time #42 refusal.
+        for d in crate::plane::registry::plane_decls() {
+            let own = if d.fallback { "" } else { d.key };
+            let on: Vec<_> = card
+                .iter()
+                .filter(|(k, _)| split_plane_lane(k).0 == own)
+                .collect();
+            let entry = on.iter().any(|(k, _)| !split_plane_lane(k).1.is_empty());
+            let unset = |c: &&str| {
+                !(entry && busbar_api::RESERVED_UNITS.contains(c)
+                    || on.iter().any(|(_, r)| r.units.contains_key(*c)))
+            };
+            let declared = d.billable_classes.iter().map(|c| c.class);
+            let missing: Vec<&str> = declared.clone().filter(unset).collect();
+            let present = if d.fallback {
+                flat_card
+            } else {
+                !on.is_empty()
+            };
+            if present && !missing.is_empty() {
+                errors.push(format!(
+                    "{}.rate_card does not configure billable unit(s) {} declared by this plane; \
+                     add them (0 to make them free)",
+                    d.config_section,
+                    missing.join(", ")
+                ));
             }
-            errors.push(format!(
-                "`{section}:` is configured and `rate_card:` is present, which switches billing ON \
-                 for this whole node — but every `rate_card:` entry is keyed by a `models:` name \
-                 and validated against `models:`, so there is no key you can write to price what a \
-                 `{section}:` registration meters. `rate_card.<a {section} meter class>` is not a \
-                 config path that exists. Every class this plane meters is therefore UNPRICED, and \
-                 an unpriced class on a billed node is a REFUSAL, never a silent 0 (a silent 0 is \
-                 only ever correct when `rate_card:` is absent). Either remove `rate_card:` (the \
-                 node then serves unbilled, keeping admission, concurrency and breaker \
-                 enforcement), or remove the `{section}:` block."
-            ));
+            // EVERY CONFIGURED CLASS IS DECLARED: a `units:` key the plane never ledgers prices
+            // nothing (almost always a typo of a declared class), so it refuses naming each such
+            // key and the plane's whole declared list.
+            let unknown: std::collections::BTreeSet<&str> = (on.iter())
+                .flat_map(|(_, r)| r.units.keys().map(String::as_str))
+                .filter(|k| !declared.clone().any(|c| c == *k))
+                .collect();
+            if !unknown.is_empty() {
+                errors.push(format!(
+                    "{}.rate_card configures unit(s) {} not declared by this plane (declared: {}); \
+                     remove them or fix the name",
+                    d.config_section,
+                    unknown.into_iter().collect::<Vec<_>>().join(", "),
+                    Some(declared.collect::<Vec<_>>().join(", "))
+                        .filter(|l| !l.is_empty())
+                        .unwrap_or_else(|| "none".into())
+                ));
+            }
         }
     }
 
@@ -1677,6 +1713,21 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             "per_request_fee must be >= 0 (got {}); a negative fee would credit every request",
             cfg.per_request_fee
         ));
+    }
+    // EVERY CONFIGURED FEE IS COUNTED: a nonzero `<section>.fees` key naming a unit the plane never
+    // counts would charge nothing, so it refuses naming the key and the plane's counted list.
+    let fee_decls = (cfg.plane_fees.iter()).filter_map(|(p, f)| Some((plane_decl_for(p)?, f)));
+    for (d, f) in fee_decls {
+        let counted = Some(d.fee_units.join(", ")).filter(|l| !l.is_empty());
+        for (unit, fee) in [(PER_REQUEST, f.per_request), (PER_SESSION, f.per_session)] {
+            if fee != 0 && !d.fee_units.contains(&unit) {
+                errors.push(format!(
+                    "{}.fees.{unit} is not counted by this plane (counted: {}); remove it",
+                    d.config_section,
+                    counted.as_deref().unwrap_or("none")
+                ));
+            }
+        }
     }
 
     // groups: parents exist, chain acyclic — any depth, the cycle check is the bound (shared
@@ -2073,7 +2124,7 @@ pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allow
 /// `an_empty_protocol_set_refuses_every_provider_through_the_real_sweep` drives this whole sweep —
 /// the production code path, error ordering and all — against an empty set.
 fn validate_providers_with(
-    known: &'static [&'static str],
+    known: &[&str],
     cfg: &RootCfg,
     unset_env_vars: &[String],
     errors: &mut Vec<String>,
@@ -2112,14 +2163,12 @@ fn validate_providers_with(
         if let Some(health) = &provider_cfg.health {
             if health.interval_secs == Some(0) {
                 errors.push(format!(
-                    "provider '{}' health.interval_secs must be >= 1 (got 0)",
-                    provider_name
+                    "provider '{provider_name}' health.interval_secs must be >= 1 (got 0)"
                 ));
             }
             if health.timeout_secs == Some(0) {
                 errors.push(format!(
-                    "provider '{}' health.timeout_secs must be >= 1 (got 0)",
-                    provider_name
+                    "provider '{provider_name}' health.timeout_secs must be >= 1 (got 0)"
                 ));
             }
             // Item 147 sweep: the per-lane override reaches the same probe deadline
@@ -2141,8 +2190,7 @@ fn validate_providers_with(
         for (code, mapped_class) in &provider_cfg.error_map {
             if crate::config::status_class_from_str(mapped_class).is_none() {
                 errors.push(format!(
-                    "provider '{}' error_map code '{}': invalid StatusClass '{}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length",
-                    provider_name, code, mapped_class
+                    "provider '{provider_name}' error_map code '{code}': invalid StatusClass '{mapped_class}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length"
                 ));
             }
         }
@@ -2194,13 +2242,11 @@ fn validate_providers_with(
                 // An http:// scheme that failed the check ⇒ the host is public (or unparseable):
                 // plaintext to a public host would leak the key.
                 format!(
-                    "provider '{}' base_url must use https for a public host (got '{}'); plaintext http is permitted only for a private/loopback local-model upstream",
-                    provider_name, base_url
+                    "provider '{provider_name}' base_url must use https for a public host (got '{base_url}'); plaintext http is permitted only for a private/loopback local-model upstream"
                 )
             } else {
                 format!(
-                    "provider '{}' base_url must use http or https (got '{}')",
-                    provider_name, base_url
+                    "provider '{provider_name}' base_url must use http or https (got '{base_url}')"
                 )
             });
         } else if let Some(host) = ssrf_blocked_host(
@@ -2218,8 +2264,7 @@ fn validate_providers_with(
             // nuclear `security.allow_all_metadata`) carve exceptions (then `ssrf_blocked_host`
             // returns None).
             errors.push(format!(
-                "provider '{}' base_url '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)",
-                provider_name, base_url, host
+                "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)"
             ));
         }
 
@@ -2239,8 +2284,7 @@ fn validate_providers_with(
         if let Some(path) = &provider_cfg.path {
             if !path.starts_with('/') {
                 errors.push(format!(
-                    "provider '{}' path '{}' must begin with '/': a path override is appended to base_url verbatim, so a path that does not start with '/' fuses into the host (e.g. base_url + '{}') and can redirect signed traffic to an attacker-controlled host",
-                    provider_name, path, path
+                    "provider '{provider_name}' path '{path}' must begin with '/': a path override is appended to base_url verbatim, so a path that does not start with '/' fuses into the host (e.g. base_url + '{path}') and can redirect signed traffic to an attacker-controlled host"
                 ));
             } else if scheme_ok {
                 let composed = format!("{}{}", provider_cfg.base_url, path);
@@ -2251,8 +2295,7 @@ fn validate_providers_with(
                     &cfg.blocked_metadata_hosts,
                 ) {
                     errors.push(format!(
-                        "provider '{}' base_url+path '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)",
-                        provider_name, composed, host
+                        "provider '{provider_name}' base_url+path '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
                     ));
                 }
             }
@@ -2263,8 +2306,7 @@ fn validate_providers_with(
         if let Some(path_base) = &provider_cfg.path_base {
             if !path_base.starts_with('/') {
                 errors.push(format!(
-                    "provider '{}' path_base '{}' must begin with '/': it is appended to base_url verbatim, so a value that does not start with '/' fuses into the host and can redirect signed traffic to an attacker-controlled host",
-                    provider_name, path_base
+                    "provider '{provider_name}' path_base '{path_base}' must begin with '/': it is appended to base_url verbatim, so a value that does not start with '/' fuses into the host and can redirect signed traffic to an attacker-controlled host"
                 ));
             } else if scheme_ok {
                 let composed = format!("{}{}", provider_cfg.base_url, path_base);
@@ -2275,8 +2317,7 @@ fn validate_providers_with(
                     &cfg.blocked_metadata_hosts,
                 ) {
                     errors.push(format!(
-                        "provider '{}' base_url+path_base '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)",
-                        provider_name, composed, host
+                        "provider '{provider_name}' base_url+path_base '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
                     ));
                 }
             }
@@ -2306,8 +2347,7 @@ fn validate_providers_with(
                 .is_empty()
             {
                 errors.push(format!(
-                    "provider '{}' uses auth: oauth-client-credentials but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)",
-                    provider_name
+                    "provider '{provider_name}' uses auth: oauth-client-credentials but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)"
                 ));
             } else if let Some(tu) = &provider_cfg.token_url {
                 // token_url carries the client secret in the POST body, so it gets the SAME two guards
@@ -2326,13 +2366,11 @@ fn validate_providers_with(
                 if !tu_scheme_ok {
                     errors.push(if scheme_is(tu, "http") {
                         format!(
-                            "provider '{}' token_url must use https for a public host (got '{}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint",
-                            provider_name, tu
+                            "provider '{provider_name}' token_url must use https for a public host (got '{tu}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint"
                         )
                     } else {
                         format!(
-                            "provider '{}' token_url must use http or https (got '{}')",
-                            provider_name, tu
+                            "provider '{provider_name}' token_url must use http or https (got '{tu}')"
                         )
                     });
                 } else if let Some(host) = ssrf_blocked_host(
@@ -2342,8 +2380,7 @@ fn validate_providers_with(
                     &cfg.blocked_metadata_hosts,
                 ) {
                     errors.push(format!(
-                        "provider '{}' token_url '{}' targets a blocked cloud-metadata host '{}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)",
-                        provider_name, tu, host
+                        "provider '{provider_name}' token_url '{tu}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
                     ));
                 }
             }
@@ -2355,8 +2392,7 @@ fn validate_providers_with(
                 .is_empty()
             {
                 errors.push(format!(
-                    "provider '{}' uses auth: oauth-client-credentials but has no `scope`",
-                    provider_name
+                    "provider '{provider_name}' uses auth: oauth-client-credentials but has no `scope`"
                 ));
             }
             // Dry-run credential-format check (parity with jwt-bearer below): the `client_id:client_secret`
@@ -2429,7 +2465,7 @@ fn validate_providers_with(
 /// `tests/tests.rs` (`an_empty_protocol_set_refuses_every_provider_naming_the_build`) was watched
 /// RED against the contains-only body before this arm existed; do not fold the arms back together.
 fn validate_provider_protocol_with(
-    known: &'static [&'static str],
+    known: &[&str],
     provider_name: &str,
     protocol: &str,
     errors: &mut Vec<String>,

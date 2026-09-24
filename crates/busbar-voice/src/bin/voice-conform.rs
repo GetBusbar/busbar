@@ -16,18 +16,18 @@
 //! sub-item gaps that must stay HONESTLY PENDING rather than be dressed as a green.
 
 use busbar_kernel::plane_host::EngineHost;
+use busbar_plane_streaming::session::TurnCounters;
+use busbar_voice::ir::usage::IrDuplexUsage;
 use busbar_voice::ir::{
     DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, IrClientEvent, IrDuplexControl,
     IrDuplexTool, IrServerEvent, OpenAiRealtimeCodec, WireEvent,
 };
 use busbar_voice::runtime::{
-    build_runtime_hosted, Carrier, EchoToolExecutor, LocalMeteringPort, MeterId, SessionCore,
-    SessionLease, SessionMeter, TurnVerdict, VoiceRuntime,
+    build_runtime_hosted, Carrier, EchoToolExecutor, SessionCore, TurnMeter, TurnVerdict,
+    VoiceRuntime,
 };
 use busbar_voice::testkit::fixture_host::FixtureHost;
-use busbar_voice::topology::{
-    begin_session, dial_provider, DialProviderError, SessionBudget, StartError,
-};
+use busbar_voice::topology::{begin_session, dial_provider, DialProviderError, StartError};
 use bytes::Bytes;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -978,24 +978,26 @@ fn governance(checkpoint: &str) -> i32 {
     0
 }
 
+/// A downlink-facing core whose turns go to the kernel session account of the probe key over a
+/// governed fixture host, whose budget view is ONE bucket of `limit` counts (`None`: uncapped) — so the
+/// D2/V probes exercise the real report-turn → kernel verdict → hard-close path.
 fn core_with_downlink(
     limit: Option<u64>,
 ) -> (
     Arc<SessionCore<OpenAiRealtimeCodec>>,
     futures::channel::mpsc::UnboundedReceiver<Vec<u8>>,
-    Arc<ConformHost>,
+    Arc<FixtureHost>,
 ) {
     let (dtx, drx) = futures::channel::mpsc::unbounded::<Vec<u8>>();
     let carrier = Carrier::with_downlink(dtx);
-    // The governance probes drive the session through a COUNT-ONLY meter — the in-harness
-    // [`ConformHost`], whose unit budget closes the carrier the moment the reported counts reach it —
-    // so the D2/V probes exercise the real report-turn → must-close → hard-close path.
-    let host = Arc::new(ConformHost::with_limit(limit));
-    let lease = open_on(Arc::clone(&host) as Arc<dyn SessionMeter>);
+    let host = counting_host(limit);
+    let metering = meter(&host, probe_key())
+        .open("")
+        .expect("a chain with room opens")
+        .expect("a governed host opens an account");
     let core = Arc::new(SessionCore::new(
         OpenAiRealtimeCodec,
-        lease,
-        None,
+        Some(metering),
         Arc::new(EchoToolExecutor),
         carrier,
         None,
@@ -1003,80 +1005,45 @@ fn core_with_downlink(
     (core, drx, host)
 }
 
-/// Open a session on `meter` under the default (uncapped) budget — the budget a meter that decides
-/// from counts, or prices nothing, never reads.
-fn open_on(meter: Arc<dyn SessionMeter>) -> SessionLease {
-    SessionLease::open(&meter, &SessionBudget::default()).expect("an uncapped session always opens")
+/// A governed fixture host whose budget view is capped at `limit` counts (`None`: uncapped).
+fn counting_host(limit: Option<u64>) -> Arc<FixtureHost> {
+    let host = FixtureHost::new().governed();
+    Arc::new(match limit {
+        Some(l) => host.with_count_cap(i64::try_from(l).unwrap_or(i64::MAX)),
+        None => host,
+    })
 }
 
-/// A COUNT-ONLY in-harness session meter: each session's reported units accrue against ONE unit
-/// budget (`None` = unlimited), and a turn that brings them to it answers [`TurnVerdict::MustClose`].
-/// The plane's side of the seam is counts in, verdict out (#43, #71); this is the smallest meter that
-/// honours it, so the governance probes can drive a hard close without naming a price.
-struct ConformHost {
-    limit: Option<u64>,
-    inner: std::sync::Mutex<ConformInner>,
+/// The presenting key every metered probe opens its session for.
+fn probe_key() -> busbar_api::VirtualKey {
+    key_with_scopes("vk", vec![])
 }
 
-#[derive(Default)]
-struct ConformInner {
-    next: u64,
-    sessions: std::collections::HashMap<u64, u64>, // id -> units reported
+/// `key`'s meter over `host` — the attribution the served door builds, before the account opens.
+fn meter(host: &Arc<FixtureHost>, key: busbar_api::VirtualKey) -> TurnMeter {
+    TurnMeter::new(
+        Arc::clone(host) as Arc<dyn EngineHost>,
+        key,
+        "voice-server",
+        busbar_voice::OPENAI_REALTIME,
+    )
 }
 
-impl ConformHost {
-    fn with_limit(limit: Option<u64>) -> Self {
-        ConformHost {
-            limit,
-            inner: std::sync::Mutex::new(ConformInner::default()),
-        }
-    }
-
-    /// Every unit reported across every open session.
-    fn units_reported(&self) -> u64 {
-        self.inner.lock().unwrap().sessions.values().sum()
-    }
+/// Every count `host` has ledgered for the probe key.
+fn counts_ledgered(host: &FixtureHost) -> u64 {
+    host.ledger_usage(&probe_key().id).map_or(0, |u| u.tokens)
 }
 
-impl SessionMeter for ConformHost {
-    fn open(&self, _budget: &SessionBudget) -> Option<MeterId> {
-        let mut g = self.inner.lock().unwrap();
-        g.next += 1;
-        let id = g.next;
-        g.sessions.insert(id, 0);
-        Some(MeterId(id))
-    }
-
-    fn report_turn(
-        &self,
-        id: MeterId,
-        _model: &str,
-        counts: &busbar_substrate_values::billing::Usage,
-    ) -> TurnVerdict {
-        let mut g = self.inner.lock().unwrap();
-        let Some(reported) = g.sessions.get_mut(&id.0) else {
-            return TurnVerdict::MustClose;
-        };
-        *reported += counts.usage_units.values().sum::<u64>();
-        if self.limit.is_some_and(|l| *reported >= l) {
-            TurnVerdict::MustClose
-        } else {
-            TurnVerdict::Live
-        }
-    }
-
-    fn settled(&self, id: MeterId) -> u64 {
-        let g = self.inner.lock().unwrap();
-        g.sessions.get(&id.0).copied().unwrap_or(0)
-    }
-
-    fn close(&self, id: MeterId) {
-        self.inner.lock().unwrap().sessions.remove(&id.0);
+/// One turn of `n` emitted audio tokens.
+fn audio_out(n: u64) -> IrDuplexUsage {
+    IrDuplexUsage {
+        audio_out: n,
+        ..IrDuplexUsage::default()
     }
 }
 
 /// D2 — the marquee guarantee: settle past cap ⇒ carrier HARD-closes ⇒ no post-close audio reaches the
-/// client. Driven through the real `SessionCore`/`LocalLease` exhaustion path.
+/// client. Driven through the real `SessionCore` → kernel session account path.
 async fn gov_d2() -> (&'static str, String) {
     use futures::StreamExt;
     let (core, mut drx, _host) = core_with_downlink(Some(5));
@@ -1130,7 +1097,7 @@ async fn gov_d2() -> (&'static str, String) {
     }
     (
         "PASS",
-        "report past the limit → response.cancel upstream → carrier hard-closed → no post-close audio (real session-meter path)".into(),
+        "counts past the limit → the kernel reads the chain dry → response.cancel upstream → carrier hard-closed → no post-close audio".into(),
     )
 }
 
@@ -1168,21 +1135,20 @@ async fn gov_v1() -> (&'static str, String) {
 
 /// V2 — a turn/session budget is BOUNDED: a limited session must close at the limit (never overruns).
 fn gov_v2() -> (&'static str, String) {
-    let meter = ConformHost::with_limit(Some(50));
-    let Some(id) = meter.open(&SessionBudget::default()) else {
+    let host = counting_host(Some(50));
+    let Ok(Some(session)) = meter(&host, probe_key()).open("m") else {
         return ("FAIL", "a limited session did not open".into());
     };
-    let mut turn = busbar_substrate_values::billing::Usage::default();
-    turn.usage_units.insert("output_tokens".into(), 20);
-    let a = meter.report_turn(id, "m", &turn);
-    let b = meter.report_turn(id, "m", &turn);
-    let c = meter.report_turn(id, "m", &turn); // 60 >= 50
+    let quiet = TurnCounters::default();
+    let a = session.report_turn(Some(&audio_out(20)), quiet);
+    let b = session.report_turn(Some(&audio_out(20)), quiet);
+    let c = session.report_turn(Some(&audio_out(20)), quiet); // 60 >= 50
     if a == TurnVerdict::Live && b == TurnVerdict::Live && c == TurnVerdict::MustClose {
         (
             "PASS",
             format!(
-                "a limited session bounds use: 20,20 live then 20 → must close at {} units",
-                meter.settled(id)
+                "a limited session bounds use: 20,20 live then 20 → must close at {} counts",
+                counts_ledgered(&host)
             ),
         )
     } else {
@@ -1190,21 +1156,23 @@ fn gov_v2() -> (&'static str, String) {
     }
 }
 
-/// V3 — a metering lease actually SETTLES (cost flows through the lease; none leaks unsettled).
+/// V3 — a session's usage actually reaches the ledger (the plane's counts through the kernel session
+/// account; nothing is left unledgered).
 async fn gov_v3() -> (&'static str, String) {
     let (core, _drx, host) = core_with_downlink(None);
     let _ = core.on_server_frame(wire_of(&usage_frame(7))).await;
-    if host.units_reported() == 7 {
+    if counts_ledgered(&host) == 7 {
         (
             "PASS",
-            "usage reported to the session meter through the lease (7 units)".into(),
+            "usage ledgered through the kernel session account (7 counts, the plane's own class)"
+                .into(),
         )
     } else {
         (
             "FAIL",
             format!(
-                "lease did not report usage: {} units",
-                host.units_reported()
+                "the turn did not reach the ledger: {} counts",
+                counts_ledgered(&host)
             ),
         )
     }
@@ -1237,8 +1205,8 @@ fn gov_v4() -> (&'static str, String) {
 // LEGS 5-7 — composition: the three seams that decide whether a MOUNTED voice door can actually
 // serve, meter and authorize a session on a real deployment. Each is a conformance leg of its own,
 // because each fails on its own: a door with no provider credential answers "nothing to dial", a door
-// with no host lease bills nobody a ceiling, and a door with no grant check admits anyone holding a
-// token for its audience.
+// whose sessions skip the kernel's account ledgers nothing and closes on no budget, and a door with no
+// grant check admits anyone holding a token for its audience.
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
 
 /// A stand-in for a deployment's secret resolver: answers ONE declared reference and refuses every
@@ -1515,10 +1483,8 @@ where
         .build()
         .expect("tokio runtime");
     let table = Arc::new(ProbeCalls::default());
-    let lease = open_on(Arc::new(LocalMeteringPort));
     let core = SessionCore::new(
         codec,
-        lease,
         None,
         Arc::new(ServesNothing),
         Carrier::sideband(),
@@ -1649,84 +1615,66 @@ fn probe_tool_reply() -> (&'static str, String) {
     )
 }
 
-/// K-gap 2 — a session's money hop is the HOST's reserve-then-settle lease, capped by the presenting
-/// principal's own remaining budget. Without this, a live session reserves an uncapped in-process cell
-/// and no caller's budget can ever hard-close it.
+/// K-gap 2 (the `metering-lease` slice, OWNER RULING Q21b) — a session is metered on the KERNEL's
+/// session account for the presenting key: its turns' counts are ledgered through the one metering
+/// path, and the kernel's budget view of the caller's chain refuses a spent caller at the open and
+/// closes a live session at the turn that dries it. The D2 lease this slice once probed is deleted.
 fn probe_metering_lease() -> (&'static str, String) {
-    let base = VoiceRuntime::new(
-        Arc::new(busbar_kernel::plane::handle_engine::DurableHandleEngine::new()),
-        Arc::new(LocalMeteringPort),
-        Arc::new(EchoToolExecutor),
+    let quiet = TurnCounters::default();
+    // A spent caller never opens a session: the kernel's view reads its chain dry.
+    let spent = Arc::new(
+        FixtureHost::new()
+            .governed()
+            .with_budget_chain(vec![budget_bucket("vk", Some(0))]),
     );
-    // A governed host whose deployment charges one unit per count, answering `chain` as the caller's
-    // budget chain — the kernel derives the session cap from it; the plane never sees the figure.
-    let hosted = |chain: Vec<busbar_api::BudgetBucketState>| {
-        let fixture = Arc::new(
-            FixtureHost::new()
-                .governed()
-                .unit_rate()
-                .with_budget_chain(chain),
-        );
-        let host = Arc::clone(&fixture) as Arc<dyn EngineHost>;
-        let budget = SessionBudget::for_principal(&*host, Some(&key_with_scopes("vk", vec![])), 0);
-        (fixture, build_runtime_hosted(&base, host), budget)
-    };
-    let turn = |units: u64| {
-        let mut usage = busbar_substrate_values::billing::Usage::default();
-        usage.usage_units.insert("output_tokens".into(), units);
-        usage
-    };
-
-    // A spent caller never opens a session: the host denies the reserve at the door.
-    let (_f, rt, spent) = hosted(vec![budget_bucket("vk", Some(0))]);
-    if rt.open_lease(&spent).is_some() {
+    if meter(&spent, probe_key()).open("m").is_ok() {
         return (
             "FAIL",
             "a session opened for a caller whose budget is spent".into(),
         );
     }
-    // An unbudgeted caller has no ceiling to impose: no turn ever closes the session.
-    let (_f, rt, open) = hosted(vec![budget_bucket("vk", None)]);
-    let Some(lease) = rt.open_lease(&open) else {
+    // An unbudgeted caller has no ceiling: no turn ever closes the session.
+    let open = Arc::new(
+        FixtureHost::new()
+            .governed()
+            .with_budget_chain(vec![budget_bucket("vk", None)]),
+    );
+    let Ok(Some(session)) = meter(&open, probe_key()).open("m") else {
         return (
             "FAIL",
             "an unbudgeted caller could not open a session".into(),
         );
     };
-    if lease.report_turn("m", &turn(u64::MAX)) != TurnVerdict::Live {
+    if session.report_turn(Some(&audio_out(u64::MAX / 2)), quiet) != TurnVerdict::Live {
         return ("FAIL", "an unbudgeted caller was given a ceiling".into());
     }
-    // The ceiling is the caller's TIGHTEST remaining bucket (4 micro-units, widened to 4_000): a turn
-    // one short of it is live, and the turn that reaches it closes the session.
-    let (fixture, rt, capped) = hosted(vec![
-        budget_bucket("vk", Some(9_000)),
-        budget_bucket("group:team@day", Some(4)),
-    ]);
-    let Some(lease) = rt.open_lease(&capped) else {
+    // A chain of 4 000 counts: a turn one short of it is live, and the turn that reaches it closes.
+    let capped = counting_host(Some(4_000));
+    let Ok(Some(session)) = meter(&capped, probe_key()).open("m") else {
         return ("FAIL", "a budgeted caller could not open a session".into());
     };
-    let live = lease.report_turn("m", &turn(3_999));
-    let dry = lease.report_turn("m", &turn(1));
+    let live = session.report_turn(Some(&audio_out(3_999)), quiet);
+    let dry = session.report_turn(Some(&audio_out(1)), quiet);
     if live != TurnVerdict::Live || dry != TurnVerdict::MustClose {
         return (
             "FAIL",
             format!("turns did not close at the caller's ceiling: {live:?} then {dry:?}"),
         );
     }
-    if fixture.open_settled_total() != 4_000 {
+    if counts_ledgered(&capped) != 4_000 {
         return (
             "FAIL",
             format!(
-                "the host did not account the exact increments: {}",
-                fixture.open_settled_total()
+                "the ledger did not hold the exact counts: {}",
+                counts_ledgered(&capped)
             ),
         );
     }
     (
         "PASS",
-        "the session is metered on the host's own lease, capped by the tightest bucket in the \
-         caller's budget chain: a spent caller is denied at the door, and a live one must close at \
-         that ceiling after exact settles"
+        "the session is metered on the kernel's session account: its counts are ledgered exactly, \
+         a spent caller is refused at the open, and a live one must close at the turn that dries \
+         its chain"
             .into(),
     )
 }
@@ -1868,10 +1816,8 @@ fn probe_gemini_live_route() -> (&'static str, String) {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let lease = open_on(Arc::new(LocalMeteringPort));
     let core = SessionCore::new(
         GeminiLiveCodec,
-        lease,
         None,
         Arc::new(EchoToolExecutor),
         Carrier::sideband(),
@@ -1911,7 +1857,7 @@ fn probe_gemini_live_route() -> (&'static str, String) {
 // A loopback WS "provider" stands in for a real realtime upstream (no network, no vendor credential
 // needed): the harness binds it on an ephemeral port, `dial_provider` dials it through the SAME
 // net-guarded path the mounted WS-accept legs now call, the loopback sends one usage frame, and the
-// session's own metering lease settles it — proving the wiring from a live socket to the D2 lease, not
+// session's own kernel account ledgers it — proving the wiring from a live socket to the ledger, not
 // just the codec math the other legs already cover.
 //
 // WAS RED: `topology::dial_provider` existed, breaker/net-guarded, but nothing in the mounted routes
@@ -1921,7 +1867,7 @@ fn probe_gemini_live_route() -> (&'static str, String) {
 /// A minimal [`busbar_kernel::plane_host::BreakerHost`] — `dial_provider` reads only the breaker
 /// slice of the host seam (never the rest of `EngineHost`), so the loopback leg needs only this much:
 /// admit always, record nothing, no cooldown. Not a plane-private breaker implementation — it lives
-/// only in this dev-only conformance binary, mirroring `ConformHost`'s role for the governance probes.
+/// only in this dev-only conformance binary.
 #[derive(Default)]
 struct AlwaysAdmitBreakerHost;
 
@@ -2007,17 +1953,15 @@ fn probe_provider_dial() -> (&'static str, String) {
         };
 
         // ONE SESSION END TO END: the dialed frame drives the SAME `SessionCore` the mounted route
-        // opens, and the lease it holds must report the usage the loopback sent. A COUNTING meter
-        // (the same `ConformHost` the governance probes drive) rather than the pre-host
-        // `LocalMeteringPort`, which records nothing — this leg is about whether the dialed usage
-        // reaches the lease at all, and a meter that records nothing would pass whether or not the
-        // frame ever arrived.
-        let counting = Arc::new(ConformHost::with_limit(None));
-        let lease = open_on(Arc::clone(&counting) as Arc<dyn SessionMeter>);
+        // opens, and its kernel account must ledger the usage the loopback sent — over a governed
+        // host that records every count, so the leg cannot pass unless the frame arrived.
+        let counting = counting_host(None);
+        let Ok(Some(metering)) = meter(&counting, probe_key()).open("") else {
+            return ("FAIL", "the probe key's account did not open".into());
+        };
         let core = SessionCore::new(
             OpenAiRealtimeCodec,
-            lease,
-            None,
+            Some(metering),
             Arc::new(EchoToolExecutor),
             Carrier::sideband(),
             None,
@@ -2033,19 +1977,19 @@ fn probe_provider_dial() -> (&'static str, String) {
             .await;
         let _ = server.await;
 
-        if counting.units_reported() == 9 {
+        if counts_ledgered(&counting) == 9 {
             (
                 "PASS",
                 "one session dialed the loopback provider through `dial_provider`'s net-guarded path \
-                 end to end, and its metering lease reported the usage the loopback sent (9 units)"
+                 end to end, and its kernel account ledgered the usage the loopback sent (9 counts)"
                     .into(),
             )
         } else {
             (
                 "FAIL",
                 format!(
-                    "the lease did not report the dialed usage: {} units",
-                    counting.units_reported()
+                    "the dialed usage did not reach the ledger: {} counts",
+                    counts_ledgered(&counting)
                 ),
             )
         }
@@ -2058,26 +2002,20 @@ fn probe_provider_dial() -> (&'static str, String) {
 // takes in production) rather than a narrow `MeteringHost`/`BreakerHost` stand-in.
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// Assemble a per-generation [`VoiceRuntime`] rebound onto `host`'s D2 lease — the harness's own
+/// Assemble a per-generation [`VoiceRuntime`] bound onto `host` — the harness's own
 /// [`build_runtime_hosted`] call, shared by every probe below that needs a governed session.
 fn hosted_runtime(host: Arc<dyn EngineHost>) -> VoiceRuntime {
     let base = VoiceRuntime::new(
         Arc::new(busbar_kernel::plane::handle_engine::DurableHandleEngine::new()),
-        Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     );
     build_runtime_hosted(&base, host)
 }
 
-/// The live host a hosted runtime carries.
-fn rt_host(rt: &VoiceRuntime) -> Arc<dyn EngineHost> {
-    Arc::clone(rt.host.as_ref().expect("a hosted runtime carries its host"))
-}
-
 /// LEG 10 — admit-refusal: a key whose budget is already spent is refused AT THE DOOR
-/// (`StartError::BudgetRefused`), before any host-side lease is opened and before any ledger posting
-/// — so no provider dial has anything left to reach. A negative control (the same destination,
-/// uncapped) proves the leg can also see a clean open.
+/// (`StartError::BudgetRefused`), before any session exists and before any ledger posting — so no
+/// provider dial has anything left to reach. A negative control (the same destination, a funded key)
+/// proves the leg can also see a clean open.
 fn probe_admit_refusal() -> (&'static str, String) {
     // The spent caller's budget is the KERNEL's reading of its budget chain (a spent bucket).
     let fixture = Arc::new(
@@ -2085,12 +2023,7 @@ fn probe_admit_refusal() -> (&'static str, String) {
             .governed()
             .with_budget_chain(vec![budget_bucket("spent-caller", Some(0))]),
     );
-    let host: Arc<dyn EngineHost> = Arc::clone(&fixture) as Arc<dyn EngineHost>;
-    let spent =
-        SessionBudget::for_principal(&*host, Some(&key_with_scopes("spent-caller", vec![])), 0);
-    let rt = hosted_runtime(host);
-
-    let leases_before = fixture.leases_opened();
+    let rt = hosted_runtime(Arc::clone(&fixture) as Arc<dyn EngineHost>);
     match begin_session(
         &rt,
         OpenAiRealtimeCodec,
@@ -2098,8 +2031,7 @@ fn probe_admit_refusal() -> (&'static str, String) {
         "call-admit-refusal-1",
         None,
         Carrier::sideband(),
-        spent,
-        None,
+        Some(meter(&fixture, key_with_scopes("spent-caller", vec![]))),
         0,
     ) {
         Err(StartError::BudgetRefused) => {}
@@ -2111,57 +2043,46 @@ fn probe_admit_refusal() -> (&'static str, String) {
             )
         }
     }
-    if fixture.leases_opened() != leases_before {
+    if fixture.ledger_usage("spent-caller").is_some() || !fixture.audit_log().is_empty() {
         return (
             "FAIL",
-            "the refused reserve still opened a host-side lease -- a dial would have something to \
-             bill against"
-                .into(),
-        );
-    }
-    if fixture.ledger_usage("spent-caller").is_some() {
-        return (
-            "FAIL",
-            "a refused admission still posted a ledger entry -- voice's design posts no separate \
-             floor line at Admit (nothing was ever dialed, so nothing is owed)"
+            "a refused admission still posted a ledger entry or opened a session -- voice posts no \
+             separate floor line at Admit (nothing was ever dialed, so nothing is owed)"
                 .into(),
         );
     }
 
-    // NEGATIVE CONTROL: the SAME destination with an uncapped budget must open cleanly, so this leg
-    // could not pass by always refusing.
-    let open = SessionBudget::for_principal(&*rt_host(&rt), None, 0);
-    match begin_session(
+    // NEGATIVE CONTROL: the SAME destination for a funded key must open cleanly, so this leg could not
+    // pass by always refusing.
+    let funded = Arc::new(FixtureHost::new().governed());
+    let rt = hosted_runtime(Arc::clone(&funded) as Arc<dyn EngineHost>);
+    if let Err(e) = begin_session(
         &rt,
         OpenAiRealtimeCodec,
         "funded-caller",
         "call-admit-refusal-2",
         None,
         Carrier::sideband(),
-        open,
-        None,
+        Some(meter(&funded, key_with_scopes("funded-caller", vec![]))),
         0,
     ) {
-        Ok(_) => {}
-        Err(e) => {
-            return (
-                "FAIL",
-                format!("the negative control (an uncapped budget) was refused too: {e}"),
-            )
-        }
-    }
-    if fixture.leases_opened() != leases_before + 1 {
         return (
             "FAIL",
-            "the negative control did not open exactly one host-side lease".into(),
+            format!("the negative control (a funded key) was refused too: {e}"),
+        );
+    }
+    if funded.audit_log().len() != 1 {
+        return (
+            "FAIL",
+            "the negative control did not open exactly one session".into(),
         );
     }
 
     (
         "PASS",
-        "a spent budget is refused at the door (StartError::BudgetRefused) with zero host-side lease \
+        "a spent budget is refused at the door (StartError::BudgetRefused) with no session opened \
          and zero ledger postings -- no provider dial has anything left to reach; the same \
-         destination with an uncapped budget opens cleanly"
+         destination for a funded key opens cleanly"
             .into(),
     )
 }
@@ -2234,7 +2155,6 @@ fn probe_audit_record() -> (&'static str, String) {
     let host: Arc<dyn EngineHost> = Arc::clone(&fixture) as Arc<dyn EngineHost>;
     let rt = hosted_runtime(host);
 
-    let budget = SessionBudget::for_principal(&*rt_host(&rt), None, 0);
     let Ok(_first) = begin_session(
         &rt,
         OpenAiRealtimeCodec,
@@ -2242,7 +2162,6 @@ fn probe_audit_record() -> (&'static str, String) {
         "call-audit-1",
         None,
         Carrier::sideband(),
-        budget,
         None,
         0,
     ) else {
@@ -2270,7 +2189,6 @@ fn probe_audit_record() -> (&'static str, String) {
     }
 
     // A second, INDEPENDENT session must add exactly one MORE row.
-    let budget2 = SessionBudget::for_principal(&*rt_host(&rt), None, 0);
     let Ok(_second) = begin_session(
         &rt,
         OpenAiRealtimeCodec,
@@ -2278,7 +2196,6 @@ fn probe_audit_record() -> (&'static str, String) {
         "call-audit-2",
         None,
         Carrier::sideband(),
-        budget2,
         None,
         0,
     ) else {
@@ -2305,74 +2222,71 @@ fn probe_audit_record() -> (&'static str, String) {
 }
 
 /// LEG 13 — exit-terminal: one session ends ONCE. Two independent proofs over the same host: a
-/// metering lease settles exactly once under a double close (the "interrupted" shape a parked
-/// handler's stale guard plus the node's own sweep produce), and a session's one admin-audit row
-/// survives being torn down before it ever runs a frame.
+/// session's open turn is ledgered exactly once under a double teardown (the "interrupted" shape a
+/// parked handler plus the node's own sweep produce), and a session's one admin-audit row survives
+/// being torn down before it ever runs a frame.
 fn probe_exit_terminal() -> (&'static str, String) {
-    // A deployment charging one unit per count, so the session has a real settled amount to close.
-    let fixture = Arc::new(FixtureHost::new().unit_rate());
+    let fixture = counting_host(None);
+    let rt = hosted_runtime(Arc::clone(&fixture) as Arc<dyn EngineHost>);
 
-    // PART 1 — the close `LeaseCloseGuard::drop` makes is idempotent: a redundant close is a harmless
-    // no-op, never a double settlement/refund. Driven through the kernel session meter the runtime
-    // binds over this host.
-    let host: Arc<dyn EngineHost> = Arc::clone(&fixture) as Arc<dyn EngineHost>;
-    let rt = hosted_runtime(host);
-    let Some(lease) = rt.open_lease(&SessionBudget::for_principal(&*rt_host(&rt), None, 0)) else {
-        return ("FAIL", "an uncapped session could not open a lease".into());
+    // PART 1 — the teardown settle is idempotent: a second settle of the same (already-settled) turn
+    // is a harmless no-op, never a second ledger posting.
+    let Ok((core, _handle)) = begin_session(
+        &rt,
+        OpenAiRealtimeCodec,
+        "dave",
+        "call-exit-0",
+        None,
+        Carrier::sideband(),
+        Some(meter(&fixture, probe_key())),
+        0,
+    ) else {
+        return ("FAIL", "a funded session open was refused".into());
     };
-    if fixture.leases_open() != 1 {
+    let pcm = Bytes::from(vec![0u8; 48_000]); // one second of PCM16 uplink
+    let _ = core.on_client_frame(wire_of(&serde_json::json!({
+        "type": "input_audio_buffer.append",
+        "audio": busbar_substrate_values::media::base64_encode(&pcm),
+    })));
+    core.settle_open_turn();
+    if counts_ledgered(&fixture) != 1 {
+        return ("FAIL", "the teardown did not ledger the open turn".into());
+    }
+    core.settle_open_turn();
+    if counts_ledgered(&fixture) != 1 {
         return (
             "FAIL",
-            "opening a session did not open exactly one lease".into(),
-        );
-    }
-    let mut turn = busbar_substrate_values::billing::Usage::default();
-    turn.usage_units.insert("output_tokens".into(), 3_000);
-    if lease.report_turn("m", &turn) != TurnVerdict::Live || fixture.open_settled_total() != 3_000 {
-        return ("FAIL", "the session did not settle its turn exactly".into());
-    }
-    let guard = lease.close_guard();
-    // The first close: the by-value guard.
-    drop(guard);
-    if fixture.leases_open() != 0 {
-        return ("FAIL", "the first close did not close the lease".into());
-    }
-    // The "interrupted" double close: the session handle closes the SAME (already-closed) session.
-    drop(lease);
-    if fixture.leases_open() != 0 || fixture.leases_opened() != 1 {
-        return (
-            "FAIL",
-            "a second close after interruption touched a lease instead of being a harmless no-op"
+            "a second teardown after interruption ledgered the turn again instead of being a \
+             harmless no-op"
                 .into(),
         );
     }
+    drop(core);
 
-    // PART 2 — the session's one admin-audit row survives an interruption: torn down (core AND close
-    // guard dropped) before it ever runs a single frame.
-    let budget = SessionBudget::for_principal(&*rt_host(&rt), None, 0);
-    let Ok((core, _handle, guard)) = begin_session(
+    // PART 2 — the session's one admin-audit row survives an interruption: torn down before it ever
+    // runs a single frame.
+    let audited = fixture.audit_log().len();
+    let Ok((core, _handle)) = begin_session(
         &rt,
         OpenAiRealtimeCodec,
         "carol",
         "call-exit-1",
         None,
         Carrier::sideband(),
-        budget,
         None,
         0,
     ) else {
         return ("FAIL", "a clean session open was refused".into());
     };
-    if fixture.audit_log().len() != 1 {
+    if fixture.audit_log().len() != audited + 1 {
         return (
             "FAIL",
             "the session's audit row did not land before the interruption".into(),
         );
     }
-    // INTERRUPTED: no frame is ever run; the core and the by-value close guard are simply dropped.
+    // INTERRUPTED: no frame is ever run; the core is simply dropped.
     drop(core);
-    drop(guard);
-    if fixture.audit_log().len() != 1 {
+    if fixture.audit_log().len() != audited + 1 {
         return (
             "FAIL",
             format!(
@@ -2384,9 +2298,9 @@ fn probe_exit_terminal() -> (&'static str, String) {
 
     (
         "PASS",
-        "a metering lease closes exactly once under a double close (a redundant close is a harmless \
-         no-op, never a double settlement), and a session's one admin-audit row survives being torn \
-         down before it ever runs a frame"
+        "a session's open turn is ledgered exactly once under a double teardown (a redundant \
+         settle is a harmless no-op, never a second posting), and a session's one admin-audit row \
+         survives being torn down before it ever runs a frame"
             .into(),
     )
 }

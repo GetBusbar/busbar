@@ -3357,6 +3357,16 @@ drain   = "none: ARCHITECTURE.md grants the kernel -> kernel class. What this ro
 
 [[dep]]
 from    = "busbar-kernel"
+to      = "busbar-kernel-audit"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md — kernel workflow crates form the loop; #36 group structure permits intra-tier edges (ARCHITECTURE_ALLOWED kernel -> kernel). Both crates are kernel-tier, so this edge crosses no kind boundary."
+why     = "busbar-kernel names busbar-kernel-audit: declared normal in the shipped graph, 1 declaration(s) at this commit. THE AMENDMENT JOURNAL (item 404): the crate's own doc calls an amendment the only way a recorded count may change and the only record of a hook or export plugin reading content, and nothing constructed one. The hook seam and the export dispatch live here and record every content read on the journal; the root correction verb's kernel half seals its adjustment on the same chain."
+drain   = "none: ARCHITECTURE.md grants the kernel -> kernel class. What this row holds is the NUMBER — draining the edge would unconstruct the amendment journal again, which is the defect it was added to close."
+
+[[dep]]
+from    = "busbar-kernel"
 to      = "busbar-plugin"
 half    = "shipped"
 count   = "1"

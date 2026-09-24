@@ -30,6 +30,7 @@ fn make_root_cfg(
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,
+        plane_fees: Default::default(),
         store: None,
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),
@@ -4382,32 +4383,59 @@ fn test_validate_rate_card_entry_all_four_explicit_zeros_still_only_warns() {
     );
 }
 
-// ── #42 — A BILLED PLANE THAT CANNOT BE PRICED ───────────────────────────────────────────────────
+// ── #42 "scoped per plane" / #47 — EACH PLANE'S CARD IS ITS OWN SWITCH ─────────────────────────────
 
-/// `rate_card:` PRESENT is billing ON (#42, `:370`). A non-LLM plane's registrations meter classes
-/// the top-level card cannot name — it is keyed by `models:` entries and validated against them —
-/// so every one of those classes is UNPRICED, which #42 makes a REFUSAL rather than a silent zero.
+/// The flat `rate_card:` PRESENT beside a configured other plane that has NO card of its
+/// own: that plane is billing OFF (#42: reads 0), so the node boots. This used to be a whole-node
+/// refusal — billing was one global switch and no key could price another plane — which #47's
+/// per-plane cards retire: the refusal narrowed to "this plane's card does not price this plane's
+/// class", which the one function answers at run time on a hit.
 #[test]
-fn test_validate_refuses_a_present_card_with_a_non_llm_plane_configured() {
+fn test_validate_allows_a_flat_card_beside_a_plane_with_no_card_of_its_own() {
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     cfg.rate_card = Some(std::collections::BTreeMap::from([(
         "claude-sonnet".to_string(),
         priced_entry(),
     )]));
     cfg.tool_defs = present_tools_section();
-
-    let errs = validate(&cfg).expect_err(
-        "#42: billing is ON (a rate_card is present) and the mcp plane's metered classes have no \
-         rate — an unpriced class is a REFUSAL, never a silent 0",
-    );
-    let joined = errs.join("\n");
     assert!(
-        joined.contains("tools:") && joined.contains("rate_card"),
-        "the refusal must name the plane section that cannot be priced: {joined}"
+        validate(&cfg).is_ok(),
+        "a plane with no card of its own is unbilled, not refused: {:?}",
+        validate(&cfg).err()
     );
 }
 
-/// THE CONTROL for the row above: billing OFF (no `rate_card:`) and the same plane configured must
+/// A plane's own card (composed beside an ABSENT flat card, as `resolve` composes it) is held to the
+/// rate card's well-formedness, named by its own path — and it never makes the flat card's
+/// completeness rule fire: the flat plane stays billing OFF.
+#[test]
+fn test_validate_holds_a_plane_card_to_the_card_shape_and_leaves_the_flat_plane_off() {
+    let mut cfg = cost_cfg(&["claude-sonnet"]);
+    let bad: config::RateEntryCfg =
+        serde_yaml::from_str("input_utok: -1\n").expect("parses; validation refuses");
+    let good: config::RateEntryCfg =
+        serde_yaml::from_str("units: { calls: 5 }\n").expect("an open-class entry parses");
+    let plane_card = std::collections::BTreeMap::from([
+        ("bad-lane".to_string(), bad),
+        ("good-lane".to_string(), good),
+    ]);
+    cfg.rate_card = busbar_kernel_ledger::cost::compose_plane_cards(
+        None,
+        &std::collections::BTreeMap::from([("p".to_string(), plane_card)]),
+    );
+    let errs = validate(&cfg).expect_err("a negative plane rate is refused");
+    assert_eq!(
+        errs,
+        vec![
+            "p.rate_card['bad-lane'].input_utok must be a finite, non-negative number of \
+             micro-units per token (got -1)"
+                .to_string()
+        ],
+        "one error, on the plane card's own path; no flat completeness stub, no dead-model entry"
+    );
+}
+
+/// THE CONTROL: billing OFF (no `rate_card:`) and the same plane configured must
 /// still boot. #42: *"rate_card ABSENT ⇒ NOT billed … no boot-refusal"*.
 #[test]
 fn test_validate_allows_a_non_llm_plane_when_billing_is_off() {
@@ -5950,4 +5978,258 @@ fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
         "the boundary values must not error: {:?}",
         validate(&cfg)
     );
+}
+
+// ── OWNER RULING Q29/Q35: A CARD CONFIGURES EVERY CLASS ITS PLANE DECLARES (generic, every plane) ──
+
+/// A neutral plane declaring billable classes. Every hook is a no-op: the only thing under test is
+/// the declaration the kernel reads. Registered under isolation, so no sibling test sees it.
+static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    key: "class-plane",
+    fallback: false,
+    config_section: "tools",
+    scope_kinds: &[],
+    subject_noun: "class thing",
+    admin_noun: "class-thing",
+    audit_kind: "class-thing",
+    wire_format_names: || &[],
+    claims: |_| Vec::new(),
+    admission: |_| None,
+    build: |_| None,
+    routes: None,
+    admin_routes: None,
+    openapi: None,
+    hydrate: None,
+    start: None,
+    config_validate: None,
+    card_signing_domain: None,
+    card_kid_prefix: None,
+    named_def_list: None,
+    named_def_get: None,
+    registry_contains: None,
+    reresolve_gates: None,
+    #[cfg(feature = "openapi-schema")]
+    openapi_schemas: None,
+    on_swap: None,
+    parse_section: None,
+    parse_endpoint: None,
+    lower_endpoint: None,
+    build_runtime: None,
+    viewer: None,
+    retain_verify_gates: None,
+    default_section: None,
+    owned_config_sections: &[],
+    billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
+    fee_units: &[],
+    resolve_provider: None,
+};
+
+/// One declared billable class in `family`.
+const fn bc(class: &'static str, family: &'static str) -> crate::plane::registry::BillableClass {
+    crate::plane::registry::BillableClass { class, family }
+}
+
+/// The FALLBACK plane's shape: its card is the flat 1.5.5 `rate_card:` (#47), and it declares the
+/// four reserved tiers plus two open classes.
+static FLAT_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    key: "flat-plane",
+    fallback: true,
+    config_section: "pools",
+    billable_classes: &[
+        bc("input", "token"),
+        bc("output", "token"),
+        bc("cache_read", "token"),
+        bc("cache_write", "token"),
+        bc("search_units", "count"),
+        bc("images", "count"),
+    ],
+    ..CLASS_PLANE
+};
+
+fn card_yaml(y: &str) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
+    serde_yaml::from_str(y).expect("a card parses")
+}
+
+/// A one-entry plane card keyed the way `resolve` composes it (`<plane key>\u{1f}<lane>`); an empty
+/// `lane` is the card's presence key alone.
+fn plane_card(
+    plane: &str,
+    lane: &str,
+    entry: &str,
+) -> std::collections::BTreeMap<String, config::RateEntryCfg> {
+    let key = format!(
+        "{plane}{}{lane}",
+        busbar_kernel_ledger::cost::PLANE_LANE_SEP
+    );
+    [(key, serde_yaml::from_str(entry).expect("an entry parses"))].into()
+}
+
+/// The flat card is the fallback plane's. A card that leaves declared classes unconfigured REFUSES,
+/// and the ONE error names the section and EVERY missing class, in the plane's declared order; the
+/// reserved tiers an entry omits are 0 by the 1.5.5 grammar, so they are configured.
+#[test]
+fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class() {
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(card_yaml("m: { input_utok: 3 }\n"));
+    let errs = validate(&cfg).expect_err("a card silent about declared classes must refuse");
+    let want = "pools.rate_card does not configure billable unit(s) search_units, images declared \
+                by this plane; add them (0 to make them free)";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+
+    // One class configured, one still missing: the error names only the one left.
+    cfg.rate_card = Some(card_yaml("m: { input_utok: 3, units: { images: 7 } }\n"));
+    let errs = validate(&cfg).expect_err("search_units is still unconfigured");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("billable unit(s) search_units declared")),
+        "{errs:?}"
+    );
+}
+
+/// Configuring every declared class passes, and an EXPLICIT 0 counts as configured. Any entry may
+/// carry a class: configuration is a property of the card, a per-lane gap is the run-time #42 one.
+#[test]
+fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE]);
+    let mut cfg = cost_cfg(&["m", "n"]);
+    cfg.rate_card = Some(card_yaml(
+        "m: { input_utok: 3, units: { search_units: 0 } }\nn: { units: { images: 0 } }\n",
+    ));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+}
+
+/// The SAME rule for a non-fallback plane, whose card is its own section's: missing classes refuse
+/// naming that section; a complete card passes; no card at all is billing off (#42) and passes.
+#[test]
+fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&CLASS_PLANE]);
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(plane_card(
+        "class-plane",
+        "srv_read",
+        "units: { calls: 10 }",
+    ));
+    let errs = validate(&cfg).expect_err("bytes is declared and unconfigured");
+    let want = "tools.rate_card does not configure billable unit(s) bytes declared by this plane; \
+                add them (0 to make them free)";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+
+    // A present card with no entry yet configures nothing: both classes are named.
+    cfg.rate_card = Some(plane_card("class-plane", "", "{}"));
+    let errs = validate(&cfg).expect_err("an empty present card configures nothing");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("billable unit(s) calls, bytes declared")),
+        "{errs:?}"
+    );
+
+    let full = "units: { calls: 10, bytes: 0 }";
+    cfg.rate_card = Some(plane_card("class-plane", "srv_read", full));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+
+    cfg.rate_card = None;
+    assert!(validate(&cfg).is_ok(), "no card = billing off, no refusal");
+}
+
+/// A plane the kernel was never compiled with — its declaration built at run time, the way a plane
+/// registered from outside core arrives — has ITS declared classes honoured: the kernel reads the
+/// list off the declaration and names what it says.
+#[test]
+fn a_dropped_in_planes_declared_classes_are_honoured() {
+    let names = ["frames".to_string(), "widgets".to_string()];
+    let classes: Vec<crate::plane::registry::BillableClass> = names
+        .into_iter()
+        .map(|s| bc(Box::leak(s.into_boxed_str()), "count"))
+        .collect();
+    let dropped: &'static crate::plane::registry::PlaneDecl =
+        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
+            key: "dropped-plane",
+            config_section: "agents",
+            billable_classes: Box::leak(classes.into_boxed_slice()),
+            ..CLASS_PLANE
+        }));
+    let _iso = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[dropped]);
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(plane_card("dropped-plane", "a", "units: { frames: 1 }"));
+    let errs = validate(&cfg).expect_err("widgets is declared by the dropped-in plane");
+    let want = "agents.rate_card does not configure billable unit(s) widgets declared by this \
+                plane; add them (0 to make them free)";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+
+    let full = "units: { frames: 1, widgets: 0 }";
+    cfg.rate_card = Some(plane_card("dropped-plane", "a", full));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+}
+
+/// EVERY CONFIGURED CLASS IS DECLARED: a `units:` key naming a class the plane does not declare
+/// refuses, naming the unknown key AND the plane's declared list — for the fallback plane's flat
+/// card and for a plane's own card alike. A card whose keys are all declared (the 1.5.5 pools card
+/// plus `units: { search_units: 0 }`) passes.
+#[test]
+fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list() {
+    let _iso =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE, &CLASS_PLANE]);
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(card_yaml(
+        "m: { input_utok: 3, units: { search_units: 0, images: 0, typo_class: 1 } }\n",
+    ));
+    let errs = validate(&cfg).expect_err("typo_class is declared by no plane");
+    let want = "pools.rate_card configures unit(s) typo_class not declared by this plane \
+                (declared: input, output, cache_read, cache_write, search_units, images); remove \
+                them or fix the name";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+
+    cfg.rate_card = Some(plane_card(
+        "class-plane",
+        "srv_read",
+        "units: { calls: 1, bytes: 0, byts: 2 }",
+    ));
+    let errs = validate(&cfg).expect_err("byts is not a declared tools class");
+    let want = "tools.rate_card configures unit(s) byts not declared by this plane (declared: \
+                calls, bytes); remove them or fix the name";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+
+    cfg.rate_card = Some(card_yaml(
+        "m: { input_utok: 3, units: { search_units: 0, images: 0 } }\n",
+    ));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+}
+
+/// EVERY CONFIGURED FEE IS COUNTED: a nonzero `<section>.fees` key naming a unit the plane's
+/// declaration does not count refuses, naming the key and the plane's counted list (`none` for a
+/// plane counting no unit); a counted unit, and an uncounted one at 0, pass.
+#[test]
+fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
+    use busbar_kernel_ledger::cost::{PlaneFees, PER_SESSION};
+    let session: &'static crate::plane::registry::PlaneDecl =
+        Box::leak(Box::new(crate::plane::registry::PlaneDecl {
+            key: "session-plane",
+            config_section: "streams",
+            fee_units: &[PER_SESSION],
+            ..CLASS_PLANE
+        }));
+    let _iso =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[session, &CLASS_PLANE]);
+    let fees = |plane: &str, per_request, per_session| {
+        let f = PlaneFees {
+            per_request,
+            per_session,
+        };
+        config::PlaneFeesMap::from([(plane.to_string(), f)])
+    };
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.plane_fees = fees("session-plane", 2, 40);
+    let errs = validate(&cfg).expect_err("the session plane counts no request");
+    let want = "streams.fees.per_request is not counted by this plane (counted: per_session); \
+                remove it";
+    assert_eq!(errs, vec![want.to_string()]);
+
+    cfg.plane_fees = fees("class-plane", 0, 1);
+    let errs = validate(&cfg).expect_err("the class plane counts no fee unit");
+    let want = "tools.fees.per_session is not counted by this plane (counted: none); remove it";
+    assert_eq!(errs, vec![want.to_string()]);
+
+    cfg.plane_fees = fees("session-plane", 0, 40);
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
 }

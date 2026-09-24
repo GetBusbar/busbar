@@ -339,7 +339,7 @@ fn gate(args: &[String]) -> i32 {
         // can diff — exactly like kind-isolation and inventory-coverage.
         if matches!(
             reg.name,
-            "kind-isolation" | "inventory-coverage" | "conformance-sync"
+            "kind-isolation" | "inventory-coverage" | "conformance-sync" | "config-schema"
         ) {
             let verdict = gates::execute(gate.as_ref(), &cx);
             gates::print_verdict(reg.name, &verdict);
@@ -939,7 +939,7 @@ mod tests {
         );
     }
 
-    /// `--execute` builds the EXECUTING hot-path gates (9bb473f04), whose owed set carries the
+    /// `--execute` builds the EXECUTING hot-path gates, whose owed set carries the
     /// `:executed` rows the registry's text-only build does not.
     #[test]
     fn execute_builds_the_executing_hot_path_gates() {

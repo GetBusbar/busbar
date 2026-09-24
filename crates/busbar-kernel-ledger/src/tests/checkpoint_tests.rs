@@ -545,3 +545,23 @@ fn a_rolled_back_checkpoint_is_detected_against_the_anchor() {
         }
     )));
 }
+
+/// **THE SEAL AND THE VERIFY SHARE ONE PREIMAGE AND ONE DIGEST (item 438).**
+///
+/// The seal used to encode its own body from its arguments and hash it, while the verify re-encoded
+/// from the checkpoint's fields and hashed that: two encoder calls and two digest calls for one
+/// preimage, which is exactly the drift `digest.rs` warns about. Now both go through
+/// `body_digest` over `signed_body`, and this counts the call sites so a second one cannot return.
+#[test]
+fn the_seal_and_the_verify_share_one_preimage_and_one_digest() {
+    let source = include_str!("../checkpoint.rs");
+    let calls = |needle: &str| {
+        source
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains(needle) && !l.contains(&format!("fn {needle}")))
+            .count()
+    };
+    assert_eq!(calls("encode_body("), 1, "one encoder call: signed_body");
+    assert_eq!(calls("digest::sha256("), 1, "one digest call: body_digest");
+}

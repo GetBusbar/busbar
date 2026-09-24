@@ -38,7 +38,7 @@
 //! and nothing in the type system would have asked it not to.
 
 use crate::governance::{Governance, GovernanceError, RotateOutcome};
-use crate::idempotency::{IdempotencyCache, Probe, ReplayEncoder};
+use crate::idempotency::{ClaimJournal, IdempotencyCache, Probe, ReplayEncoder};
 use crate::mint::{plan_mint_group, GroupLookup, MintPlan};
 use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
@@ -48,6 +48,7 @@ use crate::verb::{
 };
 use busbar_contract::caps::{AdminVerb, Grant, SecretOnce, UnitKey};
 use busbar_contract::verb_store::Store;
+use std::sync::Arc;
 
 /// The nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
 /// [`SecretOnce`] is bound to — the thing that proves exactly one occurrence of the minted secret
@@ -241,6 +242,22 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             rotate_key_cache: IdempotencyCache::new(),
             limiter: MutationLimiter::new(),
         }
+    }
+
+    /// Bind where an idempotency claim the create-key and rotate-key caches take is journalled:
+    /// `Some` on a durable node (the composition root's handle onto its journal), `None` on a node
+    /// with no data directory. `None` is exactly [`Verbs::new`]: both caches stay
+    /// [`IdempotencyCache::new`] and nothing is journalled. Called at construction, before either
+    /// cache has taken a claim, so the caches it replaces are empty.
+    #[must_use]
+    pub fn with_claim_journal(mut self, claim_journal: Option<Arc<dyn ClaimJournal>>) -> Self {
+        let cache = |journal: &Option<Arc<dyn ClaimJournal>>| match journal {
+            Some(j) => IdempotencyCache::with_journal(Arc::clone(j)),
+            None => IdempotencyCache::new(),
+        };
+        self.create_key_cache = cache(&claim_journal);
+        self.rotate_key_cache = cache(&claim_journal);
+        self
     }
 
     /// The scope + rate-limit gate every verb runs through. Returns the [`MutationClass`] on
