@@ -1095,7 +1095,7 @@ asserts. A reload that would violate a pinned `max_unposted_accrual` (§4.7 tabl
 | decline rate `R` / node-global | 100 /s per source; 10,000 /s | aggregation thresholds |
 | overdraft ceiling | 10 % of the refusing `(bucket, dimension, scope)` window cap; UNBOUNDED (flag-only) on every Migration-sealed bucket, PB-58 | every capped bucket in the chain |
 | `max_fanout_recipients` | 10,000 | `Refused(Approve, FanoutTooLarge)` when `sessions_for` resolves more |
-| `in_flight_reserve` | 10 % of `in_flight_cap` when a claimed transport declares `SESSION = true`, else 0 — so a 1.5.5 config sheds at exactly `max_inbound_concurrent` (8,192), PB-44 | held for provider frames of already-open sessions; drawn only against session Unit 0 arrivals |
+| `in_flight_reserve` | none — the provider reserve is deleted (item 280): no slot is held back, and every counted unit, a session's provider frame included, draws the one `in_flight_cap` — so a 1.5.5 config sheds at exactly `max_inbound_concurrent` (8,192), PB-44 | a provider frame arriving at the cap is refused `Refused(Decode, InFlightCap)`, as every non-client unit is |
 | `on_empty` (per restrict-capable hook) | `reject` (the 1.5.5 default, PB-1; migrated hooks sealed at `Migration`) | `weighted | reject | first` |
 | `in_flight_cap` (`Refused(Arrival, InFlightCap)` for client units, `Refused(Decode, InFlightCap)` for the rest) | read from 1.5.5's `limits.max_inbound_concurrent` (default 8,192; 0 = unbounded as there — then the arrival gate is open, the crash-exposure formula substitutes the node's measured peak in-flight count (published), and a pinned `max_unposted_accrual` requires a finite `in_flight_cap` at boot, `Refused` otherwise) | `Refused(Arrival, InFlightCap)` above it; per-lane `max_concurrent` (1.5.5 `ModelCfg`) is the egress unit's per-destination pool ceiling — fail, never wait — an at-capacity lane is skipped within the pick (PB-2) |
 | `max_unposted_accrual` (per node) | **the ONE formula, from enforced quantities**: `in_flight_cap × (max_hold + max overdraft ceiling over capped buckets)` — accrual since the last Tick checkpoint can never exceed a unit's hold plus its journaled top-ups plus the ceiling at which it is aborted; published on the ledger endpoint (PB-16); alarmed above `unposted_alarm`; measured at M2 by the kill-mid-stream cell | asserted at boot/reload only when the key is pinned |
@@ -1174,7 +1174,7 @@ intact; the echo plane unchanged.
 
 ## 6. Planes
 
-A plane is CLAIMED only when its config block is present: a 1.5.5 config claims `llm` alone, so no session transport is claimed and `in_flight_reserve` is 0 (PB-44); the three additions cost a 1.5.5 deployment nothing until configured.
+A plane is CLAIMED only when its config block is present: a 1.5.5 config claims `llm` alone, so no session transport is claimed, and no plane holds back any slot of `in_flight_cap`: every counted unit, a provider frame included, draws the one cap (PB-44); the three additions cost a 1.5.5 deployment nothing until configured.
 
 | Plane | Dialects (deny-list source for §1.3) | Claims | Units | Meter classes (the classes each plane METERS; kernel-reserved ones are declared by the kernel) | Records | Notes |
 |---|---|---|---|---|---|---|
