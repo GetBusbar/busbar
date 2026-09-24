@@ -453,7 +453,8 @@ fn the_fold_cell_doc_opens_with_its_claim() {
         "the cell's doc must open with its claim, not with the removed short form"
     );
     assert!(
-        !doc.iter().any(|l| l.contains("folds with the default tolerances")),
+        !doc.iter()
+            .any(|l| l.contains("folds with the default tolerances")),
         "the doc must not describe the removed short form as present"
     );
 }
