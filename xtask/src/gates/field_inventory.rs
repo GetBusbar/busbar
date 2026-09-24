@@ -643,7 +643,25 @@ impl Gate for FieldInventoryGate {
             .collect();
 
         let text = render(&schemas, &fields);
-        let artifact = if cx.env().write {
+        // THE FLOORS ARE ENFORCED BEFORE ANYTHING IS WRITTEN (item 194). `--write` relays whatever
+        // the schemas say into the committed inventory, and `field_coverage.rs` demands exactly
+        // what that file lists — so a write over a trimmed schema launders the trim into the
+        // baseline and every row after it passes over the smaller number. The sibling coverage
+        // gate refuses the same way; this one did not.
+        let artifact = if cx.env().write && (!short.is_empty() || !missing.is_empty()) {
+            row_artifact(
+                None,
+                Some(&format!(
+                    "refusing to --write {OUT} over a floor violation: {}",
+                    short
+                        .iter()
+                        .chain(missing.iter())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            )
+        } else if cx.env().write {
             match std::fs::write(cx.abs(OUT), &text) {
                 Ok(()) => row_ok(
                     ROW_ARTIFACT_DRIFT,
@@ -1002,6 +1020,47 @@ mod tests {
         let v = FieldInventoryGate.run(&trimmed);
         assert_eq!(status_of(&v, ROW_PROVENANCE), Status::Pass);
         assert_eq!(status_of(&v, ROW_BOTH_DIRECTIONS), Status::Fail);
+    }
+
+    /// ITEM 194: `--write` DOES NOT LAUNDER A TRIM INTO THE BASELINE. Driven over a scratch copy
+    /// of the schemas and the inventory, never the workspace's own files, so a regression writes
+    /// into a temp directory and not into `qa/`.
+    #[test]
+    fn write_refuses_over_a_floor_violation_and_leaves_the_inventory_alone() {
+        let ws = cx();
+        let root = std::env::temp_dir().join(format!(
+            "xtask-field-inventory-write-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(SCHEMA_DIR)).expect("scratch schema dir");
+        for dialect in DIALECTS {
+            let rel = format!("{SCHEMA_DIR}/{dialect}.json");
+            let mut doc: serde_json::Value =
+                serde_json::from_str(&ws.read(&rel).expect("schema")).expect("json");
+            if dialect == "gemini" {
+                let first = doc["response"][0].clone();
+                doc["response"] = serde_json::Value::Array(vec![first]);
+            }
+            std::fs::write(root.join(&rel), serde_json::to_string(&doc).expect("json"))
+                .expect("write scratch schema");
+        }
+        let before = ws.read(OUT).expect("the committed inventory");
+        std::fs::write(root.join(OUT), &before).expect("scratch inventory");
+
+        let scratch = Ctx::at(&root, root.join(".scratch"))
+            .expect("scratch ctx")
+            .write_mode(true);
+        let v = FieldInventoryGate.run(&scratch);
+        let after = std::fs::read_to_string(root.join(OUT)).expect("scratch inventory");
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(status_of(&v, ROW_ARTIFACT_DRIFT), Status::Fail);
+        assert!(
+            after == before,
+            "--write rewrote the inventory over a trimmed schema"
+        );
     }
 
     /// And the floors are true of the tree: the real schemas clear every one.
