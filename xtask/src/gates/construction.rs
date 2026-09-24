@@ -260,16 +260,33 @@ impl ConstructionGate {
             Ok(out)
         };
 
-        // THE SAME SEVEN-COLLAPSED-TO-SIX KEYS `manifest_allowlist` ITSELF READS, and they must
-        // stay the same keys: this is the rule's COMPLETENESS ORACLE, the list that decides which
+        // THE KEYS `manifest_allowlist` OUGHT TO READ — NOT A COPY OF THE ONES IT DOES. This is the
+        // rule's COMPLETENESS ORACLE, the list that decides which
         // `manifest-allowlist:<crate>` rows a run is OWED. It carried `pure_auth`/`egress_auth`
         // too, so the oracle expected exactly the rows the buggy rule produced and the two auth
         // crates were missing from both sides at once. Checker and checked shared the bug, which
         // is the one arrangement in which a reconciliation proves nothing.
-        let manifest_kinds: Vec<String> = ["plane", "store", "auth", "hook", "export", "secret"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        //
+        // AND IT WAS THAT ARRANGEMENT AGAIN, ONE KIND OVER (item 166). Both lists omitted
+        // `transport`, so no `manifest-allowlist:busbar-transport-*` row was owed, a missing one
+        // was not even DID NOT RUN, and seven transport crates were measured by nothing — while
+        // `busbar-transport-tls` path-depends on `busbar-unit-transport-key`, a dep the rule scores
+        // RED. So the oracle no longer copies the rule's list: it names all seven plugin kinds of
+        // `[gate.plugin_kinds]` (`unit`, `loader` and `abi` are the kernel side of the wall, not
+        // plugins behind it), and a kind the rule forgets is a DID NOT RUN row until the rule
+        // reads it. (The rule's own list is item 120, in `rules2.rs`.)
+        let manifest_kinds: Vec<String> = [
+            "plane",
+            "store",
+            "auth",
+            "hook",
+            "export",
+            "secret",
+            "transport",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let manifest_crates = crates_of(&manifest_kinds)?;
         if manifest_crates.is_empty() {
             ids.push("manifest-allowlist".to_string());
@@ -731,6 +748,32 @@ mod tests {
         assert!(
             passing_over_nothing.is_empty(),
             "rows PASS over an absent subject: {passing_over_nothing:?}"
+        );
+    }
+    /// ITEM 166: THE COMPLETENESS ORACLE OWES A `manifest-allowlist` ROW FOR EVERY TRANSPORT CRATE.
+    /// It shared the rule's six-kind list, so no transport row was owed, a missing one was not even
+    /// DID NOT RUN, and checker and checked agreed on the bug.
+    #[test]
+    fn the_manifest_allowlist_oracle_owes_every_transport_crate() {
+        let cx = Ctx::workspace().expect("workspace");
+        let owed = ConstructionGate::ids(&cx).expect("the owed set derives");
+        let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+        let transports: Vec<String> =
+            dirs_for_globs(&cx, &cfg.kind_globs("transport").expect("kind"))
+                .iter()
+                .map(|d| crate_name_of_dir(d))
+                .collect();
+        assert!(
+            !transports.is_empty(),
+            "the control needs transport crates on disk"
+        );
+        let unowed: Vec<&String> = transports
+            .iter()
+            .filter(|c| !owed.contains(&format!("manifest-allowlist:{c}")))
+            .collect();
+        assert!(
+            unowed.is_empty(),
+            "no manifest-allowlist row is owed for {unowed:?}"
         );
     }
 }
