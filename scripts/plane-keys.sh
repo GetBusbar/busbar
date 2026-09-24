@@ -127,7 +127,15 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src 
 #
 # THE RUST TWIN IS `xtask/src/planes.rs::neutral_src_roots`, and `xtask/tests/infra.rs`'s
 # `the_plane_key_contract_matches_plane_keys_sh` pins the two lists equal. Move one, move both.
-NEUTRAL_ROOTS_LIST="crates/busbar-kernel/src crates/busbar-substrate-values/src crates/api/src"
+#
+# THIS LINE WAS THREE ROOTS WHILE THE TWIN WAS TWENTY-ONE, and that test was red on it: the Rust
+# side enrolled the kernel's decomposed crates, the money path (busbar-kernel-ledger), the ABI and
+# contract surfaces (busbar-contract, busbar-plugin), the loader/SDK and the compiled-in cleanliness
+# crates, and this line did not follow. Both shell meters that source it (plane-grep-gate.sh,
+# plane-noun-gate.sh) therefore scanned 220 of 427 neutral files and printed 0 for needles that are
+# not 0 -- the ZERO those meters document as the signal to arm their hard gates. The list below is
+# the twin's, same order, one line (the pinning test parses this exact line).
+NEUTRAL_ROOTS_LIST="crates/busbar-kernel/src crates/busbar-kernel-audit/src crates/busbar-kernel-breaker/src crates/busbar-kernel-budget/src crates/busbar-kernel-egress/src crates/busbar-kernel-identity/src crates/busbar-kernel-ledger/src crates/busbar-kernel-scope/src crates/busbar-kernel-wal/src crates/busbar-contract/src crates/busbar-plugin/src crates/busbar-substrate-values/src crates/api/src crates/plugin-loader/src crates/plugin-sdk/src crates/busbar-core-admin/src crates/busbar-core-connsec/src crates/busbar-oauth2/src crates/busbar-timing/src crates/busbar-unit-transport-key/src crates/secret-ref/src"
 
 neutral_src_roots() { printf '%s' "$NEUTRAL_ROOTS_LIST"; }
 
