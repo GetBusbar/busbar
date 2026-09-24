@@ -457,13 +457,7 @@ async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
     let resource = a_key_minted_over(&mounted, "p2-rootcleanup-byte-identity").await;
     let path = format!("/api/v1/admin/{}", resource.replacen("key:", "keys/", 1));
 
-    let (status, _, _) = over(
-        &mounted,
-        "PATCH",
-        &path,
-        br#"{"enabled":false}"#.to_vec(),
-    )
-    .await;
+    let (status, _, _) = over(&mounted, "PATCH", &path, br#"{"enabled":false}"#.to_vec()).await;
     assert_eq!(status, 200, "the disable applied");
     let (status, _, _) = over(&mounted, "POST", &format!("{path}/revoke"), b"{}".to_vec()).await;
     assert!((200..300).contains(&status), "the revoke applied: {status}");
@@ -489,6 +483,184 @@ async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
         ],
         "one row per mutation, newest first, and no second copy"
     );
+}
+
+/// A store that applies each recovery verb, so a root-only verb can end `applied`.
+#[cfg(feature = "root-admin")]
+struct AnApplyingStore;
+
+#[cfg(feature = "root-admin")]
+impl busbar_contract::verb_store::Store for AnApplyingStore {
+    fn chain_break(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        Ok(())
+    }
+
+    fn store_restore(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        _backup_ref: &str,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        Ok(())
+    }
+
+    fn reseal_epoch_floor(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        Ok(())
+    }
+
+    fn replay_new_verb(
+        &self,
+        _key: &(String, String),
+    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
+        Ok(None)
+    }
+
+    fn commit_new_verb_replay(
+        &self,
+        _key: &(String, String),
+        _response: &[u8],
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        Ok(())
+    }
+}
+
+/// The served rows for one resource that the operator (`admin`) is attributed, as
+/// `(action, outcome)`, newest first. Filtered on the principal because the ring is process-wide
+/// and the step-level cells in `units_admin.rs` seal the same verbs under another identity.
+#[cfg(feature = "root-admin")]
+async fn the_operators_rows_for(router: &axum::Router, resource: &str) -> Vec<(String, String)> {
+    let (status, body) = audit_rows_for(router, resource).await;
+    assert_eq!(status, 200, "the audit page answers");
+    let page: serde_json::Value = serde_json::from_slice(&body).expect("the audit page is JSON");
+    page["items"]
+        .as_array()
+        .expect("the page carries items")
+        .iter()
+        .filter(|row| row["principal"] == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID)
+        .map(|row| {
+            (
+                row["action"].as_str().unwrap_or_default().to_string(),
+                row["outcome"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// EVERY ROOT-ONLY MUTATING VERB SEALS EXACTLY ONE DURABLE ROW; A READ SEALS NONE (P2-rootfollow).
+///
+/// The 1.6.0 verbs have no core-admin handler, so nothing wrote their row once the root's RAM ring
+/// went (item 237). Each is walked through the root's mount over the real surface, once, and the
+/// operator's `/audit` page must then carry exactly one row for it on the kernel's durable ring:
+/// `applied` where the effect landed (the three store verbs, under a sealed operator key and a store
+/// that applies), `rejected` where it did not. The two read-only 1.6.0 verbs and a ledger view seal
+/// nothing.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_none() {
+    busbar_kernel::metrics::init();
+    busbar_core_admin::install();
+    let app = busbar_kernel::test_support::TestApp::new()
+        .admin_chain(vec![])
+        .build();
+    let (_data, bare, _handle) =
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
+    let durability = crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+        Box::new(rows.clone()),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    let held = Arc::new(std::sync::Mutex::new(durability));
+    let read = Arc::new(rows);
+    let mounted = mount(
+        bare,
+        crate::root::kernel::new_kernel(),
+        1 << 20,
+        move |dispatch| {
+            let mut units =
+                crate::root::kernel::ProductionUnits::admin_only_sharing(dispatch, held, read)
+                    .with_auth_chain(a_door_that_identifies_the_operator())
+                    .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                        ADirectoryThatMintedIt,
+                    )));
+            units.admin.posture = Arc::new(SealedPosture::new(Some([7u8; 32])));
+            units.store = Arc::new(AnApplyingStore);
+            units
+        },
+    );
+
+    let applied = [
+        ("/api/v1/admin/chain-break", "{}", "chain_break"),
+        (
+            "/api/v1/admin/store-restore",
+            r#"{"backup_ref":"nightly"}"#,
+            "store_restore",
+        ),
+        (
+            "/api/v1/admin/reseal-epoch-floor",
+            "{}",
+            "reseal_epoch_floor",
+        ),
+    ];
+    for (path, body, verb) in applied {
+        let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
+        assert_eq!(status, 204, "{verb} applied");
+        assert_eq!(
+            the_operators_rows_for(&mounted, path).await,
+            vec![(verb.to_string(), "applied".to_string())],
+            "{verb}: one applied row on the durable ring"
+        );
+    }
+
+    let rejected = [
+        ("/api/v1/admin/plane-record-write", "plane_record_write"),
+        ("/api/v1/admin/operator-key", "set_operator_key"),
+        ("/api/v1/admin/escrow", "set_escrow"),
+        ("/api/v1/admin/dual-control", "set_dual_control"),
+        ("/api/v1/admin/overdraft-ceiling", "set_overdraft_ceiling"),
+        ("/api/v1/admin/dispute-max-age", "set_dispute_max_age"),
+        ("/api/v1/admin/commit-upgrade", "commit_upgrade"),
+        ("/api/v1/admin/disputes/resolve", "resolve_dispute"),
+        ("/api/v1/admin/slices/resolve", "resolve_slice"),
+        ("/api/v1/admin/adjust", "adjust"),
+        ("/api/v1/admin/export-keyset", "export_keyset"),
+        ("/api/v1/admin/approve", "approve"),
+        (
+            "/api/v1/admin/ledger/amend-rate-history",
+            "amend_rate_history",
+        ),
+    ];
+    for (path, verb) in rejected {
+        let (status, _, _) = over(&mounted, "POST", path, b"{}".to_vec()).await;
+        assert!(
+            !(200..300).contains(&status),
+            "{verb} did not apply: {status}"
+        );
+        assert_eq!(
+            the_operators_rows_for(&mounted, path).await,
+            vec![(verb.to_string(), "rejected".to_string())],
+            "{verb}: one rejected row on the durable ring"
+        );
+    }
+
+    for path in [
+        "/api/v1/admin/verify",
+        "/api/v1/admin/plane-facts",
+        "/api/v1/admin/ledger/totals",
+    ] {
+        let _ = over(&mounted, "GET", path, Vec::new()).await;
+        assert_eq!(
+            the_operators_rows_for(&mounted, path).await,
+            Vec::<(String, String)>::new(),
+            "{path}: a read seals nothing"
+        );
+    }
 }
 
 /// AND THE METER STEP STILL RUNS, AND STILL PRICES AN ADMIN VERB AT NOTHING.

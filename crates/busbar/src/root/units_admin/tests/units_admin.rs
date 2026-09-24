@@ -1270,12 +1270,13 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
     );
 }
 
-/// The audit step seals the resolved operation class and its finish, and appends to no ring.
+/// The audit step seals the resolved operation class and its finish, and keeps no ring of its own.
 ///
 /// Item 237: there is ONE administrative audit ring, the kernel's durable one, written by the
 /// core-admin handler as a mutation applies (the end-to-end cell in
-/// `admin_path_without_plane_face.rs` reads it back over the served `/audit`). The step used to
-/// append a second copy onto a RAM-only root ring; it now takes no ring at all, so what is left to
+/// `admin_path_without_plane_face.rs` reads it back over the served `/audit`); a root-only verb's
+/// row is written onto that same ring by this step, and is asserted there too. The step used to
+/// append a second copy onto a RAM-only root ring; it now holds no ring at all, so what is left to
 /// assert here is what it still decides — the facts the audit unit seals:
 ///
 /// - a mutating verb completes under its own write class and a complete finish;
@@ -2421,12 +2422,16 @@ fn the_reconciliation_names_a_row_this_nodes_dual_write_lost() {
 /// lives only in [`crate::root::durability::Durability::refused_rows`].
 #[cfg(feature = "root-admin")]
 fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bucket: &str) {
+    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
     use busbar_contract::caps::{Grant, KernelSeal, PrincipalId};
     use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
-    use crate::root::durability::{PostingStamp, Settling, UnitCounts};
 
     let seal = KernelSeal::acquire_for_kernel();
-    let key = TotalsKey::new(BucketId::new(bucket), CapDimension::NanoUnits, BucketScope::All);
+    let key = TotalsKey::new(
+        BucketId::new(bucket),
+        CapDimension::NanoUnits,
+        BucketScope::All,
+    );
     let token = Grant::<busbar_contract::caps::DurableWrite>::mint(&seal);
     let mut classes = std::collections::BTreeMap::new();
     classes.insert("cache_read".to_string(), 10_000_000u64);
@@ -2488,7 +2493,10 @@ fn a_refused_counts_row_fails_the_totals_and_reconciliation_reads_a_clean_book_i
     let totals_a = node_a.answer(a_ledger_request("/api/v1/admin/ledger/totals"));
     let recon_a = node_a.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
     assert_eq!(totals_a.status, 200, "a clean book must still serve totals");
-    assert_eq!(recon_a.status, 200, "a clean book must still serve reconciliation");
+    assert_eq!(
+        recon_a.status, 200,
+        "a clean book must still serve reconciliation"
+    );
 
     let clean_b = a_node_that_settled(None);
     let node_b = AdminNode::new(crate::root::kernel::new_kernel(), clean_b);

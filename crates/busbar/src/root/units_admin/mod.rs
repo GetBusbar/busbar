@@ -2960,20 +2960,19 @@ pub(crate) fn meter(
 
 /// Step 7. The end, stated as the facts the audit unit seals.
 ///
-/// THIS STEP APPENDS TO NO ADMINISTRATIVE RING. There is one — the kernel's durable ring, written by
-/// the core-admin handler as the mutation applies, and it is what an operator's `/audit` page reads.
-/// This step used to append a second copy of every mutation onto a root-held ring behind a seam that
-/// persisted nothing and that no endpoint served (item 237); a second ring is a second answer to
-/// "what changed", and the one an operator could never read. What the step still decides is the
-/// operation class and the finish the audit unit seals.
+/// There is ONE administrative ring — the kernel's durable one, and it is what an operator's
+/// `/audit` page reads. A 1.5.5 verb's row is written onto it by the core-admin handler as the
+/// mutation applies, so this step writes none for those (a second copy was item 237). A ROOT-ONLY
+/// mutating verb has no core-admin handler to write it, so this step writes its one row onto that
+/// same ring ([`seal_root_only`]). Beyond that the step decides the operation class and the finish
+/// the audit unit seals.
 pub(crate) fn audit(
     binding: &AdminBinding,
     token: &Pass<Audit>,
     ctx: &UnitCtx,
     outcome: &Outcome,
 ) -> Decision<Audit> {
-    let (Some(_), Some(resolved)) =
-        (binding.units.request(ctx.key), binding.units.verb(ctx.key))
+    let (Some(_), Some(resolved)) = (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
         return Decision::proceed(
             token,
@@ -2987,6 +2986,12 @@ pub(crate) fn audit(
             ),
         );
     };
+    let applied = matches!(outcome, Outcome::Completed)
+        && binding
+            .units
+            .answer(ctx.key)
+            .is_some_and(|answer| (200..300).contains(&answer.status));
+    seal_root_only(binding, ctx, &resolved, applied);
     Decision::proceed(
         token,
         busbar_contract::AuditFacts {
@@ -2996,17 +3001,39 @@ pub(crate) fn audit(
     )
 }
 
+/// ONE row on the kernel's durable administrative ring for a ROOT-ONLY mutating verb — a 1.6.0 verb
+/// (`NEW_VERBS`, reads excluded) whose effect lands on this root or its store, where no core-admin
+/// handler exists to write the row. `applied` only for a 2xx answer the operation produced; every
+/// other end is `rejected`. A unit refused before its identity resolved writes nothing: no principal
+/// acted, and a row naming one would attribute the attempt to somebody who was not there.
+fn seal_root_only(binding: &AdminBinding, ctx: &UnitCtx, resolved: &ResolvedVerb, applied: bool) {
+    let root_only =
+        !resolved.read_only && kernel_verb(resolved).is_some_and(|v| NEW_VERBS.contains(&v));
+    if let (true, Some(actor)) = (root_only, resolved_actor(binding, ctx.key)) {
+        let outcome = if applied {
+            busbar_kernel::audit_ring::OUTCOME_APPLIED
+        } else {
+            busbar_kernel::audit_ring::OUTCOME_REJECTED
+        };
+        busbar_kernel::audit_ring::AUDIT.record_by(
+            resolved.verb,
+            resolved.template,
+            outcome,
+            &actor,
+        );
+    }
+}
+
 /// Step 7, the other door. A unit that never passed Admit was charged nothing, and the sealed facts
-/// record the attempt rather than pretending it did not happen. Like [`audit`], it appends to no
-/// administrative ring (item 237).
+/// record the attempt rather than pretending it did not happen. Like [`audit`], it writes a row only
+/// for a root-only mutating verb, `rejected`, onto the kernel's one ring.
 pub(crate) fn audit_refused(
     binding: &AdminBinding,
     token: &Pass<Audit>,
     ctx: &UnitCtx,
     refusal: &Refusal,
 ) -> Decision<Audit> {
-    let (Some(_), Some(resolved)) =
-        (binding.units.request(ctx.key), binding.units.verb(ctx.key))
+    let (Some(_), Some(resolved)) = (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
         // THE REFUSAL THAT HAPPENED, not one composed here. This arm used to seal every unresolved
         // unit as a decode failure raised at Decode, whatever it had actually been refused for: a
@@ -3031,6 +3058,7 @@ pub(crate) fn audit_refused(
             ),
         );
     };
+    seal_root_only(binding, ctx, &resolved, false);
     Decision::proceed(
         token,
         busbar_contract::AuditFacts {
