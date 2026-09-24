@@ -92,8 +92,9 @@ pub use amend::{
 pub use heads::{HeadHistory, SignedHead, HEAD_SAMPLE_SECONDS};
 pub use legacy::{
     AuditEntry, AuditInput, AuditLog, Chain, ChainBreak, ChainBreakKind, ChainedRecord, Clock,
-    DurableSeam, NoSeam, ADMIN_LOG, AUDIT_ACTIONS, AUDIT_SCHEME_LENGTH_PREFIXED, AUDIT_SCHEME_PIPE,
-    MAX_AUDIT_ENTRIES, OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED,
+    DurableSeam, NoSeam, PositionsExhausted, ADMIN_LOG, AUDIT_ACTIONS,
+    AUDIT_SCHEME_LENGTH_PREFIXED, AUDIT_SCHEME_PIPE, MAX_AUDIT_ENTRIES, OUTCOME_APPLIED,
+    OUTCOME_DEGRADED, OUTCOME_REJECTED,
 };
 pub use recipe::{digest_fields, digest_over, DigestField, DigestValue, DIGEST_RECIPE};
 pub use record::{

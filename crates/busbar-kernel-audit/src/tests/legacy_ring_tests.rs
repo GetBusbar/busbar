@@ -10,8 +10,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::legacy::{
-    verify_chain, AuditEntry, AuditLog, Clock, DurableSeam, NoSeam, AUDIT_ACTIONS,
-    MAX_AUDIT_ENTRIES, OUTCOME_APPLIED, OUTCOME_REJECTED,
+    verify_chain, AuditEntry, AuditLog, Clock, DurableSeam, NoSeam, PositionsExhausted,
+    AUDIT_ACTIONS, MAX_AUDIT_ENTRIES, OUTCOME_APPLIED, OUTCOME_REJECTED,
 };
 
 // ── THE FROZEN PERSISTED BYTES ───────────────────────────────────────────────────────────────────
@@ -269,19 +269,81 @@ fn a_restore_at_the_top_of_the_range_saturates_instead_of_panicking() {
         "the snapshot is seeded rather than rejected"
     );
 
-    // The other half of the name: the resume point SATURATES at the top of the range. The next
-    // mutation recorded is allocated the saturated position, u64::MAX — not a wrapped one. A
-    // wrapping `+ 1` would make the resume point 0, the `fetch_max` a no-op, and the next mutation
-    // position 1: a position that sits below the restored entry, so the ring would call itself
-    // out of order.
-    restored.record_by("hook.register", "hook:b", OUTCOME_APPLIED, "admin");
-    let after = restored.export();
-    assert_eq!(after.len(), 2);
+    // The other half: the resume point does NOT saturate any more. Saturating handed the next
+    // mutation u64::MAX — the restored entry's OWN position — and the step after that wrapped to 0.
+    // The replacing behaviour is a REFUSAL: the ring keeps exactly what it restored, and the next
+    // append is refused with `PositionsExhausted` rather than placed at a reused or wrapped position.
     assert_eq!(
-        after[1].seq,
-        u64::MAX,
-        "the resume point after a snapshot at the top of the range is the saturated position"
+        restored.try_record_by("hook.register", "hook:b", OUTCOME_APPLIED, "admin"),
+        Err(PositionsExhausted { last: u64::MAX }),
+        "an append after a snapshot at the top of the range is refused, not given a spent position"
     );
+    let after = restored.export();
+    assert_eq!(
+        after.len(),
+        1,
+        "nothing was placed at a reused or wrapped position"
+    );
+    assert_eq!(after[0].seq, u64::MAX);
+}
+
+/// A POSITION IS NEVER REUSED AND NEVER WRAPS — at the top of the range the ring refuses instead.
+///
+/// The sequence W2.9 pinned: restore at `u64::MAX`, then two appends. Before, the ring held
+/// `[MAX, MAX, 0]` — one position twice, then one below the genesis. Now it holds `[MAX]`, every
+/// further append is refused with a named error, the durable seam still receives every mutation
+/// (the ring's refusal never drops the durable record), and a later snapshot carrying lower
+/// positions cannot revive the spent range. The last position itself is handed out exactly once.
+#[test]
+fn a_ring_position_is_never_reused_and_never_wraps() {
+    let (log, _clock, _seam) = log_at(1_700_000_000);
+    log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
+    let mut snapshot = log.export();
+    snapshot[0].seq = u64::MAX;
+
+    let (restored, _clock2, seam) = log_at(1_700_000_000);
+    restored.load(snapshot.clone());
+    restored.record_by("hook.register", "hook:b", OUTCOME_APPLIED, "admin");
+    restored.record_by("hook.register", "hook:c", OUTCOME_APPLIED, "admin");
+    let seqs: Vec<u64> = restored.export().iter().map(|e| e.seq).collect();
+    assert_eq!(
+        seqs,
+        vec![u64::MAX],
+        "a position was reused or wrapped: {seqs:?}"
+    );
+    assert_eq!(
+        seam.0.lock().unwrap().len(),
+        2,
+        "the ring's refusal dropped a durable record"
+    );
+    let refused = restored
+        .try_record_by("hook.register", "hook:d", OUTCOME_APPLIED, "admin")
+        .unwrap_err();
+    assert!(refused.to_string().contains(&u64::MAX.to_string()));
+
+    // An exhausted allocator stays exhausted: a snapshot of lower positions does not revive it.
+    let mut low = snapshot.clone();
+    low[0].seq = 5;
+    restored.load(low);
+    assert!(restored
+        .try_record_by("hook.register", "hook:e", OUTCOME_APPLIED, "admin")
+        .is_err());
+
+    // And the last position is handed out exactly ONCE by a live ring that reaches it.
+    let (edge, _c, _s) = log_at(1_700_000_000);
+    let mut below = snapshot;
+    below[0].seq = u64::MAX - 1;
+    edge.load(below);
+    assert_eq!(
+        edge.try_record_by("hook.register", "hook:f", OUTCOME_APPLIED, "admin"),
+        Ok(())
+    );
+    assert_eq!(
+        edge.try_record_by("hook.register", "hook:g", OUTCOME_APPLIED, "admin"),
+        Err(PositionsExhausted { last: u64::MAX })
+    );
+    let seqs: Vec<u64> = edge.export().iter().map(|e| e.seq).collect();
+    assert_eq!(seqs, vec![u64::MAX - 1, u64::MAX]);
 }
 
 #[test]
