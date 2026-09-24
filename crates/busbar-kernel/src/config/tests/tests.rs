@@ -65,6 +65,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         groups: Default::default(),
         rate_card: None,
         per_request_fee: 0,
+        plane_rate_cards: Default::default(),
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),
@@ -4045,4 +4046,128 @@ fn a_decisions_section_with_no_owning_plane_is_refused_at_resolve() {
             .any(|e| e.contains("`decisions:` is configured")),
         "an absent `decisions:` section must not be refused; got: {bare_errors:?}"
     );
+}
+
+// ── #43 / #47: A PLANE SECTION'S CORE-OWNED `rate_card` / `fees` NEVER CROSS TO THE PLANE ──────────
+
+/// Every section value the recording plane below was handed to parse — THE BLOB that crosses to the
+/// plane. Read under the registry isolation, so no sibling test writes it concurrently.
+static PLANE_SAW: std::sync::Mutex<Vec<serde_yaml::Value>> = std::sync::Mutex::new(Vec::new());
+
+fn record_plane_section(
+    v: &serde_yaml::Value,
+) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
+    PLANE_SAW.lock().unwrap().push(v.clone());
+    Ok(Box::<crate::plane::config::RawPlaneSection>::default())
+}
+
+/// A stub plane owning the registry section a card is authored in, whose `parse_section` records
+/// what it was handed. `"card-plane"` is its registry key: the key the card is filed under.
+static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    key: "card-plane",
+    fallback: false,
+    config_section: "tools",
+    scope_kinds: &[],
+    subject_noun: "card thing",
+    admin_noun: "card-thing",
+    audit_kind: "card-thing",
+    wire_format_names: || &[],
+    claims: |_| Vec::new(),
+    admission: |_| None,
+    build: |_| None,
+    routes: None,
+    admin_routes: None,
+    openapi: None,
+    hydrate: None,
+    start: None,
+    config_validate: None,
+    card_signing_domain: None,
+    card_kid_prefix: None,
+    named_def_list: None,
+    named_def_get: None,
+    registry_contains: None,
+    reresolve_gates: None,
+    #[cfg(feature = "openapi-schema")]
+    openapi_schemas: None,
+    on_swap: None,
+    parse_section: Some(record_plane_section),
+    parse_endpoint: None,
+    lower_endpoint: None,
+    build_runtime: None,
+    viewer: None,
+    retain_verify_gates: None,
+    default_section: None,
+    owned_config_sections: &[],
+    resolve_provider: None,
+};
+
+/// THE #43 ENFORCEMENT: the section value handed to the plane carries the plane's own settings and
+/// NO `rate_card` — core lifts the card off first and files it under the plane's registry key — and
+/// `resolve` composes it beside the (absent) flat card, qualified by that key, with the flat plane left
+/// billing OFF. A section carrying `fees` is refused before anything reaches the plane.
+#[test]
+fn a_plane_sections_rate_card_is_lifted_off_before_the_plane_sees_it() {
+    let _isolation = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&CARD_PLANE]);
+    PLANE_SAW.lock().unwrap().clear();
+    let deploy = crate::config::deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\ntools:\n  srv: { url: \"https://x.example/srv\" }\n  \
+         rate_card:\n    srv_read: { units: { tool_calls: 3 } }\n",
+    )
+    .expect("a plane section with a card parses");
+
+    let saw = PLANE_SAW.lock().unwrap().clone();
+    assert_eq!(saw.len(), 1, "the plane parsed its section once: {saw:?}");
+    let blob = serde_yaml::to_string(&saw[0]).unwrap();
+    assert!(
+        !blob.contains("rate_card") && !blob.contains("tool_calls") && blob.contains("srv"),
+        "the plane got its own settings and not a byte of its card: {blob}"
+    );
+    let card = &deploy.plane_rate_cards["card-plane"];
+    assert_eq!(
+        card["srv_read"].units["tool_calls"].nanos_per_unit(),
+        3_000,
+        "the card is filed under the plane's registry key, exact"
+    );
+
+    let root = resolve(&deploy, &HashMap::new()).expect("resolves");
+    let composed = root.rate_card.expect("a plane card present");
+    let lane = format!(
+        "card-plane{}srv_read",
+        busbar_kernel_ledger::cost::PLANE_LANE_SEP
+    );
+    assert!(composed.contains_key(&lane), "{composed:?}");
+    assert!(
+        !busbar_kernel_ledger::cost::flat_card_present(
+            composed
+                .keys()
+                .map(|k| busbar_kernel_ledger::cost::split_plane_lane(k).0)
+        ),
+        "no top-level `rate_card:`: the flat plane stays billing OFF beside another plane's card"
+    );
+
+    PLANE_SAW.lock().unwrap().clear();
+    let err = crate::config::deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\ntools:\n  fees: { per_request: 1 }\n",
+    )
+    .expect_err("a plane's own `fees` is refused");
+    assert!(err.to_string().contains("tools.fees"), "{err}");
+    assert!(
+        PLANE_SAW.lock().unwrap().is_empty(),
+        "the refused section never reached the plane"
+    );
+}
+
+/// 1.5.5's flat top-level `rate_card:` loads as the fallback plane's card BYTE-IDENTICALLY: with no plane
+/// card, the resolved map is the authored map, `rate_card: {}` included.
+#[test]
+fn a_flat_rate_card_resolves_to_itself() {
+    for text in [
+        "providers: {}\nmodels: {}\nrate_card: {}\n",
+        "providers: {}\nmodels: {}\nrate_card:\n  m: { input_utok: 3, output_utok: 15 }\n",
+    ] {
+        let deploy = crate::config::deploy_from_yaml_str(text).expect("parses");
+        assert!(deploy.plane_rate_cards.is_empty());
+        let root = resolve(&deploy, &HashMap::new()).expect("resolves");
+        assert_eq!(root.rate_card, deploy.rate_card, "{text}");
+    }
 }

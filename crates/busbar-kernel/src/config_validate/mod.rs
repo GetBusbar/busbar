@@ -8,6 +8,7 @@ use crate::diagnostics::{
     diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
     CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
+use busbar_kernel_ledger::cost::{flat_card_present, split_plane_lane, PLANE_LANE_SEP};
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
 /// over-long name is rejected at boot so a bad value cannot silently disable affinity at header
@@ -1530,8 +1531,18 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
 /// by boot and `--validate` so the two cannot drift.
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     if let Some(card) = &cfg.rate_card {
-        // Well-formed rates: every tier finite and >= 0 (names the exact config path).
-        for (model, r) in card {
+        // Well-formed rates: every tier finite and >= 0 (names the exact config path). A non-fallback
+        // plane's card rides in the same map under plane-qualified keys (#47) and is held to the
+        // same shape; its path reads back as the plane section the operator wrote it under.
+        for (key, r) in card {
+            // `lane` is the whole key on the flat card; empty on a plane card's presence key.
+            let (plane, lane) = split_plane_lane(key);
+            let at =
+                crate::plane::registry::plane_decl_for(plane).map_or(plane, |d| d.config_section);
+            let path = format!(
+                "{at}{}rate_card['{lane}']",
+                if at.is_empty() { "" } else { "." }
+            );
             let tiers = [
                 ("input_utok", r.input_utok),
                 ("output_utok", r.output_utok),
@@ -1541,7 +1552,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             for (tier, v) in tiers {
                 if !v.is_finite() || v < 0.0 {
                     errors.push(format!(
-                        "rate_card['{model}'].{tier} must be a finite, non-negative \
+                        "{path}.{tier} must be a finite, non-negative \
                          number of micro-units per token (got {v})"
                     ));
                 } else if busbar_kernel_ledger::cost::representable_nano_rate(v).is_none() {
@@ -1549,7 +1560,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                     // cannot hold lands on it as an UNPRICED cell (`RateCard::refused_cells`) that
                     // refuses every hit; a configuration carrying one is refused here, whole.
                     errors.push(format!(
-                        "rate_card['{model}'].{tier} = {v} micro-units per token is a rate the card \
+                        "{path}.{tier} = {v} micro-units per token is a rate the card \
                          cannot hold (non-zero rates run from 0.0005 to about 1.8e16), so the class \
                          would bill as unpriced; configure 0 to make it free, or a rate in range"
                     ));
@@ -1571,13 +1582,18 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 .keys()
                 .filter(|c| busbar_api::RESERVED_UNITS.contains(&c.as_str()))
             {
-                errors.push(format!("rate_card['{model}'].units.{class} names a reserved class; price it with {class}_utok"));
+                errors.push(format!(
+                    "{path}.units.{class} names a reserved class; price it with {class}_utok"
+                ));
             }
-            if tiers.iter().all(|(_, v)| v.is_finite() && *v == 0.0) && r.units.is_empty() {
+            if !lane.is_empty()
+                && tiers.iter().all(|(_, v)| v.is_finite() && *v == 0.0)
+                && r.units.is_empty()
+            {
                 diag_warn!(
                     CONFIG_RATE_CARD_ALL_ZERO,
-                    model = %model,
-                    "rate_card entry for model '{model}' prices every tier at zero: its token usage \
+                    model = %key,
+                    "rate_card entry for model '{key}' prices every tier at zero: its token usage \
                      meters as FREE and is uncapped by any budget: limit. If intentional, ignore; \
                      otherwise fill in the model's rate_card rates."
                 );
@@ -1586,12 +1602,14 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // COMPLETENESS (all-or-nothing): rate_card present => EVERY configured model (by CONFIG
         // name - two providers serving one upstream are two `models:` entries with two card
         // entries) has an entry, or boot/--validate FAIL with a COPY-PASTEABLE zeroed stub of
-        // exactly the missing models.
+        // exactly the missing models. The flat plane's card only (#42 "scoped per plane"): another
+        // plane's card beside an absent `rate_card:` leaves the flat plane billing OFF.
+        let flat_card = flat_card_present(card.keys().map(|k| split_plane_lane(k).0));
         let mut model_names: Vec<&String> = cfg.models.keys().collect();
         model_names.sort();
         let missing: Vec<&str> = model_names
             .iter()
-            .filter(|name| !card.contains_key(name.as_str()))
+            .filter(|name| flat_card && !card.contains_key(name.as_str()))
             .map(|name| name.as_str())
             .collect();
         if !missing.is_empty() {
@@ -1615,8 +1633,10 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             ));
         }
         // Card entries for models that do not exist are dead config - almost always a typo of a
-        // real model name. Fail loud (the completeness stub above covers the other direction).
-        for model in card.keys() {
+        // real model name. Fail loud (the completeness stub above covers the other direction). A
+        // plane-qualified key is another plane's lane, which that plane names at run time; a lane
+        // that plane never serves is never hit, and a hit its card is silent about REFUSES (#42).
+        for model in card.keys().filter(|k| !k.contains(PLANE_LANE_SEP)) {
             if !cfg.models.contains_key(model) {
                 errors.push(format!(
                     "rate_card names model '{model}', which is not defined under models: \
@@ -1625,51 +1645,11 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             }
         }
 
-        // COMPLETENESS ACROSS PLANES, not just across models (#42,
-        // `docs/design/BUSBAR-1.6.0.md:370`): *"rate_card PRESENT => billed: a hit class not priced
-        // => REFUSE (money-sacred, never a silent 0)"*, and #77(5) (`:423`): *"Unpriced class =
-        // BOOT REFUSAL when billing is on"*.
-        //
-        // THE GUARD AND THE GAP ARE THE SAME CODE. The loop above is the whole of the completeness
-        // rule, and it is written against `models:` because the key immediately above it is: a
-        // rate entry is keyed by a CONFIG MODEL NAME and an entry naming anything else is refused
-        // as dead config. `models:` is the LLM plane's lane table. So the card can price LLM token
-        // tiers and NOTHING ELSE — there is no spelling in today's grammar for an `mcp` call, an
-        // `a2a` hop or a streamed audio-second, and therefore nothing for the completeness walk to
-        // find missing. That is not "those planes are unbilled": #42 makes `rate_card` PRESENCE the
-        // switch, and the switch is one global top-level key, so a present card turns billing ON
-        // for the whole node, including the planes whose every metered class it cannot name. The
-        // only reason that was not already a refusal is that the check had no class to miss.
-        //
-        // So it is stated here directly, against the fact the grammar CAN express: a configured
-        // registration on a plane the card cannot price, while the card is present. The section
-        // nouns are read through the same type-erased `PlaneCfg` seam `validate_unified_pool_names`
-        // reads them through, so no plane crate is named and a compiled-out plane (whose raw
-        // capture still reports the section the operator wrote) answers identically.
-        //
-        // WHAT THIS IS NOT. It is not #47's per-plane `rate_card`/`fees` sub-keys
-        // (`docs/design/BUSBAR-1.6.0.md:376`, OWNER-LOCKED) — that ruling moves `rate_card` and
-        // `fees` INSIDE each plane's section and nests `models:` under `pools:`, at which point a
-        // plane could be billed or unbilled on its own and this refusal would narrow to "this
-        // plane's card does not price this plane's class". None of that structure exists. Until it
-        // does, billing-on is a whole-node fact and an unpriceable plane on a billed node is a
-        // refusal rather than a silent zero.
-        for (section, defs) in [("tools", &cfg.tool_defs), ("agents", &cfg.agent_defs)] {
-            if !defs.is_present() {
-                continue;
-            }
-            errors.push(format!(
-                "`{section}:` is configured and `rate_card:` is present, which switches billing ON \
-                 for this whole node — but every `rate_card:` entry is keyed by a `models:` name \
-                 and validated against `models:`, so there is no key you can write to price what a \
-                 `{section}:` registration meters. `rate_card.<a {section} meter class>` is not a \
-                 config path that exists. Every class this plane meters is therefore UNPRICED, and \
-                 an unpriced class on a billed node is a REFUSAL, never a silent 0 (a silent 0 is \
-                 only ever correct when `rate_card:` is absent). Either remove `rate_card:` (the \
-                 node then serves unbilled, keeping admission, concurrency and breaker \
-                 enforcement), or remove the `{section}:` block."
-            ));
-        }
+        // COMPLETENESS ACROSS PLANES is PER PLANE (#42 "scoped per plane", #47): each plane's card
+        // is its own billing switch, so the flat `rate_card:` says nothing about a `tools:`
+        // or `agents:` registration. A plane with no card of its own reads 0 (billing off for that
+        // plane); a plane with one prices its classes or REFUSES a hit the card is silent about —
+        // at run time, in the one function, because a plane's lanes are the ones it serves.
     }
 
     if cfg.per_request_fee < 0 {

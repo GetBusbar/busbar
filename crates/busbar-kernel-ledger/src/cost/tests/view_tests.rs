@@ -445,3 +445,137 @@ fn money_spells_itself_without_a_float() {
     assert_eq!(Money::from_micros(-1).to_decimal_string(), "-0.000001");
     assert_eq!(Money::ZERO.to_decimal_string(), "0.000000");
 }
+
+// ── ONE CARD PER PLANE (#42 "scoped per plane", #47): the row's plane key picks its card ──────────
+
+/// A composed card: the flat (llm) card prices `gpt-4o` input at 3; the plane `p` prices its own
+/// lane `gpt-4o` (the SAME lane name, on purpose) at 7 a `calls` unit and nothing else. Built through
+/// the config path — [`crate::cost::compose_plane_cards`] then [`RateCard::from_config`] and
+/// [`RateCard::with_unit_rates`] — exactly as the node builds it.
+fn per_plane_card(flat: bool, plane: bool) -> RateCard {
+    use crate::cost::{compose_plane_cards, TierRates};
+    use std::collections::BTreeMap;
+    let flat_card = BTreeMap::from([(
+        LANE.to_string(),
+        (
+            TierRates {
+                input: 3.0,
+                ..TierRates::default()
+            },
+            None,
+        ),
+    )]);
+    let plane_card = BTreeMap::from([(LANE.to_string(), (TierRates::default(), Some(7_000)))]);
+    let planes = if plane {
+        BTreeMap::from([("p".to_string(), plane_card)])
+    } else {
+        BTreeMap::new()
+    };
+    let map = compose_plane_cards(flat.then_some(&flat_card), &planes);
+    let card = RateCard::from_config(
+        map.as_ref()
+            .map(|m| m.iter().map(|(lane, (tiers, _))| (lane.as_str(), *tiers))),
+        0,
+    );
+    card.with_unit_rates(map.iter().flatten().filter_map(|(lane, (_, calls))| {
+        calls.map(|nanos| (LaneClass::new(lane.as_str(), "calls"), nanos))
+    }))
+}
+
+fn plane_row(lane: &str, class: &str, n: u64) -> Result<Money, MoneyError> {
+    let card = per_plane_card(true, true);
+    price_ledger(
+        &[LedgerEntry::new(lane, 0).with_whole(class, n)],
+        &History::opening(card, 0),
+    )
+}
+
+#[test]
+fn a_plane_card_prices_its_own_lane_and_the_flat_card_never_does() {
+    let q = format!("p{}{LANE}", crate::cost::PLANE_LANE_SEP);
+    // 5 calls × 7 micro-units: THE PLANE's card, although the flat card names the same lane.
+    assert_eq!(plane_row(&q, "calls", 5), Ok(Money::from_micros(35)));
+    // The flat card prices the unqualified lane, and never the plane's `calls` class.
+    assert_eq!(plane_row(LANE, INPUT, 5), Ok(Money::from_micros(15)));
+    assert!(matches!(
+        plane_row(LANE, "calls", 5),
+        Err(MoneyError::ClassUnpriced { .. })
+    ));
+    // …and the plane's lane is never priced at the flat card's `input` rate (3): it reads the plane
+    // entry's own tier, which a config entry leaves at its explicit default of 0.
+    assert_eq!(plane_row(&q, INPUT, 5), Ok(Money::ZERO));
+}
+
+#[test]
+fn a_present_plane_card_silent_about_a_lane_refuses() {
+    let q = format!("p{}other", crate::cost::PLANE_LANE_SEP);
+    assert!(matches!(
+        plane_row(&q, "calls", 1),
+        Err(MoneyError::LaneUnpriced { .. })
+    ));
+}
+
+#[test]
+fn each_plane_card_is_its_own_switch() {
+    let q = format!("p{}{LANE}", crate::cost::PLANE_LANE_SEP);
+    let price = |card: RateCard, lane: &str, class: &str| {
+        price_ledger(
+            &[LedgerEntry::new(lane, 0).with_whole(class, 5)],
+            &History::opening(card, 0),
+        )
+    };
+    // No plane card beside a present flat card: the plane is billing OFF, reads 0 (#42).
+    assert_eq!(
+        price(per_plane_card(true, false), &q, "calls"),
+        Ok(Money::ZERO)
+    );
+    // A plane card and NO flat card: the flat plane reads 0, the plane still prices.
+    let plane_only = per_plane_card(false, true);
+    assert!(!plane_only.pricing_enabled(), "the flat card is absent");
+    assert_eq!(price(plane_only.clone(), LANE, INPUT), Ok(Money::ZERO));
+    assert_eq!(price(plane_only, &q, "calls"), Ok(Money::from_micros(35)));
+    // A present plane card with no entry at all is still ON: its every lane refuses.
+    let empty = crate::cost::compose_plane_cards::<TierPair>(
+        None,
+        &std::collections::BTreeMap::from([("p".to_string(), Default::default())]),
+    );
+    let card = RateCard::from_config(
+        empty
+            .as_ref()
+            .map(|m| m.iter().map(|(lane, (tiers, _))| (lane.as_str(), *tiers))),
+        0,
+    );
+    assert!(matches!(
+        price(card, &q, "calls"),
+        Err(MoneyError::LaneUnpriced { .. })
+    ));
+}
+
+type TierPair = (crate::cost::TierRates, Option<u64>);
+
+/// With no plane card the composed map IS the flat map, byte-identical (1.5.5 `rate_card:` loads as
+/// the llm plane's card) — including the present-but-empty `rate_card: {}`.
+#[test]
+fn a_flat_card_alone_composes_to_itself() {
+    use std::collections::BTreeMap;
+    let none: BTreeMap<String, BTreeMap<String, u8>> = BTreeMap::new();
+    let flat = BTreeMap::from([("m".to_string(), 1u8)]);
+    assert_eq!(
+        crate::cost::compose_plane_cards(Some(&flat), &none),
+        Some(flat)
+    );
+    let empty: BTreeMap<String, u8> = BTreeMap::new();
+    let card = RateCard::from_config(
+        crate::cost::compose_plane_cards(Some(&empty), &none)
+            .as_ref()
+            .map(|m| {
+                m.keys()
+                    .map(|k| (k.as_str(), crate::cost::TierRates::default()))
+            }),
+        0,
+    );
+    assert!(
+        card.pricing_enabled(),
+        "`rate_card: {{}}` stays a present card"
+    );
+}

@@ -51,6 +51,7 @@ use crate::diagnostics::{
 };
 use crate::plane::config::McpEndpointSection;
 use crate::plane::config::{AgentsSection, DecisionsSection, StreamsSection, ToolsSection};
+use busbar_kernel_ledger::cost::compose_plane_cards;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
@@ -460,7 +461,9 @@ pub struct RootCfg {
     pub admin_auth: Vec<String>,
     /// The top-level `groups:` limit tree.
     pub groups: std::collections::BTreeMap<String, GroupCfg>,
-    /// The top-level `rate_card:` - the ONLY cost source. See `DeployCfg::rate_card`.
+    /// The top-level `rate_card:` - the ONLY cost source. See `DeployCfg::rate_card`. Every other
+    /// plane's own card rides in it under plane-qualified keys
+    /// (`busbar_kernel_ledger::cost::compose_plane_cards`); with none, it is `rate_card:` verbatim.
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
     /// Flat cents charged per request (default 0).
     pub per_request_fee: i64,
@@ -1116,6 +1119,10 @@ pub fn bind_is_loopback(addr: &str) -> bool {
     }
 }
 
+/// Each non-fallback plane's own card (#47): plane registry key → lane → rate entry.
+pub type PlaneRateCards =
+    std::collections::BTreeMap<String, std::collections::BTreeMap<String, RateEntryCfg>>;
+
 /// Deployment configuration - operator-owned config.yaml structure.
 // deny_unknown_fields: a typo'd or unknown TOP-LEVEL key (e.g. `plugin:` for `plugins:`) must be a
 // loud startup error, not a silently-ignored block - the fail-closed posture every nested
@@ -1239,6 +1246,11 @@ pub struct DeployCfg {
     /// Flat cents (abstract minor units) charged per request for budget accounting. Default 0.
     #[serde(default = "default_per_request_fee")]
     pub per_request_fee: i64,
+    /// Every OTHER plane's own card (#47), keyed by plane registry key: the reserved `rate_card:`
+    /// sub-key of that plane's section, stripped off it before the plane parses the rest (#43).
+    /// A lifted CARRIER, like the plane sections below; [`resolve`] composes it beside `rate_card:`.
+    #[serde(skip)]
+    pub plane_rate_cards: PlaneRateCards,
     /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
     #[serde(default)]
     pub store: Option<StoreCfg>,
@@ -2165,15 +2177,12 @@ pub fn resolve(
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
         // Look up the provider definition by name
-        let def = match defs.get(deploy_name) {
-            Some(d) => d,
-            None => {
-                errors.push(format!(
-                    "provider '{}' referenced in config.yaml not found in providers.yaml",
-                    deploy_name
-                ));
-                continue;
-            }
+        let Some(def) = defs.get(deploy_name) else {
+            errors.push(format!(
+                "provider '{}' referenced in config.yaml not found in providers.yaml",
+                deploy_name
+            ));
+            continue;
         };
 
         let merged = match resolve_provider_hook {
@@ -2211,14 +2220,8 @@ pub fn resolve(
     // An UNRESOLVABLE member is deliberately NOT refused here — see the `None` arm below for the
     // two checks that own it and why the refusal stays where 1.5.5 put it. This is the ONLY place a
     // pool's plane is decided.
-    let mut tool_pools_derived: std::collections::BTreeMap<
-        String,
-        crate::failover::CandidatePoolCfg,
-    > = std::collections::BTreeMap::new();
-    let mut agent_pools_derived: std::collections::BTreeMap<
-        String,
-        crate::failover::CandidatePoolCfg,
-    > = std::collections::BTreeMap::new();
+    let mut tool_pools_derived = std::collections::BTreeMap::new();
+    let mut agent_pools_derived = std::collections::BTreeMap::new();
     {
         // A pool's KIND discriminant is its members' shared CONFIG SECTION — the plane-declared
         // grammar key, used as OPAQUE DATA. The router never names a plane: `tools:` routes to the
@@ -2300,18 +2303,13 @@ pub fn resolve(
                 continue;
             }
             match kind {
-                Some(k) if k == tools_section => {
-                    tool_pools_derived.insert(
-                        pool_name.clone(),
-                        crate::failover::CandidatePoolCfg {
-                            members: pool.members.iter().map(|m| m.model.clone()).collect(),
-                            repeatable: pool.repeatable.clone(),
-                        },
-                    );
-                    non_llm.push(pool_name.clone());
-                }
-                Some(k) if k == agents_section => {
-                    agent_pools_derived.insert(
+                Some(k) if k == tools_section || k == agents_section => {
+                    let derived = if k == tools_section {
+                        &mut tool_pools_derived
+                    } else {
+                        &mut agent_pools_derived
+                    };
+                    derived.insert(
                         pool_name.clone(),
                         crate::failover::CandidatePoolCfg {
                             members: pool.members.iter().map(|m| m.model.clone()).collect(),
@@ -2662,35 +2660,29 @@ pub fn resolve(
     // neutral, section-keyed shape `RootCfg` carries in place of a per-plane field (mirroring
     // `tool_defs`/`agent_defs` beside it). The `tools:` plane owns the endpoint door, so its section
     // key is the map key; a build compiled without that plane produced no resource and inserts none.
-    let mut endpoint_resources: std::collections::HashMap<
-        &'static str,
-        std::sync::Arc<dyn std::any::Any + Send + Sync>,
-    > = std::collections::HashMap::new();
-    if let Some(resource) = lowered_endpoint {
-        endpoint_resources.insert(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            resource,
-        );
-    }
+    let endpoint_resources: std::collections::HashMap<_, _> = lowered_endpoint
+        .map(|resource| {
+            (
+                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+                resource,
+            )
+        })
+        .into_iter()
+        .collect();
 
     // The `oauth_as:` block, validated HERE for the same reason the endpoint block is: an authorization server
     // whose issuer is malformed advertises endpoints at paths it does not serve, and every
     // conforming client discovers them and fails. A boot refusal names the field; a runtime one is
     // found by an agent that cannot log in and cannot say why.
-    let oauth_as = match deploy
+    let oauth_as = deploy
         .oauth_as
         .as_ref()
         .map(crate::oauth_as::config::AsIdentity::from_cfg)
-    {
-        None => None,
-        Some(Ok(identity)) => Some(identity),
-        Some(Err(e)) => {
-            errors.push(e.to_string());
-            None
-        }
-    };
+        .and_then(|identity| identity.map_err(|e| errors.push(e.to_string())).ok());
 
     if errors.is_empty() {
+        // An absent `security:` block is the all-default one: no extra hosts, no allow-all.
+        let security = deploy.security.clone().unwrap_or_default();
         Ok(RootCfg {
             listen: deploy.listen.clone(),
             public_url: deploy.public_url.clone(),
@@ -2716,26 +2708,14 @@ pub fn resolve(
             // entry is its provider NAME (what `role_bindings.<name>` binds), not its module.
             admin_auth: admin_auth_names,
             groups: deploy.groups.clone(),
-            rate_card: deploy.rate_card.clone(),
+            rate_card: compose_plane_cards(deploy.rate_card.as_ref(), &deploy.plane_rate_cards),
             per_request_fee: deploy.per_request_fee,
             store: deploy.store.clone(),
             secrets: deploy.secrets.clone(),
             global_hooks: global_hook_names,
-            blocked_metadata_hosts: deploy
-                .security
-                .as_ref()
-                .map(|s| s.blocked_metadata_hosts.clone())
-                .unwrap_or_default(),
-            allow_metadata_hosts: deploy
-                .security
-                .as_ref()
-                .map(|s| s.allow_metadata_hosts.clone())
-                .unwrap_or_default(),
-            allow_all_metadata: deploy
-                .security
-                .as_ref()
-                .map(|s| s.allow_all_metadata)
-                .unwrap_or(false),
+            blocked_metadata_hosts: security.blocked_metadata_hosts,
+            allow_metadata_hosts: security.allow_metadata_hosts,
+            allow_all_metadata: security.allow_all_metadata,
             // Project the operational-limit sections onto a flat resolved struct. The `advanced:` /
             // `export:` blocks are optional; absent ⇒ their section defaults (the historical
             // hardcoded values, via the manual `Default` impls).

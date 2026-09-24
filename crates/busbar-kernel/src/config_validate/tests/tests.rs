@@ -4382,32 +4382,59 @@ fn test_validate_rate_card_entry_all_four_explicit_zeros_still_only_warns() {
     );
 }
 
-// ── #42 — A BILLED PLANE THAT CANNOT BE PRICED ───────────────────────────────────────────────────
+// ── #42 "scoped per plane" / #47 — EACH PLANE'S CARD IS ITS OWN SWITCH ─────────────────────────────
 
-/// `rate_card:` PRESENT is billing ON (#42, `:370`). A non-LLM plane's registrations meter classes
-/// the top-level card cannot name — it is keyed by `models:` entries and validated against them —
-/// so every one of those classes is UNPRICED, which #42 makes a REFUSAL rather than a silent zero.
+/// The flat `rate_card:` PRESENT beside a configured other plane that has NO card of its
+/// own: that plane is billing OFF (#42: reads 0), so the node boots. This used to be a whole-node
+/// refusal — billing was one global switch and no key could price another plane — which #47's
+/// per-plane cards retire: the refusal narrowed to "this plane's card does not price this plane's
+/// class", which the one function answers at run time on a hit.
 #[test]
-fn test_validate_refuses_a_present_card_with_a_non_llm_plane_configured() {
+fn test_validate_allows_a_flat_card_beside_a_plane_with_no_card_of_its_own() {
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     cfg.rate_card = Some(std::collections::BTreeMap::from([(
         "claude-sonnet".to_string(),
         priced_entry(),
     )]));
     cfg.tool_defs = present_tools_section();
-
-    let errs = validate(&cfg).expect_err(
-        "#42: billing is ON (a rate_card is present) and the mcp plane's metered classes have no \
-         rate — an unpriced class is a REFUSAL, never a silent 0",
-    );
-    let joined = errs.join("\n");
     assert!(
-        joined.contains("tools:") && joined.contains("rate_card"),
-        "the refusal must name the plane section that cannot be priced: {joined}"
+        validate(&cfg).is_ok(),
+        "a plane with no card of its own is unbilled, not refused: {:?}",
+        validate(&cfg).err()
     );
 }
 
-/// THE CONTROL for the row above: billing OFF (no `rate_card:`) and the same plane configured must
+/// A plane's own card (composed beside an ABSENT flat card, as `resolve` composes it) is held to the
+/// rate card's well-formedness, named by its own path — and it never makes the flat card's
+/// completeness rule fire: the flat plane stays billing OFF.
+#[test]
+fn test_validate_holds_a_plane_card_to_the_card_shape_and_leaves_the_flat_plane_off() {
+    let mut cfg = cost_cfg(&["claude-sonnet"]);
+    let bad: config::RateEntryCfg =
+        serde_yaml::from_str("input_utok: -1\n").expect("parses; validation refuses");
+    let good: config::RateEntryCfg =
+        serde_yaml::from_str("units: { calls: 5 }\n").expect("an open-class entry parses");
+    let plane_card = std::collections::BTreeMap::from([
+        ("bad-lane".to_string(), bad),
+        ("good-lane".to_string(), good),
+    ]);
+    cfg.rate_card = busbar_kernel_ledger::cost::compose_plane_cards(
+        None,
+        &std::collections::BTreeMap::from([("p".to_string(), plane_card)]),
+    );
+    let errs = validate(&cfg).expect_err("a negative plane rate is refused");
+    assert_eq!(
+        errs,
+        vec![
+            "p.rate_card['bad-lane'].input_utok must be a finite, non-negative number of \
+             micro-units per token (got -1)"
+                .to_string()
+        ],
+        "one error, on the plane card's own path; no flat completeness stub, no dead-model entry"
+    );
+}
+
+/// THE CONTROL: billing OFF (no `rate_card:`) and the same plane configured must
 /// still boot. #42: *"rate_card ABSENT ⇒ NOT billed … no boot-refusal"*.
 #[test]
 fn test_validate_allows_a_non_llm_plane_when_billing_is_off() {

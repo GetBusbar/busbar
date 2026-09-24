@@ -238,6 +238,13 @@ impl CellPrices {
 /// A card has no version field. Which card this is, is the number of the history entry that holds
 /// it, and that number belongs to the history rather than to the card — a card carrying its own name
 /// is a second identity that can disagree with the first.
+///
+/// **ONE CARD PER PLANE** (#42 "scoped per plane", #47). The card an unqualified lane is priced by is
+/// the FLAT card — the llm (`pools`) plane's, which is where 1.5.5's top-level `rate_card:` loads,
+/// byte-identically. Every other plane's card rides in `planes`, keyed by its plane key, and a lane
+/// qualified `"<plane>\u{1f}<lane>"` ([`crate::cost::PLANE_LANE_SEP`]) is priced by THAT plane's card
+/// alone ([`Self::plane_lane`]). A plane with no card of its own is billing OFF for that plane (#42:
+/// reads 0), whatever any other plane's card says; each plane's presence is its own switch.
 #[derive(Debug, Clone)]
 pub struct RateCard {
     present: bool,
@@ -247,6 +254,64 @@ pub struct RateCard {
     /// is on the card as an UNPRICED cell of a named lane, so a hit on it refuses; the list is kept
     /// so card-build validation can refuse the whole configuration at boot (#77(5)).
     refused: Vec<LaneClass>,
+    /// The other planes' cards, by plane key. Each carries no fee: the flat fee is one dimension of
+    /// the node's card (#44), posted once whatever plane the row is on.
+    planes: BTreeMap<String, RateCard>,
+}
+
+/// The card a plane with no card of its own resolves to: ABSENT, so its every class reads 0 (#42).
+static NO_CARD: RateCard = RateCard {
+    present: false,
+    prices: BTreeMap::new(),
+    fee: 0,
+    refused: Vec::new(),
+    planes: BTreeMap::new(),
+};
+
+/// Split a card key (or a ledger row's lane) into `(plane key, lane)`. An unqualified key is the
+/// flat card's, spelt here as the empty plane key; `"<plane>\u{1f}"` with no lane is that plane's
+/// PRESENCE — a card configured with no entry yet, which still turns its plane's billing on.
+pub fn split_plane_lane(key: &str) -> (&str, &str) {
+    key.split_once(crate::cost::PLANE_LANE_SEP)
+        .unwrap_or(("", key))
+}
+
+/// Whether the flat card is present, given the PLANE KEY of every key in a composed card map (see
+/// [`split_plane_lane`]): a map naming no key at all is the 1.5.5 `rate_card: {}` (present), and
+/// otherwise the flat card is present only when some key is the flat plane's (the empty plane key).
+/// [`RateCard::from_config`] and the config validator both ask this, so they cannot disagree about
+/// which card is on.
+pub fn flat_card_present<'k>(mut planes: impl Iterator<Item = &'k str>) -> bool {
+    let mut none = true;
+    planes.any(|plane| {
+        none = false;
+        plane.is_empty()
+    }) || none
+}
+
+/// COMPOSE one card map from the flat card and each plane's own card: a plane's lanes are qualified
+/// by its key and each present plane card leaves its presence key (see [`split_plane_lane`]). With no
+/// plane card this is the flat card, untouched — the 1.5.5 map, byte-identical.
+pub fn compose_plane_cards<E: Clone + Default>(
+    flat: Option<&BTreeMap<String, E>>,
+    planes: &BTreeMap<String, BTreeMap<String, E>>,
+) -> Option<BTreeMap<String, E>> {
+    if planes.is_empty() {
+        return flat.cloned();
+    }
+    let sep = crate::cost::PLANE_LANE_SEP;
+    let mut out = flat.cloned().unwrap_or_default();
+    if flat.is_some() {
+        out.insert(sep.to_string(), E::default());
+    }
+    for (plane, card) in planes {
+        out.insert(format!("{plane}{sep}"), E::default());
+        out.extend(
+            card.iter()
+                .map(|(lane, e)| (format!("{plane}{sep}{lane}"), e.clone())),
+        );
+    }
+    Some(out)
 }
 
 impl RateCard {
@@ -262,6 +327,7 @@ impl RateCard {
             // amount, which would credit a budget back toward headroom.
             fee: per_request_fee.max(0),
             refused: Vec::new(),
+            planes: BTreeMap::new(),
         }
     }
 
@@ -280,6 +346,7 @@ impl RateCard {
             prices: BTreeMap::new(),
             fee: per_request_fee.max(0),
             refused: Vec::new(),
+            planes: BTreeMap::new(),
         };
         for (cell, micro) in entries {
             card.place_rate(cell, micro);
@@ -308,6 +375,7 @@ impl RateCard {
             prices,
             fee: per_request_fee.max(0),
             refused: Vec::new(),
+            planes: BTreeMap::new(),
         }
     }
 
@@ -337,6 +405,10 @@ impl RateCard {
     /// same spellings, so no name is translated between the line and the entry that prices it. The
     /// two agreeing is not left to inspection: a card keyed by names a report does not use prices
     /// every line at zero, which the ledger identity reads as a node that delivered value for free.
+    ///
+    /// ONE CARD PER PLANE: a key qualified by a plane key lands on THAT plane's card (see
+    /// [`compose_plane_cards`]); the unqualified keys are the flat card, present by
+    /// [`flat_card_present`]'s rule. A map naming no plane builds exactly the card it always did.
     pub fn from_config<'a>(
         lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
         per_request_fee: i64,
@@ -344,13 +416,30 @@ impl RateCard {
         let Some(lanes) = lanes else {
             return RateCard::absent(per_request_fee);
         };
-        let entries = lanes.into_iter().flat_map(|(lane, tiers)| {
-            tiers
-                .by_class()
-                .into_iter()
-                .map(move |(class, micro)| (LaneClass::new(lane, class), micro))
-        });
-        RateCard::from_micro_rates(entries, per_request_fee)
+        let mut by_plane: BTreeMap<&str, Vec<(LaneClass, f64)>> = BTreeMap::new();
+        for (key, tiers) in lanes {
+            let (plane, lane) = split_plane_lane(key);
+            let cells = by_plane.entry(plane).or_default();
+            if !lane.is_empty() {
+                cells.extend(
+                    tiers
+                        .by_class()
+                        .map(|(class, micro)| (LaneClass::new(lane, class), micro)),
+                );
+            }
+        }
+        let flat_present = flat_card_present(by_plane.keys().copied());
+        let flat = by_plane.remove("").unwrap_or_default();
+        let mut card = if flat_present {
+            RateCard::from_micro_rates(flat, per_request_fee)
+        } else {
+            RateCard::absent(per_request_fee)
+        };
+        card.planes = by_plane
+            .into_iter()
+            .map(|(plane, cells)| (plane.to_string(), RateCard::from_micro_rates(cells, 0)))
+            .collect();
+        card
     }
 
     /// **THE OPEN CLASSES a deployment configured** (item 123): each `(lane, class)` cell set to an
@@ -362,11 +451,22 @@ impl RateCard {
     /// open rates configured nowhere have nowhere to land and are ignored rather than switching
     /// billing on by the back door. A card that is PRESENT carries them, and a class the traffic
     /// hits that no cell prices still REFUSES in the one function — never a silent 0.
+    ///
+    /// A plane-qualified lane lands on that plane's card, under the same rule: a plane with no card
+    /// of its own has nowhere for the rate to land.
     pub fn with_unit_rates(mut self, cells: impl IntoIterator<Item = (LaneClass, u64)>) -> Self {
-        if self.present {
-            for (cell, nanos) in cells {
-                self.prices
-                    .entry(cell.lane)
+        for (cell, nanos) in cells {
+            let (plane, lane) = split_plane_lane(&cell.lane);
+            let card = match plane {
+                "" => &mut self,
+                plane => match self.planes.get_mut(plane) {
+                    Some(card) => card,
+                    None => continue,
+                },
+            };
+            if card.present && !lane.is_empty() {
+                card.prices
+                    .entry(lane.to_string())
                     .or_default()
                     .entry(cell.class)
                     .or_default()
@@ -374,6 +474,17 @@ impl RateCard {
             }
         }
         self
+    }
+
+    /// **THE CARD A LANE IS PRICED BY, and the lane as that card keys it** (#42 "scoped per plane",
+    /// #47). An unqualified lane is this (the flat) card's; `"<plane>\u{1f}<lane>"` is that plane's
+    /// own card's — ABSENT when the plane configured none, so it reads 0 and never borrows another
+    /// plane's card, present or not.
+    pub fn plane_lane<'l>(&self, lane: &'l str) -> (&RateCard, &'l str) {
+        match split_plane_lane(lane) {
+            ("", _) => (self, lane),
+            (plane, lane) => (self.planes.get(plane).unwrap_or(&NO_CARD), lane),
+        }
     }
 
     /// Set one cell's rate.
@@ -458,7 +569,8 @@ impl RateCard {
     /// Whether a request on this lane must be refused because a card is present and has no entry
     /// for it. With no card nothing is unpriced, because there is nothing to be missing from.
     pub fn lane_unpriced(&self, lane: &str) -> bool {
-        self.present && !self.prices.contains_key(lane)
+        let (card, lane) = self.plane_lane(lane);
+        card.present && !card.prices.contains_key(lane)
     }
 
     /// The rates for one lane. Three outcomes, and they are the whole of the pricing posture:
@@ -467,10 +579,11 @@ impl RateCard {
     /// - card present and the lane is named: that lane's rates;
     /// - card present and the lane is unknown: nothing at all, so the caller fails closed.
     pub fn lane_rates(&self, lane: &str) -> Option<LaneRates<'_>> {
-        if !self.present {
+        let (card, lane) = self.plane_lane(lane);
+        if !card.present {
             return Some(LaneRates { classes: None });
         }
-        self.prices.get(lane).map(|classes| LaneRates {
+        card.prices.get(lane).map(|classes| LaneRates {
             classes: Some(classes),
         })
     }

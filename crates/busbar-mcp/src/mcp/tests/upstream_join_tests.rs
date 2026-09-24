@@ -759,3 +759,140 @@ async fn a_requests_cap_trips_on_mcp_tool_calls_and_the_llm_budget_does_not() {
         );
     }
 }
+
+// ── #47: THE MCP PLANE'S OWN CARD — `tools.rate_card` prices `tool_calls`, and only that plane's ──────
+
+/// The node's card map exactly as boot builds it: config text → core lifts `tools.rate_card` off the
+/// section (the plane never sees it, #43) → `resolve` composes it beside the llm card → the map
+/// `CostModel::resolve_parts` is handed. The plane is registered first, as the composition root
+/// installs it before any config is read, so the section is parsed by the MCP plane's own reader.
+fn composed_card(yaml: &str) -> Option<Card> {
+    crate::testkit::install_test_seams();
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
+        "providers: {{}}\nmodels: {{}}\n{yaml}"
+    ))
+    .expect("the config parses");
+    busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the config resolves")
+        .rate_card
+}
+
+/// ITEM 136's ORIGINAL CONTROL, now expressible: a `tools.rate_card` pricing the tool's `tool_calls`
+/// at one minor unit a call CHARGES it, and a group `budget:` of 3 trips on the fourth MCP call —
+/// beside an llm card, which prices none of it.
+#[tokio::test]
+async fn a_tools_card_prices_tool_calls_and_a_budget_cap_trips_on_mcp() {
+    use busbar_kernel::config::groups::LimitMetric;
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "pricedfs";
+    let card = composed_card(&format!(
+        "rate_card:\n  gpt-x: {{ input_utok: 1 }}\ntools:\n  rate_card:\n    \
+         {server}_read: {{ units: {{ tool_calls: 10000 }} }}\n"
+    ));
+    let (app, gov, cost) = budgeted_app(
+        &peer,
+        server,
+        card.as_ref(),
+        vec![per_day(LimitMetric::Budget, 3)],
+    );
+    let key = budgeted_key("k-mcp-tools-card", server);
+    for n in 1..=3 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(
+            answered(status, &body),
+            "call {n} is under the cap: {status} {body}"
+        );
+    }
+    let now = busbar_kernel::store::now();
+    let read = gov
+        .derived_bucket_usage(&*cost, "group:g@day", "day", true, now)
+        .expect("a priced MCP class reads");
+    assert_eq!(
+        read.spend_cents, 3,
+        "3 calls x 10,000 micro-units = 3 minor units"
+    );
+    let (status, body) = read_once(&app, &key, server).await;
+    assert!(
+        !answered(status, &body) && body.to_string().contains("budget"),
+        "call 4 trips the budget the tools card priced: {status} {body}"
+    );
+    assert_eq!(peer.mcp_hits(), 3, "the refused call never left");
+}
+
+/// #42 SCOPED TO THE PLANE: a PRESENT `tools.rate_card` that is silent about the tool the traffic
+/// hit REFUSES — the first call is served and ledgered, then the door cannot price the bucket and
+/// refuses, and the bucket's usage read fails. Never a silent 0.
+#[tokio::test]
+async fn a_present_tools_card_silent_about_a_tool_refuses() {
+    use busbar_kernel::config::groups::LimitMetric;
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "silentfs";
+    let card = composed_card(
+        "tools:\n  rate_card:\n    some_other_tool: { units: { tool_calls: 10000 } }\n",
+    );
+    let (app, gov, cost) = budgeted_app(
+        &peer,
+        server,
+        card.as_ref(),
+        vec![per_day(LimitMetric::Budget, 1_000)],
+    );
+    let key = budgeted_key("k-mcp-tools-silent", server);
+    let (status, body) = read_once(&app, &key, server).await;
+    assert!(answered(status, &body), "call 1 is served: {status} {body}");
+    let (status, body) = read_once(&app, &key, server).await;
+    assert!(
+        !answered(status, &body),
+        "call 2 is REFUSED: the tools card cannot price the tool call 1 ledgered: {status} {body}"
+    );
+    assert_eq!(peer.mcp_hits(), 1);
+    assert!(
+        gov.derived_bucket_usage(
+            &*cost,
+            "group:g@day",
+            "day",
+            true,
+            busbar_kernel::store::now()
+        )
+        .is_err(),
+        "the usage read refuses rather than reading 0"
+    );
+}
+
+/// The llm plane's card never prices an MCP row, even an entry spelt exactly like the tool: with no
+/// `tools` card the MCP plane is billing OFF and a 1-minor-unit budget never trips.
+#[tokio::test]
+async fn an_llm_card_entry_named_like_a_tool_never_prices_it() {
+    use busbar_kernel::config::groups::LimitMetric;
+    metrics_init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let server = "namesakefs";
+    let card = composed_card(&format!(
+        "rate_card:\n  {server}_read: {{ units: {{ tool_calls: 1000000 }} }}\n"
+    ));
+    let (app, gov, cost) = budgeted_app(
+        &peer,
+        server,
+        card.as_ref(),
+        vec![per_day(LimitMetric::Budget, 1)],
+    );
+    let key = budgeted_key("k-mcp-llm-namesake", server);
+    for n in 1..=4 {
+        let (status, body) = read_once(&app, &key, server).await;
+        assert!(answered(status, &body), "call {n}: {status} {body}");
+    }
+    let read = gov
+        .derived_bucket_usage(
+            &*cost,
+            "group:g@day",
+            "day",
+            true,
+            busbar_kernel::store::now(),
+        )
+        .expect("reads");
+    assert_eq!(
+        read.spend_cents, 0,
+        "the llm card never prices the MCP lane"
+    );
+}

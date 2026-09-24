@@ -73,9 +73,10 @@ use crate::cost::posting::{checked_apply_tier, STANDARD_TIER_BP};
 use crate::cost::{NANOS_PER_CENT, NANOS_PER_MICRO};
 
 /// Joins a plane key to its lane: `"<plane>\u{1f}<lane>"` is a lane priced by THAT plane's own card
-/// (#42 "scoped per plane", #47). An unqualified lane is the flat card's — the llm (`pools`) plane's,
-/// the only card config can author today — so a qualified lane resolves to an ABSENT card and reads 0
-/// until its plane's section can carry one. U+001F is not a character a `models:` key is written with.
+/// (#42 "scoped per plane", #47), resolved by [`crate::cost::RateCard::plane_lane`]. An unqualified
+/// lane is the flat card's — the llm (`pools`) plane's, where 1.5.5's top-level `rate_card:` loads.
+/// A plane that configured no card reads 0; one that did prices or refuses by that card alone.
+/// U+001F is not a character a `models:` key is written with.
 pub const PLANE_LANE_SEP: char = '\u{1f}';
 
 /// The scale every [`Money`] figure is held at: six decimal places, i.e. micro-units (#81).
@@ -470,13 +471,15 @@ impl<'a> Tally<'a> {
         counts: impl IntoIterator<Item = (&'c str, Count)>,
         fee_count: Count,
     ) -> Result<(), MoneyError> {
-        let (card_seq, card) = self.resolve(arrived_ms)?;
+        let (card_seq, node_card) = self.resolve(arrived_ms)?;
+        // THE CARD BY PLANE (#42 "scoped per plane", #47): the row's plane key picks its card, and a
+        // plane with no card of its own is billing off for that plane whatever another plane's says.
+        let (card, key) = node_card.plane_lane(lane);
 
-        // Another plane's lane is priced by its own card, never this one (#42/#47): absent, so 0.
-        let amount = if card.pricing_enabled() && !lane.contains(PLANE_LANE_SEP) {
+        let amount = if card.pricing_enabled() {
             // A present card that names no entry for the lane REFUSES.
             let rates = card
-                .lane_rates(lane)
+                .lane_rates(key)
                 .ok_or_else(|| MoneyError::LaneUnpriced {
                     card_seq,
                     lane: lane.to_string(),
@@ -505,7 +508,7 @@ impl<'a> Tally<'a> {
             0
         };
 
-        let fee = fee_term(card, fee_count)?;
+        let fee = fee_term(node_card, fee_count)?;
         let amount = amount.checked_add(fee).ok_or(MoneyError::Overflow)?;
         self.add(tier_bp, amount)
     }
