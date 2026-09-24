@@ -6160,3 +6160,37 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
     cfg.rate_card = Some(plane_card("dropped-plane", "a", full));
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
 }
+
+/// EVERY CONFIGURED CLASS IS DECLARED: a `units:` key naming a class the plane does not declare
+/// refuses, naming the unknown key AND the plane's declared list — for the fallback plane's flat
+/// card and for a plane's own card alike. A card whose keys are all declared (the 1.5.5 pools card
+/// plus `units: { search_units: 0 }`) passes.
+#[test]
+fn a_card_configuring_an_undeclared_class_fails_naming_it_and_the_declared_list() {
+    let _iso =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&FLAT_PLANE, &CLASS_PLANE]);
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(card_yaml(
+        "m: { input_utok: 3, units: { search_units: 0, images: 0, typo_class: 1 } }\n",
+    ));
+    let errs = validate(&cfg).expect_err("typo_class is declared by no plane");
+    let want = "pools.rate_card configures unit(s) typo_class not declared by this plane \
+                (declared: input, output, cache_read, cache_write, search_units, images); remove \
+                them or fix the name";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+
+    cfg.rate_card = Some(plane_card(
+        "class-plane",
+        "srv_read",
+        "units: { calls: 1, bytes: 0, byts: 2 }",
+    ));
+    let errs = validate(&cfg).expect_err("byts is not a declared tools class");
+    let want = "tools.rate_card configures unit(s) byts not declared by this plane (declared: \
+                calls, bytes); remove them or fix the name";
+    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+
+    cfg.rate_card = Some(card_yaml(
+        "m: { input_utok: 3, units: { search_units: 0, images: 0 } }\n",
+    ));
+    assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
+}

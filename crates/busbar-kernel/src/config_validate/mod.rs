@@ -1650,7 +1650,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                     || on.iter().any(|(_, r)| r.units.contains_key(*c)))
             };
             let declared = d.billable_classes.iter().map(|c| c.class);
-            let missing: Vec<&str> = declared.filter(unset).collect();
+            let missing: Vec<&str> = declared.clone().filter(unset).collect();
             let present = if d.fallback {
                 flat_card
             } else {
@@ -1662,6 +1662,24 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                      add them (0 to make them free)",
                     d.config_section,
                     missing.join(", ")
+                ));
+            }
+            // EVERY CONFIGURED CLASS IS DECLARED: a `units:` key the plane never ledgers prices
+            // nothing (almost always a typo of a declared class), so it refuses naming each such
+            // key and the plane's whole declared list.
+            let unknown: std::collections::BTreeSet<&str> = (on.iter())
+                .flat_map(|(_, r)| r.units.keys().map(String::as_str))
+                .filter(|k| !declared.clone().any(|c| c == *k))
+                .collect();
+            if !unknown.is_empty() {
+                errors.push(format!(
+                    "{}.rate_card configures unit(s) {} not declared by this plane (declared: {}); \
+                     remove them or fix the name",
+                    d.config_section,
+                    unknown.into_iter().collect::<Vec<_>>().join(", "),
+                    Some(declared.collect::<Vec<_>>().join(", "))
+                        .filter(|l| !l.is_empty())
+                        .unwrap_or_else(|| "none".into())
                 ));
             }
         }
