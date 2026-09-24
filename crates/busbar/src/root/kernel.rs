@@ -455,6 +455,13 @@ impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {
             .entry_at(at_ms)
             .map_or(0, busbar_kernel_ledger::cost::CardEntry::effective_from)
     }
+
+    /// THE SAME HISTORY, handed to the budget ledger (OWNER RULING Q14): its reads and its gate
+    /// price each era of a budget cell at the card this history resolves for it, so `/keys` and
+    /// `/groups` usage, the `/metrics` spend gauges and the gate agree with `GET /admin/usage`.
+    fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
+        ROOT_CARD.history()
+    }
 }
 
 /// **THE ROOT, ANSWERING THE USAGE READ'S DATED-HISTORY SEAM** (DECISION #79).
