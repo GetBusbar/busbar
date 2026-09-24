@@ -588,3 +588,51 @@ fn an_amendment_names_the_audit_record_it_amends() {
         other => panic!("expected a correction, got {other:?}"),
     }
 }
+
+/// A JOURNAL REBUILT FROM ITS WHOLE RUN is the journal that sealed it: the same head, the same
+/// corrected counts, and the next amendment links on where the run ended. A run with its head cut
+/// off is refused rather than rebuilt.
+#[test]
+fn a_journal_rebuilt_from_its_run_reads_and_continues_as_the_one_that_sealed_it() {
+    let mut sealed = AmendJournal::new();
+    sealed.append(an_access(), &token());
+    sealed.append(a_correction(), &token());
+    let run: Vec<_> = sealed.recent().cloned().collect();
+
+    let mut rebuilt = AmendJournal::restore(run.clone()).expect("a whole run rebuilds");
+    assert_eq!(rebuilt.head(), sealed.head());
+    assert_eq!(rebuilt.corrections(), sealed.corrections());
+    let recorded = counts(&[("input_tokens", 1_000), ("output_tokens", 200)]);
+    assert_eq!(
+        rebuilt.counts_now("the-entry-being-amended", &recorded),
+        counts(&[("input_tokens", 800), ("output_tokens", 200)])
+    );
+    let next = rebuilt.append(an_access(), &token());
+    assert_eq!((next.seq, next.prev_hash.as_str()), (3, sealed.head()));
+    assert_eq!(rebuilt.verify(), Ok(()));
+
+    assert!(
+        AmendJournal::restore(run[1..].to_vec()).is_err(),
+        "a run that does not start at the genesis is missing amendments"
+    );
+}
+
+/// The two frozen subject fields read back as the subject they were written from, for every kind.
+#[test]
+fn a_subject_reads_back_from_the_fields_it_is_digested_by() {
+    use crate::amend::{subject_fields, subject_from_fields};
+    for subject in [
+        Subject::PrincipalId("pseudonym-1".into()),
+        Subject::Arrival,
+        Subject::Node(7),
+        Subject::Aggregate,
+    ] {
+        let (tag, value) = subject_fields(&subject);
+        assert_eq!(subject_from_fields(tag, &value), Some(subject));
+    }
+    assert_eq!(subject_from_fields("arrival", "x"), None);
+    assert_eq!(subject_from_fields("someone", ""), None);
+    assert_eq!(AmendClass::parse("adjust"), Some(AmendClass::Adjust));
+    assert_eq!(Reader::parse("export"), Some(Reader::Export));
+    assert_eq!(Reader::parse("nobody"), None);
+}

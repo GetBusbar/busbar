@@ -117,6 +117,11 @@ mod replay;
 use replay::{apply_opened, replay_into, same_movement, Replayed};
 pub use replay::{JournalDisagreement, Recoverable};
 
+/// The node amendment journal bound to the chain: each sealed amendment journalled, and the node
+/// journal rebuilt from the chain at boot. A private child module, as `replay` is.
+mod amend;
+pub use amend::bind_amendments;
+
 /// What the root reads out of configuration to decide the durability shape.
 ///
 /// One field, because there is one decision. Its absence is the previous release's shape and its
@@ -196,6 +201,10 @@ pub struct Durability {
     /// one whose later applies it journals ([`crate::root::kernel::RootHistory::bind_journal`]).
     /// `None` on every book a production boot with a data directory did not build.
     pub(crate) cards_from: Option<&'static crate::root::kernel::RootHistory>,
+    /// THE POSITION OF THE NEWEST AMENDMENT this book rebuilt the node amendment journal from
+    /// ([`Durability::restore_amendments`]), and so the book whose later amendments are journalled
+    /// ([`bind_amendments`]). `None` on every book that rebuilt nothing.
+    amendments_through: Option<u64>,
 }
 
 /// Where the book reads the dated rate-card history a replay prices against: a snapshot pinned
@@ -2210,6 +2219,7 @@ pub fn build_with_cards(
         quarantined: Vec::new(),
         history,
         cards_from: None,
+        amendments_through: None,
     };
 
     // A CORRUPT JOURNAL DOES NOT STOP THE BOOT, AND IT IS NEVER SILENT. The log has already kept

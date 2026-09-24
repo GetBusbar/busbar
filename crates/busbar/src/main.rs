@@ -938,6 +938,10 @@ fn compose_boot_book(
         Box::new(busbar_kernel_ledger::legacy::RecordingRows::clone(&rows)),
     )
     .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
+    // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
+    // corrected count and every recorded content access survive the restart (a node with no data
+    // directory rebuilds nothing).
+    durability.restore_amendments();
     // A corrupt journal segment was already logged and counted when the book was built; this puts
     // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
     if let Err(lost) =
@@ -1009,10 +1013,10 @@ fn open_boot_book(app: &busbar_kernel::state::App) -> root::durability::NodeBook
                      over the buckets the configuration named"
                 );
             }
-            root::durability::NodeBook {
-                durability: Arc::new(std::sync::Mutex::new(durability)),
-                rows,
-            }
+            let durability = Arc::new(std::sync::Mutex::new(durability));
+            // Every amendment sealed from here on goes on the book it was rebuilt from.
+            root::durability::bind_amendments(&durability);
+            root::durability::NodeBook { durability, rows }
         }
         Err(e) => die(e),
     }

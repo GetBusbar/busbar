@@ -70,6 +70,15 @@ impl AmendClass {
     }
 }
 
+impl AmendClass {
+    /// The class written as `word`, or `None` for a word the journal does not know.
+    pub fn parse(word: &str) -> Option<AmendClass> {
+        [AmendClass::Access, AmendClass::Adjust]
+            .into_iter()
+            .find(|c| c.as_str() == word)
+    }
+}
+
 impl std::fmt::Display for AmendClass {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -93,6 +102,31 @@ impl Reader {
             Reader::Export => "export",
         }
     }
+
+    /// The reader written as `word`, or `None` for a word the journal does not know.
+    pub fn parse(word: &str) -> Option<Reader> {
+        [Reader::Hook, Reader::Export]
+            .into_iter()
+            .find(|r| r.as_str() == word)
+    }
+}
+
+/// A subject as the two frozen fields an amendment digests it by: its tag, then its identifier.
+/// The pair a durable record of the amendment carries, so reading it back reproduces the digest.
+pub fn subject_fields(subject: &Subject) -> (&'static str, String) {
+    (subject_tag(subject), subject_value(subject))
+}
+
+/// The subject [`subject_fields`] wrote, or `None` for a pair it never writes.
+pub fn subject_from_fields(tag: &str, value: &str) -> Option<Subject> {
+    let subject = match tag {
+        "principal" => Subject::PrincipalId(value.to_string()),
+        "arrival" => Subject::Arrival,
+        "node" => Subject::Node(value.parse().ok()?),
+        "aggregate" => Subject::Aggregate,
+        _ => return None,
+    };
+    (subject_fields(&subject).1 == value).then_some(subject)
 }
 
 /// One content access.
@@ -539,6 +573,32 @@ impl AmendJournal {
             .unwrap_or_else(|| recorded.clone())
     }
 
+    /// REBUILD A JOURNAL FROM A WHOLE RUN read back off durable storage, oldest first from the
+    /// genesis: the chain resumes at the run's head, every correction is kept, and the newest
+    /// [`AMENDMENTS_RETAINED`] are held. The run is verified first, so a journal is never rebuilt
+    /// over a broken chain.
+    ///
+    /// # Errors
+    ///
+    /// The run does not verify from the genesis ([`AmendChain::verify`]).
+    pub fn restore(run: Vec<Amendment>) -> Result<AmendJournal, crate::record::AuditBreak> {
+        AmendChain::verify(&run)?;
+        let chain = run.last().map_or_else(AmendChain::new, |a| {
+            AmendChain::resume(a.hash.clone(), a.seq.saturating_add(1))
+        });
+        let corrections = (run.iter())
+            .filter(|a| a.class() == AmendClass::Adjust)
+            .cloned()
+            .collect();
+        let released = run.len().saturating_sub(AMENDMENTS_RETAINED);
+        Ok(AmendJournal {
+            chain,
+            recent: run.into_iter().skip(released).collect(),
+            released: released as u64,
+            corrections,
+        })
+    }
+
     /// Verify what is held: from the genesis while nothing has been released, and always to the
     /// chain's own head. Once the window has moved, the run is checked from its first held link.
     pub fn verify(&self) -> Result<(), crate::record::AuditBreak> {
@@ -594,6 +654,57 @@ fn node() -> std::sync::MutexGuard<'static, AmendJournal> {
         .unwrap_or_else(|p| p.into_inner())
 }
 
+/// WHERE THE NODE JOURNAL'S AMENDMENTS ARE MADE DURABLE: handed every amendment the node journal
+/// seals, in chain order, as it is sealed. The composition root binds one over its own journal;
+/// with none bound the node journal is memory-only, the previous release's shape.
+///
+/// Called with the node journal's lock held — that is what keeps what reaches the sink in chain
+/// order with no gap — so an implementation must never seal an amendment itself, and no caller
+/// may seal one while holding whatever lock the sink takes.
+pub trait AmendSink: Send + Sync {
+    /// `amendment` was just sealed onto the node journal.
+    fn sealed(&self, amendment: &Amendment);
+}
+
+static SINK: std::sync::RwLock<Option<std::sync::Arc<dyn AmendSink>>> =
+    std::sync::RwLock::new(None);
+
+/// Seal `body` onto `journal` and hand it to the bound sink, under the journal's lock.
+fn seal(journal: &mut AmendJournal, body: AmendBody, token: &Pass<Audit>) -> Amendment {
+    let amendment = journal.append(body, token);
+    if let Some(sink) = SINK.read().unwrap_or_else(|p| p.into_inner()).as_ref() {
+        sink.sealed(&amendment);
+    }
+    amendment
+}
+
+/// REBUILD THE NODE JOURNAL from a whole run read back off durable storage (see
+/// [`AmendJournal::restore`]), replacing what it holds, and answer the position of the run's
+/// newest amendment (0 for an empty run) — what [`bind_node_sink`] is told was already durable.
+///
+/// # Errors
+///
+/// The run does not verify from the genesis; the node journal is left as it was.
+pub fn restore_node(run: Vec<Amendment>) -> Result<u64, crate::record::AuditBreak> {
+    let through = run.last().map_or(0, |a| a.seq);
+    let restored = AmendJournal::restore(run)?;
+    *node() = restored;
+    Ok(through)
+}
+
+/// BIND the node journal's sink (`None` unbinds). Every amendment it still holds above position
+/// `journalled_through` is handed over first, in chain order, so an amendment sealed between the
+/// rebuild and the binding reaches the sink too and what is durable has no gap.
+pub fn bind_node_sink(sink: Option<std::sync::Arc<dyn AmendSink>>, journalled_through: u64) {
+    let journal = node();
+    if let Some(sink) = &sink {
+        for amendment in journal.recent().filter(|a| a.seq > journalled_through) {
+            sink.sealed(amendment);
+        }
+    }
+    *SINK.write().unwrap_or_else(|p| p.into_inner()) = sink;
+}
+
 fn subject_of(principal: Option<&str>) -> Subject {
     principal.map_or(Subject::Arrival, |p| Subject::PrincipalId(p.to_string()))
 }
@@ -618,7 +729,7 @@ pub fn record_read(
         fields,
         wall,
     );
-    node().append(body, token)
+    seal(&mut node(), body, token)
 }
 
 /// One correction to a recorded unit's counts, as the admin verb states it.
@@ -681,7 +792,7 @@ pub fn correct_counts(
         wall,
     )
     .map_err(CorrectionError::Refused)?;
-    Ok(journal.append(body, token))
+    Ok(seal(&mut journal, body, token))
 }
 
 /// The counts an entry stands at now on the node journal: its latest correction, or `recorded`.
