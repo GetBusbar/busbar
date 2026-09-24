@@ -1627,14 +1627,21 @@ impl AdminService {
     /// secret: only module names and the mode. This is READ-ONLY at runtime — the ingress chain is
     /// mutated through the config-plane write path (`PUT/POST /api/v1/admin/config`), not a dedicated PUT.
     /// (The ADMIN-plane chain, by contrast, has `PUT /api/v1/admin/admin-auth`.)
+    ///
+    /// `open` is the 1.5.5 field: whether the BOXED chain is empty, i.e. whether `chain` above reads
+    /// `[]`. It is NOT `AuthMiddleware::is_open`, which is the admission predicate (`keys` closes the
+    /// door without installing a boxed module) and which the admin grant reads. Reporting that here
+    /// flipped `open` to `false` under `chain: [keys]` on every GET /auth, GET /config and config
+    /// reload — a customer-visible change no ruling covers. The grant keeps the strict predicate.
     pub(crate) async fn get_auth(&self) -> Result<AuthView, AdminError> {
+        let chain = self.app.auth.chain_names();
         Ok(AuthView {
-            chain: self.app.auth.chain_names(),
+            open: chain.is_empty(),
+            chain,
             upstream_credentials: match self.app.upstream_creds() {
                 busbar_kernel::auth::UpstreamCreds::Own => "own",
                 busbar_kernel::auth::UpstreamCreds::Passthrough => "passthrough",
             },
-            open: self.app.auth.is_open(),
         })
     }
 

@@ -4302,6 +4302,47 @@ async fn test_admin_v1_auth_read() {
     handle.abort();
 }
 
+/// `chain: [keys]` reads `"chain":[],"open":true` on GET /auth — 1.5.5's bytes (oracle cells
+/// `admin.ops|GetAuth|ok`, `|GetConfig|ok`, `|PostConfigReload|ok`). `open` reports the boxed
+/// chain, which `keys` never enters. 9e8dea58b tightened `AuthMiddleware::is_open` for the admin
+/// GRANT and this view followed it to `false`; the grant keeps the strict predicate, asserted
+/// alongside so the view's answer cannot be bought by loosening it.
+#[tokio::test]
+async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
+    busbar_kernel::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut cfg = busbar_kernel::config::AuthCfg::default_none();
+    cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
+    let mw = busbar_kernel::auth::AuthMiddleware::new_builtin(&cfg);
+    assert!(
+        !mw.is_open(),
+        "the admission predicate stays closed under chain: [keys]"
+    );
+    let app = crate::new_test_app()
+        .governance(gov)
+        .auth(Arc::new(mw))
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let body = reqwest::Client::new()
+        .get(format!("http://{addr}/api/v1/admin/auth"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(
+        body, r#"{"chain":[],"upstream_credentials":"own","open":true}"#,
+        "GET /auth under chain: [keys] must be 1.5.5's bytes"
+    );
+    handle.abort();
+}
+
 /// `POST /api/v1/admin/config/validate` dry-runs a proposed config: a malformed body is a 400
 /// `invalid_request`; a well-formed body describing an INVALID config (here a provider reference
 /// absent from the defs) returns 200 with `ok:false` and the resolution errors — never mutating.
