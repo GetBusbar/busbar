@@ -305,10 +305,62 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     "manifest-allowlist:busbar-transport-tcp",
     "manifest-allowlist:busbar-transport-tls",
     "manifest-allowlist:busbar-transport-ws",
+    // Four production call sites of `pick_among(` against a ceiling of 2: the kernel-egress exhaustion
+    // and walk sites beside busbar-llm's fallback and pipeline. DRAIN: Phase 4, when the plane's own
+    // pick moves behind the kernel loop and only the loop and the fallback re-entry remain.
     "one-pick-site",
-    "ports-only-tests:busbar-llm",
-    "request-path-fn-size",
-    "terminal-doors-in-audit-step",
+    // RE-DERIVED 2026-09-24 FROM A REAL RUN (P1 integration). `cargo xtask gate construction` on a
+    // clean checkout of b49db00d3, base pinned to origin/predev, is red on exactly the rows on this
+    // list. Three names were STALE and are struck here and in scripts/land.sh in the same commit:
+    // `ports-only-tests:busbar-llm`, `request-path-fn-size` and `terminal-doors-in-audit-step` are
+    // PASS on that run. `ceiling-rose` is green again because the ten expired kind-isolation raises
+    // in qa/construction.toml were struck in the same commit (each cell already reads its `to` at
+    // the base). The rows below were red and on no list, so `--posture` scored them NEW; each is a
+    // true finding, named with what it measures and the phase that drains it.
+    //
+    // MONEY — DRAIN: Phase 2.
+    // `plane-no-money`: `priced_from_ms` at crates/busbar-llm/src/unit/meter.rs — a plane module
+    // naming a price (#43/#71). (Item 208 recorded that an earlier comment claimed this row was on
+    // the list while it was not; it is on it now, by name.)
+    "plane-no-money",
+    // `one-pricing-site`: `busbar_kernel_ledger::cost::price` called from
+    // crates/busbar-core-admin/src/v1/service.rs, outside the reviewed homes — an admin read that
+    // prices on its own path (the BUDGET row: the enforcement path is not the invoice path).
+    "one-pricing-site",
+    // `no-test-doubles-in-production:doubles`: 7 reviewed doubles in the shipped binary against a
+    // ratchet of 5 — the voice governed-call node in crates/busbar/src/main.rs, built with
+    // `NullShipper`, `RecordingRows`, `without_directory(` and `Pricer::flat(` (a zero rate card
+    // where the deployment's card belongs).
+    "no-test-doubles-in-production:doubles",
+    // `token-sealed` and its three named mints: the Teller's tokens, `KernelSeal::acquire_for_kernel(`,
+    // the arrival-hold mint and `SecretOnce::mint(` are spelled outside their one home crate (266,
+    // 136, 49 and 5 sites). Item 317: the one deliberate cross-crate hole in the capability model is
+    // held by nothing while these are red. The arrival hold is a money hold, so this drains with it.
+    "token-sealed",
+    "token-sealed:admit-token-mint",
+    "token-sealed:kernel-seal",
+    "token-sealed:secret-once-mint",
+    //
+    // C1 / THE FOLD — DRAIN: Phase 4.
+    // `lean-core`: 14 string literals in the kernel and busbar-kernel-* crates naming a dialect or a
+    // section 1.3 pinned word (config/mod.rs, appbuild.rs). Item 379 widened the scan to the eight
+    // kernel crates the units became, which is what made it visible.
+    "lean-core",
+    // `neutral-no-dialect`: 27 DIALECT/KEY hits in the neutral crates per plane-purity-lint.sh
+    // (busbar-kernel-identity egress_auth tests, busbar-kernel config) — the 59/60 dialect and
+    // strict-purity drains.
+    "neutral-no-dialect",
+    // `loc-ceilings:caps-contract` and `surface-ceiling:contract`: busbar-contract measures 6840
+    // against the ARCHITECTURE.md 1.1 ceiling of 5652 (caps folded in, #37/#38). `loc-ceilings:union`
+    // is the same breach one level up — 58644 against 57456, over by 1188, which the union had been
+    // absorbing while it read its members' slack (item 378 made it read their ceilings). A TRUE
+    // red: the contract surface a plugin author reads is 1188 lines over the owner's number.
+    "loc-ceilings:caps-contract",
+    "loc-ceilings:union",
+    "surface-ceiling:contract",
+    // `loc-ceilings:kernel:teller`: teller.rs is 685 lines against its 661 ceiling. Drains with the
+    // Teller loop's split in the fold.
+    "loc-ceilings:kernel:teller",
 ];
 
 /// THE `qa-names` GATE'S STANDING REDS, BY NAME.
@@ -363,9 +415,10 @@ pub const QA_NAMES_STANDING_REDS: &[&str] = &[
     //     asserting that a plane names no price went from 1 money symbol to 113, having been green
     //     over three of its four planes (and, since #39 dissolved busbar-mcp-codec and
     //     busbar-a2a-codec INTO those crates, over two codec halves as well). Nothing is
-    //     allowlisted. `plane-no-money` is NOT a member of the construction standing-red list (a
-    //     line here once said it was, and never was): the construction gate scores it like any
-    //     other row, and a red there is a NEW RED under `--posture`.
+    //     allowlisted. `plane-no-money` was then NOT a member of the construction standing-red
+    //     list (a line here once said it was, and never was), so `--posture` scored it NEW. It
+    //     became a member on 2026-09-24, by name and with its Phase 2 drain, when the list was
+    //     re-derived from a real run — see CONSTRUCTION_STANDING_REDS.
 ];
 
 /// THE MONEY-INVARIANTS GATE'S STANDING REDS, BY NAME. Same contract as

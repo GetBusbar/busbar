@@ -204,76 +204,17 @@ busbar-voice = ["busbar-voice-codec"]
 #
 # The re-baseline that struck them changed no ceiling upward, so nothing below needs a declaration.
 
-# ── THE P0 RE-BASELINE OF qa/kind-isolation.toml, 2026-09-22 ─────────────────────────────────────
+# ── THE P0 RE-BASELINE OF qa/kind-isolation.toml, 2026-09-22 — EXPIRED AND STRUCK ───────────────
 #
-# Ten `[[cell]]` ceilings in qa/kind-isolation.toml sat BELOW the count they govern — one of them by
-# 3,046 — so `kind-isolation:matrix` was red on every one and the ratchet under it could report
-# neither a rise nor a fall. `ceiling-rose` and `kind-isolation:matrix` disagree about the repair by
-# construction: matrix wants the ceiling to EQUAL the measurement, rose wants it never to go up, and
-# the only edit that satisfies both is DRAINING THE HITS — which is the engine split itself (Waves
-# A-F), not a baseline commit. So the correction lands here, as ten named transactions, which is
-# exactly the route this section is written to provide. Each expires by itself the moment this
-# commit reaches the base, and the commit after that strikes it.
-
-[gate.ceiling_raises."cell[crate=busbar-a2a,kind=api].count"]
-file    = "qa/kind-isolation.toml"
-from    = 210
-to      = 215
-because = "busbar-a2a x api: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. Heaviest today: a2a/tests/taskstore_tests.rs, client_leg_tests.rs, local_tests.rs."
-
-[gate.ceiling_raises."cell[crate=busbar-a2a,kind=plane].count"]
-file    = "qa/kind-isolation.toml"
-from    = 2811
-to      = 3177
-because = "busbar-a2a x plane: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. This is the cell the split drains to ZERO at Wave F. The plan quotes 2811 as a measurement; it is a ledger row that stopped tracking the tree."
-
-[gate.ceiling_raises."cell[crate=busbar-a2a,kind=transport].count"]
-file    = "qa/kind-isolation.toml"
-from    = 1268
-to      = 1274
-because = "busbar-a2a x transport: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. Drains to zero at Wave F with the crate."
-
-[gate.ceiling_raises."cell[crate=busbar-kernel,kind=plane].count"]
-file    = "qa/kind-isolation.toml"
-from    = 1
-to      = 3047
-because = "busbar-kernel x plane: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. THIS ONE IS THE CUT'S ORACLE and it is the reason the re-baseline had to happen before any move. The engine-split plan s0.1 says busbar-kernel x plane MEASURES 1 and makes 'a kernel-destined move that raises it is a misclassification' the entire safety net of the three-way cut. It cites the LEDGER ROW, not a measurement: the tree measures 3047 and has since W2.c. A ceiling pinned 3046 below its own cell is red on every commit and fires on nothing, so the safety net did not exist. Pinned at 3047 it fires at 3048, which is what the plan needed it to do."
-
-[gate.ceiling_raises."cell[crate=busbar-mcp,kind=api].count"]
-file    = "qa/kind-isolation.toml"
-from    = 135
-to      = 155
-because = "busbar-mcp x api: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. Drains to zero at Wave F with the crate."
-
-[gate.ceiling_raises."cell[crate=busbar-mcp,kind=plane].count"]
-file    = "qa/kind-isolation.toml"
-from    = 3294
-to      = 3877
-because = "busbar-mcp x plane: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. This is the cell the split drains to ZERO at Wave F. The plan quotes 3294 as a measurement; it is a ledger row that stopped tracking the tree."
-
-[gate.ceiling_raises."cell[crate=busbar-mcp,kind=secret].count"]
-file    = "qa/kind-isolation.toml"
-from    = 13
-to      = 14
-because = "busbar-mcp x secret: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. Heaviest today: mcp/config.rs, then the crate manifest."
-
-[gate.ceiling_raises."cell[crate=busbar-plane-a2a,kind=plane].count"]
-file    = "qa/kind-isolation.toml"
-from    = 77
-to      = 90
-because = "busbar-plane-a2a x plane: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. This cell RISES on purpose on every plane-bound move in Waves A-F (plan s7.5), so an honest starting number is the precondition for reading any of those moves."
-
-[gate.ceiling_raises."cell[crate=busbar-plane-a2a,kind=transport].count"]
-file    = "qa/kind-isolation.toml"
-from    = 103
-to      = 110
-because = "busbar-plane-a2a x transport: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable."
-
-[gate.ceiling_raises."cell[crate=busbar-plane-mcp,kind=plane].count"]
-file    = "qa/kind-isolation.toml"
-from    = 37
-to      = 49
-because = "busbar-plane-mcp x plane: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. Rises on purpose on every plane-bound move in Waves A-F, same as its a2a sibling."
+# Ten `[[cell]]` ceilings in qa/kind-isolation.toml were raised here as ten named transactions
+# (ed45a7952, the P0 re-baseline for the engine split): busbar-a2a x {api 210->215, plane
+# 2811->3177, transport 1268->1274}, busbar-kernel x plane 1->3047, busbar-mcp x {api 135->155,
+# plane 3294->3877, secret 13->14}, busbar-plane-a2a x {plane 77->90, transport 103->110},
+# busbar-plane-mcp x plane 37->49. Each said it "expires by itself the moment this commit reaches
+# the base, and the commit after that strikes it". It reached the base: at origin/predev
+# (b7200b496) every one of the ten cells already reads its `to` value, so `ceiling-rose` reported
+# all ten as "a declared raise ... that is not a raise at the base". This is the commit after.
+# Nothing here moved a ceiling; the numbers live in qa/kind-isolation.toml and did not change.
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
