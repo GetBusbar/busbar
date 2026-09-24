@@ -2750,7 +2750,7 @@ wave = "core neutralization — DECISION #1 (core names no instance); auth schem
 [[leak]]
 noun = "mcp"
 kind = "plane"
-file = "crates/busbar-kernel/src/test_support/engine_kit.rs"
+file = "crates/busbar-kernel/src/test_support/engine_kit/core_impl.rs"
 count = 1
 category = "core"
 wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
