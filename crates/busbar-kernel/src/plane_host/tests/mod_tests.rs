@@ -696,3 +696,107 @@ fn a_committed_invoke_rewrite_installs_any_json_object_verbatim() {
          commit replaced the arguments wholesale rather than patching the one named field."
     );
 }
+
+/// A `BudgetHost` that answers only the two reads [`meter_series_billed`] makes: the card's presence,
+/// and a count of the metering rows it was asked to write. Every other seam is unreachable here.
+struct BillingProbe {
+    card: bool,
+    rows: AtomicUsize,
+}
+
+impl BudgetHost for BillingProbe {
+    fn governance_enabled(&self) -> bool {
+        unreachable!()
+    }
+    fn meter_charge(&self, _: &DispatchScope, _: &busbar_plugin::hot::Usage) {
+        unreachable!()
+    }
+    fn rate_headroom(
+        &self,
+        _: &GovHandle,
+        _: &CostHandle,
+        _: &busbar_api::VirtualKey,
+        _: Option<&str>,
+        _: u64,
+    ) -> Option<f64> {
+        unreachable!()
+    }
+    fn budget_state(
+        &self,
+        _: &GovHandle,
+        _: &CostHandle,
+        _: &busbar_api::VirtualKey,
+        _: u64,
+    ) -> Vec<busbar_api::BudgetBucketState> {
+        unreachable!()
+    }
+    fn governance(&self) -> Option<GovHandle> {
+        unreachable!()
+    }
+    fn cost(&self) -> CostHandle {
+        unreachable!()
+    }
+    fn cost_pricing_enabled(&self, _: &CostHandle) -> bool {
+        self.card
+    }
+    fn cost_model_unpriced(&self, _: &CostHandle, _: &str) -> bool {
+        unreachable!()
+    }
+    fn cost_price_usage(&self, _: &CostHandle, _: &str, _: &crate::billing::Usage) -> Option<u128> {
+        unreachable!()
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn meter_ledger(
+        &self,
+        _: &GovHandle,
+        _: &CostHandle,
+        _: &busbar_api::VirtualKey,
+        _: &str,
+        _: &str,
+        _: &crate::billing::Usage,
+        _: u64,
+    ) {
+        unreachable!()
+    }
+    fn meter_series(
+        &self,
+        _: &GovHandle,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: Option<&crate::billing::TokenUsage>,
+        _: u64,
+    ) {
+        self.rows.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// ITEM 35 / DECISION #43 — THE BILLING SWITCH IS THE KERNEL'S. A plane hands its counts to
+/// `meter_series_billed` unconditionally; the kernel writes the metering row with a card present and
+/// writes none with no card (#42). Before item 35 this branch lived inside the LLM plane
+/// (`usage.rs`: `if host.cost_pricing_enabled(..)`), which is exactly what #43 outlaws.
+#[test]
+fn the_kernel_not_the_plane_decides_whether_a_metering_row_is_written() {
+    let handle = || Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>;
+    for (card, want) in [(true, 1), (false, 0)] {
+        let probe = BillingProbe {
+            card,
+            rows: AtomicUsize::new(0),
+        };
+        meter_series_billed(
+            &probe,
+            &GovHandle(handle()),
+            &CostHandle(handle()),
+            "key",
+            "model",
+            "provider",
+            None,
+            0,
+        );
+        assert_eq!(
+            probe.rows.load(Ordering::SeqCst),
+            want,
+            "card present = {card}: #42 writes a metering row iff a rate card is present"
+        );
+    }
+}

@@ -1672,7 +1672,8 @@ async fn the_plane_reads_whether_a_rate_card_is_present() {
 
     let gov = rig.gov();
     let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
-    assert_eq!(view.pricing_enabled(), host.cost_pricing_enabled(&cost));
+    // The view asks the ONE question guard three needs; whether billing is on at all is the
+    // kernel's, answered inside `cost_model_unpriced` (no card => false), never the plane's (#43).
     assert_eq!(
         view.is_unpriced("made-up-name"),
         host.cost_model_unpriced(&cost, "made-up-name")

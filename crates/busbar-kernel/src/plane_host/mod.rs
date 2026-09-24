@@ -884,13 +884,7 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         // observation `gov.rate_headroom(&app.cost, …)` did — byte-identical, no re-read of the host
         // snapshot. A downcast miss (never in practice) reads as no constraint, matching the
         // `gov`-absent arm at the engine call site.
-        let (Ok(g), Ok(c)) = (
-            gov.0.clone().downcast::<crate::governance::GovState>(),
-            cost.0.clone().downcast::<crate::cost::CostModel>(),
-        ) else {
-            return None;
-        };
-        g.rate_headroom(&c, key, pool, now)
+        handle_models(gov, cost).and_then(|(g, c)| g.rate_headroom(&c, key, pool, now))
     }
 
     fn budget_state(
@@ -900,13 +894,7 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         key: &busbar_api::VirtualKey,
         now: u64,
     ) -> Vec<busbar_api::BudgetBucketState> {
-        let (Ok(g), Ok(c)) = (
-            gov.0.clone().downcast::<crate::governance::GovState>(),
-            cost.0.clone().downcast::<crate::cost::CostModel>(),
-        ) else {
-            return Vec::new();
-        };
-        g.budget_state(&c, key, now)
+        handle_models(gov, cost).map_or_else(Vec::new, |(g, c)| g.budget_state(&c, key, now))
     }
 
     fn governance(&self) -> Option<busbar_kernel::plane_host::GovHandle> {
@@ -917,18 +905,13 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
     }
 
     fn cost(&self) -> busbar_kernel::plane_host::CostHandle {
-        busbar_kernel::plane_host::CostHandle(
-            self.app.cost.clone() as Arc<dyn std::any::Any + Send + Sync>
-        )
+        busbar_kernel::plane_host::CostHandle(self.app.cost.clone())
     }
 
     fn cost_pricing_enabled(&self, cost: &busbar_kernel::plane_host::CostHandle) -> bool {
         // The SAME read the in-place pre-admission guard makes off `app.cost`; a handle that is not
         // this deployment's cost model answers the no-card posture rather than guessing.
-        cost.0
-            .clone()
-            .downcast::<crate::cost::CostModel>()
-            .is_ok_and(|c| c.pricing_enabled())
+        cost_model(cost).is_some_and(|c| c.pricing_enabled())
     }
 
     fn cost_model_unpriced(
@@ -936,10 +919,7 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         cost: &busbar_kernel::plane_host::CostHandle,
         model: &str,
     ) -> bool {
-        cost.0
-            .clone()
-            .downcast::<crate::cost::CostModel>()
-            .is_ok_and(|c| c.model_unpriced(model))
+        cost_model(cost).is_some_and(|c| c.model_unpriced(model))
     }
 
     fn cost_price_usage(
@@ -952,11 +932,7 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         // entry point over one function, not a second pricer — but against the card the CALLER's
         // handle names rather than this host's bound snapshot. A handle that is not a cost model is
         // not a card, so it prices nothing and says so.
-        cost.0
-            .clone()
-            .downcast::<crate::cost::CostModel>()
-            .ok()
-            .and_then(|c| c.price_usage_nanos(model, usage))
+        cost_model(cost).and_then(|c| c.price_usage_nanos(model, usage))
     }
 
     fn meter_ledger(
@@ -974,10 +950,7 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
         // name-keyed unit map (reserved four + opens); accrual folds it straight into the cell. A
         // downcast miss (never in practice — the handles are minted here) is a silent no-op, matching
         // `record_usage`'s own fail-soft posture.
-        if let (Ok(g), Ok(c)) = (
-            gov.0.clone().downcast::<crate::governance::GovState>(),
-            cost.0.clone().downcast::<crate::cost::CostModel>(),
-        ) {
+        if let Some((g, c)) = handle_models(gov, cost) {
             g.record_usage(&c, key, pool, model, &usage.usage_units, now);
         }
     }
@@ -995,6 +968,24 @@ impl busbar_kernel::plane_host::BudgetHost for EngineHostImpl {
             g.record_metering(key_id, model, provider, usage, now);
         }
     }
+}
+
+/// Recover the concrete `CostModel` an opaque [`CostHandle`](busbar_kernel::plane_host::CostHandle)
+/// was minted over; `None` on a handle this host did not mint (never in practice).
+fn cost_model(cost: &busbar_kernel::plane_host::CostHandle) -> Option<Arc<crate::cost::CostModel>> {
+    cost.0.clone().downcast().ok()
+}
+
+/// The `(GovState, CostModel)` pair behind the two opaque handles a plane's sink carries — the one
+/// recovery every two-handle budget seam above makes; `None` when either handle misses.
+fn handle_models(
+    gov: &busbar_kernel::plane_host::GovHandle,
+    cost: &busbar_kernel::plane_host::CostHandle,
+) -> Option<(
+    Arc<crate::governance::GovState>,
+    Arc<crate::cost::CostModel>,
+)> {
+    Some((gov.0.clone().downcast().ok()?, cost_model(cost)?))
 }
 
 #[async_trait::async_trait]
@@ -3060,6 +3051,34 @@ pub trait BudgetHost: Send + Sync {
         usage: Option<&crate::billing::TokenUsage>,
         now: u64,
     );
+}
+
+/// THE BILLING SWITCH, KERNEL-SIDE — DECISION #42 read where #43 puts it.
+///
+/// Record one delivered response's raw metering row ONLY when a rate card is present: with no
+/// `rate_card:` the node is a free failover/routing proxy and emits no per-model usage row (#42). A
+/// plane calls this UNCONDITIONALLY with the counts it observed and never asks whether billing is on
+/// — #43: "a plane appends its counts unconditionally — no branch, no knowledge of billing state".
+/// The switch is a property of the deployment's card, so it is answered here, over the opaque handle
+/// the plane pinned at the door, and never in plane code.
+///
+/// The two host reads are the SAME [`BudgetHost::cost_pricing_enabled`] + [`BudgetHost::meter_series`]
+/// the LLM plane's `ledger_and_meter` made in place before the branch moved here — same order, same
+/// handles, same arguments — so every served usage byte is unchanged.
+#[allow(clippy::too_many_arguments)]
+pub fn meter_series_billed<H: BudgetHost + ?Sized>(
+    host: &H,
+    gov: &GovHandle,
+    cost: &CostHandle,
+    key_id: &str,
+    model: &str,
+    provider: &str,
+    usage: Option<&crate::billing::TokenUsage>,
+    now: u64,
+) {
+    if host.cost_pricing_enabled(cost) {
+        host.meter_series(gov, key_id, model, provider, usage, now);
+    }
 }
 
 /// The IDENTITY/TRUST slice: inbound identity resolution + the trust/approval seams around it — the

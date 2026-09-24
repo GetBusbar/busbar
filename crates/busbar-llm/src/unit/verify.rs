@@ -43,7 +43,7 @@
 use busbar_contract::caps::{
     Decision, Pass, PrincipalId, ReasonCode, Refusal, VerifiedDestination, Verify,
 };
-use busbar_kernel::plane_host::{CostHandle, EngineHost, EngineTablesView};
+use busbar_kernel::plane_host::{EngineHost, EngineTablesView};
 
 use crate::unit::audit::RefusalOutcome;
 
@@ -160,10 +160,10 @@ pub trait PoolView {
     /// caller-supplied name can reach the third guard.
     fn is_configured(&self, name: &str) -> bool;
 
-    /// Whether a rate card is present at all.
-    fn pricing_enabled(&self) -> bool;
-
-    /// Whether a present card leaves this name unpriced.
+    /// Whether a PRESENT card leaves this name unpriced — `false` for every name when no card is
+    /// configured, because there is no card to miss (#42: rate_card absent reads 0, it never
+    /// refuses). The card's presence is the kernel's question, answered inside this one read; the
+    /// plane never asks whether billing is on (#43), so the guard below carries no billing branch.
     fn is_unpriced(&self, name: &str) -> bool;
 }
 
@@ -196,14 +196,13 @@ fn fallback_pools_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRe
 
 /// Guard three: with a card present, every governed request must resolve to a priced destination.
 ///
-/// Costs one boolean when no card is configured, and a single borrowed probe otherwise.
+/// With no card configured [`PoolView::is_unpriced`] is `false` for every name, so the guard is inert
+/// without this step ever reading whether billing is on (#43).
 fn priced(view: &dyn PoolView, name: &str) -> Option<VerifyRefusal> {
-    (view.has_key()
-        && view.pricing_enabled()
-        && !view.is_configured(name)
-        && view.is_unpriced(name))
-    .then(|| VerifyRefusal::NoRate {
-        name: name.to_string(),
+    (view.has_key() && !view.is_configured(name) && view.is_unpriced(name)).then(|| {
+        VerifyRefusal::NoRate {
+            name: name.to_string(),
+        }
     })
 }
 
@@ -250,18 +249,17 @@ pub struct Verified {
 /// The production [`PoolView`]: every answer below is read off the running deployment through a
 /// neutral seam, so the step's three guards see what the shipped pre-admission guard sees. It reads
 /// the key's ACL off the key row itself, the fallback edges and the configured names through the
-/// engine's own tables projection, and the two pricing questions through the host's cost seam —
+/// engine's own tables projection, and the one pricing question through the host's cost seam —
 /// never through a rendered response, which is what the shipped `EngineHost::destination_guard`
 /// hands back and what makes that call unusable as a view (a finished response answers "what does
 /// the client see", not "may this key reach this pool").
 ///
-/// The cost handle is minted once per view rather than per question: it is one `Arc` bump, and
-/// minting it twice inside one unit would be two handles onto one model.
+/// The cost handle is minted at the one question that needs it — the same live read of the
+/// deployment's card the shipped pre-admission guard makes — so the view holds no cost type at all.
 pub struct HostPoolView<'a> {
     host: &'a dyn EngineHost,
     tables: &'a dyn EngineTablesView,
     key: Option<&'a busbar_api::VirtualKey>,
-    cost: CostHandle,
 }
 
 impl<'a> HostPoolView<'a> {
@@ -274,13 +272,7 @@ impl<'a> HostPoolView<'a> {
         tables: &'a dyn EngineTablesView,
         key: Option<&'a busbar_api::VirtualKey>,
     ) -> Self {
-        let cost = host.cost();
-        HostPoolView {
-            host,
-            tables,
-            key,
-            cost,
-        }
+        HostPoolView { host, tables, key }
     }
 }
 
@@ -313,12 +305,8 @@ impl PoolView for HostPoolView<'_> {
         self.tables.pool_exists(name) || self.tables.model_index(name).is_some()
     }
 
-    fn pricing_enabled(&self) -> bool {
-        self.host.cost_pricing_enabled(&self.cost)
-    }
-
     fn is_unpriced(&self, name: &str) -> bool {
-        self.host.cost_model_unpriced(&self.cost, name)
+        self.host.cost_model_unpriced(&self.host.cost(), name)
     }
 }
 
