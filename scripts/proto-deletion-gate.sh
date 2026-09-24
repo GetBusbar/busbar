@@ -86,6 +86,10 @@ cd "$(dirname "$0")/.." || die "cannot cd to the repository root"
 # changes; with it set, the gate reads the binary cargo actually produced.
 GATE_TARGET_ROOT="${CARGO_TARGET_DIR:-target}"
 
+# The one list of plane keys (level 1's protocol-crate needles are derived from it).
+# shellcheck source=scripts/plane-keys.sh
+. scripts/plane-keys.sh || die "cannot source scripts/plane-keys.sh"
+
 # ── level 1: static (once, for the whole tree) ──────────────────────────────────────────────────
 # THE NEEDLE IS DERIVED FROM THE TREE, NEVER SPELLED. This level used to grep core for the single
 # literal `busbar_proto`. There is no `crates/busbar-proto` any more and no Rust anywhere names that
@@ -141,15 +145,86 @@ require_scan_dir() { # $1 = directory this gate scans or path-pins inside; $2 = 
   [ -d "$1" ] || die "SCAN ROOT MISSING: $1 ($2) is not on disk. A scan of zero files satisfies every prohibition below, so this is RED and not a pass — repoint this gate at whatever replaced that path (see CORE_SRC_ROOTS)"
 }
 
-proto_crate_names() { # underscore crate names of every protocol / plane crate on disk
-  local d b
-  for d in crates/busbar-llm crates/busbar-mcp crates/busbar-a2a crates/busbar-voice \
-           crates/busbar-*-codec crates/busbar-plane-*; do
-    [ -d "$d" ] || continue
-    b="$(basename "$d")"
-    printf '%s\n' "${b//-/_}"
-  done | sort -u
+# THE NEEDLE SET IS DERIVED FROM THE TWO FILES THAT ALREADY DEFINE IT, NOT FROM A PREFIX LIST.
+# It used to be six hand-written globs (busbar-llm/mcp/a2a/voice, busbar-*-codec, busbar-plane-*),
+# so a protocol or plane-side crate whose name matched none of them was no needle at all -- the
+# `busbar-transport-*` crates among them -- while the comment above promised that "a crate added or
+# renamed by the next split is covered without an edit here" (item 516). The sources now are:
+#   * scripts/plane-keys.sh `PLANE_KEYS` -- the protocol crates, BOTH halves (`busbar-<k>` and, while
+#     the codec split stands, `busbar-<k>-codec`), exactly as `plane_src_roots` names them;
+#   * qa/construction.toml `[gate.plugin_kinds]` -- the `plane` and `transport` KIND globs, the one
+#     place the kind boundaries are drawn (manifest-allowlist, source-denylist and forbid-unsafe read
+#     the same table), so a plane or transport crate is a needle the moment it is in its kind;
+#   * the #34 naming-law families `busbar-plane-*` and `busbar-*-codec`, which were already here.
+# NOT needles, and why: `busbar-contract`/`busbar-plugin` are the ABI core is built on; `busbar-oauth2`
+# and `busbar-core-*` are compiled-in cleanliness crates that plane-keys.sh's `neutral_src_roots`
+# lists as NEUTRAL (they depend on the kernel, not the reverse).
+# $1 = tree root (default: this repo). Dies -- never an empty or narrowed list -- if a source is unreadable.
+proto_crate_names() { # underscore crate names of every protocol / plane / transport crate on disk
+  local root="${1:-.}" k d b g globs
+  globs="$(plugin_kind_globs "$root/qa/construction.toml" plane transport)" \
+    || die "cannot read [gate.plugin_kinds].plane/.transport from $root/qa/construction.toml -- no needle set without it"
+  [ -n "$globs" ] || die "[gate.plugin_kinds] in $root/qa/construction.toml names no plane/transport glob"
+  [ -n "${PLANE_KEYS:-}" ] || die "PLANE_KEYS is empty -- scripts/plane-keys.sh was not sourced"
+  (
+    cd "$root" || exit 1
+    for k in $PLANE_KEYS; do
+      for d in "crates/busbar-$k" "crates/busbar-$k-codec"; do [ -d "$d" ] && printf '%s\n' "$d"; done
+    done
+    # The kind table's globs, UNION the #34 naming-law families (`busbar-plane-<x>` is a plane by its
+    # name, and a `-codec` crate is a plane's pure half by its name). The kind table enrols planes by
+    # explicit list, so a new plane crate not yet enrolled there is still a needle here; the union can
+    # only widen the set, never narrow it.
+    for g in $globs crates/busbar-plane-* crates/busbar-*-codec; do
+      # shellcheck disable=SC2086  # $g is a glob; expanding it is the point
+      for d in $g; do [ -d "$d" ] && printf '%s\n' "$d"; done
+    done
+  ) | while IFS= read -r d; do b="$(basename "$d")"; printf '%s\n' "${b//-/_}"; done | sort -u
 }
+
+# plugin_kind_globs <construction.toml> <kind>... -> the directory globs of each kind, one per line.
+# A missing table or kind is a non-zero exit, never an empty answer.
+plugin_kind_globs() {
+  python3 - "$@" <<'TOMLPY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as fh:
+    kinds = tomllib.load(fh)["gate"]["plugin_kinds"]
+for kind in sys.argv[2:]:
+    for glob in kinds[kind]:
+        print(glob)
+TOMLPY
+}
+
+# THE LLM DIALECTS ARE DERIVED FROM THE PLUGIN'S OWN DECLS, NOT TYPED (item 517). Level 3a proves
+# every dialect the deleted plugin carried is refused; the list it iterated was a hand-typed string
+# nothing counted, under a closing line claiming "all six". A seventh `&x::DECL` in DECLS would have
+# been probed by nobody while the claim stood. This reads `DECLS` in busbar-llm-codec's lib.rs, then
+# each listed module's `DECL` `name:` -- the string an operator writes as `protocol:`.
+# $1 = the codec crate's src dir. Prints the names in DECLS order; dies if any entry has no name.
+llm_dialects() {
+  local src="${1:-crates/busbar-llm-codec/src}" mods m f n out=""
+  [ -f "$src/lib.rs" ] || die "cannot derive the LLM dialects: $src/lib.rs is not on disk"
+  mods="$(awk '/static DECLS:/ {on=1} on {print} on && /\];/ {exit}' "$src/lib.rs" \
+          | grep -oE '&[A-Za-z0-9_]+::DECL' | sed -e 's/^&//' -e 's/::DECL$//')"
+  [ -n "$mods" ] || die "cannot derive the LLM dialects: no '&<module>::DECL' entry in $src/lib.rs DECLS"
+  for m in $mods; do
+    f="$src/$m/mod.rs"; [ -f "$f" ] || f="$src/$m.rs"
+    [ -f "$f" ] || die "DECLS names module '$m' but neither $src/$m/mod.rs nor $src/$m.rs exists"
+    n="$(awk '/^pub (const|static) DECL:/ {on=1} on && match($0, /name:[[:space:]]*"[^"]+"/) {
+            v = substr($0, RSTART, RLENGTH); sub(/^name:[[:space:]]*"/, "", v); sub(/"$/, "", v); print v; exit }' "$f")"
+    [ -n "$n" ] || die "DECLS names module '$m' but its DECL carries no name: in $f"
+    out="${out:+$out }$n"
+  done
+  printf '%s\n' "$out"
+}
+
+# THE HTTP VERDICTS ARE PURE AND STRICT (item 518). curl prints `000` for connection refused, a reset
+# or an empty reply, so a dead or dying process answers `000`; a case/esac whose only arm is `404)`
+# (or `2*)`) waved that through as "mounted" (or "absent"). A code counts only if it is a real HTTP
+# status: MOUNTED = a status that is not 404; ABSENT = a status that is not 2xx.
+is_http_status() { case "${1:-}" in [1-5][0-9][0-9]) return 0 ;; *) return 1 ;; esac; }
+mounted_code_ok() { is_http_status "$1" && [ "$1" != "404" ]; }
+absent_code_ok()  { is_http_status "$1" && case "$1" in 2*) return 1 ;; *) return 0 ;; esac; }
 
 core_prod_files() { # core's PRODUCTION sources: no tests/ tree, no *_test(s).rs
   find "${1:-$CORE_SRC}" -name '*.rs' -not -path '*/tests/*' 2>/dev/null \
@@ -218,8 +293,66 @@ if [ "${1:-}" = "--selftest" ]; then
     fi
   done
 
+  # NEEDLES ARE DERIVED, NOT ENUMERATED (item 516). A transport crate -- a plane-side plugin kind the
+  # old prefix list never named -- planted in core production code must be flagged; the ABI and the
+  # neutral cleanliness crates must not be needles; and a kind crate that appears on disk with no edit
+  # to this script is a needle at once (a fixture tree carrying the real kind table).
+  printf 'use busbar_transport_http::Listener;\n' > "$st_tmp/core/transport_leak.rs"
+  if [ -n "$(level1_scan "$st_tmp/core" "$needles" | grep transport_leak)" ]; then
+    note "self-test RED: core production code naming a transport crate is flagged"
+  else
+    st_fail=1; note "SELF-TEST NEEDLE case FAILED: core naming busbar_transport_http was not flagged (needles: $(printf '%s' "$needles" | tr '\n' ' '))"
+  fi
+  rm -f "$st_tmp/core/transport_leak.rs"
+  for st_n in busbar_contract busbar_plugin busbar_oauth2 busbar_kernel; do
+    if printf '%s\n' "$needles" | grep -qx "$st_n"; then
+      st_fail=1; note "SELF-TEST NEEDLE case FAILED: $st_n (ABI / neutral) is a needle -- level 1 would red on core's own foundations"
+    fi
+  done
+  mkdir -p "$st_tmp/tree/qa" "$st_tmp/tree/crates/busbar-transport-selftestzz" "$st_tmp/tree/crates/busbar-plane-selftestzz"
+  cp qa/construction.toml "$st_tmp/tree/qa/"
+  st_fix_needles="$(proto_crate_names "$st_tmp/tree")"
+  if printf '%s\n' "$st_fix_needles" | grep -qx busbar_transport_selftestzz \
+     && printf '%s\n' "$st_fix_needles" | grep -qx busbar_plane_selftestzz; then
+    note "self-test DERIVED: a new busbar-transport-*/busbar-plane-* crate is a needle with no edit to this script"
+  else
+    st_fail=1; note "SELF-TEST NEEDLE case FAILED: a newly added kind crate is not a needle (got: $(printf '%s' "$st_fix_needles" | tr '\n' ' '))"
+  fi
+
+  # DIALECTS ARE DERIVED AND COUNTED (item 517): the live derivation matches the DECLS entry count and
+  # carries the leg's own probe dialect; a fixture DECLS yields exactly its own entries.
+  st_decls_n="$(awk '/static DECLS:/ {on=1} on {print} on && /\];/ {exit}' crates/busbar-llm-codec/src/lib.rs | grep -cE '&[A-Za-z0-9_]+::DECL' || true)"
+  st_dialects="$(llm_dialects crates/busbar-llm-codec/src)"
+  st_dialects_n="$(printf '%s\n' "$st_dialects" | wc -w | tr -d ' ')"
+  if [ "${st_decls_n:-0}" -gt 0 ] && [ "$st_dialects_n" = "$st_decls_n" ] && printf ' %s ' "$st_dialects" | grep -q ' anthropic '; then
+    note "self-test DIALECTS: $st_dialects_n derived from DECLS ($st_dialects), one per entry"
+  else
+    st_fail=1; note "SELF-TEST DIALECTS case FAILED: DECLS has $st_decls_n entries, derived $st_dialects_n ($st_dialects)"
+  fi
+  mkdir -p "$st_tmp/codec/alpha"
+  printf 'pub static DECLS: &[&X] = &[\n    &alpha::DECL,\n    &beta::DECL,\n];\n' > "$st_tmp/codec/lib.rs"
+  printf 'pub const DECL: ProtocolDecl = ProtocolDecl {\n    name: "alpha-dialect",\n};\n' > "$st_tmp/codec/alpha/mod.rs"
+  printf 'fn other() { let name: "not-this" = 1; }\npub const DECL: ProtocolDecl = ProtocolDecl {\n    name: "beta-dialect",\n};\n' > "$st_tmp/codec/beta.rs"
+  if [ "$(llm_dialects "$st_tmp/codec")" = "alpha-dialect beta-dialect" ]; then
+    note "self-test DIALECTS: a fixture DECLS of two yields exactly its two names, in order"
+  else
+    st_fail=1; note "SELF-TEST DIALECTS case FAILED: fixture DECLS derived '$(llm_dialects "$st_tmp/codec")'"
+  fi
+
+  # THE HTTP VERDICTS REJECT A DEAD PROCESS (item 518): curl's `000` is neither mounted nor absent.
+  if mounted_code_ok 000 || absent_code_ok 000 || mounted_code_ok "" || absent_code_ok ""; then
+    st_fail=1; note "SELF-TEST HTTP case FAILED: curl's 000 (no HTTP answer) was accepted as a mounted or absent route"
+  else
+    note "self-test HTTP: 000 / empty (no HTTP answer at all) is neither mounted nor absent"
+  fi
+  if mounted_code_ok 503 && ! mounted_code_ok 404 && absent_code_ok 404 && ! absent_code_ok 200; then
+    note "self-test HTTP: 503 mounted, 404 not mounted; 404 absent, 200 not absent"
+  else
+    st_fail=1; note "SELF-TEST HTTP case FAILED: a real status was misjudged"
+  fi
+
   if [ "$st_fail" -ne 0 ]; then
-    die "proto-deletion-gate self-test FAILED — the static scanner would let a protocol-crate reference through"
+    die "proto-deletion-gate self-test FAILED — a static leg would pass what it exists to refuse (see the FAILED line above)"
   fi
   echo "proto-deletion-gate self-test: static legs GREEN (RED on a real reference, silent on prose and tests)"
   exit 0
@@ -398,6 +531,7 @@ run_busbar_bg() { # binary, args... ; caller supplies the redirections and the t
 # string the refusal must name. Called once per dialect the plugin carried: deleting the plugin
 # deletes ALL of them, and a leg that checked only one would pass on a plugin that had quietly kept
 # five.
+LLM_REFUSED=0
 llm_dialect_refused() {
   local bin="$1" proto="$2" remaining="$3" out rc
   mk_providers "$proto"; mk_config "127.0.0.1:0" "127.0.0.1:0"
@@ -424,6 +558,7 @@ llm_dialect_refused() {
       || die "the refusal must NAME the rejected protocol $proto; got: $out"
     note "level 3a refusal: empty-codec-set rejects protocol $proto (exit $rc)"
   fi
+  LLM_REFUSED=$((LLM_REFUSED + 1))
 }
 
 # ── run_gate: levels 2/3 + control, for ONE extracted PROTOCOL ──────────────────────────────────
@@ -513,9 +648,8 @@ run_gate() {
   local msg_code
   msg_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$port$deleted_ingress_path" \
     -H 'content-type: application/json' -d '{"model":"test-model","max_tokens":8,"messages":[]}')
-  case "$msg_code" in
-    2*) die "POST $deleted_ingress_path answered $msg_code on a build with no $proto dialect" ;;
-  esac
+  absent_code_ok "$msg_code" \
+    || die "POST $deleted_ingress_path must answer a non-2xx HTTP status on a build with no $proto dialect; got '$msg_code' (000 = no HTTP answer: a dead process is not an absent route)"
   kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
   note "level 3c boot: up on $up_probe, /stats 200, ${proto}-format ingress answers $msg_code (no handler)"
 
@@ -547,9 +681,19 @@ run_gate() {
 # The deleted-ingress probe is anthropic's `/v1/messages`; every other dialect's URL space
 # (gemini's `/v1beta/...`, bedrock's `/model/{id}/converse`, `/v1/responses`, `/v2/chat`) is covered
 # by the same binary having no LLM handler at all.
+LLM_DIALECTS="$(llm_dialects crates/busbar-llm-codec/src)"
+LLM_DIALECTS_N="$(printf '%s\n' "$LLM_DIALECTS" | wc -w | tr -d ' ')"
+case " $LLM_DIALECTS " in
+  *" anthropic "*) ;;
+  *) die "the LLM leg probes /v1/messages as anthropic, but DECLS no longer declares anthropic ($LLM_DIALECTS)" ;;
+esac
+LLM_ALSO_DELETED="$(printf '%s\n' "$LLM_DIALECTS" | tr ' ' '\n' | grep -vx anthropic | tr '\n' ' ')"
+note "level 3a dialects: $LLM_DIALECTS_N derived from busbar-llm-codec DECLS ($LLM_DIALECTS)"
 run_gate "anthropic" "proto-llm" "plane-mcp" \
   "" "" "/v1/messages" \
-  "gemini openai bedrock responses cohere"
+  "$LLM_ALSO_DELETED"
+[ "$LLM_REFUSED" -eq "$LLM_DIALECTS_N" ] \
+  || die "level 3a refused $LLM_REFUSED dialect(s) but DECLS declares $LLM_DIALECTS_N -- every dialect the plugin carries must be probed"
 
 # ── MCP: its own leg, NOT a run_gate call — see the header's "WHAT THE MCP LEG NOW CLAIMS". ──────
 # MCP is not a codec dialect, so the LLM levels 3a/3c (a `protocol:` refusal, an LLM-format ingress)
@@ -672,9 +816,8 @@ curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null || die "/stats must answer o
 # there — and mcp-c already showed this OFF build REFUSES the very `mcp:` block that would mount it.
 MCP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/mcp" \
   -H 'content-type: application/json' -d '{"jsonrpc":"2.0","method":"initialize","id":1}')
-case "$MCP_CODE" in
-  2*) die "POST /mcp answered $MCP_CODE with the MCP plane compiled out — the plane's data path did not leave core" ;;
-esac
+absent_code_ok "$MCP_CODE" \
+  || die "POST /mcp must answer a non-2xx HTTP status with the MCP plane compiled out; got '$MCP_CODE' (2xx: the data path did not leave core; 000: no HTTP answer at all)"
 # The mount's one unauthenticated route — GET /.well-known/oauth-protected-resource<path> — is 404
 # here: with the plane compiled out it is not in the table at all. (On a mounted plane it is 200,
 # asserted at mcp-b-mounted below.) This is the ABSENT half of the mounted-vs-absent discriminator.
@@ -799,9 +942,8 @@ curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null || die "/stats must answer o
 # ROUTES a POST /a2a to a live plane response (non-404), while an unmounted sibling path still 404s.
 A2A_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/a2a/agents/probe" \
   -H 'content-type: application/json' -d '{"jsonrpc":"2.0","method":"message/send","id":1}')
-case "$A2A_CODE" in
-  2*) die "POST /a2a answered $A2A_CODE with the A2A plane compiled out — the plane's data path did not leave core" ;;
-esac
+absent_code_ok "$A2A_CODE" \
+  || die "POST /a2a must answer a non-2xx HTTP status with the A2A plane compiled out; got '$A2A_CODE' (2xx: the data path did not leave core; 000: no HTTP answer at all)"
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
 note "a2a-b boot: /healthz 200, /stats 200, POST /a2a $A2A_CODE (plane ABSENT) with plane-a2a off"
 
@@ -829,9 +971,8 @@ done
 [ -n "$up" ] || { cat "$FIX/boot-a2a-mounted.log"; die "the a2a-mounted control did not come up on the default build"; }
 A2A_ON_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$A2A_ON_PORT/a2a" \
   -H 'content-type: application/json' -d '{"jsonrpc":"2.0","method":"message/send","id":1}')
-case "$A2A_ON_CODE" in
-  404) die "with plane-a2a ON and agents:+public_url, POST /a2a must MOUNT (non-404); got 404" ;;
-esac
+mounted_code_ok "$A2A_ON_CODE" \
+  || die "with plane-a2a ON and agents:+public_url, POST /a2a must MOUNT (a non-404 HTTP status); got '$A2A_ON_CODE' (000 = no HTTP answer: a dead process mounts nothing)"
 A2A_ON_UNROUTED=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$A2A_ON_PORT/a2a-not-a-route" \
   -H 'content-type: application/json' -d '{}')
 [ "$A2A_ON_UNROUTED" = "404" ] \
@@ -891,8 +1032,8 @@ done
 [ -n "$up" ] || { cat "$FIX/boot-mcp-d.log"; die "the mcp-d binary did not come up on /stats"; }
 MCP_D_A2A=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/a2a" \
   -H 'content-type: application/json' -d '{"jsonrpc":"2.0","method":"message/send","id":1}')
-[ "$MCP_D_A2A" != "404" ] \
-  || die "with plane-a2a ON the A2A door must MOUNT (non-404) on the mcp-d build; got 404"
+mounted_code_ok "$MCP_D_A2A" \
+  || die "with plane-a2a ON the A2A door must MOUNT (a non-404 HTTP status) on the mcp-d build; got '$MCP_D_A2A'"
 MCP_D_MCP=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/mcp" \
   -H 'content-type: application/json' -d '{"jsonrpc":"2.0","method":"initialize","id":1}')
 [ "$MCP_D_MCP" = "404" ] \
@@ -900,4 +1041,4 @@ MCP_D_MCP=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PO
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
 note "mcp-d boot: /stats 200, POST /a2a $MCP_D_A2A (A2A mounted), POST /mcp 404 (MCP compiled out)"
 
-echo "proto-deletion-gate: PASS (static 0; the LLM protocol deletes as one plugin and all six dialects it carries are refused, boot+serve, remaining dialects unaffected, control green; mcp and a2a each independently droppable in BOTH directions — the receiving door mounts and routes when its plane is present and 404s when it is compiled out — and the binary still serving)"
+echo "proto-deletion-gate: PASS (static 0; the LLM protocol deletes as one plugin and all $LLM_DIALECTS_N dialects it carries (derived from DECLS) are refused, boot+serve, remaining dialects unaffected, control green; mcp and a2a each independently droppable in BOTH directions — the receiving door mounts and routes when its plane is present and 404s when it is compiled out — and the binary still serving)"
