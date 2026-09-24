@@ -164,6 +164,9 @@ mod forward_pool_integration_tests;
 #[path = "tests/gate_policy_503_literals_tests.rs"]
 mod gate_policy_503_literals_tests;
 #[cfg(test)]
+#[path = "tests/hook_access_tests.rs"]
+mod hook_access_tests;
+#[cfg(test)]
 #[path = "tests/hook_non_chat_projection_tests.rs"]
 mod hook_non_chat_projection_tests;
 #[cfg(test)]

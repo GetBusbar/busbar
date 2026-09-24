@@ -745,3 +745,81 @@ fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
         }))
     );
 }
+
+/// The hook accesses the node journal holds under one ingress label, oldest first. The journal is
+/// process-wide, so each test below uses a label no other test uses.
+fn hook_accesses_under(op: &str) -> Vec<crate::audit::amend::Access> {
+    crate::audit::amend::node_recent()
+        .into_iter()
+        .filter_map(|a| match a.body {
+            crate::audit::amend::AmendBody::Access(x) if x.op_class.as_str() == op => Some(x),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A rewrite hook that abstains: only what it was handed matters.
+struct AbstainingRewrite;
+
+#[async_trait::async_trait]
+impl crate::hooks::RoutingPolicy for AbstainingRewrite {
+    async fn decide(
+        &self,
+        _req: &busbar_api::RoutingRequest<'_>,
+        _candidates: &[busbar_api::Candidate<'_>],
+        _ctx: &busbar_api::RoutingContext<'_>,
+        _budget: std::time::Duration,
+    ) -> busbar_api::PolicyResult {
+        Ok(busbar_api::RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "abstaining-rewrite"
+    }
+}
+
+/// THE REWRITE LEG EVERY NON-LLM PLANE FIRES (`host.transform_over`, reached by the tool, agent and
+/// session planes alike) hands the hook the call's arguments, and leaves exactly one access
+/// amendment naming the hook — the same record the gate seam leaves.
+#[test]
+fn the_plane_rewrite_leg_leaves_one_access_amendment_per_hook_handed_the_arguments() {
+    const PLANE: &str = "access-rewrite-leg";
+    let mut app = crate::test_support::TestApp::new().build();
+    let mut containers = crate::state::ContainerRewriteMap::new();
+    containers.insert(
+        "c".to_string(),
+        vec![(
+            std::time::Duration::from_millis(500),
+            Arc::new(AbstainingRewrite) as Arc<dyn crate::hooks::RoutingPolicy>,
+        )],
+    );
+    Arc::get_mut(&mut app)
+        .expect("sole owner")
+        .plane_rewrites
+        .insert(PLANE, containers);
+    let verdict = transform_over_over(&app, PLANE, "c", 1, "tool", br#"{"path":"/x"}"#);
+    assert!(matches!(verdict, TransformVerdict::Proceed { .. }));
+    let seen = hook_accesses_under(PLANE);
+    assert_eq!(seen.len(), 1, "one access per hand-over: {seen:?}");
+    assert_eq!(seen[0].name, "abstaining-rewrite");
+}
+
+/// THE PORT A PLANE'S OWN HOOK CALL SITES RECORD THROUGH: the host's provided `hook_read` seals the
+/// access on the node journal, naming the hook, the caller and the fields that crossed.
+#[test]
+fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal() {
+    const OP: &str = "access-host-port";
+    let app = crate::test_support::TestApp::new().build();
+    let host = crate::test_support::engine_host(&app);
+    host.hook_read("port-hook", Some("key-1"), OP, true);
+    let seen = hook_accesses_under(OP);
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0].name, "port-hook");
+    assert_eq!(
+        seen[0].subject,
+        crate::audit::amend::Subject::PrincipalId("key-1".to_string())
+    );
+    assert_eq!(
+        seen[0].fields,
+        vec!["content".to_string(), "identity".to_string()]
+    );
+}

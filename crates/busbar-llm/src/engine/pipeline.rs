@@ -545,6 +545,11 @@ fn fire_global_taps(
             shape_proj.clone()
         };
         if let Some(proj) = proj {
+            // A tap handed the prompt projection leaves one access amendment, through the kernel's
+            // one seam; a shape-only projection hands no content and leaves none.
+            if *send_prompt && prompt_proj.is_some() {
+                host.hook_read(hook.name(), None, ingress_protocol, false);
+            }
             let policy = hook.clone();
             let budget = *timeout;
             crate::engine::hooks::spawn_bounded_tap(
@@ -1058,6 +1063,7 @@ async fn run_rewrite_pass(
                 ));
             };
             let mut applied = match apply_global_rewrites(
+                &**host,
                 host.rewrite_hooks(),
                 parsed,
                 pool_name,
@@ -1072,6 +1078,7 @@ async fn run_rewrite_pass(
                 Err((status, message)) => return Err(reject(status, message)),
             };
             applied |= match apply_global_rewrites(
+                &**host,
                 pool_rewrites,
                 parsed,
                 pool_name,

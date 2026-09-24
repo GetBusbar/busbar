@@ -2847,6 +2847,14 @@ pub trait HookConfigHost: Send + Sync {
     /// zero-cost-when-off property.
     fn any_content_hook(&self) -> bool;
 
+    /// A hook was handed a unit's content (and the caller's identity, when `identity`): leave the
+    /// one access amendment the kernel's own gate and rewrite seams leave, on the node journal.
+    /// `principal` is whose content it was; `op` the ingress label — data, never branched on.
+    /// PROVIDED, so a plane's own hook call sites record through the same seam as the kernel's.
+    fn hook_read(&self, name: &str, principal: Option<&str>, op: &str, identity: bool) {
+        crate::audit::amend::hook_read(name, principal, op, identity);
+    }
+
     /// The GLOBAL request-stage `kind: tap` observers — the borrow of `App::tap_hooks`. Each
     /// [`TapEntry`](crate::hooks::TapEntry) is a neutral `(deadline, prompt-grant, transport, groups)`
     /// tuple. Held BY REF across the forward await-loop (the tap-fire pass reads it after each hop), so
