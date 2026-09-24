@@ -24,8 +24,8 @@ cd "$(dirname "$0")/.."
 # An explicit LOOM_MAX_PREEMPTIONS in the environment is still honoured, for bisecting a failure
 # down to its shallowest interleaving; it is a debugging aid, not the gate's setting.
 # BOTH packages, unit targets of each (`--bins --lib`): the txn_loom module lives in
-# `config/tests/`, which the core split (step 3.7) moved into the engine lib -- `busbar-core`'s at
-# the time, and `busbar-kernel`'s since the W4.a absorption (673ecdaaa) deleted that crate. A
+# `config/tests/`, which the core split moved into the engine lib -- `busbar-core`'s at
+# the time, and `busbar-kernel`'s since busbar-core was absorbed and deleted. A
 # selector naming only the bin target would come back GREEN AND EMPTY on the far side of that
 # move — the classic vacuous gate — so the selector names both sides of the seam and the count
 # floor below refuses a run that executed zero models.

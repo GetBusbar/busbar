@@ -1260,8 +1260,8 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # tools 3 · agents 2 · streams 7 -- `GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh
 # --check`, confirmed stable over three consecutive runs). This constant previously said 16, copied
 # from a note that itself admitted it could not re-measure: scripts/plane-config-noun-gate.sh's
-# CORE_ROOT used to read "crates/busbar-core/src", which commit 673ecdaaa deleted when it absorbed
-# busbar-core into busbar-kernel (#19/#37), so the armed gate printed no residual line at all and the
+# CORE_ROOT used to read "crates/busbar-core/src", which was deleted when busbar-core was absorbed
+# into busbar-kernel, so the armed gate printed no residual line at all and the
 # 16 was carried forward unverified rather than measured. scripts/plane-config-noun-gate.sh has since
 # been repointed at CORE_ROOTS="crates/busbar-kernel/src" (its own
 # CORE_ROOTS section), so the gate runs again and the true residual is 17, not 16 -- 16 was the wrong
@@ -1523,9 +1523,9 @@ begin_group "KERNEL — the Teller loop battery, the capability fixtures and att
 # every reason posts, the settlement table, the two-sided canary, kill points). The caps fixtures
 # prove the tokens cannot be forged.
 #
-# THE CAPS STEP NAMES `busbar-contract`, NOT `busbar-caps`. Commit 2c9eddecf (1.6.0 W2.c) folded
-# busbar-caps into busbar-contract as `busbar_contract::caps` and deleted the crate and its
-# workspace member. `cargo test -p busbar-caps` does not run a reduced set against the survivor --
+# THE CAPS STEP NAMES `busbar-contract`, NOT `busbar-caps`. busbar-caps was folded
+# into busbar-contract as `busbar_contract::caps`, and the crate and its
+# workspace member were deleted. `cargo test -p busbar-caps` does not run a reduced set against the survivor --
 # cargo cannot resolve the package at all, so the step errored and the whole KERNEL group was red on
 # the harness rather than on the tree. The fixtures came with the fold: they are the ~75 tests under
 # `caps::tests::*` (crates/busbar-contract/src/caps/tests/{mod,the_posting_arithmetic,
@@ -1540,7 +1540,7 @@ begin_group "KERNEL — the Teller loop battery, the capability fixtures and att
 # (`crates/busbar-llm/src/engine/tests/attempt_identity_tests.rs`), which today holds:
 #   * `walk_vs_pipeline_attempt_identity` -- the identity harness itself (legacy twin vs the unified
 #     attempt seam, table-driven over 200+ cases).
-#   * `eventstream_normalization_blanks_the_reading_and_nothing_else` -- added in commit d50addefc,
+#   * `eventstream_normalization_blanks_the_reading_and_nothing_else` -- added
 #     directly beside the harness, to prove the `normalize()` helper the harness diffs THROUGH
 #     collapses only the non-identity-bearing framing bytes (measured latencyMs, CRC/length bytes)
 #     and NOT the frame's real content -- the module's own doc says a broken normalizer "could pass

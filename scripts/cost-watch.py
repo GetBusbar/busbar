@@ -1216,7 +1216,7 @@ def selftest() -> int:
     # ── 5d. latchkey_sample_job_minutes / price_latchkey_jobs_sample: the duration_ms basis ────
     say(latchkey_sample_job_minutes(0) == 0, "latchkey_sample_job_minutes: 0ms is 0min, not guessed")
     say(latchkey_sample_job_minutes("3000") == 1,
-        "latchkey_sample_job_minutes: duration_ms as a STRING (F2) still parses -- 3000ms -> 1min")
+        "latchkey_sample_job_minutes: duration_ms as a STRING still parses -- 3000ms -> 1min")
     say(latchkey_sample_job_minutes(61000) == 2, "latchkey_sample_job_minutes: 61000ms rounds up to 2min")
     say(latchkey_sample_job_minutes(None) == 0, "latchkey_sample_job_minutes: missing duration -- 0, not guessed")
 

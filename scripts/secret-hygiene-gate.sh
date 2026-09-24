@@ -17,10 +17,10 @@
 #               `format!`/`write!`/`panic!` enclosed by an `Err(...)`/`map_err`/`ok_or_else`/
 #               `push(...)`/diagnostic call. See below for why this had to be added.
 #
-# WHY CHECK 3 EXISTS — TWO COMMITTED LEAKS SHIPPED WITH THIS INSTRUMENT WATCHING (49d781bd1).
+# WHY CHECK 3 EXISTS — TWO COMMITTED LEAKS SHIPPED WITH THIS INSTRUMENT WATCHING.
 #   `egress/engine/mod.rs` `parse_proxy` rendered the RAW `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`
-#   value with `{v:?}` on three refusal arms; those variables carry `user:password@` (RFC 3986
-#   §3.2.1) and the refusal becomes a boot panic with no `catch_unwind` under it. And
+#   value with `{v:?}` on three refusal arms; those variables carry `user:password@` (RFC 3986 §3.2.1)
+#   and the refusal becomes a boot panic with no `catch_unwind` under it. And
 #   `egress_auth/jwt_bearer.rs` `pem_to_pkcs8_der` interpolated `base64::DecodeError`'s own
 #   `Display`, which names a byte OF THE KEY BODY — `InvalidLastSymbol` prints a VALID base64
 #   character, i.e. six bits of the operator's RSA private key — into a string `config_validate`

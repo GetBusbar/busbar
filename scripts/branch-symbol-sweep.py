@@ -1208,11 +1208,21 @@ def cmd_selftest(a) -> int:
     return 0
 
 
+def _default_repo() -> str:
+    """The repo `--repo` defaults to when neither it nor BSWEEP_REPO is set: the
+    git worktree this script is being run from."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True, check=True)
+        return out.stdout.strip() or os.getcwd()
+    except Exception:
+        return os.getcwd()
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="branch-symbol-sweep", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--repo", default=os.environ.get(
-        "BSWEEP_REPO", "/Users/matthew/Developer/GetBusbar/busbar"))
+    ap.add_argument("--repo", default=os.environ.get("BSWEEP_REPO", _default_repo()))
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("sweep", help="sweep branches into a ledger")

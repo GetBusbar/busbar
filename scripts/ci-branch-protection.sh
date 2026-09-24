@@ -135,8 +135,8 @@ REQUIRED_CONTEXTS_JSON='[
 # it — this is a deliberate removal path, not a place to quietly prune
 # something.
 #
-# "gate-mutants" — DECISIONS #78: mutation testing is TEST-ENHANCING, not
-# release-breaking; workflow_dispatch-only and disabled_manually on GitHub.
+# "gate-mutants" — a test-effectiveness check, not a release-breaking one;
+# workflow_dispatch-only and disabled_manually on GitHub.
 RETIRED_CONTEXTS_JSON='[
   "gate-mutants"
 ]'

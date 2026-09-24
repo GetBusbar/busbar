@@ -19,7 +19,7 @@ echo "== txn compile fence (this build MUST fail) =="
 # that carries the fence, so nothing else in the graph is rebuilt under it.
 #
 # THE PACKAGE NAME IS LOAD-BEARING IN THE DANGEROUS DIRECTION, because this gate's PASS condition is
-# a build FAILURE. It read `-p busbar-core` after the W4.a absorption (673ecdaaa) deleted that crate,
+# a build FAILURE. It read `-p busbar-core` until that crate was absorbed into busbar-kernel and deleted,
 # and `cargo rustc` on a package that does not exist fails too -- which is this script's green. The
 # only thing standing between that and a fence reported as holding over a crate that was never
 # compiled is the expected-error check below, which is why that check is not optional politeness.

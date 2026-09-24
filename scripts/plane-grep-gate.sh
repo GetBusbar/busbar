@@ -149,9 +149,9 @@ OPERATION_EXCLUDE="crates/api/src/operation.rs"
 # is a fact about the frozen contract itself, so it travels with the declaration when the declaration
 # moves and stops matching when the declaration is actually gone — which is when the row should go too.
 #
-# THE PATH-PREFIXES WERE REPOINTED AFTER THE W4 ABSORPTIONS, and the dead-row check below is what
-# named them. `busbar-core` went into `busbar-kernel` (673ecdaaa) and `busbar-substrate`'s engine
-# followed (5fa320208); four rows kept pointing at the deleted crates. The rot stayed INVISIBLE for as
+# THE PATH-PREFIXES WERE REPOINTED AFTER THE CRATE ABSORPTIONS, and the dead-row check below is what
+# named them. `busbar-core` went into `busbar-kernel` and `busbar-substrate`'s engine
+# followed; four rows kept pointing at the deleted crates. The rot stayed INVISIBLE for as
 # long as it did because the gate died EARLIER — on `neutral_src_roots()` listing those same two dead
 # crates as scan roots — and a gate that refuses to start never reaches its own dead-row check.
 # Repointing the roots (scripts/plane-keys.sh) is what let this check finally speak. Every declaration
