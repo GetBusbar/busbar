@@ -178,7 +178,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate service-images --selftest",
     "cargo xtask gate service-images",
     "cargo xtask gate structure-lint --selftest",
-    "cargo xtask gate structure-lint",
+    "cargo xtask gate structure-lint --posture",
     "cargo xtask gate no-tracked-ignored --selftest",
     "cargo xtask gate no-tracked-ignored",
     "cargo xtask gate package-selectors --selftest",

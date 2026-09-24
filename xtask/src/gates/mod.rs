@@ -245,6 +245,28 @@ pub const REPORT_ONLY: &[Posture] = &[
         }),
     },
     Posture {
+        name: "structure-lint",
+        why: "RED ON FOUR NAMED ROWS, AND THEY ARE TRUE FINDINGS. be9c473f5 derived the plane set, \
+              the protocol crates and the tree-wide scope from the tree instead of from lists that \
+              had gone stale, and the lint then saw what it had been blind to: \
+              `plane-dup:unledgered` (24 plane-local reimplementations of a shared concern), \
+              `plane-dup:stale-ledger` (3 ledger rows that outlived their duplication), \
+              `axis:purity` (4 places the agnostic core asks an axis its identity) and \
+              `census:count` (3 shared words with a second spelling). DRAIN: Phase 4, when the \
+              plane owners dedupe or sign ledger rows; strike each name from \
+              STRUCTURE_LINT_STANDING_REDS in the commit that turns its row green. Every OTHER row \
+              of this gate is scored like any gate's, so a new red anywhere else reds `--all` and \
+              the blocking `--posture` step in ci.yml alike, and a listed row that goes green \
+              without its strike is STALE and reds them too. \
+              `posture_tests::the_structure_lint_posture_holds_on_the_tree` runs the real gate and \
+              holds this entry to what it says.",
+        excuse: Excused::OnlyRows(StandingReds {
+            rows: STRUCTURE_LINT_STANDING_REDS,
+            list: "STRUCTURE_LINT_STANDING_REDS",
+            mirror: None,
+        }),
+    },
+    Posture {
         name: "ship-ready",
         why: "THE SHIP CRITERION, and the integration line is not the ship SHA. Every one of its \
               rows is a claim about a tree that is ready to promote — the twin at zero, the \
@@ -310,7 +332,7 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // pick moves behind the kernel loop and only the loop and the fallback re-entry remain.
     "one-pick-site",
     // RE-DERIVED 2026-09-24 FROM A REAL RUN (P1 integration). `cargo xtask gate construction` on a
-    // clean checkout of b49db00d3, base pinned to origin/predev, is red on exactly the rows on this
+    // clean checkout of b7200b496, base pinned to origin/predev, is red on exactly the rows on this
     // list. Three names were STALE and are struck here and in scripts/land.sh in the same commit:
     // `ports-only-tests:busbar-llm`, `request-path-fn-size` and `terminal-doors-in-audit-step` are
     // PASS on that run. `ceiling-rose` is green again because the ten expired kind-isolation raises
@@ -441,6 +463,22 @@ pub const CONFORMANCE_SYNC_STANDING_REDS: &[&str] = &[
     // carried-over pass is STALE on the dev line (KICKOFF 7.3). Drained in Phase 5 on the release
     // sha (KICKOFF 7.4). Strike this line in the commit that turns the row green.
     "conformance:freshness",
+];
+
+/// THE STRUCTURE-LINT GATE'S STANDING REDS, BY NAME. Same contract as
+/// [`MONEY_INVARIANTS_STANDING_REDS`]: a red this list does not name is scored, and a name on this
+/// list that has gone green is STALE and is scored too.
+pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
+    // be9c473f5 (W1.2, items 183/184/222-224/236) made the lint derive its plane set, protocol
+    // crates and scope from the tree, and these four rows went red on what it could now see.
+    // Measured 2026-09-24 on a clean checkout of 4be7fd3b5: red on exactly these four, green on the
+    // other 33. DRAIN: Phase 4 — the plane owners dedupe each plane-local copy or sign its ledger
+    // row, prune the stale ledger rows, take the axis identity questions out of the agnostic core
+    // and collapse each second spelling. Strike each line in the commit that turns its row green.
+    "structure-lint:axis:purity",
+    "structure-lint:census:count",
+    "structure-lint:plane-dup:stale-ledger",
+    "structure-lint:plane-dup:unledgered",
 ];
 
 /// One entry of [`REPORT_ONLY`].
@@ -3814,8 +3852,9 @@ mod posture_tests {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        let lists: [(&str, &[&str]); 4] = [
+        let lists: [(&str, &[&str]); 5] = [
             ("CONSTRUCTION_STANDING_REDS", CONSTRUCTION_STANDING_REDS),
+            ("STRUCTURE_LINT_STANDING_REDS", STRUCTURE_LINT_STANDING_REDS),
             ("QA_NAMES_STANDING_REDS", QA_NAMES_STANDING_REDS),
             (
                 "MONEY_INVARIANTS_STANDING_REDS",
@@ -3966,6 +4005,38 @@ mod posture_tests {
         assert!(
             only_rows_unexplained(&sr, &v).is_empty(),
             "CONFORMANCE_SYNC_STANDING_REDS carries a row that is not red (stale) or misses one \
+             that is: {:?}",
+            only_rows_unexplained(&sr, &v)
+        );
+    }
+
+    /// The structure-lint posture holds on the tree it runs over — the same fact ci.yml's blocking
+    /// `cargo xtask gate structure-lint --posture` step asserts — and the standing list names
+    /// exactly the rows that are red: a NEW red on any other row, or a listed row that has gone
+    /// green without its name being struck, fails here.
+    #[test]
+    fn the_structure_lint_posture_holds_on_the_tree() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let reg = find("structure-lint").expect("structure-lint is registered");
+        let v = execute(&*(reg.build)(), &cx);
+        assert!(
+            excused_from_all("structure-lint", &cx, &v).is_some() || !v.red,
+            "structure-lint is red beyond STRUCTURE_LINT_STANDING_REDS: {:?} {:?}",
+            v.rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .map(|r| format!("{} {}", r.id, r.detail))
+                .collect::<Vec<_>>(),
+            v.problems
+        );
+        let sr = StandingReds {
+            rows: STRUCTURE_LINT_STANDING_REDS,
+            list: "STRUCTURE_LINT_STANDING_REDS",
+            mirror: None,
+        };
+        assert!(
+            only_rows_unexplained(&sr, &v).is_empty(),
+            "STRUCTURE_LINT_STANDING_REDS carries a row that is not red (stale) or misses one \
              that is: {:?}",
             only_rows_unexplained(&sr, &v)
         );

@@ -415,8 +415,13 @@ jobs:
         env:
           XTASK_GATE_CEILING_SECS_STRUCTURE_LINT: "900"
         run: cargo xtask gate structure-lint --selftest
-      - name: Structure lint
-        run: cargo xtask gate structure-lint
+      # BLOCKING, ON ITS POSTURE (the money-invariants shape). be9c473f5 made the lint see four TRUE
+      # red rows it had been blind to; they drain in Phase 4. `--posture` exits 0 while the gate is
+      # red on exactly STRUCTURE_LINT_STANDING_REDS (xtask/src/gates/mod.rs) and 1 on any other red
+      # or on a listed row that went green without its strike, so a new structural regression still
+      # fails this job and the four known rows are printed on every run.
+      - name: Structure lint (BLOCKING on its posture — a NEW red fails the run)
+        run: cargo xtask gate structure-lint --posture
       # NO-TRACKED-IGNORED: a file that is both tracked AND matched by a .gitignore rule of this tree
       # is a landmine — it ships from a clean checkout but vanishes from a fresh `git add`, so the two
       # halves of the team see different trees. Cheap, structural, and belongs on every push. Self-test
