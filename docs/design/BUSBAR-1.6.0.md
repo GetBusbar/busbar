@@ -197,6 +197,31 @@ prove, and each one names the failure that would refute it:
 | **C3** | LLM-only 1.6.0 is byte-identical to published 1.5.5. | One unexplained cell in the oracle diff against the real 1.5.5 binary. |
 | **C4** | Money is a view: `money = f(ledger, ratecard)`, nothing stores a dollar. | Any stored price; any float; any money finding that cannot name ledger-or-ratecard as the wrong one. |
 
+### MEASURED STATUS OF THE FOUR CLAIMS — 2026-09-23
+
+The claims are the release's definition of done. Three of the four have now been MEASURED rather
+than asserted, and two are **refuted**. This table is the honest state; the refutations are not
+reasons to weaken a claim, they are the work.
+
+| | status | the measurement |
+|---|---|---|
+| **C1** | **UNMEASURED over 5 of its 7 kinds** | `INSTANCE_VOCAB_KINDS = ["plane","transport"]` (`kind_isolation/matrix.rs:116`). Core carries no cell on the store, secret, auth, hook or export axis. A counter-example is live in core: `EXPORT_MODULES` (`config/sections.rs:435`) is a closed list of export instance names and `config/mod.rs:1983` refuses every name outside it. **Every C1 green on record is a statement about planes and transports only.** |
+| **C2** | **REFUTED for the `export` kind** | `config/mod.rs:1983` hard-errors at boot on any export module name outside the four built-ins, so a dropped-in export plugin cannot be NAMED in a config file; `open_export` has zero callers against four positive controls. The two folds are not the same contract. Same root cause as C1's hole. |
+| **C3** | **REFUTED — 16 diverging cells, 12 of them product** | LLM-only build recorded against the published 1.5.5 golden: `owed 916 · diverging 16 · --strict rc=1`. C3's own criterion is one unexplained cell. Both byte-neutrality claims in `crates/busbar/Cargo.toml` (`:263` for `root-llm`, `:309` for `root-admin`) are **false** — a 2×2 isolation shows each moves cells its own comment says it does not. |
+| **C4** | **the instruments cannot currently refute it** | The reconciliation compares an empty book to an empty book and passes; the rollback detector is declared and never constructed; the books-balance verifier wraps in release. Those are not a C4 verdict — they are the reason no C4 verdict is available yet. |
+
+**The honest reading:** C3 and C2 are refuted, C1 is unmeasured over most of its surface, and C4 is
+unmeasurable until its instruments are repaired. None of that changes what the claims should say.
+It changes what "done" costs, and it is why Phase 1 (arm the instruments) precedes Phase 2 (money)
+and Phase 3 (C3) in the execution order rather than running beside them.
+
+**One refutation is already ruled on.** Ruling 8 — *"the 1.5.5 under-billing is CORRECTED in 1.6.0,
+with no customer restatement; C4 wins over C3 on the 42 affected cells"* — is the precedent for a
+cell where 1.5.5's bytes are the wrong ones. At least one of the 16 is of that shape
+(`billing|key-usage|after-upstream-down`, whose own `why` says the new answer is correct), so it
+needs a signed exception rather than a fix. **The exception was never written**, which is the
+actual defect there.
+
 **C1's test is the sharp one and it is nearly free to run:** add a dialect, and `git diff --stat` must
 show zero files changed under core. That single command falsifies or confirms the entire premise of
 the release, which is more than the 22-group script can say.
