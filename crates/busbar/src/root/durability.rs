@@ -1630,7 +1630,6 @@ pub fn node_book() -> NodeBook {
     }
 }
 
-
 /// Build the journal, the ledger and the audit record chain.
 ///
 /// The whole decision is the first `match`. Everything after it is the same on both branches, which

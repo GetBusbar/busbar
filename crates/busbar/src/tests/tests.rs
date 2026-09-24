@@ -1164,7 +1164,10 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
     // 247: `main()` calls into `root::`, so the `mod root;` doc may not say nothing does.
     let main_fn = &MAIN[MAIN.find("\nfn main() {").expect("main() is in main.rs")..];
     let main_body = &main_fn[..main_fn.find("\n}\n").expect("main() closes")];
-    assert!(main_body.contains("root::"), "the control: main() reaches root::");
+    assert!(
+        main_body.contains("root::"),
+        "the control: main() reaches root::"
+    );
     assert!(
         !MAIN.contains("Nothing in `main()` calls into it"),
         "the `mod root;` doc says main() does not call into the root, and it does"

@@ -182,7 +182,10 @@ fn the_shipped_default_bounds_stop_sequence_count_when_the_key_is_omitted() {
         "stopSequences": stop,
     });
     let err = chat_body(Some(&over), &c, SERVER).unwrap_err();
-    assert!(err.contains("tools.fs.sampling.max_stop_sequences"), "{err}");
+    assert!(
+        err.contains("tools.fs.sampling.max_stop_sequences"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -215,7 +218,10 @@ fn the_shipped_default_bounds_stop_sequence_length_when_the_key_is_omitted() {
     let long = "x".repeat(DEFAULT_MAX_STOP_SEQUENCE_BYTES as usize + 1);
     let params = params_with_stop(vec![long.as_str()]);
     let err = chat_body(Some(&params), &c, SERVER).unwrap_err();
-    assert!(err.contains("tools.fs.sampling.max_stop_sequence_bytes"), "{err}");
+    assert!(
+        err.contains("tools.fs.sampling.max_stop_sequence_bytes"),
+        "{err}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -276,7 +282,10 @@ fn the_shipped_default_range_is_the_protocols_own_zero_to_two() {
     };
     let over = params_with_temperature(c.temperature_max() + 0.1);
     let err = chat_body(Some(&over), &c, SERVER).unwrap_err();
-    assert!(err.contains("tools.fs.sampling.temperature_max_milli"), "{err}");
+    assert!(
+        err.contains("tools.fs.sampling.temperature_max_milli"),
+        "{err}"
+    );
     let at_floor = params_with_temperature(c.temperature_min());
     chat_body(Some(&at_floor), &c, SERVER).expect("the default floor is admitted");
     let at_ceiling = params_with_temperature(c.temperature_max());

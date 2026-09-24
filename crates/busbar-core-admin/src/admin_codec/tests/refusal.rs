@@ -59,7 +59,11 @@ fn all_eleven_frozen_codes_render_verbatim() {
         "unavailable",
         "unpriced_class",
     ];
-    assert_eq!(FROZEN_CODES.len(), 11, "the frozen set is eleven and only eleven");
+    assert_eq!(
+        FROZEN_CODES.len(),
+        11,
+        "the frozen set is eleven and only eleven"
+    );
     for code in FROZEN_CODES {
         let parsed: serde_json::Value =
             serde_json::from_str(&envelope_of(code, code)).expect("valid json");

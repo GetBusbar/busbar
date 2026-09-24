@@ -2177,7 +2177,11 @@ async fn dial_side_stalled_preface_is_dropped() {
         Err(e) => e,
         Ok(_) => panic!("a stalled preface must not hang the dial forever"),
     };
-    assert_eq!(err, TransportError::Timeout, "the budget, not a protocol error, ends it");
+    assert_eq!(
+        err,
+        TransportError::Timeout,
+        "the budget, not a protocol error, ends it"
+    );
     assert!(
         started.elapsed() >= Duration::from_millis(50),
         "the budget is what ended it"
@@ -2196,7 +2200,9 @@ async fn accept_side_stalled_preface_is_dropped() {
     crate::server::serve_connection(Box::new(a), state.clone(), Duration::from_millis(50));
 
     let mut guard = state.inbound_rx.lock().await;
-    let rx = guard.as_mut().expect("the inbound receiver is still here to read from");
+    let rx = guard
+        .as_mut()
+        .expect("the inbound receiver is still here to read from");
     let first = rx.recv().await;
     assert!(
         matches!(first, Some(Err(TransportError::Reset))),
