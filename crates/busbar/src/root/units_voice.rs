@@ -793,13 +793,31 @@ pub struct VoiceNodeParts {
     pub origin: busbar_contract::caps::Origin,
 }
 
+/// Every class an installed plane declares in the token family — what a `tokens:` cap sums beside
+/// the reserved four.
+fn declared_token_classes() -> impl Iterator<Item = &'static str> {
+    use busbar_kernel::plane::registry::{plane_decls, TOKEN_FAMILY};
+    plane_decls()
+        .iter()
+        .flat_map(|d| d.billable_classes.iter())
+        .filter(|c| c.family == TOKEN_FAMILY)
+        .map(|c| c.class)
+}
+
 impl VoiceNode {
     /// Assemble the node's half over what the root already built.
     #[must_use]
     pub fn new(parts: VoiceNodeParts) -> Self {
         VoiceNode {
             plane: parts.plane,
-            door: Mutex::new(Door::new(InMemoryCells::new())),
+            // The door's `tokens:` caps count every class an installed plane declares in the token
+            // family — this plane's audio and text tokens among them — not only the reserved four,
+            // the same set the kernel door counts. Read off the installed planes' declarations so
+            // the budget crate names no plane's vocabulary.
+            door: Mutex::new(Door::with_token_classes(
+                InMemoryCells::new(),
+                declared_token_classes(),
+            )),
             groups: parts.groups,
             pricer: parts.pricer,
             auth: parts.auth,

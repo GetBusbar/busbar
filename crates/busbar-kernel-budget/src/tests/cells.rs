@@ -234,7 +234,7 @@ fn an_all_time_cell_caps_the_models_it_interns_and_keeps_the_token_truth() {
         "the model list is held at the cap, not grown to a thousand"
     );
     assert_eq!(
-        cell.total_tokens(),
+        cell.total_tokens(d.token_classes()),
         1_000,
         "every accrued token still counts toward the token caps"
     );

@@ -287,7 +287,7 @@ pub(crate) fn bucket_usage(
     match d.cells().snapshot(bucket_id) {
         Some(cell) if cell.window_start == window => (
             cell.requests,
-            cell.total_tokens(),
+            cell.total_tokens(d.token_classes()),
             pricer
                 .derive_spend_cents(cell.model_views(), cell.billable_requests, true)
                 .expect("the fixture's card prices every model it serves"),

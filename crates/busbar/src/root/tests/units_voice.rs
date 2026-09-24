@@ -2663,6 +2663,96 @@ fn a_turns_counts_reach_the_door_cells_and_a_spent_budget_refuses_the_next_frame
     );
 }
 
+// ── P2-voicecaps — a `tokens:` cap counts the plane's own token classes ─────────────────────────────
+
+/// A voice group capped at `{metric: tokens, amount: 100, per: minute}`.
+#[cfg(feature = "plane-voice")]
+fn a_hundred_tokens_a_minute() -> busbar_kernel_budget::GroupTable {
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    let groups = std::collections::BTreeMap::from([(
+        "g".to_string(),
+        busbar_kernel::config::GroupCfg {
+            limits: vec![LimitCfg {
+                metric: LimitMetric::Tokens,
+                amount: 100,
+                per: Some(LimitWindow::Minute),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    crate::root::policy::group_table(&groups, &std::collections::BTreeMap::new())
+}
+
+/// Run one turn reporting `usage` on the session's chain, then ask the door for the next frame.
+#[cfg(feature = "plane-voice")]
+fn next_frame_after(usage: TurnUsage) -> Outcome {
+    let node = node_governed_by(serviceable(), a_hundred_tokens_a_minute());
+    let chain = node
+        .chain_for(&PrincipalId::new("acct:voice"), Some("g"))
+        .expect("the configured group resolves");
+    let kernel = Kernel::new();
+    let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+        .charging_through(&chain)
+        .reporting(usage);
+    let Ended::Settled { end, .. } = run(&kernel, &turn) else {
+        panic!("the exit path settles it");
+    };
+    assert_eq!(end.outcome(), Outcome::Completed, "nothing ledgered yet");
+    let next = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+    let Ended::Settled { end, .. } = run(&kernel, &next) else {
+        panic!("the exit path settles it");
+    };
+    end.outcome()
+}
+
+/// **A `tokens:` cap counts the voice plane's own token classes** (the architect's ruling the kernel
+/// door took in 0fb654405). A turn ledgering 60 audio tokens in and 40 out has spent a 100-token
+/// minute, so the session's next frame is refused at the door as a rate limit (tokens, minute). The
+/// voice door used to sum only the four reserved LLM tiers, so voice traffic never reached the cap
+/// and the next frame was admitted.
+#[cfg(feature = "plane-voice")]
+#[test]
+fn a_voice_tokens_cap_counts_audio_tokens_and_refuses_the_next_frame() {
+    // The node reads the installed planes' token classes at construction, as boot does after
+    // `install_planes`.
+    let _reg =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&busbar_voice::PLANE_DECL]);
+    assert_eq!(
+        next_frame_after(TurnUsage {
+            audio_tokens_in: 60,
+            audio_tokens_out: 40,
+            ..TurnUsage::default()
+        }),
+        Outcome::Refused(
+            busbar_contract::caps::StepName::Admit,
+            ReasonCode::RateLimited
+        ),
+        "60 + 40 audio tokens reach the 100-token minute: the door refuses the next frame"
+    );
+}
+
+/// CONTROL: a class the plane declares OUTSIDE the token family — inbound audio seconds, a duration —
+/// never counts toward a `tokens:` cap, however far past the amount it runs.
+#[cfg(feature = "plane-voice")]
+#[test]
+fn a_voice_tokens_cap_never_counts_audio_seconds() {
+    let _reg =
+        busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[&busbar_voice::PLANE_DECL]);
+    assert_eq!(
+        next_frame_after(TurnUsage {
+            audio_tokens_in: 60,
+            audio_ms_in: 500_000,
+            tool_calls: 200,
+            ..TurnUsage::default()
+        }),
+        Outcome::Completed,
+        "500 audio seconds and 200 tool calls are not tokens; 60 tokens are under the cap"
+    );
+}
+
 #[cfg(feature = "plane-voice")]
 #[test]
 fn the_voice_lane_is_qualified_by_the_key_the_streams_card_is_filed_under() {
