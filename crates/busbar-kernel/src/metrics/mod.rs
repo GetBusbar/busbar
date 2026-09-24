@@ -19,11 +19,13 @@
 //!   budget cap. Enables Prometheus burn-rate alerts on a bounded, operator-configured label space.
 //! * **`busbar_key_tokens_total`** — accumulated tokens consumed by each virtual key in the current
 //!   budget window. Useful for token-cost dashboards.
-//! * **`busbar_lane_state`** — per-(pool, lane) health gauge: 0 = healthy/closed, 1 =
-//!   half-open (cooling but at least one cell admits), 2 = tripped (all cells Open or hard-down).
-//!   Labels use ONLY configured pool names and lane MODEL strings (matching the request-counter
-//!   emission sites below so gauge and counters PromQL-join on `lane`) — both bounded by operator
-//!   config, never client-supplied values.
+//! * **`busbar_lane_state`** — per-(pool, lane) breaker gauge read from THAT pool's own breaker
+//!   cell: 0 = healthy/closed, 1 = a half-open recovery probe is in flight on this cell, 2 =
+//!   tripped (this cell Open, or the lane hard-down). Emitted for every plane's pools and
+//!   destinations. Labels use ONLY configured pool names / registered target keys and lane MODEL
+//!   strings / member positions (the model string matches the request-counter emission sites below
+//!   so gauge and counters PromQL-join on `lane`) — all bounded by operator config, never
+//!   client-supplied values.
 //!
 //! ## Cardinality invariant
 //!
@@ -309,8 +311,9 @@ pub(crate) fn record_plane_request_duration(
 /// values are current at observation time. The reads are all side-effect-free:
 /// * Governance: `GovState::usage_for` queries the SQLite store (offloaded to the blocking pool
 ///   by the caller when in async context, or inline in unit tests).
-/// * Lane health: `store.snapshot()` + `store.cooldown_remaining_in()` — pure atomic reads that
-///   do NOT trigger Open→HalfOpen transitions or acquire the single-flight recovery probe.
+/// * Lane health: `store.snapshot()` + each cell's own `breaker_state_snapshot_in()` /
+///   `cooldown_remaining_in()` (and the plane-neutral breaker cells' own readings) — pure atomic
+///   reads that do NOT trigger Open→HalfOpen transitions or acquire the single-flight recovery probe.
 ///
 /// No-op when governance is disabled (the governance arc is `None`). Pool and lane label spaces
 /// are bounded by the operator's configuration; virtual-key ids are bounded by the set of
@@ -326,15 +329,14 @@ pub fn refresh_scrape_gauges(app: &App) {
 
     // ── Lane health: per-(pool, lane-index) breaker state ──────────────────────────────────────
     // For each configured pool, iterate the pool's lane members. The lane state is derived from
-    // the lane snapshot (dead flag, aggregate usability, aggregate cooldown remaining), which are
-    // pure atomic reads — no FSM transitions are triggered. The `lane` label value is the lane's
+    // the pool's own breaker cell (its FSM state and its own cooldown), which are pure atomic
+    // reads — no FSM transitions are triggered. The `lane` label value is the lane's
     // MODEL string (matching the request-counter emission sites above; bounded
     // one-per-configured-lane, a startup constant), not a numeric index.
     //
-    // State derivation (3-state: 0=healthy, 1=half-open, 2=tripped):
-    //   dead || (!usable && cooldown > 0) → 2 (hard-down or all cells Open)
-    //   usable && cooldown > 0            → 1 (some cells admit but aggregate cooling down)
-    //   usable && cooldown == 0           → 0 (healthy / all cells Closed)
+    // State derivation (3-state: 0=healthy, 1=half-open, 2=tripped) reads the POOL'S OWN cell
+    // only — see `lane_state_value`. A sibling pool's healthy cell on the same lane never masks
+    // this pool's trip.
     //
     // `snapshot()` is LANE-GLOBAL (indexed by lane, not scoped to a pool) and `now` is fixed for the
     // whole scrape, so a lane shared across K pools would otherwise recompute the identical (now-2x)
@@ -358,17 +360,12 @@ pub fn refresh_scrape_gauges(app: &App) {
             let snap = snap_cache
                 .entry(lane_idx)
                 .or_insert_with(|| app.store.snapshot(lane_idx, now));
-            // Per-pool cooldown check: use `cooldown_remaining_in` for this specific (pool, lane)
-            // cell, not the lane-wide aggregate from the snapshot (which may reflect a different
-            // pool's cell). This gives per-pool accuracy without touching the FSM.
-            let pool_cooldown = app.store.cooldown_remaining_in(pool_name, lane_idx, now);
-            let state_val: f64 = if snap.dead || (pool_cooldown > 0 && !snap.usable) {
-                2.0 // hard-down or all cells Open/tripped
-            } else if pool_cooldown > 0 {
-                1.0 // HalfOpen: this cell has a non-zero cooldown but the lane still admits
-            } else {
-                0.0 // Closed / healthy
-            };
+            // THIS pool's own cell, nothing lane-global: its FSM state and its own cooldown.
+            let state_val = lane_state_value(
+                app.store.breaker_state_snapshot_in(pool_name, lane_idx),
+                app.store.cooldown_remaining_in(pool_name, lane_idx, now),
+                now,
+            );
             // The `lane` label is the lane's MODEL string (NOT a numeric index), matching the
             // request-counter emission sites above so the gauge and counters can be PromQL-joined on
             // `lane`. It is bounded one-per-configured-lane (a startup constant), so cardinality
@@ -405,14 +402,11 @@ pub fn refresh_scrape_gauges(app: &App) {
         let snap = snap_cache
             .entry(lane_idx)
             .or_insert_with(|| app.store.snapshot(lane_idx, now));
-        let cooldown = app.store.cooldown_remaining_in("", lane_idx, now);
-        let state_val: f64 = if snap.dead || (cooldown > 0 && !snap.usable) {
-            2.0
-        } else if cooldown > 0 {
-            1.0
-        } else {
-            0.0
-        };
+        let state_val = lane_state_value(
+            app.store.breaker_state_snapshot_in("", lane_idx),
+            app.store.cooldown_remaining_in("", lane_idx, now),
+            now,
+        );
         let lane_model = view
             .lane_view(lane_idx)
             .expect("the routed lane index is in range")
@@ -428,6 +422,42 @@ pub fn refresh_scrape_gauges(app: &App) {
         // fault attribution (the same cell `LANE_STATE` reads via `cooldown_remaining_in("", ...)`).
         let avail = app.store.classify("", lane_idx, now);
         emit_lane_gauges(model, &lane_model, snap, &avail, now);
+    }
+
+    // Every OTHER plane's destinations: the plane-neutral breaker cells secondary planes dispatch
+    // through, read from the one shared handle. The `pool` label is the cell's key exactly as the
+    // plane keyed it (a registered target id or a pool name, already qualified by the plane so it
+    // cannot collide with a bare pool name above); the `lane` label is the member's position in
+    // that pool (`0` for a single registered target). Only cells a dispatch has materialized
+    // exist, so the label space is bounded by the configured targets and pools.
+    for (key, member, state, cooldown) in app.plane_breakers.cell_readings(now) {
+        metrics::gauge!(
+            LANE_STATE,
+            "pool" => key.to_string(),
+            "lane" => member.to_string()
+        )
+        .set(lane_state_value(state, cooldown, now));
+    }
+}
+
+/// `busbar_lane_state` for ONE breaker cell, read from that cell alone — never folded with any
+/// other pool's cell on the same lane:
+/// * `1` — the cell is HalfOpen: a recovery probe is in flight on THIS cell right now.
+/// * `2` — the cell refuses: Open with its cooldown still running (a dead lane reads Open with a
+///   never-elapsing cooldown), or Closed but inside a pending cooldown.
+/// * `0` — the cell admits: Closed with no cooldown, or Open with its cooldown elapsed (the next
+///   request through it is the recovery probe).
+fn lane_state_value(
+    state: busbar_kernel::store::BreakerState,
+    cooldown_remaining: u64,
+    now: u64,
+) -> f64 {
+    use busbar_kernel::store::BreakerState;
+    match state {
+        BreakerState::HalfOpen => 1.0,
+        BreakerState::Open { until } if until > now => 2.0,
+        _ if cooldown_remaining > 0 => 2.0,
+        _ => 0.0,
     }
 }
 
@@ -795,7 +825,10 @@ pub const PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL: &str =
 // * `busbar_lane_state`: labels `pool` (configured pool name set — bounded by Cargo at startup) and
 //   `lane` (the lane's configured MODEL string — bounded by N = number of configured lanes, a
 //   startup constant; identical to the `lane` label on the proxy engine counters so the gauge and
-//   counters PromQL-join). Neither label can be influenced by a client request.
+//   counters PromQL-join). For the plane-neutral breaker cells, `pool` is the cell's registered
+//   target / pool key and `lane` the member position (bounded by the pool member ceiling); only
+//   cells a dispatch to a registered target materialized are emitted. Neither label can be
+//   influenced by a client request.
 
 /// Per-virtual-key spend in cents for the current budget window. Scrape-time gauge.
 /// Label: `key` = virtual-key id (operator-bounded). Only emitted when governance is enabled.
@@ -824,10 +857,14 @@ pub const BUCKET_SPEND_CENTS: &str = "busbar_bucket_spend_cents";
 pub const BUCKET_BUDGET_REMAINING_CENTS: &str = "busbar_bucket_budget_remaining_cents";
 
 /// Per-(pool, lane-model) circuit-breaker health gauge.
-/// Values: 0 = healthy (Closed), 1 = half-open (cooling but probe admitted), 2 = tripped (Open /
-/// hard-down). Scrape-time gauge; side-effect-free (does not trigger Open→HalfOpen transitions).
-/// Labels: `pool` (configured pool name, bounded) and `lane` (the lane's MODEL string, bounded —
-/// matches the proxy engine counter sites so the gauge and counters can be PromQL-joined on `lane`).
+/// Read from the POOL'S OWN breaker cell, never folded with a sibling pool's cell on the same lane.
+/// Values: 0 = healthy (Closed, or Open with its cooldown elapsed so the next request probes), 1 =
+/// a half-open recovery probe is in flight on this cell, 2 = tripped (this cell Open or inside a
+/// pending cooldown, or the lane hard-down). Scrape-time gauge; side-effect-free (does not trigger
+/// Open→HalfOpen transitions). Labels: `pool` (configured pool name, bounded) and `lane` (the lane's
+/// MODEL string, bounded — matches the proxy engine counter sites so the gauge and counters can be
+/// PromQL-joined on `lane`); for the plane-neutral breaker cells every other plane dispatches
+/// through, `pool` is the cell's registered target / pool key and `lane` the member position.
 pub const LANE_STATE: &str = "busbar_lane_state";
 
 /// Per-(pool, lane-model) availability gauge — the UNIFIED capacity+breaker signal. `1` =

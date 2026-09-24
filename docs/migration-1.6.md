@@ -77,6 +77,15 @@ None of these need action; they are listed so what you see is expected.
   No 1.5.5 series changed shape or labels; in particular `busbar_requests_total` and
   `busbar_request_duration_seconds` are byte-identical (MCP and A2A traffic is on the separate
   `busbar_plane_*` families). See [Observability](observability.md).
+- **`busbar_lane_state` reads each pool's own breaker.** When one lane is shared by several
+  pools, the gauge for a pool now reflects that pool's own breaker only. On 1.5.5 a pool whose
+  breaker had tripped read `1` as long as another pool could still reach the same lane; it now
+  reads `2`, matching `busbar_lane_available` = `0` on the same labels. `1` now means only that a
+  recovery probe is in flight on that pool's breaker. Some series that read `1` on 1.5.5 therefore
+  read `2`; an alert on `busbar_lane_state == 2` fires for a pool that cannot send, whatever its
+  neighbours do. The gauge also gains series for MCP and A2A destinations (`pool` is the
+  plane-qualified target or pool key such as `tool:<server>`, `lane` the member position), which
+  appear once a request has been sent to them.
 - **Admin views gained fields.** Hook objects carry `fires_at`, `groups` and `phase`; the
   overlay-section 404 lists the sections that now exist; `openapi.json` describes the new planes.
   Every 1.5.5 field, including the lane `limit` alias on `/stats`, is still there.

@@ -323,6 +323,19 @@ impl PlaneBreakers {
             .max(1)
     }
 
+    /// READ-ONLY: every target cell materialized so far with its own FSM state and remaining
+    /// cooldown — the operator surface (`/metrics`) reads these without naming any plane. Pure
+    /// projection; empty for the inert handle.
+    pub(crate) fn cell_readings(
+        &self,
+        now: u64,
+    ) -> Vec<(Box<str>, usize, super::BreakerState, u64)> {
+        if !self.provisioned {
+            return Vec::new();
+        }
+        self.health.named_cell_readings(now)
+    }
+
     /// The raw FSM state of one target's cell, for tests and operator surfaces. Pure projection —
     /// no probe CAS.
     #[cfg(any(test, feature = "test-support"))]

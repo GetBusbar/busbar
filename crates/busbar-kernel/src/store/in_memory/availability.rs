@@ -892,3 +892,35 @@ impl LaneRuntime for HealthState {
         self.select_weighted_for(pool, candidates, weights, now)
     }
 }
+
+impl HealthState {
+    /// READ-ONLY census of every NAMED `(pool, lane)` breaker cell materialized so far, as
+    /// `(pool key, lane, the cell's OWN FSM state, the cell's own remaining cooldown secs)`. The
+    /// state is the same pure projection as `breaker_state_for` (a dead lane reads
+    /// `Open { until: u64::MAX }`). The lane-default (`""`) cells are not listed — they are not
+    /// named. No cell is created, no probe CAS, no transition: the scrape reads what the dispatch
+    /// path already wrote. Order is unspecified.
+    pub(crate) fn named_cell_readings(
+        &self,
+        now: u64,
+    ) -> Vec<(Box<str>, usize, BreakerState, u64)> {
+        let cells = read_recover(&self.pool_cells);
+        let mut out = Vec::new();
+        for (&lane, per_lane) in cells.iter() {
+            let dead = self.get_lane(lane).dead.load(Ordering::Relaxed);
+            for (pool, cell) in per_lane {
+                let state = if dead {
+                    BreakerState::Open { until: u64::MAX }
+                } else {
+                    Self::cell_breaker_state(cell.as_ref())
+                };
+                let cooldown = cell
+                    .cooldown_until
+                    .load(Ordering::Acquire)
+                    .saturating_sub(now);
+                out.push((pool.clone(), lane, state, cooldown));
+            }
+        }
+        out
+    }
+}
