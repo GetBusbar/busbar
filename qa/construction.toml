@@ -792,7 +792,12 @@ kernel_crate = "busbar-kernel"
 # `#[cfg(test)] impl` body in the crate. It now reads `cargo xtask loc`, which takes the item span
 # from the parse, and which is also the counter `[gate.surface_ceilings]` reads — one instrument,
 # so the two rows of this file's pair cannot disagree about a measurement again.
-kernel_ceiling = 52950
+# ── RE-PINNED (item 378): 52950 -> 51536, `cargo xtask gate construction --report` at e970ed0ae.
+# `ceiling-slack` was FAIL naming this row: "loc-ceilings:kernel measures 51536 against ceiling
+# 52950 (slack 1414)" — 1,414 lines the Teller/pump/admit surface could grow by with no row
+# reporting it. Downward only; this is the figure the crate measures, committed-tree, not the
+# working tree (whose uncommitted kernel edits read 51543 and are not this file's to bless).
+kernel_ceiling = 51536
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -863,7 +868,17 @@ unit_total_ceiling = 268
 # have made the union green while one of its members was in breach, and the whole reason this row
 # exists is that a union can be over while every part of it looks reasonable. A union ceiling moves
 # WITH its members, per this file's own rule; it does not absorb their overage.
-union_ceiling = 58870
+# ── RE-PINNED (item 378): 58870 -> 57456, the same arithmetic, re-done with the new kernel figure:
+#
+#     51536 (kernel_ceiling) + 5652 (caps_contract_ceiling) + 268 (unit_total_ceiling) = 57456
+#
+# `ceiling-slack` named this row too ("loc-ceilings:union measures 58644 against ceiling 58870,
+# slack 226"), and the slack was the defect this paragraph warns about happening for real: the
+# kernel shrank by 1,414, the union's figure did not move, and the union went GREEN while its
+# contract member stood 1,188 over its ceiling — the union absorbing a member's overage through the
+# back door. Pinned to the sum of the member ceilings, the union reads 58644 against 57456 and is
+# RED by 1,188, which is the caps/contract breach and nothing else, exactly as stated above.
+union_ceiling = 57456
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
