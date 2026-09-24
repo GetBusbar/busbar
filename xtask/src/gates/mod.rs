@@ -100,11 +100,13 @@ pub struct Registration {
 ///
 /// THIS LIST WAS ONE NAME AND A COMMENT, AND THAT COST THE ONE SIGNAL IT PROTECTS.
 /// `cargo xtask gate --all` exited 1 on a clean tree — `RED in design-bindings,
-/// kind-isolation-ship` — because both are red on HEAD for reasons nothing here knew about.
-/// `.github/workflows/keep-proof.yml` runs exactly that command with no `continue-on-error`, and
-/// `ci.yml` does not run on `keep-**` at all, so keep-proof is the ONLY judge of an agent
-/// hand-back and its gate job was permanently red: a real regression on a keep branch was
-/// indistinguishable from the standing red. Two excuse vocabularies existed — this one, and
+/// kind-isolation-ship` — because both are red on HEAD for reasons nothing here knew about. The
+/// workflow that ran it then (`keep-proof.yml`, now the dispatch-only `manual-keep-proof.yml`) was
+/// the only judge of an agent hand-back, and its gate job was permanently red: a real regression
+/// was indistinguishable from the standing red. The runner this vocabulary serves TODAY is
+/// [`ALL_RUNNER`] — ci.yml's `gate-all` job, `cargo xtask gate --all` on every push — and a test
+/// (`posture_tests::the_all_runner_this_vocabulary_serves_is_invoked`) holds that it still is, so
+/// this paragraph cannot outlive its workflow a second time. Two excuse vocabularies existed — this one, and
 /// `full_gate`'s [`crate::full_gate::REGISTRY_NOT_IN_CI`], which knew about `kind-isolation-ship`
 /// and checks its claim against the tree — and `--all` read the wrong one.
 ///
@@ -116,12 +118,23 @@ pub struct Registration {
 /// An excused gate is still fully reconciled, still self-tested, and still exits non-zero when run
 /// BY NAME (`cargo xtask gate construction`), which is what the CI job captures. This governs one
 /// thing: whether `--all` adds it to the red list.
+/// WHERE `cargo xtask gate --all` RUNS, which is the whole reason [`REPORT_ONLY`] exists: the file
+/// and the needle, checked over executed lines by `full_gate::Excuse::holds`.
+pub const ALL_RUNNER: crate::full_gate::Excuse = crate::full_gate::Excuse::ReleaseScript(
+    ".github/workflows/ci.yml",
+    "run: cargo xtask gate --all\n",
+);
+
 pub const REPORT_ONLY: &[Posture] = &[
     Posture {
         name: "construction",
         why: "RED BY DESIGN on HEAD while the construction work it measures is in flight — but \
               red about a NAMED, FINITE list of rows and nothing else",
-        excuse: Excused::OnlyRows(CONSTRUCTION_STANDING_REDS),
+        excuse: Excused::OnlyRows(StandingReds {
+            rows: CONSTRUCTION_STANDING_REDS,
+            list: "CONSTRUCTION_STANDING_REDS",
+            mirror: Some("land_construction_standing_reds in scripts/land.sh"),
+        }),
     },
     Posture {
         name: "kind-isolation-ship",
@@ -176,22 +189,22 @@ pub const REPORT_ONLY: &[Posture] = &[
     Posture {
         name: "qa-names",
         why:
-            "THE LIST IS EMPTY AND THE GATE IS GREEN OUTRIGHT. This posture was written on \
-              2026-09-22 naming three rows and twenty-five dead names -- five crate names, \
-              seventeen paths and three `scope_globs` -- and ALL TWENTY-FIVE ARE DRAINED, so the \
-              list that scored them is `&[]` and every row of this gate is now SCORED like any \
-              other: a new dead name, a kind that names no key, a scan that collapsed or a stale \
-              declaration reds `--all` and `--posture` alike. An empty `OnlyRows` cannot excuse \
-              anything -- `excused_from_all` is only consulted when the verdict is red, and with no \
-              named row every red is a NEW RED -- so this entry is inert rather than a waiver. It \
-              is kept for exactly one reason: `ci.yml` and `full_gate::CARGO_LOCAL` both invoke \
-              `cargo xtask gate qa-names --posture`, and `--posture` on a gate with NO posture \
-              entry exits 2 by design. DELETING THIS ENTRY IS A THREE-FILE EDIT and must be all \
-              three at once: strike this `Posture` and `QA_NAMES_STANDING_REDS` here, change \
-              ci.yml's step to plain `cargo xtask gate qa-names`, and change the matching string in \
-              `full_gate::CARGO_LOCAL` -- the full-gate selftest holds those two in set equality, \
-              so editing either alone reds it.",
-        excuse: Excused::OnlyRows(QA_NAMES_STANDING_REDS),
+            "RED ON ONE NAMED ROW, AND NOTHING ELSE. This entry used to say the list was empty and \
+              the gate green outright; the gate was red on this tree the whole time, so the \
+              blocking `cargo xtask gate qa-names --posture` step in ci.yml exited 1 on a tree \
+              nobody had touched (item 176). The one red is `qa-names:path-names-a-live-path`, \
+              about xtask/src/audit.rs's `REGISTER_REL = qa/audit-ledger.json`, a register the \
+              tree no longer has -- carried on QA_NAMES_STANDING_REDS with its drain written \
+              there. Every OTHER row of this gate is scored like any gate's: a new dead name, a \
+              kind that names no key, a scan that collapsed or a stale declaration reds `--all` \
+              and `--posture` alike, and the named row going green reds them too until it is \
+              struck. `posture_tests::the_qa_names_posture_holds_on_the_tree` runs the real gate \
+              and holds this entry to what it says.",
+        excuse: Excused::OnlyRows(StandingReds {
+            rows: QA_NAMES_STANDING_REDS,
+            list: "QA_NAMES_STANDING_REDS",
+            mirror: None,
+        }),
     },
     Posture {
         name: "ship-ready",
@@ -200,8 +213,19 @@ pub const REPORT_ONLY: &[Posture] = &[
               ceilings tight, nothing standing red, the mutants caught — and this tree is \
               deliberately none of those things yet. It is a REQUIRED CHECK on `qa` and `main`, \
               which is where the claim is meant to bite and where branch protection scores it; \
-              `--all` on the dev line is not. Same standing as the ship twin it reads.",
-        excuse: Excused::ReleaseTime,
+              `--all` on the dev line is not. It cannot be `ReleaseTime`: ci.yml DOES invoke it, so \
+              it has no `full_gate::REGISTRY_NOT_IN_CI` entry for that arm to read, and the arm \
+              excused nothing. The excuse is the two facts the promotion claim turns on.",
+        excuse: Excused::RequiredAtPromotion(&[
+            crate::full_gate::Excuse::ReleaseScript(
+                ".github/workflows/ci.yml",
+                "run: cargo xtask gate ship-ready\n",
+            ),
+            crate::full_gate::Excuse::ReleaseScript(
+                "scripts/ci-branch-protection.sh",
+                "\"ship-ready\"",
+            ),
+        ]),
     },
 ];
 
@@ -218,13 +242,10 @@ pub const REPORT_ONLY: &[Posture] = &[
 /// Draining a row means striking its name here in the same commit, which is the transaction the
 /// whole gate exists to force.
 ///
-/// Keep in step with `land_construction_standing_reds` in scripts/land.sh, which subtracts the same
-/// rows so that every landing can run the gate over EVERY row instead of a caller-chosen few.
-///
-/// `ceiling-rose` is on this list for one reason only: the stale `[gate.ceiling_raises]` 26 -> 47
-/// entry in qa/construction.toml, which is being struck separately. STRIKE THIS NAME ON THE SAME
-/// COMMIT that strikes that entry — the stale-name check above will red until you do, which is the
-/// point.
+/// `land_construction_standing_reds` in scripts/land.sh subtracts the same rows so that every
+/// landing can run the gate over EVERY row instead of a caller-chosen few. The two lists are held
+/// EQUAL by `posture_tests::land_sh_subtracts_exactly_the_construction_standing_reds`: an edit to
+/// either alone reds `cargo test -p xtask`.
 pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // The scan-set floor added 2026-09-09 scores an absent subject RED instead of PASS, and this
     // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
@@ -262,7 +283,14 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
 /// that has gone green is STALE and is scored too, so the list cannot outlive its facts and cannot
 /// quietly become a blanket.
 pub const QA_NAMES_STANDING_REDS: &[&str] = &[
-    // EMPTY, 2026-09-22, and that is the drain finishing rather than the list being switched off.
+    // RE-OPENED 2026-09-24 (item 176): the list below was declared drained while the gate was red.
+    // `xtask/src/audit.rs:49` `pub const REGISTER_REL = "qa/audit-ledger.json"` names a register
+    // this tree no longer has (`ls qa/audit*` matches nothing; the audit-register readers were
+    // repointed in 2a0a832ff and this const was not). Drain: the owner of xtask/src/audit.rs
+    // repoints or strikes REGISTER_REL, and strikes this name in the same commit -- the STALE
+    // check reds `--posture` until they do.
+    "qa-names:path-names-a-live-path",
+    // HISTORY. It was EMPTIED 2026-09-22 as the drain below finished -- but not the whole drain.
     //
     // It held three row ids covering twenty-five dead names in `qa/*.toml`. Each was decided by the
     // same question -- did the SUBJECT move, or is it gone? -- and the two answers have different
@@ -301,7 +329,9 @@ pub const QA_NAMES_STANDING_REDS: &[&str] = &[
     //     asserting that a plane names no price went from 1 money symbol to 113, having been green
     //     over three of its four planes (and, since #39 dissolved busbar-mcp-codec and
     //     busbar-a2a-codec INTO those crates, over two codec halves as well). Nothing is
-    //     allowlisted; `plane-no-money` stays red at 113 on `CONSTRUCTION_STANDING_REDS`.
+    //     allowlisted. `plane-no-money` is NOT a member of the construction standing-red list (a
+    //     line here once said it was, and never was): the construction gate scores it like any
+    //     other row, and a red there is a NEW RED under `--posture`.
 ];
 
 /// One entry of [`REPORT_ONLY`].
@@ -334,7 +364,30 @@ pub enum Excused {
     ///   gate is scored — which is the whole signal `Excused::Whole` threw away;
     /// * a name on this list that is NOT red any more is a STALE entry, and the gate is scored for
     ///   that too. Without it the list only ever grows and drifts back into being a blanket.
-    OnlyRows(&'static [&'static str]),
+    OnlyRows(StandingReds),
+    /// The gate is a REQUIRED CHECK at promotion and is red on the dev line by design. Every fact
+    /// listed must hold — the workflow still runs it, and branch protection still requires it — or
+    /// the gate is scored like any other.
+    RequiredAtPromotion(&'static [crate::full_gate::Excuse]),
+}
+
+/// An [`Excused::OnlyRows`] list, with the names an operator is told to edit when it goes stale.
+/// The diagnostics read these, so a `qa-names` red is never answered with the construction list.
+pub struct StandingReds {
+    pub rows: &'static [&'static str],
+    /// The Rust constant that holds `rows`.
+    pub list: &'static str,
+    /// Any other place that must be struck in the same commit, or `None`.
+    pub mirror: Option<&'static str>,
+}
+
+/// The constant an operator edits to carry (or strike) a standing red of gate `name`, if the gate
+/// has an [`Excused::OnlyRows`] posture.
+pub fn standing_list_of(name: &str) -> Option<&'static str> {
+    match &REPORT_ONLY.iter().find(|p| p.name == name)?.excuse {
+        Excused::OnlyRows(sr) => Some(sr.list),
+        _ => None,
+    }
 }
 
 /// Why `--all` did not count this gate's red, or `None` if it must count it.
@@ -351,6 +404,18 @@ pub fn excused_from_all(name: &str, cx: &Ctx, verdict: &Verdict) -> Option<Strin
             excuse.holds(cx).ok()?;
             Some(format!(
                 "{} — full_gate's excuse still holds: {reason}",
+                p.why
+            ))
+        }
+        Excused::RequiredAtPromotion(facts) => {
+            for fact in facts.iter() {
+                if let Err(why) = fact.holds(cx) {
+                    eprintln!("  {name} posture: the promotion excuse no longer holds: {why}");
+                    return None;
+                }
+            }
+            Some(format!(
+                "{} — ci.yml still runs it and branch protection still requires it",
                 p.why
             ))
         }
@@ -388,66 +453,78 @@ pub fn excused_from_all(name: &str, cx: &Ctx, verdict: &Verdict) -> Option<Strin
                 None
             }
         }
-        Excused::OnlyRows(named) => {
-            // A row that emitted nothing at all reaches the verdict as a reconciliation problem
-            // (`"<id>: … DID NOT RUN"`), never as a row, so the named ids are matched against both.
-            // A rule that stopped running is not a rule that is red for a known reason: a problem
-            // about an id this list does not name fails the excuse exactly like a new red row.
-            let red_now: BTreeSet<&str> = verdict
-                .rows
-                .iter()
-                .filter(|r| r.status != crate::ledger::Status::Pass)
-                .map(|r| r.id.as_str())
-                .collect();
-
-            let mut unexplained: Vec<String> = verdict
-                .rows
-                .iter()
-                .filter(|r| r.status != crate::ledger::Status::Pass)
-                .filter(|r| !named.contains(&r.id.as_str()))
-                .map(|r| format!("NEW RED {} {}", r.id, r.detail))
-                .collect();
-            unexplained.extend(
-                verdict
-                    .problems
-                    .iter()
-                    .filter(|t| !named.iter().any(|id| t.starts_with(&format!("{id}: "))))
-                    .map(|t| format!("NEW RED {t}")),
-            );
-            // THE EXPIRY. A named row that is green again is a list that has outlived its facts.
-            unexplained.extend(
-                named
-                    .iter()
-                    .filter(|id| {
-                        !red_now.contains(*id)
-                            && !verdict
-                                .problems
-                                .iter()
-                                .any(|t| t.starts_with(&format!("{id}: ")))
-                    })
-                    .map(|id| {
-                        format!(
-                            "STALE `{id}` is named as a standing red and is not red any more — \
-                             strike it from CONSTRUCTION_STANDING_REDS (and from \
-                             land_construction_standing_reds in scripts/land.sh)"
-                        )
-                    }),
-            );
-
+        Excused::OnlyRows(sr) => {
+            let unexplained = only_rows_unexplained(sr, verdict);
             if unexplained.is_empty() {
                 Some(format!(
                     "{} — red on exactly the {} named standing row(s) and nothing else",
                     p.why,
-                    named.len()
+                    sr.rows.len()
                 ))
             } else {
                 for u in &unexplained {
-                    eprintln!("  construction posture: {u}");
+                    eprintln!("  {name} posture: {u}");
                 }
                 None
             }
         }
     }
+}
+
+/// Every reason an [`Excused::OnlyRows`] posture does NOT hold over `verdict`: each NEW red, and
+/// each STALE name. Empty means the excuse holds.
+///
+/// A row that emitted nothing at all reaches the verdict as a reconciliation problem
+/// (`"<id>: … DID NOT RUN"`), never as a row, so the named ids are matched against both. A rule
+/// that stopped running is not a rule that is red for a known reason: a problem about an id the
+/// list does not name fails the excuse exactly like a new red row.
+fn only_rows_unexplained(sr: &StandingReds, verdict: &Verdict) -> Vec<String> {
+    let named = sr.rows;
+    let red_now: BTreeSet<&str> = verdict
+        .rows
+        .iter()
+        .filter(|r| r.status != crate::ledger::Status::Pass)
+        .map(|r| r.id.as_str())
+        .collect();
+
+    let mut unexplained: Vec<String> = verdict
+        .rows
+        .iter()
+        .filter(|r| r.status != crate::ledger::Status::Pass)
+        .filter(|r| !named.contains(&r.id.as_str()))
+        .map(|r| format!("NEW RED {} {}", r.id, r.detail))
+        .collect();
+    unexplained.extend(
+        verdict
+            .problems
+            .iter()
+            .filter(|t| !named.iter().any(|id| t.starts_with(&format!("{id}: "))))
+            .map(|t| format!("NEW RED {t}")),
+    );
+    // THE EXPIRY. A named row that is green again is a list that has outlived its facts.
+    let also = sr
+        .mirror
+        .map(|m| format!(" (and from {m})"))
+        .unwrap_or_default();
+    unexplained.extend(
+        named
+            .iter()
+            .filter(|id| {
+                !red_now.contains(*id)
+                    && !verdict
+                        .problems
+                        .iter()
+                        .any(|t| t.starts_with(&format!("{id}: ")))
+            })
+            .map(|id| {
+                format!(
+                    "STALE `{id}` is named as a standing red and is not red any more — strike it \
+                     from {}{also}",
+                    sr.list
+                )
+            }),
+    );
+    unexplained
 }
 
 impl Registration {
@@ -2205,7 +2282,32 @@ pub fn prove_rows_green<'a>(
     let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
     let cx = cx.clone();
     CasePlan::new(move || {
-        let planted = cx.with_overlay(plant.build());
+        let overlay = plant.build();
+        // A GREEN PROOF OVER A PLANT THAT CHANGED NOTHING IS A CLAIM ABOUT THE UNPLANTED TREE. The
+        // red arm has refused that since `inert_plant` was written; the green arm is the proof
+        // that a gate does NOT fire on a legitimate shape, and it needs the same door shut.
+        //
+        // An EMPTY overlay is the one exception, and it is not a plant: it is the CONTROL case —
+        // "the unplanted tree is green on these rows" — which claims nothing it did not do. A
+        // non-empty overlay claims to have changed the tree, and must have.
+        let checked = if overlay.is_empty() {
+            Ok(())
+        } else {
+            inert_plant(&cx, &overlay)
+        };
+        if let Err(why) = checked {
+            let verdict = execute(gate, &cx.with_overlay(overlay));
+            return Case {
+                name,
+                covers: covers.clone(),
+                expected: Expect::Green,
+                got: Expect::Inert {
+                    why,
+                    scored: Box::new(narrowed_got(&verdict, &refs(&covers))),
+                },
+            };
+        }
+        let planted = cx.with_overlay(overlay);
         let verdict = execute(gate, &planted);
         let offenders: Vec<String> = verdict
             .rows
@@ -2884,6 +2986,31 @@ mod falsification_tests {
         );
     }
 
+    /// ITEM 209: THE GREEN ARM SHUTS THE SAME DOOR. A green case over a plant that changed nothing
+    /// is a claim about the unplanted tree, and `prove_rows_green` used to score it a pass.
+    #[test]
+    fn a_green_case_over_a_no_op_plant_is_refused_too() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        assert!(!cx.exists(PROBE_PHANTOM));
+        let gate = ProbeGate;
+        let mut ov = Overlay::new();
+        ov.remove(PROBE_PHANTOM);
+        let case = took(prove_rows_green(
+            &cx,
+            &gate,
+            "removing a crate that is not there leaves the row green",
+            &[PROBE_GREENABLE],
+            ov,
+        ));
+        let why = case
+            .failure()
+            .expect("a green case whose plant changed nothing is never a pass");
+        assert!(
+            why.contains("ALREADY ABSENT"),
+            "the finding must name what the plant failed to remove: {why}"
+        );
+    }
+
     /// The other no-op: an overlay that writes back the bytes the tree already has.
     #[test]
     fn a_plant_that_writes_the_bytes_the_tree_already_has_is_refused() {
@@ -3430,6 +3557,213 @@ mod posture_tests {
 
     /// Every posture names a registered gate. An entry for a gate that no longer exists is a
     /// waiver that outlived what it excused.
+    /// ITEM 205: the runner the REPORT_ONLY header says this vocabulary serves is still invoked.
+    #[test]
+    fn the_all_runner_this_vocabulary_serves_is_invoked() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        if let Err(why) = ALL_RUNNER.holds(&cx) {
+            panic!("REPORT_ONLY's header rests on `cargo xtask gate --all` running in CI: {why}");
+        }
+    }
+
+    /// ITEM 177: `ReleaseTime` reads `full_gate::REGISTRY_NOT_IN_CI` and excuses nothing without
+    /// an entry there, so a `ReleaseTime` posture without one is a posture that can never apply.
+    #[test]
+    fn every_release_time_posture_has_the_full_gate_entry_it_reads() {
+        for p in REPORT_ONLY {
+            if matches!(p.excuse, Excused::ReleaseTime) {
+                assert!(
+                    crate::full_gate::REGISTRY_NOT_IN_CI
+                        .iter()
+                        .any(|(n, _, _)| *n == p.name),
+                    "`{}` is excused as ReleaseTime and has no REGISTRY_NOT_IN_CI entry, so the \
+                     excuse can never hold and `--all` scores it on every run",
+                    p.name
+                );
+            }
+        }
+    }
+
+    /// ITEM 177: ship-ready's red is excused under `--all` while ci.yml runs it and branch
+    /// protection requires it, and scored the moment either stops being true.
+    #[test]
+    fn the_ship_ready_posture_holds_while_its_promotion_facts_do() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let red = verdict(vec![Row::fail("ship-ready:standing-reds", "t", "d")]);
+        assert!(
+            excused_from_all("ship-ready", &cx, &red).is_some(),
+            "ship-ready is red on the dev line by design and --all must not count it"
+        );
+        let ci = cx.read(".github/workflows/ci.yml").expect("ci.yml reads");
+        let mut ov = Overlay::new();
+        ov.set(
+            ".github/workflows/ci.yml",
+            ci.replace("run: cargo xtask gate ship-ready\n", "run: true\n"),
+        );
+        assert!(
+            excused_from_all("ship-ready", &cx.with_overlay(ov), &red).is_none(),
+            "a ship-ready ci.yml no longer runs is a gate nothing runs, and is scored"
+        );
+        let bp = cx
+            .read("scripts/ci-branch-protection.sh")
+            .expect("ci-branch-protection.sh reads");
+        let mut ov = Overlay::new();
+        ov.set(
+            "scripts/ci-branch-protection.sh",
+            bp.replace("\"ship-ready\"", "\"not-required\""),
+        );
+        assert!(
+            excused_from_all("ship-ready", &cx.with_overlay(ov), &red).is_none(),
+            "a ship-ready branch protection no longer requires is not a promotion check"
+        );
+    }
+
+    /// The names in `land_construction_standing_reds`'s heredoc in scripts/land.sh.
+    fn land_sh_standing_reds(text: &str) -> Vec<String> {
+        let body = text
+            .split("land_construction_standing_reds() {")
+            .nth(1)
+            .expect("land.sh defines land_construction_standing_reds");
+        let heredoc = body
+            .split("<<'EOF'\n")
+            .nth(1)
+            .expect("the function reads its list from a quoted heredoc")
+            .split("\nEOF\n")
+            .next()
+            .expect("the heredoc closes");
+        heredoc
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// ITEM 206: land.sh subtracts EXACTLY the rows `--posture` excuses. They differed by four
+    /// rows, so a landing on the dev line was allowed a red `--all` and ship-ready then scored.
+    #[test]
+    fn land_sh_subtracts_exactly_the_construction_standing_reds() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let land = cx.read("scripts/land.sh").expect("scripts/land.sh reads");
+        let shell: BTreeSet<String> = land_sh_standing_reds(&land).into_iter().collect();
+        let rust: BTreeSet<String> = CONSTRUCTION_STANDING_REDS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert_eq!(
+            shell.difference(&rust).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "land.sh excuses rows CONSTRUCTION_STANDING_REDS does not"
+        );
+        assert_eq!(
+            rust.difference(&shell).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "CONSTRUCTION_STANDING_REDS excuses rows land.sh does not"
+        );
+    }
+
+    /// ITEMS 207, 208: prose in this file that says a row is CARRIED on a standing-red list names a
+    /// row that list carries. Two sentences said so of ceiling-rose and plane-no-money, neither was
+    /// a member, and a maintainer was told a live red was excused.
+    #[test]
+    fn prose_that_says_a_row_is_carried_names_a_member() {
+        // Comment text only, joined into one line so a sentence that wraps is still one sentence.
+        let prose: String = include_str!("mod.rs")
+            .lines()
+            .map(str::trim_start)
+            .filter_map(|l| {
+                l.strip_prefix("///")
+                    .or_else(|| l.strip_prefix("//"))
+                    .map(str::trim)
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let lists: [(&str, &[&str]); 2] = [
+            ("CONSTRUCTION_STANDING_REDS", CONSTRUCTION_STANDING_REDS),
+            ("QA_NAMES_STANDING_REDS", QA_NAMES_STANDING_REDS),
+        ];
+        let mut offenders = Vec::new();
+        // An id, backticked, followed by "is on this list" (said in a list's own doc block).
+        let mut rest = prose.as_str();
+        while let Some(at) = rest.find("` is on this list") {
+            let id = rest[..at].rsplit('`').next().unwrap_or_default();
+            if !lists.iter().any(|(_, rows)| rows.contains(&id)) {
+                offenders.push(format!("`{id}` is on this list"));
+            }
+            rest = &rest[at + 1..];
+        }
+        // A sentence naming a backticked id and ending "on" or "onto" a backticked list name.
+        for (list, rows) in lists {
+            for verb in [" on `", " onto `"] {
+                let needle = format!("{verb}{list}`");
+                let mut rest = prose.as_str();
+                while let Some(at) = rest.find(&needle) {
+                    // The sentence the claim is in, back to its start.
+                    let sentence = rest[..at].rsplit(['.', ';']).next().unwrap_or_default();
+                    let ids: Vec<&str> = sentence.split('`').skip(1).step_by(2).collect();
+                    if let Some(id) = ids
+                        .iter()
+                        .rev()
+                        .find(|i| i.contains('-') && !i.contains(' ') && !i.contains('/'))
+                    {
+                        if !rows.contains(id) {
+                            offenders.push(format!("`{id}` ... on `{list}`"));
+                        }
+                    }
+                    rest = &rest[at + needle.len()..];
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "prose says these rows are carried as standing reds, and the list does not carry \
+             them: {offenders:?}"
+        );
+    }
+
+    /// ITEM 235: a stale `OnlyRows` name is answered with the list that governs THAT gate, and a
+    /// list with no mirror names none.
+    #[test]
+    fn a_stale_standing_red_names_the_list_that_governs_it() {
+        let sr = StandingReds {
+            rows: &["qa-names:path-names-a-live-path"],
+            list: "QA_NAMES_STANDING_REDS",
+            mirror: None,
+        };
+        let lines = only_rows_unexplained(&sr, &verdict(vec![]));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("QA_NAMES_STANDING_REDS"), "{lines:?}");
+        assert!(!lines[0].contains("CONSTRUCTION"), "{lines:?}");
+        assert!(!lines[0].contains("land.sh"), "{lines:?}");
+        assert_eq!(standing_list_of("qa-names"), Some("QA_NAMES_STANDING_REDS"));
+        assert_eq!(
+            standing_list_of("construction"),
+            Some("CONSTRUCTION_STANDING_REDS")
+        );
+    }
+
+    /// ITEM 176: the qa-names posture holds on the tree — the exact check ci.yml's blocking
+    /// `cargo xtask gate qa-names --posture` step makes. The entry said "green outright" over a
+    /// gate that was red, with an empty list that could excuse nothing.
+    #[test]
+    fn the_qa_names_posture_holds_on_the_tree() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let reg = find("qa-names").expect("qa-names is registered");
+        let v = execute(&*(reg.build)(), &cx);
+        if v.red {
+            assert!(
+                excused_from_all("qa-names", &cx, &v).is_some(),
+                "qa-names is red beyond QA_NAMES_STANDING_REDS: {:?} {:?}",
+                v.rows
+                    .iter()
+                    .filter(|r| r.status != crate::ledger::Status::Pass)
+                    .map(|r| format!("{} {}", r.id, r.detail))
+                    .collect::<Vec<_>>(),
+                v.problems
+            );
+        }
+    }
+
     #[test]
     fn every_posture_names_a_registered_gate() {
         for p in REPORT_ONLY {
