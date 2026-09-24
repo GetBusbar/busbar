@@ -108,6 +108,25 @@ ok()   { echo "  [ok] $*"; }
 note() { echo "  [note] $*"; }
 integ() { echo "  [VERIFIED-AT-INTEGRATION] $*"; }
 
+# ── Plugin pre-flight acceptance, read from a boot log (item 538) ─────────────────────────────────
+# preflight.rs logs one line per loadable plugin: "plugin validated" (trusted) or "plugin validated
+# as UNVERIFIED" (an explicit plugins.trust opt-in such as allow_unsigned), each carrying
+# `plugin=<name>`; a trust-policy skip logs "plugin present but NOT loaded (trust policy)". The
+# fetch line ("plugins.fetch: downloaded + verified") is NOT evidence: it is written before
+# pre-flight runs. Returns non-zero, naming why, unless <name> was validated and not skipped.
+assert_plugin_validated() {  # $1 boot log, $2 plugin manifest name
+  local log="$1" name="$2"
+  if ! grep -F 'plugin validated' "$log" | grep -qF "$name"; then
+    echo "  pre-flight: no 'plugin validated' line for ${name} in ${log}" >&2
+    return 1
+  fi
+  if grep -F 'NOT loaded (trust policy)' "$log" | grep -qF "$name"; then
+    echo "  pre-flight: ${name} was SKIPPED by trust policy (present but NOT loaded)" >&2
+    return 1
+  fi
+  return 0
+}
+
 # ── Coverage-gap accounting (item 480) — see COVERAGE GAPS in the header ─────────────────────────
 GAPS=()
 record_gap() {  # $1 phase-id, $2 status (sibling-missing | skip-docker — release-check.sh's GAP_STATUSES)
@@ -159,6 +178,19 @@ gap_selftest() {
   rc=0; ( GAPS=(); BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1; unset BUSBAR_RELEASE_GAP_FILE; \
           record_gap phase-152-selftest sibling-missing; final_verdict ) >/dev/null || rc=$?
   st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a gap under BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1 -> non-zero (rc=${rc})"
+  # 6. assert_plugin_validated (item 538): the fetch line alone is NOT a load proof.
+  new_tmpdir; gf="$NEW_TMPDIR/boot.log"
+  printf 'INFO plugins.fetch: downloaded + verified filename=busbar-hook-test.tar.gz\n' >"$gf"
+  rc=0; assert_plugin_validated "$gf" busbar-hook-test 2>/dev/null || rc=$?
+  st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a log with only 'downloaded + verified' is NOT a validated plugin (rc=${rc})"
+  printf 'WARN plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in) plugin=busbar-hook-test alias=hooktest\n' >>"$gf"
+  rc=0; assert_plugin_validated "$gf" busbar-hook-test 2>/dev/null || rc=$?
+  st "$rc" "a 'plugin validated' line naming the plugin is accepted"
+  rc=0; assert_plugin_validated "$gf" some-other-plugin 2>/dev/null || rc=$?
+  st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a validated line for a DIFFERENT plugin does not count (rc=${rc})"
+  printf 'WARN plugin present but NOT loaded (trust policy) plugin=busbar-hook-test\n' >>"$gf"
+  rc=0; assert_plugin_validated "$gf" busbar-hook-test 2>/dev/null || rc=$?
+  st "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" "a trust-policy skip of the plugin fails the check (rc=${rc})"
   if [ "$bad" -ne 0 ]; then echo "release-check-1.5.2 selftest: RED (${bad} failed)"; return 1; fi
   echo "release-check-1.5.2 selftest: GREEN"
 }
@@ -510,10 +542,10 @@ EOF
   ok "log shows: fetched + verified"
   [ -f "${d1}/busbar-hook-test.tar.gz" ] || { echo "  A.1: staged tarball missing in dir" >&2; exit 1; }
   ok "tarball staged into plugins.dir"
-  # Prove it actually LOADED (validated) — a fetched-but-rejected artifact would not.
-  grep -Eiq "validated|loaded|hooktest|busbar-hook-test" "$log1" \
-    || note "A.1: could not positively confirm LOAD from log at RUST_LOG=info (fetch+verify confirmed above)"
-  ok "A.1 happy path proven: fetch → verify → stage (load confirmed via boot success + staged artifact)"
+  # Prove plugin PRE-FLIGHT accepted the fetched artifact — a fetched-but-rejected one would not.
+  # (Item 538: the old grep matched `loaded` inside `downloaded`, and only noted on a miss.)
+  assert_plugin_validated "$log1" "busbar-hook-test" || { cat "$log1" >&2; exit 1; }
+  ok "A.1 happy path proven: fetch → verify → stage → pre-flight validated busbar-hook-test"
   kill "$p1" 2>/dev/null || true; wait "$p1" 2>/dev/null || true
 
   # ---- A.2 CACHE-BY-PIN: second boot with the artifact already staged + matching pin → NO download ----
