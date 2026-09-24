@@ -298,8 +298,8 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
                 status: response.status().as_u16(),
                 // Nothing was dialled, so this is not a fee-bearing upstream leg.
                 upstream_leg: false,
-                // The walk never ran, so no tap of its can have accrued anything.
-                accrued: false,
+                // The walk never ran, so no tap of its can have posted anything.
+                tap_posts: false,
             },
             meter_sink: usage_sink,
             refusal: Some(Refusal::new(ReasonCode::NoDestination)),
@@ -334,7 +334,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     // The walk is about to take the meter half, and its taps are where this unit's accrual is made
     // — see the Meter step's header for why a streamed answer's usage can become known nowhere
     // else. Recorded here, before the move, because after it there is nothing left to ask.
-    let accrued = usage_sink.is_some();
+    let tap_posts = usage_sink.is_some();
 
     let span = tracing::span!(
         HOTPATH_LEVEL,
@@ -449,7 +449,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     // For a BUFFERED answer the tap has already finished: the body was read whole before it was
     // translated, so the cell is filled here and the three figures below are the tap's own. For a
     // STREAMED answer the cell is still empty, because the response is served on its headers and its
-    // figures do not exist yet — so the fields stay as they were and `accrued` says the tap owns the
+    // figures do not exist yet — so the fields stay as they were and `tap_posts` says the tap owns the
     // posting.
     //
     // This fold is a snapshot of the cell at THIS instant, not a promise about a later one. The cell
@@ -466,7 +466,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         status: resp.status().as_u16(),
         // The walk resolved candidates and dialled, so this is a fee-bearing client request.
         upstream_leg: true,
-        accrued,
+        tap_posts,
     };
     if let Some(report) = resp
         .extensions()

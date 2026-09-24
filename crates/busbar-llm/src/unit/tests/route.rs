@@ -463,7 +463,7 @@ async fn route_step_refuses_an_unresolved_destination_without_a_terminal() {
     // The facts a miss hands the Meter step: nothing was dialled, so there is no fee-bearing
     // leg and no tap of anyone's accrued anything.
     assert!(!routed.facts.upstream_leg);
-    assert!(!routed.facts.accrued);
+    assert!(!routed.facts.tap_posts);
     assert_eq!(routed.facts.status, 404);
     let refusal = routed
         .decision
@@ -549,7 +549,7 @@ async fn route_reports_the_taps_figures_for_an_answer_that_finished() {
         "the split the dialect's reader found, carried to the step that reports it"
     );
     assert!(
-        !routed.facts.accrued,
+        !routed.facts.tap_posts,
         "the walk held no meter half on this fixture, so the Meter step is the posting — and it \
          now has a lane and a split to post"
     );

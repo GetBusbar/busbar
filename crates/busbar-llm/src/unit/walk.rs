@@ -344,10 +344,11 @@ impl Walk {
 
     /// Take the door's answer.
     ///
-    /// The plane's own half of it — the meter half of the hold, whether the charge landed, and which
-    /// pool it landed on — stays here; the kernel's half is handed straight back. The refusal, where
-    /// the door raised one, waits with the other rendered bytes for the terminal.
-    pub fn take_admission(&self, admitted: Admitted) -> Decision<busbar_contract::caps::Admit> {
+    /// The plane's own half of it — the metering sink, whether the charge landed, and which pool it
+    /// landed on — stays here; the door's verdict is handed straight back for the kernel to seal,
+    /// opening the hold on a yes. The refusal's bytes, where the door raised one, wait with the
+    /// other rendered bytes for the terminal.
+    pub fn take_admission(&self, admitted: Admitted) -> Result<(), busbar_contract::caps::Refusal> {
         let mut carry = self.lock();
         carry.charged = admitted.charged;
         carry.effective = admitted.effective_pool;
@@ -356,7 +357,7 @@ impl Walk {
         if let Some(resp) = admitted.refusal {
             carry.pending = Some(Served::of(resp));
         }
-        admitted.decision
+        admitted.verdict
     }
 
     /// Whether the admission charge landed, which is what decides whether a non-2xx refunds.
@@ -621,7 +622,7 @@ impl Walk {
         // be cloned (the engine clones it once per failover attempt) and every field it carries is a
         // shared handle, so this is a refcount bump on the same key, the same pool and the same
         // pinned window the tap accrues against — never a second admission and never a second
-        // accrual. Which of the two arms posts is still `MeterFacts::accrued`'s answer, and the walk
+        // accrual. Which of the two arms posts is still `MeterFacts::tap_posts`'s answer, and the walk
         // having run is what sets it.
         let meter_half = sink.clone();
         // THE AWAIT. Everything the walk needs is borrowed straight off the carry — there is no task
@@ -664,8 +665,8 @@ impl Walk {
 
     /// STEP 6, METER — the one metering seam, bound to what the Route step observed.
     ///
-    /// The hold is NOT handed to the step: the loop put it in the unit's cell at the door and the
-    /// exit is the one place it comes out again. What the step does here is what it does on the
+    /// No hold goes near the step: the kernel opened it at the door, put it in the unit's cell, and
+    /// the exit is the one place it comes out again. What the step does here is what it does on the
     /// rehearsal's admitted fixtures — seal the accrual the walk's tap already made, or make it
     /// where the walk held no meter half — and answer with the report the posting is made against.
     ///
@@ -696,7 +697,7 @@ impl Walk {
         //
         // A stream still flowing at this step is the one case that stays empty, and it stays empty
         // by construction: its figures do not exist yet. Its accrual is the tap's, which is what
-        // `accrued` says and what `posted` below confirms.
+        // `tap_posts` says and what `posted` below confirms.
         let mut facts = facts.clone();
         if let Some(report) = carry
             .pending
@@ -713,7 +714,7 @@ impl Walk {
         let tables = crate::engine::EngineTables::new(&self.rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i));
         let ctx = MeterCtx::bind(&self.host, carry.meter_sink.as_ref(), lane, &facts, charged);
-        let metered = crate::unit::meter::meter(token, usage, &ctx, None, &Outcome::Completed);
+        let metered = crate::unit::meter::meter(token, usage, &ctx, &Outcome::Completed);
         // What the ACCRUAL ARM reported about itself. `row` is filled whether this step posted or
         // only sealed, so reading it here called every sealed unit a posting — and this value is
         // what the rehearsal asserts one-posting-per-unit on.
@@ -724,11 +725,6 @@ impl Walk {
         // is what made the whole seam unobservable: a report the step assembles and the carry
         // discards cannot be told apart from one it never built.
         carry.step_report = metered.report;
-        // The hold rides back out exactly as it arrived plus its accrual. On this loop the step is
-        // handed none — the kernel put the unit's reservation in its own cell at the door and the
-        // exit is the one place it comes out again — so there is nothing here to settle and nothing
-        // to drop. See this method's header.
-        drop(metered.hold);
         metered.decision
     }
 }

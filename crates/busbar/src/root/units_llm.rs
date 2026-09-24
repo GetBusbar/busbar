@@ -81,9 +81,9 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Consumption, Decision,
-    Decode, Dial, Encode, Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId,
-    ReasonCode, Refusal, Route, VerifiedDestination, Verify,
+    Admission, Admit, Admittance, Approve, Arrival, ArrivalRecord, Audit, Authenticate,
+    Consumption, Decision, Decode, Dial, Encode, Grant, Hold, Meter, OpClassId, OriginKind,
+    Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
@@ -662,7 +662,7 @@ impl LlmNode {
         let hold =
             busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
         // What this unit reserves, read off the hold it enters the table with. The door on this
-        // plane opens its own hold at ZERO (busbar-llm `unit/admit.rs`), so the arrival hold's
+        // plane has its hold opened at ZERO (this file's `Units::admit` row), so the arrival hold's
         // figure is the unit's reservation for its whole life; a door that reserved would be the
         // place to journal the difference.
         let reserved = hold.reserved();
@@ -1533,8 +1533,6 @@ impl Units for LlmUnit<'_> {
         // than an already-posted record, and the over-budget path leaves through the same terminal
         // every other path leaves through, with exactly one link on the unit's chain.
         let admitted = admit::admit(
-            token,
-            admit_token,
             &admit::AdmitCtx {
                 host: self.walk.host(),
                 gov: self.walk.gov(),
@@ -1542,12 +1540,19 @@ impl Units for LlmUnit<'_> {
                 destination: &model,
                 charged_at: self.charged_at,
             },
-            principal,
             destinations,
         );
-        // The plane's half of the answer — the meter half of the hold, whether the charge landed,
-        // and which pool it landed on — stays with the walk; the kernel's half comes back here.
-        self.walk.take_admission(admitted)
+        // The plane's half of the answer — the metering sink, whether the charge landed, and which
+        // pool it landed on — stays with the walk; the door's verdict comes back here. THE HOLD IS
+        // OPENED HERE, not in the plane (#43, #83 defs 5/6): at zero, for this principal — it never
+        // refused a unit the door admitted, and the spend is the governance ledger's.
+        match self.walk.take_admission(admitted) {
+            Ok(()) => Decision::proceed(
+                token,
+                Admission::Own(Hold::open(admit_token, principal.clone(), 0)),
+            ),
+            Err(refusal) => Decision::refuse(token, refusal),
+        }
     }
 
     fn route(

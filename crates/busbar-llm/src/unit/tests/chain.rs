@@ -10,8 +10,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
 use busbar_contract::caps::{
-    Admission, Admittance, Approve, Audit, Authenticate, Consumption, Dial, Grant, KernelSeal,
-    OpClassId, Outcome, Pass, PrincipalId, Route, VerifiedDestination, Verify,
+    Approve, Audit, Authenticate, Consumption, Dial, Grant, KernelSeal, OpClassId, Outcome, Pass,
+    PrincipalId, Route, VerifiedDestination, Verify,
 };
 use busbar_kernel::plane_host::EngineTablesView;
 use busbar_kernel::proxy::reqlog::REQUESTS;
@@ -861,8 +861,6 @@ async fn drive(
 
     // ---- STEP 4, ADMIT ----------------------------------------------------------------------
     let admitted = admit::admit(
-        &Pass::mint(seal),
-        &Grant::<Admittance>::mint(seal),
         &admit::AdmitCtx {
             host,
             gov,
@@ -870,7 +868,6 @@ async fn drive(
             destination: &model,
             charged_at,
         },
-        &principal,
         &destinations,
     );
     let charged = admitted.charged;
@@ -883,7 +880,7 @@ async fn drive(
     // the Audit step — and the unit that was turned away has exactly one link on its chain, named
     // with the pool it asked for.
     if let Some(resp) = admitted.refusal {
-        let _ = admitted.decision;
+        let _ = admitted.verdict;
         return audit::audit_refused(
             &Pass::mint(seal),
             &audit_ctx(host, gov, &model, started, charged_at),
@@ -892,12 +889,11 @@ async fn drive(
         .response
         .into_response();
     }
-    let hold = match admitted.decision.into_result(seal) {
-        Ok(Admission::Own(hold)) => Some(hold),
-        Ok(Admission::Accrual(_)) => panic!("a client unit holds its own admission"),
-        Ok(Admission::ZeroHold) => None,
-        Err(_) => unreachable!("a refusal carries its rendered bytes and returned above"),
-    };
+    // The door said yes. The hold that yes entitles the unit to is the kernel's to open, and this
+    // rehearsal is not the kernel: it drives the plane's steps and keeps no books.
+    if admitted.verdict.is_err() {
+        unreachable!("a refusal carries its rendered bytes and returned above");
+    }
 
     // ---- STEP 5, ROUTE ----------------------------------------------------------------------
     // THE READER'S COPY of the meter half, taken before the walk takes it — the same move the
@@ -950,13 +946,11 @@ async fn drive(
     let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts, charged);
     // The rehearsal drives this plane's steps and keeps no books. The step names no price and works
     // out no amount: it assembles what the unit consumed and hands it back on its report, and what
-    // the money actually comes to is the composition root's, proven where the card is. The hold
-    // below reaches no exit path here anyway.
+    // the money actually comes to is the composition root's, proven where the card is.
     let metered = meter::meter(
         &Pass::mint(seal),
         &Grant::<Consumption>::mint(seal),
         &ctx,
-        hold,
         &Outcome::Completed,
     );
     metering.reached = true;
@@ -968,9 +962,6 @@ async fn drive(
     // What the step was actually BOUND to, read off the facts rather than off the response: the
     // three figures Route folds out of the tap where the tap had already finished.
     metering.bound = (facts.lane, split(facts.usage.as_ref()));
-    // The hold reaches no exit path in this rehearsal: the exit is the kernel's, and there is no
-    // plane-side settle. Held to the end of the unit so the accounting is not silently dropped.
-    let _hold = metered.hold;
     let _usage = metered.decision;
 
     // ---- STEP 7, AUDIT ----------------------------------------------------------------------
@@ -1476,7 +1467,8 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
     });
     walk.keep_arrival(arrived);
 
-    let principal: PrincipalId = {
+    // Authenticated as the root does, though its answer is the kernel's to hold the unit's hold for.
+    let _principal: PrincipalId = {
         let token: Pass<Authenticate> = Pass::mint(&seal);
         authenticate::authenticate(&token, &gov)
             .into_result(&seal)
@@ -1492,12 +1484,10 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
     let destinations = sealed_destinations(&seal, &configured_lane);
 
     // THE DOOR. Its answer's plane half — the meter half, the charge flag, the effective pool —
-    // stays on the carry, exactly as the root's Admit step leaves it. The kernel half carries the
-    // unit's reservation and is what the loop puts in its own cell, so it is dropped here: this test
-    // is not a loop and has no cell to put one in.
+    // stays on the carry, exactly as the root's Admit step leaves it. The verdict is what the
+    // kernel seals and opens the unit's hold on, so it is dropped here: this test is not a loop and
+    // has no cell to put one in.
     let admitted = admit::admit(
-        &Pass::mint(&seal),
-        &Grant::<Admittance>::mint(&seal),
         &admit::AdmitCtx {
             host: &host,
             gov: &gov,
@@ -1505,7 +1495,6 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
             destination: &model,
             charged_at: rig.charged_at,
         },
-        &principal,
         &destinations,
     );
     assert!(

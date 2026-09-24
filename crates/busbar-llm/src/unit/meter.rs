@@ -22,7 +22,7 @@
 //! after the Audit step gave the client its bytes. So for a unit that reached the walk holding the
 //! admission's meter half, the walk's tap IS this step's body — the same function, the same four
 //! arguments — and what this step does is SEAL what was posted rather than post it a second time.
-//! [`MeterFacts::accrued`] is Route saying which of the two happened, and it is the only thing
+//! [`MeterFacts::tap_posts`] is Route saying which of the two happened, and it is the only thing
 //! standing between one accrual and two. [`Metered::posted`] is this step saying which of the two
 //! it did, and it is set inside the accrual arm: the row this step reports is filled either way, so
 //! a row cannot answer that question and a caller that read one for the answer would call every
@@ -80,12 +80,12 @@
 //! request for the serving model with every tier at zero. Dropping the row because the tiers were
 //! empty would make the request count and the consumption disagree about the same response.
 //!
-//! # The hold, and the settle that is not here
+//! # No hold, and no settle
 //!
-//! Meter computes; the exit path settles. There are exactly two places a hold is taken out of its
-//! cell — the exit and the node's sweep — and a third would be a unit that could post twice. So
-//! this step takes the hold, accrues against it, and hands it straight back for the exit to close;
-//! it never builds a `Posted`. What it does own is the report the posting is made against.
+//! Meter counts; the kernel settles. The hold is the kernel's — opened at its admit, in the unit's
+//! cell, and taken out only by the exit and the node's sweep (#43, #83 defs 5/6) — so this step is
+//! handed none, carries none and spends against none. What it does own is the report of counts
+//! the posting is made against.
 //!
 //! **What a unit consumed is not what it is WORTH, and this step does not turn one into the other.**
 //! The report's lines are quantities in four different meter classes and their sum is a figure in no
@@ -101,8 +101,8 @@
 use std::sync::Arc;
 
 use busbar_contract::caps::{
-    step::Meter, Consumption, Decision, Grant, Hold, MeterClassId, Outcome, Pass, QuantitySource,
-    Usage, UsageLine,
+    step::Meter, Consumption, Decision, Grant, MeterClassId, Outcome, Pass, QuantitySource, Usage,
+    UsageLine,
 };
 use busbar_contract::ClassDirection;
 use busbar_kernel::plane_host::EngineHost;
@@ -114,7 +114,7 @@ use busbar_kernel::plane_host::EngineHost;
 /// expression a driver could write produced a [`MeterCtx`] from what Route returned. Every field
 /// here is read off the walk that actually ran.
 ///
-/// [`MeterFacts::accrued`] is the load-bearing one, and it says where this unit's ONE posting is
+/// [`MeterFacts::tap_posts`] is the load-bearing one, and it says where this unit's ONE posting is
 /// made. The walk is handed the admission's meter half and its taps — the buffered tap and the
 /// stream-end tap — are the only places a streamed answer's usage becomes known at all; a stream is
 /// still flowing when Route returns and when this step runs, so no shape of this type could carry
@@ -145,9 +145,9 @@ pub(crate) struct MeterFacts {
     /// Whether the unit reached an upstream at all, which is what makes it a fee-bearing client
     /// request rather than a turn-away that never dialled.
     pub(crate) upstream_leg: bool,
-    /// Whether the walk's own taps hold this unit's accrual. When true this step seals; when false
+    /// Whether the walk's own tap posts this unit's counts. When true this step seals; when false
     /// this step posts.
-    pub(crate) accrued: bool,
+    pub(crate) tap_posts: bool,
 }
 
 impl MeterFacts {
@@ -158,7 +158,7 @@ impl MeterFacts {
     /// which is the charge on every end (#62). Route calls it on the way out, which fills them for every end
     /// the tap had already reached — every buffered answer, and every transfer that failed before a
     /// body could flow. A stream's report does not exist yet at that moment, so nothing is folded and
-    /// the facts stay as they were, `accrued` says the tap owns the posting, and the tap's own
+    /// the facts stay as they were, `tap_posts` says the tap owns the posting, and the tap's own
     /// accrual is the unit's one accrual.
     ///
     /// A report is folded ONCE and never partially: reading two figures out of two different
@@ -182,7 +182,7 @@ pub struct MeterCtx<'a> {
     status: u16,
     charged: bool,
     upstream_leg: bool,
-    accrued: bool,
+    tap_posts: bool,
 }
 
 impl<'a> MeterCtx<'a> {
@@ -217,7 +217,7 @@ impl<'a> MeterCtx<'a> {
             upstream_leg,
             // The step is the posting unless something before it says otherwise; `bind` is what
             // says otherwise.
-            accrued: false,
+            tap_posts: false,
         }
     }
 
@@ -242,7 +242,7 @@ impl<'a> MeterCtx<'a> {
             status: facts.status,
             charged,
             upstream_leg: facts.upstream_leg,
-            accrued: facts.accrued,
+            tap_posts: facts.tap_posts,
         }
     }
 
@@ -255,15 +255,10 @@ impl<'a> MeterCtx<'a> {
 
 /// The step's answer, plus what the Audit step and the exit path read.
 ///
-/// [`Metered::decision`] is exactly what the kernel's `Units::meter` returns. The hold rides back
-/// out untouched by anything but its accrual, because settling it is the exit's and only the
-/// exit's.
+/// [`Metered::decision`] is exactly what the kernel's `Units::meter` returns.
 pub struct Metered {
     /// The sealed step-6 answer: the usage report the posting is made against.
     pub decision: Decision<Meter>,
-    /// The unit's reservation, handed back for the exit path to settle. Never settled here: there
-    /// are two places a hold leaves its cell and this is not one of them.
-    pub hold: Option<Hold>,
     /// The metering row this response accrued — one request for the serving model, with the token
     /// split preserved. `None` when there was no key or no serving lane to attribute it to, which
     /// is the only case in which nothing is metered at all.
@@ -303,11 +298,10 @@ impl Metered {
 
 /// The shape of this step, as a value — the `Units::meter` row with the plane's own context.
 ///
-/// The kernel's row also takes the hold implicitly, through the cell; here it is passed and
-/// returned explicitly, because a plane holds no cell and the point is that the hold leaves this
-/// step exactly as it arrived plus its accrual.
+/// The hold is not part of it: the kernel's row reaches the hold through the unit's cell, which a
+/// plane never holds, and a plane-side step that carried one would be a plane doing money.
 pub type MeterStep =
-    for<'a> fn(&Pass<Meter>, &Grant<Consumption>, &MeterCtx<'a>, Option<Hold>, &Outcome) -> Metered;
+    for<'a> fn(&Pass<Meter>, &Grant<Consumption>, &MeterCtx<'a>, &Outcome) -> Metered;
 
 /// The four reserved meter classes, in the canonical order the pricer prices them.
 ///
@@ -319,7 +313,7 @@ const CLASS_OUTPUT: MeterClassId = MeterClassId::new(busbar_api::UNIT_OUTPUT);
 const CLASS_CACHE_READ: MeterClassId = MeterClassId::new(busbar_api::UNIT_CACHE_READ);
 const CLASS_CACHE_WRITE: MeterClassId = MeterClassId::new(busbar_api::UNIT_CACHE_WRITE);
 
-/// Step 6. Fold what the legs reported, accrue it, and say what the posting is made against.
+/// Step 6. Fold what the legs reported, post the counts, and say what the posting is made against.
 ///
 /// The provisional end is carried for the record and does not lower the fee: the fee was decided
 /// at the frame that carried the status, and a unit that ended badly after that still delivered
@@ -328,7 +322,6 @@ pub fn meter(
     unit_token: &Pass<Meter>,
     usage_token: &Grant<Consumption>,
     ctx: &MeterCtx<'_>,
-    hold: Option<Hold>,
     _provisional: &Outcome,
 ) -> Metered {
     let delivered = ctx.delivered();
@@ -366,7 +359,7 @@ pub fn meter(
         let tier = reported
             .map(busbar_llm_codec::wire_shim::tier_usage)
             .unwrap_or_default();
-        if !ctx.accrued {
+        if !ctx.tap_posts {
             crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
             posted = true;
         }
@@ -410,14 +403,10 @@ pub fn meter(
     }
     let usage = Usage::report(usage_token, lines).expect("four tiers fit any record");
 
-    // The hold rides back out exactly as it arrived. This step settles nothing: what the unit
-    // consumed leaves on the report, and the side that holds the card is the one that turns those
-    // quantities into an amount — the plane's own quantity sum is still there to be read and is
-    // still not a money figure.
-
+    // This step settles nothing: what the unit consumed leaves on the report, and the side that
+    // holds the card is the one that turns those quantities into an amount.
     Metered {
         decision: Decision::proceed(unit_token, usage),
-        hold,
         row,
         fee_count,
         // The refund is owed only where a charge landed and the client did not see a 2xx — and it

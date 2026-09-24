@@ -235,7 +235,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
         true,
     );
     let (seal, unit_token, usage_token) = tokens();
-    let metered = meter(&unit_token, &usage_token, &ctx, None, &Outcome::Completed);
+    let metered = meter(&unit_token, &usage_token, &ctx, &Outcome::Completed);
 
     assert_eq!(
         metered.row.as_ref().expect("a served response is metered"),
@@ -349,7 +349,7 @@ fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
         ),
     ] {
         let ctx = MeterCtx::new(&host, None, None, None, status, charged, upstream_leg);
-        let metered = meter(&unit_token, &usage_token, &ctx, None, &Outcome::Completed);
+        let metered = meter(&unit_token, &usage_token, &ctx, &Outcome::Completed);
         assert_eq!(metered.fee_count, fee, "{why}: fee_count");
         assert_eq!(metered.refund, refund, "{why}: refund");
         assert!(
@@ -386,7 +386,6 @@ fn a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned()
         &unit_token,
         &usage_token,
         &ctx,
-        None,
         &Outcome::Failed(
             StepName::Route,
             busbar_contract::caps::ReasonCode::DestinationUnreachable,
@@ -525,7 +524,6 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
             true,
             true,
         ),
-        None,
         &Outcome::Completed,
     );
     assert_eq!(
@@ -544,7 +542,7 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
         usage: Some(reported.clone()),
         status: 200,
         upstream_leg: true,
-        accrued: true,
+        tap_posts: true,
     };
     let sealing = meter(
         &unit_token,
@@ -556,7 +554,6 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
             &facts,
             true,
         ),
-        None,
         &Outcome::Completed,
     );
     let gov2 = app2.governance.clone().expect("governance is configured");
