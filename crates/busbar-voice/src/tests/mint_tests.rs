@@ -23,7 +23,7 @@ use crate::mount::{
 };
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use busbar_kernel::plane::handle_engine::DurableHandleEngine;
-use busbar_kernel::testkit::fixture_host::FixtureHost;
+use crate::testkit::fixture_host::FixtureHost;
 use std::sync::{Arc, Mutex};
 
 /// The provider key busbar holds server-side — the value the loopback provider must be dialed with.

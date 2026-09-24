@@ -29,7 +29,7 @@
 //! rule one and vice versa. Both hold; neither implies the other.
 
 use crate::testkit::engine_boot::engine;
-use busbar_kernel::testkit::engine_kit_plus::metric_sum;
+use busbar_kernel::test_support::engine_kit_plus::metric_sum;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::Ordering;
 

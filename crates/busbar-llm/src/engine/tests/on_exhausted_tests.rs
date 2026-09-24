@@ -476,7 +476,7 @@ fn retry_after(resp: &axum::response::Response) -> Option<String> {
 /// Drive one request through `forward_with_pool` under the shed budget. A correct shed returns
 /// immediately; a queue-instead-of-shed regression parks the inner future to the failover deadline
 /// and this `.expect` panics — the shed-not-queued assertion.
-async fn drive_shed<A: busbar_kernel::testkit::BuiltAppSeam>(
+async fn drive_shed<A: busbar_kernel::test_support::BuiltAppSeam>(
     app: std::sync::Arc<A>,
     cands: Vec<WeightedLane>,
     pool: &str,
@@ -1101,7 +1101,7 @@ fn busy_real_lane(model: &str, base_url: &str, sem: &Arc<tokio::sync::Semaphore>
 
 /// Spawn one request through the real dispatch path with `'static` literals so it can run detached
 /// while the test frees a permit / trips a breaker underneath it.
-fn spawn_request<A: busbar_kernel::testkit::BuiltAppSeam + Send + Sync + 'static>(
+fn spawn_request<A: busbar_kernel::test_support::BuiltAppSeam + Send + Sync + 'static>(
     app: std::sync::Arc<A>,
 ) -> tokio::task::JoinHandle<axum::response::Response> {
     tokio::spawn(async move {
@@ -1124,7 +1124,7 @@ fn spawn_request<A: busbar_kernel::testkit::BuiltAppSeam + Send + Sync + 'static
 /// a tight interval rather than sleeping a fixed wall-clock time. Replaces flaky fixed-sleep syncs
 /// under CI scheduler pressure — it only proceeds once the spawned request(s) have actually reached
 /// the queue park point. Panics if the depth is not reached within the bound.
-async fn wait_until_queued<A: busbar_kernel::testkit::BuiltAppSeam + ?Sized>(
+async fn wait_until_queued<A: busbar_kernel::test_support::BuiltAppSeam + ?Sized>(
     app: &std::sync::Arc<A>,
     pool: &str,
     min_depth: u64,

@@ -2723,3 +2723,32 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
         "the keys engine arm must NOT cache vkey verdicts (revocation window unchanged)"
     );
 }
+
+/// `chain: [keys]` is NOT an open front door. `keys` is engine-handled and installs no boxed
+/// module, so the boxed chain stays empty — but the operator asked for authentication and got it.
+/// Reading emptiness alone reports the door open while key auth is enforcing, and
+/// `Root::admin_grant` turns that report into `VerbScope::Full` for every caller. The construction
+/// path already spells the predicate correctly (`chain.is_empty() && !keys_in_chain`); this pins
+/// the accessor to the same rule.
+#[test]
+fn a_keys_only_chain_is_not_an_open_front_door() {
+    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
+    assert!(mw.keys_in_chain, "precondition: keys sets the flag");
+    assert!(
+        mw.chain_names().is_empty(),
+        "precondition: keys installs no boxed module"
+    );
+    assert!(
+        !mw.is_open(),
+        "chain: [keys] authenticates, so the front door is CLOSED — reporting it open grants \
+         VerbScope::Full to every caller at Root::admin_grant"
+    );
+
+    // The genuinely open posture still reads open.
+    let none = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
+    assert!(none.is_open(), "no module and no keys arm IS the open door");
+
+    // keys + a boxed module: closed by both halves.
+    let both = AuthMiddleware::new_builtin(&chain_cfg(&["keys", "test-groups-module"]));
+    assert!(!both.is_open(), "a boxed module closes the door regardless");
+}

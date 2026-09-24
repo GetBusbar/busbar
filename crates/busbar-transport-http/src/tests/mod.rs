@@ -5,7 +5,6 @@
 use super::*;
 // The `Transport` surface, its meta and its claim forms moved to the kind's own `transport.rs`,
 // `meta.rs` and `claims.rs` (`PLUGIN-TREE.md` §3), so `use super::*` no longer carries them.
-use busbar_contract::plugin::KernelSeal;
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::WireStatus;
 use busbar_contract::transport::wire::{CloseReason, FrameMeta, TransportError};
@@ -14,12 +13,7 @@ use busbar_contract::{ScratchBytes, Transport, TransportConfigView, TransportKey
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 
-struct FixtureSeal;
-impl KernelSeal for FixtureSeal {
-    fn seal_origin(&self) -> &'static str {
-        "busbar-transport-http test fixture"
-    }
-}
+use busbar_contract::plugin::TestKernelSeal as FixtureSeal;
 fn fixture_key() -> TransportKeyHandle {
     TransportKeyHandle::issue(&FixtureSeal, 0, "test")
 }

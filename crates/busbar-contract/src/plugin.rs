@@ -6,12 +6,22 @@
 
 use core::fmt;
 
-mod sealed {
+pub(crate) mod sealed {
     /// The private supertrait that closes the kind marker set.
     pub trait KindSeal {}
+
+    /// The private supertrait that closes [`KernelSeal`](super::KernelSeal) (#65).
+    ///
+    /// This module is `pub(crate)`, so no crate outside this one can NAME this trait, and a trait
+    /// that cannot be named cannot be implemented. That makes `KernelSeal` implementable by
+    /// exactly the types this crate implements it for — the capability tokens in
+    /// [`crate::caps::token`] — and turns "only the kernel builds a kernel-built view" from a
+    /// source scan into a thing the type checker enforces.
+    pub trait KernelSealed {}
 }
 
-/// The closed set of plugin kinds.
+/// The closed set of plugin kinds — SEVEN of them: plane, transport, auth, store, secret, hook,
+/// export.
 ///
 /// This is structure, not vocabulary, so it is closed: the open-vocabulary section of the design
 /// allows a plugin to invent claims, classes and schemes, but never a new kind of plugin. A new
@@ -22,10 +32,10 @@ pub enum Kind {
     Plane,
     /// Moves bytes. In-tree only, inside the trusted computing base.
     Transport,
-    /// Turns an arriving credential into facts about a principal.
+    /// Turns an arriving credential into facts about a principal, and decorates an outbound one
+    /// with an upstream's own scheme. ONE kind, two operations: direction is a property of the
+    /// leg — `(transport, auth, direction)` — never a kind of its own.
     Auth,
-    /// Decorates an outbound request with an upstream's own scheme.
-    EgressAuth,
     /// The durable store behind the journal.
     Store,
     /// Resolves, signs, seals and unseals key material.
@@ -43,13 +53,13 @@ impl Kind {
         K::KIND
     }
 
-    // The PURE kinds — plane, hook, and the pure static and egress-auth schemes — are the ones the
-    // core-to-plugin section scopes its source denylist to; the input/output kinds (store, secret,
-    // export, and the network-backed auth plugins) own their input and output by definition and are
-    // bounded by their signature, a deadline and an access journal entry instead. That partition was
-    // also spelled here as a predicate no caller in the workspace ever asked, and the rule it stated
-    // is enforced by `source-denylist:*` in the construction gate, over the crates rather than over
-    // this enum. One statement of it, in the place that acts on it.
+    // The PURE kinds — plane, hook, and the auth plugins that do no I/O of their own — are the ones
+    // the core-to-plugin section scopes its source denylist to; the input/output kinds (store,
+    // secret, export, and the network-backed auth plugins) own their input and output by definition
+    // and are bounded by their signature, a deadline and an access journal entry instead. That
+    // partition was also spelled here as a predicate no caller in the workspace ever asked, and the
+    // rule it stated is enforced by `source-denylist:*` in the construction gate, over the crates
+    // rather than over this enum. One statement of it, in the place that acts on it.
 }
 
 impl fmt::Display for Kind {
@@ -58,7 +68,6 @@ impl fmt::Display for Kind {
             Self::Plane => "plane",
             Self::Transport => "transport",
             Self::Auth => "auth",
-            Self::EgressAuth => "egress-auth",
             Self::Store => "store",
             Self::Secret => "secret",
             Self::Hook => "hook",
@@ -101,11 +110,8 @@ pub mod markers {
         /// Marker for the transport kind.
         TransportKind => Transport);
     marker!(
-        /// Marker for the ingress auth kind.
+        /// Marker for the auth kind, inbound and outbound alike.
         AuthKind => Auth);
-    marker!(
-        /// Marker for the egress auth-scheme kind.
-        EgressAuthKind => EgressAuth);
     marker!(
         /// Marker for the store kind.
         StoreKind => Store);
@@ -159,23 +165,27 @@ pub trait Plugin: Send + Sync + 'static {
 /// constructors take a reference to one, the capability crate's tokens implement it, and a plugin
 /// crate cannot name that crate at all under the manifest allow-list.
 ///
-/// This is honest rather than airtight, and the honesty is worth spelling out because the shape of
-/// it decides what may be claimed elsewhere. The trait has to be public: the capability crate sits
-/// ABOVE this one and implements it on every token, and there is no Rust construct for "a trait
-/// implementable by exactly one other crate" — a private supertrait would lock that crate out too.
+/// **This trait is SEALED** (#65). It is implementable only by the capability tokens in
+/// [`crate::caps::token`], because its supertrait [`sealed::KernelSealed`] lives in a `pub(crate)`
+/// module: a crate outside this one cannot name that trait, and what cannot be named cannot be
+/// implemented. The earlier text here claimed sealing was impossible because "the capability crate
+/// sits ABOVE this one" — that was true when the tokens lived in a separate crate. They do not:
+/// `caps` is a MODULE of this crate, so the ordinary private-supertrait pattern reaches them and
+/// locks everyone else out. The claim below is now the type system's, not a scan's.
 ///
-/// So what stops each population is different, and none of it is the type system:
+/// So the populations collapse to one rule:
 ///
-/// - An out-of-tree plugin cannot obtain a token, because the manifest allow-list refuses a plugin
-///   crate that names the capability crate at all. It CAN implement this trait on a type of its own.
-///   A loaded plugin is signature-verified, operator-installed, trusted code, so that is not a line
-///   this system draws.
-/// - An in-tree crate is held by a source scan, `kernel-seal-impls` in the construction gate, which
-///   forbids implementing this trait anywhere outside the capability crate.
+/// - No crate outside this one can implement this trait AT ALL — in-tree or out-of-tree, test code
+///   or production. The compiler refuses it; see the `compile_fail` fixture below. A fixture that
+///   needs a seal mints a real token instead, which routes it through
+///   [`KernelSeal::acquire_for_kernel`](crate::caps::KernelSeal::acquire_for_kernel) — the one
+///   audited symbol CI's `seal-witness` scan watches.
+/// - The `kernel-seal-impls` source scan in the construction gate still runs, but it is now a
+///   belt-and-braces check behind a compiler guarantee rather than the only thing standing there.
 ///
-/// What this crate does contribute is that the trait is not on its ROOT surface: it is reachable
-/// only as `busbar_contract::plugin::KernelSeal`, so it is not in the list of names a plugin author
-/// reads as the ABI. That is a smaller claim than "removed", and it is the true one.
+/// The trait is also absent from this crate's ROOT surface: it is reachable only as
+/// `busbar_contract::plugin::KernelSeal`, so it is not in the list of names a plugin author reads
+/// as the ABI.
 ///
 /// The root spelling does not resolve:
 ///
@@ -183,10 +193,11 @@ pub trait Plugin: Send + Sync + 'static {
 /// use busbar_contract::KernelSeal;
 /// ```
 ///
-/// The module spelling does, and still builds a destination — stated here so this fixture is never
-/// misread as a claim that the trait cannot be implemented:
+/// An outside crate cannot implement it. The supertrait that closes the set lives in a
+/// crate-private module, so a foreign type cannot satisfy the bound — the COMPILER refuses the
+/// forgery, rather than a source scan noticing it afterwards (#65):
 ///
-/// ```
+/// ```compile_fail,E0277
 /// struct FakeSeal;
 /// impl busbar_contract::plugin::KernelSeal for FakeSeal {
 ///     fn seal_origin(&self) -> &'static str {
@@ -201,7 +212,36 @@ pub trait Plugin: Send + Sync + 'static {
 /// );
 /// assert_eq!(forged.transport(), "http");
 /// ```
-pub trait KernelSeal {
+pub trait KernelSeal: sealed::KernelSealed {
     /// Which kernel-side crate the seal came from, for the journal's access entry.
     fn seal_origin(&self) -> &'static str;
 }
+
+/// The one seal a TEST harness may present — behind the `test-seal` feature, off in every real
+/// build.
+///
+/// This exists because sealing [`KernelSeal`] (#65) closed a door that in-tree test harnesses were
+/// walking through. Most of them now mint a real capability token instead, but a PLANE crate may
+/// not name [`crate::caps`] at all (ARCHITECTURE section 1.2; each plane asserts it from the inside
+/// in its own `purity` test), so a plane's harness has no token to mint and no legal way to build
+/// the kernel-side values its fixtures need. `qa/construction.toml`'s `kernel-seal-impls` rule
+/// named this exact gap and the exact remedy — *"their test seals cannot move onto a token until
+/// the contract offers a seal a plane is allowed to name"*. This is that seal.
+///
+/// What it does NOT do is re-open the forgery:
+///
+/// - It is `#[cfg(feature = "test-seal")]`, and **no non-dev dependency edge in this workspace
+///   turns that feature on**. In a release build this type does not exist, so nothing shipped can
+///   name it.
+/// - A crate must opt in LOUDLY, in its own `[dev-dependencies]`, under a feature whose name says
+///   what it is. That is an edit a reviewer sees, unlike the old `struct FakeSeal; impl KernelSeal
+///   for FakeSeal` which any file could write silently.
+/// - The trait stays sealed. This is one more in-crate implementor, not a re-opened trait: an
+///   outside crate still cannot implement [`KernelSeal`], with or without the feature.
+/// The TYPE is declared here so a plane can NAME it (`busbar_contract::plugin::TestKernelSeal`);
+/// its two `impl` blocks live in [`crate::caps::token`] with every other implementor of this
+/// trait, which is both where `qa/construction.toml`'s `kernel-seal-impls` rule requires them and
+/// the point of that rule — one directory holds every type that can present a seal.
+#[cfg(feature = "test-seal")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TestKernelSeal;

@@ -16,7 +16,6 @@
 
 use std::sync::Arc;
 
-use busbar_contract::plugin::KernelSeal;
 use busbar_contract::transport::wire::Listener;
 use busbar_contract::{
     ConfigView, ScratchBytes, StreamId, Transport, TransportConfigView, TransportKeyHandle,
@@ -45,20 +44,12 @@ impl TransportConfigView for SubjectCfg {
     }
 }
 
-/// The subject arms itself; there is no kernel here to issue a real key handle. This mirrors the
-/// fixture seal every in-tree transport battery uses (`busbar-transport-tcp/src/tests/mod.rs`).
-struct SubjectSeal;
-impl KernelSeal for SubjectSeal {
-    fn seal_origin(&self) -> &'static str {
-        "ws-conformance-subject: no key material -- this transport upgrade needs none"
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let tcp: Arc<dyn Transport> = Arc::new(TcpTransport::new());
     let ws = Arc::new(WsTransport::over(tcp));
-    let key = TransportKeyHandle::issue(&SubjectSeal, 0, "ws-conformance-subject");
+    // No key material: this subject echoes on loopback and the upgrade reads no key of its own.
+    let key = TransportKeyHandle::keyless();
 
     let listener: Listener = ws
         .listen(&SubjectCfg, &key)

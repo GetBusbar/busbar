@@ -47,22 +47,25 @@
 #
 # ── DECLARATIONS ─────────────────────────────────────────────────────────────────────────────────
 #
-# ONE ROW, AND IT IS A MOVE RATHER THAN A SILENCE. `decision` being registered nowhere is a
-# correct RED and it stays visible: a declared row PASSES but PRINTS its reason and its switch on
-# every single run, which is strictly more than the script comment it replaces ever did. The
-# sentence below is lifted verbatim from scripts/verify-1.6.0-done.sh, which is where this fact was
-# living — in a shell comment, next to a group that does not measure it, with no expiry and nothing
-# that would notice when it stopped being true. Here it expires: the moment `register_planes()` or
-# `plane_claims()` names the plane, `reachability:stale-declaration` reds until this row is struck.
+# NONE. The one row this file ever carried was `decision`/`registered`, and it was STRUCK by the
+# commit its own `switch` named — the one that adds the `busbar-plane-decision` dependency edge to
+# crates/busbar/Cargo.toml and pushes a `&PlaneDecl` for it in `register_planes()`. The row read
+# "DELIBERATELY UNWIRED — no root Cargo.toml entry, no main.rs entry"; both are now false, and a
+# declaration that outlived its debt is the one thing `reachability:stale-declaration` exists to
+# catch. It did: the run on the wiring commit, before this strike, reported
+# "`decision`/`registered` is declared dormant and is REACHED again", which is the expiry working
+# rather than a red anybody had to remember.
 #
-# Nothing else is declared. See below for why.
-
-[[dormant]]
-subject = "decision"
-aspect  = "registered"
-module  = "crates/busbar-plane-decision/src/lib.rs"
-reason  = "`busbar-plane-decision` exists but is DELIBERATELY UNWIRED — no root Cargo.toml entry, no main.rs entry, and no on-disk `busbar-decision(s)` I/O crate. #48 locks the roster at five and the fifth plane's crate has landed ahead of its wiring; the fold that wires it is tracked separately from this gate. Verbatim from scripts/verify-1.6.0-done.sh, moved here so it has an expiry."
-switch  = "the commit that adds the busbar-plane-decision dependency edge to crates/busbar/Cargo.toml and pushes its PLANE_DECL in register_planes() (or chains DecisionPlane in registry.rs::plane_claims) — strike this row in that same commit"
+# ONE THING THE STRIKE DOES NOT CLAIM. `reachability:unit-path:decision` and
+# `reachability:root-reach:decision` still PASS, and they pass FOR FREE: there is no
+# `crates/busbar/src/root/units_decision.rs`, so both rules answer "there is no unit path to
+# reach" rather than "the unit path is reached". That is the honest state and not an oversight —
+# the plane's registry declaration claims no path, binds no audience and builds no runtime slot
+# (crates/busbar/src/root/plane_decision.rs says why), so there is nothing yet for a ten-step unit
+# to be on the other side of. The day this plane is given a unit path, those two rows start
+# MEASURING for the first time, and they may well red. That is the gate finally seeing the plane.
+#
+# Nothing is declared. See below for why the four standing findings are not.
 
 # THE OTHER FOUR FINDINGS ARE DELIBERATELY NOT DECLARED ON THE COMMIT THAT INTRODUCED THE GATE. The gate is RED on this tree today, on
 # five named rows, and that red IS the instrument working — it is the red-before-green proof that it
@@ -70,8 +73,9 @@ switch  = "the commit that adds the busbar-plane-decision dependency edge to cra
 # with its own findings pre-suppressed, which teaches nobody anything. The owning agents either
 # switch their module on or write the sentence here; either way somebody decides on purpose.
 #
-# WHAT IT FINDS ON THIS TREE, 2026-09-22 (`cargo xtask gate reachability`, 44 files, 883 items,
-# 422 of them reached from `fn main()`):
+# WHAT IT FOUND ON THE TREE THAT INTRODUCED THIS FILE, 2026-09-22 (`cargo xtask gate reachability`,
+# 44 files, 883 items, 422 of them reached from `fn main()`) — five findings, one of them since
+# retired by the commit that wired the decision plane:
 #
 #   reachability:unit-path:mcp        `crates/busbar/src/root/units_mcp.rs` is 1 884 lines of a
 #                                     module named for a unit path and declares NO `impl … Units
@@ -87,12 +91,12 @@ switch  = "the commit that adds the busbar-plane-decision dependency edge to cra
 #                                     crates/busbar/src/root/tests/units_voice.rs. The NODE half IS
 #                                     live (main.rs builds a `VoiceNode` and installs `NodeCalls`);
 #                                     the ten-step UNIT it is a node for is not.
-#   reachability:registered:decision  no registration token appears in `register_planes()` or
-#                                     `plane_claims()`. `crates/busbar-plane-decision` exists and
-#                                     `crates/busbar/src` names it ZERO times. Already declared in
-#                                     prose at scripts/verify-1.6.0-done.sh ("busbar-plane-decision
-#                                     exists but is deliberately unwired") — which is exactly the
-#                                     kind of sentence that belongs in this file instead.
+#   [STRUCK 2026-09-22] reachability:registered:decision — this finding is GONE, and it is the only
+#                                     one of the five that is. `crates/busbar/Cargo.toml` names
+#                                     `busbar-plane-decision` and `register_planes()` pushes a
+#                                     `&PlaneDecl` for it, so the row now passes on its own merits
+#                                     rather than on a declaration. The declaration it used to
+#                                     stand on is struck above.
 #   reachability:root-module          `money_book` and `vocabulary` are declared by `root/mod.rs`
 #                                     and named by nothing else in the crate, so no chain from
 #                                     `fn main()` arrives at either. `money_book.rs` calls itself

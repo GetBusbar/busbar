@@ -1471,6 +1471,52 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 ));
             }
         }
+
+        // COMPLETENESS ACROSS PLANES, not just across models (#42,
+        // `docs/design/BUSBAR-1.6.0.md:370`): *"rate_card PRESENT => billed: a hit class not priced
+        // => REFUSE (money-sacred, never a silent 0)"*, and #77(5) (`:423`): *"Unpriced class =
+        // BOOT REFUSAL when billing is on"*.
+        //
+        // THE GUARD AND THE GAP ARE THE SAME CODE. The loop above is the whole of the completeness
+        // rule, and it is written against `models:` because the key immediately above it is: a
+        // rate entry is keyed by a CONFIG MODEL NAME and an entry naming anything else is refused
+        // as dead config. `models:` is the LLM plane's lane table. So the card can price LLM token
+        // tiers and NOTHING ELSE — there is no spelling in today's grammar for an `mcp` call, an
+        // `a2a` hop or a streamed audio-second, and therefore nothing for the completeness walk to
+        // find missing. That is not "those planes are unbilled": #42 makes `rate_card` PRESENCE the
+        // switch, and the switch is one global top-level key, so a present card turns billing ON
+        // for the whole node, including the planes whose every metered class it cannot name. The
+        // only reason that was not already a refusal is that the check had no class to miss.
+        //
+        // So it is stated here directly, against the fact the grammar CAN express: a configured
+        // registration on a plane the card cannot price, while the card is present. The section
+        // nouns are read through the same type-erased `PlaneCfg` seam `validate_unified_pool_names`
+        // reads them through, so no plane crate is named and a compiled-out plane (whose raw
+        // capture still reports the section the operator wrote) answers identically.
+        //
+        // WHAT THIS IS NOT. It is not #47's per-plane `rate_card`/`fees` sub-keys
+        // (`docs/design/BUSBAR-1.6.0.md:376`, OWNER-LOCKED) — that ruling moves `rate_card` and
+        // `fees` INSIDE each plane's section and nests `models:` under `pools:`, at which point a
+        // plane could be billed or unbilled on its own and this refusal would narrow to "this
+        // plane's card does not price this plane's class". None of that structure exists. Until it
+        // does, billing-on is a whole-node fact and an unpriceable plane on a billed node is a
+        // refusal rather than a silent zero.
+        for (section, defs) in [("tools", &cfg.tool_defs), ("agents", &cfg.agent_defs)] {
+            if !defs.is_present() {
+                continue;
+            }
+            errors.push(format!(
+                "`{section}:` is configured and `rate_card:` is present, which switches billing ON \
+                 for this whole node — but every `rate_card:` entry is keyed by a `models:` name \
+                 and validated against `models:`, so there is no key you can write to price what a \
+                 `{section}:` registration meters. `rate_card.<a {section} meter class>` is not a \
+                 config path that exists. Every class this plane meters is therefore UNPRICED, and \
+                 an unpriced class on a billed node is a REFUSAL, never a silent 0 (a silent 0 is \
+                 only ever correct when `rate_card:` is absent). Either remove `rate_card:` (the \
+                 node then serves unbilled, keeping admission, concurrency and breaker \
+                 enforcement), or remove the `{section}:` block."
+            ));
+        }
     }
 
     if cfg.per_request_fee < 0 {

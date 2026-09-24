@@ -22,7 +22,7 @@ use serde_json::json;
 /// Test-only anthropic-ingress convenience wrapper (the former `proxy::forward`, kept here so
 /// the production entry point is a single `forward_with_pool`). Binds anthropic ingress, the
 /// lane-default breaker cell (empty pool name), and no affinity.
-async fn forward<A: busbar_kernel::testkit::BuiltAppSeam>(
+async fn forward<A: busbar_kernel::test_support::BuiltAppSeam>(
     app: std::sync::Arc<A>,
     cands: Vec<crate::engine::WeightedLane>,
     body: bytes::Bytes,
@@ -392,7 +392,7 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 #[tokio::test]
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
@@ -465,7 +465,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -521,7 +521,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 #[tokio::test]
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     busbar_kernel::metrics::init();
 
@@ -602,7 +602,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -871,7 +871,7 @@ async fn test_metrics_admitted_in_open_relay_mode() {
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -924,7 +924,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {
@@ -970,7 +970,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
 #[tokio::test]
 async fn test_governance_vkey_auth_and_pool_acl() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
 
     busbar_kernel::metrics::init();
@@ -1000,7 +1000,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
     let app = TestApp::new().keys_chain().governance_kit(gov).build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1052,7 +1052,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 async fn test_governance_budget_over_quota() {
     crate::testkit::install_test_seams();
     use busbar_api::Store;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
 
     busbar_kernel::metrics::init();
@@ -1121,7 +1121,7 @@ async fn test_governance_budget_over_quota() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1176,7 +1176,7 @@ async fn test_governance_budget_over_quota() {
 /// needed — only a parseable body that carries `model` where the protocol expects it.
 async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use busbar_api::Store;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
 
     let store = Arc::new(MemoryStore::new());
@@ -1242,7 +1242,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
         .cost_kit(cost)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1427,7 +1427,7 @@ async fn test_budget_over_quota_bedrock_envelope() {
 #[tokio::test]
 async fn test_governance_rate_limit_429() {
     crate::testkit::install_test_seams();
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
 
     busbar_kernel::metrics::init();
@@ -1478,7 +1478,7 @@ async fn test_governance_rate_limit_429() {
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1541,7 +1541,7 @@ async fn test_governance_rate_limit_429() {
 /// `model` where the protocol expects it. An omitted `allowed_pools` admits every pool so the ACL
 /// never short-circuits the rate gate.
 async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
 
     let store = Arc::new(MemoryStore::new());
@@ -1589,7 +1589,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
         .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -4664,7 +4664,7 @@ async fn test_health_probe_recovers_tripped_lane() {
     );
 
     crate::engine::health::probe_lane(
-        busbar_kernel::testkit::engine_host(&app).as_ref(),
+        busbar_kernel::test_support::engine_host(&app).as_ref(),
         0,
         Duration::from_secs(5),
     )
@@ -4709,7 +4709,7 @@ async fn test_health_probe_failure_records_transient() {
 
     let before = app.store.snapshot(0, busbar_kernel::store::now()).err;
     crate::engine::health::probe_lane(
-        busbar_kernel::testkit::engine_host(&app).as_ref(),
+        busbar_kernel::test_support::engine_host(&app).as_ref(),
         0,
         Duration::from_secs(5),
     )

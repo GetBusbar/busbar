@@ -16,7 +16,7 @@
 //! sub-item gaps that must stay HONESTLY PENDING rather than be dressed as a green.
 
 use busbar_kernel::plane_host::{CostLeaseId, EngineHost, MeteringHost, SettleOutcome};
-use busbar_kernel::testkit::fixture_host::FixtureHost;
+use busbar_voice::testkit::fixture_host::FixtureHost;
 use busbar_voice::ir::{
     DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, IrClientEvent, IrDuplexControl,
     IrDuplexTool, IrServerEvent, OpenAiRealtimeCodec, WireEvent,

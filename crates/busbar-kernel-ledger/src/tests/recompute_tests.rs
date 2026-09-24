@@ -6,11 +6,12 @@
 
 use std::collections::BTreeMap;
 
-use crate::cost::{Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass, RateCard};
+use crate::cost::{Author, CardEntryDraft, History, HistorySeq, LaneClass, RateCard};
 use busbar_contract::caps::MeterClassId;
 
+use crate::cost::apply_tier_signed;
 use crate::recompute::{
-    apply_tier, price_line, recheck, recompute, DerivedPrice, Divergence, HistoryArchive, Posting,
+    price_line, recheck, recompute, DerivedPrice, Divergence, HistoryArchive, Posting,
     PostingOrigin, PricedLine, SealedHistory, Verdict, Watermark, BASIS_POINTS,
 };
 
@@ -20,9 +21,9 @@ use super::fixtures::key;
 const LANE: &str = "lane-a";
 /// The instant every line arrives at, unless a test moves it on purpose.
 const ARRIVED_MS: u64 = 1_767_225_600_000;
-/// The tier the fixture's bucket is on: a discount, not the neutral value, because `apply_tier` at
-/// ten thousand basis points is the identity function and a fixture priced only there would pass
-/// with the whole tier projection missing.
+/// The tier the fixture's bucket is on: a discount, not the neutral value, because the tier
+/// arithmetic at ten thousand basis points is the identity function and a fixture priced only there
+/// would pass with the whole tier projection missing.
 const DISCOUNT_TIER_BP: u32 = 9_000;
 
 /// The card the opening entry seals: two classes on one lane, and a flat fee.
@@ -101,7 +102,6 @@ fn correct_line(node_seq: u64) -> Posting {
         fee_count: 1,
         tier_bp: DISCOUNT_TIER_BP,
         arrived_ms: ARRIVED_MS,
-        currency: CurrencyCode::USD,
         cached: DerivedPrice::default(),
         origin: PostingOrigin::Client,
     };
@@ -258,10 +258,7 @@ fn the_fee_line_is_zero_for_work_no_client_asked_for() {
 fn on_a_deployment_with_no_rate_card_the_fee_line_is_what_gets_checked() {
     // No class prices at all. Every class line prices at zero, so the fee line is the whole amount
     // and the recompute is checking exactly it.
-    let archive = SealedHistory::new(History::opening(
-        RateCard::absent_in(CurrencyCode::USD, 250),
-        0,
-    ));
+    let archive = SealedHistory::new(History::opening(RateCard::absent(250), 0));
     let mut line = correct_line(1);
     line.tier_bp = BASIS_POINTS;
     line.fee_count = 3;
@@ -306,28 +303,6 @@ fn a_hole_in_the_history_is_a_refusal_and_never_a_zero() {
         outcome.corrected.is_none(),
         "an unpriceable line's cache is left alone: overwriting it with a refusal would be the \
          zero this variant exists to refuse to write"
-    );
-}
-
-#[test]
-fn a_currency_the_card_does_not_name_is_never_converted() {
-    // The card prices USD. The line is denominated in yen. There is no cross-rate in this path and
-    // this refusal is what stands where one would have gone.
-    let yen = CurrencyCode::new("JPY").expect("JPY is three upper-case letters");
-    let mut line = correct_line(1);
-    line.currency = yen;
-    let outcome = recheck(&line, &archive());
-    assert!(
-        matches!(
-            outcome.divergences.as_slice(),
-            [Divergence::CurrencyNotPriced { currency, .. }] if *currency == yen
-        ),
-        "expected a refusal, got {:?}",
-        outcome.divergences
-    );
-    assert!(
-        outcome.corrected.is_none(),
-        "never a converted figure and never a zero"
     );
 }
 
@@ -420,31 +395,48 @@ fn a_watermark_that_survives_a_restart_resumes_where_it_stopped() {
     assert_eq!(second.watermark.mark_for(1), Some(20));
 }
 
+/// **THE RECOMPUTE READS THE PRICING PATH'S TIER, NOT A SECOND ONE.**
+///
+/// This module used to import `recompute::apply_tier` — an `i128 -> i128` copy of the tier rule,
+/// re-exported as `busbar_kernel_ledger::apply_tier` next to `busbar_kernel_ledger::cost::apply_tier`,
+/// so which function a caller got depended on which `use` line they typed. It had no production
+/// caller at all: `recheck` prices through `price_line` -> `price_at_card` -> `cost::apply_tier`,
+/// and the copy existed only to be asserted about here.
+///
+/// Two copies that agree are the dangerous shape, not the safe one. The day one of them was
+/// corrected for #44 and the other was not, the recompute — whose whole job is to DETECT a tier
+/// divergence — would itself have become the divergence, reporting
+/// `Divergence::Priced{posted, recomputed}` on every posting in the book at once. An alarm that
+/// fires on all of them is an alarm that fires on none. So the copy is deleted rather than pinned
+/// to its twin, and the recompute is checked against the one function the bill is computed with.
 #[test]
-fn the_tier_multiplies_before_it_divides() {
-    // A tier applied by dividing first rounds small amounts to nothing, which is a real way to lose
-    // money one nano-unit at a time.
-    assert_eq!(apply_tier(1, 9_999), 0);
-    assert_eq!(apply_tier(10_000, 9_999), 9_999);
-    assert_eq!(apply_tier(3, 5_000), 1);
-    assert_eq!(apply_tier(-10_000, 9_000), -9_000);
+fn the_tier_rounds_to_nearest_and_never_divides_first() {
+    // Dividing FIRST rounds a small amount to nothing, which is a real way to lose money one
+    // nano-unit at a time: `1 / 10_000 = 0`, then `0 x 9_999 = 0`.
+    assert_eq!(apply_tier_signed(1, 9_999), 1, "0.9999 is nearer 1 than 0");
+    assert_eq!(apply_tier_signed(10_000, 9_999), 9_999);
+    // 3 x 5,000bp = 1.5 exactly; 1 is odd, so half-to-even goes UP (#44 `:372`).
+    assert_eq!(apply_tier_signed(3, 5_000), 2);
+    // A reversal is a negative amount and the tier applies to it the same way.
+    assert_eq!(apply_tier_signed(-10_000, 9_000), -9_000);
+    assert_eq!(apply_tier_signed(-3, 5_000), -2);
 }
 
-/// The tier multiplier saturates too, so a pre-tier figure at the ceiling does not wrap on the way
-/// through the multiply-before-divide.
+/// The neutral tier is the identity at the ceiling, in both signs.
+///
+/// This cell used to assert `apply_tier(i128::MAX, BASIS_POINTS) == i128::MAX / 10_000` and called
+/// it saturation. Ten thousand basis points is ×1: the correct answer is `i128::MAX` itself, and
+/// the assertion was pinning a ten-thousand-fold UNDER-bill at the one tier every posting this
+/// tree writes actually carries.
 #[test]
-fn the_tier_multiplier_saturates_rather_than_wrapping() {
-    // A wrap here flips the sign, which is how a ceiling figure would come back as a credit.
-    assert_eq!(
-        apply_tier(i128::MAX, BASIS_POINTS),
-        i128::MAX / i128::from(BASIS_POINTS)
-    );
-    assert_eq!(
-        apply_tier(i128::MIN, BASIS_POINTS),
-        i128::MIN / i128::from(BASIS_POINTS)
-    );
+fn the_neutral_tier_is_the_identity_at_the_ceiling_in_both_signs() {
+    assert_eq!(apply_tier_signed(i128::MAX, BASIS_POINTS), i128::MAX);
+    assert_eq!(apply_tier_signed(i128::MIN, BASIS_POINTS), i128::MIN);
+    // A wrap here would flip the sign, which is how a ceiling figure comes back as a credit.
+    assert!(apply_tier_signed(i128::MAX, BASIS_POINTS) > 0);
+    assert!(apply_tier_signed(i128::MIN, BASIS_POINTS) < 0);
     // And the ordinary figures are untouched.
-    assert_eq!(apply_tier(10_000, 9_999), 9_999);
+    assert_eq!(apply_tier_signed(10_000, 9_999), 9_999);
 }
 
 /// A figure too large to hold is a DISAGREEMENT, not a wrap.

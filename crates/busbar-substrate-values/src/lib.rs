@@ -110,7 +110,7 @@ pub mod egress_auth {
 
 // The neutral warn-capture tracing Layer a plane's tests assert coded diagnostics through. Revealed
 // only under the test surface, exactly as in the parent crate; `busbar-substrate`'s `testkit`
-// re-exports this module so `busbar_kernel::testkit::warn_capture::WarnCapture` resolves.
+// re-exports this module so `busbar_substrate_values::testkit::warn_capture::WarnCapture` resolves.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testkit {
     pub mod warn_capture;

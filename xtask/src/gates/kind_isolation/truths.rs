@@ -40,7 +40,7 @@ pub const LEDGER: &str = "qa/kind-isolation.toml";
 /// DECISIONS #3 (locked): the SEVEN plugin kinds, in the gate's own spelling (the design writes
 /// `hook`; the table writes `hooks`). Every one must be a row of the kind table and must have a
 /// construction scope, or a plugin kind is a kind nothing measures.
-const PLUGIN_KINDS: &[&str] = &[
+pub(super) const PLUGIN_KINDS: &[&str] = &[
     "store",
     "secret",
     "auth",

@@ -10,8 +10,8 @@
 //!
 //! ## Quantities are the truth; a price is a lookup
 //!
-//! A booked line stores what happened — the quantities, the lane, the instant, the tier, the
-//! currency — and the two history numbers that say which snapshot it was settled under and which
+//! A booked line stores what happened — the quantities, the lane, the instant, the tier — and the
+//! two history numbers that say which snapshot it was settled under and which
 //! dated card that snapshot resolved to at that instant. It also stores a price, and that price is
 //! a CACHE: derived, re-derivable, and never the record. A statement is cut AS OF a snapshot and
 //! re-derives every figure from the quantities; it never sums the caches, so its answer does not
@@ -106,7 +106,7 @@ pub use migration::{
     Outcome as MigrationOutcome, OPENING_CHECKPOINT_SEQ,
 };
 pub use recompute::{
-    apply_tier, divergence_of, price_line, recheck, recompute, DerivedPrice, Divergence,
+    divergence_of, price_line, recheck, recompute, DerivedPrice, Divergence,
     Finding as RecomputeFinding, HistoryArchive, Pass, Posting, PostingOrigin, PricedLine, Recheck,
     SealedHistory, Verdict, Watermark, BASIS_POINTS,
 };

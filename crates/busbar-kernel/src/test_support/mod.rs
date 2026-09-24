@@ -785,7 +785,7 @@ type PlaneContainerHooks =
 /// same `test_support` doorway a plane already binds the fixture at, so a helper that only passes
 /// the built handle around stays inside that one binding instead of opening a second reach into the
 /// engine. A helper that needs a VERB rather than the handle should take the neutral port
-/// (`&dyn EngineHost`) or [`busbar_kernel::testkit::BuiltAppSeam`) instead.
+/// (`&dyn EngineHost`) or [`busbar_kernel::test_support::BuiltAppSeam`) instead.
 pub type BuiltApp = crate::state::App;
 
 /// The MCP plane's default-test-runtime factory, registered by an EXTERNAL `test-support` consumer
@@ -957,7 +957,7 @@ pub struct TestApp {
     /// fluent `.mcp(...).mcp_server(...).build()` call shape working while the runtime/resource
     /// construction that NAMES plane types lives entirely in the plane crate's test-kit.
     #[allow(clippy::type_complexity)]
-    plane_finalizers: Vec<Box<dyn FnOnce(&mut dyn busbar_kernel::testkit::TestAppSeam)>>,
+    plane_finalizers: Vec<Box<dyn FnOnce(&mut dyn busbar_kernel::test_support::TestAppSeam)>>,
 }
 
 impl Default for TestApp {
@@ -1447,7 +1447,7 @@ impl TestApp {
     /// this unwraps it back to the concrete table and installs it exactly as [`Self::cost`] does.
     pub fn cost_kit(
         mut self,
-        c: std::sync::Arc<dyn busbar_kernel::testkit::engine_kit::CostKit>,
+        c: std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::CostKit>,
     ) -> Self {
         self.cost = Some(engine_kit::cost_model(c));
         self
@@ -1458,7 +1458,7 @@ impl TestApp {
     /// the concrete `GovState` the fixture holds.
     pub fn governance_kit(
         self,
-        g: std::sync::Arc<dyn busbar_kernel::testkit::engine_kit::GovKit>,
+        g: std::sync::Arc<dyn busbar_kernel::test_support::engine_kit::GovKit>,
     ) -> Self {
         self.governance(engine_kit::gov_state(g))
     }
@@ -2282,13 +2282,23 @@ pub mod warn_capture;
 /// The REAL `kind: store` plugin, loaded over the REAL C ABI: how a durability claim is judged.
 pub mod plugin_store;
 
-/// The engine's implementation of the neutral engine test-kit seam
-/// (`busbar_kernel::testkit::engine_kit`): what a plane crate's test binary binds in one line so
-/// its tests build and drive the whole fixture naming no other item of this crate.
+/// THE TEST-APP / BUILT-APP SEAM — the object-safe doorway onto this module's own `TestApp` and the
+/// `App` that comes out of its `build()`. Relocated here from the deleted `busbar_kernel::testkit`
+/// (1.6.0 Locked Decision #33: the kernel ships no testkit — a plugin tests itself). Its items are
+/// re-exported at the `test_support` root below, so `busbar_kernel::test_support::TestAppSeam`
+/// resolves exactly where the fixture it is a view onto does.
+pub mod seam;
+pub use seam::{
+    build_router, engine_host, engine_host_value, BuiltAppSeam, TestAppSeam, TestAppSeamExt,
+};
+
+/// The engine test-kit seam AND the engine's implementation of it, as one module: what a caller's
+/// test binary binds in one line so its tests build and drive the whole fixture naming no other item
+/// of this crate.
 pub mod engine_kit;
 
-/// The engine's implementation of the WIDENED engine test-kit seam
-/// (`busbar_kernel::testkit::engine_kit_plus`), on the same fixture types as `engine_kit`.
+/// The WIDENED engine test-kit seam and its implementation, on the same fixture types as
+/// `engine_kit`.
 pub mod engine_kit_plus;
 
 /// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.

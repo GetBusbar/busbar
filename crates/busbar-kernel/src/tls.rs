@@ -30,7 +30,7 @@
 //! itself: it is handed an already-built `busbar_contract::transport::wire::ConnectionSecurity`
 //! and calls nothing on it but `wrap`. Reading the operator's `tls:` config, resolving the key
 //! material through the secret kind, and building the rustls config live in
-//! `busbar-core-transport` — this module is the LISTENER half of the seam (the accept loop,
+//! `busbar-core-connsec` — this module is the LISTENER half of the seam (the accept loop,
 //! hyper serving, graceful shutdown), not the connection-security-prep half.
 //!
 //! ## Crypto provider
@@ -124,7 +124,7 @@ use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 /// Idempotent and safe to call alongside reqwest/hyper-rustls, which also use ring: a "provider
 /// already installed" error is expected and ignored, because all we require is that *a ring provider*
 /// is the process default before any `ServerConfig` is built. Must run before
-/// `busbar_core_transport::build_server_config` (which now owns that build — DECISIONS #40) — and
+/// `busbar_core_connsec::build_server_config` (which now owns that build — DECISIONS #40) — and
 /// before any other subsystem in this process builds a rustls config, which is why several
 /// unrelated call sites (the egress engine's client-side TLS, test setup) also call this directly
 /// rather than assuming the inbound listener already has.
@@ -135,7 +135,7 @@ pub fn install_crypto_provider() {
 }
 
 // The cert/key/client-CA PARSING and the `rustls::ServerConfig` BUILD that used to sit here moved
-// verbatim to `busbar-core-transport` (DECISIONS #40, the core-side connection-security seam):
+// verbatim to `busbar-core-connsec` (DECISIONS #40, the core-side connection-security seam):
 // this crate's own inbound listener now names no rustls/cert type of its own for that job — it is
 // handed an already-built, opaque `ConnectionSecurity` wrap (`serve`'s `security` parameter, below)
 // and calls nothing on it but `wrap`. `read_pem` (below) stays here: `busbar-a2a`'s OUTBOUND client
@@ -769,7 +769,7 @@ async fn serve_one_plain(
 /// Handshake + serve a single accepted TCP connection. Any failure is contained to this connection.
 ///
 /// `security` is the opaque connection-security wrap `serve`'s caller was handed by
-/// `busbar-core-transport` (DECISIONS #40): this function calls `wrap` on the raw accepted stream
+/// `busbar-core-connsec` (DECISIONS #40): this function calls `wrap` on the raw accepted stream
 /// and nothing else — it names no rustls type, no cert, no key byte. The `RawIo`/tokio-io compat
 /// bridge on either side of `wrap` is the same seam `busbar-transport-tls` uses to cross the same
 /// futures-io/tokio-io boundary.

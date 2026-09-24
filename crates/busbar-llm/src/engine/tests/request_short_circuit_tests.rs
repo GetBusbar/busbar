@@ -8,7 +8,7 @@ use serde_json::json;
 fn app_with_lane(
     proto: &'static str,
     lane_model: &str,
-) -> std::sync::Arc<impl busbar_kernel::testkit::BuiltAppSeam> {
+) -> std::sync::Arc<impl busbar_kernel::test_support::BuiltAppSeam> {
     TestApp::new()
         .lane(LaneSpec::new(lane_model, proto, "http://unused.local"))
         .build()

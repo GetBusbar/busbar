@@ -99,23 +99,22 @@ impl RateNanos {
         }
     }
 
-    /// The nano-unit cost of a unit map's reserved four at this rate: four multiply-adds in u128.
+    /// The nano-unit cost of a unit map's reserved four at this rate.
     ///
-    /// One product cannot overflow the accumulator — a u64 count times a u64 nano rate is inside a
-    /// u128 by a whole bit — but their SUM can, and four maximal products are past the top of it.
-    /// So the running total saturates. A plain add panics on overflow in a debug build and wraps in
-    /// a release one, and a wrapped total lands back near zero: an over-the-top ledger deriving as
-    /// nearly free and escaping every budget cap. Pinning at the maximum instead gives an
-    /// astronomically over-cap figure, which is what the caller above then pins into cents. This is
-    /// the same saturation posture the cross-model sum and the cent projection already take, applied
-    /// one level lower so no layer of the money fold is the exception.
+    /// THE ARITHMETIC IS [`busbar_kernel_ledger::cost::nanos_sum`]'S, on the same terms the rate
+    /// projection above already reads [`busbar_kernel_ledger::cost::nano_rate`]: what is left here
+    /// is which rate each reserved key prices at, and the multiply, the sum and the saturation at
+    /// both steps belong to the one fold. This function's own copy of that fold was correct, which
+    /// is exactly what made it dangerous to keep — a THIRD copy in the kernel's cost projection had
+    /// no overflow guard at all, and two right copies are no evidence about a third. One
+    /// implementation is the only arrangement in which there is nothing left to drift.
     #[inline]
     pub fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
-        RESERVED_UNITS.iter().fold(0u128, |acc, u| {
-            let n = units.get(*u).copied().unwrap_or(0);
-            let amount = u128::from(n).saturating_mul(u128::from(self.reserved_rate(u)));
-            acc.saturating_add(amount)
-        })
+        busbar_kernel_ledger::cost::nanos_sum(
+            RESERVED_UNITS
+                .iter()
+                .map(|u| (units.get(*u).copied().unwrap_or(0), self.reserved_rate(u))),
+        )
     }
 }
 
@@ -166,9 +165,20 @@ impl Pricer {
         self.price_per_request_cents
     }
 
-    /// The effective rate for a model. Card absent: a zero rate, so every model prices at 0. Card
-    /// present and the model priced: its rate. Card present and the model unknown: `None`, and the
-    /// derive paths price it at 0.
+    /// The effective rate for a model. Card absent: a zero rate, so every model prices at 0 — the
+    /// ONLY circumstance in which a silent zero is a correct answer (#42,
+    /// `docs/design/BUSBAR-1.6.0.md:370`: *"A silent 0 is ONLY ever returned when rate_card is
+    /// absent"*). Card present and the model priced: its rate. Card present and the model UNKNOWN:
+    /// `None`, which means **UNPRICED, not free**.
+    ///
+    /// THE SENTENCE THAT USED TO END THIS COMMENT — *"and the derive paths price it at 0"* — was a
+    /// SECOND COPY of #42's ruling, and it was the wrong copy. #42 resolves a present card silent
+    /// about a hit class to a REFUSAL (*"a hit class not priced ⇒ REFUSE (money-sacred, never a
+    /// silent 0)"*), which is what the one function answers
+    /// ([`busbar_kernel_ledger::cost::MoneyError::LaneUnpriced`], raised at
+    /// `busbar-kernel-ledger/src/cost/view.rs`). The derive path below no longer restates the
+    /// ruling in its own words: it asks [`Self::model_unpriced`] — the one place in this crate that
+    /// states it — and fails closed. See [`Self::derive_spend_cents`].
     #[inline]
     pub fn rate_for(&self, model: &str) -> Option<RateNanos> {
         match &self.rates {
@@ -193,6 +203,17 @@ impl Pricer {
     /// request count. Every enforcement path passes `true`; the flag exists for callers that want
     /// a tokens-only projection.
     ///
+    /// **AN UNPRICED MODEL BLOCKS; IT DOES NOT COST NOTHING.** This loop used to read
+    /// `if let Some(rate) = self.rate_for(model)`, which reaches "price at nothing" through a
+    /// control-flow arm indistinguishable from "there was nothing to price": a present card with no
+    /// entry for a model dropped that model's whole consumption, and the bucket derived as free.
+    /// This function GATES ADMISSION, so that arm admitted a model against a `budget:` cap it never
+    /// accrued against — the exact silent 0 #42 (`docs/design/BUSBAR-1.6.0.md:370`) confines to a
+    /// card that is ABSENT. The question "is this model unpriced?" is not answered again here; it
+    /// is [`Self::model_unpriced`]'s, once, and the answer is resolved the way this function
+    /// already resolves its other fail-closed case — pinned at the top, an astronomically over-cap
+    /// spend that blocks — rather than at the bottom, where it would admit.
+    ///
     /// The saturation matters and is not decoration. An adversarially large ledger (u64-scale token
     /// counts against a large configured rate) can push the cent total past the signed maximum, and
     /// a wrapping cast would land negative, which the floor below would then turn into zero — an
@@ -206,9 +227,15 @@ impl Pricer {
     ) -> i64 {
         let mut nanos: u128 = 0;
         for (model, units) in models {
-            if let Some(rate) = self.rate_for(model) {
-                nanos = nanos.saturating_add(rate.reserved_nanos(units));
+            if self.model_unpriced(model) {
+                return i64::MAX;
             }
+            // `rate_for` cannot be `None` past the guard above: with the card absent it answers a
+            // zero rate, and with the card present `model_unpriced` already returned for every
+            // model the table does not hold. The `unwrap_or_default` is the unreachable arm made
+            // total, not a second resolution of the ruling.
+            nanos = nanos
+                .saturating_add(self.rate_for(model).unwrap_or_default().reserved_nanos(units));
         }
         let mut cents = i64::try_from(nanos / NANOS_PER_CENT).unwrap_or(i64::MAX);
         if include_request_fee {

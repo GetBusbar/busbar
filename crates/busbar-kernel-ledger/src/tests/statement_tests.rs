@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::cost::{Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass, RateCard};
+use crate::cost::{Author, CardEntryDraft, History, HistorySeq, LaneClass, RateCard};
 use busbar_contract::caps::MeterClassId;
 
 use crate::identity::residual;
@@ -97,7 +97,6 @@ fn line(node_seq: u64, arrived_ms: u64, archive: &SealedHistory) -> Posting {
         fee_count: 1,
         tier_bp: TIER_BP,
         arrived_ms,
-        currency: CurrencyCode::USD,
         cached: DerivedPrice::default(),
         origin: PostingOrigin::Client,
     };
@@ -128,7 +127,7 @@ fn a_statement_re_derives_from_the_quantities_and_never_sums_a_cached_price() {
     let view = archive.view_at(head).unwrap();
     let mut lines = book(&archive);
 
-    let honest = totals_as_of(&view, WINDOW, CurrencyCode::USD, lines.iter());
+    let honest = totals_as_of(&view, WINDOW, lines.iter());
     assert!(
         honest.total_nanos() > 0,
         "a statement of nothing would agree with an unimplemented lookup"
@@ -138,7 +137,7 @@ fn a_statement_re_derives_from_the_quantities_and_never_sums_a_cached_price() {
         line.cached.priced_nanos = 999_999_999;
         line.cached.pre_tier_nanos = -1;
     }
-    let over_a_corrupted_book = totals_as_of(&view, WINDOW, CurrencyCode::USD, lines.iter());
+    let over_a_corrupted_book = totals_as_of(&view, WINDOW, lines.iter());
     assert_eq!(
         honest, over_a_corrupted_book,
         "the read path must not be able to see a cache at all"
@@ -154,13 +153,11 @@ fn a_statement_is_cut_as_of_a_snapshot_and_two_snapshots_differ_by_the_lines_the
     let before = totals_as_of(
         &archive.view_at(HistorySeq::OPENING).unwrap(),
         WINDOW,
-        CurrencyCode::USD,
         lines.iter(),
     );
     let after = totals_as_of(
         &archive.view_at(archive.head().unwrap()).unwrap(),
         WINDOW,
-        CurrencyCode::USD,
         lines.iter(),
     );
 
@@ -182,7 +179,6 @@ fn a_statement_is_cut_as_of_a_snapshot_and_two_snapshots_differ_by_the_lines_the
     let again = totals_as_of(
         &archive.view_at(HistorySeq::OPENING).unwrap(),
         WINDOW,
-        CurrencyCode::USD,
         lines.iter(),
     );
     assert_eq!(before, again);
@@ -205,7 +201,7 @@ fn a_statement_lists_the_lines_it_could_not_price_rather_than_counting_them_as_z
     let view = archive.view_at(archive.head().unwrap()).unwrap();
     let lines = book(&archive_of(opening()));
 
-    let statement = totals_as_of(&view, WINDOW, CurrencyCode::USD, lines.iter());
+    let statement = totals_as_of(&view, WINDOW, lines.iter());
     assert_eq!(statement.unpriceable.len(), 1);
     assert_eq!(
         statement.unpriceable[0].why,
@@ -218,21 +214,35 @@ fn a_statement_lists_the_lines_it_could_not_price_rather_than_counting_them_as_z
     );
 }
 
+/// **A STATEMENT NAMES ONE WINDOW AND NEVER SUMS TWO.**
+///
+/// This is what remains of the guard that used to filter on window AND currency. #66 removed the
+/// currency half — money is unitless, so there is no denomination a line could belong to and
+/// therefore nothing to segregate by — and the window half is the whole of it now. A line from
+/// another window belongs on another statement; counting it here would put yesterday's traffic on
+/// today's bill.
 #[test]
-fn a_statement_names_one_currency_and_never_sums_two() {
+fn a_statement_names_one_window_and_never_sums_two() {
     let archive = archive_of(opening());
     let view = archive.view_at(archive.head().unwrap()).unwrap();
-    let yen = CurrencyCode::new("JPY").expect("JPY is three upper-case letters");
     let mut lines = book(&archive);
-    lines[1].currency = yen;
+    lines[1].window_start = WINDOW + 86_400;
 
-    let usd = totals_as_of(&view, WINDOW, CurrencyCode::USD, lines.iter());
+    let statement = totals_as_of(&view, WINDOW, lines.iter());
     assert_eq!(
-        usd.row(&key("b")).lines,
+        statement.row(&key("b")).lines,
         1,
-        "a line denominated in another currency belongs on another statement, not in this sum"
+        "a line in another window belongs on another statement, not in this sum"
     );
-    assert_eq!(usd.currency, CurrencyCode::USD);
+    assert_eq!(statement.window, WINDOW);
+    // And the statement cut over the OTHER window carries exactly the other line.
+    let next = totals_as_of(&view, WINDOW + 86_400, lines.iter());
+    assert_eq!(next.row(&key("b")).lines, 1);
+    assert_ne!(
+        statement.row(&key("b")).priced_nanos,
+        0,
+        "both statements are real figures, not two empty ones agreeing"
+    );
 }
 
 #[test]
@@ -248,7 +258,6 @@ fn an_amendment_emits_one_adjusting_entry_per_affected_balance_and_none_for_the_
 
     assert_eq!(entry.key, key("b"));
     assert_eq!(entry.window, WINDOW);
-    assert_eq!(entry.currency, CurrencyCode::USD);
     assert_eq!(entry.from_seq, HistorySeq::OPENING);
     assert_eq!(entry.to_seq, HistorySeq(1));
     assert_eq!(entry.old_card_seq, HistorySeq::OPENING);

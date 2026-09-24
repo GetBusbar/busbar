@@ -95,18 +95,26 @@ fn refs(v: &[String]) -> Vec<&str> {
     v.iter().map(String::as_str).collect()
 }
 
-fn kind_crates(cx: &Ctx, kinds: &[String]) -> Vec<String> {
-    let Ok(cfg) = ConstructionGate::cfg(cx) else {
-        return Vec::new();
-    };
-    let mut out: Vec<String> = kinds
-        .iter()
-        .flat_map(|k| dirs_for_globs(cx, &cfg.kind_globs(k)))
-        .map(|d| crate_name_of_dir(&d))
-        .collect();
+/// The crates of these kinds, or a refusal naming the kind key that does not resolve.
+///
+/// THE ERROR IS THE POINT. This used to swallow both failures — an unparseable ceilings file and
+/// an unknown kind key — into an empty list, and an empty list here plants NOTHING, covers NO row
+/// ids, and leaves the case claiming a proof it never ran. That is how the `pure_auth`/`egress_auth`
+/// spellings survived: the self-test asked for two kinds that do not exist, planted a kernel
+/// dependency into no crate at all, and reported the plugin-kind case green.
+fn kind_crates(cx: &Ctx, kinds: &[String]) -> Result<Vec<String>, String> {
+    let cfg = ConstructionGate::cfg(cx)?;
+    let mut out: Vec<String> = Vec::new();
+    for k in kinds {
+        out.extend(
+            dirs_for_globs(cx, &cfg.kind_globs(k)?)
+                .iter()
+                .map(|d| crate_name_of_dir(d)),
+        );
+    }
     out.sort();
     out.dedup();
-    out
+    Ok(out)
 }
 
 fn strings(items: &[&str]) -> Vec<String> {
@@ -269,20 +277,69 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a>
         "pub fn planted_forged_token() {\n    let _ = UnitToken::mint(seal);\n    let _ = \
          KernelSeal::acquire_for_kernel(x);\n    let _ = AdmitToken::mint(y);\n}\n",
     );
+    // X-178: THE KERNEL'S OTHER SEALED CONSTRUCTORS, WHICH NO ROW OF THIS GATE SCANNED AT ALL.
+    //
+    // A SECOND FILE IN THIS CASE'S OVERLAY, NOT A SECOND CASE. The budget entry for `construction`
+    // says the plants are "grouped by family so one case carries every edit a family needs", and a
+    // new case is a whole new drive of every rule over a 660k-line tree — the exact growth that
+    // entry exists to catch. These forgeries belong to the family this case already covers, so
+    // they ride in its overlay and cost one more file scan rather than one more battery.
+    //
+    // X-177 widened the TOKEN family and stopped there. A grep of qa/ and xtask/src/ returned ZERO
+    // for every symbol below, so each was a badge press reachable from any crate by writing one
+    // line. Planted together in an orphan module, all three token-sealed rows stood PASS on all six.
+    //
+    // The last line is the odd one and is here ON PURPOSE. `SecretOnce::mint(`'s home is the VERBS
+    // unit, not the kernel, so it is owned by the `secret-once-mint` sub-row rather than by the
+    // family list — and it is written in the FULLY-QUALIFIED spelling the tree actually uses
+    // (crates/busbar/src/root/units_admin/tests/units_admin.rs:851), so this also proves the
+    // path-prefixed form is reached. Covering that row here proves the DELEGATION too: six planted
+    // forgeries, five counted by `token-sealed` and the sixth by its own row, never one twice.
+    ov.set(
+        "crates/busbar-llm/src/zz_planted_sealed.rs",
+        "pub fn planted_forged_kernel_values() {\n    let _ = CallId::seal(seal, 7);\n    let _ = \
+         Origin::seal(seal, kind);\n    let _ = SessionId::mint(seal, 9);\n    let _ = \
+         IdempotencyKey::mint(seal, digest);\n    let _ = UnitEnd::seal(exit, outcome, \
+         posted);\n    let _ = busbar_contract::caps::SecretOnce::mint(admin, n, unit, \
+         target);\n}\n",
+    );
     r.push(prove_red(
         cx,
         gate,
-        "a unit token, a kernel seal and an admit-hold mint are all forged outside the kernel",
+        "a unit token, a kernel seal, an admit-hold mint, the kernel's own value constructors and \
+         the verbs unit's one-time secret placeholder are all forged outside their homes",
         &[
             "token-sealed",
             "token-sealed:kernel-seal",
             "token-sealed:admit-token-mint",
+            "token-sealed:secret-once-mint",
         ],
         ov,
+        // X-177: THIS CASE WAS ALREADY FAILING, AND WHAT IT WAS FAILING ABOUT WAS TRUE. The plant
+        // below is the exact forgery the finding reproduces, and two of the three rows it covers
+        // went PASS under it — `narrowed_got` therefore reported Green where Red was expected, so
+        // `cargo xtask gate construction --selftest` was red on the one case that holds the badge
+        // press. The case was right and the ROWS were wrong; the rows are widened now.
+        //
+        // The third string used to read "call site(s) of `AdmitToken::mint(`", which the sub-row's
+        // detail satisfied out of a HARD-CODED subject label rather than out of anything it
+        // scanned. It is now two strings against the same row: that its claim still NAMES the
+        // pre-#73 constructor, and that it reported the planted `AdmitToken::mint(` line (4) as an
+        // offender SITE — so the label can no longer be green on a symbol the scan cannot see.
         &[
             "`UnitToken::mint(` at crates/busbar-llm/src/zz_planted_token.rs",
             "call site(s) of `KernelSeal::acquire_for_kernel(`",
-            "call site(s) of `AdmitToken::mint(`",
+            "pre-#73 name `AdmitToken::mint(`",
+            "(ceiling 0): crates/busbar-llm/src/zz_planted_token.rs:4",
+            // X-178. One string per symbol, each naming the SPELLING and the SITE, so a row that
+            // goes red for some other reason cannot satisfy this case.
+            "`CallId::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:2",
+            "`Origin::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:3",
+            "`SessionId::mint(` at crates/busbar-llm/src/zz_planted_sealed.rs:4",
+            "`IdempotencyKey::mint(` at crates/busbar-llm/src/zz_planted_sealed.rs:5",
+            "`UnitEnd::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:6",
+            // The verbs-unit symbol lands on its own sub-row, which prints sites as `path:line`.
+            "(ceiling 0): crates/busbar-llm/src/zz_planted_sealed.rs:7",
         ],
     ));
 
@@ -879,16 +936,23 @@ fn rose_plants(cx: &Ctx) -> Vec<(String, String, String)> {
 /// The plugin kinds: the manifest allow-list, the source denylist and the unsafe attributes.
 fn kind_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
-    let manifest_kinds = strings(&[
-        "plane",
-        "store",
-        "pure_auth",
-        "hook",
-        "export",
-        "secret",
-        "egress_auth",
-    ]);
-    let crates = kind_crates(cx, &manifest_kinds);
+    // THE SIX KEYS `manifest_allowlist` READS, AND `auth` IS ONE OF THEM. `pure_auth` and
+    // `egress_auth` stood here, and neither is a key of `[gate.plugin_kinds]`, so this case planted
+    // a `busbar-kernel` dependency into ZERO crates for the auth kind and proved nothing about the
+    // one kind it thereby exempted. `crates/auth-admin-tokens` and `crates/auth-static-plugin` are
+    // planted into now, and their `manifest-allowlist:` rows must go RED under the plant or this
+    // case fails.
+    let manifest_kinds = strings(&["plane", "store", "auth", "hook", "export", "secret"]);
+    let crates = match kind_crates(cx, &manifest_kinds) {
+        Ok(c) => c,
+        Err(e) => {
+            r.note_infra_failure(format!(
+                "the plugin-kind scopes would not resolve, so no manifest-allowlist plant is \
+                 real: {e}"
+            ));
+            return r;
+        }
+    };
     let mut ov = on(base);
     for c in &crates {
         let rel = format!("crates/{c}/Cargo.toml");
@@ -918,7 +982,15 @@ fn kind_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a>
                 .unwrap_or_default()
         })
         .unwrap_or_default();
-    let pure = kind_crates(cx, &denylist_kinds);
+    let pure = match kind_crates(cx, &denylist_kinds) {
+        Ok(c) => c,
+        Err(e) => {
+            r.note_infra_failure(format!(
+                "the source-denylist scopes would not resolve, so no purity plant is real: {e}"
+            ));
+            return r;
+        }
+    };
     let mut ov = on(base);
     for c in &pure {
         ov.set(
@@ -948,7 +1020,17 @@ fn kind_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a>
         // BY DESIGN, and asking `prove_red` for it would fail the case for the rule working. So
         // the ratcheted crates are proven the other way round, in the green case below: the same
         // plant, the tracked rows, and the claim that tolerating them is what the ratchet is for.
-        let (held, tracked) = ConstructionGate::unsafe_split(cx, &cfg, kinds_key, missing_key);
+        let (held, tracked) = match ConstructionGate::unsafe_split(cx, &cfg, kinds_key, missing_key)
+        {
+            Ok(split) => split,
+            Err(e) => {
+                r.note_infra_failure(format!(
+                    "the `{rid}` scopes would not resolve, so no unsafe-attribute plant is \
+                     real: {e}"
+                ));
+                return r;
+            }
+        };
         let here: Vec<String> = held.iter().chain(tracked.iter()).cloned().collect();
         let mut ov = on(base);
         for c in &here {

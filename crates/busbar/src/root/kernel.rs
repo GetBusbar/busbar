@@ -95,25 +95,6 @@ pub fn new_registration() -> busbar_contract::Registration {
 // The dated card history the root prices against
 // ---------------------------------------------------------------------------------------------
 
-/// **THE CURRENCY THIS NODE'S MONEY IS IN**, named once, here.
-///
-/// A 1.5.5 deployment's configured figures carry no currency at all
-/// (`crates/busbar-core/src/config/mod.rs:1224`: "ABSTRACT cost units (no currency, no FX)") and its
-/// `/usage` labels them `USD` through a synthetic serializer. So the node reads them as a card
-/// naming exactly one currency, `USD`, whose minor unit is the cent every 1.5.5 figure was already
-/// projected through — `nanos_per_minor() == 10_000_000`, bit-identical arithmetic, not one byte of
-/// a released surface moved.
-///
-/// It is a function rather than an inlined `CurrencyCode::USD` at each call site because there are
-/// three call sites and they must never disagree: the card is BUILT in this currency, the lookup is
-/// ASKED for this currency, and the posting's cache RECORDS this currency. A second spelling is how
-/// a node comes to price a card in one currency and read it in another and report the refusal as a
-/// zero. The day a deployment declares its own, this is the one body that changes.
-#[must_use]
-pub fn node_currency() -> busbar_kernel_ledger::cost::CurrencyCode {
-    busbar_kernel_ledger::cost::CurrencyCode::USD
-}
-
 /// A HISTORY PINNED BY ONE READER: the `Arc` it took at admission, and the snapshot it took with it.
 ///
 /// The two travel together because neither is the pin on its own. The `Arc` alone would let a reader
@@ -393,17 +374,16 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 /// itself would be a second identity that can disagree with the first. This relay builds the card;
 /// appending it to the history is [`RootHistory::apply`]'s.
 ///
-/// THE CURRENCY IS THE CALLER'S, and it is passed in rather than assumed. The configured figures
-/// carry no currency of their own — a 1.5.5 deployment's rates are abstract cost units — so the
-/// currency a card is built in is a statement about the NODE, made once at [`node_currency`], and
-/// handed here. Defaulting it inside this relay would put a second answer to "what currency is this
-/// node's money in" in a file that has no business deciding, and the two answers would be free to
-/// drift.
+/// THERE IS NO DENOMINATION TO CARRY. #66 (`BUSBAR-1.6.0.md:528`, owner-locked) rules money
+/// UNITLESS: the configured figures are abstract cost units (`crates/busbar-core/src/config/mod.rs`:
+/// "ABSTRACT cost units (no currency, no FX)"), the card holds them as integers at the one scale,
+/// and what a dashboard DISPLAYS them as is the dashboard's (`docs/configuration.md:634`). This
+/// relay used to take a `currency` argument, sourced from a `node_currency()` that always answered
+/// `USD`; both are gone, and the scale is now a constant nothing can name.
 pub(crate) fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate_values::billing::RawTierRates)>,
     flat_minor: i64,
     present: bool,
-    currency: busbar_kernel_ledger::cost::CurrencyCode,
 ) -> busbar_kernel_ledger::cost::RateCard {
     // The substrate's neutral raw-rate view, lifted into the cost unit's own — four numbers copied
     // across a crate boundary, in the same canonical order, with nothing computed on the way.
@@ -423,7 +403,7 @@ pub(crate) fn card_from_config<'r>(
     // The flat figure crosses as a NEUTRAL minor-unit value; the cost unit's constructor is the one
     // that reads it AS the per-request fee (clamps it, bills it), so no plane and no root file spells
     // a fee — the read lives where the card lives.
-    busbar_kernel_ledger::cost::RateCard::from_config_in(currency, lanes, flat_minor)
+    busbar_kernel_ledger::cost::RateCard::from_config(lanes, flat_minor)
 }
 
 /// The root, answering the engine's rate-apply seam.
@@ -446,7 +426,6 @@ impl busbar_kernel::rate_apply::RateApply for CardRepricer {
                 rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
                 rates.flat_minor,
                 rates.present,
-                node_currency(),
             ),
             busbar_kernel::store::now_ms(),
         );

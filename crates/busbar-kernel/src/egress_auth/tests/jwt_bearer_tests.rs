@@ -312,3 +312,79 @@ async fn mint_rejects_a_response_body_over_the_cap() {
         "expected an error naming the size cap / truncation, got: {err}"
     );
 }
+
+/// THE PRIVATE KEY'S OWN BYTES MUST NOT REACH THE `config/validate` RESPONSE.
+///
+/// This is a PRIVILEGE BOUNDARY, not log hygiene. `validate_credential` is the config `--validate`
+/// dry-run entry point, and `config_validate` puts whatever it returns in the `errors` list that
+/// the admin `config/validate` endpoint RETURNS TO ITS CALLER. A read-scope admin is allowed to ask
+/// whether the configuration is valid; they are not allowed to be told what the service account's
+/// RSA key contains. `base64::DecodeError` answers the second question: its `Display` renders the
+/// offending byte AND its offset, and for `InvalidLastSymbol` that byte is a symbol OF THE KEY BODY
+/// — a base64 character carrying six bits of the key — not some foreign character that got mixed in.
+///
+/// Both leaking variants are driven, because they render differently — and the spelling matters,
+/// because an earlier cut of this test asserted on a DECIMAL byte value for both and so could only
+/// ever have caught one of them:
+///   * `Az==` is canonically-padded, and its final symbol's discarded bits are non-zero, so base64
+///     reports `InvalidLastSymbol { offset: 1, symbol: b'z', .. }` — whose `Display` prints the
+///     symbol as HEX **and as the character itself** (`Invalid last symbol 0x7a ('z') at offset 1,
+///     decoded as 0b00110011.`). `z` is a REAL character of the key body, printed verbatim, plus
+///     its exact offset and its decoded bits. (The unpadded `Az` this case used to carry never
+///     reached that variant at all: `STANDARD` requires canonical padding, so it failed earlier
+///     with a length/padding error that names no key byte — the case passed while leaking nothing,
+///     which is a test that proves nothing.)
+///   * `AAAA~AAA` carries a character outside the alphabet, so base64 reports
+///     `InvalidByte(4, 126)`, whose `Display` prints the DECIMAL byte value and the position
+///     within the key body (`Invalid symbol 126, offset 4.`).
+///
+/// The markers are planted and their ABSENCE is what is asserted; the test never prints a real key
+/// to fail informatively.
+#[test]
+fn validate_never_echoes_a_byte_of_the_service_account_key() {
+    // (armored body, the exact fragment of it base64's Display would have named, what that is)
+    let cases = [
+        ("Az==", "'z'", "the final symbol of the key body itself"),
+        (
+            "AAAA~AAA",
+            "126",
+            "a byte at a named offset inside the key body",
+        ),
+    ];
+    for (body, leaked_byte, what) in cases {
+        let sa = serde_json::json!({
+            "client_email": "svc@proj.iam.gserviceaccount.com",
+            "private_key": format!("-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n"),
+            "token_uri": "https://oauth2.googleapis.com/token",
+        })
+        .to_string();
+
+        // THE LIVE PATH: the same entry point `config_validate` calls, whose `Err` string is
+        // copied verbatim into the `errors` array of the `config/validate` response.
+        let e = validate_credential(&sa, &deny())
+            .expect_err("a private_key that is not base64 must be refused");
+        assert!(
+            !e.contains(leaked_byte),
+            "the response must not carry {what} ({leaked_byte}), got: {e}"
+        );
+        assert!(
+            !e.contains("Invalid symbol") && !e.contains("Invalid last symbol"),
+            "the base64 crate's byte-naming Display must not be interpolated, got: {e}"
+        );
+        // What the caller IS owed still arrives: WHICH field failed and THAT it failed to decode,
+        // so a malformed key is still distinguishable from a missing one.
+        assert!(
+            e.contains("private_key") && e.contains("base64"),
+            "the failing field and the failure must still be named, got: {e}"
+        );
+    }
+
+    // The private helper underneath it, same discipline, so a future caller that reaches
+    // `pem_to_pkcs8_der` by another route inherits the redaction rather than re-introducing it.
+    let e = pem_to_pkcs8_der("-----BEGIN PRIVATE KEY-----\nAz\n-----END PRIVATE KEY-----\n")
+        .expect_err("`Az` is not decodable base64");
+    assert!(
+        !e.contains("122"),
+        "the helper must not name a byte of the key either, got: {e}"
+    );
+}

@@ -6,7 +6,6 @@
 use super::*;
 // The `Transport` surface, its meta and its claim forms moved to the kind's own `transport.rs`,
 // `meta.rs` and `claims.rs` (`PLUGIN-TREE.md` §3), so `use super::*` no longer carries them.
-use busbar_contract::plugin::KernelSeal;
 use busbar_contract::transport::wire::{CloseReason, Listener};
 use busbar_contract::ConfigView;
 use busbar_contract::{
@@ -22,12 +21,7 @@ use tokio_rustls::TlsConnector;
 /// New file per the mutation-hardening pass on this crate: `src/tests/mutation_hardening.rs`.
 mod mutation_hardening;
 
-struct FixtureSeal;
-impl KernelSeal for FixtureSeal {
-    fn seal_origin(&self) -> &'static str {
-        "busbar-transport-tls test fixture"
-    }
-}
+use busbar_contract::plugin::TestKernelSeal as FixtureSeal;
 
 fn fixture_key(slot: u64) -> TransportKeyHandle {
     TransportKeyHandle::issue(&FixtureSeal, slot, "test")

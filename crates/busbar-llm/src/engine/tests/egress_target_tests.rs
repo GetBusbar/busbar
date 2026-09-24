@@ -16,7 +16,7 @@ use crate::test_support::{LaneSpec, TestApp};
 
 /// For one built lane, prove every table entry equals the reference composition, and that the
 /// table covers chat for both stream intents (the hot path's keys).
-fn assert_table_matches_reference<A: busbar_kernel::testkit::BuiltAppSeam + ?Sized>(
+fn assert_table_matches_reference<A: busbar_kernel::test_support::BuiltAppSeam + ?Sized>(
     app: &std::sync::Arc<A>,
     lane_idx: usize,
 ) {

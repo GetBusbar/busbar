@@ -4,7 +4,7 @@
 
 use super::{connect_reply, AdminReply, AdminReqCtx, PlaneTrust, PlaneVerbError};
 use crate::plane_host::EngineHost;
-use crate::testkit::fixture_host::FixtureHost;
+use crate::test_support::TestApp;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -43,7 +43,12 @@ impl PlaneTrust for NanPlane {
 /// record of a look that succeeded whose answer nobody ever saw.
 #[tokio::test]
 async fn a_view_that_will_not_serialize_is_not_answered_as_applied() {
-    let host: Arc<dyn EngineHost> = Arc::new(FixtureHost::new());
+    // The host is core's OWN fixture App, minted through the production seam: `NanPlane` never dials
+    // it (both `resolve` and `look` ignore the host), so this is a carrier for the `AdminReqCtx`
+    // field and nothing else. It used to be the plane test-kit's in-memory double, which has moved
+    // OUT of core to the one plane that drives it (1.6.0 #33: the kernel tests no plugin).
+    let app = TestApp::new().build();
+    let host: Arc<dyn EngineHost> = crate::plane_host::engine_host(&app);
     let ctx = AdminReqCtx {
         host,
         name: "anything".to_string(),

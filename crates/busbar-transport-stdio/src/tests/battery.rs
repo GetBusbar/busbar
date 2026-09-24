@@ -504,12 +504,7 @@ async fn transport_meta_matches_the_architecture_row() {
 }
 
 fn test_key_handle() -> busbar_contract::TransportKeyHandle {
-    struct Seal;
-    impl busbar_contract::plugin::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "test"
-        }
-    }
+    use busbar_contract::plugin::TestKernelSeal as Seal;
     busbar_contract::TransportKeyHandle::issue(&Seal, 0, "test")
 }
 
@@ -582,12 +577,7 @@ fn program_dest(
     args: &[&'static str],
     env: &'static [(&'static str, &'static str)],
 ) -> busbar_contract::VerifiedDestination {
-    struct Seal;
-    impl busbar_contract::plugin::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "test"
-        }
-    }
+    use busbar_contract::plugin::TestKernelSeal as Seal;
     let mut argv: Vec<&'static str> = args.to_vec();
     argv.push("argzero");
     let argv: &'static [&'static str] = Box::leak(argv.into_boxed_slice());

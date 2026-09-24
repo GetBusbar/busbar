@@ -288,6 +288,23 @@ fn read_credential(credential: &str) -> Result<String, String> {
 }
 
 /// Strip the PEM armor from a PKCS#8 private key and base64-decode the body to DER.
+///
+/// The decode failure is reported by CLASS, never by `base64::DecodeError`'s own `Display`. That
+/// `Display` names a byte OF THE KEY BODY: `InvalidByte` prints the decimal byte value and its
+/// offset (`Invalid symbol 126, offset 4.`), and `InvalidLastSymbol` is worse still — it prints the
+/// symbol as hex AND as the character itself AND its decoded bits (`Invalid last symbol 0x7a ('z')
+/// at offset 1, decoded as 0b00110011.`), and for that variant the symbol is a VALID base64
+/// character, i.e. six bits of the operator's RSA private key, not a foreign character that got
+/// mixed in. This error is not swallowed: [`validate_credential`] is the config `--validate` entry
+/// point and `config_validate` copies its string verbatim into the `errors` array that the admin
+/// `config/validate` endpoint returns — a READ-SCOPE caller. Read scope may ask whether the
+/// configuration is valid; it may not be told what the key contains. That is a privilege boundary,
+/// not log hygiene, so the byte and the offset are withheld here.
+///
+/// The diagnosis is not deleted with them. Which field failed (`private_key`), that it failed to
+/// base64-decode, and WHICH KIND of malformation it was all survive — enough for an operator to
+/// tell a truncated key from a re-wrapped one from a missing one, which is every repair they would
+/// make. Only the key's own bytes go.
 fn pem_to_pkcs8_der(pem: &str) -> Result<Vec<u8>, String> {
     let body: String = pem
         .lines()
@@ -300,7 +317,32 @@ fn pem_to_pkcs8_der(pem: &str) -> Result<Vec<u8>, String> {
     }
     base64::engine::general_purpose::STANDARD
         .decode(body.as_bytes())
-        .map_err(|e| format!("service-account private_key base64 is invalid: {e}"))
+        .map_err(|e| {
+            // The CLASS of malformation, spelled here rather than taken from `e`'s Display — see
+            // this fn's docs. Matched exhaustively and with no `_` arm on purpose: `DecodeError` is
+            // not `#[non_exhaustive]`, so a new variant in a base64 upgrade must fail the build and
+            // be classified by hand, rather than fall through a catch-all that might reinstate the
+            // leak by printing it.
+            let why = match e {
+                base64::DecodeError::InvalidByte(..) => {
+                    "it contains a character outside the base64 alphabet (a stray line-ending, \
+                     whitespace inside the body, or a URL-safe `-`/`_` where `+`/`/` belong)"
+                }
+                base64::DecodeError::InvalidLength(..) => {
+                    "its final base64 group is short — the key body looks truncated"
+                }
+                base64::DecodeError::InvalidLastSymbol { .. } => {
+                    "its final base64 symbol carries bits that decoding would discard — the key \
+                     body looks corrupted or truncated mid-group"
+                }
+                base64::DecodeError::InvalidPadding => "its `=` padding is absent or malformed",
+            };
+            format!(
+                "service-account private_key base64 is invalid: {why}. (The offending byte and its \
+                 offset are withheld deliberately: they are key material, and this message is \
+                 returned to read-scope callers of config/validate.)"
+            )
+        })
 }
 
 fn b64url(bytes: &[u8]) -> String {

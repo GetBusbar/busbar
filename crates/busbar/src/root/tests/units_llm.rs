@@ -747,7 +747,6 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
             )],
             0,
             true,
-            crate::root::kernel::node_currency(),
         );
         history.append(busbar_kernel_ledger::cost::CardEntryDraft {
             effective_from: if n == 0 { 0 } else { *from },
@@ -833,7 +832,6 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
             )],
             0,
             true,
-            crate::root::kernel::node_currency(),
         ),
         1_000,
     );
@@ -855,7 +853,6 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
             )],
             0,
             true,
-            crate::root::kernel::node_currency(),
         ),
         2_000,
     );
@@ -907,7 +904,7 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
 /// **THE CACHE IS WRITTEN AND IS NEVER AUTHORITATIVE.**
 ///
 /// The posting the pricing builds carries a cache — the head it settled at, the entry it
-/// resolved to, the currency and both figures — so a reader has something to compare a
+/// resolved to, and both figures — so a reader has something to compare a
 /// re-derivation against. Corrupt every one of those figures and ask again: the answer is
 /// unchanged, because the lookup does not read them. A node that fell back to the cache would
 /// answer the corrupted number and call it money.
@@ -926,7 +923,7 @@ fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
     assert_eq!(cached.priced_nanos, priced.priced_nanos);
     assert_eq!(cached.card_seq, priced.card_seq);
     assert_eq!(cached.history_seq, history.seq());
-    assert_eq!(cached.currency, crate::root::kernel::node_currency());
+    assert_eq!(cached.pre_tier_nanos, priced.pre_tier_nanos);
     assert_eq!(
         posting.arrived_ms, 4_000,
         "the posting kept its own instant"
@@ -937,13 +934,12 @@ fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
     posting.cached = Some(busbar_kernel_ledger::cost::CachedPrice {
         history_seq: busbar_kernel_ledger::cost::HistorySeq(u64::MAX),
         card_seq: busbar_kernel_ledger::cost::HistorySeq(u64::MAX),
-        currency: crate::root::kernel::node_currency(),
         pre_tier_nanos: 1,
         priced_nanos: 1,
     });
     assert_eq!(
         posting
-            .priced_nanos(&history.view(), crate::root::kernel::node_currency())
+            .priced_nanos(&history.view())
             .expect("the lookup still answers"),
         priced.priced_nanos,
         "the money moved when the cache was corrupted, so the cache was on the money path"

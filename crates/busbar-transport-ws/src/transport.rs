@@ -892,12 +892,5 @@ impl Drop for PoisonGuard<'_> {
 /// The WebSocket handshake needs no key material of its own: whatever secured the bytes was
 /// resolved by the layer underneath, at its own `listen`, through the transport-key unit. A handle
 /// naming no slot is the honest way to say that rather than passing one this layer never reads.
-static NO_KEYS: std::sync::LazyLock<TransportKeyHandle> = std::sync::LazyLock::new(|| {
-    struct NoKeySeal;
-    impl busbar_contract::plugin::KernelSeal for NoKeySeal {
-        fn seal_origin(&self) -> &'static str {
-            "busbar-transport-ws: an upgrade reads no key of its own"
-        }
-    }
-    TransportKeyHandle::issue(&NoKeySeal, 0, "none")
-});
+static NO_KEYS: std::sync::LazyLock<TransportKeyHandle> =
+    std::sync::LazyLock::new(TransportKeyHandle::keyless);

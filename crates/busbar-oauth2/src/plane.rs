@@ -164,7 +164,7 @@ impl AsPlane {
                 // `oauth-as` refuses every signed credential when no verifier is installed, and the
                 // day `dpop` or `client-assertion` is switched on, a MISSING verifier would be a
                 // silent refusal of every conforming client rather than a build error.
-                .with_es256_verifier(Arc::new(RingEs256Verifier))
+                .with_jws_verifier(Arc::new(RingEs256Verifier))
                 .with_registration_policy(Box::new(super::policy::OpenRegistration)),
         );
 

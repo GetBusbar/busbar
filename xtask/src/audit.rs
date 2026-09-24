@@ -134,6 +134,7 @@ pub const UNCOVERED_BY_DESIGN: &[(&str, &str)] = &[
         "crates/*/Cargo.lock",
         "resolved lockfile -- governed by the build gates, not a code audit",
     ),
+    // qa-names: crates/*/fixtures/** -- xtask/src/audit.rs -- an EXCLUSION matching nothing excludes nothing, so it is rot and not blindness; no crate has a fixtures/ dir at its root any more (the surviving ones are nested under src/), and striking the row regenerates the committed register copy, which is a separate reviewed act
     (
         "crates/*/fixtures/**",
         "fixture inputs a crate's own gate reads; not shipped code",
@@ -602,6 +603,27 @@ pub fn derive_scopes(root: &Path) -> Vec<Json> {
     prod.extend(tests);
     prod.extend(inst);
     prod
+}
+
+/// The scope PATHS that own no tracked file at all.
+///
+/// A scope is an ADDRESS plus a claim about what was read there, and the address has to resolve. A
+/// path that owns zero tracked files contributes zero files to the register's coverage, and then
+/// every rule the register carries answers about it in the affirmative — because zero is the
+/// passing answer to every question, not only to every ban. Twenty-four of this register's hundred
+/// and seventy scope paths were such phantoms when this rule landed, most of them crates that the
+/// 57 → 35 fold has since merged away, and the register reported GREEN across all of them: audited,
+/// clean, round 8, with a tree hash over nothing.
+///
+/// It is deliberately NOT an auto-fix. Some of these are renames whose real target is still in the
+/// tree under a new name, and re-pointing one is a judgement about whether the audit that was taken
+/// still applies to the code that moved — which is a human's call, made in a diff that says so.
+/// What this does is stop the register from claiming they are fine in the meantime.
+pub fn phantom_paths(sc: &Json, all: &BTreeMap<String, String>) -> Vec<String> {
+    str_list(sc.get("paths"))
+        .into_iter()
+        .filter(|x| !all.keys().any(|p| under(p, x)))
+        .collect()
 }
 
 fn under(path: &str, prefix: &str) -> bool {

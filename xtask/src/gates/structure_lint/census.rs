@@ -74,15 +74,37 @@ pub fn table(a: &Addresses) -> Vec<CensusRow> {
     let mut refusal_scope = tree_and_substrate.clone();
     refusal_scope.push("crates/busbar-contract/src/".to_string());
 
+    // THE TWO `_meta` KEYS RODE FOLD #39 OUT OF THE SCAN. `5fbd891e0` dissolved `busbar-mcp-codec`
+    // — "the dialect to the plane, the registry row to the engine" — and both key constants landed
+    // in `crates/busbar-plane-mcp/src/codec.rs:116,125`, one definition each, exactly as before.
+    // What did not move is `roots::proto_root_of`, which knows four crate shapes (`busbar-llm`,
+    // `busbar-mcp`, `busbar-*-codec`, `busbar-proto-*`) and not the one the fold created, so the
+    // dialect's new home is under no scan prefix this gate has. Both rows therefore counted ZERO
+    // and `census:subject` said so — correctly, and about the ROW rather than about the tree.
+    //
+    // So the rows are re-pointed at where their subject now lives, which is this invariant's own
+    // stated remedy ("you re-point the row, you do not go looking for a duplicate that is not
+    // there") and the same move `refusal_scope` above makes for the audit vocabulary. The ASSERTION
+    // is untouched and is strictly stronger than it was: still exactly one spelling, now measured
+    // somewhere that has one.
+    //
+    // SCOPED TO THESE TWO ROWS, NOT TO `tree()`, ON PURPOSE. Widening the protocol-crate derivation
+    // would also pull `crates/busbar-plane-mcp/src/plane.rs:62`'s `FIELD_PROTOCOL_VERSION: &str =
+    // "mcp-protocol-version"` into the scan beside `busbar-mcp`'s `H_PROTOCOL_VERSION` — a SECOND
+    // spelling of a wire word, which is a real finding this narrower repoint deliberately does not
+    // pretend to have settled. It is reported, not absorbed.
+    let mut mcp_dialect_scope = tree.clone();
+    mcp_dialect_scope.push("crates/busbar-plane-mcp/src/".to_string());
+
     vec![
         // ── The five shared MCP wire words. One definition each; the outbound client imports them.
         //    A second occurrence is a second copy that can drift silently in the one direction no
         //    single-sided test can see — busbar refusing a request busbar sent. Zero occurrences
         //    means the word left the tree, which for a protocol constant is a rebuild that quietly
         //    stopped speaking the protocol.
-        r("wire-word-meta-protocol-version", "WIRE-WORD-RESPELT", r#""io\.modelcontextprotocol/protocolVersion""#, 1, tree.clone(),
+        r("wire-word-meta-protocol-version", "WIRE-WORD-RESPELT", r#""io\.modelcontextprotocol/protocolVersion""#, 1, mcp_dialect_scope.clone(),
           "the `_meta` protocol-version key must have exactly one spelling in the tree: the ingress REQUIRES it and the client EMITS it, and two copies disagree in the direction where each side is internally consistent with itself"),
-        r("wire-word-meta-client-capabilities", "WIRE-WORD-RESPELT", r#""io\.modelcontextprotocol/clientCapabilities""#, 1, tree.clone(),
+        r("wire-word-meta-client-capabilities", "WIRE-WORD-RESPELT", r#""io\.modelcontextprotocol/clientCapabilities""#, 1, mcp_dialect_scope.clone(),
           "the `_meta` client-capabilities key is REQUIRED on the way in and written on the way out; a second copy is a request busbar would send and then refuse"),
         r("wire-word-header-protocol-version", "WIRE-WORD-RESPELT", r#""mcp-protocol-version""#, 1, tree.clone(),
           "the protocol-version header name is read by the ingress and written by the client from one constant; a second literal is the drift the deleted symmetry test existed to catch"),

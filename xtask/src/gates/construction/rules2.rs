@@ -46,8 +46,8 @@ fn scoped_files(tree: &Tree, globs: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn kind_crate_dirs(cx: &Ctx, cfg: &Cfg, kind: &str) -> Vec<String> {
-    dirs_for_globs(cx, &cfg.kind_globs(kind))
+fn kind_crate_dirs(cx: &Ctx, cfg: &Cfg, kind: &str) -> Result<Vec<String>, String> {
+    Ok(dirs_for_globs(cx, &cfg.kind_globs(kind)?))
 }
 
 // ── 14. loc-ceilings ─────────────────────────────────────────────────────────────────────────────
@@ -304,15 +304,14 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
 
 pub fn manifest_allowlist(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("manifest-allowlist")?;
-    let kinds = [
-        "plane",
-        "store",
-        "pure_auth",
-        "hook",
-        "export",
-        "secret",
-        "egress_auth",
-    ];
+    // THE KEYS OF `[gate.plugin_kinds]`, SPELLED THE WAY THAT FILE SPELLS THEM. `pure_auth` and
+    // `egress_auth` stood here until 2026-09-22 and neither is a key: DECISIONS #3 collapsed the
+    // split into ONE `auth` kind, because direction is a property of the leg — this transport,
+    // this auth, this direction — and never a kind. Both stale spellings resolved to zero crates,
+    // so `crates/auth-admin-tokens` and `crates/auth-static-plugin` were scanned by nothing and
+    // this rule printed twelve green rows where fourteen were owed. `Cfg::kind_globs` now refuses
+    // a key the config does not declare, so the next such typo is a RED instead of a silence.
+    let kinds = ["plane", "store", "auth", "hook", "export", "secret"];
     let unit_names: BTreeSet<String> = match cfg.rule("loc-ceilings") {
         Ok(lc) => dirs_for_globs(
             cx,
@@ -328,11 +327,11 @@ pub fn manifest_allowlist(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>,
     };
     let mut plane_names: BTreeSet<String> = cfg.plane_crates()?.into_iter().collect();
     plane_names.extend(
-        kind_crate_dirs(cx, cfg, "plane")
+        kind_crate_dirs(cx, cfg, "plane")?
             .iter()
             .map(|d| crate_name_of_dir(d)),
     );
-    let transport_names: BTreeSet<String> = kind_crate_dirs(cx, cfg, "transport")
+    let transport_names: BTreeSet<String> = kind_crate_dirs(cx, cfg, "transport")?
         .iter()
         .map(|d| crate_name_of_dir(d))
         .collect();
@@ -350,7 +349,7 @@ pub fn manifest_allowlist(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>,
     let mut rows = Vec::new();
     let mut seen_dirs: Vec<(&str, String)> = Vec::new();
     for kind in kinds {
-        for d in kind_crate_dirs(cx, cfg, kind) {
+        for d in kind_crate_dirs(cx, cfg, kind)? {
             seen_dirs.push((kind, d));
         }
     }
@@ -455,7 +454,7 @@ pub fn source_denylist(
     let mut rows = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     for kind in c.list_of("kinds") {
-        for d in kind_crate_dirs(cx, cfg, &kind) {
+        for d in kind_crate_dirs(cx, cfg, &kind)? {
             seen.push((kind.clone(), d));
         }
     }
@@ -1037,7 +1036,7 @@ pub fn forbid_unsafe(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Stri
         let known_missing = c.list_of(missing_key);
         let mut seen = Vec::new();
         for kind in c.list_of(kinds_key) {
-            seen.extend(kind_crate_dirs(cx, cfg, &kind));
+            seen.extend(kind_crate_dirs(cx, cfg, &kind)?);
         }
         let mut out = Vec::new();
         for d in seen {
@@ -1609,16 +1608,76 @@ pub fn one_pricing_site(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             Vec::new(),
         ));
     } else {
-        let readers: Vec<String> = all_hits
+        // THE REVIEWED FEE HOMES, and why this half has them at all. The entry-verb half above is
+        // scoped by PATH (`[rules.one-pricing-site.allowed.*]`), and one of its homes is
+        // `crates/busbar/src/root/` — "the composition root's meter and admission wiring". This
+        // half was scoped by CRATE only, so the same rule said two different things about the same
+        // root in the same breath. A crate list cannot express "this one reviewed file", and the
+        // only widening it can offer is the whole `busbar` crate, which would bless `main.rs` and
+        // every `units_*.rs` in one unargued stroke. So the grant is per PATH, with a COUNT, and
+        // both halves of it bite: a read above `max` at a home is reported exactly like a read with
+        // no home at all, and a home whose count falls to ZERO is reported too, because a grant
+        // that describes nothing is the dead name this file has already been bitten by five times
+        // — it stops applying in silence, and the next real read at that path inherits a waiver
+        // nobody reviewed.
+        let fee_homes: Vec<(String, String, i64)> = cfg
+            .doc
+            .children("rules.one-pricing-site.fee_allowed")
             .into_iter()
-            .filter(|(rel, _)| !fee_crates.contains(&tree.crate_of(rel)))
-            .map(|(rel, l)| format!("{rel}:{}", l.no))
+            .map(|(k, t)| {
+                (
+                    k,
+                    t.str_of("path").unwrap_or("").to_string(),
+                    t.int_of("max").unwrap_or(0),
+                )
+            })
             .collect();
+        let mut seen_at_home: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut readers: Vec<String> = Vec::new();
+        for (rel, l) in all_hits {
+            if fee_crates.contains(&tree.crate_of(rel)) {
+                continue;
+            }
+            let site = format!("{rel}:{}", l.no);
+            match fee_homes
+                .iter()
+                .find(|(_, p, _)| !p.is_empty() && (rel == *p || rel.starts_with(&format!("{p}/"))))
+            {
+                Some((key, _, _)) => seen_at_home.entry(key.clone()).or_default().push(site),
+                None => readers.push(site),
+            }
+        }
+        let mut homes_detail: Vec<String> = Vec::new();
+        for (key, _, max) in &fee_homes {
+            let at = seen_at_home.get(key).cloned().unwrap_or_default();
+            homes_detail.push(format!("{key} {}/{max}", at.len()));
+            if at.is_empty() {
+                readers.push(format!(
+                    "[rules.one-pricing-site.fee_allowed.{key}] grants a reviewed fee home that \
+                     reads no fee on this tree — a dead grant, to be deleted or repointed"
+                ));
+            }
+            // Over the reviewed count, the SURPLUS is named. Which of the reads is the new one is
+            // not knowable from a count, so the whole home is named once rather than an arbitrary
+            // tail of it being blamed.
+            if at.len() as i64 > *max {
+                readers.push(format!(
+                    "{key}: {} read(s) where {max} were reviewed ({})",
+                    at.len(),
+                    at.join(", ")
+                ));
+            }
+        }
         let detail = format!(
-            "{} production read(s) of {} outside {} (ceiling {max_fee}): {}",
+            "{} production read(s) of {} outside {} (ceiling {max_fee}){}: {}",
             readers.len(),
             py_list(&fee_fields),
             py_list(&sorted_crates),
+            if homes_detail.is_empty() {
+                String::new()
+            } else {
+                format!(" and the reviewed fee homes [{}]", homes_detail.join(", "))
+            },
             join_or_none(&readers)
         );
         rows.push(plain(

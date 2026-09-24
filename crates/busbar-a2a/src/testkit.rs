@@ -6,7 +6,7 @@
 //!
 //! Before the plane split, `TestApp` in busbar-core built the A2A plane runtime itself (naming
 //! `crate::a2a::*` back INTO core through the `#[path]` dual-compile). Now the `agents:` builder
-//! methods live here as an extension trait over the neutral `busbar_kernel::testkit::TestAppSeam`
+//! methods live here as an extension trait over the neutral `busbar_kernel::test_support::TestAppSeam`
 //! (which core implements for its `TestApp`), and they lower to the real, externally-linked
 //! `busbar-a2a` crate through core's neutral install seams
 //! (`install_plane_runtime`, `mount_plane`/`admit_plane`, `set_container_hooks`,
@@ -14,7 +14,7 @@
 
 use crate::a2a::config::{AgentDefCfg, AgentsCfg};
 use crate::a2a::plane::A2aPlane;
-use busbar_kernel::testkit::{TestAppSeam, TestAppSeamExt};
+use busbar_kernel::test_support::{TestAppSeam, TestAppSeamExt};
 use std::sync::Arc;
 
 // The self-enveloping admin-verb backing (core's `CorePlaneAdminEnvelope`) — bound plane-side so the

@@ -558,7 +558,7 @@ fn lanes(n: usize) -> Vec<WeightedLane> {
         .collect()
 }
 
-async fn fire<A: busbar_kernel::testkit::BuiltAppSeam>(app: Arc<A>, n_lanes: usize) -> Response {
+async fn fire<A: busbar_kernel::test_support::BuiltAppSeam>(app: Arc<A>, n_lanes: usize) -> Response {
     forward_with_pool(
         &app,
         lanes(n_lanes),
@@ -711,7 +711,7 @@ async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
         .pool("p", &[(0, 1)])
         .build();
     Arc::get_mut(&mut app).expect("sole owner").groups_registry = tree;
-    let host = busbar_kernel::testkit::engine_host_value(&app);
+    let host = busbar_kernel::test_support::engine_host_value(&app);
 
     let shape = busbar_kernel::proxy::proxy_vocab::StageShape::zeroed(
         1,
@@ -801,7 +801,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
     Arc::get_mut(&mut app)
         .expect("sole owner")
         .tap_hooks_response = vec![tap];
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let serve = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -839,7 +839,7 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
     Arc::get_mut(&mut app)
         .expect("sole owner")
         .tap_hooks_response = vec![tap];
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let serve = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1663,7 +1663,7 @@ async fn max_tokens_saturates_not_wraps() {
 async fn send_user_projects_governance_key_identity() {
     crate::testkit::install_test_seams();
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -1840,7 +1840,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
 async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     crate::testkit::install_test_seams();
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
     let store = std::sync::Arc::new(MemoryStore::new());
     let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
@@ -2386,7 +2386,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RequestIdSpanCaptu
 fn ensure_forward_span_interest_is_forced_on() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        drop(busbar_kernel::testkit::warn_capture::WarnCapture::default());
+        drop(busbar_substrate_values::testkit::warn_capture::WarnCapture::default());
     });
 }
 

@@ -58,3 +58,10 @@ serde_json = { workspace = true }
 [features]
 dispatch = []
 runtime = []
+
+# The TEST-ONLY seal (#65). `plugin::TestKernelSeal` is the one implementor of the now-SEALED
+# `plugin::KernelSeal` that exists for fixtures rather than for the kernel, and it exists at all
+# because a PLANE crate may not name `caps` (section 1.2) and so cannot mint a real token for its
+# own harness. OFF by default and named only in `[dev-dependencies]`: no non-dev dependency edge in
+# this workspace enables it, so the type is absent from every release build.
+test-seal = []

@@ -3,7 +3,7 @@
 
 //! THE DOCUMENT CHECKS, adversarially. The flow test proves a GOOD document admits a client end
 //! to end; every test here is a document that must NOT, each aimed at the specific escalation its
-//! member exists to close. These are busbar's own checks (the tree pins `oauth-as` 0.9.3, which
+//! member exists to close. These are busbar's own checks (the tree pins `oauth-as` 1.0.0, which
 //! ships a CIMD validator behind an off-by-default `cimd` feature this tree does not enable —
 //! see the TODO in [`super`]), so they are the whole of the enforcement today and must each be
 //! held red-able on their own.

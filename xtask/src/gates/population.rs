@@ -65,8 +65,29 @@ impl Population {
 /// The test scaffolding a source scan is not making claims about, by path.
 const TEST_DIRS: [&str; 2] = ["/tests/", "/test_support/"];
 
+/// THE BARE STEM IS THE SAME SPELLING WITHOUT THE UNDERSCORE, and leaving it out let test code
+/// into three gates' idea of "the tree".
+///
+/// `#[cfg(test)] mod tests;` beside a `lib.rs` or a `mod.rs` puts the module in `tests.rs`. That
+/// file ends with `/tests.rs`, not `_tests.rs`, so it matched neither suffix and sat in no `/tests/`
+/// directory either — TWELVE files, in nine crates, scanned by `settings-leak`, `response-header`
+/// and `blocking-ffi` as production source. It is not a hypothetical: `busbar-core-connsec`'s TLS
+/// battery used to be `crates/busbar-kernel/src/tests/tls_tests.rs` — excluded twice over — and the
+/// #40 connection-security extraction (029230dd7) rewrote it as `src/tests.rs`, at which point
+/// `blocking-ffi:no-inline-ffi` went red naming `build_server_config(&tls, &resolver)` inside a
+/// `#[tokio::test] async fn`. The rule is right and the finding was never about production code:
+/// the scan set had quietly grown a test file.
+///
+/// NOT A LOOSENING, and measured: 762 -> 750 non-test files against a floor of 700, and every one of
+/// the twelve is an out-of-line `#[cfg(test)] mod tests;` — code that does not exist in a release
+/// build, checked one file at a time against the `#[cfg(test)]` on its own `mod` line. A
+/// `test.rs`/`tests.rs` that a crate ships as production source would be a module named after the
+/// thing it is not, and there is none in this tree.
 fn is_test_file(rel: &str) -> bool {
-    rel.ends_with("_test.rs") || rel.ends_with("_tests.rs")
+    rel.ends_with("_test.rs")
+        || rel.ends_with("_tests.rs")
+        || rel.ends_with("/test.rs")
+        || rel.ends_with("/tests.rs")
 }
 
 /// Walk the tree for the population. `Err` — never a smaller answer — when `crates/` will not list:

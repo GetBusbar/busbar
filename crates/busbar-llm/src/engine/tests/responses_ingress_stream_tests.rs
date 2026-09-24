@@ -9,7 +9,7 @@
 //! path; this is what the oracle's mock upstream does for `/v1/responses`).
 use super::{forward_with_pool, UsageSink};
 use crate::test_support::{LaneSpec, TestApp};
-use busbar_kernel::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
+use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, TestAppKit};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

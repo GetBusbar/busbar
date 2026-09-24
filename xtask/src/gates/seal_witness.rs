@@ -12,13 +12,18 @@
 //!
 //! | row | the claim it holds |
 //! | --- | --- |
-//! | `seal-witness:no-surviving-proof-name` | no production source names ANY of the old proof-type zoo identifiers — the unified scheme is the only one that survives (#73) |
-//! | `seal-witness:single-minter` | `KernelSeal::acquire_for_kernel(` is spelled in production only inside the kernel crate — the one root minter, unforgeable (#65) |
+//! | `seal-witness:no-surviving-proof-name` | NO source under `crates/` names ANY of the old proof-type zoo identifiers — the unified scheme is the only one that survives (#73) |
+//! | `seal-witness:single-minter` | `KernelSeal::acquire_for_kernel(` is spelled only inside the kernel crate — the one root minter, unforgeable (#65) |
 //!
 //! The scan is comment-stripped (a migration note in a doc comment naming the old type is prose, not
-//! a use) and test-scoped out (a unit's own tests mint sealed tokens by calling the seal directly,
-//! mirroring the construction gate's `token-sealed` classification). String literals stay INTACT, so
-//! a zoo name smuggled into a literal is still caught.
+//! a use). String literals stay INTACT, so a zoo name smuggled into a literal is still caught.
+//!
+//! IT IS NOT TEST-SCOPED OUT ANY MORE, AND THE WORD "production" IS GONE FROM BOTH CLAIMS. This
+//! header used to say the scan was "test-scoped out ... mirroring the construction gate's
+//! `token-sealed` classification" and the code did not do that either — an inline `#[cfg(test)] mod`
+//! was always caught while `crates/*/tests/`, `crates/*/benches/` and an in-`src` `tests/` directory
+//! were not, so the sentence described neither the rule nor the code. See [`EXCLUDE`] for the
+//! measurement and for #65's own binding text, which says CODE and not production code.
 //!
 //! It complements the construction gate's `token-sealed`/`seal-sites`/`kernel-seal-impls` family
 //! rather than replacing it: those hold the minting SURFACE; this holds the #73 vocabulary result
@@ -32,7 +37,7 @@ use crate::scan;
 pub const ROW_NO_SURVIVING: &str = "seal-witness:no-surviving-proof-name";
 pub const ROW_SINGLE_MINTER: &str = "seal-witness:single-minter";
 
-/// The old capability-proof zoo (#73). None of these identifiers may survive in production code.
+/// The old capability-proof zoo (#73). None of these identifiers may survive anywhere under `crates/`.
 pub const ZOO: &[&str] = &[
     "UnitToken",
     "AdmitToken",
@@ -50,14 +55,43 @@ pub const ZOO: &[&str] = &[
 /// The single root minter's one obtaining symbol (#65).
 const MINTER: &str = "KernelSeal::acquire_for_kernel(";
 
-/// Where the one root minter may be spelled in production.
+/// Where the one root minter may be spelled at all.
 const KERNEL_ROOT: &str = "crates/busbar-kernel/src/";
 
-/// The production `.rs` under `crates/`, tests excluded. A unit's own tests mint sealed tokens by
-/// calling the seal directly, so they are classified out exactly as the construction gate does.
+/// Every `.rs` under `crates/`, and from 2026-09-23 that means EVERY one.
+///
+/// ── WHY THE FOUR TEST EXCLUSIONS ARE GONE ───────────────────────────────────────────────────────
+///
+/// They read `["/tests/", "/tests.rs", "_tests.rs", "/benches/", "/target/"]` and the argument
+/// beside them was that a unit's own tests mint sealed tokens by calling the seal directly, "exactly
+/// as the construction gate does". That mirroring is the reason to drop them, not to keep them: the
+/// construction gate's `token-sealed` family stopped being production-only on the same day, because
+/// #65 (`docs/design/BUSBAR-1.6.0.md:401`) binds *"a gate proves no **non-kernel code** can mint a
+/// seal"* — code, not production code. Two rows holding one property from two directions is the
+/// design; two rows holding it over two different populations is two different properties wearing
+/// one name, and they disagreed by 135 sites.
+///
+/// THE EXCLUSIONS WERE ALSO WIDER THAN THE WORD "TEST". `/tests/` matches an IN-SRC directory —
+/// `crates/busbar-llm/src/tests/` and `crates/busbar-kernel-identity/src/egress_auth/tests.rs` are
+/// both inside a crate's own `src` and were both unscanned — and `/benches/` excluded a scope that
+/// is not test code at all. The census demonstrated it: eight seal/zoo sites planted, three found,
+/// with `crates/busbar-llm/tests/`, `crates/busbar-llm/benches/` and `crates/busbar-llm/src/tests/`
+/// all invisible while the inline `#[cfg(test)] mod` beside them was caught — this gate's own module
+/// header claimed to be "test-scoped out" and never was, so the doc and the code disagreed and only
+/// one of them was enforcing anything.
+///
+/// MEASURED before the change: the ZOO identifiers occur ZERO times in the newly-included scope, so
+/// `:no-surviving-proof-name` gains a whole population and no finding. `:single-minter` gains 135
+/// sites, which is the same 135 `construction`'s `token-sealed:kernel-seal` now reports — the two
+/// rows agree for the first time.
+///
+/// `/target/` stays: build output is not source. `xtask` is deliberately NOT added to `ROOTS`, for
+/// the reason `qa/construction.toml`'s `scan_roots` note gives at length — xtask declares no product
+/// dependency, so it cannot spell a real mint, and line 51 of THIS FILE is
+/// `const MINTER: &str = "KernelSeal::acquire_for_kernel("`.
 const ROOTS: &[&str] = &["crates"];
-const EXCLUDE: &[&str] = &["/tests/", "/tests.rs", "_tests.rs", "/benches/", "/target/"];
-/// The denominator floor: a walk that finds fewer production files than this is broken, not clean.
+const EXCLUDE: &[&str] = &["/target/"];
+/// The denominator floor: a walk that finds fewer files than this is broken, not clean.
 const SCAN_FLOOR: usize = 200;
 
 fn word_hit(hay: &str, needle: &str) -> bool {
@@ -146,9 +180,9 @@ impl SealWitnessGate {
         let no_surviving = if scan.surviving.is_empty() {
             Row::pass(
                 ROW_NO_SURVIVING,
-                "no production source names a pre-#73 proof-type zoo identifier",
+                "no source under crates/ names a pre-#73 proof-type zoo identifier",
                 format!(
-                    "{} production files scanned; the capability-proof types are exactly \
+                    "{} files scanned; the capability-proof types are exactly \
                      Pass<stage> + Grant<capability> + KernelSeal",
                     scan.files
                 ),
@@ -168,12 +202,12 @@ impl SealWitnessGate {
             Row::pass(
                 ROW_SINGLE_MINTER,
                 "the one root minter is spelled only inside the kernel crate",
-                format!("`{MINTER}` appears in production only under {KERNEL_ROOT}"),
+                format!("`{MINTER}` appears only under {KERNEL_ROOT}"),
             )
         } else {
             Row::fail(
                 ROW_SINGLE_MINTER,
-                "a non-kernel production site obtains the kernel seal",
+                "a non-kernel site obtains the kernel seal",
                 format!(
                     "{} site(s) of `{MINTER}` outside {KERNEL_ROOT}: {}",
                     scan.minters_outside.len(),

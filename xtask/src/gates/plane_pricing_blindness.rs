@@ -1,6 +1,7 @@
 //! `cargo xtask gate plane-pricing-blindness` — NO PLANE CRATE TOUCHES MONEY.
 //!
-//! THE RULING THIS ENFORCES. DECISION #87 (owner-locked 2026-09-22): **planes always ledger.** A
+//! THE RULING THIS ENFORCES. DECISION #43 (owner-locked 2026-09-20; restated 2026-09-22, Part 7
+//! §13(3)): **planes always ledger.** A
 //! plane appends its raw counts unconditionally, with no branch and no knowledge of whether
 //! billing is on; `rate_card` is optional per plane IN CONFIG (#47); and the switch is a READ-TIME
 //! property of the money VIEW, kernel-side — "billing off" means the VIEW reads 0, never that the
@@ -41,14 +42,14 @@
 //! | row | the act |
 //! | --- | --- |
 //! | [`ROW_CARD`] | **RESOLVES A CARD** — names `rate_card`, a `RateCard`, or the pricing switch |
-//! | [`ROW_SWITCH`] | **BRANCHES ON BILLING STATE** — #87's own clause: a card needle inside a conditional |
+//! | [`ROW_SWITCH`] | **BRANCHES ON BILLING STATE** — #43's own clause: a card needle inside a conditional |
 //! | [`ROW_PRICE`] | **PRICES** — names a price, a money lease, a money-nanos quantity, or a posting stamp |
 //! | [`ROW_UNIT_KEY`] | **MINTS A KEY** — fabricates a unit identity the kernel owns |
 //! | [`ROW_HOLD`] | **ARITHMETICS A HOLD** — opens, sizes, accrues against or settles one |
 //!
 //! ## WHY THE DENOMINATION WORD IS NOT A NEEDLE
 //!
-//! #87's own checkbox says "zero `rate_card`/`price`/`nanos`/`spend` references", and run as a bare
+//! #43's own checkbox says "zero `rate_card`/`price`/`nanos`/`spend` references", and run as a bare
 //! grep that phrase is useless — it was measured at 125 hits across the five `busbar-plane-*`
 //! crates and **essentially all of them are prose**: doc comments explaining that this plane does
 //! NOT price. `spend`, `charge`, `settle`, `reserve` and `hold` are all ambiguous in this tree
@@ -317,7 +318,7 @@ const PRICE: &[Needle] = &[
     ex("NANOS_PER_CENT"),
 ];
 
-/// MINTS A KEY. #87: a plane emits counts "and NOTHING else — no ... `UnitKey` minting".
+/// MINTS A KEY. #43: a plane emits counts "and NOTHING else — no ... `UnitKey` minting".
 ///
 /// `UnitKey::new` is an unsealed `const fn`; what is privileged is ATTACHING one to a `Unit`, which
 /// `Unit::new` gates behind `&dyn KernelSeal`. Both are here: a plane that fabricates a unit
@@ -340,7 +341,7 @@ const HOLD: &[Needle] = &[
 /// act test, so the exemption is by exact spelling and it is checked.
 const TIME_NANOS: &[&str] = &["monotonic_nanos", "as_nanos", "subsec_nanos", "from_nanos"];
 
-/// The conditional forms a billing-state BRANCH can take. #87: a plane appends "unconditionally,
+/// The conditional forms a billing-state BRANCH can take. #43 (Part 7 §13(3)): a plane appends "unconditionally,
 /// with no branch and no knowledge of whether billing is on".
 const CONDITIONALS: &[&str] = &["if ", "if(", "match ", "&&", "||", ".then", ".filter", "? "];
 
@@ -641,8 +642,8 @@ pub fn census(cx: &Ctx) -> Result<(Vec<Finding>, bool), String> {
             let price = money_nanos_hit || PRICE.iter().any(|n| hits(&code, n));
             let key = UNIT_KEY.iter().any(|n| hits(&code, n));
             let hold = HOLD.iter().any(|n| hits(&code, n));
-            // THE #87 ROW. A card needle is a violation wherever it sits; a card needle inside a
-            // CONDITIONAL is the specific thing #87 outlaws — "planes always ledger" means the
+            // THE #43 ROW. A card needle is a violation wherever it sits; a card needle inside a
+            // CONDITIONAL is the specific thing #43 (Part 7 §13(3)) outlaws — "planes always ledger" means the
             // append cannot be behind `if billing_is_on`.
             let switch = card && is_conditional(&code);
 
@@ -1137,7 +1138,7 @@ impl Gate for PlanePricingBlindnessGate {
             ));
         }
 
-        // THE #87 ROW IS NARROWER THAN THE CARD ROW, and the fixture proves it: the card needle
+        // THE #43 ROW IS NARROWER THAN THE CARD ROW, and the fixture proves it: the card needle
         // appears both inside a conditional and in a plain declaration, and only the conditional
         // may name the switch row. Without this the switch row is just a duplicate of the card row.
         report.push(switch_is_narrower(self, cx, FIX));
@@ -1384,7 +1385,7 @@ fn green_over_fixture<'a>(
     }
 }
 
-/// THE #87 ROW IS NARROWER THAN THE CARD ROW. Plant a card needle in a plain declaration and in a
+/// THE #43 ROW IS NARROWER THAN THE CARD ROW. Plant a card needle in a plain declaration and in a
 /// conditional; the card row must name both files and the switch row only the conditional one.
 fn switch_is_narrower(gate: &PlanePricingBlindnessGate, cx: &Ctx, fixture: &str) -> Case {
     let covers = vec![ROW_SWITCH.to_string()];

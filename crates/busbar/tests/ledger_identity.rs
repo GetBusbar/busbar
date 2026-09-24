@@ -55,9 +55,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::caps::{
     Consumption, Grant, KernelSeal, MeterClassId, QuantitySource, Usage, UsageLine,
 };
-use busbar_kernel_ledger::cost::{
-    price, CurrencyCode, History, LaneClass, Posting, RateCard, STANDARD_TIER_BP,
-};
+use busbar_kernel_ledger::cost::{price, History, LaneClass, Posting, RateCard, STANDARD_TIER_BP};
 
 // The binary has no library target, so the composition root's identity check is reached the only
 // way an integration test can reach it: by compiling the same source file into this test binary.
@@ -334,7 +332,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         // into the row's figure.
         for _ in 0..requests {
             let quantities = Posting::from_usage(&lane, &one_response(), 1, STANDARD_TIER_BP, 0, 0);
-            let posting = price(&view, &quantities, CurrencyCode::USD)
+            let posting = price(&view, &quantities)
                 .expect("the opening entry covers instant zero and names USD");
             assert_eq!(
                 posting.priced_nanos, NANOS_PER_RESPONSE,

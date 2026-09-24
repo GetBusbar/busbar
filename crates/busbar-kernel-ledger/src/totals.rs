@@ -19,9 +19,27 @@
 //! separate direction flag is how a sign error becomes invisible. Nothing here is floating point,
 //! for the reason nothing in a ledger ever is.
 
+//! ## ONE GUARD POLICY FOR THIS FILE: EVERY BOOK OPERATOR SATURATES
+//!
+//! Every arithmetic operator in this file saturates — the same policy `settle.rs` states, for the
+//! same reason, so the two files that move the books cannot be read as disagreeing about it.
+//!
+//! The two derived figures below are the ones that mattered. `headroom` subtracted four `i128`s
+//! bare and `overdraft_carried` two, in a file whose statement fold thirty lines further down
+//! already used `saturating_add` — one file, two policies, and the unguarded pair were the figures
+//! the budget gate reads. Measured: `budget = 0`, `settled = i128::MAX`, `open_holds = i128::MAX`
+//! is a book with `-340282366920938463463374607431768211454` of headroom, and the bare subtraction
+//! returns **`2`**. An exhausted budget reporting two nano-units of room is a request admitted.
+//! Saturated, the same book returns `i128::MIN` — no room, which is the true reading narrowed to
+//! what the type can say, and it fails CLOSED.
+//!
+//! Saturation is also why the figures stay derived rather than stored: pinning at a bound is only
+//! honest if the bound is recomputed from the columns every read, and a saturated figure written
+//! back into a column would be a lie the next read could not detect.
+
 use std::collections::BTreeMap;
 
-use crate::cost::{CurrencyCode, HistorySeq, HistoryView};
+use crate::cost::{HistorySeq, HistoryView};
 use busbar_contract::caps::MeterClassId;
 
 use crate::recompute::{price_line, Divergence, Posting};
@@ -196,12 +214,16 @@ impl Totals {
     /// The two fields survive separately because a checkpoint seals both, and an operator asking
     /// "what did the last window hand us" is asking for the one the identity has already folded in.
     pub fn overdraft_carried(&self) -> i128 {
-        self.overdraft_carried_out - self.overdraft_carried_in
+        self.overdraft_carried_out
+            .saturating_sub(self.overdraft_carried_in)
     }
 
     /// What is left of the budget once everything posted, held, and carried is accounted for.
     pub fn headroom(&self) -> i128 {
-        self.budget - self.settled - self.open_holds - self.overdraft_carried_in
+        self.budget
+            .saturating_sub(self.settled)
+            .saturating_sub(self.open_holds)
+            .saturating_sub(self.overdraft_carried_in)
     }
 }
 
@@ -264,7 +286,7 @@ impl Book {
     pub fn retain_from(&mut self, window: WindowStart) -> usize {
         let before = self.totals.len();
         self.totals.retain(|(_, at), _| *at >= window);
-        before - self.totals.len()
+        before.saturating_sub(self.totals.len())
     }
 
     /// The book as a plain map, for a checkpoint to seal.
@@ -276,7 +298,7 @@ impl Book {
 /// What one balance came to on a statement, re-derived from the quantities.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StatementRow {
-    /// The money, in nano-units of the statement's currency, summed over the balance's lines.
+    /// The money, in nano-units, summed over the balance's lines.
     pub priced_nanos: i128,
     /// The request fees the balance's lines carry between them.
     pub fee_count: u64,
@@ -286,9 +308,9 @@ pub struct StatementRow {
 
 /// A line a statement could not price, and why.
 ///
-/// It is listed rather than dropped and rather than counted as zero: a hole in the history, an
-/// unpriced currency and an unpriced lane are all refusals, and a statement that silently omitted
-/// them would read as a smaller bill rather than as an incomplete one.
+/// It is listed rather than dropped and rather than counted as zero: a hole in the history and an
+/// unpriced lane are both refusals, and a statement that silently omitted them would read as a
+/// smaller bill rather than as an incomplete one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unpriced {
     /// Which node wrote the line.
@@ -308,8 +330,6 @@ pub struct Unpriced {
 pub struct Statement {
     /// The history snapshot the figures were derived against.
     pub history_seq: HistorySeq,
-    /// The currency they are in. Two currencies never sum, so a statement names exactly one.
-    pub currency: CurrencyCode,
     /// The window it covers.
     pub window: WindowStart,
     /// The balances, in key order.
@@ -344,19 +364,18 @@ impl Statement {
 /// The tier is the line's own: a tier is a property of the chain a request was admitted through,
 /// and an amendment to the price of a token is not a re-decision about which chain admitted it.
 ///
-/// `lines` comes last because the first three arguments are the statement's identity — which
-/// history, which window, which currency — and the lines are what that identity is applied to.
+/// `lines` comes last because the first two arguments are the statement's identity — which
+/// history and which window — and the lines are what that identity is applied to.
 /// Only lines in `window` are counted; lines in another window belong on another statement.
 pub fn totals_as_of<'a>(
     view: &HistoryView<'_>,
     window: WindowStart,
-    currency: CurrencyCode,
     lines: impl IntoIterator<Item = &'a Posting>,
 ) -> Statement {
     let mut rows: BTreeMap<TotalsKey, StatementRow> = BTreeMap::new();
     let mut unpriceable = Vec::new();
     for line in lines {
-        if line.window_start != window || line.currency != currency {
+        if line.window_start != window {
             continue;
         }
         match price_line(line, view, line.tier_bp) {
@@ -366,7 +385,7 @@ pub fn totals_as_of<'a>(
                     .priced_nanos
                     .saturating_add(i128::try_from(priced.priced_nanos).unwrap_or(i128::MAX));
                 row.fee_count = row.fee_count.saturating_add(priced.fee_count);
-                row.lines += 1;
+                row.lines = row.lines.saturating_add(1);
             }
             Err(why) => unpriceable.push(Unpriced {
                 node: line.node,
@@ -377,7 +396,6 @@ pub fn totals_as_of<'a>(
     }
     Statement {
         history_seq: view.seq(),
-        currency,
         window,
         rows,
         unpriceable,

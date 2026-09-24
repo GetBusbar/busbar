@@ -298,7 +298,38 @@ fn register_planes() {
     // build with voice compiled out (`--no-default-features`) pushes nothing.
     #[cfg(feature = "plane-voice")]
     installed.push(&busbar_voice::PLANE_DECL);
+    // THE DECISION PLANE (jev), #48's fifth. Same slot and the same reason as the rows above, and
+    // ONE difference: the `&PlaneDecl` it pushes is not the plane crate's, because that crate may
+    // not have one. `busbar-plane-decision` is a PURE plane whose manifest may name
+    // `busbar-contract` and nothing else (DECISIONS #40) and `PlaneDecl` is a `busbar-kernel` type,
+    // so the declaration is written in the composition root — `root::plane_decision`, which reads
+    // the plane's own `PlaneMeta` for its identity rather than restating it. Present under
+    // `plane-decision`, which is IN `default`; a build with it off pushes nothing and drops the
+    // crate edge with it.
+    #[cfg(feature = "plane-decision")]
+    installed.push(&root::plane_decision::PLANE_DECL);
     busbar_kernel::plane::registry::install_planes(installed.leak());
+
+    // THE DECISION PLANE, READ BACK OUT OF THE AXIS IT WAS JUST INSTALLED INTO. Every other plane
+    // is installed under a key its own crate wrote; this one is installed under a key the ROOT
+    // wrote, and the fold between the push above and the registry below dedups by key and
+    // normalises order — so "the root pushed it" and "the process serves it" are two facts here and
+    // one everywhere else. This is the line that makes them one again, and it is the only reader
+    // that asks the plane itself (`PlaneMeta::KEY`) what to look for. A boot refusal, for the same
+    // reason the MCP seal below is one: a composition that disagrees with itself must not bind a
+    // listener.
+    #[cfg(feature = "plane-decision")]
+    {
+        let key = <busbar_plane_decision::DecisionPlane as busbar_contract::plane::PlaneMeta>::KEY;
+        if busbar_kernel::plane::registry::plane_decl_for(key).is_none() {
+            eprintln!(
+                "busbar: the composition root did not seal: the decision plane was installed but \
+                 the plane axis answers no declaration for `{key}`, so nothing it declares — \
+                 including its `decisions:` section — is in front of any reader"
+            );
+            std::process::exit(2);
+        }
+    }
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-oauth2` dependency above), before any config loads. Mirrors
@@ -506,7 +537,7 @@ fn compose_voice_governed_calls() {
 ///
 /// WHY NOTHING IS BOUND HERE, AND WHERE THAT ENDS. This boot does not call `listen_all`, and it is
 /// not an oversight: `serve_listener` below binds the data and admin addresses over its own
-/// `busbar_core_transport::prepare` path, so a second bind here would refuse the address and take
+/// `busbar_core_connsec::prepare` path, so a second bind here would refuse the address and take
 /// the node down. What this function does is everything up to the bind — resolve, journal, register
 /// — so the commit that moves serving onto the root's transports is a change of who accepts, not a
 /// change of where the key comes from. Until then, this is a second resolution of the same
@@ -1653,7 +1684,7 @@ fn serve_thread_per_core(
     // declares itself TLS-capable, so this can only fail on unresolvable/unparsable material —
     // exactly the boot failure `build_server_config` always reported here.
     if tls_cfg.is_some() {
-        let _ = busbar_core_transport::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
+        let _ = busbar_core_connsec::prepare(&addr, tls_cfg.as_ref(), &secret_resolver, true)
             .unwrap_or_else(|e| die(format!("TLS configuration error for '{addr}': {e}")));
     }
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -1834,7 +1865,7 @@ async fn serve_listener(
             // (`transport_capable = true`); `prepare` still fails closed rather than silently
             // downgrading to plaintext if the material cannot be resolved/parsed (DECISIONS #40).
             let security =
-                busbar_core_transport::prepare(label, Some(&tls), &secret_resolver, true)
+                busbar_core_connsec::prepare(label, Some(&tls), &secret_resolver, true)
                     .unwrap_or_else(|e| die(format!("TLS configuration error for '{label}': {e}")));
             let mtls = tls.client_ca.is_some();
             if log_at_info {

@@ -82,12 +82,10 @@ fn every_destination_kind_decides_whether_it_carries_the_fee() {
     }
 }
 
-struct Seal;
-
-impl busbar_contract::plugin::KernelSeal for Seal {
-    fn seal_origin(&self) -> &'static str {
-        "busbar-contract::tests"
-    }
+// A REAL capability token, not a fixture seal: `Pass<Verify>` is one of the two
+// types this crate implements the sealed `KernelSeal` for (#65).
+fn seal() -> busbar_contract::caps::Pass<busbar_contract::caps::Verify> {
+    busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
 }
 
 /// Re-addressing a sealed destination for the layer beneath it carries every judgement the trust
@@ -100,7 +98,7 @@ impl busbar_contract::plugin::KernelSeal for Seal {
 #[test]
 fn walking_down_a_transport_stack_carries_the_seal_and_widens_nothing() {
     let sealed = VerifiedDestination::seal(
-        &Seal,
+        &seal(),
         DestinationFacts::Upstream {
             transport: "ws",
             address: UpstreamAddress::socket("api.example:443"),
@@ -160,7 +158,7 @@ fn walking_down_a_transport_stack_carries_the_seal_and_widens_nothing() {
         },
         DestinationFacts::Upgrade { to: "ws" },
     ] {
-        let sealed = VerifiedDestination::seal(&Seal, facts, "http", Some(17));
+        let sealed = VerifiedDestination::seal(&seal(), facts, "http", Some(17));
         assert!(
             sealed
                 .beneath("tcp", UpstreamAddress::socket("10.0.0.1:443"))

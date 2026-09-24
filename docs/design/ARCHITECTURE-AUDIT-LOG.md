@@ -2335,7 +2335,7 @@ identical); PB-54 CLI as a subset invariant with the additive `--help` lines sta
 Body sentences reworded: §1.4 auth and hook rows, §2.2 step 0/2/4 and the `requests` row, §2.3 and
 §3.1 `MAX_NEEDMORE_FRAMES`, §4.4 aborts, §4.5 cl. 3 (cents floor, micros none), §4.6 slices, §4.7
 scope counts / reload / `spill_budget` / overdraft ceiling rows, §4.8 canary, §7 export, §8.1 `first`
-cell, §10 memory-store sweeps. Inventory `1.5.5-auth-secrets.md:551` annotated with the actual
+cell, §10 memory-store sweeps. Inventory `inventory/1.5.5-auth-secrets.md:551` annotated with the actual
 cross-node rotate mechanism (the row repeated a code comment).
 
 Next: parity audit 4 (Opus + Fable) on v1.26; freeze if clean.

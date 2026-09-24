@@ -15,14 +15,26 @@
 //!
 //! # What this consumes, and what it does not
 //!
-//! This is the FIRST caller of the hot lane: until now `busbar_plugin::hot::PlaneDecl` +
-//! [`PlaneHostVtable`] were a fully-built but UNUSED skeleton (`hot/mod.rs`'s own doc says so). The
-//! host vtable half is already real (`busbar_kernel::plane_host::build_plane_host_vtable`); this is the
-//! LOADER half. The remaining work to fold a dropped-in plane into the native
-//! `busbar_kernel::plane::registry` claim seal — an adapter from this C-ABI decl to the native Rust
-//! `PlaneDecl`, and manifest-CARRIED claims — is tracked as the post-1.6.0 registry-seal item and is
-//! NOT done here (see the crate-level module notes); `DynPlane` is the boundary-safe handle that item
-//! will adapt.
+//! This is the loader half of the hot lane. The host half is `busbar_kernel::plane_host`'s
+//! `build_plane_host_vtable()` (44 of 44 slots over live core primitives), and the two are CROSSED:
+//! `busbar-plugin-example-plane` is a real cdylib that, once built through [`DynPlane`], calls core's
+//! own host slots back from the plugin side — `clock_now`, `govern_admit`, `meter_charge`,
+//! `cost_reserve`, `cost_settle` — and REFUSES its work item if any of them is absent or answers
+//! fail-closed. That crossing is asserted, per slot and by exact call count, in two places:
+//! `src/tests/plane_conformance_tests.rs` (this crate's half, against an instrumented table) and
+//! `crates/busbar-kernel/tests/plane_abi_rider.rs` (against the REAL vtable — unreachable from here,
+//! because this crate may not name `busbar-kernel`). So `PlaneDecl` + [`PlaneHostVtable`] are no
+//! longer the 0-caller ABI BUSBAR-1.6.0 §11a forbids.
+//!
+//! WHAT IS GENUINELY NOT HERE, stated as a measurement rather than a filing: a dropped-in plane is
+//! driven through [`DynPlane`], not yet INSTALLED into `busbar_kernel::plane::registry` beside the
+//! compiled-in decls. Two things are missing for that — an adapter from this C-ABI decl to the native
+//! Rust `PlaneDecl` the registry seals, and manifest-CARRIED claims — and both belong to the same
+//! change that routes the kernel's own request loop through `&PlaneHostVtable` rather than
+//! `&dyn EngineHost`, because until the loop is unified there is no single seam for an adapted decl to
+//! be installed ON. That change is `docs/design/1.6.0-TRACKER.md`'s H6, in this release, with an owner;
+//! it is NOT deferred past 1.6.0 and nothing here should be read as filing it away. [`DynPlane`] is the
+//! boundary-safe handle it adapts.
 
 use crate::stage;
 use busbar_plugin::hot::decl::{BuildFn, ConfigValidateFn, DispatchFn, HydrateFn, StartFn};

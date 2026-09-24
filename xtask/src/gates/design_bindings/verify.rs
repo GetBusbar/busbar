@@ -72,6 +72,9 @@ pub struct Ctx {
     /// Overridable so a self-test can plant a note table without touching the shipped one.
     pub unproven_by_note: Vec<(String, String)>,
     pub notes: Vec<(String, String)>,
+    /// Every `fn` name and `.rs` stem under `crates/` and `xtask/` — the set a NOTE's named
+    /// witness must resolve into. See [`symbol_index`].
+    pub symbols: BTreeSet<String>,
 }
 
 impl Ctx {
@@ -114,6 +117,11 @@ impl Ctx {
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
+            symbols: if crates.exists() {
+                symbol_index(crates, &root.join("xtask"))
+            } else {
+                BTreeSet::new()
+            },
         })
     }
 
@@ -515,4 +523,134 @@ pub fn verify_rows(doc: &J, ctx: &Ctx) -> Vec<(String, String, String, String)> 
             (id, verdict, title, detail)
         })
         .collect()
+}
+
+// ─── THE NOTE-WITNESS RULE ──────────────────────────────────────────────────────────────────────
+//
+// A NOTE IS EVIDENCE OR IT IS NOTHING, AND UNTIL NOW IT WAS NEITHER — IT WAS PROSE.
+//
+// `SEED` refs are verified: `check_verdict`'s `"test"` arm already refuses a ref naming a fn that
+// was renamed away. `NOTES` are not. A note is the table that ADJUDICATES a binding — it is where
+// "Resolved <date>" is written and where the reason a binding counts as proven is argued — and it
+// carries test-function names in running prose, where no checker has ever looked.
+//
+// PB-58 is the instance that exposed the class. Its note closes:
+//
+//     "the behavioural half is where the behaviour is: admit.rs's
+//      over_budget_refuses_with_no_charge_and_nothing_to_refund and meter.rs's
+//      a_spend_past_the_reservation_is_carried_out_as_an_overdraft."
+//
+// The first resolves. The second is a `fn` in NO file in the tree, and has not been for as long as
+// anyone has looked — the binding reads "Resolved" on the strength of a witness that does not
+// exist. Nothing was lying; the citation simply rotted, silently, because the only thing joining
+// the spelling to a real symbol was a human having once read it.
+//
+// THE RULE, AND WHY IT IS DRAWN HERE. A token in a note is owed a referent when it is shaped
+// unmistakably like a Rust test name: lowercase, snake_case, FOUR OR MORE WORDS. It discharges by
+// resolving to a `fn` declared anywhere in `crates/` or `xtask/`, or to a `.rs` file stem — notes
+// legitimately name both, and a note pointing at `no_data_dir_neutrality.rs` is pointing at
+// something a reader can open, which is the whole test.
+//
+// THE THRESHOLD IS MEASURED, NOT CHOSEN. Over the shipped table: at three-or-more words the scan
+// flags `rejected_by_auth` (a synthetic outcome string), `idle_bound_applies` and
+// `max_unit_duration` (a config key) — three false positives, because three-word snake_case is the
+// house style for config keys and enum payloads. At four-or-more it flags ONE token, and that
+// token is the real defect. The rule is deliberately silent about anything shorter: a gate that
+// cries about config keys is a gate somebody switches off.
+//
+// FAILING CLOSED IS THE POINT. This cannot be satisfied by renaming the note. It is satisfied by
+// the symbol existing, or by the note not claiming it.
+
+/// Every `fn` name declared under `crates/` and `xtask/`, plus every `.rs` file stem — the set a
+/// note's named witness may resolve into.
+///
+/// TEST-ONLY WOULD BE THE WRONG SET. [`test_index`] indexes fns carrying a test attribute, which is
+/// right for a `SEED` ref that claims "this test proves it". A note is looser in what it may name —
+/// a helper, a production fn, a file — and the defect being caught is a name that resolves to
+/// NOTHING. Narrowing the haystack here would turn every prose mention of a production fn into a
+/// failure, which is how a true rule acquires a waiver.
+pub fn symbol_index(crates: &Path, xtask: &Path) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut files = Vec::new();
+    collect_rs(crates, &mut files);
+    collect_rs(xtask, &mut files);
+    for f in files {
+        if f.to_string_lossy().contains("/target/") {
+            continue;
+        }
+        if let Some(stem) = f.file_stem().and_then(|s| s.to_str()) {
+            out.insert(stem.to_string());
+        }
+        let Ok(text) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        for (i, _) in text.match_indices("fn ") {
+            // `fn` must be its own token: the preceding byte cannot continue an identifier, which
+            // is what keeps `fn` inside a longer word from opening a declaration that is not one.
+            if i > 0 {
+                let p = text.as_bytes()[i - 1];
+                if p.is_ascii_alphanumeric() || p == b'_' {
+                    continue;
+                }
+            }
+            let rest = &text[i + 3..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                out.insert(name);
+            }
+        }
+    }
+    out
+}
+
+/// Whether a token in a note is shaped unmistakably like a Rust test-function name, and therefore
+/// owes a referent. Lowercase snake_case, four or more words, no edge underscore.
+///
+/// Hand-scanned rather than matched: the shape is three cheap predicates, and a regex here would
+/// bet the rule on `{n,}` and `\b` support in the in-tree engine for no gain in clarity.
+fn is_witness_shaped(tok: &str) -> bool {
+    if tok.len() < 8 || tok.starts_with('_') || tok.ends_with('_') {
+        return false;
+    }
+    if !tok.starts_with(|c: char| c.is_ascii_lowercase()) {
+        return false;
+    }
+    if !tok
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return false;
+    }
+    tok.matches('_').count() >= 3
+}
+
+/// Split note prose into candidate identifier tokens. Anything that cannot appear inside a Rust
+/// identifier ends a token, so `meter.rs's a_spend_past_…` yields `meter`, `rs`, `s` and the name.
+fn tokens(text: &str) -> Vec<&str> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+/// Every `(binding, symbol)` a NOTE names as a witness that resolves to nothing in the tree.
+///
+/// Reads `ctx.notes`, which the self-test can replace through the existing
+/// [`super::NOTE_TABLE_KEY`] overlay — so the rule is plantable without a shipped fiction.
+pub fn note_witness_offenders(ctx: &Ctx) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (pb, text) in &ctx.notes {
+        let mut seen = BTreeSet::new();
+        for tok in tokens(text) {
+            if !is_witness_shaped(tok) || ctx.symbols.contains(tok) || !seen.insert(tok) {
+                continue;
+            }
+            out.push((pb.clone(), tok.to_string()));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }

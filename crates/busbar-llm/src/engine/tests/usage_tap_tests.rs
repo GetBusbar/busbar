@@ -234,7 +234,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     crate::testkit::install_test_seams();
     use busbar_kernel::governance::NewKeySpec;
     use busbar_kernel::governance::SECS_PER_DAY;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
 
     let store = Arc::new(MemoryStore::new());
@@ -360,7 +360,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
 fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
     crate::testkit::install_test_seams();
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
 
     let store = Arc::new(MemoryStore::new());
@@ -442,7 +442,7 @@ fn test_stable_hash_is_deterministic() {
 fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     crate::testkit::install_test_seams();
     use busbar_kernel::governance::NewKeySpec;
-    use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+    use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
     use busbar_store_memory::MemoryStore;
 
     let store = Arc::new(MemoryStore::new());

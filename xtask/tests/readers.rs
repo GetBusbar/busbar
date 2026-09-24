@@ -48,20 +48,27 @@ fn dump_python_uses_pythons_escape_table_and_not_serde_jsons() {
 }
 
 #[test]
-fn the_committed_audit_register_round_trips_byte_for_byte() {
+fn a_committed_register_the_rust_writer_produces_round_trips_byte_for_byte() {
     // THE PARITY PROOF FOR THE WRITER, and the reason this module exists rather than a
-    // `preserve_order` feature flag on a dependency eleven crates share: read the register Python
-    // wrote and write it back unchanged.
+    // `preserve_order` feature flag on a dependency eleven crates share: read a register the Rust
+    // writer produced and write it back unchanged.
+    //
+    // This pointed at `qa/audit-ledger.json` until that register was deleted (it carried 586
+    // findings against trees nobody could reconstruct). The proof itself is not optional -- two
+    // live gates write through this writer (`inventory_coverage`, `teller_steps`) -- so it is
+    // repointed rather than dropped, onto the largest committed file the writer still produces.
+    // The synthetic cases above cover the escape table and the container forms; this one covers a
+    // real 121 KB corpus, which is the part a hand-written fixture cannot do.
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join("qa/audit-ledger.json");
+        .join("qa/inventory-coverage.json");
     let text = std::fs::read_to_string(&path).unwrap();
     let v = json_lite::parse(&text).unwrap();
     assert_eq!(
-        format!("{}\n", json_lite::dump_python(&v)),
+        format!("{}\n", json_lite::dump_python_indent(&v, 2)),
         text,
-        "the Rust writer must reproduce `json.dump(doc, fh, indent=1, ensure_ascii=False, \
+        "the Rust writer must reproduce `json.dump(doc, fh, indent=2, ensure_ascii=False, \
          sort_keys=False)` exactly"
     );
 }
@@ -91,37 +98,6 @@ fn the_committed_teller_matrix_round_trips_and_keeps_its_step_order() {
         ],
         "the Teller step order is the file's key order, not an alphabetical one"
     );
-}
-
-#[test]
-fn the_uncovered_by_design_constant_matches_the_committed_register() {
-    // The excuse list is a CONSTANT in Rust and `sync --write` regenerates the file's copy from it,
-    // so an excuse is a source edit somebody reviews rather than a line somebody adds to a 147KB
-    // JSON file. This pins the transcription: if the two ever disagree, the next `sync --write`
-    // silently rewrites 30 excuses and the diff that matters is buried.
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("qa/audit-ledger.json");
-    let text = std::fs::read_to_string(&path).unwrap();
-    let doc = json_lite::parse(&text).unwrap();
-    let committed: Vec<(String, String)> = doc
-        .get("uncovered_by_design")
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| {
-            (
-                e.get("glob").as_str().unwrap().to_string(),
-                e.get("reason").as_str().unwrap().to_string(),
-            )
-        })
-        .collect();
-    let ours: Vec<(String, String)> = xtask::audit::UNCOVERED_BY_DESIGN
-        .iter()
-        .map(|(g, r)| ((*g).to_string(), (*r).to_string()))
-        .collect();
-    assert_eq!(committed, ours);
 }
 
 #[test]

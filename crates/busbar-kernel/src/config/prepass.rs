@@ -43,7 +43,8 @@ use super::DeployCfg;
 // (`EndpointSection` / `ENDPOINT_SECTION_KEY`), so this generic lift machinery names no concrete
 // plane (DECISIONS #1). The other carriers are already neutrally named.
 use crate::plane::config::{
-    AgentsSection, EndpointSection, StreamsSection, ToolsSection, ENDPOINT_SECTION_KEY,
+    AgentsSection, DecisionsSection, EndpointSection, StreamsSection, ToolsSection,
+    ENDPOINT_SECTION_KEY,
 };
 
 /// One lifted key's parse-and-bank step: deserialize the key's value straight into `Target` on the
@@ -101,6 +102,13 @@ impl LiftableSection for StreamsSection {
     }
 }
 
+impl LiftableSection for DecisionsSection {
+    const KEY: &'static str = "decisions";
+    fn bank(self, into: &mut Lifted) {
+        into.decisions = Some(self);
+    }
+}
+
 impl LiftableSection for crate::config::AuthPolicyCfg {
     const KEY: &'static str = "policy";
     fn bank(self, into: &mut Lifted) {
@@ -117,10 +125,10 @@ impl LiftableSection for crate::config::AuthPolicyCfg {
 ///
 /// In order: busbar's OWN endpoint as an OAuth 2.1 resource server; busbar AS an OAuth 2.1
 /// authorization server; then, one per registered plane that declares a top-level config section
-/// of its own — a remote-endpoint registry, a named-definition registry, and a session-policy
-/// section.
+/// of its own — a remote-endpoint registry, a named-definition registry, a session-policy section,
+/// and a decision-model registry.
 pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] =
-    &["mcp", "oauth_as", "tools", "agents", "streams"]; // plane-purity: frozen-wire the frozen top-level wire KEYS this pass lifts
+    &["mcp", "oauth_as", "tools", "agents", "streams", "decisions"]; // plane-purity: frozen-wire the frozen top-level wire KEYS this pass lifts
 
 /// The keys lifted out of the `auth:` block. `policy:` is a 1.6.0 addition (token-mint caps); the
 /// five keys around it are 1.5.5's and stay in the frozen struct.
@@ -140,6 +148,7 @@ pub(crate) struct Lifted {
     tools: Option<ToolsSection>,
     agents: Option<AgentsSection>,
     streams: Option<StreamsSection>,
+    decisions: Option<DecisionsSection>,
     auth_policy: Option<crate::config::AuthPolicyCfg>,
 }
 
@@ -162,6 +171,9 @@ impl Lifted {
         }
         if let Some(v) = self.streams {
             deploy.streams = v;
+        }
+        if let Some(v) = self.decisions {
+            deploy.decisions = v;
         }
         if let Some(v) = self.auth_policy {
             // A policy block without an `auth:` block cannot happen: `policy:` is lifted from
@@ -197,6 +209,7 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
             k if k == ToolsSection::KEY => ToolsSection::deserialize(de)?.bank(self.lifted),
             k if k == AgentsSection::KEY => AgentsSection::deserialize(de)?.bank(self.lifted),
             k if k == StreamsSection::KEY => StreamsSection::deserialize(de)?.bank(self.lifted),
+            k if k == DecisionsSection::KEY => DecisionsSection::deserialize(de)?.bank(self.lifted),
             k if k == crate::config::AuthPolicyCfg::KEY => {
                 crate::config::AuthPolicyCfg::deserialize(de)?.bank(self.lifted)
             }

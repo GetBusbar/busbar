@@ -441,6 +441,26 @@ impl TransportKeyHandle {
         Self { slot, fingerprint }
     }
 
+    /// The handle that names NO key material — no seal, because it attests nothing.
+    ///
+    /// A layered transport whose upgrade reads no key of its own (the WebSocket handshake: whatever
+    /// secured the bytes was resolved by the layer underneath, at ITS `listen`) still has to pass a
+    /// handle. Before #65 sealed [`KernelSeal`], such a layer forged a seal to call
+    /// [`issue`](Self::issue) — shipping code fabricating kernel evidence to say "I have none",
+    /// which is the forgery this release closed.
+    ///
+    /// This is the honest spelling. It takes no seal BECAUSE it conveys no authority: the seal on
+    /// `issue` attests that the transport-key unit resolved real material, and there is no material
+    /// here to attest. It can only ever produce slot 0 / `"none"` — a caller cannot name a slot or
+    /// a fingerprint through it, which is exactly what the forged seal used to allow.
+    #[must_use]
+    pub fn keyless() -> Self {
+        Self {
+            slot: 0,
+            fingerprint: "none",
+        }
+    }
+
     /// The node-local slot the material lives in.
     #[must_use]
     pub fn slot(&self) -> u64 {

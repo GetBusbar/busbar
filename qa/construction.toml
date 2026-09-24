@@ -12,7 +12,36 @@
 [gate]
 # Where Rust source is scanned. Globs relative to the repo root; the composition-root bin
 # (crates/busbar) is included on purpose because production installers live there.
-scan_roots = ["crates/*/src"]
+#
+# ── WIDENED 2026-09-23: THIS ONE LINE WAS THE DENOMINATOR OF ALL 113 ROWS ────────────────────────
+#
+# It read `["crates/*/src"]` and that is not the tree. MEASURED on this branch: `crates/*/src` holds
+# 1471 `.rs` files, `crates/*/tests` holds 139 and `crates/*/benches` holds 4 — 143 files of real,
+# compiled, product-linked Rust that every one of the 113 rows below was asserting about and none of
+# them could open. A forged token mint, a `busbar_core::` reach, a seal site or a test double
+# written into `crates/busbar-llm/tests/` was invisible to this gate, and the census in
+# docs/design/1.6.0-gate-blindspots.md planted one and watched the gate stay green.
+#
+# `crates/*/tests` and `crates/*/benches` are PRODUCT code in the sense that matters here: they
+# compile against the product crates, they can name every type the product exports, and a
+# capability they spell is a capability that crate can reach. They are in.
+#
+# `xtask/src` IS DELIBERATELY NOT, and the reason is structural rather than a preference. `xtask`
+# declares three dependencies (serde_json, proc-macro2, syn) and NO product crate — which is the
+# property `cargo xtask gate segregation` exists to hold — so a line spelling `Grant::<C>::mint(`
+# there names a type xtask cannot reach and would not compile. It is not a forgery surface; it is
+# prose about one. MEASURED: adding `xtask/src` produces 17 non-comment hits on the token-sealed
+# pattern set and every single one is this gate's OWN needle table or its own selftest plant string
+# (`xtask/src/gates/seal_witness.rs:51` is `const MINTER: &str = "KernelSeal::acquire_for_kernel("`).
+# A gate that goes red reading its own specification has not widened its scan, it has lost its
+# subject. The census's P3 plant is therefore recorded as a plant that could never have been a
+# defect.
+#
+# `crates/*/build.rs` (1 file) stays out for a mechanical reason, not a judged one: these are
+# DIRECTORY globs walked by `glob_dirs` + `collect_rs`, so a bare file path cannot be expressed
+# here at all. It is shipped source, it is compiled on every build, and it is in no construction
+# row. PARK: it needs a file-glob arm in `Tree::load`, not an entry on this line.
+scan_roots = ["crates/*/src", "crates/*/tests", "crates/*/benches"]
 # The plane crates (the plugin side): one name per protocol plane, so each carries its own ceiling
 # below. This is the ROW KEY list, not the whole source surface — see gate.plane_codec_crates.
 #
@@ -430,15 +459,122 @@ types rather than discipline: a step can only be answered with that step's token
 be opened by Admit, a posting can only be minted after Audit. Every one of those constructors takes \
 a token, so a unit spelling Decision::proceed or Hold::open with its own token is the design working; \
 the forgery surface is MINTING a token. That holds exactly as long as nothing outside the kernel can \
-spell a token constructor. Every such spelling elsewhere is a forged token."""
+spell a token constructor. Every such spelling elsewhere is a forged token.
+
+The same argument covers the kernel's own VALUE constructors, which are sealed on the same seal and \
+were scanned by nothing at all until X-178: the request generation a proof is bound to, a unit's \
+origin, its session, its replay-claim key, and the end that closes it. A forged generation makes a \
+stray proof match any call; a forged origin is a plane claiming to be a tick and skipping the door. \
+"Nobody spells it outside the kernel today" is the reason to write the rule down, not a reason to \
+leave it out — a capability confined only by convention is confined until the first author who does \
+not know the convention."""
 patterns = ["Pass::mint(", "Grant::<WriteMoney>::mint(", "Grant::<Consumption>::mint(", "Grant::<Exit>::mint("]
+# ── WIDENED 2026-09-23 (X-177): THIS ROW NAMED FOUR OF TWENTY MARKERS AND CALLED THAT "SEALED" ───
+#
+# `patterns` above is a list of LITERAL spellings, one per capability somebody happened to write
+# down. But `Grant<C>::mint` and `Pass<S>::mint` are ONE GENERIC CONSTRUCTOR EACH (busbar-contract/
+# src/caps/token.rs) over a SEALED marker set -- ten capabilities in caps/capability.rs, ten steps
+# in caps/step.rs. A per-marker literal list is therefore stale the moment a marker is added, and
+# this one was stale on arrival: measured on this tree, the literals reached four markers and left
+# SIX CAPABILITIES (Dial, DurableWrite, KeyHandle, Sign, AdminVerb, Recover), the ENTIRE turbofish
+# `Pass::<S>::mint(` form the kernel itself writes 31 times, the FULLY-QUALIFIED
+# `Grant::<busbar_contract::caps::C>::mint(` form it writes 42 times, and `mint_bound` in a place
+# no row of this gate looked at. A forged mint spelled any of those ways sat under a green row.
+#
+# `pattern_families` are REGEXES (not escaped literals) and they match the constructor FAMILY, so
+# an eleventh capability is covered on the day it is declared rather than on the day somebody
+# remembers this file. They are scanned with the same `allowed_root`, `exclude_files` and
+# max_sites=0 ceiling; nothing here is loosened, and a site a literal and a family both reach is
+# counted once.
+pattern_families = [
+  # The two generic constructors, in every spelling the tree actually uses: bare marker
+  # (`Grant::<Dial>`), fully-qualified marker (`Grant::<busbar_contract::caps::Dial>`), and both
+  # the unbound `mint(` and the call-bound `mint_bound(` (#74).
+  '(?<![A-Za-z0-9_])Pass::<[^<>]*>::mint(_bound)?\(',
+  '(?<![A-Za-z0-9_])Grant::<[^<>]*>::mint(_bound)?\(',
+  # The inferred-marker spelling of the same two, which `patterns` covers only for `Pass::mint(`.
+  '(?<![A-Za-z0-9_])(Pass|Grant)::mint_bound\(',
+  '(?<![A-Za-z0-9_])Grant::mint\(',
+  # QUALIFIED-PATH SYNTAX (X-178) — the fourth spelling X-177 NAMED as a gap and did not close.
+  # `<Grant<Dial>>::mint(` writes the marker inside the type rather than after a turbofish `::`, so
+  # it carries no `Grant::<` for the two families above to bite on and no bare `Grant::mint(`
+  # either: measured against the pre-X-178 family set, `<Grant<Dial>>::mint(` and
+  # `<Pass<Approve>>::mint_bound(` both scored ZERO. It is ordinary Rust and it is the last way left
+  # to spell either generic constructor.
+  '<(Grant|Pass)<[^<>]*>>::mint(_bound)?\(',
+  # THE PRE-#73 TOKEN ZOO'S CONSTRUCTORS. These names are dead (caps/token.rs documents the
+  # unification) and `cargo xtask gate seal-witness` bans the identifiers outright -- but this row
+  # claims "the Teller's tokens are minted only inside the Teller", and a resurrected zoo
+  # constructor called from outside the kernel is exactly that claim being false. Two rows holding
+  # one property from two directions is the point; a name that only ONE row can see is not.
+  # `AdmitToken::mint(` is deliberately absent: it belongs to the admit-token-mint sub-row below,
+  # which is the row whose own claim text names it.
+  '(?<![A-Za-z0-9_])(UnitToken|TrustToken|UsageToken|LedgerToken|DurabilityToken|EgressAuthToken|TransportKeyToken|AdminToken|RecoveryToken|ExitToken)::mint(_bound)?\(',
+  # ── X-178: THE KERNEL'S OWN VALUE CONSTRUCTORS, WHICH NOTHING AT ALL SCANNED ──────────────────
+  #
+  # X-177 widened this row across the TOKEN family and left the kernel's other sealed constructors
+  # where it found them: unscanned. A grep of qa/ and xtask/src/ returned ZERO for every symbol
+  # below. Five of them take `&KernelSeal` exactly as `Grant`/`Pass` do (caps/token.rs:115,
+  # caps/unit_end.rs:50/115/135) or the exit token (caps/unit_end.rs:223), so each is the same
+  # forgery surface this row exists to close, and each was reachable from any crate in the tree by
+  # writing one line. Measured on this tree with all six planted in an orphan module under
+  # crates/busbar-llm/src, the pre-X-178 scanners scored ZERO hits and all three token-sealed rows
+  # stood PASS.
+  #
+  # "There is no production site outside the kernel today" is the reason to write these down, not
+  # a reason to skip them: a capability confined only by convention is confined until the first
+  # agent who does not know the convention. The kernel owns the badge press (spec Part 0, #73 at
+  # :413, hardened by #65 at :401) and a mint outside it must be impossible to spell.
+  #
+  # Each is a FAMILY, not a literal, for the same reason X-177's are: the optional `(?:…::)*` path
+  # prefix covers the fully-qualified spelling (`busbar_contract::caps::SecretOnce::mint(` is
+  # written today at crates/busbar/src/root/units_admin/tests/units_admin.rs:851), the `>?` covers
+  # the qualified-path form `<UnitEnd>::seal(`, and `(_bound)?` covers the #74 call-bound variant
+  # the day one of these grows it. A turbofish arm is deliberately absent HERE and only here: all
+  # six types are non-generic (they carry a `u64`, a `[u8; 32]`, an `OriginKind`), so `T::<X>::seal(`
+  # does not parse for any of them and an arm matching it would be an arm no tree can ever exercise.
+  #
+  # `SecretOnce::mint(` is deliberately absent from this list: its home is the VERBS unit, not the
+  # kernel, so it belongs to the `secret-once-mint` sub-row below, which is the row that can state
+  # its actual confinement. Same reason `AdmitToken::mint(` is absent.
+  #
+  # `CallId::seal(` mints the #74 generation `bound_to` compares, so a forged one makes a stray
+  # proof match any call. `Origin::seal(`'s own doc gives the attack: "a plane that could claim to
+  # be a tick could skip the door". `IdempotencyKey::mint(` is the replay-claim key and is ON THE
+  # MONEY PATH — it has NO production site anywhere in this tree, which is the strongest possible
+  # position from which to seal it, because the ceiling can be 0 with nothing to grandfather.
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*CallId>?::seal(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*Origin>?::seal(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*SessionId>?::mint(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*IdempotencyKey>?::mint(_bound)?\(',
+  '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*UnitEnd>?::seal(_bound)?\(',
+]
 allowed_root = "crates/busbar-kernel/src"
 max_sites = 0
-# The RULE-SPEC DATA for the hold-discipline scan below, not surface this rule scans: its own header
-# says "This file is DATA, not surface... the specification", so its literal token-constructor
-# strings (written down so the scan's own test keeps this list from going stale) self-match the
-# scanner. Excluded rather than counted as a forged mint.
-exclude_files = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
+# ── THE BLANKET EXCLUSION IS STRUCK 2026-09-23. IT DID NOT SURVIVE, AND HERE IS WHY ─────────────
+#
+# It read `exclude_files = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]` and the
+# argument beside it was that the file is "DATA, not surface": its literal token-constructor strings
+# self-match this scanner. That argument is true about TWO LINES and the exclusion was written
+# file-wide, so it stood over the whole file — and the file is not data on disk, it is
+# `crates/busbar-contract/src/**.rs`, compiled into the shipped contract crate. A real forged mint
+# written anywhere in it was invisible: the census planted one (`Grant::<Sign>::mint(`, appended)
+# and the row stayed PASS.
+#
+# THE TWO SELF-MATCHES ARE NOW FINDINGS AND ARE REPORTED AS SUCH, zero-touch, with no plant needed:
+# `lint_rules.rs:84` (`symbol: "Grant::<Recover>::mint("`) and `:93`
+# (`symbol: "take(&Grant::<Exit>::mint("`). Both are exact matches for this rule's pattern set, both
+# sit outside `allowed_root`, and the row was green about them.
+#
+# THEY ARE NOT SILENCED HERE. A per-line pragma would be the narrow shape (`plane-purity`'s
+# frozen-wire carve-out is the model) but a pragma is a new permission, and permissions are the
+# owner's. PARK, with the recommendation: move the rule-spec literals out of Rust source into a data
+# file this gate does not walk, which removes the self-match instead of excusing it — a
+# specification that is not compiled cannot be mistaken for a call site by anything.
+#
+# The key stays, empty, because an absent key and an empty list read the same to `list_of` and only
+# one of them is a decision somebody made.
+exclude_files = []
 # Two more of the same shape, scoped to busbar-kernel (not busbar-substrate/src/teller, which is
 # the pre-busbar-kernel path the `patterns` list above still ratchets against): `KernelSeal::
 # acquire_for_kernel(` mints the one seal every token constructor needs, and the unit crates'
@@ -449,11 +585,50 @@ exclude_files = ["crates/busbar-contract/src/caps/fixtures/lint_rules.rs"]
 # named seam, so the mint itself should never be spelled anywhere else -- it is scanned only by the
 # admit-token-mint sub-rule below, not by the `patterns` list above, so each seal-site symbol has
 # exactly one scanner.
+#
+# THAT LAST SENTENCE WAS THE BUG (X-177). "Scanned only by the sub-rule, not by the patterns list"
+# is a correct description of an intent and was a false description of the code: the sub-rule
+# scanned `Grant::<Admittance>::mint\(` and NOTHING scanned the bare-marker variants, the
+# fully-qualified variant, `mint_bound`, or the pre-#73 `AdmitToken::mint(` that the sub-row's own
+# printed claim named. A symbol assigned to one mechanism and matched by neither is covered by
+# neither, and the row said PASS about it. The patterns below are widened to the same family shape
+# `pattern_families` above uses; `*_subject` is the text the row PRINTS, read from beside the
+# pattern it describes so a claim can no longer name a symbol its scan cannot see.
 kernel_seal_pattern = 'KernelSeal::acquire_for_kernel\('
-admit_token_mint_pattern = 'Grant::<Admittance>::mint\('
+kernel_seal_subject = "`KernelSeal::acquire_for_kernel(`"
+admit_token_mint_pattern = '(?<![A-Za-z0-9_])(Grant::<([A-Za-z0-9_]+::)*Admittance>|AdmitToken)::mint(_bound)?\('
+admit_token_mint_subject = "the arrival-hold mint (`Grant::<Admittance>::mint[_bound](`, and its pre-#73 name `AdmitToken::mint(`)"
 kernel_root = "crates/busbar-kernel/src"
 max_kernel_seal_sites = 0
 max_admit_token_mint_sites = 0
+
+# ── X-178: THE ONE SEALED CONSTRUCTOR WHOSE HOME IS NOT THE KERNEL ──────────────────────────────
+#
+# `SecretOnce::mint(` mints the placeholder for a credential a verb creates ONCE, at ONE declared
+# location; if the encoded bytes do not carry the nonce exactly once at that location the unit fails
+# and the mint is reversed. That is what stops a credential-minting verb leaking its output into a
+# log, a fact, or a second copy of the response — so a forged mint is a second copy of a secret with
+# nothing to reverse it.
+#
+# Its confinement is "Verbs unit only" (caps/egress.rs:149), NOT "kernel only", and it is the only
+# one of the six that has a live production site: crates/busbar-core-admin/src/verbs.rs:285. That is
+# why it gets a sub-row with `secret_once_root` rather than a `pattern_families` entry — the family
+# list is judged against `allowed_root` (the kernel), which would stand this row RED on the single
+# call the design REQUIRES. Greening that would need a waiver for a correct call, and a waiver for a
+# correct call is how a gate learns to lie. The row that can state the real confinement is the row
+# that gets to make the claim.
+#
+# TWO TYPES, ONE SPELLING — SAID OUT LOUD BECAUSE A TEXT SCANNER CANNOT SEE IT. There are two live
+# `SecretOnce` types with two different `mint` signatures: `caps::egress::SecretOnce::mint(&Grant
+# <AdminVerb>, nonce, unit, target)` (caps/egress.rs:150) and `dest::SecretOnce::mint(&dyn
+# KernelSeal, nonce, target)` (dest.rs:379), both re-exported from the contract crate's root. This
+# pattern matches BOTH, and that is correct rather than sloppy: both docs say the verbs unit is the
+# only minter ("Verbs unit only"; "Verbs-unit-only; the seal is what says so"), so one home holds
+# for both. `dest::SecretOnce::mint` has no production caller at all today.
+secret_once_mint_pattern = '(?<![A-Za-z0-9_])(?:[A-Za-z0-9_]+::)*SecretOnce>?::mint(_bound)?\('
+secret_once_mint_subject = "the one-time secret placeholder mint (`SecretOnce::mint(`, both the capability and the destination type of that name)"
+secret_once_root = "crates/busbar-core-admin/src"
+max_secret_once_mint_sites = 0
 
 # ── 9. teller-step-order ─────────────────────────────────────────────────────────────────────────
 [rules.teller-step-order]
@@ -643,7 +818,8 @@ contract_crate = "busbar-contract"
 # (DECISIONS #38, fold busbar-contract-transport into busbar-contract) both dissolve into this
 # crate's src tree; busbar-caps is now empty (0). Pinned at today's measurement. See the declared
 # raise above.
-# RAISED AGAIN 5230 -> 5238: busbar-core-transport (DECISIONS #40) added the opaque
+# RAISED AGAIN 5230 -> 5238: busbar-core-connsec (DECISIONS #40; then named busbar-core-transport,
+# renamed by OWNER RULING R2 under #37) added the opaque
 # `ConnectionSecurity` transport face to busbar-contract's src tree (~8 lines). busbar-caps stays
 # empty (0). Pinned at today's measurement. See the declared raise above.
 # ── HELD 2026-09-22 at 5652, AND RED: busbar-caps 0 + busbar-contract 6659 = 6659. ─────────────
@@ -1003,8 +1179,14 @@ way to answer it."""
 file = "crates/busbar-contract/src/kinds.rs"
 plane_file = "crates/busbar-contract/src/plane.rs"
 transport_file = "crates/busbar-contract/src/transport/mod.rs"
+# ONE auth kind, ONE auth trait (DECISIONS #3, owner 2026-09-22). `EgressAuthScheme` stood here
+# until the `Kind::EgressAuth` variant, the `EgressAuthKind` marker and the trait itself were struck
+# from busbar-contract: outbound-sign is an OPERATION of the auth kind and direction is a property
+# of the leg, so there is no second kind trait for this rule to scan. The rule's own refusal is what
+# requires the strike to land in the same commit as the deletion — a trait it cannot find is a trait
+# it cannot judge, and a ceiling of 0 met by scanning nothing is the passing answer to every ban.
 traits = [
-  "AuthScheme", "EgressAuthScheme", "Store", "Secret", "Hook", "Export", "Anchor",
+  "AuthScheme", "Store", "Secret", "Hook", "Export", "Anchor",
   "Plane", "SessionPlane", "Transport",
 ]
 max_defaulted = 0
@@ -1487,15 +1669,75 @@ which is the row that can name the home the call belongs in, so one site is neve
 # above, which records exactly that. So `crates/busbar-*-codec/src/*` kept matching the two codec
 # crates that survive (llm, voice) and never went red when the other two folded into the very crates
 # these globs were supposed to reach: the mcp and a2a codec halves have been unscanned since the
-# fold. `busbar-voice` likewise carries its plane in `src/runtime/` and `src/topology/`. Each glob
-# now names its crate's whole `src`, which is what this rule's own `why` asks for ("a plane crate,
-# the pure codec half it shed") and the same width `crates/busbar-plane-*/src/*` already uses for a
-# plane crate.
+# fold. So the MCP and A2A globs now name their crate's whole `src`, which is what this rule's own
+# `why` asks for ("a plane crate, the pure codec half it shed") and the same width
+# `crates/busbar-plane-*/src/*` already uses for a plane crate. Both isolate to ZERO findings: that
+# widening restores coverage the fold silently took away, and costs nothing.
 #
-# MEASURED BEFORE AND AFTER ON THIS TREE, AND THE DIFFERENCE IS THE FINDING: 1 -> 113 money symbols.
-# A rule asserting that a plane names no price was green over three of its four planes. Under
-# #43/#71 a plane is pricing-blind, so every one of those is a real hit and NOT ONE of them is
-# allowlisted here; the row stays red at 113 until they are neutralised.
+# ── VOICE IS NOT MCP OR A2A. ITS GLOB WAS RE-SCOPED AGAIN, 2026-09-22 ───────────────────────────
+#
+# The same repoint handed `busbar-voice` its whole `src` in the same sentence, and THAT half was
+# wrong. Not because the old `crates/busbar-voice/src/unit/*` was any better -- it never resolved
+# either, and putting it back would restore the exact green-over-nothing this rule had just stopped
+# printing -- but because voice's two in-scope halves ARE ALREADY SCANNED by the two wildcard globs
+# above, and the half the widening actually added is not in scope at all:
+#
+#   * THE PLANE is `busbar-plane-streaming`, NOT `busbar-voice`. #18: the fourth plane is
+#     STREAMING and `voice` is one dialect inside it. `qa/kind-isolation.toml` says it outright --
+#     "`busbar-voice` is the retiring 1.5.x streams crate and `busbar-plane-streaming` is the plane
+#     it [became]" -- `[gate.plugin_kinds].plane` above lists `crates/busbar-plane-streaming` as the
+#     plane KIND, and `plane_crates` at the top of this file files `busbar-voice` under "LEGACY
+#     ENGINE crates" with its own warning that "a reader must not take either as the plane kind".
+#     `crates/busbar-plane-*/src/*` has always reached it.
+#   * THE PURE CODEC HALF IT SHED is `busbar-voice-codec`, AND THAT CRATE STILL EXISTS. Unlike
+#     `busbar-mcp-codec` and `busbar-a2a-codec` it was never folded back in, so the argument three
+#     paragraphs up does not transfer: `crates/busbar-*-codec/src/*` has been matching it the whole
+#     time. Its own crate doc states the split in this rule's exact words -- "`busbar-voice` held
+#     two things behind one name: these codecs ... and the runtime that carries them over a live
+#     socket."
+#   * THE PLANE'S OWN UNIT MODULES do not exist here. `crates/busbar-voice/src` has no `unit/`
+#     directory and never had one, which is why the original glob could not have matched.
+#
+# So what `crates/busbar-voice/src/*` added over those two globs was ONLY the ENGINE half -- the
+# axum mount, the tokio session pump, the D2 metering lease, the telephony/WebRTC dial, and a
+# conformance-harness BINARY. An engine is none of the three things the `why` scopes.
+#
+# MEASURED WITH ALL 113 COUNTED BY FILE, not sampled off the detail line -- which prints only the
+# first 8 IN PATH ORDER, so `busbar-llm` and `src/bin/` are all a sample can ever show and the
+# distribution reads as "it is nearly all the test binary". It is not:
+#
+#      44  crates/busbar-voice/src/runtime/metering.rs                   the D2 reserve/settle lease
+#      36  crates/busbar-voice/src/bin/voice-conform.rs                  the conformance harness bin
+#      14  crates/busbar-voice/src/runtime/voice_d2_billing_oracle.rs    a pinned billing oracle
+#       6  crates/busbar-voice/src/mount.rs                              the axum mount
+#       5  crates/busbar-voice/src/runtime/mod.rs
+#       4  crates/busbar-voice/src/topology/mod.rs                       telephony / WebRTC
+#       3  crates/busbar-voice/src/runtime/session.rs
+#       1  crates/busbar-llm/src/unit/meter.rs                           `priced_from_ms` -- REAL
+#
+# The binary is 36 of 113, not the bulk. 112 of the 113 are the engine half, and the symbols are
+# `cap_nanos` / `settled_nanos` / `fee_nanos` / `estimate_nanos` / `reserved_nanos` -- NANODOLLARS,
+# as `metering.rs`'s own header says ("a reserve-then-settle lease over ALREADY-PRICED
+# nanodollars"), not the time-sense `_nanos` this rule's `allowed_vocabulary` excuses. They are real
+# money and real DEBT -- but they are not THIS row's debt. `plane-pricing-blindness` (DECISION #43,
+# Part 7 §13(3),
+# `qa/plane-pricing-blindness.toml`) is the gate built to burn exactly them down, with a per-file
+# ledger and a human-supplied reachability claim on every row; its own worked example row is
+# `crates/busbar-voice/src/runtime/metering.rs`. Counting them a second time under a `max_hits = 0`
+# with no burndown would not fix one of them. It would only bury the one finding this row can still
+# see under 112 it cannot act on.
+#
+# ZERO of the 113 were in `crates/busbar-voice-codec/src` or `crates/busbar-plane-streaming/src`.
+# Voice's plane and its codec are clean TODAY, and after this re-scope they are still SCANNED, so
+# they cannot stop being clean quietly. PROVEN with a positive control in BOTH directions, each
+# plant grepped back before the verdict was read: a `per_request_fee` planted in
+# `crates/busbar-voice-codec/src/ir/usage.rs` is CAUGHT (1 -> 2), and the same symbol planted in
+# `crates/busbar-voice/src/bin/voice-conform.rs` is NOT (1). Both plants were reverted.
+#
+# WHAT SURVIVES IS STILL RED, WHICH IS THE POINT. `crates/busbar-llm/src/unit/meter.rs:490`
+# `priced_from_ms` is a plane-side unit module naming a price -- the field the parked
+# two-money-reads recommendation proposes, landing on the plane side of the #43 line. It is NOT
+# allowlisted and this row stays RED at 1.
 #
 # `busbar-llm` IS DELIBERATELY LEFT AT `src/unit/*`. That glob RESOLVES — it is not a dead name, and
 # widening it to `crates/busbar-llm/src/*` would pull `src/engine/` into scope in the same edit that
@@ -1507,7 +1749,6 @@ scope_globs = [
   "crates/busbar-llm/src/unit/*",
   "crates/busbar-mcp/src/*",
   "crates/busbar-a2a/src/*",
-  "crates/busbar-voice/src/*",
 ]
 # Each is matched as a whole word (an entry starting with `_` as a suffix), and judged against the
 # WHOLE identifier it lands in, so the vocabulary below can excuse a word rather than a substring.
@@ -1594,32 +1835,100 @@ fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
 # from a genuine regression. (qa/kind-isolation.toml still names `busbar-admin` in 8 rows from the
 # same miss -- out of scope for this key, reported separately.)
 #
-# NOT ADDED, and flagged for owner review rather than silently covered: `busbar` (the composition
-# root)'s crates/busbar/src/root/units_admin/mod.rs:1118,1149,1155,1247 read `per_request_fee` too
-# (line numbers refreshed 2026-09-22; they read 762,793,799,891 when first recorded and the file has
-# since grown -- the sites are the same ones), but git-trace to 54dbbdfcc ("build D38
-# amend_rate_history money-path admin verb (additive)") and 5e0336a85 -- new code, not a move, and
-# `git log -S per_request_fee -- crates/busbar/src/root/units_admin/mod.rs` lists those two commits
-# and nothing else. It parses an operator's JSON payload into `per_request_fee: Option<i64>` and
-# hands it straight to `busbar_kernel_ledger::cost::RateCard::from_micro_rates_in(...)` without
-# deriving anything itself, which reads like the same "root wiring hands the cost unit its input"
-# shape this rule already allows for the entry-verb side (`rules.one-pricing-site.allowed.
-# root-wiring`) -- but this rule's fee-fields check is crate-scoped with no path-level allowance, and
-# the money-sacred instruction for this branch is: only widen for code that GENUINELY moved. D38 is
-# new, so these 4 sites STAY RED, and the repoint above deliberately does not reach them.
+# ADJUDICATED 2026-09-22 AGAINST THE LAWS, AND THE VERDICT REVERSED: `busbar` (the composition
+# root)'s crates/busbar/src/root/units_admin/mod.rs:1118,1149,1155,1247 read `per_request_fee`, and
+# THE SCOPE OF THIS CHECK WAS THE DEFECT, not those four sites. The reads are granted below, by
+# PATH and with a COUNT, and `max_fee_readers` STAYS 0 -- the ceiling did not move.
 #
-# RE-CONFIRMED 2026-09-22 UNDER THE GOVERNING DESIGN, which makes these 4 a real defect and not a
-# missing waiver. BUSBAR-1.6.0.md "MONEY -- the enforcement book must stop storing a price": there
-# is to be exactly ONE money function `price(ledger_slice, card_history) -> Money`, called by the
-# admin reads AND by the budget gate, and the census found `f` implemented ~20 times across 5
-# crates. `one-pricing-site` is the gate that enforces precisely that. So this row is not noise to
-# be quieted -- it is TELLING THE TRUTH that the fee is handled at a site outside the card's own
-# crates. The 4 belong to the money-function consolidation to DELETE, not to an allowlist to
-# absorb; widening `fee_reader_crates` to cover `busbar` would launder a live finding into a
-# pre-existing exception. Ceiling therefore stays 0: repointing the dead name restores 5 of the 9,
-# and the row is CORRECTLY still red on the remaining 4.
+# THE CONFLICT THAT FORCED THE ADJUDICATION. This rule's OWN `why` opens "the composition root's
+# meter and admission wiring is what calls it"; `[rules.one-pricing-site.allowed.root-wiring]` below
+# grants `crates/busbar/src/root/` in so many words; and the sibling `plane-no-money`'s `why` says
+# "Only busbar-kernel-ledger's cost module ... AND THE COMPOSITION ROOT'S METER/ADMISSION WIRING may
+# name a price." Three sentences in this file permitted the root; one crate list forbade it. They
+# cannot both be right, and the crate list is the one with no argument behind it -- it was never
+# written as a ruling about the root, it is simply the only shape a crate list can take, because a
+# crate list cannot say "this one reviewed file". The entry-verb half of this same rule had path
+# homes from birth; the fee half never did, and that asymmetry -- not a decision -- is what kept the
+# root out.
+#
+# WHAT THE FOUR SITES ARE, each read and judged on its own:
+#   :1118  `obj.get("per_request_fee")` -> `Option<i64>`. PARSES the operator's JSON wire field.
+#          The spelling is the operator's, fixed by #47 ("1.5.5's flat top-level `rate_card`/
+#          `per_request_fee` load as the `pools` (llm) plane's reserved keys, byte-identical"). No
+#          arithmetic, no card read, integer -- there is no f64 anywhere on the fee's own path.
+#   :1149  `entries.is_empty() && per_request_fee.is_none()` -- a SHAPE REFUSAL. An amendment that
+#          moves no figure is refused before anything is appended. Tests PRESENCE, uses no value.
+#   :1155  `per_request_fee.unwrap_or(0)` handed as the third argument to
+#          `RateCard::from_micro_rates_in`. THE RELAY the card crate itself asks for, in its own
+#          words at `crates/busbar-kernel-ledger/src/cost/rate.rs` (`from_config`'s doc): "the two
+#          configured figures a card is made of ... are read by their owner and handed straight
+#          over; what is DONE with them is this crate's ... and the composition root's binding is a
+#          relay with no arithmetic in it." The clamp (`.max(0)`) and the absent/present branch are
+#          the card crate's, exactly as that doc requires. `unwrap_or(0)` is a default, not a
+#          derivation, and it is the card crate's own convention -- `absent_in`/`from_config` take a
+#          bare `i64` with no `Option`, so "no fee named" is 0 everywhere, not just here.
+#   :1247  the STRING LITERAL `"per_request_fee"` in `canonical_amend_payload`'s fixed key list.
+#          It reads no fee at all: it names the JSON key so the operator's detached ed25519
+#          signature COVERS the fee. Deleting it to quiet a grep would take the fee outside the
+#          signed payload -- a security regression bought with a green row.
+#
+# NONE of the four stores a price (#77(3)), writes a price into a durable book, computes money in
+# binary floating point (#77(8)/#81), or prices against any card at all -- they never price. What
+# they append is a CARD, into the dated history, which is the machinery #79 exists to describe.
+#
+# THE DECISION THAT DECIDES IT IS #79, AND IT NAMES THIS FILE. "A back-dated correction ... DOES
+# reprice exactly the window `[effective_from, effective_until)` -- that is the sanctioned repair
+# path ... it is an APPEND and a signed admin act, never an edit. Engine already exists and is
+# reachable: `crates/busbar/src/root/kernel.rs:262` (`effective_from`), `:291` (window recompute),
+# `root/units_admin/mod.rs:679` (signed back-dated entry)." CHECKED, not paraphrased: #79 was locked
+# by 5caf5fea7 on 2026-09-22, FIVE DAYS AFTER D38 landed (54dbbdfcc, 2026-09-17), and
+# `git show 5caf5fea7:crates/busbar/src/root/units_admin/mod.rs | sed -n 679p` is the doc line of
+# `amend_rate_history_effect` -- the very function these four sites live in. A locked decision
+# examined this code, five days after it was written, and named its path as the sanctioned engine.
+# Part 2's own preamble: "a decision here is LAW and states the CURRENT truth ... Only Part 1 (the
+# Laws) and Part 3 outrank this Part." A gate note does not.
+#
+# THE OLD NOTE'S ARGUMENT, AND WHY IT DOES NOT REACH. It cited "MONEY -- the enforcement book must
+# stop storing a price": one money function `price(ledger_slice, card_history) -> Money`, `f`
+# implemented ~20 times across 5 crates. That section is about the READ that turns COUNTS into
+# MONEY. `amend_rate_history_effect` is not an implementation of `f` -- it takes no ledger slice,
+# returns no `Money`, and performs no multiplication. It AUTHORS `card_history`, which is `f`'s
+# second ARGUMENT. Consolidating `f` does not delete the verb that appends to the card history; the
+# consolidated `f` cannot be written without one, because the same section requires "each posting
+# prices against the card in force at its own `arrived_ms` (#79)". Counting the card's author as one
+# of the ~20 pricing sites is a category error, and it is what kept this row red.
+#
+# AND PART 1, WHICH OUTRANKS EVERYTHING ELSE IN THIS FILE, DECIDES THE REMEDY: "The purity gates ...
+# are servants of the vision, not the vision ... A gate that reds on that is SCOPED WRONG, and the
+# fix is the gate's scope, not the code." Law 6 puts pricing in core -- "Core captures the
+# quantities and prices them against the rate card the user registered" -- and #43 makes the card
+# core-owned ("rate_card + fees are CORE-owned; plugins are PRICING-BLIND"). The composition root IS
+# core. #42 governs the READ (card presence is the switch) and says nothing against authoring a
+# card; #43/#71 make pricing a read-time view, and this file computes no view.
+#
+# WHY NOT `fee_reader_crates = [..., "busbar"]`. Because the old note is RIGHT about that much: a
+# crate grant would launder the whole root -- `main.rs`, every `units_*.rs`, `money_book` -- in one
+# unargued stroke, and it would contradict the root's own written discipline at
+# `crates/busbar/src/root/kernel.rs` (`card_from_config`): "the flat figure crosses as a NEUTRAL
+# minor-unit value; the cost unit's constructor is the one that reads it AS the per-request fee ...
+# so no plane and no root file spells a fee -- the read lives where the card lives." That discipline
+# is real and it still holds for every root file but this one. THE ONE EXCEPTION IS FORCED BY THE
+# WIRE: an admin verb that accepts a correction must spell the operator's own field name to parse
+# it and must spell it again to sign it (#47 fixes the spelling; the signature makes it
+# load-bearing). So the grant is exactly one file, with the count it was reviewed at, and a fifth
+# read in that same file is RED again.
 fee_reader_crates = ["busbar-kernel-ledger", "busbar-kernel", "busbar-core-admin"]
 max_fee_readers = 0
+
+# The reviewed fee homes: a PATH, the COUNT it was reviewed at, and the reason. The count is half
+# the grant -- a read above it is reported exactly like a read with no home at all -- and a home
+# that falls to ZERO reads is reported too, because a grant that describes nothing is the dead name
+# this file has been bitten by five times already: it stops applying in silence, and the next real
+# read at that path inherits a waiver nobody reviewed.
+[rules.one-pricing-site.fee_allowed.amend-rate-history]
+path = "crates/busbar/src/root/units_admin/mod.rs"
+max = 4
+because = "#79 names this file as the engine of the signed back-dated correction and was locked five days after the code landed; the verb parses the operator's own `per_request_fee` wire field (#47 fixes that spelling), covers it with the operator's ed25519 signature, and relays it unchanged to `RateCard::from_micro_rates_in` -- it appends a CARD to the dated history and never derives, stores or computes a price"
 
 [rules.one-pricing-site.allowed.cost-unit]
 path = "crates/busbar-kernel-ledger/src/cost/"

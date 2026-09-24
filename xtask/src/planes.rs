@@ -70,16 +70,90 @@ pub fn plane_src_roots() -> Vec<String> {
 /// REMOVING A ROOT IS A NAMED CHANGE, NEVER A SILENT ONE. A root that is listed but absent means
 /// the gate scans zero files of it and reports the passing answer to every ban, which is why the
 /// walk refuses a missing root rather than narrowing itself.
+/// ── WIDENED 2026-09-23: "THE NEUTRAL CRATES" WAS THREE OF FORTY-NINE ────────────────────────────
+///
+/// This list read `busbar-kernel`, `busbar-substrate-values`, `api` — and it is the denominator for
+/// `plane-purity` (9 rows), `plane-transport-neutrality` (3 rows) and `plane-purity-strict`'s
+/// ceilings. Two gates print the words "the neutral crates" and read three directories.
+///
+/// The census in `docs/design/1.6.0-gate-blindspots.md` planted the identical line
+/// `let _ = busbar_mcp::Thing;` in six crates and only the one in `busbar-kernel` was found; it then
+/// planted `let rtp_port = 1;` in the same six and found one again. **`busbar-contract` was not on
+/// the list** — the plugin-visible capability surface, the crate whose neutrality is the entire
+/// promise of the plane ABI — and neither was `busbar-kernel-ledger`, which is the money path.
+/// `docs/design/BUSBAR-1.6.0.md:2988` names this exactly: *a crate that is in no list is in no
+/// gate.*
+///
+/// THE MEMBERSHIP RULE, so the next reader can decide an entry rather than copy one. A crate is
+/// NEUTRAL when it must still compile with every plane crate deleted and must never name a protocol
+/// by name. That admits the kernel and every crate it decomposed into, the ABI and contract crates,
+/// the loader and the SDK, and the compiled-in cleanliness crates. It excludes, each for a reason
+/// that is a property of the crate and not a preference:
+///
+/// * the five `busbar-plane-*` crates — the plane kind itself, scanned by the REVERSE side of
+///   `plane-purity` through `kind_isolation::plane_kind_src_roots`;
+/// * `busbar-llm`, `busbar-mcp`, `busbar-a2a`, `busbar-voice` and the two surviving `-codec` halves
+///   — the legacy engines: naming a protocol is what they are for, and [`plane_src_roots`] is the
+///   list that scans them;
+/// * the plugin INSTANCES (`busbar-transport-*`, `store-*`, `secret-*`, `auth-*`, `hook*`,
+///   `export-*`, `plane-example`) — an instance crate names its own protocol by definition;
+/// * `crates/busbar` — the composition root constructs planes BY NAME (`root/plane_decision.rs`),
+///   which is the one place in the tree where naming one is the job.
+///
+/// STILL AN EXPLICIT LIST, AND THAT IS STILL A GAP. Deriving this by exclusion from the directories
+/// on disk would close the enrolment hole for good — a new neutral crate would be in the gate on the
+/// day it is created rather than on the day somebody remembers this function. It is not done here
+/// because the [`crate::gates::plane_purity`] and [`crate::gates::plane_transport_neutrality`]
+/// `:roots` rows are built on this list being a LIST: they refuse a listed root that is not on disk,
+/// and a list derived from disk can never fail that way, which would trade one blind spot for a row
+/// that cannot go red. PARK for the owner: derive-by-exclusion plus a separate census row that every
+/// `crates/*/src` is either neutral or named non-neutral, so neither property is lost.
+///
+/// REMOVING A ROOT IS A NAMED CHANGE, NEVER A SILENT ONE. A root that is listed but absent means
+/// the gate scans zero files of it and reports the passing answer to every ban, which is why the
+/// walk refuses a missing root rather than narrowing itself.
 pub fn neutral_src_roots() -> Vec<String> {
-    vec![
-        // `busbar-core` was absorbed into `busbar-kernel` (W4.a, 673ecdaaa); `busbar-substrate`'s
-        // engine followed it (W4.b P2, 5fa320208) while its value leaves live in
-        // `busbar-substrate-values` (already listed below). Both former roots are gone from disk —
-        // scanning them now would read zero files and pass every ban silently.
-        "crates/busbar-kernel/src".to_string(),
-        "crates/busbar-substrate-values/src".to_string(),
-        "crates/api/src".to_string(),
+    [
+        // The kernel and the crates it decomposed into. `busbar-core` was absorbed into
+        // `busbar-kernel` (W4.a, 673ecdaaa); `busbar-substrate`'s engine followed it (W4.b P2,
+        // 5fa320208) while its value leaves live in `busbar-substrate-values`. Both former roots
+        // are gone from disk — scanning them now would read zero files and pass every ban silently.
+        "crates/busbar-kernel/src",
+        "crates/busbar-kernel-audit/src",
+        "crates/busbar-kernel-breaker/src",
+        "crates/busbar-kernel-budget/src",
+        "crates/busbar-kernel-egress/src",
+        "crates/busbar-kernel-identity/src",
+        // THE MONEY PATH. `plane-purity`'s claim is that a plane's name does not reach a neutral
+        // crate; the one-book ledger is where a plane's name reaching in would become a price keyed
+        // by plugin, which #77(1) bans outright.
+        "crates/busbar-kernel-ledger/src",
+        "crates/busbar-kernel-scope/src",
+        "crates/busbar-kernel-wal/src",
+        // THE ABI AND CONTRACT SURFACES. `busbar-contract` is the crate the census's demonstration
+        // was about: it is what a plugin author compiles against, so a protocol noun in it is a
+        // protocol noun in the published ABI.
+        "crates/busbar-contract/src",
+        "crates/busbar-plugin/src",
+        "crates/busbar-substrate-values/src",
+        "crates/api/src",
+        // THE LOADER AND THE SDK — the TCB crates ARCHITECTURE.md excuses by name from the plugin
+        // KINDS, which is not the same as excusing them from neutrality: the loader dlopens every
+        // kind and the SDK is what an author writes against.
+        "crates/plugin-loader/src",
+        "crates/plugin-sdk/src",
+        // THE COMPILED-IN CLEANLINESS CRATES (DECISIONS #4/#5: admin and oauth2 are not a `control`
+        // kind) and the remaining neutral leaves.
+        "crates/busbar-core-admin/src",
+        "crates/busbar-core-connsec/src",
+        "crates/busbar-oauth2/src",
+        "crates/busbar-timing/src",
+        "crates/busbar-unit-transport-key/src",
+        "crates/secret-ref/src",
     ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 #[derive(Debug, Clone)]

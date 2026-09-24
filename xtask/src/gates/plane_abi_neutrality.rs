@@ -240,7 +240,35 @@ fn declared_plane_keys(cx: &Ctx) -> Result<Vec<String>, String> {
         else {
             continue;
         };
-        let key = krate.strip_prefix("busbar-").unwrap_or(krate).to_string();
+        // THE COMPOSITION ROOT IS NOT A PLANE CRATE, so the directory rule above cannot name the
+        // plane a declaration written there is about. `crates/busbar` strips to `busbar` — the
+        // project's own name, in every crate in the tree, and a "plane key" nobody could sanely
+        // ban — and that is exactly what this row was failing on.
+        //
+        // WHY A DECLARATION LIVES IN THE ROOT AT ALL, and why this is not a widening: the decision
+        // plane is ONE crate, pure, and a pure plane's manifest may name `busbar-contract` and
+        // nothing else (the dep wall, DECISIONS #40). `PlaneDecl` is a `busbar-kernel` type, so the
+        // plane crate cannot hold its own declaration; `crates/busbar-plane-decision/src/registry.rs`
+        // was DELETED for carrying that forbidden edge (aad3cdd15) and the declaration was rewritten
+        // in the root (7265a533b), both on 2026-09-22. `PRIMITIVE_COLLISION_KEYS` — which names this
+        // exact plane, for the noun collision written up on it — was set a day earlier against the
+        // address the declaration used to have, and has covered nothing since.
+        //
+        // So the key is repointed, not the rule relaxed: the root names the plane it declares in the
+        // FILE name (`root/plane_decision.rs` declares `busbar-plane-decision`), the derived key is
+        // the same string the directory rule produced before the move, and the one documented
+        // exemption below goes on doing the job it was written for. A root file that declares a
+        // `PLANE_DECL` and is NOT named `plane_<key>.rs` still reads as `busbar` and is still loud.
+        let key = if krate == "busbar" {
+            rel.rsplit('/')
+                .next()
+                .and_then(|f| f.strip_suffix(".rs"))
+                .and_then(|stem| stem.strip_prefix("plane_"))
+                .map(|plane| format!("plane-{}", plane.replace('_', "-")))
+                .unwrap_or_else(|| krate.to_string())
+        } else {
+            krate.strip_prefix("busbar-").unwrap_or(krate).to_string()
+        };
         if PRIMITIVE_COLLISION_KEYS.contains(&key.as_str()) {
             continue;
         }

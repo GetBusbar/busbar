@@ -128,21 +128,25 @@ pub struct RateNanos {
 
 impl RateNanos {
     /// Project the NEUTRAL raw-rate view ([`busbar_substrate_values::billing::RawTierRates`]) — the four raw
-    /// micro-float-per-token rates in canonical reserved order — to this integer nano-rate. This is
-    /// the ONE projection: config micro-units × 1000, rounded once, with the defense-in-depth clamp.
-    /// Core reads rates through this NEUTRAL view so the projection names no plane config type; the
-    /// arithmetic (and thus every derived figure) is byte-identical to the pre-seam `from_cfg`.
+    /// micro-float-per-token rates in canonical reserved order — to this integer nano-rate. Core
+    /// reads rates through this NEUTRAL view so the projection names no plane config type.
+    ///
+    /// THE CONVERSION IS THE LEDGER'S, NOT A COPY OF IT. `busbar_kernel_ledger::cost::nano_rate` is
+    /// the one decimal-to-money conversion in the tree, and this used to be a second copy of its
+    /// three lines. The two DID drift, in the way a doc comment is no defence against: the ledger's
+    /// clamp refuses a value too large for a `u64` to hold, and this copy tested only finiteness —
+    /// so one configured rate with too many zeros (`1e300` micro-units per token) priced as ZERO in
+    /// the book and, because a float-to-integer cast SATURATES rather than wrapping, as
+    /// `u64::MAX` nanos per token here. A request JUDGED at one rate and BILLED at another is
+    /// precisely the failure a duplicate exists to cause, so the duplicate is gone rather than
+    /// patched: the clamp, the half-away-from-zero rounding (#44 — card-build quantization) and the
+    /// ×1000 are the ledger's, once.
+    ///
+    /// Every in-range rate projects to the same integer it always did; only the out-of-range ones
+    /// move, and they move from a garbage overcharge to the zero that means "nobody can price
+    /// this".
     pub fn from_raw(raw: &busbar_substrate_values::billing::RawTierRates) -> Self {
-        // Config values are validated finite + >= 0; the clamp here is defense-in-depth so a NaN
-        // or negative that slipped past validation becomes 0, never a huge/garbage integer rate.
-        fn nanos(utok: f64) -> u64 {
-            let v = (utok * 1000.0).round();
-            if v.is_finite() && v > 0.0 {
-                v as u64
-            } else {
-                0
-            }
-        }
+        let nanos = busbar_kernel_ledger::cost::nano_rate;
         Self {
             input: nanos(raw.input),
             output: nanos(raw.output),
@@ -172,17 +176,32 @@ impl RateNanos {
         }
     }
 
-    /// The nano-unit cost of a unit map's RESERVED FOUR at this rate: the four multiply-adds in u128
-    /// (a u64 count times a u64 nano rate cannot overflow u128). Byte-identical to the pre-M1b
-    /// `cost_nanos(&TierTokens)` — the map values ARE the old struct fields. Opens are NOT priced
-    /// here (they need the per-model `ExtraRates`); the enforcement/derive summation prices only the
-    /// reserved four, exactly as before M1b.
+    /// The nano-unit cost of a unit map's RESERVED FOUR at this rate. Opens are NOT priced here
+    /// (they need the per-model `ExtraRates`); the enforcement/derive summation prices only the
+    /// reserved four.
+    ///
+    /// THE ARITHMETIC IS [`busbar_kernel_ledger::cost::nanos_sum`]'S. What is left here is the only
+    /// thing this type knows that the ledger does not: WHICH rate each reserved key prices at. The
+    /// multiply, the sum and the saturation at both steps are the one fold every money path shares.
+    ///
+    /// THE COMMENT THIS REPLACES IS WHY THE DEFECT SURVIVED. It said a `u64` count times a `u64`
+    /// nano rate cannot overflow a `u128`, which is TRUE — and it is a true sentence about the
+    /// MULTIPLY, standing where a reader looks for a sentence about the SUM. The sum was the
+    /// unguarded operation: four maximal products reach about 2^130 against a 2^128 ceiling, a
+    /// plain `+` panics in a debug build and WRAPS in a release one, and a total one past the
+    /// ceiling wraps to ONE nano-unit — an astronomical ledger deriving as very nearly free and
+    /// clearing every budget cap on the way past. Saturating is the only reading of an over-the-top
+    /// bill that cannot UNDER-bill.
+    ///
+    /// No ordinary answer moves: below the ceiling this is the same exact integer arithmetic it has
+    /// always been, so every bill a deployment actually produces is byte-identical to 1.5.5.
     #[inline]
     pub fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
-        RESERVED_UNITS.iter().fold(0u128, |acc, u| {
-            let n = units.get(*u).copied().unwrap_or(0);
-            acc + (n as u128) * (self.reserved_rate(u) as u128)
-        })
+        busbar_kernel_ledger::cost::nanos_sum(
+            RESERVED_UNITS
+                .iter()
+                .map(|u| (units.get(*u).copied().unwrap_or(0), self.reserved_rate(u))),
+        )
     }
 }
 

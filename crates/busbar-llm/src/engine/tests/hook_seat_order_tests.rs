@@ -15,7 +15,7 @@ use busbar_api::{
     RoutingRequest, TransformOutcome,
 };
 use busbar_kernel::hooks::ResolvedPolicy;
-use busbar_kernel::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
+use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, TestAppKit};
 use std::sync::{Arc, Mutex};
 
 /// The marker the rewrite hook plants in the prompt; a tap payload carrying it saw the rewrite.
@@ -221,7 +221,7 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     a.tap_hooks_candidate = vec![(std::time::Duration::from_millis(500), false, ct, Vec::new())];
     a.global_gates = vec![(0u16, gate(Arc::new(gate_probe)))];
 
-    let router = busbar_kernel::testkit::build_router(app);
+    let router = busbar_kernel::test_support::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let serve = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

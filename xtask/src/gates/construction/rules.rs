@@ -775,11 +775,57 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let allowed_root = need_str(c, "allowed_root", "token-sealed")?;
     let root = format!("{}/", allowed_root.trim_end_matches('/'));
     let max_sites = need_int(c, "max_sites", "token-sealed")?;
-    // EACH ROW OWNS A DISJOINT SET OF SITES: the two dedicated sub-rows below scan the same two
-    // symbols this list would, and one forged mint counted twice is not two proofs.
-    let delegated: Vec<String> = ["kernel_seal_pattern", "admit_token_mint_pattern"]
-        .into_iter()
-        .map(|k| need_str(c, k, "token-sealed").map(|s| s.replace('\\', "")))
+    // THE SUB-ROWS, DECLARED ONCE AND READ TWICE: `(row id, pattern key, ceiling key, subject key,
+    // ROOT KEY)`.
+    //
+    // THE ROOT IS PER SUB-ROW (X-178), because "sealed" does not mean "kernel" for every sealed
+    // constructor. `SecretOnce::mint(`'s own doc says "Verbs unit only" and its one production site
+    // is the Verbs unit, so a row that judged it against `kernel_root` would stand RED on the single
+    // call the design REQUIRES — and the only way to green it would be a waiver for a correct call,
+    // which is how a gate learns to lie. A symbol whose home is not the kernel gets a row that says
+    // so, not an exemption from being scanned at all.
+    //
+    // ONE TABLE, NOT TWO LISTS. The delegation set immediately below and the rows emitted further
+    // down are this same table read twice. When they were two lists, a sub-row added to one and
+    // forgotten in the other produced either a symbol counted twice (once by its own row, once by
+    // the family scan) or a symbol whose row exists while the family scan still claims its sites —
+    // and that drift is the exact shape of X-177. Adding a fourth sub-row is now one edit.
+    const SUB_ROWS: [(&str, &str, &str, &str, &str); 3] = [
+        (
+            "token-sealed:kernel-seal",
+            "kernel_seal_pattern",
+            "max_kernel_seal_sites",
+            "kernel_seal_subject",
+            "kernel_root",
+        ),
+        (
+            "token-sealed:admit-token-mint",
+            "admit_token_mint_pattern",
+            "max_admit_token_mint_sites",
+            "admit_token_mint_subject",
+            "kernel_root",
+        ),
+        (
+            "token-sealed:secret-once-mint",
+            "secret_once_mint_pattern",
+            "max_secret_once_mint_sites",
+            "secret_once_mint_subject",
+            "secret_once_root",
+        ),
+    ];
+
+    // EACH ROW OWNS A DISJOINT SET OF SITES: the dedicated sub-rows below scan symbols this
+    // list would otherwise reach too, and one forged mint counted twice is not two proofs.
+    //
+    // THE DELEGATION IS BY SITE, NOT BY PATTERN STRING (X-177). It used to drop a `patterns` entry
+    // whose literal text equalled a sub-rule's unescaped pattern — a test that no entry has ever
+    // satisfied, and one that cannot work at all now that this rule also scans constructor
+    // FAMILIES: a family regex is never string-equal to the one spelling a sub-row owns, so the
+    // only way to keep the two sets disjoint is to ask, per line, whether a sub-row already claims
+    // it.
+    let delegated_rx: Vec<Regex> = SUB_ROWS
+        .iter()
+        .map(|(_, pat_key, _, _, _)| need_str(c, pat_key, "token-sealed").and_then(Regex::new))
         .collect::<Result<_, _>>()?;
 
     // Files that are the SPECIFICATION for this very scan rather than surface it scans (e.g. the
@@ -794,17 +840,69 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         })
     };
 
-    let mut offenders = Vec::new();
+    // THE SCAN SET IS LITERALS PLUS FAMILIES (X-177). `patterns` are exact spellings, escaped and
+    // word-anchored; `pattern_families` are REGEXES, because `Grant<C>::mint` and `Pass<S>::mint`
+    // are one generic constructor each over a sealed marker set, and a list of per-marker literals
+    // is blind to every marker nobody remembered to add to it.
+    let mut scans: Vec<(String, Regex)> = Vec::new();
     for pat in c.list_of("patterns") {
-        if delegated.contains(&pat) {
-            continue;
-        }
         let rx_pat = Regex::new(&word(&pat))?;
-        for (rel, l) in tree.grep(&rx_pat, true, None) {
+        scans.push((pat, rx_pat));
+    }
+    for pat in c.list_of("pattern_families") {
+        let rx_pat = Regex::new(&pat)?;
+        scans.push((pat, rx_pat));
+    }
+
+    // ── THE SCAN IS NO LONGER PRODUCTION-ONLY (2026-09-23), AND THAT IS HALF OF ONE FIX ─────────
+    //
+    // `qa/construction.toml`'s `scan_roots` and this `production_only` flag are ONE blind spot, not
+    // two, and widening either alone moves nothing: every file under `crates/*/tests` also matches
+    // the `/tests/` entry in `test_path_fragments`, so the widened walk yields the file and this
+    // filter then drops every line of it. The census proved that by planting a mint in
+    // `crates/busbar-llm/tests/` and in a `#[cfg(test)] mod` body and watching both stay invisible
+    // through seven simultaneous forgeries of which the gate found one.
+    //
+    // THE AUTHORITY FOR SCANNING TEST SCOPE IS THE SPEC'S OWN BINDING, NOT A PREFERENCE. #65
+    // (`docs/design/BUSBAR-1.6.0.md:401`) reads "a gate proves **no non-kernel code** can mint a
+    // seal" — code, not production code. `qa/construction.toml` carried the opposite in prose
+    // ("allowed there because production_only test-classification already excludes them"), which
+    // was never an owner ruling: it is a description of what this flag happened to do, written down
+    // beside the rule as though it were the rule.
+    //
+    // NOTHING HERE IS PERMITTED THAT WAS NOT PERMITTED BEFORE: `allowed_root` is unchanged,
+    // `max_sites` is unchanged at 0, and no site gains an excuse. The row simply now sees the sites
+    // its own claim has always been about, and the count it reports is the count the tree carries.
+    const SCAN_TEST_SCOPE_TOO: bool = false; // the `production_only` argument to `Tree::grep`
+
+    // ONE SITE IS ONE FINDING. A line a literal and a family both name is a single forged mint, so
+    // the first scan to reach it labels it and the rest pass over.
+    let mut seen: std::collections::BTreeSet<(&str, usize)> = std::collections::BTreeSet::new();
+    let mut offenders = Vec::new();
+    for (pat, rx_pat) in &scans {
+        for (rel, l) in tree.grep(rx_pat, SCAN_TEST_SCOPE_TOO, None) {
             if rel.starts_with(root.as_str()) || excluded(rel) {
                 continue;
             }
-            offenders.push(format!("`{pat}` at {rel}:{}", l.no));
+            if delegated_rx.iter().any(|d| d.is_match(l.code_bytes())) {
+                continue;
+            }
+            if !seen.insert((rel, l.no)) {
+                continue;
+            }
+            // NAME THE SPELLING, NOT THE SCANNER. A literal pattern IS its own match, so this is
+            // unchanged for `patterns`; a family pattern would otherwise print its regex, and
+            // "`(?<![A-Za-z0-9_])Grant::<[^<>]*>::mint(_bound)?\(` at x.rs:12" tells a reader
+            // which scanner fired rather than which token was forged.
+            // `get` rather than an index: the match bounds are byte offsets, and a gate that
+            // panics slicing a line is worse than one that falls back to naming its pattern.
+            let hit = rx_pat
+                .find_iter(l.code_bytes())
+                .first()
+                .and_then(|m| l.code.get(m.start..m.end))
+                .map(str::to_string)
+                .unwrap_or_else(|| pat.clone());
+            offenders.push(format!("`{hit}` at {rel}:{}", l.no));
         }
     }
     let current = offenders.len() as i64;
@@ -825,39 +923,43 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         offenders,
     )];
 
-    let kernel_root = need_str(c, "kernel_root", "token-sealed")?;
-    let kroot = format!("{}/", kernel_root.trim_end_matches('/'));
-    for (sub_id, pat_key, ceil_key, subject) in [
-        (
-            "token-sealed:kernel-seal",
-            "kernel_seal_pattern",
-            "max_kernel_seal_sites",
-            "`KernelSeal::acquire_for_kernel(`",
-        ),
-        (
-            "token-sealed:admit-token-mint",
-            "admit_token_mint_pattern",
-            "max_admit_token_mint_sites",
-            "`AdmitToken::mint(`",
-        ),
-    ] {
+    // THE SUBJECT IS READ BESIDE THE PATTERN, NEVER HARD-CODED HERE (X-177). These two strings used
+    // to be literals in this table, and `token-sealed:admit-token-mint` printed "`AdmitToken::mint(`
+    // is spelled only inside crates/busbar-kernel/src" while its pattern scanned for
+    // `Grant::<Admittance>::mint(` — the pre-#73 name the claim NAMED was the one spelling the row
+    // could not see. A row that asserts a property about a symbol it does not scan is worse than no
+    // row. `need_str` makes a missing subject a refusal, so the label cannot drift from the pattern
+    // again without the gate saying so.
+    for (sub_id, pat_key, ceil_key, subj_key, root_key) in SUB_ROWS {
+        // THE HOME IS READ BESIDE THE PATTERN TOO (X-178). Same argument as the subject one line
+        // down: a row that prints "is spelled only inside X" while filtering against Y is a row
+        // whose claim and whose scan are two different assertions.
+        let home = need_str(c, root_key, "token-sealed")?;
+        let hroot = format!("{}/", home.trim_end_matches('/'));
+        let subject = need_str(c, subj_key, "token-sealed")?;
         let rx_pat = Regex::new(need_str(c, pat_key, "token-sealed")?)?;
+        // SAME SCOPE AS THE FAMILY SCAN ABOVE, and it has to be the same or the four rows of this
+        // family disagree about what "spelled only inside X" ranges over.
         let sites: Vec<String> = tree
-            .grep(&rx_pat, true, None)
+            .grep(&rx_pat, SCAN_TEST_SCOPE_TOO, None)
             .into_iter()
-            .filter(|(rel, _)| !rel.starts_with(kroot.as_str()))
+            .filter(|(rel, _)| !rel.starts_with(hroot.as_str()))
             .map(|(rel, l)| format!("{rel}:{}", l.no))
             .collect();
         let ceiling = need_int(c, ceil_key, "token-sealed")?;
         let detail = format!(
-            "{} production call site(s) of {subject} outside {kernel_root} (ceiling {ceiling}): {}",
+            // "production" is gone from this sentence because the scan is no longer production-only
+            // (see SCAN_TEST_SCOPE_TOO above): #65 binds "no NON-KERNEL CODE can mint a seal", and a
+            // row whose text narrows its own claim to production is a row asserting less than it
+            // checks — which is the drift X-177 was about, in the other direction.
+            "{} call site(s) of {subject} outside {home} (ceiling {ceiling}): {}",
             sites.len(),
             join_or_none(&sites)
         );
         rows.push(plain(
             sub_id,
             sites.len() as i64 <= ceiling,
-            format!("{subject} is spelled only inside {kernel_root}"),
+            format!("{subject} is spelled only inside {home}"),
             detail,
             sites.len() as i64,
             ceiling,

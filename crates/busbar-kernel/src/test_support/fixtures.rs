@@ -221,13 +221,13 @@ pub async fn oversized_413_body(
         .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"))
 }
 
-// ── THE NEUTRAL TEST-APP SEAM (busbar_kernel::testkit::TestAppSeam) ──────────────────────────────
+// ── THE NEUTRAL TEST-APP SEAM (busbar_kernel::test_support::TestAppSeam) ──────────────────────────────
 // Core implements the neutral fixture seam for its concrete `TestApp`, so the extracted plane
 // test-kits (`busbar-mcp`/`busbar-a2a`) build and drive the test App through the trait — naming no
 // `busbar_kernel::state::App`/`test_support::TestApp` backwards. Each method delegates to the inherent
 // fixture logic above (or to the type-erased scratch map); the object-safe scratch primitives back the
 // generic `TestAppSeamExt::plane_scratch::<T>` sugar the plane test-kits call.
-impl busbar_kernel::testkit::TestAppSeam for TestApp {
+impl busbar_kernel::test_support::TestAppSeam for TestApp {
     fn plane_scratch_any(
         &mut self,
         key: &'static str,
@@ -242,7 +242,7 @@ impl busbar_kernel::testkit::TestAppSeam for TestApp {
 
     fn register_plane_finalizer(
         &mut self,
-        f: Box<dyn FnOnce(&mut dyn busbar_kernel::testkit::TestAppSeam)>,
+        f: Box<dyn FnOnce(&mut dyn busbar_kernel::test_support::TestAppSeam)>,
     ) {
         self.plane_finalizers.push(f);
     }
@@ -292,14 +292,14 @@ impl busbar_kernel::testkit::TestAppSeam for TestApp {
     }
 }
 
-// ── THE NEUTRAL BUILT-APP SEAM (busbar_kernel::testkit::BuiltAppSeam) ────────────────────────────
+// ── THE NEUTRAL BUILT-APP SEAM (busbar_kernel::test_support::BuiltAppSeam) ────────────────────────────
 // The second half of the fixture doorway: what a plane's tests drive on the `Arc<App>` that came OUT
 // of `TestApp::build()`. Each method is a thin delegate to the very fn the plane's tests used to name
 // directly (`plane_host::engine_host`, `build_router`, `App::plane_slot_mut`,
 // `metrics::refresh_scrape_gauges`), so a plane's money-path tests forward a request / mount the real
 // router / mutate their runtime slot through the trait, generic over `A: BuiltAppSeam`, naming no
 // `busbar_kernel::` item.
-impl busbar_kernel::testkit::BuiltAppSeam for crate::state::App {
+impl busbar_kernel::test_support::BuiltAppSeam for crate::state::App {
     fn engine_host_of(
         app: &std::sync::Arc<Self>,
     ) -> std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost> {

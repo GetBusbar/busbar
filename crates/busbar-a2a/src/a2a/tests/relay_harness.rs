@@ -21,8 +21,8 @@
 
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
-use busbar_kernel::testkit::engine_kit::{GovKit, HookEnvHandle};
-use busbar_kernel::testkit::engine_kit_plus::EngineAppPlus;
+use busbar_kernel::test_support::engine_kit::{GovKit, HookEnvHandle};
+use busbar_kernel::test_support::engine_kit_plus::EngineAppPlus;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

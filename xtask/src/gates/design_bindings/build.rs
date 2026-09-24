@@ -193,8 +193,15 @@ impl Redactor {
                 r"§\s*\d+(?:\.\d+)*(?:\s*[/,–—-]\s*(?:§\s*)?\d+(?:\.\d+)*)*(?:\s*\(\s*[a-z]\s*\))?",
             )?,
             bare_section: Regex::new(r"(?<![\w.\-])\d+(?:\.\d+)+(?![\w\-.])")?,
+            // `(?!\.\d)` IS A FILENAME GUARD, NOT A TIGHTENING. A row id ends where it ends —
+            // `ADM-066;`, `BOOT-172 `, `D-3,` — and a DOTTED VERSION NUMBER never does:
+            // `BUSBAR-1.6.0.md` opens with a token this pattern reads as `BUSBAR-1`, and stripping
+            // it left PB-103's inventory column citing `` `.6.0.md` `` — a pointer to a file that
+            // has never existed, derived out of one that does. An anchor is a thing INSIDE a file;
+            // the file's own name is the pointer this column is for, and a redaction that eats half
+            // of it has not removed an anchor, it has manufactured a dangling reference.
             family_row_id: Regex::new(
-                r"(?<![\w-])(?!PB-)[A-Z]{2,8}-(?:\*|[A-Z]?\d{1,3}(?:\s*(?:/|\.\.)\s*\d{1,3})*)|(?<![\w-])[A-Z]\d{1,3}(?![\w-])",
+                r"(?<![\w-])(?!PB-)[A-Z]{2,8}-(?:\*|[A-Z]?\d{1,3}(?:\s*(?:/|\.\.)\s*\d{1,3})*)(?!\.\d)|(?<![\w-])[A-Z]\d{1,3}(?![\w-])",
             )?,
             empty_paren: Regex::new(r"\(\s*[;,/–—-]*\s*\)")?,
             dangling_sep: Regex::new(r"(?<![\w`])/+\s*")?,

@@ -53,6 +53,17 @@ busbar-contract = { path = "../busbar-contract" }
 # nothing but the NAME arm can refuse it, and the name arm read a two-entry list). One judge is the
 # fix; this edge is what makes one judge reachable from here.
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
+# THE MONEY ARITHMETIC, so this crate does not restate it. `src/cost.rs` carried its own copy of the
+# decimal-to-rate conversion AND its own copy of the reserved-four multiply-and-sum, and both had
+# drifted from the ledger's. The rate copy tested only finiteness where the ledger also clamps a
+# value too large for a `u64`, so a config typo with too many zeros priced as 0 in the book and
+# u64::MAX nanos/token here. The summation copy had no overflow guard at all where the ledger's and
+# the budget unit's both saturate, so a total one past the u128 ceiling wrapped to ONE nano-unit —
+# an astronomical bill deriving as nearly free. One judge is the fix; this edge is what makes the
+# one judge reachable from here. The ledger unit depends only on `busbar-contract` + `sha2`, so the
+# edge is acyclic, it is kernel -> kernel (an intra-tier edge ARCHITECTURE_ALLOWED grants), and it
+# is already in this crate's compile closure via `busbar-plugin-loader`.
+busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.

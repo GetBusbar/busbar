@@ -757,8 +757,7 @@ fn priced_posting(
     // THE LOOKUP, at the snapshot pinned at the door and the instant the unit arrived at. The
     // history resolves which entry was in force then; a later apply is not in this view at all, so
     // there is no arm here that could read one.
-    let currency = crate::root::kernel::node_currency();
-    let priced = busbar_kernel_ledger::cost::price(&history.view(), &posting, currency).ok();
+    let priced = busbar_kernel_ledger::cost::price(&history.view(), &posting).ok();
     // THE CACHE IS WRITTEN AND IS NEVER READ BACK. It rides the posting so a reader has a figure to
     // compare a re-derivation against and so a totals read need not re-price a day of postings on
     // every request — but the figure this function RETURNS is the lookup's, taken off `priced`
@@ -773,9 +772,9 @@ fn priced_posting(
 ///
 /// A figure too large for the record narrows at the ceiling rather than wrapping, exactly as the
 /// terminal's own settlement narrows it: a wrap would charge nearly nothing for the most expensive
-/// unit the node has ever run. A report nothing can price — a hole in the history, or a currency the
-/// card in force does not name — is nothing rather than a zero the caller cannot tell from a free
-/// request, and the caller posts no row for it.
+/// unit the node has ever run. A report nothing can price — a hole in the history — is nothing
+/// rather than a zero the caller cannot tell from a free request, and the caller posts no row for
+/// it.
 fn priced_amount(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
@@ -1636,7 +1635,7 @@ pub fn settle(
 /// The same six lines as `units_a2a::A2aUnits::rate_card_version` and
 /// `units_mcp::Provenance::rate_card_version`, and the same `card_at` the admin read resolves
 /// through (`busbar-core-admin/src/v1/service.rs:2375`). FOUR COPIES OF ONE RULING IS FOUR CHANCES
-/// TO GET IT WRONG — this is the fourth, written to match rather than to differ, and #87's end
+/// TO GET IT WRONG — this is the fourth, written to match rather than to differ, and #43's end
 /// state is the one kernel-side implementation that retires all four.
 fn card_in_force(card: Option<&crate::root::kernel::PinnedHistory>, arrived_ms: u64) -> u64 {
     card.and_then(|pinned| pinned.view().card_at(arrived_ms).map(|(seq, _)| seq.get()))

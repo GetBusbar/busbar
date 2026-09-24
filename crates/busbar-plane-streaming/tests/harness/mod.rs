@@ -10,7 +10,6 @@ use busbar_contract::bounded::{
 };
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
-use busbar_contract::plugin::KernelSeal;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, Origin, TransportView, Unit};
 use busbar_contract::wire::{Direction, Frame, FrameMeta};
 use std::sync::Arc;
@@ -91,16 +90,10 @@ impl TransportView for WsStack {
     }
 }
 
-/// The marker the kernel-built constructors take. A test is not a plugin; what stops a plugin
-/// fabricating one is the manifest allow-list, not the type system.
-#[derive(Debug)]
-pub struct TestSeal;
-
-impl KernelSeal for TestSeal {
-    fn seal_origin(&self) -> &'static str {
-        "busbar-plane-streaming tests"
-    }
-}
+/// The blessed TEST seal (#65). `KernelSeal` is SEALED — no crate outside `busbar-contract` can
+/// implement it — so a fixture names the contract's own `test-seal` type instead of forging one.
+/// The type system stops a plugin now, not the manifest allow-list alone.
+pub use busbar_contract::plugin::TestKernelSeal as TestSeal;
 
 /// Build a context over the pieces above.
 #[must_use]

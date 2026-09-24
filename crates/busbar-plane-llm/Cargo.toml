@@ -53,6 +53,10 @@ serde_json = { workspace = true }
 sonic-rs = { workspace = true }
 
 [dev-dependencies]
+# The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
+# fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
+# forge their own. Dev-only and feature-gated, so it is absent from every release build.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # THE CODECS' SELF-REGISTERING TEST SEAM. In a shipped build the composition root installs the
 # dialect declarations, and the answer-normalization pass reads the client dialect's native tool-id
 # prefix off that registry. This crate's test binary runs no composition root, so it turns on the

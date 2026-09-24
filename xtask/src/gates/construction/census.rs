@@ -118,7 +118,17 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
     let kind_pins = cfg.doc.table_or_empty("gate.census.plugin_kinds");
     let mut pinned: BTreeSet<String> = BTreeSet::new();
     for key in kinds.keys() {
-        let globs = cfg.kind_globs(key);
+        // Every key here came out of `[gate.plugin_kinds]` itself, so the refusal `kind_globs`
+        // raises for an undeclared key is unreachable from this loop. It is reported rather than
+        // unwrapped anyway: a census that panicked would say nothing, and a census that swallowed
+        // the error would count the kind as zero — the shape this whole rule exists to catch.
+        let globs = match cfg.kind_globs(key) {
+            Ok(g) => g,
+            Err(e) => {
+                bad.push(e);
+                continue;
+            }
+        };
         let n = dirs_for_globs(cx, &globs).len();
         match kind_pins.int_of(key) {
             Some(pin) => {

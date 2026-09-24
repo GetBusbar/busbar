@@ -5,7 +5,7 @@
 use super::*;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use busbar_contract::caps::{KernelSeal, StepName};
-use busbar_kernel::testkit::engine_kit::{EngineTestKit as _, TestAppKit};
+use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, TestAppKit};
 
 /// The literal token figures every identity here is pinned on: eleven uncached input tokens and
 /// seven output tokens, reported by the upstream and normalized by the dialect's reader.
@@ -312,7 +312,7 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
 #[test]
 fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
     let host: Arc<dyn EngineHost> =
-        busbar_kernel::testkit::engine_host(&crate::test_support::TestApp::new().build());
+        busbar_kernel::test_support::engine_host(&crate::test_support::TestApp::new().build());
     let (_seal, unit_token, usage_token) = tokens();
     for (status, charged, upstream_leg, fee, refund, why) in [
         (200u16, true, true, 1u32, false, "delivered and charged"),
@@ -378,7 +378,7 @@ fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
 #[test]
 fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
     let host: Arc<dyn EngineHost> =
-        busbar_kernel::testkit::engine_host(&crate::test_support::TestApp::new().build());
+        busbar_kernel::test_support::engine_host(&crate::test_support::TestApp::new().build());
     let (seal, unit_token, usage_token) = tokens();
     let reported = busbar_substrate_values::billing::TokenUsage {
         input: INPUT,

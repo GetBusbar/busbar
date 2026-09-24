@@ -149,6 +149,41 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
 /// without an entry in the shipped table that would then be a fiction somebody has to maintain.
 pub const NOTE_TABLE_KEY: &str = "design-bindings:unproven-by-note";
 
+/// The row the NOTE-WITNESS rule writes: a binding's NOTE may not name a test-shaped symbol that
+/// resolves to nothing in the tree.
+///
+/// This is the class behind PB-58, not the instance. `SEED` refs have been verified since
+/// [`verify::check_verdict`] existed; NOTES — the table where "Resolved <date>" is argued — never
+/// were, so a citation inside one could rot silently and the binding kept reading as proven. The
+/// rule is stated and measured at [`verify::note_witness_offenders`].
+pub const ROW_NOTE_WITNESS: &str = "design-bindings:note-witness";
+const NOTE_WITNESS_TITLE: &str = "every symbol a binding's note names as its witness resolves";
+
+fn note_witness_row(ctx: &verify::Ctx) -> Row {
+    let bad = verify::note_witness_offenders(ctx);
+    if bad.is_empty() {
+        return Row::pass(
+            ROW_NOTE_WITNESS,
+            NOTE_WITNESS_TITLE,
+            "every test-shaped name in every note resolves to a fn or a .rs stem in the tree",
+        );
+    }
+    Row::fail(
+        ROW_NOTE_WITNESS,
+        "a binding's note names a witness that does not exist",
+        format!(
+            "{} citation(s) resolve to no fn and no .rs stem under crates/ or xtask/: {} — a note \
+             is evidence or it is nothing. Fix by making the symbol exist, or by the note not \
+             claiming it; renaming the prose does not discharge it.",
+            bad.len(),
+            bad.iter()
+                .map(|(pb, sym)| format!("{pb} -> {sym}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ),
+    )
+}
+
 /// The row the REGEN-CLEAN guard writes. It is owed only under `--strict`, because plain `--check`
 /// is the gap REPORT and a report on a slightly stale ledger is still a useful report; `--strict`
 /// is the DONE claim, and that claim is about Appendix B, not about a cache of it.
@@ -170,6 +205,7 @@ impl Gate for DesignBindingsGate {
             return vec!["design-bindings:ledger-unreadable".to_string()];
         }
         ids.push(ROW_REGEN.to_string());
+        ids.push(ROW_NOTE_WITNESS.to_string());
         ids
     }
 
@@ -203,6 +239,7 @@ impl Gate for DesignBindingsGate {
             })
             .collect();
         rows.push(regen_row(cx, &inputs));
+        rows.push(note_witness_row(&inputs.ctx));
         Verdict::of(rows)
     }
 

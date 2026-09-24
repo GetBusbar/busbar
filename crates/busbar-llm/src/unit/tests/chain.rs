@@ -15,7 +15,7 @@ use busbar_contract::caps::{
 };
 use busbar_kernel::plane_host::EngineTablesView;
 use busbar_kernel::proxy::reqlog::REQUESTS;
-use busbar_kernel::testkit::engine_kit::EngineTestKit as _;
+use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
 
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use crate::unit::{admit, approve, arrival, audit, authenticate, decode, meter, route, verify};

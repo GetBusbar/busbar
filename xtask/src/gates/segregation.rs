@@ -39,9 +39,17 @@ pub const ROW_ORACLE_DATA: &str = "segregation:oracle-data-allow";
 /// find out. The Python it replaces did run it; that arm stayed in `scripts/verify-1.6.0-done.sh`,
 /// where a caller driving the oracle is a caller, rather than moving into the gate runner, where it
 /// would be the runner importing its subject.
+/// `testing/shadow-oracle/golden/1.5.5/golden-digests.tsv` WAS HERE AND IS STRUCK, 2026-09-23.
+/// It was dead on both halves at once, which is what an allowlist entry has to be before it can go.
+/// The FILE is not in the tree (`testing/shadow-oracle/golden/1.5.5/` holds `cells/`, `ledger.tsv`
+/// and `meta.json`; the only `golden-digests.tsv` is one level up). And this list does not excuse
+/// files — it excuses PATHS NAMED IN `xtask/src/**`, which is why the list has to write the path
+/// down to exempt it. A grep for the string across the whole tree returned exactly ONE line: this
+/// one. Against a control, `golden/1.5.5/ledger.tsv` returns three — its allow row plus the two
+/// consumers that open it (`inventory_coverage.rs:59`, `design_bindings/build.rs:26`). So the entry
+/// excused no read, and striking it cannot un-allow one: the only mention goes with the line.
 pub const ORACLE_DATA_ALLOW: &[&str] = &[
     "testing/shadow-oracle/golden/1.5.5/ledger.tsv",
-    "testing/shadow-oracle/golden/1.5.5/golden-digests.tsv",
     "testing/shadow-oracle/accepted-differences.json",
     "testing/shadow-oracle/cells.json",
     "testing/shadow-oracle/rigs-baseline.json",
@@ -65,6 +73,16 @@ pub const ORACLE_DATA_ALLOW: &[&str] = &[
 /// to WRITE the path down to exempt it, so the declaration is an occurrence of the very string it
 /// governs. The alternative — exempting the rule's own source wholesale — would let any future
 /// mention hide here. This exempts one path in one file, which is the same bargain as the first row.
+/// THE SUBJECT HERE IS A MENTION, NOT A FILE, AND THAT IS WHY IT IS DECLARED RATHER THAN STRUCK.
+/// `testing/shadow-oracle/record.sh` left the tree at `c73ae4f66` ("the oracle tool leaves this
+/// tree"), so the path resolves to nothing — but this list does not promise the path exists. It
+/// promises that ONE named file may NAME it, and that naming is live: `design_bindings/build.rs:788`
+/// still emits the markdown line `- `oracle-cell` / `oracle-family`: `…/record.sh` + `replay.sh`…`.
+/// Strike the row and `segregation:oracle-clean` reds on a real mention. The rot is in the EMITTED
+/// PROSE — a generated document telling a reader to run a script this tree no longer carries — and
+/// repairing that rewrites `qa/DESIGN-BINDINGS.md`, which is a generated artefact and a separate,
+/// reviewed act.
+// qa-names: testing/shadow-oracle/record.sh -- xtask/src/gates/segregation.rs -- the subject is a live MENTION at design_bindings/build.rs:788, not a file; the script left at c73ae4f66 and the emitted prose still cites it
 pub const ORACLE_PROSE_CITATION_ALLOW: &[(&str, &str)] = &[
     (
         "xtask/src/gates/design_bindings/build.rs",

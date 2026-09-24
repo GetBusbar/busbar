@@ -27,7 +27,7 @@ use super::upstream_support::{call, exchanging_server, gov_with_scopes, mcp_cfg,
 use crate::mcp::test_engine::*;
 use crate::testkit::TestAppMcpExt;
 use axum::http::StatusCode;
-use busbar_kernel::testkit::loopback_http::{MockResponse, MockServer, MockServerState};
+use crate::testkit::loopback_http::{MockResponse, MockServer, MockServerState};
 use std::sync::Arc;
 
 const CANONICAL: &str = "https://gateway.example.com/mcp";

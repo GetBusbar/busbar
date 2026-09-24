@@ -5,9 +5,10 @@
 //!
 //! ## Why this file exists rather than a cargo feature
 //!
-//! `oauth-as` 0.9.0 split its `jwt` feature in two: `jwt` is the JWS surface plus the
-//! [`Es256Signer`] and [`Es256Verifier`] TRAITS with no arithmetic behind them, and `jwt-p256` is
-//! the built-in backend over RustCrypto's `p256`. Enabling `jwt-p256` would add a COMPLETE SECOND
+//! `oauth-as` 0.9.0 split its `jwt` feature in two: `jwt` is the JWS surface plus the signing and
+//! verifying TRAITS with no arithmetic behind them (since 0.10.0 the algorithm-generic
+//! [`JwsSigner`] and [`JwsVerifier`]), and `jwt-p256` is the built-in backend over RustCrypto's
+//! `p256`. Enabling `jwt-p256` would add a COMPLETE SECOND
 //! elliptic-curve implementation — measured at twenty packages against that crate's own tree — to a
 //! process that already links `ring` as rustls's crypto provider and already signs RS256 with it
 //! (`egress_auth::jwt_bearer`). Two implementations of one algorithm on a security-critical path is
@@ -18,8 +19,8 @@
 //!
 //! ## The two shapes, and why they differ
 //!
-//! [`Es256Signer::sign`] is async because the private key is allowed not to be in this process — a
-//! cloud KMS or an HSM is a network round trip. [`Es256Verifier::verify`] is sync because it holds
+//! [`JwsSigner::sign`] is async because the private key is allowed not to be in this process — a
+//! cloud KMS or an HSM is a network round trip. [`JwsVerifier::verify`] is sync because it holds
 //! only public keys, so there is nothing to externalise. busbar's signer today is local, so its
 //! `sign` completes without ever yielding; the async shape is the trait's, and honouring it costs
 //! nothing.
@@ -37,13 +38,13 @@
 //! nearly every KMS emit by default. `ring` has both, and they differ by one constant:
 //! `ECDSA_P256_SHA256_FIXED_SIGNING` is the correct one and `ECDSA_P256_SHA256_ASN1_SIGNING` is the
 //! wrong one, and a build that picks the wrong one COMPILES, since both produce bytes. The
-//! `[u8; 64]` return refuses the wrong LENGTH and cannot refuse the wrong ENCODING; the thing that
+//! `JwsSignature::Es256([u8; 64])` return refuses the wrong LENGTH and cannot refuse the wrong ENCODING; the thing that
 //! catches it is `oauth_as::signer_conformance` — the harness in the upstream `oauth-as` crate —
 //! driven from busbar's own `oauth_as/tests/signer_tests.rs` against the RFC 7515 appendix A.3
 //! vector, which is a value neither half of busbar produced.
 
 use base64::Engine as _;
-use oauth_as::jwt::{Es256Signer, Es256Verifier, Jwk, PublicJwk, SignerError};
+use oauth_as::jwt::{EcCurve, Jwk, JwsAlg, JwsSignature, JwsSigner, JwsVerifier, SignerError};
 use ring::signature::KeyPair as _;
 
 /// The URL-safe unpadded base64 alphabet every JOSE member uses.
@@ -136,22 +137,29 @@ fn public_jwk_of(pair: &ring::signature::EcdsaKeyPair, kid: String) -> Result<Jw
     if point.len() != 65 || point[0] != 0x04 {
         return Err(KeyError::MalformedPublicKey { bytes: point.len() });
     }
-    Ok(Jwk {
-        kty: "EC",
-        crv: "P-256",
+    // `use`/`alg` are no longer members of the key: since `oauth-as` 0.10.0 the JWKS document
+    // derives `"use":"sig","alg":"ES256"` from the key's curve when it serves it, in the same member
+    // order 0.9.x emitted (`kty`, `crv`, `x`, `y`, `kid`, `use`, `alg`). `kid` is `Some` always: an
+    // absent `kid` would publish a JWKS entry with none while every token header still carries
+    // `"kid":""`.
+    Ok(Jwk::Ec {
+        crv: EcCurve::P256,
         x: B64.encode(&point[1..33]),
         y: B64.encode(&point[33..65]),
-        kid,
-        use_: "sig",
-        alg: "ES256",
+        kid: Some(kid),
     })
 }
 
-impl Es256Signer for RingEs256Key {
+impl JwsSigner for RingEs256Key {
+    /// ES256, and only ES256: this is what `oauth-as` writes into every access token's JOSE `alg`.
+    fn alg(&self) -> JwsAlg {
+        JwsAlg::Es256
+    }
+
     fn sign(
         &self,
         signing_input: &[u8],
-    ) -> impl std::future::Future<Output = Result<[u8; 64], SignerError>> + Send {
+    ) -> impl std::future::Future<Output = Result<JwsSignature, SignerError>> + Send {
         // Computed EAGERLY, before the future is constructed: this signer is local, so there is
         // nothing to await, and pretending otherwise would put a suspension point on the token
         // endpoint's hot path for no gain. The `async move` below is the trait's shape, not work.
@@ -164,11 +172,13 @@ impl Es256Signer for RingEs256Key {
             .sign(&self.rng, signing_input)
             .map_err(|_| SignerError::new("the platform random number generator failed"))
             .and_then(|sig| {
-                <[u8; 64]>::try_from(sig.as_ref()).map_err(|_| {
-                    SignerError::new(
-                        "ring produced a signature that is not the 64-byte fixed-width r||s form",
-                    )
-                })
+                <[u8; 64]>::try_from(sig.as_ref())
+                    .map(JwsSignature::Es256)
+                    .map_err(|_| {
+                        SignerError::new(
+                            "ring produced a signature that is not the 64-byte fixed-width r||s form",
+                        )
+                    })
             });
         async move { signed }
     }
@@ -185,7 +195,12 @@ impl Es256Signer for RingEs256Key {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RingEs256Verifier;
 
-impl Es256Verifier for RingEs256Verifier {
+impl JwsVerifier for RingEs256Verifier {
+    /// Installed into the ES256 slot and consulted for nothing else.
+    fn alg(&self) -> JwsAlg {
+        JwsAlg::Es256
+    }
+
     /// `true` means, and may only mean, that `signature` is a valid ES256 signature over exactly
     /// `signing_input` under exactly `key`.
     ///
@@ -201,11 +216,23 @@ impl Es256Verifier for RingEs256Verifier {
     /// * **One `false`.** A malformed key, a wrong-length signature and a signature that simply
     ///   does not verify all return `false`. Distinguishing them would invite a caller to treat one
     ///   as recoverable, and there is no recoverable failure to check a signature.
-    fn verify(&self, key: &PublicJwk, signing_input: &[u8], signature: &[u8]) -> bool {
+    /// * **Key kind.** Since `oauth-as` 0.10.0 `key` is the `kty`-tagged [`Jwk`], which can also be
+    ///   an RSA or an OKP key. Only `EC`/`P-256` is an ES256 key; anything else is `false` here,
+    ///   by pattern, rather than by an empty coordinate happening to fail to decode.
+    fn verify(&self, key: &Jwk, signing_input: &[u8], signature: &[u8]) -> bool {
         if signature.len() != 64 {
             return false;
         }
-        let (Ok(x), Ok(y)) = (B64.decode(key.x()), B64.decode(key.y())) else {
+        let Jwk::Ec {
+            crv: EcCurve::P256,
+            x,
+            y,
+            ..
+        } = key
+        else {
+            return false;
+        };
+        let (Ok(x), Ok(y)) = (B64.decode(x), B64.decode(y)) else {
             return false;
         };
         if x.len() != 32 || y.len() != 32 {

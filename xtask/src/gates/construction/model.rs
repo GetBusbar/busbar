@@ -164,13 +164,43 @@ impl Cfg {
         Ok(self.gate()?.list_of("scan_roots"))
     }
 
-    /// The directory globs naming one plugin kind. A kind with no entry is no globs, never an
-    /// error: the kind simply has no crate yet.
-    pub fn kind_globs(&self, kind: &str) -> Vec<String> {
-        self.doc
-            .table("gate.plugin_kinds")
-            .map(|t| t.list_of(kind))
-            .unwrap_or_default()
+    /// The directory globs naming one plugin kind.
+    ///
+    /// AN UNKNOWN KIND KEY IS A REFUSAL, NOT AN EMPTY LIST. This used to answer a key the file does
+    /// not declare with `Vec::new()`, and the difference between "this kind has no crates yet" and
+    /// "nobody spells this kind that way any more" was erased at the one place that could still
+    /// tell them apart. Measured on this tree: `manifest-allowlist` asked for `pure_auth` and
+    /// `egress_auth` — the pre-DECISIONS-#3 spellings of the ONE `auth` kind — got two empty lists,
+    /// scanned `crates/auth-admin-tokens` and `crates/auth-static-plugin` with nothing at all, and
+    /// printed twelve green rows over a set that should have had fourteen. A `busbar-kernel`
+    /// dependency in either crate was invisible, and the gate's own completeness oracle in
+    /// `construction.rs` was built from the same stale list, so checker and checked agreed.
+    /// ZERO IS THE PASSING ANSWER TO EVERY BAN: a rule scoped to nothing reports clean forever.
+    ///
+    /// A kind that genuinely has no crate yet is still expressible, and is expressed the way every
+    /// other intended zero in this file is — an entry with an empty or not-yet-matching glob list,
+    /// written down, counted by `[gate.census.plugin_kinds]`. What is refused is a kind key that
+    /// the config never heard of.
+    ///
+    /// # Errors
+    /// When `[gate.plugin_kinds]` is absent, or when it declares no key `kind`.
+    pub fn kind_globs(&self, kind: &str) -> Result<Vec<String>, String> {
+        let t = self.doc.table("gate.plugin_kinds").ok_or_else(|| {
+            "qa/construction.toml has no [gate.plugin_kinds] table, so no rule scoped by \
+             plugin kind has a scope to read"
+                .to_string()
+        })?;
+        if !t.keys().iter().any(|k| k == kind) {
+            return Err(format!(
+                "[gate.plugin_kinds] declares no `{kind}`, so every rule scoped by that key \
+                 would scan the empty set and report clean — the passing answer to every \
+                 ban. The keys this file does declare are {}. Either spell the kind the \
+                 way the config does, or add the key with its globs and pin its count in \
+                 [gate.census.plugin_kinds]",
+                py_list(t.keys())
+            ));
+        }
+        Ok(t.list_of(kind))
     }
 }
 

@@ -734,28 +734,69 @@ mod tunnel {
         (net[whole] & mask) == (addr[whole] & mask)
     }
 
+    /// The proxy env value as a REFUSAL may render it: userinfo replaced by `***`, everything
+    /// else verbatim.
+    ///
+    /// `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` carry `user:password@` (RFC 3986 §3.2.1) in every
+    /// corporate deployment that authenticates its proxy, and [`parse_proxy`]'s refusals are not
+    /// swallowed: `resolve_config` hands them to `install_proxy_tunnel_if_configured`, whose `Err`
+    /// the llm engine's runtime build turns into a boot panic. Interpolating the raw value put the
+    /// operator's proxy password on stderr, in the crash report and in whatever CI log collected
+    /// them. The host, port and scheme are what the operator needs to fix the variable, so they
+    /// survive — only the credential goes.
+    ///
+    /// TEXTUAL, not a re-parse, deliberately: the first caller is the arm where `url::Url::parse`
+    /// has ALREADY FAILED, so a masker that had to parse could only fail the same way and return
+    /// the raw value. Userinfo is everything before the LAST `@` of the authority — last, because
+    /// a password may itself contain an unencoded `@` (`svcacct:hunter2-Pr0xyP@ss@proxy.corp`),
+    /// and the authority ends at the first `/`, `?` or `#` because userinfo may not contain one.
+    /// An `@` that appears only AFTER the authority cannot be userinfo, but neither can this
+    /// function prove the value is well-formed enough for that reasoning to hold, so that residue
+    /// case redacts wholesale rather than print a maybe-credential.
+    fn redact_userinfo(v: &str) -> String {
+        let (scheme, rest) = match v.split_once("://") {
+            Some((s, r)) => (Some(s), r),
+            None => (None, v),
+        };
+        let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let (authority, tail) = rest.split_at(authority_end);
+        let shown = match authority.rsplit_once('@') {
+            Some((_userinfo, host_port)) => format!("***@{host_port}{tail}"),
+            None if rest.contains('@') => "***".to_string(),
+            None => rest.to_string(),
+        };
+        match scheme {
+            Some(s) => format!("{s}://{shown}"),
+            None => shown,
+        }
+    }
+
     /// Parse a proxy env value (`http://[user:pass@]host[:port]`; a bare `host:port` is accepted
     /// too). `https://` proxies are refused loudly: TLS-to-proxy is a different transport this
     /// tunnel does not speak, and silently downgrading it to TCP would be a lie.
+    ///
+    /// Every refusal renders the value through [`redact_userinfo`] — see there for why the raw
+    /// value must never reach the message, and why the host still does.
     pub(super) fn parse_proxy(v: &str) -> Result<ProxySpec, String> {
+        let shown = redact_userinfo(v);
         let url = if v.contains("://") {
             v.to_string()
         } else {
             format!("http://{v}")
         };
         let parsed = url::Url::parse(&url)
-            .map_err(|e| format!("proxy env value {v:?} is not a valid URL: {e}"))?;
+            .map_err(|e| format!("proxy env value {shown:?} is not a valid URL: {e}"))?;
         if parsed.scheme() != "http" {
             return Err(format!(
-                "proxy env value {v:?} uses scheme {:?}: only plain http:// CONNECT proxies are \
-                 supported (an https:// proxy would need TLS-to-proxy, which this tunnel does not \
-                 speak)",
+                "proxy env value {shown:?} uses scheme {:?}: only plain http:// CONNECT proxies \
+                 are supported (an https:// proxy would need TLS-to-proxy, which this tunnel does \
+                 not speak)",
                 parsed.scheme()
             ));
         }
         let host = parsed
             .host_str()
-            .ok_or_else(|| format!("proxy env value {v:?} has no host"))?
+            .ok_or_else(|| format!("proxy env value {shown:?} has no host"))?
             .to_string();
         let port = parsed.port().unwrap_or(80);
         let auth = (!parsed.username().is_empty()).then(|| {

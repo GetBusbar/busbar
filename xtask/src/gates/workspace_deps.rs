@@ -755,7 +755,20 @@ fn planted(
         materialize.push(format!("{path}/Cargo.toml"));
     }
     for gone in absent {
-        overlay.remove(gone);
+        // WITHDRAWN OR REMOVED, AND THE TWO ARE NOT THE SAME CLAIM. `absent` carries both shapes:
+        // a manifest of a FABRICATED member — one the loop above wrote and the tree never had — and
+        // a manifest of a REAL crate, which the collapse case takes out by the hundred. Un-saying
+        // the first is what its case means; `Overlay::remove` there would assert the absence of a
+        // path that is absent anyway, which removes nothing and is what `prove_red` now refuses a
+        // plant for. The second must really be removed, and is.
+        let fabricated = members
+            .iter()
+            .any(|(path, _)| format!("{path}/Cargo.toml") == *gone);
+        if fabricated {
+            overlay.unset(gone);
+        } else {
+            overlay.remove(gone);
+        }
         materialize.retain(|p| p != gone);
     }
     Plant {

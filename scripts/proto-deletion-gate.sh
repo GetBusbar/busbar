@@ -8,8 +8,11 @@
 #
 # LEVELS (per dialect)
 #   1. STATIC   — core's sources never name a protocol crate: the underscore crate-name grep over
-#                 crates/busbar-core/src is exactly zero (core-split exit criterion 7). Checked
-#                 ONCE, up front — it is a property of the whole tree, not any one dialect.
+#                 the NEUTRAL CORE ROOTS (crates/busbar-kernel/src, crates/busbar-substrate-values/src,
+#                 crates/api/src — the same three `xtask/src/planes.rs::neutral_src_roots()` scans) is
+#                 exactly zero (core-split exit criterion 7). Checked ONCE, up front — it is a
+#                 property of the whole tree, not any one dialect. NOTE THE ROOTS ARE A TABLE AND
+#                 EACH IS PROVED PRESENT FIRST: see `CORE_SRC_ROOTS` / `require_scan_dir` below.
 #   2. BUILD    — `cargo build -p busbar` with the dialect's OWN feature OFF (every other extracted
 #                 dialect's feature stays ON) produces a binary. The dependency edge and the
 #                 registration line are gated by the same feature, so this is a complete deletion of
@@ -35,7 +38,9 @@
 #
 # WHAT THE MCP LEG NOW CLAIMS: dropping `plane-mcp` compiles out BOTH halves of MCP — the
 #   protocol codec crate (busbar-mcp) AND the MCP PLANE in `busbar-mcp/src/mcp` (gated by the
-#   `busbar-core/plane-mcp` feature the binary's `plane-mcp` forwards). Core names no `crate::mcp`
+#   `busbar-kernel/plane-mcp` feature the binary's `plane-mcp` forwards — see the forward at
+#   `crates/busbar/Cargo.toml`'s `plane-mcp = ["dep:busbar-mcp", "busbar-kernel/plane-mcp", …]`).
+#   Core names no `crate::mcp`
 #   type in that build, so:
 #     * mcp-b: the binary BUILDS, BOOTS and SERVES its operator surface (/healthz, /stats), and the
 #       MCP plane's routes are ABSENT from its table. The receiving door mounts only when an `mcp:`
@@ -72,6 +77,15 @@ die()  { printf 'proto-deletion-gate: FAIL — %s\n' "$1"; exit 1; }
 # source root, the crate globs, the cargo invocations — resolving against the caller's directory.
 cd "$(dirname "$0")/.." || die "cannot cd to the repository root"
 
+# WHERE THE BUILDS LAND. The per-leg deleted-feature builds each get their OWN target dir (so a
+# feature flip does not thrash the default one), and the CONTROL leg uses cargo's default. Both were
+# spelled as the literal `target/…`, which silently ignored a caller's `CARGO_TARGET_DIR` for the
+# legs and then looked for the control binary at the literal `target/debug/busbar` — a path cargo had NOT
+# written, because the control build honoured the env var. With `CARGO_TARGET_DIR` unset (how CI
+# runs this) `${CARGO_TARGET_DIR:-target}` expands to exactly `target`, so nothing about the CI run
+# changes; with it set, the gate reads the binary cargo actually produced.
+GATE_TARGET_ROOT="${CARGO_TARGET_DIR:-target}"
+
 # ── level 1: static (once, for the whole tree) ──────────────────────────────────────────────────
 # THE NEEDLE IS DERIVED FROM THE TREE, NEVER SPELLED. This level used to grep core for the single
 # literal `busbar_proto`. There is no `crates/busbar-proto` any more and no Rust anywhere names that
@@ -86,7 +100,46 @@ cd "$(dirname "$0")/.." || die "cannot cd to the repository root"
 # first: core's own `proto/registry.rs` documents the rule in prose that names `busbar_mcp::PROTO_DECL`
 # and `busbar_llm::DECLS`, and prose explaining a ban is not a violation of it. `tests/` trees are out
 # for the same reason the neutral-purity lint excludes them — a test may name what production cannot.
-CORE_SRC="crates/busbar-core/src"
+# ── THE SCAN ROOTS, AND THE RULE THAT A MISSING ONE IS RED, NEVER A PASS ───────────────────────
+# `crates/busbar-core` IS NOT ON DISK AND HAS NOT BEEN FOR SOME TIME. `busbar-core` was absorbed
+# INTO `busbar-kernel` (W4.a, 673ecdaaa; `crates/busbar/Cargo.toml` says so in as many words), and
+# `busbar-substrate`'s value leaves became `busbar-substrate-values` (W4.b P2, 5fa320208). That is
+# the same pair of moves `xtask/src/planes.rs::neutral_src_roots()` already records, and its three
+# roots are the three below. THIS SCRIPT WAS MISSED BY THAT REPOINT — the finding
+# docs/design/1.6.0-security-posture.md §2.4 filed as BROKEN.
+#
+# ZERO IS THE PASSING ANSWER TO EVERY BAN. That sentence is why this table exists and why
+# `require_scan_dir` refuses a root that is not on disk instead of scanning it as zero files. It is
+# the discipline `xtask/src/gates/plane_pricing_blindness.rs`'s `ROW_ROOTS` states in its own words:
+# it "refuses a listed crate that is not on disk rather than scanning it as zero files — because
+# zero is the passing answer to every ban." A GAP AND A FAILURE MUST NEVER BE THE SAME OUTPUT — AND
+# NEITHER MAY A GAP AND A SUCCESS. Half of this gate was RED on the vanished path (the level-1 root
+# guard), which is the half somebody was always going to fix; the other half — the `[ -e … ]`
+# path-pins at level 1b and mcp-a — read the absence of a whole directory as a clean tree and
+# printed a green `note`. Every path this script scans or path-pins now goes through
+# `require_scan_dir` FIRST, so the next rename reds this gate loudly instead of silencing it.
+#
+# `busbar-core-admin` is DELIBERATELY NOT A CORE ROOT HERE, and this is its written reason: it is
+# the ADMIN SURFACE carved off core, not the neutral engine, and its `#[cfg(test)] fn ensure_seam()`
+# legitimately names the `busbar_llm` / `busbar_mcp` / `busbar_a2a` testkits
+# (`crates/busbar-core-admin/src/lib.rs`). `level1_scan` drops `tests/` trees and `*_tests.rs` files
+# but does NOT strip `#[cfg(test)]` bodies, so listing it would red this gate on test-support
+# wiring rather than on a seam violation. `neutral_src_roots()` leaves it out for the same reason.
+CORE_SRC_ROOTS=(
+  "crates/busbar-kernel/src"           # the engine — `busbar-core` was absorbed INTO it (W4.a)
+  "crates/busbar-substrate-values/src" # the neutral value leaves `busbar-substrate` left behind
+  "crates/api/src"                     # the neutral ABI crate
+)
+# CORE PROPER — the direct successor of the historical `crates/busbar-core/src`, and what the
+# path-pinned structural legs (level 1b, mcp-a) hang off.
+CORE_SRC="${CORE_SRC_ROOTS[0]}"
+
+# EVERY directory this gate reads passes through here BEFORE any count it produces means anything.
+# `die`, never a warning and never a narrowing: at the grep, a scan root that vanished is
+# indistinguishable from a clean tree, so the guard has to be louder than the thing it guards.
+require_scan_dir() { # $1 = directory this gate scans or path-pins inside; $2 = what it is
+  [ -d "$1" ] || die "SCAN ROOT MISSING: $1 ($2) is not on disk. A scan of zero files satisfies every prohibition below, so this is RED and not a pass — repoint this gate at whatever replaced that path (see CORE_SRC_ROOTS)"
+}
 
 proto_crate_names() { # underscore crate names of every protocol / plane crate on disk
   local d b
@@ -138,12 +191,32 @@ if [ "${1:-}" = "--selftest" ]; then
     st_fail=1; note "SELF-TEST RED case FAILED: core naming a protocol crate was not flagged"
   fi
 
-  if [ -n "$(core_prod_files "$st_tmp/no-such-root" | grep -c . || true)" ] \
-     && [ "$(core_prod_files "$st_tmp/no-such-root" | grep -c . || true)" -eq 0 ]; then
-    note "self-test ROOT: a core root that is not on disk yields zero files, which the guard above refuses"
+  # THE ROOT CASE, IN TWO HALVES — and the second half is the one that was missing. (1) a root that
+  # is not on disk yields ZERO files, i.e. the same clean answer a compliant core gives, which is
+  # exactly why the count cannot be trusted on its own. (2) `require_scan_dir` REFUSES that root, so
+  # the zero is never reached. The old case asserted only (1): it proved the HAZARD and never the
+  # GUARD, which is how three path-pinned prohibitions came to sit over a deleted directory.
+  if [ "$(core_prod_files "$st_tmp/no-such-root" | grep -c . || true)" -eq 0 ]; then
+    note "self-test ROOT(1): a core root that is not on disk yields zero files — the passing answer to every ban"
   else
-    st_fail=1; note "SELF-TEST ROOT case FAILED"
+    st_fail=1; note "SELF-TEST ROOT(1) case FAILED: a missing root did not scan as zero files"
   fi
+  if ( require_scan_dir "$st_tmp/no-such-root" "a root that is not on disk" ) >/dev/null 2>&1; then
+    st_fail=1; note "SELF-TEST ROOT(2) case FAILED: require_scan_dir ACCEPTED a root that is not on disk"
+  else
+    note "self-test ROOT(2): require_scan_dir REFUSES a root that is not on disk (a gap is RED, never a pass)"
+  fi
+  # AND EVERY ROOT THE REAL RUN READS, proved present by the same guard the real run uses — so a
+  # rename reds the self-test too, not only the run, and names which path went.
+  for st_root in "${CORE_SRC_ROOTS[@]}" \
+                 crates/busbar-kernel/src/ir crates/busbar-substrate-values/src/ir \
+                 crates/busbar-kernel/src/handlers crates/busbar-mcp/src crates/busbar-plane-mcp/src; do
+    if ( require_scan_dir "$st_root" "a live scan root" ) >/dev/null 2>&1; then
+      note "self-test ROOT(3): live scan root present — $st_root"
+    else
+      st_fail=1; note "SELF-TEST ROOT(3) case FAILED: live scan root $st_root is not on disk"
+    fi
+  done
 
   if [ "$st_fail" -ne 0 ]; then
     die "proto-deletion-gate self-test FAILED — the static scanner would let a protocol-crate reference through"
@@ -154,19 +227,31 @@ fi
 
 # A missing root and a needle-less scan are each RED before the count means anything: `find` on a
 # renamed root prints its complaint and returns an empty list, and an empty list has no protocol
-# crate in it — the same clean answer a compliant core gives.
-[ -d "$CORE_SRC" ] || die "$CORE_SRC is not on disk; a scan of zero files names no protocol crate, which is not the same as core not naming one"
+# crate in it — the same clean answer a compliant core gives. EVERY root, not just the first: a
+# scope that quietly narrows to the roots that happen to survive is the same defect one crate down.
+for core_root in "${CORE_SRC_ROOTS[@]}"; do
+  require_scan_dir "$core_root" "a neutral core source root (level 1 static)"
+done
 PROTO_NEEDLES="$(proto_crate_names)"
 [ -n "$PROTO_NEEDLES" ] || die "no protocol or plane crate found under crates/; with no needle this level asserts nothing"
-CORE_NFILES="$(core_prod_files | grep -c . || true)"
-[ "$CORE_NFILES" -gt 0 ] || die "$CORE_SRC holds no production .rs; zero files name no protocol crate, which is not a pass"
+CORE_NFILES=0
+for core_root in "${CORE_SRC_ROOTS[@]}"; do
+  core_root_n="$(core_prod_files "$core_root" | grep -c . || true)"
+  [ "$core_root_n" -gt 0 ] \
+    || die "$core_root holds no production .rs; zero files name no protocol crate, which is not a pass"
+  CORE_NFILES=$(( CORE_NFILES + core_root_n ))
+done
 
-PROTO_HITS="$(level1_scan "$CORE_SRC" "$PROTO_NEEDLES")"
-if [ -n "$PROTO_HITS" ]; then
-  printf '%s\n' "$PROTO_HITS"
-  die "crates/busbar-core/src names a protocol crate; the seam only means something if core cannot"
+PROTO_HITS=""
+for core_root in "${CORE_SRC_ROOTS[@]}"; do
+  core_root_hits="$(level1_scan "$core_root" "$PROTO_NEEDLES")"
+  [ -n "$core_root_hits" ] && PROTO_HITS="${PROTO_HITS}${core_root_hits}"$'\n'
+done
+if [ -n "${PROTO_HITS//[[:space:]]/}" ]; then
+  printf '%s' "$PROTO_HITS"
+  die "a neutral core root (${CORE_SRC_ROOTS[*]}) names a protocol crate; the seam only means something if core cannot"
 fi
-note "level 1 static: core names no protocol crate (0 hits over $CORE_NFILES production file(s), needles: $(printf '%s' "$PROTO_NEEDLES" | tr '\n' ' '))"
+note "level 1 static: core names no protocol crate (0 hits over $CORE_NFILES production file(s) across ${#CORE_SRC_ROOTS[@]} root(s): ${CORE_SRC_ROOTS[*]}; needles: $(printf '%s' "$PROTO_NEEDLES" | tr '\n' ' '))"
 
 # ── level 1b: structural — the IrReq/IrResp hub enums (G6 step A4a scaffolding) ──────────────────
 # The `g6-freeze-witness.sh` count DELIBERATELY excludes `IrReq`/`IrResp`: they do not relocate as a
@@ -175,18 +260,35 @@ note "level 1 static: core names no protocol crate (0 hits over $CORE_NFILES pro
 # inflate the number ~160x, masking per-leaf progress. So their removal needs its OWN structural gate.
 #
 # A4a only ENCAPSULATED the concrete IR codec surface; A4b DISSOLVES the hub enums. This gate is now
-# FLIPPED (as promised at A4a) to "must be ABSENT": `crates/busbar-core/src/ir/variant.rs` — the file
-# that DEFINED `enum IrReq`/`enum IrResp` and their operation-blind surface — is deleted at A4b, the
-# surface having inverted onto `ir::handle::IrHandle` (the neutral `Box<dyn IrHandle>` the engine
-# drives) plus the core-owned invoke/subscribe leaf handles. This is the structural proof the enum is
-# gone; the freeze witness → 0 pins the concrete-family relocation, this pins the dissolve.
-if [ -e crates/busbar-core/src/ir/variant.rs ]; then
-  die "ir/variant.rs still exists — A4b dissolves IrReq/IrResp onto Box<dyn IrHandle> and DELETES this file"
-fi
-if grep -rREq "\benum IrReq\b|\benum IrResp\b" crates/busbar-core/src; then
+# FLIPPED (as promised at A4a) to "must be ABSENT": `ir/variant.rs` — the file that DEFINED
+# `enum IrReq`/`enum IrResp` and their operation-blind surface — is deleted at A4b, the surface
+# having inverted onto `ir::handle::IrHandle` (the neutral `Box<dyn IrHandle>` the engine drives)
+# plus the core-owned invoke/subscribe leaf handles. This is the structural proof the enum is gone;
+# the freeze witness → 0 pinned the concrete-family relocation, this pins the dissolve. (The witness
+# script `scripts/g6-freeze-witness.sh` has since been DELETED — see
+# docs/design/1.6.0-security-posture.md; the prose above is history, this leg is the live claim.)
+#
+# WHERE THE FILE WOULD BE TODAY. Its old address was `crates/busbar-core/src/ir/variant.rs`, and
+# `crates/busbar-core` does not exist. Core's `ir` module FORKED at W4.b: the sealed `IrHandle` and
+# the neutral Invoke/Subscribe handles went to `crates/busbar-substrate-values/src/ir` (see
+# `crates/busbar-kernel/src/ir/handle.rs`, which re-exports them at the historical path) while the
+# operation-blind remainder stayed at `crates/busbar-kernel/src/ir`. BOTH are a home the dissolved
+# enums could come back to, so BOTH are pinned — and each `ir` directory is proved present FIRST,
+# because `[ -e <a-directory-that-moved>/variant.rs ]` is false for the wrong reason and prints a
+# green note over nothing. That vacuous green is exactly what this leg did before this repoint.
+for ir_root in crates/busbar-kernel/src/ir crates/busbar-substrate-values/src/ir; do
+  require_scan_dir "$ir_root" "an IR module the A4b dissolve emptied"
+  if [ -e "$ir_root/variant.rs" ]; then
+    die "$ir_root/variant.rs still exists — A4b dissolves IrReq/IrResp onto Box<dyn IrHandle> and DELETES this file"
+  fi
+done
+# The enum ban runs over the SAME guarded neutral core roots level 1 scans, not over one path: the
+# hub enums dissolved out of core as a whole, so re-declaring them anywhere in core is the violation.
+if grep -rREq "\benum IrReq\b|\benum IrResp\b" "${CORE_SRC_ROOTS[@]}"; then
+  grep -rREn "\benum IrReq\b|\benum IrResp\b" "${CORE_SRC_ROOTS[@]}"
   die "enum IrReq/IrResp still defined in core — the A4b dissolve must remove them entirely"
 fi
-note "level 1b structural: IrReq/IrResp hub enums ABSENT (A4b dissolve complete — variant.rs deleted)"
+note "level 1b structural: IrReq/IrResp hub enums ABSENT (A4b dissolve complete — no variant.rs under crates/busbar-kernel/src/ir or crates/busbar-substrate-values/src/ir, no enum declared across ${CORE_SRC_ROOTS[*]})"
 
 # ── fixtures ─────────────────────────────────────────────────────────────────────────────────────
 FIX=$(mktemp -d "${TMPDIR:-/tmp}/proto-deletion-gate.XXXXXX")
@@ -338,7 +440,7 @@ llm_dialect_refused() {
 run_gate() {
   local proto="$1" feature="$2" keep_features="$3" remaining="$4" control_proto="$5" deleted_ingress_path="$6"
   local also_deleted="${7:-}"
-  local del_target="target/deletion-gate-${proto}"
+  local del_target="$GATE_TARGET_ROOT/deletion-gate-${proto}"
   local keep_arg=""
   [ -n "$keep_features" ] && keep_arg=",${keep_features}"
 
@@ -421,7 +523,7 @@ run_gate() {
   note "control: cargo build -p busbar (default features)"
   cargo build -q -p busbar || die "default build failed"
   mk_providers "$proto"; mk_config "127.0.0.1:0" "127.0.0.1:0"
-  out=$(run_busbar target/debug/busbar --validate 2>&1) \
+  out=$(run_busbar "$GATE_TARGET_ROOT/debug/busbar" --validate 2>&1) \
     || die "the DEFAULT build must accept protocol: $proto (gate would be measuring a broken fixture); got: $out"
   note "control: default build accepts protocol: $proto"
 }
@@ -456,11 +558,21 @@ run_gate "anthropic" "proto-llm" "plane-mcp" \
 # and the compile-out itself is pinned by the config refusal (mcp-c) and the static declaration (mcp-a).
 
 # ── mcp-a: MCP THE PROTOCOL LIVES IN THE CRATE, NOT IN CORE (the leg that goes RED) ──────────────
-# On the pre-extraction tree these three assertions fail: the dialect was a core built-in at
-# crates/busbar-core/src/handlers/mcp.rs, there was no crate to declare it, and the composition root
-# had no feature-gated registration line for it.
-[ ! -e crates/busbar-core/src/handlers/mcp.rs ] \
-  || die "crates/busbar-core/src/handlers/mcp.rs still exists: MCP the protocol has not left core"
+# On the pre-extraction tree these three assertions fail: the dialect was a core built-in in core's
+# `handlers/` module, there was no crate to declare it, and the composition root had no
+# feature-gated registration line for it.
+#
+# WHERE THAT BUILT-IN WOULD BE TODAY: `crates/busbar-kernel/src/handlers/mcp.rs`. The old address
+# was `crates/busbar-core/src/handlers/mcp.rs`; `busbar-core` was absorbed into `busbar-kernel`
+# (W4.a) and the handlers module went with it — `crates/busbar-kernel/src/handlers` is the ONLY
+# `handlers` DIRECTORY in the workspace (substrate's share of the codec-cell matrix is the flat file
+# `crates/busbar-substrate-values/src/handlers.rs`, which is a re-export surface and not a place a
+# dialect handler can be a sibling in). The directory is proved present BEFORE the path-pin: a
+# `[ ! -e … ]` over a directory that moved does not read "the handler left core", it reads as this
+# gate answering a question about nothing — and it answered it GREEN for as long as nobody looked.
+require_scan_dir crates/busbar-kernel/src/handlers "core's protocol-handler module — the MCP built-in's old home"
+[ ! -e crates/busbar-kernel/src/handlers/mcp.rs ] \
+  || die "crates/busbar-kernel/src/handlers/mcp.rs still exists: MCP the protocol has not left core"
 # The declaration is asserted BY CONTENT over the MCP protocol crates rather than at one fixed
 # path. The codec fold moved it twice — `busbar-mcp-codec` took it from core, then dissolved (#39),
 # leaving the `ProtocolDecl` with the ENGINE at `crates/busbar-mcp/src/codec/` and the protocol KEY
@@ -468,9 +580,14 @@ run_gate "anthropic" "proto-llm" "plane-mcp" \
 # longer exists does not read as "the protocol left the crate", it reads as a gate erroring on a
 # missing file. What the leg actually claims is that a crate OUTSIDE core names this protocol, so
 # that is what is read: the protocol's own key, and a `ProtocolDecl` built with it.
-MCP_DECL_SRC=$(ls -d crates/busbar-mcp/src crates/busbar-plane-mcp/src 2>/dev/null || true)
-[ -n "$MCP_DECL_SRC" ] \
-  || die "no busbar-mcp / busbar-plane-mcp source tree: MCP the protocol has no crate to live in"
+# BOTH trees are REQUIRED, not "whichever of the two survives". The old form took whatever `ls -d`
+# returned and only refused an EMPTY result, so losing one crate would have narrowed the scan
+# silently and left the surviving grep to carry a claim about two crates. Today the two needles live
+# one in each tree (`PLANE_KEY` in busbar-plane-mcp, the `ProtocolDecl` in busbar-mcp), so each root
+# is asserted present on its own — same `require_scan_dir` rule as the core roots.
+require_scan_dir crates/busbar-mcp/src "the MCP protocol crate (its ProtocolDecl lives here)"
+require_scan_dir crates/busbar-plane-mcp/src "the MCP plane crate (its PLANE_KEY lives here)"
+MCP_DECL_SRC="crates/busbar-mcp/src crates/busbar-plane-mcp/src"
 # shellcheck disable=SC2086
 grep -rq 'PLANE_KEY: &str = "mcp"' $MCP_DECL_SRC \
   || die "the MCP protocol crates must declare the mcp protocol key (PLANE_KEY = \"mcp\")"
@@ -485,7 +602,7 @@ note "mcp-a static: mcp declared by the crate, absent from core, registered by t
 # `default minus plane-mcp` — a real, separate feature axis, and the per-crate BUILD+BOOT proof
 # (R-D). It is NOT a behaviour discriminator and is not presented as one: mcp-a above is what goes
 # red without the move.
-MCP_TARGET="target/deletion-gate-mcp"
+MCP_TARGET="$GATE_TARGET_ROOT/deletion-gate-mcp"
 MCP_KEEP="auth-admin-tokens,hooks-ranking,proto-llm"
 note "mcp-b build: cargo build -p busbar --no-default-features --features $MCP_KEEP (plane-mcp OFF)"
 CARGO_TARGET_DIR="$MCP_TARGET" cargo build -q -p busbar \
@@ -579,13 +696,13 @@ note "mcp-b boot: /healthz 200, /stats 200, POST /mcp $MCP_CODE + metadata 404 (
 # The `mcp:` block requires a CLOSED data-plane chain (an MCP endpoint with an empty `auth.chain` is
 # an open front door and is refused at boot), so the fixture carries the minimal `keys` chain plus an
 # `admin-tokens` credential and a signing key — the smallest config that both boots and mounts /mcp.
-[ -x target/debug/busbar ] || die "default build binary missing for the mcp mounted control"
+[ -x "$GATE_TARGET_ROOT/debug/busbar" ] || die "default build binary missing for the mcp mounted control"
 MCP_ON_PORT=$(free_port) || die "could not find a free port pair for the mcp-mounted control boot"
 MCP_ON_ADMIN=$(( MCP_ON_PORT + 1 ))
 printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  chain: [keys]\n  admin_auth: [admin-tokens]\nmcp:\n  canonical_uri: https://busbar.example.com/mcp\n  authorization_servers:\n    - https://login.example.com\n' \
   "$MCP_ON_PORT" "$MCP_ON_ADMIN" > "$FIX/config.yaml"
 mk_no_providers
-run_busbar_bg target/debug/busbar >"$FIX/boot-mcp-mounted.log" 2>&1 &
+run_busbar_bg "$GATE_TARGET_ROOT/debug/busbar" >"$FIX/boot-mcp-mounted.log" 2>&1 &
 SRV_PID=$!
 up=""
 for _ in $(seq 1 60); do
@@ -610,7 +727,7 @@ note "mcp-b-mounted: plane-mcp ON mounts the door — metadata route 200 (presen
 # (and its plane-side helper `plane::taskstore`) out, so core names no `crate::a2a` type. This is a
 # SEPARATE feature axis from `plane-mcp` — dropping it keeps MCP, proving the two planes are
 # independently droppable rather than droppable only as a set.
-A2A_TARGET="target/deletion-gate-a2a"
+A2A_TARGET="$GATE_TARGET_ROOT/deletion-gate-a2a"
 A2A_KEEP="auth-admin-tokens,hooks-ranking,proto-llm,plane-mcp"
 note "a2a-b build: cargo build -p busbar --no-default-features --features $A2A_KEEP (plane-a2a OFF)"
 CARGO_TARGET_DIR="$A2A_TARGET" cargo build -q -p busbar \
@@ -695,13 +812,13 @@ note "a2a-b boot: /healthz 200, /stats 200, POST /a2a $A2A_CODE (plane ABSENT) w
 # NON-404. A sibling path the plane does NOT own (`/a2a-not-a-route`) still 404s on the SAME running
 # build, proving the non-404 is the SPECIFIC mounted door and not a blanket answer. Paired with the
 # 404 above, POST /a2a now DISCRIMINATES "plane present & mounted" (non-404) from "compiled out" (404).
-[ -x target/debug/busbar ] || die "default build binary missing for the a2a mounted control"
+[ -x "$GATE_TARGET_ROOT/debug/busbar" ] || die "default build binary missing for the a2a mounted control"
 A2A_ON_PORT=$(free_port) || die "could not find a free port pair for the a2a-mounted control boot"
 A2A_ON_ADMIN=$(( A2A_ON_PORT + 1 ))
 printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\nagents:\n  probe:\n    url: https://remote-agent.example.com/a2a\n    pin:\n      mechanism: unpinned\n' \
   "$A2A_ON_PORT" "$A2A_ON_ADMIN" > "$FIX/config.yaml"
 mk_no_providers
-run_busbar_bg target/debug/busbar >"$FIX/boot-a2a-mounted.log" 2>&1 &
+run_busbar_bg "$GATE_TARGET_ROOT/debug/busbar" >"$FIX/boot-a2a-mounted.log" 2>&1 &
 SRV_PID=$!
 up=""
 for _ in $(seq 1 60); do
@@ -727,7 +844,7 @@ note "a2a-b-mounted: plane-a2a ON mounts the door — POST /a2a $A2A_ON_CODE (pr
 # serving". This leg does: build with `plane-a2a` (plus proto-llm + admin/hooks) but NOT `plane-mcp`,
 # under `-D warnings`, and prove the two planes are independently droppable in BOTH directions — the
 # A2A door mounts and routes on a build the MCP plane has left entirely.
-MCP_A2AON_TARGET="target/deletion-gate-mcp-a2aon"
+MCP_A2AON_TARGET="$GATE_TARGET_ROOT/deletion-gate-mcp-a2aon"
 MCP_A2AON_KEEP="auth-admin-tokens,hooks-ranking,proto-llm,plane-a2a"
 note "mcp-d build: RUSTFLAGS=-D warnings cargo build -p busbar --no-default-features --features $MCP_A2AON_KEEP (plane-mcp OFF, plane-a2a ON)"
 RUSTFLAGS="-D warnings" CARGO_TARGET_DIR="$MCP_A2AON_TARGET" cargo build -q -p busbar \

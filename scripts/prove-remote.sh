@@ -146,7 +146,7 @@ if [ -x ./bin/oracle ]; then
   export LAND_ORACLE_PORT_BASE=$(( 40000 + ( $$ % 40 ) * 200 ))
   ./bin/oracle record --plane all --bin target/release/busbar \
      --filter "$FAMILIES" --out target/oracle/recordings/candidate || exit 1
-  ./bin/oracle replay --golden target/oracle/recordings/golden \
+  ./bin/oracle replay --golden target/oracle/recordings/golden --strict \
      --candidate target/oracle/recordings/candidate --out target/oracle/reports/prove || exit 1
 else
   echo "   (no ./bin/oracle in this tree — the oracle leg is NOT part of this verdict)"

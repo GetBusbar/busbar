@@ -68,6 +68,17 @@ impl Overlay {
             .insert(rel.as_ref().to_path_buf(), Change::Absent);
     }
 
+    /// WITHDRAW EVERY CLAIM ABOUT `rel`: the gate reads whatever the real tree has there.
+    ///
+    /// NOT THE SAME AS [`Overlay::remove`], and the difference is the whole point. `remove` asserts
+    /// the path is ABSENT — a claim `crate::gates::prove_red` now refuses when the tree has not got
+    /// the path anyway, because removing nothing is not a plant. This one un-says an earlier `set`,
+    /// which is what a builder that lays down a fixture and then wants one file of it missing
+    /// actually means when the file was never in the tree to begin with.
+    pub fn unset(&mut self, rel: impl AsRef<Path>) {
+        self.files.remove(rel.as_ref());
+    }
+
     /// The path stays in every walk and every read of it fails with `why`.
     pub fn unreadable(&mut self, rel: impl AsRef<Path>, why: impl Into<String>) {
         self.files
@@ -83,9 +94,63 @@ impl Overlay {
         self.files.keys()
     }
 
+    /// EVERY CLAIM THIS OVERLAY MAKES, path and change together.
+    ///
+    /// [`Overlay::paths`] answers "which files does this plant touch"; a reader that must decide
+    /// whether the plant CHANGES anything needs the other half. `crate::gates::prove_red` is that
+    /// reader: a `Change::Absent` over a path the tree has not got removes nothing, and a plant
+    /// that removes nothing proves nothing.
+    pub fn changes(&self) -> impl Iterator<Item = (&PathBuf, &Change)> {
+        self.files.iter()
+    }
+
     /// A derived input this overlay stands in for, by its key.
     pub fn command(&self, key: &str) -> Option<&String> {
         self.commands.get(key)
+    }
+
+    /// Whether this overlay stands in for any derived input. A canned `cargo metadata` is a real
+    /// change to what the gate reads even when not one file is touched.
+    pub fn has_commands(&self) -> bool {
+        !self.commands.is_empty()
+    }
+
+    /// An overlay that claims nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.commands.is_empty()
+    }
+
+    /// A STABLE STRING FOR "THIS EXACT OVERLAY", for keying a cache on the tree a gate will read.
+    ///
+    /// It is the claims themselves rather than a hash of them: an overlay is a handful of entries,
+    /// a collision here would mis-attribute one plant's baseline to another, and a digest buys
+    /// nothing a `BTreeMap`'s own ordering has not already given.
+    pub fn fingerprint(&self) -> String {
+        let mut out = String::new();
+        for (path, change) in &self.files {
+            out.push_str(&path.to_string_lossy());
+            match change {
+                Change::Content(c) => {
+                    out.push_str("\u{1}content:");
+                    out.push_str(&c.len().to_string());
+                    out.push(':');
+                    out.push_str(c);
+                }
+                Change::Absent => out.push_str("\u{1}absent"),
+                Change::Unreadable(why) => {
+                    out.push_str("\u{1}unreadable:");
+                    out.push_str(why);
+                }
+            }
+            out.push('\u{2}');
+        }
+        for (key, stdout) in &self.commands {
+            out.push_str(key);
+            out.push('\u{1}');
+            out.push_str(stdout);
+            out.push('\u{2}');
+        }
+        out
     }
 }
 
@@ -161,6 +226,7 @@ pub struct WalkSpec {
     ext: Option<String>,
     exclude: Vec<String>,
     min_files: usize,
+    allow_empty: bool,
 }
 
 impl WalkSpec {
@@ -197,6 +263,22 @@ impl WalkSpec {
         self
     }
 
+    /// DECLARE THAT ZERO FILES IS A REAL ANSWER FOR THIS SCOPE, and not the instrument going blind.
+    ///
+    /// Every scope refuses an empty result by default ([`WalkError::Empty`]), because an empty scan
+    /// and a clean tree are the same bytes on the terminal and only one of them is a verdict. A few
+    /// scopes genuinely mean "whatever is here, and nothing is a legitimate here" — a plugin
+    /// directory before the first plugin lands, an optional overlay tree, a census that COUNTS what
+    /// it finds rather than banning something in it. Those say so, at the call site, one at a time.
+    ///
+    /// It is deliberately not a default and deliberately not a convenience: each use is a written
+    /// claim that this particular rule still means something over an empty set, and a reviewer can
+    /// grep for every such claim in one command.
+    pub fn allow_empty(mut self) -> WalkSpec {
+        self.allow_empty = true;
+        self
+    }
+
     pub fn roots(&self) -> &[String] {
         &self.roots
     }
@@ -206,6 +288,13 @@ impl WalkSpec {
 pub enum WalkError {
     MissingRoot {
         root: String,
+    },
+    /// The roots ARE on disk and the filters left nothing. Distinct from
+    /// [`WalkError::MissingRoot`] because the failure is different: the address is right and the
+    /// scope is empty, which is the shape a rule takes when its `ext`, its `exclude` or an ignore
+    /// rule has quietly eaten the whole set.
+    Empty {
+        roots: Vec<String>,
     },
     BelowFloor {
         found: usize,
@@ -226,6 +315,15 @@ impl fmt::Display for WalkError {
                 "walk root `{root}` does not exist. `find` drops a missing root silently and then \
                  scans nothing of it, and zero is the passing answer to every ban — so a root that \
                  moved is an error here, never a narrower scan."
+            ),
+            WalkError::Empty { roots } => write!(
+                f,
+                "walk over [{}] yielded ZERO files. The roots are on disk and the filters left \
+                 nothing, so this rule is being asked about an empty set — and zero is the passing \
+                 answer to every ban. If the scope moved, move it in a reviewed diff; if zero is \
+                 genuinely a real answer for this rule, say so at the call site with \
+                 `WalkSpec::allow_empty`.",
+                roots.join(", ")
             ),
             WalkError::BelowFloor {
                 found,
@@ -260,6 +358,15 @@ pub struct Env {
     /// `CONFIG_SCHEMA_BOOTSTRAP` — that gate's declared, one-run escape from having no baseline at
     /// all. Declared, never inferred; it announces itself and it is not a pass.
     pub config_bootstrap: bool,
+    /// `XTASK_SCAN_AUDIT=1` — trace every resolved scope and its FILE COUNT to stderr, one
+    /// tab-separated line per walk.
+    ///
+    /// It exists so the question "what is this rule actually looking at" has a mechanical answer
+    /// instead of a reading of the source. A rule whose scope silently narrowed to four files still
+    /// prints the same green it printed over four hundred, and the only way to notice is to be able
+    /// to SEE the denominator. Diagnostic only: it changes no verdict and writes to stderr, so a
+    /// runner that captures stdout is unaffected.
+    pub scan_audit: bool,
 }
 
 impl Env {
@@ -273,6 +380,7 @@ impl Env {
                 .ok()
                 .filter(|s| !s.is_empty()),
             config_bootstrap: std::env::var("CONFIG_SCHEMA_BOOTSTRAP").as_deref() == Ok("1"),
+            scan_audit: std::env::var("XTASK_SCAN_AUDIT").as_deref() == Ok("1"),
         }
     }
 }
@@ -506,6 +614,19 @@ impl Ctx {
         }
         let mut kept = self.drop_ignored(kept);
         kept.sort();
+        // THE GENERAL RULE. A scope that resolves to nothing is refused here, at the one place every
+        // rule in every gate resolves its scope, rather than in the handful of gates that thought to
+        // set a floor. Fifty-five of the eighty-eight scan sets in this tree carried no floor at
+        // all: their roots existed, their filters returned nothing, and they printed the same green
+        // a genuinely clean tree prints. An instrument that cannot produce a NO is not a check.
+        if kept.is_empty() && !spec.allow_empty {
+            return Err(WalkError::Empty {
+                roots: spec.roots.clone(),
+            });
+        }
+        if self.env.scan_audit {
+            eprintln!("scan-audit\t{}\t{}", kept.len(), spec.roots.join("+"));
+        }
         Ok(kept)
     }
 

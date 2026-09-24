@@ -10,16 +10,14 @@
 use busbar_contract::caps::step::MeterClassId;
 use busbar_contract::caps::{Consumption, Grant, KernelSeal, QuantitySource, Usage, UsageLine};
 
-use crate::cost::{
-    price, CurrencyCode, History, LaneClass, Posting, Priced, RateCard, Unpriceable,
-};
+use crate::cost::{price, History, LaneClass, Posting, Priced, RateCard};
 
-mod currency_tests;
 mod derive_tests;
 mod history_tests;
 mod identity_tests;
 mod posting_tests;
 mod rate_tests;
+mod scale_tests;
 mod view_tests;
 
 /// The four classes the older release priced, under the names it used for them.
@@ -122,22 +120,9 @@ pub(crate) fn priced(
     fee_count: u64,
     tier_bp: u32,
 ) -> Priced {
-    priced_in(card, lane, usage, fee_count, tier_bp, CurrencyCode::USD)
-        .expect("a one-currency card prices in its own currency")
-}
-
-/// The same, in a named currency, keeping the refusal rather than unwrapping it.
-pub(crate) fn priced_in(
-    card: &RateCard,
-    lane: &str,
-    usage: &busbar_contract::caps::Usage,
-    fee_count: u64,
-    tier_bp: u32,
-    currency: CurrencyCode,
-) -> Result<Priced, Unpriceable> {
     let history = History::opening(card.clone(), 0);
     let posting = Posting::from_usage(lane, usage, fee_count, tier_bp, 0, 0);
-    price(&history.current(), &posting, currency)
+    price(&history.current(), &posting).expect("a card at instant zero covers a posting at zero")
 }
 
 /// A posting carrying one class's quantity, dated at a named instant.

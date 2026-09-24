@@ -366,10 +366,19 @@ impl AuthMiddleware {
         self.chain.iter().map(|(_, m)| m.name()).collect()
     }
 
-    /// Whether the front door is OPEN — an empty auth chain admits every request unconditionally
-    /// (the old `none`/`passthrough`). Governance, when enabled, supersedes this.
+    /// Whether the front door is OPEN — no boxed module AND no keys arm, so every request is
+    /// admitted unconditionally (the old `none`/`passthrough`). Governance, when enabled,
+    /// supersedes this.
+    ///
+    /// Both halves are load-bearing. `keys` is engine-handled: it sets [`Self::keys_in_chain`] and
+    /// installs no boxed module, so `chain` stays empty while authentication is very much on.
+    /// Reading emptiness alone reported `chain: [keys]` as open, and `Root::admin_grant` turns that
+    /// report into `VerbScope::Full` for every caller — an operator ENABLING key auth would have
+    /// handed out full administrative scope. The construction path has always spelled the predicate
+    /// correctly (`chain.is_empty() && !keys_in_chain`, where it warns `AUTH_CHAIN_OPEN_RELAY`);
+    /// this accessor now says the same thing.
     pub fn is_open(&self) -> bool {
-        self.chain.is_empty()
+        self.chain.is_empty() && !self.keys_in_chain
     }
 
     /// Run the auth chain over the presented candidate credential. Empty chain -> admit with NO

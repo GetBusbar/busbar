@@ -18,7 +18,7 @@
 //! is the engine's money-path suite to prove; this plane's tests do not link the engine.
 
 use crate::runtime::metering::TurnMeter;
-use busbar_kernel::testkit::fixture_host::FixtureHost;
+use crate::testkit::fixture_host::FixtureHost;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
