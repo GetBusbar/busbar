@@ -118,6 +118,27 @@ fn read_entry_bounded<R: std::io::Read>(
     Ok(buf)
 }
 
+/// The gzip reader, with a stream that ENDS EARLY reported by its kind alone.
+///
+/// A truncated archive refuses boot naming the member it cut (`cannot read manifest member: <why>`),
+/// and `<why>` is the `io::Error`'s text. flate2 1.1.10 raises a deflate stream cut short as
+/// `UnexpectedEof` with its own message, "incomplete deflate stream"; the 1.1.9 of the published
+/// 1.5.5 lock raised the same condition, one layer later, as the bare kind — "unexpected end of
+/// file" (oracle cell `boot.refusal|BOOT-135|boot`). The condition and its kind are unchanged; only
+/// a dependency's prose moved, so the kind is what this surface prints. Every other error, and
+/// every successful read, passes through untouched — the refusal is exactly as fail-closed as it
+/// was.
+struct EofAsKind<R>(R);
+
+impl<R: std::io::Read> std::io::Read for EofAsKind<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf).map_err(|e| match e.kind() {
+            std::io::ErrorKind::UnexpectedEof => std::io::ErrorKind::UnexpectedEof.into(),
+            _ => e,
+        })
+    }
+}
+
 /// Unpack a plugin tarball FULLY IN MEMORY, fail-closed: the archive must contain EXACTLY one
 /// `manifest.json` and EXACTLY one other regular file (the library), nothing else - no
 /// directories, links, absolute paths, or parent references. Returns the parsed manifest + the
@@ -126,7 +147,7 @@ fn read_entry_bounded<R: std::io::Read>(
 /// NOTE: this performs NO signature/trust/structure checks - it is pure decoding. The caller runs
 /// phase 1 (structural) and phase 2 (trust) over the returned parts.
 pub fn unpack(bytes: &[u8]) -> Result<UnpackedPlugin, String> {
-    let gz = flate2::read::GzDecoder::new(bytes);
+    let gz = EofAsKind(flate2::read::GzDecoder::new(bytes));
     let mut archive = tar::Archive::new(gz);
     let mut manifest: Option<Manifest> = None;
     let mut lib: Option<(String, Vec<u8>)> = None;
