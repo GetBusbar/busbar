@@ -776,4 +776,89 @@ mod tests {
             "no manifest-allowlist row is owed for {unowed:?}"
         );
     }
+
+    /// ITEM 120: THE RULE READS THE `transport` KIND. It read six kinds, so the oracle above owed
+    /// seven rows the rule never emitted. Every transport crate now gets a row, and
+    /// `busbar-transport-tls`'s is RED naming the unit crate it path-depends on — the true breach
+    /// the missing kind was hiding.
+    #[test]
+    fn the_manifest_allowlist_rule_emits_a_row_for_every_transport_crate() {
+        let cx = Ctx::workspace().expect("workspace");
+        let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+        let tree = Tree::load(
+            &cx,
+            &cfg.scan_roots().expect("scan roots"),
+            &cfg.test_path_fragments().expect("fragments"),
+        )
+        .expect("tree");
+        let rows = rules2::manifest_allowlist(&cx, &tree, &cfg).expect("the rule runs");
+        let transports: Vec<String> =
+            dirs_for_globs(&cx, &cfg.kind_globs("transport").expect("kind"))
+                .iter()
+                .map(|d| crate_name_of_dir(d))
+                .collect();
+        assert!(!transports.is_empty(), "the control needs transport crates");
+        let missing: Vec<&String> = transports
+            .iter()
+            .filter(|c| {
+                !rows
+                    .iter()
+                    .any(|r| r.id == format!("manifest-allowlist:{c}"))
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "no manifest-allowlist row for {missing:?}"
+        );
+        let tls = rows
+            .iter()
+            .find(|r| r.id == "manifest-allowlist:busbar-transport-tls")
+            .expect("the tls row");
+        assert_eq!(tls.status, Status::Fail, "{}", tls.detail);
+        assert!(
+            tls.detail
+                .contains("RED (kernel/caps/unit/plane/transport): busbar-unit-transport-key"),
+            "{}",
+            tls.detail
+        );
+    }
+
+    /// ITEM 89 (the `forbid-unsafe` arm the self-test caught): the attribute counts only as the
+    /// crate-level inner attribute in the crate root. A test file asserting the attribute's TEXT
+    /// (`assert!(lib.contains("#![forbid(unsafe_code)]"))`) and a module-level `#![forbid]` are
+    /// not it, and each used to keep the row PASS with the real attribute stripped.
+    #[test]
+    fn forbid_unsafe_reads_the_crate_root_attribute_and_nothing_else() {
+        let cx = Ctx::workspace().expect("workspace");
+        let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+        let lib = "crates/busbar-plane-a2a/src/lib.rs";
+        let text = cx.read(lib).expect("the plane's root");
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set(
+            lib,
+            text.replace("forbid(unsafe_code)", "planted_attribute_removed"),
+        );
+        ov.set(
+            "crates/busbar-plane-a2a/tests/zz_planted_attr.rs",
+            "#[test]\nfn t() { assert!(LIB.contains(\"#![forbid(unsafe_code)]\")); }\n",
+        );
+        ov.set(
+            "crates/busbar-plane-a2a/src/zz_planted_mod.rs",
+            "#![forbid(unsafe_code)]\npub fn f() {}\n",
+        );
+        let pcx = cx.with_overlay(ov);
+        let tree = Tree::load(
+            &pcx,
+            &cfg.scan_roots().expect("scan roots"),
+            &cfg.test_path_fragments().expect("fragments"),
+        )
+        .expect("tree");
+        let rows = rules2::forbid_unsafe(&pcx, &tree, &cfg).expect("the rule runs");
+        let row = rows
+            .iter()
+            .find(|r| r.id == "forbid-unsafe:busbar-plane-a2a")
+            .expect("the a2a row");
+        assert_eq!(row.status, Status::Fail, "{}", row.detail);
+        assert!(row.detail.contains("MISSING"), "{}", row.detail);
+    }
 }

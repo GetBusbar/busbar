@@ -11,7 +11,7 @@ use crate::ctx::Ctx;
 use crate::gates::construction::model::{need_int, need_str, plain, py_list, CRow, Cfg, VACUOUS};
 use crate::gates::construction::rules::call_sites;
 use crate::gates::construction::tree::{
-    crate_name_of_dir, dirs_for_globs, fnmatch, read_cargo_deps_text, Tree,
+    crate_name_of_dir, dirs_for_globs, fnmatch, memo_file_scan, read_cargo_deps_text, Tree,
 };
 use crate::rx::{self, Regex};
 use crate::toml_doc::Table;
@@ -311,7 +311,20 @@ pub fn manifest_allowlist(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>,
     // so `crates/auth-admin-tokens` and `crates/auth-static-plugin` were scanned by nothing and
     // this rule printed twelve green rows where fourteen were owed. `Cfg::kind_globs` now refuses
     // a key the config does not declare, so the next such typo is a RED instead of a silence.
-    let kinds = ["plane", "store", "auth", "hook", "export", "secret"];
+    //
+    // AND `transport` WAS MISSING TOO (item 120): the list named six of the seven plugin kinds of
+    // `[gate.plugin_kinds]` (DECISIONS #3), so the seven `busbar-transport-*` crates got no row at
+    // all and this rule printed green while `busbar-transport-tls` path-depends on
+    // `busbar-unit-transport-key`. A transport is a plugin behind the wall like any other kind.
+    let kinds = [
+        "plane",
+        "store",
+        "auth",
+        "hook",
+        "export",
+        "secret",
+        "transport",
+    ];
     let unit_names: BTreeSet<String> = match cfg.rule("loc-ceilings") {
         Ok(lc) => dirs_for_globs(
             cx,
@@ -543,21 +556,35 @@ pub fn lean_core(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> 
     let (mut offenders, mut tracked) = (Vec::new(), Vec::new());
     for crate_name in &crates {
         for rel in tree.crate_files(crate_name) {
-            for l in tree.files[&rel].iter() {
-                if l.intest {
-                    continue;
-                }
-                for (_, (bs, be)) in tree.lexer.string_literals(&l.code) {
-                    let content = &l.code.as_bytes()[bs..be];
-                    if word_rx.is_match(content) {
-                        let where_ =
-                            format!("\"{}\" at {rel}:{}", String::from_utf8_lossy(content), l.no);
-                        if known_sites.iter().any(|s| s == &format!("{rel}:{}", l.no)) {
-                            tracked.push(where_);
-                        } else {
-                            offenders.push(where_);
+            // The per-file hits, memoised on the file's scan (`memo_file_scan`); the review list is
+            // applied after, so it is not an input of the memoised half.
+            let tag = format!("lean-core\u{1}{rel}\u{1}{}", word_rx.as_str());
+            let hits = memo_file_scan(tag, &tree.files[&rel], |lines| {
+                let mut out = Vec::new();
+                for l in lines {
+                    if l.intest {
+                        continue;
+                    }
+                    for (_, (bs, be)) in tree.lexer.string_literals(&l.code) {
+                        let content = &l.code.as_bytes()[bs..be];
+                        if word_rx.is_match(content) {
+                            out.push(format!(
+                                "{}\u{1}\"{}\" at {rel}:{}",
+                                l.no,
+                                String::from_utf8_lossy(content),
+                                l.no
+                            ));
                         }
                     }
+                }
+                out
+            });
+            for h in hits.iter() {
+                let (no, where_) = h.split_once('\u{1}').unwrap_or(("", h));
+                if known_sites.iter().any(|s| s == &format!("{rel}:{no}")) {
+                    tracked.push(where_.to_string());
+                } else {
+                    offenders.push(where_.to_string());
                 }
             }
         }
@@ -1012,8 +1039,19 @@ pub fn kernel_seal_impls(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 
 pub fn forbid_unsafe(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("forbid-unsafe")?;
-    let forbid_rx = Regex::new(r"forbid\s*\(\s*unsafe_code\s*\)")?;
-    let deny_rx = Regex::new(r"(forbid|deny)\s*\(\s*unsafe_code\s*\)")?;
+    // THE CRATE-LEVEL INNER ATTRIBUTE, IN THE CRATE ROOT, AND NOTHING ELSE COUNTS (item 89).
+    //
+    // This matched `forbid(unsafe_code)` anywhere in any file of the crate, over the `code` text,
+    // which keeps string literals intact. So `assert!(lib.contains("#![forbid(unsafe_code)]"))` in
+    // `crates/busbar-plane-{a2a,llm,mcp,decision}/tests/*.rs` — a TEST ABOUT the attribute — was
+    // scored as the attribute itself, and stripping the real one from `src/lib.rs` left every one
+    // of those rows PASS: the self-test's "every crate of this kind loses its attribute" plant went
+    // GREEN, which is this rule unable to see the one thing it exists for. A module-level
+    // `#![forbid(unsafe_code)]` (busbar-contract's `json_grammar.rs`, `caps/mod.rs`) does not bind
+    // the crate either. So: the blanked text (literal bodies emptied), production lines only, the
+    // `#![...]` inner-attribute spelling, in `src/lib.rs` or `src/main.rs`.
+    let forbid_rx = Regex::new(r"#!\s*\[\s*forbid\s*\(\s*unsafe_code\s*\)\s*\]")?;
+    let deny_rx = Regex::new(r"#!\s*\[\s*(forbid|deny)\s*\(\s*unsafe_code\s*\)\s*\]")?;
     let mut rows = Vec::new();
     for (kinds_key, level, rid_prefix, label, missing_key, rx_pat) in [
         (
@@ -1041,10 +1079,13 @@ pub fn forbid_unsafe(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Stri
         let mut out = Vec::new();
         for d in seen {
             let crate_name = crate_name_of_dir(&d);
-            let has_it = tree.crate_files(&crate_name).iter().any(|rel| {
-                tree.files[rel]
-                    .iter()
-                    .any(|l| rx_pat.is_match(l.code_bytes()))
+            let roots = [format!("{d}/src/lib.rs"), format!("{d}/src/main.rs")];
+            let has_it = roots.iter().any(|rel| {
+                tree.files.get(rel.as_str()).is_some_and(|lines| {
+                    lines
+                        .iter()
+                        .any(|l| !l.intest && rx_pat.is_match(l.blank.as_bytes()))
+                })
             });
             let current = i64::from(!has_it);
             let is_known = known_missing.contains(&crate_name);
@@ -1433,28 +1474,41 @@ pub fn plane_no_money(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Str
     let mut offenders = Vec::new();
     for rel in &files {
         let here = allowlist.list_of(rel);
-        for l in tree.files[rel].iter() {
-            if l.intest {
-                continue;
-            }
-            let bytes = l.code_bytes();
-            for m in sym_rx.find_iter(bytes) {
-                let raw = m.str_of(bytes, 0).unwrap_or_default();
-                let w = identifier_at(&ident_rx, bytes, m.start).unwrap_or_else(|| raw.clone());
-                if allowed.contains(&w) || here.contains(&w) || here.contains(&raw) {
+        // Every input of the per-file scan is in the tag; see `memo_file_scan`.
+        let tag = format!(
+            "plane-no-money\u{1}{rel}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+            sym_rx.as_str(),
+            path_rx.as_str(),
+            allowed.join("\u{2}"),
+            here.join("\u{2}")
+        );
+        let found = memo_file_scan(tag, &tree.files[rel], |lines| {
+            let mut out = Vec::new();
+            for l in lines {
+                if l.intest {
                     continue;
                 }
-                offenders.push(format!("`{w}` at {rel}:{}", l.no));
-                break;
+                let bytes = l.code_bytes();
+                for m in sym_rx.find_iter(bytes) {
+                    let raw = m.str_of(bytes, 0).unwrap_or_default();
+                    let w = identifier_at(&ident_rx, bytes, m.start).unwrap_or_else(|| raw.clone());
+                    if allowed.contains(&w) || here.contains(&w) || here.contains(&raw) {
+                        continue;
+                    }
+                    out.push(format!("`{w}` at {rel}:{}", l.no));
+                    break;
+                }
+                if let Some(pm) = path_rx.search(bytes) {
+                    out.push(format!(
+                        "`{}` at {rel}:{}",
+                        pm.str_of(bytes, 0).unwrap_or_default(),
+                        l.no
+                    ));
+                }
             }
-            if let Some(pm) = path_rx.search(bytes) {
-                offenders.push(format!(
-                    "`{}` at {rel}:{}",
-                    pm.str_of(bytes, 0).unwrap_or_default(),
-                    l.no
-                ));
-            }
-        }
+            out
+        });
+        offenders.extend(found.iter().cloned());
     }
     let forbidden_deps = c.list_of("forbidden_deps");
     let mut crates: Vec<String> = files.iter().map(|rel| tree.crate_of(rel)).collect();

@@ -73,6 +73,9 @@ pub const KIND_CEILINGS: &str = "qa/kind-isolation.toml";
 pub const BASE_ENV: &str = "XTASK_CEILING_BASE";
 
 pub const ROW_ROSE: &str = "ceiling-rose";
+
+/// The overlay command key a self-test plants to pin [`base_ref`]'s answer. See there.
+pub const BASE_PIN_KEY: &str = "construction-ceiling-base";
 pub const ROW_SLACK: &str = "ceiling-slack";
 
 /// One ceiling: the row it governs, and the exact place in the ceilings file the number is written.
@@ -346,6 +349,79 @@ pub fn set_int(text: &str, table: &str, key: &str, value: i64) -> Option<String>
     Some(s)
 }
 
+/// Add `items` to the list `table.key`, in place, creating the key directly under the table's header
+/// when it is absent. The entries go in right after the list's opening `[`, so a one-line list, a
+/// multi-line list and an empty `[]` all stay valid TOML. `None` when the table has no header line.
+///
+/// Written for the construction self-test's GREEN FIXTURE (item 89), which records today's debt in
+/// the rule's own review lists INSIDE AN OVERLAY so a case can ask about a site the debt does not
+/// touch. Nothing writes this to the committed file.
+pub fn add_to_list(text: &str, table: &str, key: &str, items: &[String]) -> Option<String> {
+    let quoted = items
+        .iter()
+        .map(|i| format!("\"{}\"", i.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut cur = String::new();
+    let mut out: Vec<String> = Vec::new();
+    let (mut header_at, mut done) = (None, false);
+    for raw in text.lines() {
+        let t = raw.trim();
+        if t.starts_with('[') && t.ends_with(']') {
+            cur = t[1..t.len() - 1].trim().to_string();
+            out.push(raw.to_string());
+            if cur == table && header_at.is_none() {
+                header_at = Some(out.len());
+            }
+            continue;
+        }
+        if !done && cur == table && !t.starts_with('#') {
+            if let Some((k, v)) = t.split_once('=') {
+                if k.trim().trim_matches('"') == key && v.trim_start().starts_with('[') {
+                    let at = raw.find('[').unwrap_or(raw.len());
+                    let (head, tail) = raw.split_at(at + 1);
+                    out.push(format!("{head} {quoted},{tail}"));
+                    done = true;
+                    continue;
+                }
+            }
+        }
+        out.push(raw.to_string());
+    }
+    if !done {
+        let at = header_at?;
+        out.insert(at, format!("{key} = [{quoted}]"));
+    }
+    let mut s = out.join("\n");
+    if text.ends_with('\n') {
+        s.push('\n');
+    }
+    Some(s)
+}
+
+/// The text with every table whose header starts with `prefix` removed, header to next header.
+/// The self-test's green fixture uses it to take `[gate.ceiling_raises.*]` out of a ceilings file
+/// whose base is planted as that same file: a declaration over a base with no raise is stale by
+/// design, so the fixture that makes the base equal to the tree carries none.
+pub fn strip_tables(text: &str, prefix: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut skipping = false;
+    for raw in text.lines() {
+        let t = raw.trim();
+        if t.starts_with('[') && t.ends_with(']') {
+            skipping = t[1..].starts_with(prefix);
+        }
+        if !skipping {
+            out.push(raw);
+        }
+    }
+    let mut s = out.join("\n");
+    if text.ends_with('\n') {
+        s.push('\n');
+    }
+    s
+}
+
 // ── ceiling-rose ─────────────────────────────────────────────────────────────────────────────────
 
 /// THE BASE, AND THE DERIVATION THAT PRODUCED IT.
@@ -405,6 +481,21 @@ impl std::fmt::Display for Base {
 /// Only case (4)'s complement — the merge-base IS the ref's tip, or IS `HEAD` — is a base, and in
 /// both the span it names is a contiguous run of commits every one of which is on this line.
 pub fn base_ref(cx: &Ctx) -> Result<Base, String> {
+    // A SELF-TEST'S PINNED BASE. Every other input to this derivation is live git: `HEAD`, the
+    // line's remote tip, the merge-base. On a shared checkout that other writers commit onto, a
+    // self-test that takes minutes sees `HEAD~1` move under it, so the base a fixture planted
+    // `git-show:<sha>:<file>` for at the start is not the base a case asks about at the end — and
+    // the case reports a race as a rule's verdict. The fixture pins the sha it planted against. An
+    // EMPTY value is "not pinned", so a case can plant the unpinned derivation back (the case that
+    // proves an unresolvable ref is refused needs the live arm). No real run carries an overlay.
+    if let Some(sha) = cx.overlay_command(BASE_PIN_KEY) {
+        if !sha.trim().is_empty() {
+            return Ok(Base {
+                sha: sha.trim().to_string(),
+                how: "pinned by the self-test's fixture".to_string(),
+            });
+        }
+    }
     let head = cx.git(&["rev-parse", "HEAD"])?.trim().to_string();
     let (r, why) = base_line(cx)?;
     if !cx.git_ref_resolves(&r) {
@@ -886,7 +977,7 @@ mod tests {
             }
         }
         // The struck row's key is simply absent, which `ceiling_rose` skips.
-        assert!(now.get("cell[crate=b,kind=api].count").is_none());
+        assert!(!now.contains_key("cell[crate=b,kind=api].count"));
         // …and `c` is still found, under the same key, at the same number.
         assert_eq!(now.get("cell[crate=c,kind=api].count"), Some(&3));
     }
@@ -955,5 +1046,23 @@ mod tests {
     fn a_pin_that_names_no_key_writes_nothing() {
         assert!(set_int(DOC, "rules.y", "n", 9).is_none());
         assert!(set_int(DOC, "rules.x", "missing", 9).is_none());
+    }
+
+    /// The self-test fixture's two text editors: an entry lands in the named table's list (made
+    /// when absent, prepended when present), the result still parses, and a stripped table takes
+    /// its body with it and nothing else.
+    #[test]
+    fn the_fixture_editors_add_to_a_list_and_strip_a_table() {
+        let doc = "[a]\nk = [\n  \"x\",\n]\n[b]\nn = 1\n[gate.ceiling_raises.\"c[k=v].n\"]\nfrom = 1\nto = 2\n[d]\nm = 3\n";
+        let added = add_to_list(doc, "a", "k", &["y".to_string()]).expect("table a");
+        let made = add_to_list(&added, "b", "new-key", &["z".to_string()]).expect("table b");
+        let parsed = crate::toml_doc::parse_str(&made).expect("still TOML");
+        assert_eq!(parsed.table("a").expect("a").list_of("k"), vec!["y", "x"]);
+        assert_eq!(parsed.table("b").expect("b").list_of("new-key"), vec!["z"]);
+        assert!(add_to_list(doc, "nope", "k", &[]).is_none());
+        let stripped = strip_tables(doc, "gate.ceiling_raises.");
+        assert!(!stripped.contains("from = 1"), "{stripped}");
+        assert!(stripped.contains("[d]\nm = 3"), "{stripped}");
+        assert!(stripped.contains("[b]\nn = 1"), "{stripped}");
     }
 }

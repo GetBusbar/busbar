@@ -770,49 +770,70 @@ pub fn duplicate_dispatch(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 
 // ── 8. token-sealed ──────────────────────────────────────────────────────────────────────────────
 
+// THE token-sealed SUB-ROWS, DECLARED ONCE AND READ THREE TIMES (the third reader is the
+// self-test's green fixture, via [`token_sealed_scans`]): `(row id, pattern key, ceiling key, subject key,
+// ROOT KEY)`.
+//
+// THE ROOT IS PER SUB-ROW (X-178), because "sealed" does not mean "kernel" for every sealed
+// constructor. `SecretOnce::mint(`'s own doc says "Verbs unit only" and its one production site
+// is the Verbs unit, so a row that judged it against `kernel_root` would stand RED on the single
+// call the design REQUIRES — and the only way to green it would be a waiver for a correct call,
+// which is how a gate learns to lie. A symbol whose home is not the kernel gets a row that says
+// so, not an exemption from being scanned at all.
+//
+// ONE TABLE, NOT TWO LISTS. The delegation set immediately below and the rows emitted further
+// down are this same table read twice. When they were two lists, a sub-row added to one and
+// forgotten in the other produced either a symbol counted twice (once by its own row, once by
+// the family scan) or a symbol whose row exists while the family scan still claims its sites —
+// and that drift is the exact shape of X-177. Adding a fourth sub-row is now one edit.
+const SUB_ROWS: [(&str, &str, &str, &str, &str); 3] = [
+    (
+        "token-sealed:kernel-seal",
+        "kernel_seal_pattern",
+        "max_kernel_seal_sites",
+        "kernel_seal_subject",
+        "kernel_root",
+    ),
+    (
+        "token-sealed:admit-token-mint",
+        "admit_token_mint_pattern",
+        "max_admit_token_mint_sites",
+        "admit_token_mint_subject",
+        "kernel_root",
+    ),
+    (
+        "token-sealed:secret-once-mint",
+        "secret_once_mint_pattern",
+        "max_secret_once_mint_sites",
+        "secret_once_mint_subject",
+        "secret_once_root",
+    ),
+];
+
+/// EVERY SPELLING `token-sealed` AND ITS SUB-ROWS SCAN FOR, compiled — the literals (word-anchored
+/// exactly as the rule anchors them), the families and each sub-row's own pattern. The self-test's
+/// green fixture reads this to neutralise today's sites in its overlay, so the fixture and the rule
+/// cannot disagree about what a site is.
+pub fn token_sealed_scans(cfg: &Cfg) -> Result<Vec<Regex>, String> {
+    let c = cfg.rule("token-sealed")?;
+    let mut out = Vec::new();
+    for pat in c.list_of("patterns") {
+        out.push(Regex::new(&word(&pat))?);
+    }
+    for pat in c.list_of("pattern_families") {
+        out.push(Regex::new(&pat)?);
+    }
+    for (_, pat_key, ..) in SUB_ROWS {
+        out.push(Regex::new(need_str(c, pat_key, "token-sealed")?)?);
+    }
+    Ok(out)
+}
+
 pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("token-sealed")?;
     let allowed_root = need_str(c, "allowed_root", "token-sealed")?;
     let root = format!("{}/", allowed_root.trim_end_matches('/'));
     let max_sites = need_int(c, "max_sites", "token-sealed")?;
-    // THE SUB-ROWS, DECLARED ONCE AND READ TWICE: `(row id, pattern key, ceiling key, subject key,
-    // ROOT KEY)`.
-    //
-    // THE ROOT IS PER SUB-ROW (X-178), because "sealed" does not mean "kernel" for every sealed
-    // constructor. `SecretOnce::mint(`'s own doc says "Verbs unit only" and its one production site
-    // is the Verbs unit, so a row that judged it against `kernel_root` would stand RED on the single
-    // call the design REQUIRES — and the only way to green it would be a waiver for a correct call,
-    // which is how a gate learns to lie. A symbol whose home is not the kernel gets a row that says
-    // so, not an exemption from being scanned at all.
-    //
-    // ONE TABLE, NOT TWO LISTS. The delegation set immediately below and the rows emitted further
-    // down are this same table read twice. When they were two lists, a sub-row added to one and
-    // forgotten in the other produced either a symbol counted twice (once by its own row, once by
-    // the family scan) or a symbol whose row exists while the family scan still claims its sites —
-    // and that drift is the exact shape of X-177. Adding a fourth sub-row is now one edit.
-    const SUB_ROWS: [(&str, &str, &str, &str, &str); 3] = [
-        (
-            "token-sealed:kernel-seal",
-            "kernel_seal_pattern",
-            "max_kernel_seal_sites",
-            "kernel_seal_subject",
-            "kernel_root",
-        ),
-        (
-            "token-sealed:admit-token-mint",
-            "admit_token_mint_pattern",
-            "max_admit_token_mint_sites",
-            "admit_token_mint_subject",
-            "kernel_root",
-        ),
-        (
-            "token-sealed:secret-once-mint",
-            "secret_once_mint_pattern",
-            "max_secret_once_mint_sites",
-            "secret_once_mint_subject",
-            "secret_once_root",
-        ),
-    ];
 
     // EACH ROW OWNS A DISJOINT SET OF SITES: the dedicated sub-rows below scan symbols this
     // list would otherwise reach too, and one forged mint counted twice is not two proofs.

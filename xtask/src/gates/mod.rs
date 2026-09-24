@@ -257,10 +257,15 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // strikes both names here on the same commit.
     "loc-ceilings:kernel:slice",
     "loc-ceilings:unit-verbs",
-    // SEVEN ROWS THAT DID NOT RUN. The allowlist rule owes one row per `busbar-transport-*` crate
-    // and emits none, because rules2.rs:314 does not read the `transport` kind — "owed but no row
-    // was recorded" is a red about the rule, not about the seven manifests. Drain: item 120
-    // (Phase 1) makes the rule read `transport`; its commit strikes these seven names.
+    // SEVEN ROWS THAT RUN AND ARE RED ON THEIR MANIFESTS. Until item 120 the allowlist rule did not
+    // read the `transport` kind, so these were "owed but no row was recorded — DID NOT RUN". It
+    // reads it now, and every one of the seven FAILS for a real reason, measured: each names
+    // third-party crates no review has recorded (tokio, futures, rustls, hyper, ...), and three name
+    // a crate the rule scores as an automatic RED — `busbar-transport-tls` path-depends on
+    // `busbar-unit-transport-key` (a unit crate; #36/#40 kernel-side machinery), and `-grpc` and
+    // `-sse` on `busbar-transport-http` (a transport). Drain: the owner reviews the third-party
+    // deps into `[rules.manifest-allowlist.reviewed_extra]` and the #40 opaque-handle work removes
+    // the tls → unit edge; each name is struck here AND in scripts/land.sh as its row goes green.
     "manifest-allowlist:busbar-transport-grpc",
     "manifest-allowlist:busbar-transport-http",
     "manifest-allowlist:busbar-transport-sse",
