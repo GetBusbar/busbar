@@ -11,8 +11,16 @@
 #
 # Declaring it here is not a way of silencing the check; it is the check working as designed. The
 # list below is the ONLY custom labels the fleets issue, so a typo (`busbar-x1`, `latchkey-xlage`, a
-# label no runner actually carries) is still caught — the job would otherwise sit queued forever,
-# and actionlint says so before it is pushed.
+# label no runner actually carries) is still caught — the job would otherwise sit queued forever.
+#
+# THIS IS NOT A CI GATE TODAY. No workflow in .github/workflows/ invokes actionlint; the only caller
+# is scripts/land.sh's staged-file check, and even there it is conditional on
+# `command -v actionlint` — a contributor without the binary installed silently falls back to a plain
+# `yaml.safe_load` parse (which cannot catch a bad runner label at all). So "actionlint says so before
+# it is pushed" is true only for a contributor who both has actionlint installed AND runs
+# `scripts/land.sh` before pushing; nothing here or in CI enforces either. Wiring an unconditional
+# actionlint step into a workflow (so this file's labels are actually checked on every push/PR) is a
+# `.github/workflows/` change, outside this file's scope.
 self-hosted-runner:
   labels:
     - busbar-xl
