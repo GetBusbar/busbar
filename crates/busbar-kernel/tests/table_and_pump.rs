@@ -539,36 +539,38 @@ fn a_supersede_frees_only_the_direction_the_superseded_unit_was_holding() {
     );
 }
 
+/// Dispatch one one-shot frame and keep nothing, so the unit ends the moment its answer drops.
+fn opens_and_ends(scheduler: &Scheduler, table: &InFlight) -> bool {
+    let verdict = scheduler.dispatch(None, table, StreamId(0), Direction::Inbound, Shape::OneShot);
+    matches!(verdict, Dispatch::OpenOneShot(_))
+}
+
 #[test]
 fn one_shots_run_under_a_small_fixed_concurrency() {
     let table = InFlight::new(64, 0);
     let scheduler = Scheduler::new(2);
     assert_eq!(scheduler.one_shots(), 0, "nothing has started yet");
-    assert_eq!(
-        scheduler.dispatch(
-            None,
-            &table,
-            StreamId(0),
-            Direction::Inbound,
-            Shape::OneShot
-        ),
-        Dispatch::OpenOneShot
+    let first = scheduler.dispatch(
+        None,
+        &table,
+        StreamId(0),
+        Direction::Inbound,
+        Shape::OneShot,
     );
+    assert!(matches!(first, Dispatch::OpenOneShot(_)));
     assert_eq!(
         scheduler.one_shots(),
         1,
         "the accessor reflects the open the dispatch just won"
     );
-    assert_eq!(
-        scheduler.dispatch(
-            None,
-            &table,
-            StreamId(0),
-            Direction::Inbound,
-            Shape::OneShot
-        ),
-        Dispatch::OpenOneShot
+    let second = scheduler.dispatch(
+        None,
+        &table,
+        StreamId(0),
+        Direction::Inbound,
+        Shape::OneShot,
     );
+    assert!(matches!(second, Dispatch::OpenOneShot(_)));
     assert_eq!(scheduler.one_shots(), 2, "both permits are now out");
     assert_eq!(
         scheduler.dispatch(
@@ -578,20 +580,60 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             Direction::Inbound,
             Shape::OneShot
         ),
-        Dispatch::Wait,
-        "the third waits rather than crowding out the open conversation"
+        Dispatch::Refuse {
+            step: StepName::Decode,
+            reason: ReasonCode::InFlightCap,
+        },
+        "the third is refused rather than crowding out the open conversation"
     );
     assert_eq!(
         scheduler.one_shots(),
         2,
-        "a wait takes no permit, so the count does not move past the ceiling"
+        "a refusal takes no permit, so the count does not move past the ceiling"
     );
-    scheduler.finish_one_shot();
+    drop(first);
     assert_eq!(
         scheduler.one_shots(),
         1,
         "the accessor reflects the permit given back"
     );
+    let third = scheduler.dispatch(
+        None,
+        &table,
+        StreamId(0),
+        Direction::Inbound,
+        Shape::OneShot,
+    );
+    assert!(matches!(third, Dispatch::OpenOneShot(_)));
+    assert_eq!(scheduler.one_shots(), 2);
+    drop((second, third));
+    assert_eq!(scheduler.one_shots(), 0, "every place came back");
+}
+
+/// ITEM 557: a one-shot that ENDS gives its place back, and one past the concurrency is REFUSED.
+///
+/// The place used to be a bare `bool` whose release (`finish_one_shot`) no production code called,
+/// and exhaustion answered `Wait` — "keep reading" — on a frame that is a whole unit with nothing
+/// more to read. So once K one-shots had ever opened, every later one was neither served, refused,
+/// dropped nor counted. Here K units open and end, the way a caller that keeps nothing ends them;
+/// the next K must open, and the one after those, while they are all still running, is refused.
+#[test]
+fn a_one_shot_that_ends_gives_its_place_back_and_one_past_the_concurrency_is_refused() {
+    let table = InFlight::new(64, 0);
+    let scheduler = Scheduler::new(2);
+    for round in 0..3 {
+        for _ in 0..2 {
+            assert!(
+                opens_and_ends(&scheduler, &table),
+                "round {round}: the units before this one ended, so their places came back"
+            );
+        }
+    }
+    assert_eq!(scheduler.one_shots(), 0, "nothing is running");
+    let held = [
+        scheduler.start_one_shot().expect("a place"),
+        scheduler.start_one_shot().expect("a place"),
+    ];
     assert_eq!(
         scheduler.dispatch(
             None,
@@ -600,9 +642,14 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             Direction::Inbound,
             Shape::OneShot
         ),
-        Dispatch::OpenOneShot
+        Dispatch::Refuse {
+            step: StepName::Decode,
+            reason: ReasonCode::InFlightCap,
+        },
+        "a whole unit with no place is refused, never told to keep reading"
     );
-    assert_eq!(scheduler.one_shots(), 2);
+    drop(held);
+    assert_eq!(scheduler.one_shots(), 0);
 }
 
 #[test]
