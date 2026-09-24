@@ -222,15 +222,8 @@ unshipped = true
 switch    = "STRIKE THIS ROW when the amend-rate-history effect books the adjusting entries it derives. This is a BILLED-BYTE change and needs an owner signature before it lands."
 
 # MONEY — the #79 exact pricing view has no production producer.
-[[capability]]
-id        = "money-one-function-view"
-built     = "crates/busbar-kernel-ledger/src/cost/view.rs"
-symbol    = "new"
-construct = ["LedgerEntry::new("]
-scope     = ["crates"]
-why       = "The class-keyed, tier-aware, refuse-on-hole exact derivation of #42/#71/#79 is proven equivalent to the live arithmetic by an integration test and is called by nothing in production, because no production code ever builds a LedgerEntry to feed it."
-unshipped = true
-switch    = "STRIKE THIS ROW in the commit that gives the production money path a LedgerEntry producer and routes a real read through price_in_view/price_exact. MONEY: PARKED-OWNER — an owner signs, not an agent."
+# `money-one-function-view` STRUCK 2026-09-24 by OWNER RULING (Q12/Q25c): the one function is the
+# production money path (789d55a78) and GET /admin/usage prices through price_in_view.
 
 # ─── SECURITY AND DURABILITY, from the same sweep ───────────────────────────────────────────────
 

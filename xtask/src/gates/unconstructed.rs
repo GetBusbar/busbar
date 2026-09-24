@@ -154,7 +154,7 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     "ledger-checkpoint-seal",
     "ledger-checkpoint-journal",
     "ledger-adjusting-entries",
-    "money-one-function-view",
+    // `money-one-function-view` STRUCK 2026-09-24 (owner ruling Q12/Q25c; item 421).
     "voice-denied-destinations",
     "plane-plugin-open",
     "export-plugin-open",
