@@ -3468,3 +3468,52 @@ mod one_recorded_usage_every_surface {
         );
     }
 }
+
+/// Item 375: a doc comment in this directory that names a backticked file under the workspace's
+/// scripts directory as the thing enforcing a rule must name a file that EXISTS. `service.rs` cited
+/// the settings-leak shell lint as the guard on admin settings redaction after that script was
+/// deleted (the rule lives on as `cargo xtask gate settings-leak`), so a reader looking for the
+/// guard found nothing. A citation of another repository's script is not this tree's and is
+/// skipped by the busbar-ui qualifier on the same line.
+#[test]
+fn every_scripts_path_cited_in_v1_exists() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("v1/ is readable") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest.join("../..");
+    let mut files = Vec::new();
+    walk(&manifest.join("src/v1"), &mut files);
+    assert!(
+        files.len() > 5,
+        "the walk found the v1 sources ({})",
+        files.len()
+    );
+    let mut stale = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).expect("a v1 source reads");
+        for (n, line) in text.lines().enumerate() {
+            if line.contains("busbar-ui") {
+                continue;
+            }
+            for cited in line.split("`scripts/").skip(1) {
+                let Some(end) = cited.find('`') else { continue };
+                let path = cited[..end].split("::").next().unwrap_or_default();
+                if !workspace.join("scripts").join(path).exists() {
+                    stale.push(format!("{}:{}: scripts/{path}", file.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "v1/ cites scripts that do not exist: {stale:#?}"
+    );
+}

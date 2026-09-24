@@ -39,7 +39,7 @@ use busbar_kernel::config::{
 /// THE ONE PROJECTION, deliberately: named-map definitions, hook definitions, hook STATUS (desired
 /// and reported), and the whole-`RootSettings` config read all go through this function (or through
 /// [`redact_settings_bags`], which is this function applied structurally). A second redaction scheme
-/// is how a leak comes back — and `scripts/settings-leak-lint.sh` fails the build for any admin
+/// is how a leak comes back — and `cargo xtask gate settings-leak` fails the build for any admin
 /// projection that grows a raw `settings` bag instead of using one of these two.
 pub(crate) fn settings_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
     let mut keys: Vec<String> = settings.keys().cloned().collect();
