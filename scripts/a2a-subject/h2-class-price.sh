@@ -91,7 +91,10 @@ fi
 # Every quantity column the money surface exposes for this row, summed. The request COUNT is
 # deliberately excluded: a request is not a quantity, it is what #44's flat fee prices.
 quantity="$(h2_meter_row_quantity "agent:probe" "a2a")"
-if [ "$quantity" = "-" ] || [ "$quantity" -le 0 ] 2>/dev/null; then
+# Asked through h2_int_is so ANY read that is not a positive integer -- `-` (no row), 0, empty,
+# non-numeric -- is a failure. The old `[ "$quantity" -le 0 ] 2>/dev/null` errored silently on
+# every shape but `-` and 0 and let the leg pass (a2a twin of mcp item 499).
+if ! h2_int_is "$quantity" -gt 0; then
   failures=$((failures+1))
   detail="${detail}(2) the served exchange reported quantity=${quantity} under this plane's declared class 'bytes' (want > 0: the agent answered with a document, and an exchange that moved no bytes did not happen); "
 fi
