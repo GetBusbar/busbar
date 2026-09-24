@@ -6,11 +6,13 @@ use super::*;
 use busbar_contract::grammar::{Claim, Selector};
 use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, PluginKind};
 
-/// The sealed walk over the forty-eight declared claims, most specific first.
+/// The sealed walk over the fifty declared claims, most specific first. The decision plane's two
+/// exact paths (item 251) sit among the other exact paths, ahead of every pattern that could also
+/// describe them.
 ///
 /// Pinned as text rather than as indices so that a diff of it reads as a routing change. See
 /// the test that reads it for what a change to this array means.
-#[cfg(feature = "plane-voice")]
+#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
 const SEALED_ORDER: &[&str] = &[
     "mcp ExactPath(\"/.well-known/oauth-protected-resource/mcp\")",
     "a2a ExactPath(\"/.well-known/oauth-protected-resource/a2a\")",
@@ -18,7 +20,9 @@ const SEALED_ORDER: &[&str] = &[
     "a2a ExactPath(\"/a2a/extendedAgentCard\")",
     "a2a ExactPath(\"/a2a/message:stream\")",
     "a2a ExactPath(\"/a2a/message:send\")",
+    "decision ExactPath(\"/v1/systemone\")",
     "a2a ExactPath(\"/a2a/tasks\")",
+    "decision ExactPath(\"/v1/models\")",
     "a2a ExactPath(\"/a2a/push\")",
     "a2a ExactPath(\"/a2a/\")",
     "mcp ExactPath(\"/mcp\")",
@@ -68,6 +72,9 @@ const SEALED_ORDER: &[&str] = &[
 /// against; a build that compiled voice out is a different composition, not a smaller one.
 const VOICE: bool = cfg!(feature = "plane-voice");
 
+/// Whether this build carries the decision plane — its registry row and its two claims (item 251).
+const DECISION: bool = cfg!(feature = "plane-decision");
+
 /// Every transport and every plane goes into one registry, and both counts are what the design
 /// says they are. This is the half of the seal that does not depend on the claims.
 #[test]
@@ -78,7 +85,10 @@ fn seven_transports_and_five_planes_register() {
         registry.count(PluginKind::Transport),
         if VOICE { 7 } else { 6 }
     );
-    assert_eq!(registry.count(PluginKind::Plane), if VOICE { 5 } else { 4 });
+    assert_eq!(
+        registry.count(PluginKind::Plane),
+        4 + usize::from(VOICE) + usize::from(DECISION)
+    );
     for key in ["tcp", "tls", "http", "sse", "grpc", "stdio"] {
         assert!(
             registry.resolve(PluginKind::Transport, key).is_some(),
@@ -91,6 +101,16 @@ fn seven_transports_and_five_planes_register() {
             "plane `{key}` is not registered"
         );
     }
+    // The decision plane is registered exactly when its crate edge is in the build.
+    assert_eq!(
+        registry
+            .resolve(
+                PluginKind::Plane,
+                <busbar_plane_decision::DecisionPlane as PlaneMeta>::KEY
+            )
+            .is_some(),
+        DECISION
+    );
     // The voice plane and its transport are present exactly together: neither is a thing this
     // root registers without the other.
     assert_eq!(
@@ -110,17 +130,21 @@ fn seven_transports_and_five_planes_register() {
 /// should have to say so here.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
 #[test]
-fn the_planes_declare_forty_eight_claims() {
+fn the_planes_declare_fifty_claims() {
     let claims = plane_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
     assert_eq!(count("llm"), 25);
     assert_eq!(count("mcp"), 4);
     assert_eq!(count("a2a"), 14);
     assert_eq!(count(busbar_plane_streaming::CAP_KEY), 4);
+    assert_eq!(
+        count(<busbar_plane_decision::DecisionPlane as PlaneMeta>::KEY),
+        2
+    );
     assert_eq!(count("admin"), 1);
-    assert_eq!(claims.len(), 48);
+    assert_eq!(claims.len(), 50);
 }
 
 /// The measured overlap, split the way the rule splits it. Both counts are pinned because both
@@ -132,12 +156,13 @@ fn the_planes_declare_forty_eight_claims() {
 /// are the half a tighter grammar moves: reading a suffix and a substring as the segment
 /// constraints they are, rather than as fragments that overlap anything, takes them from 119 to
 /// 65 without ever answering "disjoint" for a pair one arrival satisfies, and naming the audio
-/// surface one path at a time rather than as a prefix took it from 65 to 63.
+/// surface one path at a time rather than as a prefix took it from 65 to 63. Joining the decision
+/// plane (item 251) added one more — its `/v1/models` against the llm plane's tail pattern — for 64.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
 #[test]
-fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
+fn one_hundred_and_sixty_four_cross_plane_pairs_overlap() {
     use busbar_kernel::grammar::family;
 
     let claims = plane_claims();
@@ -155,11 +180,14 @@ fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
             }
         }
     }
-    assert_eq!(cross_family, 90);
-    assert_eq!(same_family, 63);
+    // The decision plane's two exact paths add ten cross-family pairs (a header claim can be true
+    // of the same arrival) and one path-family pair: `/v1/models` inside the llm plane's
+    // `v1/models/<tail>` pattern.
+    assert_eq!(cross_family, 100);
+    assert_eq!(same_family, 64);
 }
 
-/// What the 63 path-family overlaps that remain actually ARE, one class at a time.
+/// What the 64 path-family overlaps that remain actually ARE, one class at a time.
 ///
 /// A count alone cannot say whether an overlap is a real shape or a gap in the reasoning, and
 /// that distinction is the whole reason to tighten a grammar rather than to relax a check. So
@@ -176,7 +204,7 @@ fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
 /// account of itself. There is none, and the assertion is that there is none.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
 #[test]
 fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     use busbar_contract::grammar::PathSeg;
@@ -209,27 +237,27 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
             }
         }
     }
-    assert_eq!(tail, 23);
+    assert_eq!(tail, 24);
     assert_eq!(variable, 24);
     assert_eq!(fragments, 16);
 }
 
-/// **The finding, answered.** Every one of those 153 overlaps is settled by the sealed order,
+/// **The finding, answered.** Every one of those 164 overlaps is settled by the sealed order,
 /// and none of them is a refusal.
 ///
 /// The resolved count is pinned against the overlap count above, so the two cannot drift apart
 /// silently: a pair that stops being resolved has either stopped overlapping or become a tie,
 /// and each of those is a different thing to have to explain. The refusal list is pinned empty,
-/// which is the whole claim of this file — the declared set of five planes seals.
+/// which is the whole claim of this file — the declared set of planes seals.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
 #[test]
 fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = plane_claims();
     let sealed = seal_claims(&claims);
 
-    assert_eq!(sealed.resolved.len(), 153);
+    assert_eq!(sealed.resolved.len(), 164);
     assert!(
         sealed.refused.is_empty(),
         "the declared claims do not seal: {:?}",
@@ -255,7 +283,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-/// The sealed order of the forty-eight, written out.
+/// The sealed order of the fifty, written out.
 ///
 /// A snapshot, and deliberately a verbose one: the walk every arriving connection is matched
 /// against is the thing this file produces, and a change to it is a change to which plane
@@ -264,9 +292,9 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 /// respelled has to update it, on purpose, with the new order visible in the same diff.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
 #[test]
-fn the_sealed_order_of_the_forty_eight_claims_is_pinned() {
+fn the_sealed_order_of_the_fifty_claims_is_pinned() {
     let claims = plane_claims();
     let sealed = seal_claims(&claims);
     let walk: Vec<String> = sealed
@@ -541,12 +569,12 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 /// composition and a node that boots.
 // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
 // because the numbers below are that composition's, not a subset of it.
-#[cfg(feature = "plane-voice")]
+#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
 #[test]
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");
-    assert_eq!(sealed.claims.len(), 48);
-    assert_eq!(sealed.precedence.len(), 48);
+    assert_eq!(sealed.claims.len(), 50);
+    assert_eq!(sealed.precedence.len(), 50);
 }
 
 /// The operator's request-body cap reaches every mounted plane's transport.
@@ -617,7 +645,7 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
 /// on, and a dial-side instance over `tls`, which is the only composition under which `wss` is
 /// honest. A `ws://` destination still resolves to the ingress instance, so nothing that worked
 /// over cleartext quietly moved onto a different stack.
-#[cfg(feature = "plane-voice")]
+#[cfg(all(feature = "plane-voice", feature = "plane-decision"))]
 #[test]
 fn a_secure_realtime_upstream_resolves_to_the_tls_composed_instance() {
     let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");

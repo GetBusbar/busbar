@@ -1,8 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The boot seal: seven transports, five planes, and the two checks that answer before a listener
-//! is bound.
+//! The boot seal: seven transports, the planes' declared claims, and the checks that answer before a
+//! listener is bound.
+//!
+//! ## What the claim check reads, and what it does not
+//!
+//! Stated first, because the name "claim overlap check" promises more than this file can keep. The
+//! claims compared here are each plane's DECLARED claims — `PlaneMeta::CLAIMS`, the pure plane
+//! crate's own compile-time words. The paths a request is actually routed on are a different
+//! object: each installed `busbar_kernel::plane::registry::PlaneDecl`'s `claims` hook, evaluated over
+//! the plane's runtime object at app build, is what `build_dispatch` mounts, and nothing here reads
+//! it. So a clean seal says the declarations do not tie; it does not say two planes' LIVE, configured
+//! routes cannot collide. That second check belongs where the live claims are folded
+//! (`build_dispatch`), which is not this file, and until it exists a live collision is resolved by
+//! whatever that fold does with it rather than refused at boot.
 //!
 //! ## Why the claims travel separately
 //!
@@ -32,9 +44,11 @@
 //!
 //! ## The declared claim set seals, and this is where that is measured
 //!
-//! **153 of the cross-plane pairs overlap** — 90 across selector families and 63 within the path
+//! **164 of the cross-plane pairs overlap** — 100 across selector families and 64 within the path
 //! family. Both numbers follow from the overlap rule as the design writes it, and neither is a
-//! rounding of the other.
+//! rounding of the other. (The decision plane joining the seal, item 251, added eleven: its two
+//! exact paths against every header claim, and its `/v1/models` against the llm plane's
+//! `v1/models/<tail>` pattern — which the order settles in the exact path's favour.)
 //!
 //! The 90 are the conservative arm, and they are conservative because a request really does carry
 //! both a path and a header: `HeaderPresent("x-api-key")` and `ExactPath("/mcp")` can be true of one
@@ -45,19 +59,21 @@
 //! satisfies either. That reading is what took the path-family count from 119 to 65, and naming the
 //! audio surface one path at a time rather than as a prefix — so that the two one-shot audio
 //! operations belong to the plane the inventory gives them to, instead of being described by two
-//! planes at once — took it from 65 to 63. Of the 63, 23 involve a pattern ending in a tail (which
+//! planes at once — took it from 65 to 63, and the decision plane's `/v1/models` made it 64. Of the
+//! 64, 24 involve a pattern ending in a tail (which
 //! can supply whatever the fragment asks for), 24 are a fragment landing inside a pattern's
 //! variable segment, and 16 are two fragment forms that can be satisfied at once by writing a path
 //! with both. Every one of them is a real shape, not a gap in the reasoning.
 //!
-//! All 153 are settled by the sealed order, and none of them is a refusal. That is not the check
-//! being softened: every one of the 153 is a pair whose two claims sit at different precedence, so
+//! All 164 are settled by the sealed order, and none of them is a refusal. That is not the check
+//! being softened: every one of the 164 is a pair whose two claims sit at different precedence, so
 //! the order already says which plane takes bytes both describe, and the pair is recorded in
-//! `resolved` with its winner named. The tests below pin the count at 153, the refusal count at
+//! `resolved` with its winner named. The tests below pin the count at 164, the refusal count at
 //! zero and the sealed order itself, so a declaration change that turns a resolved pair into a tie —
 //! the shape nothing can decide — has to say so here. A root that skipped the check to get a node
-//! running would be choosing which plane owns a request by accident of registration order, which is
-//! the one thing the check exists to prevent.
+//! running would be choosing which plane's DECLARATION owns a shape by accident of registration
+//! order, which is the one thing the check exists to prevent — for the declarations. See the section
+//! above for the live routes it does not reach.
 //!
 //! ## The shape that would pass both checks and still refuse every connection
 //!
@@ -260,6 +276,10 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
         .collect();
     #[cfg(feature = "plane-voice")]
     claims.extend(claims_of::<StreamingPlane>());
+    // The decision plane (#48's fifth) is appended after the four it joined, for the same reason
+    // voice is gated: its claims are in the seal exactly when its crate edge is in the build.
+    #[cfg(feature = "plane-decision")]
+    claims.extend(claims_of::<busbar_plane_decision::DecisionPlane>());
     claims.extend(claims_of::<AdminPlane>());
     claims
 }
@@ -470,6 +490,8 @@ fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal
     // mounting a plane whose claims name a layer this binary does not carry.
     #[cfg(feature = "plane-voice")]
     planes.push(Arc::new(StreamingPlane::EMPTY) as Arc<dyn Plugin>);
+    #[cfg(feature = "plane-decision")]
+    planes.push(Arc::new(busbar_plane_decision::DecisionPlane::EMPTY) as Arc<dyn Plugin>);
     planes.push(Arc::new(AdminPlane::new()) as Arc<dyn Plugin>);
     for plane in planes {
         registry.register(plane).map_err(BootRefusal::Registry)?;
