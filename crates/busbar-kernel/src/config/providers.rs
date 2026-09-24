@@ -75,7 +75,7 @@ pub struct ProviderCfg {
 /// FROZEN config-grammar default for an omitted `protocol:` — independent of which dialects are
 /// compiled in (a build with every LLM dialect deleted still parses providers.yaml against it), so it
 /// cannot be read off the (possibly-empty) protocol registry and is named as a frozen-wire literal.
-// plane-purity: frozen-wire the omitted-`protocol:` default in the frozen providers.yaml config grammar
+// plane-purity: frozen-wire the omitted-`protocol:` default in the frozen providers.yaml config grammar (frozen since 1.5.3)
 pub const DEFAULT_PROTOCOL: &str = "anthropic";
 
 /// The serde default for an omitted `protocol:` — see [`DEFAULT_PROTOCOL`].

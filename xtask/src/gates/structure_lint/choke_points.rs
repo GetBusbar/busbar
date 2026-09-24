@@ -216,7 +216,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     &[
                         format!("{core}/config/transaction.rs"),
                         format!("{core}/state.rs"),
-                        format!("{core}/test_support/engine_kit.rs"),
+                        format!("{core}/test_support/engine_kit/core_impl.rs"),
                     ],
                 ),
             ],

@@ -556,7 +556,13 @@ impl Gate for ConfigSchemaGate {
 
         match baseline {
             Some(baseline) => {
-                let outcome = classify::judge(classify::classify(&baseline, &fresh), &waivers);
+                let home = match &state {
+                    BaselineState::Ok { path, .. } => path.as_str(),
+                    _ => schema::SNAPSHOT,
+                };
+                let see = see_through(cx, &r, home, &baseline, &fresh, &read);
+                let outcome =
+                    classify::judge(classify::classify_with(&baseline, &fresh, &see), &waivers);
                 rows.push(row_additive(&outcome));
                 rows.push(row_waivers(&if outcome.stale.is_empty() {
                     WaiverState::Ok { n: waivers.len() }
@@ -659,6 +665,89 @@ fn read_baseline(cx: &Ctx, r: &str) -> (BaselineState, Option<Value>) {
         },
         Some(doc),
     )
+}
+
+/// WHAT THE CLASSIFIER READS BESIDE THE TWO FINGERPRINTS — see [`classify::SeeThrough`].
+///
+/// THE REFUSAL HALF READS THE BASELINE REF'S SOURCE, BECAUSE ITS SNAPSHOT CANNOT ANSWER. Every
+/// hand-written impl whose fresh `manual-de X` node records `refused` but whose baseline node does
+/// not (absent, or rendered before the arm existed — which is every node of `v1.5.3`) is measured
+/// from the source the baseline ref carried, by the same rule as the working tree's. The baseline's
+/// source is looked for in two places, both read through [`Ctx::git_show`] and so from history,
+/// never the working tree:
+///
+/// * the tracked files as they are named TODAY, at the baseline ref — a file that has not moved
+///   (`crates/secret-ref/src/lib.rs`) is found where it is;
+/// * every `*.rs` directly inside the directory that held the baseline's own snapshot — the config
+///   module the baseline froze, which is where a type that has since MOVED lived then.
+///
+/// A type whose hand-written impl is found in neither place (or in two) did not exist at the
+/// baseline in any form this can measure, and is left to the "new type" verdict it already gets.
+fn see_through(
+    cx: &Ctx,
+    r: &str,
+    baseline_home: &str,
+    baseline: &Value,
+    fresh: &Value,
+    read: &[(String, String)],
+) -> classify::SeeThrough {
+    let mut see = classify::SeeThrough {
+        forwards: schema::forwards(read),
+        ..Default::default()
+    };
+    let empty = serde_json::Map::new();
+    let bt = baseline
+        .get("types")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty);
+    let ft = fresh
+        .get("types")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty);
+    let need: Vec<&str> = ft
+        .iter()
+        .filter(|(_, v)| v.get("refused").is_some())
+        .filter_map(|(k, _)| k.strip_prefix("manual-de "))
+        .filter(|x| {
+            bt.get(&format!("manual-de {x}"))
+                .and_then(|b| b.get("refused"))
+                .is_none()
+        })
+        .collect();
+    if need.is_empty() {
+        return see;
+    }
+    let mut paths: Vec<String> = read
+        .iter()
+        .filter(|(_, t)| need.iter().any(|x| t.contains(&format!("for {x}"))))
+        .map(|(p, _)| p.clone())
+        .collect();
+    if let Some((dir, _)) = baseline_home.rsplit_once('/') {
+        // `git show <ref>:<dir>` lists a tree: a `tree …` header, a blank line, then one entry per
+        // line with a trailing `/` on a subdirectory.
+        if let Ok(listing) = cx.git_show(r, dir) {
+            for entry in listing.lines().skip_while(|l| !l.is_empty()).skip(1) {
+                if entry.ends_with(".rs") && !entry.contains('/') {
+                    paths.push(format!("{dir}/{entry}"));
+                }
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    let base_src: Vec<(String, String)> = paths
+        .into_iter()
+        .filter_map(|p| cx.git_show(r, &p).ok().map(|t| (p, t)))
+        .collect();
+    let base_eff = schema::effective_refusals(&base_src);
+    let fresh_eff = schema::effective_refusals(read);
+    for x in need {
+        if let (Some(Some(b)), Some(Some(f))) = (base_eff.get(x), fresh_eff.get(x)) {
+            see.refusals
+                .insert(format!("manual-de {x}"), (b.clone(), f.clone()));
+        }
+    }
+    see
 }
 
 /// The waiver register as the gate reads it, exposed for the self-test.

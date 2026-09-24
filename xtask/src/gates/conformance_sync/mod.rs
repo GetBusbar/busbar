@@ -19,8 +19,8 @@
 //! | `conformance:manifest-drift` | `conformance/manifest.json` byte-equals a fresh render from the registry + verdicts. `--write` rewrites; otherwise diff. (The config-schema `snapshot-drift` rule, `config_schema/mod.rs:11`.) |
 //! | `conformance:coverage` | every registered suite appears in the committed manifest and every manifest suite is registered — SET EQUALITY (`verdict-covers-every-leg.py:12-18` applied to suites). |
 //! | `conformance:readme-drift` | the README badge block between the markers byte-equals a fresh render from the manifest. |
-//! | `conformance:freshness` | every armed passing verdict's `commit` equals the release commit — a pass carried over from an older sha is RED (§5.2). |
-//! | `conformance:no-orphan-claim` | no human-visible claim string outside the marker block lacks a backing manifest entry (the grep backstop, §5). |
+//! | `conformance:freshness` | every armed passing verdict's `commit` equals the release commit — `git rev-parse HEAD` of the checkout under judgement, resolved from OUTSIDE the verdicts, never elected by them — so a pass carried over from an older sha is RED however many verdicts share that sha (§5.2). |
+//! | `conformance:no-orphan-claim` | no human-visible claim string outside the marker block lacks a backing manifest entry: neither a registered suite's badge string nor any claim word ([`render::CLAIM_WORDS`]) for a standard no registry names (the grep backstop, §5). |
 //!
 //! ## Why the website page is not a row here
 //!
@@ -180,29 +180,9 @@ impl Gate for ConformanceSyncGate {
         // ── :readme-drift — the badge block, rendered from the manifest.
         rows.push(row_readme(cx, &suites, &manifest_text));
 
-        // ── :freshness — every armed passing verdict about the release commit.
-        rows.push(match render::assess(cx, &suites) {
-            Ok(a) if a.stale.is_empty() => Row::pass(
-                ROW_FRESHNESS,
-                "every armed passing verdict is about the release commit",
-                format!(
-                    "release commit {}, {} pass suite(s), none stale",
-                    a.commit.chars().take(9).collect::<String>(),
-                    a.resolved.iter().filter(|r| r.status == "pass").count()
-                ),
-            ),
-            Ok(a) => Row::fail(
-                ROW_FRESHNESS,
-                "a passing verdict is STALE — not about the release commit",
-                format!(
-                    "suite(s) {} claim a green on a commit that is not the release commit {} — a \
-                     pass carried over from an older sha is refused. Re-run the suite on this sha.",
-                    a.stale.join(", "),
-                    a.commit.chars().take(9).collect::<String>()
-                ),
-            ),
-            Err(why) => Row::fail(ROW_FRESHNESS, "the verdicts could not be read", why),
-        });
+        // ── :freshness — every armed passing verdict about the release commit, which is resolved
+        //    from OUTSIDE the verdicts (item 165), never elected by them.
+        rows.push(row_freshness(cx, &suites));
 
         // ── :no-orphan-claim — the grep backstop over the README.
         rows.push(row_no_orphan(cx, &suites));
@@ -338,6 +318,54 @@ fn row_readme(cx: &Ctx, suites: &[render::Suite], manifest_text: &str) -> Row {
     }
 }
 
+fn row_freshness(cx: &Ctx, suites: &[render::Suite]) -> Row {
+    let release = match render::release_commit(cx) {
+        Ok(c) => c,
+        Err(why) => {
+            return Row::fail(
+                ROW_FRESHNESS,
+                "the release commit could not be resolved",
+                format!("{why} — freshness cannot be judged against an unknown commit"),
+            )
+        }
+    };
+    let a = match render::assess(cx, suites) {
+        Ok(a) => a,
+        Err(why) => return Row::fail(ROW_FRESHNESS, "the verdicts could not be read", why),
+    };
+    let stale = render::stale_against(&a, &release);
+    let short: String = release.chars().take(9).collect();
+    if stale.is_empty() {
+        Row::pass(
+            ROW_FRESHNESS,
+            "every armed passing verdict is about the release commit",
+            format!(
+                "release commit {short} (the checkout under judgement), {} armed pass(es), none \
+                 stale",
+                a.resolved
+                    .iter()
+                    .filter(|r| r
+                        .verdict
+                        .as_ref()
+                        .is_some_and(|v| v.armed && v.status == "pass"))
+                    .count()
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_FRESHNESS,
+            "a passing verdict is STALE — not about the release commit",
+            format!(
+                "{} suite(s) claim a green on a commit that is not the release commit {short}: {} \
+                 — a pass carried over from an older sha is refused, however many other verdicts \
+                 agree on that older sha. Re-run the suite(s) on this sha.",
+                stale.len(),
+                stale.join(", ")
+            ),
+        )
+    }
+}
+
 fn row_no_orphan(cx: &Ctx, suites: &[render::Suite]) -> Row {
     let readme = cx.read(README_PATH).unwrap_or_default();
     let orphans = no_orphan_claims(&readme, suites);
@@ -350,7 +378,12 @@ fn row_no_orphan(cx: &Ctx, suites: &[render::Suite]) -> Row {
     } else {
         let named: Vec<String> = orphans
             .iter()
-            .map(|(id, token)| format!("`{token}` (suite {id})"))
+            .map(|o| match o {
+                render::Orphan::Registered { id, token } => format!("`{token}` (suite {id})"),
+                render::Orphan::Unbacked { line, word, text } => format!(
+                    "`{text}` (line {line}: claim word `{word}`, and no registered suite backs it)"
+                ),
+            })
             .collect();
         Row::fail(
             ROW_NO_ORPHAN,

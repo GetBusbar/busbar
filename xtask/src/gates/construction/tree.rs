@@ -638,13 +638,8 @@ impl Tree {
             let Some((key, lines)) = self.files.get_key_value(&rel) else {
                 continue;
             };
-            for l in lines.iter() {
-                if production_only && l.intest {
-                    continue;
-                }
-                if rx.is_match(l.code_bytes()) {
-                    out.push((key.as_str(), l));
-                }
+            for i in grep_file(rx, production_only, lines).iter() {
+                out.push((key.as_str(), &lines[*i]));
             }
         }
         out
@@ -658,6 +653,85 @@ impl Tree {
             .cloned()
             .collect()
     }
+}
+
+/// THE PER-FILE ANSWER TO ONE `grep`, MEMOISED ON THE FILE'S OWN SCAN (item 89's budget).
+///
+/// A self-test drives this whole gate once per plant, and a plant edits a handful of files out of
+/// thousands; every other file reaches the rules as the SAME `Arc<Vec<Line>>` the scan memo handed
+/// the previous case. So the question "which lines of this file match this pattern" has the same
+/// answer it had last time, and asking it again — through a backtracking engine, over every byte of
+/// a 660k-line tree, for each of the dozens of patterns the rules carry — was most of what a case
+/// cost. The key is the pattern, the production flag and the scan's IDENTITY; the memo holds a
+/// clone of that `Arc`, so the allocation can never be freed and its address handed to a different
+/// file while the entry exists. A planted file is a new scan, a new `Arc`, and a fresh answer.
+fn grep_file(
+    rx: &Regex,
+    production_only: bool,
+    lines: &std::sync::Arc<Vec<Line>>,
+) -> std::sync::Arc<Vec<usize>> {
+    type Memo = std::collections::HashMap<
+        (String, bool, usize),
+        (std::sync::Arc<Vec<Line>>, std::sync::Arc<Vec<usize>>),
+    >;
+    static MEMO: std::sync::Mutex<Option<Memo>> = std::sync::Mutex::new(None);
+    let key = (
+        rx.as_str().to_string(),
+        production_only,
+        std::sync::Arc::as_ptr(lines) as usize,
+    );
+    if let Some((_, hit)) = MEMO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(&key))
+    {
+        return hit.clone();
+    }
+    let found: std::sync::Arc<Vec<usize>> = std::sync::Arc::new(
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| !(production_only && l.intest) && rx.is_match(l.code_bytes()))
+            .map(|(i, _)| i)
+            .collect(),
+    );
+    MEMO.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(key, (lines.clone(), found.clone()));
+    found
+}
+
+/// THE SAME MEMO FOR A RULE THAT SCANS A FILE ITS OWN WAY rather than through [`Tree::grep`]:
+/// `tag` must spell EVERY input the scan reads besides the lines themselves (its patterns, its
+/// review lists, the path it prints), because the answer is reused for any call with the same tag
+/// over the same scan. See [`grep_file`] for why the scan's identity is a sound key.
+pub fn memo_file_scan(
+    tag: String,
+    lines: &std::sync::Arc<Vec<Line>>,
+    scan: impl FnOnce(&[Line]) -> Vec<String>,
+) -> std::sync::Arc<Vec<String>> {
+    type Memo = std::collections::HashMap<
+        (String, usize),
+        (std::sync::Arc<Vec<Line>>, std::sync::Arc<Vec<String>>),
+    >;
+    static MEMO: std::sync::Mutex<Option<Memo>> = std::sync::Mutex::new(None);
+    let key = (tag, std::sync::Arc::as_ptr(lines) as usize);
+    if let Some((_, hit)) = MEMO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(&key))
+    {
+        return hit.clone();
+    }
+    let found = std::sync::Arc::new(scan(lines));
+    MEMO.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(Default::default)
+        .insert(key, (lines.clone(), found.clone()));
+    found
 }
 
 /// Is an overlay-planted path one the walk would have yielded had it been on disk? The scan roots

@@ -31,6 +31,15 @@
 //! * ADDING a row for NEW code is not a fix, it is evading the check. Shrinking is the only
 //!   permitted edit.
 //!
+//! A ROW SIGNS FOR THE PLANES IT WAS ARGUED FOR, and a declared concern must have a DEBT row owing
+//! against it. Both were missing (items 223, 236): a row matched by name alone silently excused the
+//! same name in every plane added after it was written, and a concern with nothing owed read as an
+//! owed unification while the gate tracked none. The first is an unledgered finding, the second a
+//! stale-ledger one.
+//!
+//! EVERY DECLARED PLANE IS COMPARED WITH EVERY OTHER (items 184, 223): the corpora are the plane
+//! homes [`super::roots`] derives from the tree's `PLANE_DECL` declarations, not a list of two.
+//!
 //! Class `DEBT` is duplication owed a unification, and its concern id names what is owed. Class
 //! `DISTINCT` is a name two unrelated concerns happen to share; it must STILL be written down,
 //! because "these two are unrelated" is a claim, and an undocumented claim is indistinguishable
@@ -40,7 +49,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::Ctx;
 use crate::ere::Ere;
-use crate::gates::structure_lint::corpus::{scan_decls, Candidate};
+use crate::gates::structure_lint::corpus::{scan_decls, test_scoped, Candidate, Corpus};
 use crate::gates::structure_lint::roots::Addresses;
 use crate::gates::structure_lint::{row, Findings, Tables};
 use crate::ledger::Row;
@@ -81,6 +90,9 @@ pub struct LedgerRow {
     pub concern: String,
     /// The claim somebody signed. Never empty.
     pub note: String,
+    /// The planes the claim was argued for. A name that is ALSO declared in a plane not listed
+    /// here is a copy nobody signed for, and is reported as unledgered.
+    pub planes: Vec<String>,
 }
 
 pub fn concerns(a: &Addresses) -> Vec<Concern> {
@@ -112,11 +124,14 @@ pub fn concerns(a: &Addresses) -> Vec<Concern> {
 /// Four concerns have been RETIRED off this list rather than left with an empty row list — a concern
 /// with nothing owed is a heading somebody adds a row under.
 pub fn ledger() -> Vec<LedgerRow> {
+    // Every row below was argued for the MCP and A2A planes — the only pair the scan could see
+    // when each was written — and signs for exactly that pair.
     let d = |name: &str, note: &str| LedgerRow {
         name: name.to_string(),
         class: Class::Distinct,
         concern: String::new(),
         note: note.to_string(),
+        planes: vec!["mcp".to_string(), "a2a".to_string()],
     };
     vec![
         d("config.rs", "The parse ORDER these two files shared is gone: plane::config::split_section owns the reserved-key refusals, the two typed lifts and the sequence they run in, and all THREE plane sections are read through it. What is left in each file is that plane's GRAMMAR and nothing else — they share no type, no field, no value rule, no sentence and no caller. What they share is a filename, which on every plane says the same true and un-actionable thing: this is where that section's grammar is written."),
@@ -143,6 +158,13 @@ pub fn finding_malformed(name: &str, why: &str) -> String {
     format!("MALFORMED-LEDGER: `{name}` — {why}")
 }
 
+pub fn finding_stale_concern(id: &str) -> String {
+    format!(
+        "STALE-CONCERN: `{id}` is a declared concern and no DEBT row owes anything against it. \
+         If it was unified — thank you — RETIRE the concern."
+    )
+}
+
 pub fn finding_stale(name: &str) -> String {
     format!(
         "STALE-LEDGER: `{name}` is on the plane ledger but is no longer duplicated across planes. \
@@ -150,13 +172,23 @@ pub fn finding_stale(name: &str) -> String {
     )
 }
 
-pub fn scan(cx: &Ctx, a: &Addresses, t: &Tables, f: &mut Findings) {
+pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mut Findings) {
     let fn_decl = Ere::new(FN_DECL).expect("the fn declaration pattern compiles");
     let type_decl = Ere::new(TYPE_DECL).expect("the type declaration pattern compiles");
 
     // The plane corpora are read separately from the candidate corpus, because a plane root is
     // resolved and may sit anywhere under `crates/`.
-    let planes: Vec<(&str, &str)> = vec![("mcp", &a.mcp), ("a2a", &a.a2a)];
+    //
+    // EVERY PLANE, and every pair of them. This was `[("mcp", ..), ("a2a", ..)]` — two corpora of
+    // the five the tree declares — so a copy between voice and a2a (voice's `mount::absolute`,
+    // whose own doc calls it "the A2A `serve::absolute` discipline, kept local"), or between any
+    // pair without both mcp and a2a in it, could not be seen, and so could not be required to
+    // carry a signed row either (items 184, 223).
+    let planes: Vec<(&str, &str)> = a
+        .planes
+        .iter()
+        .map(|p| (p.key.as_str(), p.home.as_str()))
+        .collect();
     // A symbol records EVERY site it was declared at (two copies in one plane and one in the other
     // is still a cross-plane duplicate, and the reader wants all three); a module name records the
     // first path per plane, because a directory tree repeating a filename inside ONE plane is not
@@ -164,29 +196,61 @@ pub fn scan(cx: &Ctx, a: &Addresses, t: &Tables, f: &mut Findings) {
     let mut symbol_homes: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     let mut module_homes: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
 
-    for (key, dir) in &planes {
-        let Ok(files) = cx.walk(
-            &crate::ctx::WalkSpec::new([(*dir).to_string()])
-                .ext("rs")
-                .exclude(["/tests/"]),
-        ) else {
-            continue;
-        };
-        for s in files {
-            let rel = s.rel_str();
-            let c = Candidate {
-                rel: rel.clone(),
-                lines: scan::test_scope(&s.text),
-            };
-            for (sym, line) in scan_decls(&c, &fn_decl, &type_decl) {
+    // THE PLANE FILES. With a candidate corpus they are read out of it — already walked, already
+    // lexed, and with test scope already answered over the WHOLE tree (the `#[cfg(test)] mod x;`
+    // that makes a file a test file sits in its parent, which one plane's home may not hold). The
+    // corpus below its floor is the one case that walks again, because this rule reads the plane
+    // homes directly and an empty candidate list says nothing about them.
+    let mut plane_files: Vec<(&str, Vec<Candidate>)> = Vec::new();
+    match corpus {
+        Some(corpus) => {
+            for (key, dir) in &planes {
+                let prefix = vec![format!("{dir}/")];
+                let files: Vec<Candidate> = corpus.production_in_scope(&prefix).cloned().collect();
+                plane_files.push((key, files));
+            }
+        }
+        None => {
+            let test_only = cx
+                .walk(&crate::ctx::WalkSpec::new([super::roots::CRATES]).ext("rs"))
+                .map(|all| test_scoped(&all))
+                .unwrap_or_default();
+            for (key, dir) in &planes {
+                let Ok(files) = cx.walk(
+                    &crate::ctx::WalkSpec::new([(*dir).to_string()])
+                        .ext("rs")
+                        .exclude(["/tests/", "/benches/"]),
+                ) else {
+                    continue;
+                };
+                let files: Vec<Candidate> = files
+                    .into_iter()
+                    .filter(|s| !test_only.contains(&s.rel_str()))
+                    .map(|s| Candidate {
+                        rel: s.rel_str(),
+                        lines: scan::test_scope(&s.text),
+                    })
+                    .collect();
+                plane_files.push((key, files));
+            }
+        }
+    }
+
+    for (key, files) in &plane_files {
+        for c in files {
+            let rel = &c.rel;
+            for (sym, line) in scan_decls(c, &fn_decl, &type_decl) {
                 symbol_homes
                     .entry(sym)
                     .or_default()
                     .push(((*key).to_string(), format!("{rel}:{line}")));
             }
-            // `mod.rs` is Rust's spelling of "this directory", not a concern.
+            // `mod.rs` is Rust's spelling of "this directory", not a concern — and `lib.rs` and
+            // `main.rs` are its spelling of "this crate", which is what a plane that IS a crate
+            // (llm, voice, decision) is rooted at. Three planes' crate roots sharing a filename is
+            // the language's naming, not a concern duplicated.
             if let Some(base) = rel.rsplit('/').next() {
-                if base != "mod.rs" {
+                if !matches!(base, "mod.rs" | "lib.rs" | "main.rs") {
                     module_homes
                         .entry(base.to_string())
                         .or_default()
@@ -217,21 +281,27 @@ pub fn scan(cx: &Ctx, a: &Addresses, t: &Tables, f: &mut Findings) {
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for (kind, name, sites) in &duplicated {
         seen.insert(name.clone());
+        let where_ = sites
+            .iter()
+            .map(|(p, loc)| format!("{p}:{loc}"))
+            .collect::<Vec<_>>()
+            .join(" ");
         let Some(rowdef) = t.plane_ledger.iter().find(|r| &r.name == name) else {
-            let where_ = sites
-                .iter()
-                .map(|(p, loc)| format!("{p}:{loc}"))
-                .collect::<Vec<_>>()
-                .join(" ");
             f.unledgered.push(finding_duplicate(kind, name, &where_));
             continue;
         };
-        if rowdef.class == Class::Debt && !t.plane_concerns.iter().any(|c| c.id == rowdef.concern) {
-            f.ledger_integrity.push(finding_malformed(
+        // A SIGNED CLAIM IS ABOUT THE PLANES IT WAS SIGNED FOR. `config.rs` was argued for mcp and
+        // a2a; the same filename in voice is a third file nobody has read, and a row matched by
+        // name alone would have absorbed it — and every future plane's copy — without a word.
+        let declared_in: BTreeSet<&str> = sites.iter().map(|(p, _)| p.as_str()).collect();
+        let signed_for: BTreeSet<&str> = rowdef.planes.iter().map(String::as_str).collect();
+        if declared_in != signed_for {
+            f.unledgered.push(finding_duplicate(
+                kind,
                 name,
                 &format!(
-                    "it names concern `{}`, which is not a declared concern",
-                    rowdef.concern
+                    "{where_} (the ledger row signs for {} only)",
+                    signed_for.iter().copied().collect::<Vec<_>>().join("+")
                 ),
             ));
         }
@@ -255,6 +325,24 @@ pub fn scan(cx: &Ctx, a: &Addresses, t: &Tables, f: &mut Findings) {
                 "a cell carries a literal `|`, the separator the legacy row format uses",
             ));
         }
+        // A DEBT row is a promise to unify, and the concern is what is promised. Checked on EVERY
+        // row, not only on a name the scan happened to find duplicated: the check used to sit
+        // behind the duplicate match, where a row naming no concern at all was never read.
+        if r.class == Class::Debt && !t.plane_concerns.iter().any(|c| c.id == r.concern) {
+            f.ledger_integrity.push(finding_malformed(
+                &r.name,
+                &format!(
+                    "it is DEBT and names concern `{}`, which is not a declared concern",
+                    r.concern
+                ),
+            ));
+        }
+        if r.planes.len() < 2 {
+            f.ledger_integrity.push(finding_malformed(
+                &r.name,
+                "a row signs for the PLANES it was argued for, and a duplicate needs two",
+            ));
+        }
         if r.class == Class::Distinct && !r.concern.is_empty() {
             f.ledger_integrity.push(finding_malformed(
                 &r.name,
@@ -272,6 +360,20 @@ pub fn scan(cx: &Ctx, a: &Addresses, t: &Tables, f: &mut Findings) {
         }
         if !seen.contains(&r.name) {
             f.stale_ledger.push(finding_stale(&r.name));
+        }
+    }
+
+    // A CONCERN NOTHING IS OWED AGAINST is a heading somebody adds a row under — the module doc's
+    // own reason for retiring four of them. It is the other half of the ledger rotting, and it was
+    // invisible: no DEBT row existed, so the three declared concerns read as three owed
+    // unifications while the gate tracked none (item 236).
+    for c in &t.plane_concerns {
+        if !t
+            .plane_ledger
+            .iter()
+            .any(|r| r.class == Class::Debt && r.concern == c.id)
+        {
+            f.stale_ledger.push(finding_stale_concern(&c.id));
         }
     }
 }

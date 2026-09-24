@@ -572,21 +572,53 @@ pub fn single_terminal(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let current = extra.len() as i64;
     let mut sorted_allowed = allowed.clone();
     sorted_allowed.sort();
+    let seen = sorted_unique(&seen_allowed);
+    // ITEM 190: THE FLOOR FOR "I FOUND NONE". A terminal renamed away is called from nowhere, so
+    // zero extra sites was a pass forever while this same detail printed `allowed callers seen: []`.
+    // The rule is a statement about a function that exists and the doors that call it; a
+    // configured terminal with no production definition, or a configured door that never calls
+    // it, is the configuration having lost its subject — refused, and named.
+    let mut refusals = Vec::new();
+    if tree.find_fn_by_name(term).is_empty() {
+        refusals.push(format!(
+            "no production `fn {term}` found -- the configured terminal does not resolve, so zero \
+             calls of it proves nothing"
+        ));
+    }
+    let unseen: Vec<String> = sorted_allowed
+        .iter()
+        .filter(|a| !seen.contains(a))
+        .cloned()
+        .collect();
+    if !unseen.is_empty() {
+        refusals.push(format!(
+            "allowed caller(s) never seen calling `{term}`: {}",
+            unseen.join(", ")
+        ));
+    }
     let detail = format!(
         "{current} call(s) of `{term}` outside the allowed callers {} (ceiling {ceiling}): {}; \
-         allowed callers seen: {}",
+         allowed callers seen: {}{}",
         py_list(&sorted_allowed),
         join_or_none(&extra),
-        py_list(&sorted_unique(&seen_allowed))
+        py_list(&seen),
+        if refusals.is_empty() {
+            String::new()
+        } else {
+            format!("; REFUSED: {}", refusals.join("; "))
+        }
     );
+    let pass = current <= ceiling && refusals.is_empty();
+    let mut offenders = extra;
+    offenders.extend(refusals);
     Ok(vec![plain(
         "single-terminal",
-        current <= ceiling,
+        pass,
         format!("`{term}` is called only from its allowed doors"),
         detail,
         current,
         ceiling,
-        extra,
+        offenders,
     )])
 }
 
@@ -770,49 +802,70 @@ pub fn duplicate_dispatch(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 
 // ── 8. token-sealed ──────────────────────────────────────────────────────────────────────────────
 
+// THE token-sealed SUB-ROWS, DECLARED ONCE AND READ THREE TIMES (the third reader is the
+// self-test's green fixture, via [`token_sealed_scans`]): `(row id, pattern key, ceiling key, subject key,
+// ROOT KEY)`.
+//
+// THE ROOT IS PER SUB-ROW (X-178), because "sealed" does not mean "kernel" for every sealed
+// constructor. `SecretOnce::mint(`'s own doc says "Verbs unit only" and its one production site
+// is the Verbs unit, so a row that judged it against `kernel_root` would stand RED on the single
+// call the design REQUIRES — and the only way to green it would be a waiver for a correct call,
+// which is how a gate learns to lie. A symbol whose home is not the kernel gets a row that says
+// so, not an exemption from being scanned at all.
+//
+// ONE TABLE, NOT TWO LISTS. The delegation set immediately below and the rows emitted further
+// down are this same table read twice. When they were two lists, a sub-row added to one and
+// forgotten in the other produced either a symbol counted twice (once by its own row, once by
+// the family scan) or a symbol whose row exists while the family scan still claims its sites —
+// and that drift is the exact shape of X-177. Adding a fourth sub-row is now one edit.
+const SUB_ROWS: [(&str, &str, &str, &str, &str); 3] = [
+    (
+        "token-sealed:kernel-seal",
+        "kernel_seal_pattern",
+        "max_kernel_seal_sites",
+        "kernel_seal_subject",
+        "kernel_root",
+    ),
+    (
+        "token-sealed:admit-token-mint",
+        "admit_token_mint_pattern",
+        "max_admit_token_mint_sites",
+        "admit_token_mint_subject",
+        "kernel_root",
+    ),
+    (
+        "token-sealed:secret-once-mint",
+        "secret_once_mint_pattern",
+        "max_secret_once_mint_sites",
+        "secret_once_mint_subject",
+        "secret_once_root",
+    ),
+];
+
+/// EVERY SPELLING `token-sealed` AND ITS SUB-ROWS SCAN FOR, compiled — the literals (word-anchored
+/// exactly as the rule anchors them), the families and each sub-row's own pattern. The self-test's
+/// green fixture reads this to neutralise today's sites in its overlay, so the fixture and the rule
+/// cannot disagree about what a site is.
+pub fn token_sealed_scans(cfg: &Cfg) -> Result<Vec<Regex>, String> {
+    let c = cfg.rule("token-sealed")?;
+    let mut out = Vec::new();
+    for pat in c.list_of("patterns") {
+        out.push(Regex::new(&word(&pat))?);
+    }
+    for pat in c.list_of("pattern_families") {
+        out.push(Regex::new(&pat)?);
+    }
+    for (_, pat_key, ..) in SUB_ROWS {
+        out.push(Regex::new(need_str(c, pat_key, "token-sealed")?)?);
+    }
+    Ok(out)
+}
+
 pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("token-sealed")?;
     let allowed_root = need_str(c, "allowed_root", "token-sealed")?;
     let root = format!("{}/", allowed_root.trim_end_matches('/'));
     let max_sites = need_int(c, "max_sites", "token-sealed")?;
-    // THE SUB-ROWS, DECLARED ONCE AND READ TWICE: `(row id, pattern key, ceiling key, subject key,
-    // ROOT KEY)`.
-    //
-    // THE ROOT IS PER SUB-ROW (X-178), because "sealed" does not mean "kernel" for every sealed
-    // constructor. `SecretOnce::mint(`'s own doc says "Verbs unit only" and its one production site
-    // is the Verbs unit, so a row that judged it against `kernel_root` would stand RED on the single
-    // call the design REQUIRES — and the only way to green it would be a waiver for a correct call,
-    // which is how a gate learns to lie. A symbol whose home is not the kernel gets a row that says
-    // so, not an exemption from being scanned at all.
-    //
-    // ONE TABLE, NOT TWO LISTS. The delegation set immediately below and the rows emitted further
-    // down are this same table read twice. When they were two lists, a sub-row added to one and
-    // forgotten in the other produced either a symbol counted twice (once by its own row, once by
-    // the family scan) or a symbol whose row exists while the family scan still claims its sites —
-    // and that drift is the exact shape of X-177. Adding a fourth sub-row is now one edit.
-    const SUB_ROWS: [(&str, &str, &str, &str, &str); 3] = [
-        (
-            "token-sealed:kernel-seal",
-            "kernel_seal_pattern",
-            "max_kernel_seal_sites",
-            "kernel_seal_subject",
-            "kernel_root",
-        ),
-        (
-            "token-sealed:admit-token-mint",
-            "admit_token_mint_pattern",
-            "max_admit_token_mint_sites",
-            "admit_token_mint_subject",
-            "kernel_root",
-        ),
-        (
-            "token-sealed:secret-once-mint",
-            "secret_once_mint_pattern",
-            "max_secret_once_mint_sites",
-            "secret_once_mint_subject",
-            "secret_once_root",
-        ),
-    ];
 
     // EACH ROW OWNS A DISJOINT SET OF SITES: the dedicated sub-rows below scan symbols this
     // list would otherwise reach too, and one forged mint counted twice is not two proofs.
@@ -873,14 +926,17 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     // NOTHING HERE IS PERMITTED THAT WAS NOT PERMITTED BEFORE: `allowed_root` is unchanged,
     // `max_sites` is unchanged at 0, and no site gains an excuse. The row simply now sees the sites
     // its own claim has always been about, and the count it reports is the count the tree carries.
-    const SCAN_TEST_SCOPE_TOO: bool = false; // the `production_only` argument to `Tree::grep`
+    // Named for the argument it IS, not for the intent behind it: `Tree::grep`'s third state is
+    // `production_only`, and this rule now passes `false` to it. A const called
+    // "scan test scope too = false" reads as the opposite of what it does.
+    const PRODUCTION_ONLY: bool = false;
 
     // ONE SITE IS ONE FINDING. A line a literal and a family both name is a single forged mint, so
     // the first scan to reach it labels it and the rest pass over.
     let mut seen: std::collections::BTreeSet<(&str, usize)> = std::collections::BTreeSet::new();
     let mut offenders = Vec::new();
     for (pat, rx_pat) in &scans {
-        for (rel, l) in tree.grep(rx_pat, SCAN_TEST_SCOPE_TOO, None) {
+        for (rel, l) in tree.grep(rx_pat, PRODUCTION_ONLY, None) {
             if rel.starts_with(root.as_str()) || excluded(rel) {
                 continue;
             }
@@ -941,7 +997,7 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         // SAME SCOPE AS THE FAMILY SCAN ABOVE, and it has to be the same or the four rows of this
         // family disagree about what "spelled only inside X" ranges over.
         let sites: Vec<String> = tree
-            .grep(&rx_pat, SCAN_TEST_SCOPE_TOO, None)
+            .grep(&rx_pat, PRODUCTION_ONLY, None)
             .into_iter()
             .filter(|(rel, _)| !rel.starts_with(hroot.as_str()))
             .map(|(rel, l)| format!("{rel}:{}", l.no))
@@ -949,7 +1005,7 @@ pub fn token_sealed(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         let ceiling = need_int(c, ceil_key, "token-sealed")?;
         let detail = format!(
             // "production" is gone from this sentence because the scan is no longer production-only
-            // (see SCAN_TEST_SCOPE_TOO above): #65 binds "no NON-KERNEL CODE can mint a seal", and a
+            // (see PRODUCTION_ONLY above): #65 binds "no NON-KERNEL CODE can mint a seal", and a
             // row whose text narrows its own claim to production is a row asserting less than it
             // checks — which is the drift X-177 was about, in the other direction.
             "{} call site(s) of {subject} outside {home} (ceiling {ceiling}): {}",

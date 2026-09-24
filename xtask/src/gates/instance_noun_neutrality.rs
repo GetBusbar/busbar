@@ -140,6 +140,11 @@ const GCP_GENERIC_MENTION_FILES: &[&str] = &[
 const FAM_SECRET: &[&str] = &["secret-example-plugin"];
 const FAM_HOOK: &[&str] = &["hook-test-plugin"];
 const FAM_EXPORT: &[&str] = &["export-example-plugin"];
+// The two store-kind crates that DO exist in this tree, and the one in-tree hook plugin (item 197).
+// Each is matched, like the example/test plugins above, on its own crate identifier.
+const FAM_STORE_MEMORY: &[&str] = &["store-memory"];
+const FAM_STORE_EXAMPLE: &[&str] = &["store-example-plugin"];
+const FAM_HOOKS_RANKING: &[&str] = &["hooks-ranking"];
 
 const NOUNS: &[Noun] = &[
     // Planes.
@@ -267,6 +272,22 @@ const NOUNS: &[Noun] = &[
         family: FAM_NONE,
         tokens: &["sqlite"],
     },
+    // Stores that DO have a crate (item 197). The four above are censused on backends with no crate
+    // here; these two ARE the store kind's in-tree instances, and until this row they had no Noun
+    // at all, so the kind's real instance vocabulary was unpoliced. Matched on the crate identifier
+    // (bare `memory` is a core word; the example plugin's name is its only unambiguous spelling).
+    Noun {
+        key: "memory",
+        kind: "store",
+        family: FAM_STORE_MEMORY,
+        tokens: &["busbar_store_memory"],
+    },
+    Noun {
+        key: "store",
+        kind: "store",
+        family: FAM_STORE_EXAMPLE,
+        tokens: &["busbar_store_example_plugin"],
+    },
     // Auth schemes — matched on the unambiguous scheme name only. `aws` (broad infra) is left to
     // its precise scheme spelling `sigv4`.
     Noun {
@@ -313,6 +334,13 @@ const NOUNS: &[Noun] = &[
         kind: "hook",
         family: FAM_HOOK,
         tokens: &["hook_test_plugin"],
+    },
+    // The hook kind's one in-tree instance (item 197), on its crate identifier.
+    Noun {
+        key: "ranking",
+        kind: "hook",
+        family: FAM_HOOKS_RANKING,
+        tokens: &["busbar_hooks_ranking"],
     },
     Noun {
         key: "export",

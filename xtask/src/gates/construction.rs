@@ -202,7 +202,6 @@ impl ConstructionGate {
             "loc-ceilings:kernel",
             "loc-ceilings:caps-contract",
             "loc-ceilings:unit-total",
-            "loc-ceilings:unit-verbs",
             "loc-ceilings:union",
             "lean-core",
             "no-default-bodies",
@@ -415,7 +414,7 @@ impl ConstructionGate {
         );
         take(
             "source-denylist",
-            rules2::source_denylist(cx, &tree, &cfg, denylist.as_ref()),
+            rules2::source_denylist(cx, &tree, &cfg, denylist.as_ref().map_err(String::as_str)),
             &mut rows,
         );
         take("lean-core", rules2::lean_core(cx, &tree, &cfg), &mut rows);
@@ -775,5 +774,175 @@ mod tests {
             unowed.is_empty(),
             "no manifest-allowlist row is owed for {unowed:?}"
         );
+    }
+
+    /// ITEM 120: THE RULE READS THE `transport` KIND. It read six kinds, so the oracle above owed
+    /// seven rows the rule never emitted. Every transport crate now gets a row, and
+    /// `busbar-transport-tls`'s is RED naming the unit crate it path-depends on — the true breach
+    /// the missing kind was hiding.
+    #[test]
+    fn the_manifest_allowlist_rule_emits_a_row_for_every_transport_crate() {
+        let cx = Ctx::workspace().expect("workspace");
+        let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+        let tree = Tree::load(
+            &cx,
+            &cfg.scan_roots().expect("scan roots"),
+            &cfg.test_path_fragments().expect("fragments"),
+        )
+        .expect("tree");
+        let rows = rules2::manifest_allowlist(&cx, &tree, &cfg).expect("the rule runs");
+        let transports: Vec<String> =
+            dirs_for_globs(&cx, &cfg.kind_globs("transport").expect("kind"))
+                .iter()
+                .map(|d| crate_name_of_dir(d))
+                .collect();
+        assert!(!transports.is_empty(), "the control needs transport crates");
+        let missing: Vec<&String> = transports
+            .iter()
+            .filter(|c| {
+                !rows
+                    .iter()
+                    .any(|r| r.id == format!("manifest-allowlist:{c}"))
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "no manifest-allowlist row for {missing:?}"
+        );
+        let tls = rows
+            .iter()
+            .find(|r| r.id == "manifest-allowlist:busbar-transport-tls")
+            .expect("the tls row");
+        assert_eq!(tls.status, Status::Fail, "{}", tls.detail);
+        assert!(
+            tls.detail
+                .contains("RED (kernel/caps/unit/plane/transport): busbar-unit-transport-key"),
+            "{}",
+            tls.detail
+        );
+    }
+
+    /// ITEM 190: A TERMINAL RENAMED AWAY IS NOT A CLEAN TERMINAL. Renaming `finish_inner` in its
+    /// one home leaves zero call sites of the configured name; the rule used to count that as zero
+    /// extra sites and PASS while printing `allowed callers seen: []`.
+    #[test]
+    fn single_terminal_refuses_a_terminal_that_no_longer_resolves() {
+        let cx = Ctx::workspace().expect("workspace");
+        let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+        let home = "crates/busbar-kernel/src/ingress/mod.rs";
+        let text = cx.read(home).expect("the terminal's home");
+        assert!(
+            text.contains("fn finish_inner("),
+            "the control needs the terminal on disk"
+        );
+        let load = |cx: &Ctx| {
+            Tree::load(
+                cx,
+                &cfg.scan_roots().expect("scan roots"),
+                &cfg.test_path_fragments().expect("fragments"),
+            )
+            .expect("tree")
+        };
+        let clean = rules::single_terminal(&load(&cx), &cfg).expect("the rule runs");
+        assert_eq!(clean[0].status, Status::Pass, "{}", clean[0].detail);
+
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set(
+            home,
+            text.replace("finish_inner", "finish_inner_renamed_away"),
+        );
+        let pcx = cx.with_overlay(ov);
+        let rows = rules::single_terminal(&load(&pcx), &cfg).expect("the rule runs");
+        assert_eq!(rows[0].status, Status::Fail, "{}", rows[0].detail);
+        assert!(
+            rows[0].detail.contains("does not resolve"),
+            "{}",
+            rows[0].detail
+        );
+    }
+
+    /// ITEMS 191/192: A CONFIGURED UNIT TRAIT THAT NO LONGER RESOLVES IS A FAILURE. Renaming
+    /// `Breaker`'s declaration (the one sealed trait of the three) used to drop it from the
+    /// denominator: `1 of 2 unsealed (ceiling 1)` and PASS. Moving `Audit`'s file did the same.
+    #[test]
+    fn sealed_unit_traits_refuses_a_configured_trait_that_no_longer_resolves() {
+        let cx = Ctx::workspace().expect("workspace");
+        let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+        let load = |cx: &Ctx| {
+            Tree::load(
+                cx,
+                &cfg.scan_roots().expect("scan roots"),
+                &cfg.test_path_fragments().expect("fragments"),
+            )
+            .expect("tree")
+        };
+        let clean = rules2::sealed_unit_traits(&load(&cx), &cfg).expect("the rule runs");
+        assert_eq!(clean[0].status, Status::Pass, "{}", clean[0].detail);
+
+        let breaker = "crates/busbar-kernel-breaker/src/lib.rs";
+        let text = cx.read(breaker).expect("the breaker's home");
+        assert!(
+            text.contains("pub trait Breaker: sealed::Sealed"),
+            "the control needs the sealed trait on disk"
+        );
+        let mut moved = crate::ctx::Overlay::new();
+        moved.set(
+            breaker,
+            text.replace("pub trait Breaker:", "pub trait BreakerMovedAway:"),
+        );
+        let rows = rules2::sealed_unit_traits(&load(&cx.with_overlay(moved)), &cfg)
+            .expect("the rule runs");
+        assert_eq!(rows[0].status, Status::Fail, "{}", rows[0].detail);
+        assert!(rows[0].detail.contains("NOT FOUND"), "{}", rows[0].detail);
+
+        let mut gone = crate::ctx::Overlay::new();
+        gone.remove("crates/busbar-kernel-audit/src/record.rs");
+        let rows =
+            rules2::sealed_unit_traits(&load(&cx.with_overlay(gone)), &cfg).expect("the rule runs");
+        assert_eq!(rows[0].status, Status::Fail, "{}", rows[0].detail);
+        assert!(
+            rows[0].detail.contains("not in the tree"),
+            "{}",
+            rows[0].detail
+        );
+    }
+
+    /// ITEM 89 (the `forbid-unsafe` arm the self-test caught): the attribute counts only as the
+    /// crate-level inner attribute in the crate root. A test file asserting the attribute's TEXT
+    /// (`assert!(lib.contains("#![forbid(unsafe_code)]"))`) and a module-level `#![forbid]` are
+    /// not it, and each used to keep the row PASS with the real attribute stripped.
+    #[test]
+    fn forbid_unsafe_reads_the_crate_root_attribute_and_nothing_else() {
+        let cx = Ctx::workspace().expect("workspace");
+        let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+        let lib = "crates/busbar-plane-a2a/src/lib.rs";
+        let text = cx.read(lib).expect("the plane's root");
+        let mut ov = crate::ctx::Overlay::new();
+        ov.set(
+            lib,
+            text.replace("forbid(unsafe_code)", "planted_attribute_removed"),
+        );
+        ov.set(
+            "crates/busbar-plane-a2a/tests/zz_planted_attr.rs",
+            "#[test]\nfn t() { assert!(LIB.contains(\"#![forbid(unsafe_code)]\")); }\n",
+        );
+        ov.set(
+            "crates/busbar-plane-a2a/src/zz_planted_mod.rs",
+            "#![forbid(unsafe_code)]\npub fn f() {}\n",
+        );
+        let pcx = cx.with_overlay(ov);
+        let tree = Tree::load(
+            &pcx,
+            &cfg.scan_roots().expect("scan roots"),
+            &cfg.test_path_fragments().expect("fragments"),
+        )
+        .expect("tree");
+        let rows = rules2::forbid_unsafe(&pcx, &tree, &cfg).expect("the rule runs");
+        let row = rows
+            .iter()
+            .find(|r| r.id == "forbid-unsafe:busbar-plane-a2a")
+            .expect("the a2a row");
+        assert_eq!(row.status, Status::Fail, "{}", row.detail);
+        assert!(row.detail.contains("MISSING"), "{}", row.detail);
     }
 }

@@ -129,6 +129,35 @@ fn drop_type(doc: &mut Value, key: &str) {
     }
 }
 
+/// THE FIXTURE BASE: the committed snapshot as the baseline, and an EMPTY waiver register — the
+/// unplanted state every `ROW_ADDITIVE_ONLY` red proof is measured from.
+///
+/// WHY A FIXTURE AND NOT THE REAL BASELINE. [`crate::gates::prove_red`] demands a GREEN -> RED
+/// transition, and it reads the GREEN half off the context it is handed. Handed the real tree, that
+/// half is the real render against the real freeze-point ref — which is RED today on real debt (the
+/// seven `PoolMember` removals; see the second control in [`run`]). Every additive red proof
+/// measured from there was PROOF IMPOSSIBLE: a planted break over a row that was already red proves
+/// nothing about whether the rule can fire.
+///
+/// Measured from THIS base instead, the unplanted additive row is honestly green — the committed
+/// snapshot is byte-equal to the fresh render, which the first control proves — and each case's
+/// plant is that same base with exactly one mutation, so the RED it produces is the plant's and
+/// no one else's. The real-tree red is not hidden by this: it stays RED on `cargo xtask gate
+/// config-schema` and on the second control below. This fixes the PROOF, not the tree.
+///
+/// The register is emptied for the same reason [`additive_green`] empties it: a verdict about
+/// waivers must not decide a case that is not about waivers.
+fn fixture_base(cx: &Ctx) -> Overlay {
+    baseline_with_waivers(cx, "# no waivers\n", |_| {})
+}
+
+/// The context whose UNPLANTED state is [`fixture_base`]. A plant handed to a proof run on this
+/// context must itself carry the whole base (every `baseline*` helper here builds a complete
+/// overlay), because [`Ctx::with_overlay`] replaces the overlay rather than layering on it.
+fn on_fixture(cx: &Ctx) -> Ctx {
+    cx.with_overlay(fixture_base(cx))
+}
+
 /// A green case for the additive rule.
 ///
 /// THE REGISTER IS EMPTIED IN EVERY ONE OF THESE. The committed register's single line is stale
@@ -150,6 +179,9 @@ fn additive_green<'a>(
 }
 
 /// A red case for the additive rule, naming the path and the reason the report must carry.
+///
+/// MEASURED FROM [`fixture_base`], never from the real tree: the transition proven is "the committed
+/// snapshot as baseline is additive-green; the same baseline with this one mutation is RED".
 fn additive_red<'a>(
     cx: &'a Ctx,
     gate: &'a dyn Gate,
@@ -158,13 +190,79 @@ fn additive_red<'a>(
     f: impl Fn(&mut Value),
 ) -> crate::gates::CasePlan<'a> {
     prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         name,
         &[ROW_ADDITIVE_ONLY],
         baseline_with_waivers(cx, "# no waivers\n", f),
         naming,
     )
+}
+
+/// The tracked file carrying `SecretRef`'s hand-written `Deserialize`, at its path today and at the
+/// freeze point alike (it has not moved since `v1.5.3`).
+const SECRETREF_SRC: &str = "crates/secret-ref/src/lib.rs";
+
+/// A baseline `SecretRef` impl that REFUSES every bare scalar — the `v1.5.3` shape, whose
+/// `visit_str` could only fail and whose other scalar forms fell to serde's default error.
+const BASE_SECRETREF_REFUSES_ALL: &str = "impl<'de> Deserialize<'de> for SecretRef {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error> where D: Deserializer<'de> {
+        struct RefVisitor;
+        impl<'de> Visitor<'de> for RefVisitor {
+            type Value = SecretRef;
+            fn visit_str<E>(self, _v: &str) -> Result<SecretRef, E> where E: de::Error {
+                Err(E::custom(\"a secret must be a reference\"))
+            }
+            fn visit_map<A>(self, map: A) -> Result<SecretRef, A::Error> where A: MapAccess<'de> {
+                Ok(from_map(map))
+            }
+        }
+        d.deserialize_any(RefVisitor)
+    }
+}
+";
+
+/// A baseline `SecretRef` impl that ACCEPTS every bare scalar — so each one the tree refuses today
+/// is a form that parsed and no longer does.
+const BASE_SECRETREF_ACCEPTS_ALL: &str = "impl<'de> Deserialize<'de> for SecretRef {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error> where D: Deserializer<'de> {
+        struct RefVisitor;
+        impl<'de> Visitor<'de> for RefVisitor {
+            type Value = SecretRef;
+            fn visit_str<E>(self, v: &str) -> Result<SecretRef, E> { Ok(lit(v)) }
+            fn visit_u64<E>(self, v: u64) -> Result<SecretRef, E> { Ok(lit(v)) }
+            fn visit_i64<E>(self, v: i64) -> Result<SecretRef, E> { Ok(lit(v)) }
+            fn visit_f64<E>(self, v: f64) -> Result<SecretRef, E> { Ok(lit(v)) }
+            fn visit_bool<E>(self, v: bool) -> Result<SecretRef, E> { Ok(lit(v)) }
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<SecretRef, E> { Ok(lit(v)) }
+        }
+        d.deserialize_any(RefVisitor)
+    }
+}
+";
+
+/// The fixture base with `SecretRef`'s hand-written detail removed from the baseline SNAPSHOT — as
+/// `v1.5.3` has it — and `src` planted as the `SecretRef` source the baseline REF carries. The ref
+/// is synthetic, so every other source read at it answers "no such file" rather than falling
+/// through to the real repository.
+fn predating_baseline(cx: &Ctx, src: &str) -> Overlay {
+    let mut ov = baseline_with_waivers(cx, "# no waivers\n", |d| drop_type(d, T_MANUAL));
+    ov.set_command(
+        format!("git-show:{}:{SECRETREF_SRC}", super::DEFAULT_BASELINE_REF),
+        src.to_string(),
+    );
+    ov
+}
+
+/// Record `PoolMember` in the baseline the way the freeze point does: a DERIVED struct carrying the
+/// fields its map grammar accepts, read from the forwarded `RichMember` node of the real render —
+/// plus, when `extra` is named, one field the forwarded grammar does not carry.
+fn derived_pool_member(d: &mut Value, extra: Option<&str>) {
+    let mut fields = d["types"]["RichMember"]["fields"].clone();
+    if let (Some(x), Some(m)) = (extra, fields.as_object_mut()) {
+        m.insert(x.to_string(), json!({ "optional": true, "type": "u32" }));
+    }
+    d["types"]["PoolMember"] = json!({ "kind": "struct", "fields": fields });
 }
 
 pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
@@ -189,27 +287,42 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     //
     // It was vacuous until the baseline was repaired: with `DEFAULT_BASELINE_REF = "HEAD"` it
     // compared the tree against itself, so "the real render against the real baseline is additive"
-    // was a sentence that could not be false. Against the freeze point it is a real assertion, and
-    // on this tree it FAILS — `PoolMember` has lost seven fields (`attempt_timeout_ms`,
-    // `context_max`, `model`, `reasoning`, `tags`, `tier`, `weight`) out of a grammar declared
-    // frozen since 1.5.3, with an EMPTY waiver register. The names reappear under a new type,
-    // `RichMember`; `crates/busbar-kernel/src/config/pools.rs`'s hand-written `Deserialize`
-    // forwards to it, so the WIRE still parses all seven and no operator's config breaks. The
-    // fingerprint's namespace lost them anyway, and to an additive-only classifier that is seven
-    // removals. See `docs/design/1.6.0-denominator.md` §8.1.
+    // was a sentence that could not be false. Against the freeze point it is a real assertion.
     //
-    // A standing red here makes every `ROW_ADDITIVE_ONLY` red-proof below report `Impossible`
-    // rather than pass, because `prove_red` demands a GREEN -> RED transition and this row is red
-    // before any plant. That is the harness working: those proofs have no falsifiability to
-    // demonstrate while the row cannot be green. It is NOT a reason to waive the seven paths, to
-    // re-record the snapshot, or to narrow this control to rows it can pass — each of those
-    // restores the green and nothing else. Clear the breach and all of them can be asked again.
+    // It first went red on seven `PoolMember` "removals" (`attempt_timeout_ms`, `context_max`,
+    // `model`, `reasoning`, `tags`, `tier`, `weight`) — FALSE ones: `PoolMember` became a
+    // hand-written impl that forwards a map to a derived `RichMember`, the wire still parses all
+    // seven, and only the renderer's sentinel had lost them. The classifier now sees through the
+    // forward ([`super::classify::SeeThrough`]; the see-through cases below), with the snapshot's
+    // bytes unchanged. What keeps it red now is a TRUE finding the refusal arm could not make
+    // before it read the baseline's source (item 163): `manual-de SecretRef::visit_str` — at
+    // `v1.5.3` a bare string was refused outright, and today the bare string `none` parses (the
+    // keyless reference). Whether that widening is waived is the owner's call; see
+    // `docs/design/1.6.0-denominator.md` §8.1 for the history.
+    //
+    // This standing red USED to make every `ROW_ADDITIVE_ONLY` red-proof below report
+    // `Impossible`, because each was measured from the real tree and `prove_red` demands a
+    // GREEN -> RED transition. Those proofs are now measured from [`fixture_base`] — whose
+    // additive row is green, which the fixture control below proves — so each is a real
+    // transition again, and none of them depends on this row. That is a repair to the PROOFS, not
+    // to this row: it is NOT a reason to waive the path, to re-record the snapshot, or to narrow
+    // this control to rows it can pass — each of those restores the green and nothing else.
     report.push(prove_rows_green(
         cx,
         gate,
         "control: the real render against the real baseline is additive",
         &[ROW_ADDITIVE_ONLY],
         Overlay::new(),
+    ));
+    // THE FIXTURE CONTROL. Every `ROW_ADDITIVE_ONLY` red proof below starts from this base, so it
+    // must be green on that row — or each of those proofs is measured from a red, and the harness
+    // will say so (`Impossible`) rather than pass it.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "control: the fixture base (committed snapshot as baseline, empty register) is additive",
+        &[ROW_ADDITIVE_ONLY, ROW_BASELINE],
+        fixture_base(cx),
     ));
 
     // ══ :tracked-sources ═════════════════════════════════════════════════════════════════════════
@@ -311,14 +424,26 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // These two cases are a matched pair, and neither is worth anything without the other: the
     // first says a type that MOVED between two core-kind roots is not a break, the second says a
     // type that VANISHED from every core-kind root still is. A census that only knew how to say
-    // "fine" would pass both halves of that pair and gate nothing. The move target,
-    // `busbar-core-config`, is a real core-kind census member (no `config/` module, so its `src/`
-    // root is its grammar directory).
+    // "fine" would pass both halves of that pair and gate nothing.
+    //
+    // THE MOVE TARGET IS READ FROM THE CENSUS, NEVER NAMED. This case used to plant into
+    // `crates/busbar-core-config`, which the drain has since dissolved: no manifest names it and
+    // no directory holds it, so the "move" re-homed the file where nothing reads it — a deletion
+    // asserted green (item 231). The target is now the grammar directory of a core-kind root the
+    // census ACTUALLY returns, other than the one the file leaves; a census that stops counting
+    // that root turns this move back into a deletion and this case red. Both halves are measured
+    // over [`fixture_base`], so the standing real-tree red on the additive row cannot decide them.
     let moved = "crates/busbar-kernel/src/config/overlay.rs";
+    let target = schema::core_roots(cx)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| schema::grammar_dir(cx, &r))
+        .find(|d| !moved.starts_with(&format!("{d}/")))
+        .unwrap_or_else(|| "crates/<no second core-kind root in the census>/src".to_string());
 
-    let mut ov = Overlay::new();
+    let mut ov = fixture_base(cx);
     ov.set(
-        "crates/busbar-core-config/src/overlay.rs",
+        format!("{target}/overlay.rs"),
         cx.read(moved).unwrap_or_default(),
     );
     ov.remove(moved);
@@ -335,7 +460,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     let mut ov = baseline_with_waivers(cx, "# no waivers\n", |_| {});
     ov.remove(moved);
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "a grammar type that VANISHED from every core-kind root is still a BREAK",
         &[ROW_ADDITIVE_ONLY],
@@ -467,7 +592,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // beside it. This is the case that distinguishes "the hole is closed" from "the hole is
     // labelled": the row that would have lied is SKIP, never PASS.
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "HOLE: an empty baseline leaves the additive check UNPROVEN rather than passing",
         &[ROW_ADDITIVE_ONLY],
@@ -583,11 +708,14 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     // A BASELINE THAT PREDATES A FIELD OF THE FINGERPRINT compares against nothing rather than
-    // against the empty set — otherwise the commit that ADDS a check reds the gate.
+    // against the empty set — otherwise the commit that ADDS a check reds the gate. For the
+    // refusal arm that is only true when the baseline ref's SOURCE cannot answer either: the
+    // fixture's ref is synthetic and plants no source, so there is nothing to measure. The cases
+    // after the stricter arm below plant that source, and there the arm DOES fire (item 163).
     report.push(additive_green(
         cx,
         gate,
-        "a baseline with no `refused` key predates the arm and does not fire it",
+        "a baseline with no `refused` key AND no source for the impl has nothing to compare",
         |d| {
             if let Some(m) = d["types"][T_MANUAL].as_object_mut() {
                 m.remove("refused");
@@ -791,6 +919,62 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         },
     ));
 
+    // ── THE STRICTER ARM AGAINST A BASELINE SNAPSHOT THAT PREDATES IT (item 163) ─────────────────
+    // The pinned freeze point `v1.5.3` carries NO `refused` key and NO `manual-de` node at all, so
+    // the two cases above — both planted into a baseline that already records refusals — proved an
+    // arm that could never run against the baseline a real run reads. Each case here plants the
+    // baseline the way `v1.5.3` looks (no `manual-de SecretRef` node) and the SOURCE that baseline
+    // ref carried, and the arm must answer from that source.
+    //
+    // The widening case leans on the tree as it is: `SecretRef` accepts the bare string `none`
+    // (the keyless reference), where a baseline whose `visit_str` can only fail refused every bare
+    // string. If the tree stops accepting `none`, this case goes RED loudly — it cannot pass
+    // silently, because a plant that proves nothing is refused by the harness.
+    report.push(prove_rows_red(
+        &on_fixture(cx),
+        gate,
+        "breaking: a refusal DROPPED since a baseline that predates the arm is RED (read from its source)",
+        &[ROW_ADDITIVE_ONLY],
+        predating_baseline(cx, BASE_SECRETREF_REFUSES_ALL),
+        &["manual-de SecretRef::visit_str", "no longer refused"],
+    ));
+    report.push(prove_rows_red(
+        &on_fixture(cx),
+        gate,
+        "breaking: a form that PARSED at a baseline that predates the arm and is now refused is RED",
+        &[ROW_ADDITIVE_ONLY],
+        predating_baseline(cx, BASE_SECRETREF_ACCEPTS_ALL),
+        &["manual-de SecretRef::visit_u64", "now refused"],
+    ));
+    // ...and it does not cry wolf: the SAME source at the baseline as in the tree is no delta,
+    // which is what proves the two sides are measured by one rule.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a baseline that predates the arm, carrying the tree's own impl, has no refusal delta",
+        &[ROW_ADDITIVE_ONLY],
+        predating_baseline(cx, &cx.read(SECRETREF_SRC).unwrap_or_default()),
+    ));
+
+    // ── SEEING THROUGH A HAND-WRITTEN IMPL (the seven `PoolMember` "removals") ──────────────────
+    // `PoolMember` was a DERIVED struct at the freeze point; today a hand-written impl forwards a
+    // map to a derived `RichMember`, and the render records `PoolMember` as a field-less sentinel.
+    // Planted the way `v1.5.3` records it, the forwarded grammar must read as unchanged...
+    report.push(additive_green(
+        cx,
+        gate,
+        "see-through: a derived struct that became a forwarding hand-written impl is not a removal",
+        |d| derived_pool_member(d, None),
+    ));
+    // ...and a field the forwarded grammar really lost must still read as REMOVED.
+    report.push(additive_red(
+        cx,
+        gate,
+        "see-through: a field the forwarded grammar really LOST is still a removal",
+        &["PoolMember.zz_gone", "field REMOVED"],
+        |d| derived_pool_member(d, Some("zz_gone")),
+    ));
+
     report.push(additive_red(
         cx,
         gate,
@@ -846,7 +1030,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
 
     // THE DECISIVE ONE: a waiver for path A must not suppress an unrelated break at path B.
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "waiver: a waiver for one path does NOT excuse an unwaived break at another",
         &[ROW_ADDITIVE_ONLY],
@@ -897,7 +1081,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "waiver: an EMPTY register weakens nothing — the break stays RED",
         &[ROW_ADDITIVE_ONLY],
@@ -908,7 +1092,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // A COMMENT IS NOT A WAIVER. The register's format ignores `#`, and a break "waived" in a
     // comment is not waived at all.
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "waiver: a waiver commented out is not a waiver",
         &[ROW_ADDITIVE_ONLY],
@@ -919,7 +1103,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // A MALFORMED REGISTER MUST NOT LET THE ADDITIVE CHECK CLAIM A PASS: it is the register the
     // breaks are judged against, so nothing can be judged without it.
     report.push(prove_rows_red(
-        cx,
+        &on_fixture(cx),
         gate,
         "waiver: a malformed register leaves the additive check UNPROVEN rather than passing",
         &[ROW_ADDITIVE_ONLY],

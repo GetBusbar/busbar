@@ -29,11 +29,22 @@ BACKWARDS = 33
 # [test-reach] — the BACKWARDS class broken out per plane crate (bare plane key, matching
 # the plane keys in xtask::planes), test scope only: how many lines under crates/busbar-<key>/src's OWN test
 # code (files under /tests/, *_tests.rs, or a #[cfg(test)] mod block) name `busbar_core::`. This is
-# the same measurement `cargo xtask gate construction` reports per crate as `ports-only-tests:<crate>`
-# (qa/construction.toml carries llm=565, mcp=1, a2a=3, voice=0); this file's llm figure differs by
-# one measured method (the xtask line-scan here vs. the python tree-scanner there) — both agree to
-# within a single line and neither claims exactness beyond "test code reaching busbar_core:: is
-# visible and ratchets down", which is the point of both gates.
+# the same needle `cargo xtask gate construction` reports per crate as `ports-only-tests:<crate>`.
+#
+# CORRECTED 2026-09-24 (item 466). This paragraph said qa/construction.toml carries llm=565, mcp=1,
+# a2a=3, voice=0 and that the two files "agree to within a single line". Neither is true today:
+# `[rules.ports-only-tests.max_per_crate]` reads busbar-llm = 0, busbar-mcp = 0, busbar-a2a = 0,
+# busbar-voice = 0, and the figures below (24/1/3/0) do not match those. Both tables have gone stale
+# for ONE reason: `busbar_core` is a crate 673ecdaaa absorbed into busbar-kernel, so the needle both
+# gates count matches no line in any crate — `grep -rn 'busbar_core::' crates/busbar-{llm,mcp,a2a,voice}/src`
+# returns nothing (the two `busbar_core_admin::install()` test lines are a different crate), while
+# the successor spelling `busbar_kernel::` stands at 1326 / 606 / 481 / 151 lines in the same four
+# `src` trees, production and test together. So every `test-reach` row here and every
+# `ports-only-tests` row there reads 0 and PASSES whatever the planes' tests reach. The repoint is
+# item 376 (ports-only's needle; it moves ceilings off 0, which is an owner-ruled raise) and, for
+# this file, the scanner's own needle in `xtask/src/gates/plane_purity/scanner.rs` (the `Mode::Reverse`
+# arm). Until then these four figures are ceilings over a needle that cannot match, NOT a measured
+# agreement between two gates.
 [test-reach]
 llm = 24
 mcp = 1

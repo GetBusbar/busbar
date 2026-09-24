@@ -72,14 +72,36 @@ const HOT_LANE_DECL_SITE: &str = "crates/busbar-plugin/src/hot/mod.rs";
 /// NOT a licence: a genuine leak of THIS plane into a neutral crate is caught by `plane-purity` and
 /// by the `law0-neutral-instance` class in `kind_isolation::matrix`, which key on the crate edge
 /// rather than on a noun and so are immune to the collision.
-const PRIMITIVE_COLLISION_KEYS: &[&str] = &["plane-decision"];
+///
+/// Two spellings of the ONE plane, because the key is read two ways (see [`declared_plane_keys`]):
+/// `plane-decision` from the declaration the composition root writes for it, `decision` from its
+/// crate directory `busbar-plane-decision`. Same plane, same collision, same exemption.
+const PRIMITIVE_COLLISION_KEYS: &[&str] = &["plane-decision", "decision"];
 
 /// The banned protocol/role nouns. Matched case-insensitively as SUBSTRINGS of identifiers on
 /// declaration lines: a banned noun concatenated into a name — `McpTransport`, `server_stream` — is
 /// exactly the leak to catch, and a word-boundary match would miss it.
 const BANNED: &[&str] = &[
-    "llm", "mcp", "a2a", "tool", "agent", "sampling", "task", "server", "card", "round", "prompt",
-    "voice", "realtime", "audio",
+    "llm",
+    "mcp",
+    "a2a",
+    "tool",
+    "agent",
+    "sampling",
+    "task",
+    "server",
+    "card",
+    "round",
+    "prompt",
+    "voice",
+    "realtime",
+    "audio",
+    // THE FOURTH PLANE BY ITS OWN NAME (DECISIONS #18: the plane is `streaming`; `voice` is a
+    // dialect inside it). `busbar-plane-streaming` carries no `PLANE_DECL`, so the declaration scan
+    // never read its key and this list never needed it; the crate-directory derivation reads it,
+    // and the totality row is red until the noun is banned. Measured 2026-09-24: zero declarations
+    // in the hot lane carry it, so banning it moves no finding.
+    "streaming",
 ];
 
 /// The Plane-4 nouns this witness's own header commits to, cited to their section. `voice` is a
@@ -226,6 +248,21 @@ fn declared_plane_keys(cx: &Ctx) -> Result<Vec<String>, String> {
         let rel = f.rel_str();
         if rel == HOT_LANE_DECL_SITE {
             continue;
+        }
+        // A PLANE CRATE NAMES ITS PLANE IN ITS DIRECTORY, declaration or none. `busbar-plane-*` is
+        // the plane kind's own naming scheme (`busbar-plane-<key>[-<dialect>]`), and a plane crate
+        // that carries no `PLANE_DECL` — `busbar-plane-streaming` does not — was a plane this row
+        // could not see: the fourth plane's noun sat outside the ban list with the row green.
+        if let Some(key) = rel
+            .strip_prefix("crates/busbar-plane-")
+            .and_then(|r| r.split('/').next())
+            .and_then(|d| d.split('-').next())
+            .filter(|k| !k.is_empty())
+        {
+            let key = key.to_string();
+            if !PRIMITIVE_COLLISION_KEYS.contains(&key.as_str()) && !keys.contains(&key) {
+                keys.push(key);
+            }
         }
         if !f
             .text
@@ -611,6 +648,23 @@ impl Gate for PlaneAbiNeutralityGate {
             &[ROW_PLANE_KEYS],
             ov,
             &["quantum"],
+        ));
+
+        // A NEW PLANE CRATE THAT DECLARES NOTHING IS STILL A PLANE (1.6.0 item 3). The case above
+        // plants a `PLANE_DECL`; the plane kind's crates do not have to carry one, and the fourth
+        // plane did not. Its directory is its name.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-quasar/src/lib.rs",
+            "//! A planted plane-kind crate with no PLANE_DECL.\npub struct Plane;\n",
+        );
+        report.push(crate::gates::prove_rows_red(
+            cx,
+            self,
+            "a new busbar-plane-* crate whose noun is not in the ban list is a finding",
+            &[ROW_PLANE_KEYS],
+            ov,
+            &["quasar"],
         ));
 
         report

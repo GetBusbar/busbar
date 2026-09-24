@@ -12,7 +12,10 @@ use serde_json::{json, Value};
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::{prove_rows_green, prove_rows_red, Gate, Report};
 
-use super::render::{BADGE_BEGIN, BADGE_END, MANIFEST_PATH, README_PATH, VERDICT_DIR};
+use super::render::{
+    parse_registry, BADGE_BEGIN, BADGE_END, MANIFEST_PATH, README_PATH, RELEASE_COMMIT_KEY,
+    VERDICT_DIR,
+};
 use super::{
     ROW_COVERAGE, ROW_FRESHNESS, ROW_MANIFEST_DRIFT, ROW_NO_ORPHAN, ROW_README_DRIFT, ROW_REGISTRY,
 };
@@ -26,7 +29,51 @@ const NOT_RUN_WORD: &str = "conformant";
 
 /// The floor under this suite's own case count. A suite that runs zero cases reports zero failures,
 /// which is the false green the gate exists to be immune to.
-const CASE_FLOOR: usize = 12;
+const CASE_FLOOR: usize = 18;
+
+/// The release commit the freshness FIXTURE is judged against. Not a real sha on purpose: the
+/// fixture says "the checkout under judgement is this commit, and every verdict is about it".
+const FIXTURE_RELEASE: &str = "f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1";
+/// A second commit, for the plants that move the release commit or one verdict off the fixture's.
+const OTHER_COMMIT: &str = "0000000000000000000000000000000000000000";
+
+/// THE FRESHNESS FIXTURE BASE: every registered suite's verdict rewritten to be about
+/// [`FIXTURE_RELEASE`] (the anchor suite's written outright, so the base is armed whatever the tree
+/// holds), and the release commit planted as that same sha.
+///
+/// WHY A FIXTURE AND NOT THE REAL TREE (item 89's rule). The freshness row judges every armed pass
+/// against the commit of the checkout under judgement (item 165). On any commit but the one the
+/// suites ran on, the real tree is RED on that row — that is the rule working (KICKOFF §7.3), and
+/// it stays RED on `cargo xtask gate conformance-sync`. Measured from the real tree, every
+/// freshness red proof would be PROOF IMPOSSIBLE. Measured from this base, the unplanted row is
+/// honestly green (the fixture control proves it) and each plant is the base with exactly one
+/// mutation. This fixes the PROOF, not the tree.
+fn freshness_base(cx: &Ctx) -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set_command(RELEASE_COMMIT_KEY, FIXTURE_RELEASE);
+    for suite in parse_registry(cx).unwrap_or_default() {
+        let path = format!("{VERDICT_DIR}/{}.json", suite.id);
+        let Ok(text) = cx.read(&path) else { continue };
+        let Ok(mut v) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("commit".into(), json!(FIXTURE_RELEASE));
+        }
+        ov.set(path, serde_json::to_string_pretty(&v).unwrap());
+    }
+    ov.set(
+        format!("{VERDICT_DIR}/{ANCHOR}.json"),
+        serde_json::to_string_pretty(&anchor_verdict(FIXTURE_RELEASE)).unwrap(),
+    );
+    ov
+}
+
+/// The context whose UNPLANTED state is [`freshness_base`]. [`Ctx::with_overlay`] replaces rather
+/// than layers, so every plant proven on it carries the whole base plus its one mutation.
+fn on_fresh(cx: &Ctx) -> Ctx {
+    cx.with_overlay(freshness_base(cx))
+}
 
 /// A registry fixture: one line of `[[suite]]` tables from `(id, tier, extra-omit)` triples. `omit`
 /// names a field to leave out, for the missing-field case.
@@ -79,21 +126,31 @@ fn anchor_verdict(commit: &str) -> Value {
 pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     let mut report = Report::new();
 
-    // ── THE CONTROLS. The seeded tree is green in every row.
+    // ── THE CONTROLS. The seeded tree is green in every row but freshness, whose green depends on
+    //    the commit under judgement (see [`freshness_base`]); freshness has its own control on the
+    //    fixture it is proven from.
     report.push(prove_rows_green(
         cx,
         gate,
-        "control: the seeded tree is green in every conformance-sync row",
+        "control: the seeded tree is green in every commit-independent conformance-sync row",
         &[
             ROW_REGISTRY,
             ROW_MANIFEST_DRIFT,
             ROW_COVERAGE,
             ROW_README_DRIFT,
-            ROW_FRESHNESS,
             ROW_NO_ORPHAN,
         ],
         Overlay::new(),
     ));
+    // The plant IS the fixture base: an empty overlay would replace the base, not keep it.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "control: the freshness fixture (every verdict about the release commit) is green",
+        &[ROW_FRESHNESS],
+        freshness_base(cx),
+    ));
+    let fresh = on_fresh(cx);
 
     // ══ :registry ════════════════════════════════════════════════════════════════════════════════
     report.push(prove_rows_red(
@@ -218,21 +275,49 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     ));
 
     // ══ :freshness ═══════════════════════════════════════════════════════════════════════════════
+    // Every case is measured from the fixture base, whose freshness row is green by construction.
+    //
     // A pass carried over from an older sha: the anchor's verdict claims green on a commit that is
-    // not the one the other suites agree on. Fail-closed staleness (§5.2).
-    let mut ov = Overlay::new();
+    // not the release commit, while every other suite's is about it. Fail-closed staleness (§5.2).
+    let mut ov = freshness_base(cx);
     ov.set(
         format!("{VERDICT_DIR}/{ANCHOR}.json"),
-        serde_json::to_string_pretty(&anchor_verdict("0000000000000000000000000000000000000000"))
-            .unwrap(),
+        serde_json::to_string_pretty(&anchor_verdict(OTHER_COMMIT)).unwrap(),
     );
     report.push(prove_rows_red(
-        cx,
+        &fresh,
         gate,
         "freshness: a pass on a commit that is not the release commit is STALE",
         &[ROW_FRESHNESS],
         ov,
-        &["STALE"],
+        &["STALE", ANCHOR],
+    ));
+
+    // ITEM 165: EVERY verdict agrees — on a commit that is not the one under judgement. An anchor
+    // elected from the verdicts agrees with them by construction and calls this fresh; the release
+    // commit is resolved from outside them, so the whole majority is STALE.
+    let mut ov = freshness_base(cx);
+    ov.set_command(RELEASE_COMMIT_KEY, OTHER_COMMIT);
+    report.push(prove_rows_red(
+        &fresh,
+        gate,
+        "freshness: every verdict agreeing on an OLDER commit is still STALE — the anchor is not \
+         elected by the verdicts it judges",
+        &[ROW_FRESHNESS],
+        ov,
+        &["STALE", ANCHOR],
+    ));
+
+    // A release commit that cannot be resolved is RED, never a vacuous "nothing is stale".
+    let mut ov = freshness_base(cx);
+    ov.set_command(RELEASE_COMMIT_KEY, "");
+    report.push(prove_rows_red(
+        &fresh,
+        gate,
+        "freshness: an unresolvable release commit is RED, not a pass against nothing",
+        &[ROW_FRESHNESS],
+        ov,
+        &["could not be resolved"],
     ));
 
     // ══ :no-orphan-claim ═════════════════════════════════════════════════════════════════════════
@@ -253,6 +338,42 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &[ROW_NO_ORPHAN],
         ov,
         &["no backing manifest entry"],
+    ));
+
+    // ITEM 188: a claim for a standard NO registry names. The registered-token scan cannot see it
+    // by construction; the claim vocabulary does.
+    let mut ov = Overlay::new();
+    ov.set(
+        README_PATH,
+        format!(
+            "{}\n\nbusbar is SOC 2 certified.\n",
+            cx.read(README_PATH).unwrap_or_default()
+        ),
+    );
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "no-orphan-claim: a claim for a standard in NO registry is an unbacked claim",
+        &[ROW_NO_ORPHAN],
+        ov,
+        &["SOC 2 certified", "no registered suite backs it"],
+    ));
+
+    // …and the vocabulary is WORDS, not substrings: TLS `certificate` prose is not a claim.
+    let mut ov = Overlay::new();
+    ov.set(
+        README_PATH,
+        format!(
+            "{}\n\nTLS certificates are rotated without a restart.\n",
+            cx.read(README_PATH).unwrap_or_default()
+        ),
+    );
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "no-orphan-claim: `certificate` prose outside the markers is not a claim",
+        &[ROW_NO_ORPHAN],
+        ov,
     ));
 
     if report.cases().len() < CASE_FLOOR {

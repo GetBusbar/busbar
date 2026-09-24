@@ -367,6 +367,10 @@ fn read_blobs(
 // ── MEASUREMENT ──────────────────────────────────────────────────────────────────────────────────
 
 /// Measure `source` under `cfg`. `only`, when non-empty, keeps just those crates.
+/// One worker's share of [`measure`]'s fan-out: its `(crate, path)` pairs and, index for index,
+/// the bodies read for them.
+type ChunkPair<'a> = (&'a [(String, String)], &'a [Result<String, String>]);
+
 pub fn measure(cx: &Ctx, source: &Source, cfg: &Config, only: &[String]) -> Result<Report, String> {
     let discovered = discover(cx, source, cfg)?;
     let discovered: Vec<(String, String)> = if only.is_empty() {
@@ -399,8 +403,7 @@ pub fn measure(cx: &Ctx, source: &Source, cfg: &Config, only: &[String]) -> Resu
         .unwrap_or(1)
         .clamp(1, 16);
     let chunk = discovered.len().div_ceil(jobs).max(1);
-    let work: Vec<(&[(String, String)], &[Result<String, String>])> =
-        discovered.chunks(chunk).zip(texts.chunks(chunk)).collect();
+    let work: Vec<ChunkPair<'_>> = discovered.chunks(chunk).zip(texts.chunks(chunk)).collect();
 
     let mut files: Vec<FileCount> = Vec::with_capacity(discovered.len());
     let mut errors: Vec<FileError> = Vec::new();

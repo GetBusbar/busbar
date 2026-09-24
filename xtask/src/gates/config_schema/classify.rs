@@ -261,11 +261,17 @@ fn variant_findings(
 
 /// THE STRICTER ARM: the set of refused input forms is frozen in BOTH directions.
 ///
-/// A BASELINE THAT PREDATES THIS ARM IS NOT A BASELINE WITH NO REFUSALS. `refused` is absent from
-/// every snapshot rendered before it existed, and absent there means "never recorded", not "the
-/// empty set" — treating the two the same would report all six of `SecretRef`'s refusals as newly
-/// ADDED and red the gate on the commit that introduced the check. An empty LIST is different and
-/// does compare, because a type that genuinely refuses nothing has been measured and said so.
+/// A BASELINE SNAPSHOT THAT PREDATES THIS ARM IS NOT A BASELINE WITH NO REFUSALS. `refused` is
+/// absent from every snapshot rendered before it existed, and absent there means "never recorded",
+/// not "the empty set" — treating the two the same would report all of `SecretRef`'s refusals as
+/// newly ADDED. An empty LIST is different and does compare, because a type that genuinely refuses
+/// nothing has been measured and said so.
+///
+/// "Never recorded" is NOT "nothing to compare", though, and it used to be read that way: the
+/// pinned freeze-point baseline (`v1.5.3`) carries no `refused` key on ANY node, so this arm
+/// returned early on every real run and could never emit a finding. A baseline snapshot that
+/// predates the arm is now answered from the baseline ref's own SOURCE — see [`SeeThrough`] — so
+/// this early return only covers a node whose refusals were measured nowhere at all.
 fn refusal_findings(
     tname: &str,
     bref: Option<&Value>,
@@ -278,9 +284,12 @@ fn refusal_findings(
     if bref.is_null() || fref.is_null() {
         return;
     }
-    let b = set_of(Some(bref));
-    let f = set_of(Some(fref));
-    for v in b.difference(&f) {
+    refusal_diff(tname, &set_of(Some(bref)), &set_of(Some(fref)), out);
+}
+
+/// The refused-form sets of one hand-written impl, baseline vs fresh, in BOTH directions.
+fn refusal_diff(tname: &str, b: &BTreeSet<String>, f: &BTreeSet<String>, out: &mut Vec<Finding>) {
+    for v in b.difference(f) {
         add(
             out,
             Severity::Breaking,
@@ -291,7 +300,7 @@ fn refusal_findings(
              reject and the one that ends up in a boot log",
         );
     }
-    for v in f.difference(&b) {
+    for v in f.difference(b) {
         add(
             out,
             Severity::Breaking,
@@ -301,6 +310,57 @@ fn refusal_findings(
              rather than a silent narrowing",
         );
     }
+}
+
+/// WHAT THE CLASSIFIER READS BESIDE THE TWO FINGERPRINTS — measured from SOURCE, never frozen.
+///
+/// Both halves exist because a fingerprint comparison alone was blind in a way that could only be
+/// cured by reading what the snapshot does not carry:
+///
+/// * `forwards` — a hand-written `Deserialize` that hands its input to a DERIVED type (see
+///   [`super::schema::forwards`]). The fresh render records such a type as a field-less sentinel,
+///   so a baseline that recorded it as a derived struct read as every field REMOVED. When the
+///   baseline node recorded real fields (it is not itself a sentinel), they are compared against
+///   the fields of the derived type(s) the impl forwards to — a field that is really gone from the
+///   forwarded grammar is still a removal, and one that is still accepted is not.
+/// * `refusals` — `manual-de X` -> (baseline, fresh) effective refused-form sets, measured from the
+///   baseline ref's source and the working tree's by the same rule
+///   ([`super::schema::effective_refusals`]), for every hand-written impl whose baseline SNAPSHOT
+///   node predates the refusal arm. Without it the arm could never fire against `v1.5.3`.
+#[derive(Debug, Default)]
+pub struct SeeThrough {
+    pub forwards: BTreeMap<String, BTreeSet<String>>,
+    pub refusals: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)>,
+}
+
+/// Is this node a hand-written impl's field-less sentinel rather than a recorded shape?
+fn is_sentinel(v: &Value) -> bool {
+    v.get("deserialize").and_then(Value::as_str) == Some("manual")
+}
+
+/// The fields the fresh sentinel `tname` actually accepts on the wire, through the derived types
+/// its hand-written impl forwards to. `None` when it forwards to none — nothing to see through.
+fn forwarded_fields(
+    tname: &str,
+    ft: &serde_json::Map<String, Value>,
+    see: &SeeThrough,
+) -> Option<Value> {
+    let targets = see.forwards.get(tname)?;
+    let mut merged = serde_json::Map::new();
+    let mut any = false;
+    for t in targets {
+        let Some(node) = ft.get(t) else { continue };
+        if str_of(node, "kind") != "struct" || is_sentinel(node) {
+            continue;
+        }
+        any = true;
+        if let Some(fields) = node.get("fields").and_then(Value::as_object) {
+            for (k, v) in fields {
+                merged.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+    }
+    any.then_some(Value::Object(merged))
 }
 
 /// The container knobs that decide WHICH DOCUMENTS PARSE. Both were once extracted and thrown away,
@@ -345,8 +405,14 @@ fn container_flag_findings(tname: &str, b: &Value, f: &Value, out: &mut Vec<Find
     }
 }
 
-/// Walk baseline-vs-fresh fingerprint trees and classify every delta.
+/// Walk baseline-vs-fresh fingerprint trees and classify every delta, with nothing read beside them.
 pub fn classify(baseline: &Value, fresh: &Value) -> Vec<Finding> {
+    classify_with(baseline, fresh, &SeeThrough::default())
+}
+
+/// Walk baseline-vs-fresh fingerprint trees and classify every delta, seeing through each
+/// hand-written `Deserialize` with what [`SeeThrough`] measured from source.
+pub fn classify_with(baseline: &Value, fresh: &Value, see: &SeeThrough) -> Vec<Finding> {
     let empty = serde_json::Map::new();
     let bt = baseline
         .get("types")
@@ -439,10 +505,15 @@ pub fn classify(baseline: &Value, fresh: &Value) -> Vec<Finding> {
             );
             refusal_findings(tname, b.get("refused"), f.get("refused"), &mut out);
         } else if bk == "struct" {
+            // SEE THROUGH A HAND-WRITTEN IMPL, but only onto a baseline that recorded real fields:
+            // a baseline sentinel never measured them, and "never measured" is not "none".
+            let seen = (is_sentinel(f) && !is_sentinel(b))
+                .then(|| forwarded_fields(tname, ft, see))
+                .flatten();
             field_findings(
                 tname,
                 b.get("fields").unwrap_or(&null),
-                f.get("fields").unwrap_or(&null),
+                seen.as_ref().or(f.get("fields")).unwrap_or(&null),
                 &mut out,
             );
         } else if bk == "enum" {
@@ -480,6 +551,10 @@ pub fn classify(baseline: &Value, fresh: &Value) -> Vec<Finding> {
                 ),
             );
         }
+    }
+    // THE REFUSAL ARM, AGAINST A BASELINE SNAPSHOT THAT PREDATES IT — answered from source.
+    for (tname, (b, f)) in &see.refusals {
+        refusal_diff(tname, b, f, &mut out);
     }
     out
 }

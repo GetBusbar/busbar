@@ -128,7 +128,7 @@ impl LiftableSection for crate::config::AuthPolicyCfg {
 /// of its own — a remote-endpoint registry, a named-definition registry, a session-policy section,
 /// and a decision-model registry.
 pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] =
-    &["mcp", "oauth_as", "tools", "agents", "streams", "decisions"]; // plane-purity: frozen-wire the frozen top-level wire KEYS this pass lifts
+    &["mcp", "oauth_as", "tools", "agents", "streams", "decisions"];
 
 /// The keys lifted out of the `auth:` block. `policy:` is a 1.6.0 addition (token-mint caps); the
 /// five keys around it are 1.5.5's and stay in the frozen struct.
@@ -157,7 +157,6 @@ impl Lifted {
     /// carrier at its `Default`, which is exactly what an omitted section means.
     fn install(self, deploy: &mut DeployCfg) {
         if let Some(v) = self.endpoint {
-            // plane-purity: frozen-wire writes the frozen mcp: wire field on DeployCfg
             deploy.mcp = v;
         }
         if let Some(v) = self.oauth_as {

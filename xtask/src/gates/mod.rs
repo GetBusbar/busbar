@@ -189,20 +189,80 @@ pub const REPORT_ONLY: &[Posture] = &[
     Posture {
         name: "qa-names",
         why:
-            "RED ON ONE NAMED ROW, AND NOTHING ELSE. This entry used to say the list was empty and \
-              the gate green outright; the gate was red on this tree the whole time, so the \
-              blocking `cargo xtask gate qa-names --posture` step in ci.yml exited 1 on a tree \
-              nobody had touched (item 176). The one red is `qa-names:path-names-a-live-path`, \
-              about xtask/src/audit.rs's `REGISTER_REL = qa/audit-ledger.json`, a register the \
-              tree no longer has -- carried on QA_NAMES_STANDING_REDS with its drain written \
-              there. Every OTHER row of this gate is scored like any gate's: a new dead name, a \
+            "GREEN, AND HELD THERE BY NAME. This entry once said the list was empty and the gate \
+              green outright while the gate was red, so the blocking `cargo xtask gate qa-names \
+              --posture` step in ci.yml exited 1 on a tree nobody had touched (item 176). Its one \
+              red, `qa-names:path-names-a-live-path` on xtask/src/audit.rs's `REGISTER_REL`, is \
+              drained by a written declaration beside the const and QA_NAMES_STANDING_REDS is \
+              empty again. Every row of this gate is scored like any gate's: a new dead name, a \
               kind that names no key, a scan that collapsed or a stale declaration reds `--all` \
-              and `--posture` alike, and the named row going green reds them too until it is \
-              struck. `posture_tests::the_qa_names_posture_holds_on_the_tree` runs the real gate \
+              and `--posture` alike, and a name added to the list that is not red is STALE and \
+              reds them too. `posture_tests::the_qa_names_posture_holds_on_the_tree` runs the real gate \
               and holds this entry to what it says.",
         excuse: Excused::OnlyRows(StandingReds {
             rows: QA_NAMES_STANDING_REDS,
             list: "QA_NAMES_STANDING_REDS",
+            mirror: None,
+        }),
+    },
+    Posture {
+        name: "money-invariants",
+        why: "RED ON ONE NAMED ROW, AND IT IS THE TRUE FINDING. Item 9 pointed this gate at the \
+              record production actually journals — busbar-kernel-audit/src/record.rs — and \
+              `money-invariants:no-stored-price` went red on three stored priced figures there: \
+              `AuditRecord.amount`, `Amount.priced` and `HookApplied.priced_delta` (#77(3): price \
+              is never stored). DRAIN: Phase 2 money work takes the priced figures off the \
+              journalled audit record; the currency field in the SIGNED audit digest is item 34, \
+              owner-owed. Every OTHER row of this gate is scored like any gate's, so a \
+              plugin-keyed money field or a seal outside core reds `--all` and `--posture` alike, \
+              and once `:no-stored-price` goes green the name here is STALE and reds them too \
+              until it is struck from MONEY_INVARIANTS_STANDING_REDS. \
+              `posture_tests::the_money_invariants_posture_holds_on_the_tree` runs the real gate \
+              and holds this entry to what it says.",
+        excuse: Excused::OnlyRows(StandingReds {
+            rows: MONEY_INVARIANTS_STANDING_REDS,
+            list: "MONEY_INVARIANTS_STANDING_REDS",
+            mirror: None,
+        }),
+    },
+    Posture {
+        name: "conformance-sync",
+        why: "RED ON ONE NAMED ROW, AND IT IS THE TRUE FINDING. `conformance:freshness` honours a \
+              pass only if its verdict commit IS the commit under judgement (item 165), and \
+              KICKOFF 7.3 rules that every commit to predev invalidates every conformance pass: \
+              STALE is normal in flight, shown on every push and not blocking it. DRAIN: KICKOFF \
+              7.4, Phase 5, on the release sha, where the suites are re-run on that sha and the \
+              row goes green; strike the name from CONFORMANCE_SYNC_STANDING_REDS in that commit. \
+              Every OTHER row of this gate (registry, manifest-drift, coverage, readme-drift, \
+              no-orphan-claim) is scored like any gate's, so a drifted manifest or a hand-added \
+              claim reds `--all` and `--posture` alike. \
+              `posture_tests::the_conformance_sync_posture_holds_on_the_tree` runs the real gate \
+              and holds this entry to what it says.",
+        excuse: Excused::OnlyRows(StandingReds {
+            rows: CONFORMANCE_SYNC_STANDING_REDS,
+            list: "CONFORMANCE_SYNC_STANDING_REDS",
+            mirror: None,
+        }),
+    },
+    Posture {
+        name: "structure-lint",
+        why: "RED ON FOUR NAMED ROWS, AND THEY ARE TRUE FINDINGS. be9c473f5 derived the plane set, \
+              the protocol crates and the tree-wide scope from the tree instead of from lists that \
+              had gone stale, and the lint then saw what it had been blind to: \
+              `plane-dup:unledgered` (24 plane-local reimplementations of a shared concern), \
+              `plane-dup:stale-ledger` (3 ledger rows that outlived their duplication), \
+              `axis:purity` (4 places the agnostic core asks an axis its identity) and \
+              `census:count` (3 shared words with a second spelling). DRAIN: Phase 4, when the \
+              plane owners dedupe or sign ledger rows; strike each name from \
+              STRUCTURE_LINT_STANDING_REDS in the commit that turns its row green. Every OTHER row \
+              of this gate is scored like any gate's, so a new red anywhere else reds `--all` and \
+              the blocking `--posture` step in ci.yml alike, and a listed row that goes green \
+              without its strike is STALE and reds them too. \
+              `posture_tests::the_structure_lint_posture_holds_on_the_tree` runs the real gate and \
+              holds this entry to what it says.",
+        excuse: Excused::OnlyRows(StandingReds {
+            rows: STRUCTURE_LINT_STANDING_REDS,
+            list: "STRUCTURE_LINT_STANDING_REDS",
             mirror: None,
         }),
     },
@@ -251,17 +311,15 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
     // the route step" that found no `.await` in scope at all, and passed on that basis.
     "hold-discipline:cancellation-before-await",
-    // TWO CEILINGS WHOSE SUBJECT IS NOT IN THE TREE. `slice.rs` under busbar-kernel/src and the
-    // `busbar-unit-verbs` crate do not exist, so each row measures a vacuous 0 against a ceiling of
-    // 0 and the scan-set floor scores that RED, correctly. Drain: slot W1.1 corrects the two
-    // entries in qa/construction.toml (re-point to the subject's real home or strike the row), and
-    // strikes both names here on the same commit.
-    "loc-ceilings:kernel:slice",
-    "loc-ceilings:unit-verbs",
-    // SEVEN ROWS THAT DID NOT RUN. The allowlist rule owes one row per `busbar-transport-*` crate
-    // and emits none, because rules2.rs:314 does not read the `transport` kind — "owed but no row
-    // was recorded" is a red about the rule, not about the seven manifests. Drain: item 120
-    // (Phase 1) makes the rule read `transport`; its commit strikes these seven names.
+    // SEVEN ROWS THAT RUN AND ARE RED ON THEIR MANIFESTS. Until item 120 the allowlist rule did not
+    // read the `transport` kind, so these were "owed but no row was recorded — DID NOT RUN". It
+    // reads it now, and every one of the seven FAILS for a real reason, measured: each names
+    // third-party crates no review has recorded (tokio, futures, rustls, hyper, ...), and three name
+    // a crate the rule scores as an automatic RED — `busbar-transport-tls` path-depends on
+    // `busbar-unit-transport-key` (a unit crate; #36/#40 kernel-side machinery), and `-grpc` and
+    // `-sse` on `busbar-transport-http` (a transport). Drain: the owner reviews the third-party
+    // deps into `[rules.manifest-allowlist.reviewed_extra]` and the #40 opaque-handle work removes
+    // the tls → unit edge; each name is struck here AND in scripts/land.sh as its row goes green.
     "manifest-allowlist:busbar-transport-grpc",
     "manifest-allowlist:busbar-transport-http",
     "manifest-allowlist:busbar-transport-sse",
@@ -269,10 +327,62 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     "manifest-allowlist:busbar-transport-tcp",
     "manifest-allowlist:busbar-transport-tls",
     "manifest-allowlist:busbar-transport-ws",
+    // Four production call sites of `pick_among(` against a ceiling of 2: the kernel-egress exhaustion
+    // and walk sites beside busbar-llm's fallback and pipeline. DRAIN: Phase 4, when the plane's own
+    // pick moves behind the kernel loop and only the loop and the fallback re-entry remain.
     "one-pick-site",
-    "ports-only-tests:busbar-llm",
-    "request-path-fn-size",
-    "terminal-doors-in-audit-step",
+    // RE-DERIVED 2026-09-24 FROM A REAL RUN (P1 integration). `cargo xtask gate construction` on a
+    // clean checkout of b7200b496, base pinned to origin/predev, is red on exactly the rows on this
+    // list. Three names were STALE and are struck here and in scripts/land.sh in the same commit:
+    // `ports-only-tests:busbar-llm`, `request-path-fn-size` and `terminal-doors-in-audit-step` are
+    // PASS on that run. `ceiling-rose` is green again because the ten expired kind-isolation raises
+    // in qa/construction.toml were struck in the same commit (each cell already reads its `to` at
+    // the base). The rows below were red and on no list, so `--posture` scored them NEW; each is a
+    // true finding, named with what it measures and the phase that drains it.
+    //
+    // MONEY — DRAIN: Phase 2.
+    // `plane-no-money`: `priced_from_ms` at crates/busbar-llm/src/unit/meter.rs — a plane module
+    // naming a price (#43/#71). (Item 208 recorded that an earlier comment claimed this row was on
+    // the list while it was not; it is on it now, by name.)
+    "plane-no-money",
+    // `one-pricing-site`: `busbar_kernel_ledger::cost::price` called from
+    // crates/busbar-core-admin/src/v1/service.rs, outside the reviewed homes — an admin read that
+    // prices on its own path (the BUDGET row: the enforcement path is not the invoice path).
+    "one-pricing-site",
+    // `no-test-doubles-in-production:doubles`: 7 reviewed doubles in the shipped binary against a
+    // ratchet of 5 — the voice governed-call node in crates/busbar/src/main.rs, built with
+    // `NullShipper`, `RecordingRows`, `without_directory(` and `Pricer::flat(` (a zero rate card
+    // where the deployment's card belongs).
+    "no-test-doubles-in-production:doubles",
+    // `token-sealed` and its three named mints: the Teller's tokens, `KernelSeal::acquire_for_kernel(`,
+    // the arrival-hold mint and `SecretOnce::mint(` are spelled outside their one home crate (266,
+    // 136, 49 and 5 sites). Item 317: the one deliberate cross-crate hole in the capability model is
+    // held by nothing while these are red. The arrival hold is a money hold, so this drains with it.
+    "token-sealed",
+    "token-sealed:admit-token-mint",
+    "token-sealed:kernel-seal",
+    "token-sealed:secret-once-mint",
+    //
+    // C1 / THE FOLD — DRAIN: Phase 4.
+    // `lean-core`: 14 string literals in the kernel and busbar-kernel-* crates naming a dialect or a
+    // section 1.3 pinned word (config/mod.rs, appbuild.rs). Item 379 widened the scan to the eight
+    // kernel crates the units became, which is what made it visible.
+    "lean-core",
+    // `neutral-no-dialect`: 27 DIALECT/KEY hits in the neutral crates per plane-purity-lint.sh
+    // (busbar-kernel-identity egress_auth tests, busbar-kernel config) — the 59/60 dialect and
+    // strict-purity drains.
+    "neutral-no-dialect",
+    // `loc-ceilings:caps-contract` and `surface-ceiling:contract`: busbar-contract measures 6840
+    // against the ARCHITECTURE.md 1.1 ceiling of 5652 (caps folded in, #37/#38). `loc-ceilings:union`
+    // is the same breach one level up — 58644 against 57456, over by 1188, which the union had been
+    // absorbing while it read its members' slack (item 378 made it read their ceilings). A TRUE
+    // red: the contract surface a plugin author reads is 1188 lines over the owner's number.
+    "loc-ceilings:caps-contract",
+    "loc-ceilings:union",
+    "surface-ceiling:contract",
+    // `loc-ceilings:kernel:teller`: teller.rs is 685 lines against its 661 ceiling. Drains with the
+    // Teller loop's split in the fold.
+    "loc-ceilings:kernel:teller",
 ];
 
 /// THE `qa-names` GATE'S STANDING REDS, BY NAME.
@@ -283,13 +393,11 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
 /// that has gone green is STALE and is scored too, so the list cannot outlive its facts and cannot
 /// quietly become a blanket.
 pub const QA_NAMES_STANDING_REDS: &[&str] = &[
-    // RE-OPENED 2026-09-24 (item 176): the list below was declared drained while the gate was red.
-    // `xtask/src/audit.rs:49` `pub const REGISTER_REL = "qa/audit-ledger.json"` names a register
-    // this tree no longer has (`ls qa/audit*` matches nothing; the audit-register readers were
-    // repointed in 2a0a832ff and this const was not). Drain: the owner of xtask/src/audit.rs
-    // repoints or strikes REGISTER_REL, and strikes this name in the same commit -- the STALE
-    // check reds `--posture` until they do.
-    "qa-names:path-names-a-live-path",
+    // DRAINED 2026-09-24 (item 176, re-opened the same day): `qa-names:path-names-a-live-path`
+    // stood here for `xtask/src/audit.rs`'s `REGISTER_REL = "qa/audit-ledger.json"`. The register
+    // was deleted in 647f2fae9 while `cargo xtask ledger` was kept on purpose, so the const is the
+    // DEFAULT home a fresh register is written to -- not moved, not obsolete -- and it now carries
+    // a `// qa-names:` declaration beside it saying so, which reds the day the file exists again.
     // HISTORY. It was EMPTIED 2026-09-22 as the drain below finished -- but not the whole drain.
     //
     // It held three row ids covering twenty-five dead names in `qa/*.toml`. Each was decided by the
@@ -329,9 +437,48 @@ pub const QA_NAMES_STANDING_REDS: &[&str] = &[
     //     asserting that a plane names no price went from 1 money symbol to 113, having been green
     //     over three of its four planes (and, since #39 dissolved busbar-mcp-codec and
     //     busbar-a2a-codec INTO those crates, over two codec halves as well). Nothing is
-    //     allowlisted. `plane-no-money` is NOT a member of the construction standing-red list (a
-    //     line here once said it was, and never was): the construction gate scores it like any
-    //     other row, and a red there is a NEW RED under `--posture`.
+    //     allowlisted. `plane-no-money` was then NOT a member of the construction standing-red
+    //     list (a line here once said it was, and never was), so `--posture` scored it NEW. It
+    //     became a member on 2026-09-24, by name and with its Phase 2 drain, when the list was
+    //     re-derived from a real run — see CONSTRUCTION_STANDING_REDS.
+];
+
+/// THE MONEY-INVARIANTS GATE'S STANDING REDS, BY NAME. Same contract as
+/// [`QA_NAMES_STANDING_REDS`]: a red this list does not name is scored, and a name on this list that
+/// has gone green is STALE and is scored too.
+pub const MONEY_INVARIANTS_STANDING_REDS: &[&str] = &[
+    // Item 9 (2026-09-24): the gate now reads the journalled audit record and is red on three
+    // stored priced figures in crates/busbar-kernel-audit/src/record.rs — `AuditRecord.amount`,
+    // `Amount.priced`, `HookApplied.priced_delta`. Drained by Phase 2 (money); the currency field
+    // in the signed audit digest is item 34, owner-owed. Strike this line in the commit that
+    // turns the row green.
+    "money-invariants:no-stored-price",
+];
+
+/// THE CONFORMANCE-SYNC GATE'S STANDING REDS, BY NAME. Same contract as
+/// [`QA_NAMES_STANDING_REDS`]: a red this list does not name is scored, and a name on this list that
+/// has gone green is STALE and is scored too.
+pub const CONFORMANCE_SYNC_STANDING_REDS: &[&str] = &[
+    // Item 165 (2026-09-24): freshness is judged against the checkout's own commit, so every
+    // carried-over pass is STALE on the dev line (KICKOFF 7.3). Drained in Phase 5 on the release
+    // sha (KICKOFF 7.4). Strike this line in the commit that turns the row green.
+    "conformance:freshness",
+];
+
+/// THE STRUCTURE-LINT GATE'S STANDING REDS, BY NAME. Same contract as
+/// [`MONEY_INVARIANTS_STANDING_REDS`]: a red this list does not name is scored, and a name on this
+/// list that has gone green is STALE and is scored too.
+pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
+    // be9c473f5 (W1.2, items 183/184/222-224/236) made the lint derive its plane set, protocol
+    // crates and scope from the tree, and these four rows went red on what it could now see.
+    // Measured 2026-09-24 on a clean checkout of 4be7fd3b5: red on exactly these four, green on the
+    // other 33. DRAIN: Phase 4 — the plane owners dedupe each plane-local copy or sign its ledger
+    // row, prune the stale ledger rows, take the axis identity questions out of the agnostic core
+    // and collapse each second spelling. Strike each line in the commit that turns its row green.
+    "structure-lint:axis:purity",
+    "structure-lint:census:count",
+    "structure-lint:plane-dup:stale-ledger",
+    "structure-lint:plane-dup:unledgered",
 ];
 
 /// One entry of [`REPORT_ONLY`].
@@ -2665,7 +2812,10 @@ pub static REGISTRY: &[Registration] = &[
     Registration {
         name: "instance-noun-neutrality",
         batch: 1,
-        tier: Tier::Fast,
+        // RELEASE-TIME, NOT PER-PUSH (item 185): red by design on a tracked burndown baseline, run
+        // in full by release-stage.yml's `done-oracle` job on the sha being staged, on the same
+        // footing as its Tier::Full siblings (reachability, plane-purity-strict, kind-isolation-ship).
+        tier: Tier::Full,
         build: || Box::new(instance_noun_neutrality::InstanceNounNeutralityGate),
         summary:
             "no crate names a concrete plugin instance outside that instance's own crate family",
@@ -2673,7 +2823,10 @@ pub static REGISTRY: &[Registration] = &[
     Registration {
         name: "plane-pricing-blindness",
         batch: 1,
-        tier: Tier::Fast,
+        // RELEASE-TIME, NOT PER-PUSH (item 185): red by design on a tracked burndown baseline, run
+        // in full by release-stage.yml's `done-oracle` job on the sha being staged, on the same
+        // footing as its Tier::Full siblings (reachability, plane-purity-strict, kind-isolation-ship).
+        tier: Tier::Full,
         build: || Box::new(plane_pricing_blindness::PlanePricingBlindnessGate),
         summary:
             "no plane crate resolves a card, prices, mints a unit key or arithmetics a hold (#43/#71)",
@@ -3393,11 +3546,32 @@ mod posture_tests {
     fn the_release_time_posture_is_read_from_full_gate_and_expires_with_it() {
         let cx = Ctx::workspace().expect("the workspace opens");
         let red = verdict(vec![Row::fail("kind-isolation:shape", "t", "d")]);
-        assert!(
-            excused_from_all("kind-isolation-ship", &cx, &red).is_some(),
-            "verify-1.6.0-done.sh invokes it, which is what full_gate's excuse asserts"
-        );
+        // THE BASELINE IS PLANTED, NOT BORROWED. The excuse holds only while the script names the
+        // gate AND some workflow runs the script in full (item 161). The control used to read that
+        // second half off whatever the real workflows carried, so on a tree where no workflow ran
+        // the script it failed before the plant, and the plant below proved nothing (item 89's
+        // PROOF IMPOSSIBLE). A workflow job running the script in full is planted here, so the
+        // green -> red transition is the script edit and nothing else.
+        let ci = ".github/workflows/ci.yml";
         let mut ov = Overlay::new();
+        ov.set(
+            ci,
+            format!(
+                "{}\n  planted-release-run:\n    runs-on: ubuntu-latest\n    steps:\n      \
+                 - run: bash scripts/verify-1.6.0-done.sh\n",
+                cx.read(ci).expect("ci.yml")
+            ),
+        );
+        let base = cx.with_overlay(ov.clone());
+        assert!(
+            excused_from_all("kind-isolation-ship", &base, &red).is_some(),
+            "verify-1.6.0-done.sh invokes it and a workflow runs the script, which is what \
+             full_gate's excuse asserts: {:?}",
+            crate::full_gate::REGISTRY_NOT_IN_CI
+                .iter()
+                .find(|(n, _, _)| *n == "kind-isolation-ship")
+                .map(|(_, _, e)| e.holds(&base))
+        );
         ov.set(
             "scripts/verify-1.6.0-done.sh",
             "#!/usr/bin/env bash\n# the release script no longer runs it\n",
@@ -3678,9 +3852,18 @@ mod posture_tests {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        let lists: [(&str, &[&str]); 2] = [
+        let lists: [(&str, &[&str]); 5] = [
             ("CONSTRUCTION_STANDING_REDS", CONSTRUCTION_STANDING_REDS),
+            ("STRUCTURE_LINT_STANDING_REDS", STRUCTURE_LINT_STANDING_REDS),
             ("QA_NAMES_STANDING_REDS", QA_NAMES_STANDING_REDS),
+            (
+                "MONEY_INVARIANTS_STANDING_REDS",
+                MONEY_INVARIANTS_STANDING_REDS,
+            ),
+            (
+                "CONFORMANCE_SYNC_STANDING_REDS",
+                CONFORMANCE_SYNC_STANDING_REDS,
+            ),
         ];
         let mut offenders = Vec::new();
         // An id, backticked, followed by "is on this list" (said in a list's own doc block).
@@ -3762,6 +3945,101 @@ mod posture_tests {
                 v.problems
             );
         }
+    }
+
+    /// ITEM 9 (posture): the money-invariants posture holds on the tree — the exact check ci.yml's
+    /// blocking `cargo xtask gate money-invariants --posture` step makes — AND the gate is red, so
+    /// the standing row is a real red and not an excuse over a green gate.
+    #[test]
+    fn the_money_invariants_posture_holds_on_the_tree() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let reg = find("money-invariants").expect("money-invariants is registered");
+        let v = execute(&*(reg.build)(), &cx);
+        assert!(
+            excused_from_all("money-invariants", &cx, &v).is_some() || !v.red,
+            "money-invariants is red beyond MONEY_INVARIANTS_STANDING_REDS: {:?} {:?}",
+            v.rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .map(|r| format!("{} {}", r.id, r.detail))
+                .collect::<Vec<_>>(),
+            v.problems
+        );
+        let sr = StandingReds {
+            rows: MONEY_INVARIANTS_STANDING_REDS,
+            list: "MONEY_INVARIANTS_STANDING_REDS",
+            mirror: None,
+        };
+        assert!(
+            only_rows_unexplained(&sr, &v).is_empty(),
+            "MONEY_INVARIANTS_STANDING_REDS carries a row that is not red (stale) or misses one \
+             that is: {:?}",
+            only_rows_unexplained(&sr, &v)
+        );
+    }
+
+    /// ITEM 165 (posture): the conformance-sync posture holds on the tree — the exact check
+    /// ci.yml's blocking `cargo xtask gate conformance-sync --posture` step makes — and the
+    /// standing list names exactly the rows that are red: a NEW red on any other row, or a
+    /// freshness row that has gone green without its name being struck, fails here.
+    #[test]
+    fn the_conformance_sync_posture_holds_on_the_tree() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let reg = find("conformance-sync").expect("conformance-sync is registered");
+        let v = execute(&*(reg.build)(), &cx);
+        assert!(
+            excused_from_all("conformance-sync", &cx, &v).is_some() || !v.red,
+            "conformance-sync is red beyond CONFORMANCE_SYNC_STANDING_REDS: {:?} {:?}",
+            v.rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .map(|r| format!("{} {}", r.id, r.detail))
+                .collect::<Vec<_>>(),
+            v.problems
+        );
+        let sr = StandingReds {
+            rows: CONFORMANCE_SYNC_STANDING_REDS,
+            list: "CONFORMANCE_SYNC_STANDING_REDS",
+            mirror: None,
+        };
+        assert!(
+            only_rows_unexplained(&sr, &v).is_empty(),
+            "CONFORMANCE_SYNC_STANDING_REDS carries a row that is not red (stale) or misses one \
+             that is: {:?}",
+            only_rows_unexplained(&sr, &v)
+        );
+    }
+
+    /// The structure-lint posture holds on the tree it runs over — the same fact ci.yml's blocking
+    /// `cargo xtask gate structure-lint --posture` step asserts — and the standing list names
+    /// exactly the rows that are red: a NEW red on any other row, or a listed row that has gone
+    /// green without its name being struck, fails here.
+    #[test]
+    fn the_structure_lint_posture_holds_on_the_tree() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let reg = find("structure-lint").expect("structure-lint is registered");
+        let v = execute(&*(reg.build)(), &cx);
+        assert!(
+            excused_from_all("structure-lint", &cx, &v).is_some() || !v.red,
+            "structure-lint is red beyond STRUCTURE_LINT_STANDING_REDS: {:?} {:?}",
+            v.rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .map(|r| format!("{} {}", r.id, r.detail))
+                .collect::<Vec<_>>(),
+            v.problems
+        );
+        let sr = StandingReds {
+            rows: STRUCTURE_LINT_STANDING_REDS,
+            list: "STRUCTURE_LINT_STANDING_REDS",
+            mirror: None,
+        };
+        assert!(
+            only_rows_unexplained(&sr, &v).is_empty(),
+            "STRUCTURE_LINT_STANDING_REDS carries a row that is not red (stale) or misses one \
+             that is: {:?}",
+            only_rows_unexplained(&sr, &v)
+        );
     }
 
     #[test]

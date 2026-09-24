@@ -247,16 +247,34 @@ feed() {
 # If a run command names `cargo test --test <target>`, that integration target must EXIST. Prints the
 # missing target name and returns 0 when it is absent; returns 1 when there is nothing missing.
 # A segment whose named target is absent cannot run anything, so it is RED rather than green.
+#
+# CRATE-AWARE (item 169/10, benches segment): a `--test <target>` belongs to whichever crate the SAME
+# command's `-p <crate>` names, not always `busbar` — the `benches` segment's new
+# `cargo test -p xtask --test hot_path_gates` leg (crates/xtask, at `xtask/`, not under `crates/`)
+# proved the old hardcoded `crates/busbar/tests/` check a false-positive generator the day a second
+# crate's integration test target was ever named here. `-p <crate>` is captured off the SAME `--test`
+# clause so multi-crate chained commands cannot borrow the wrong `-p`; a target named with no `-p` at
+# all keeps the original default (`busbar`) so every pre-existing manifest line's behaviour is
+# unchanged, byte-for-byte.
 missing_test_target() {
-  local run="$1" name
+  local run="$1" name crate dir
   # bash `=~` (portable across bash 3.2 on macOS and 4+ on Linux) — avoids BSD-vs-GNU sed `\+` drift.
-  if [[ "$run" =~ --test[[:space:]]+([A-Za-z0-9_]+) ]]; then
+  if [[ "$run" =~ -p[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]+--test[[:space:]]+([A-Za-z0-9_]+) ]]; then
+    crate="${BASH_REMATCH[1]}"
+    name="${BASH_REMATCH[2]}"
+  elif [[ "$run" =~ --test[[:space:]]+([A-Za-z0-9_]+) ]]; then
+    crate="busbar"
     name="${BASH_REMATCH[1]}"
-    [ -f "crates/busbar/tests/${name}.rs" ] && return 1
-    printf '%s\n' "$name"
-    return 0
+  else
+    return 1
   fi
-  return 1
+  # `crates/<crate>/tests/` covers every workspace member under crates/ (busbar, busbar-plugin, …);
+  # `<crate>/tests/` covers a top-level member like xtask that is not under crates/ at all.
+  for dir in "crates/${crate}/tests" "${crate}/tests"; do
+    [ -f "${dir}/${name}.rs" ] && return 1
+  done
+  printf '%s\n' "$name"
+  return 0
 }
 
 # ── Run one segment; sets LAST_RESULT (PASS|SKIP|FAIL) and LAST_SECONDS. ──────────────────────────
@@ -450,8 +468,14 @@ selftest() {
     fi
   done
 
-  # (d) the RESERVED slots are defined-but-inert, each mapped to a release
-  for seg in mcp-integrity a2a smart-router; do
+  # (d) the RESERVED slots are defined-but-inert, each mapped to a release. `smart-router` was struck
+  # from this roster and from qa/segments.toml in the same commit (item 97): its `qa_smart_router`
+  # test target never existed at any point in the repo's history (`git log --all --diff-filter=A --
+  # '*qa_smart_router*'` is empty), so the slot named a capability that was never built, not one
+  # merely not-yet-armed. The reserved-with-absent-target and active-with-absent-target invariants
+  # this selftest proves (blocks (h) and (i) below) are both driven by synthetic fixtures, not by this
+  # roster, so striking smart-router here removes no coverage.
+  for seg in mcp-integrity a2a; do
     if printf '%s\n' "$reserved" | grep -qx "$seg"; then
       note "PASS  reserved slot defined-but-inert: $seg"
     else
@@ -585,6 +609,23 @@ TOML
     fails=$((fails+1))
   else
     note "PASS  missing-target check does NOT fire on a target that exists (cli_validate)"
+  fi
+
+  # (i.2) CRATE-AWARE, not just `busbar`-shaped (item 169/10): `xtask/tests/hot_path_gates.rs` is a
+  # real target under a crate that is NOT under `crates/`, and the `benches` segment now names it.
+  if missing_test_target "cargo test -p xtask --test hot_path_gates" >/dev/null; then
+    red "  FAIL  missing-target check fired on 'xtask --test hot_path_gates', which DOES exist (regression: crate-blind check)"
+    fails=$((fails+1))
+  else
+    note "PASS  missing-target check does NOT fire on a real non-busbar crate target (xtask --test hot_path_gates)"
+  fi
+  # …and still fires RED for a target that does not exist under that same crate — proving the
+  # crate-aware path is not just a blanket pass for anything naming `-p xtask`.
+  if missing_test_target "cargo test -p xtask --test no_such_xtask_target_exists" >/dev/null; then
+    note "PASS  missing-target check still fires for a non-existent target under a non-busbar crate"
+  else
+    red "  FAIL  missing-target check let a non-existent xtask target through (false negative)"
+    fails=$((fails+1))
   fi
   rm -rf "$mtmp"
 

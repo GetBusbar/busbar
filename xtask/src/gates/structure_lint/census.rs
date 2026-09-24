@@ -88,11 +88,12 @@ pub fn table(a: &Addresses) -> Vec<CensusRow> {
     // is untouched and is strictly stronger than it was: still exactly one spelling, now measured
     // somewhere that has one.
     //
-    // SCOPED TO THESE TWO ROWS, NOT TO `tree()`, ON PURPOSE. Widening the protocol-crate derivation
-    // would also pull `crates/busbar-plane-mcp/src/plane.rs:62`'s `FIELD_PROTOCOL_VERSION: &str =
-    // "mcp-protocol-version"` into the scan beside `busbar-mcp`'s `H_PROTOCOL_VERSION` — a SECOND
-    // spelling of a wire word, which is a real finding this narrower repoint deliberately does not
-    // pretend to have settled. It is reported, not absorbed.
+    // `tree()` NOW COVERS THIS TOO (items 183, 224): it is every crate's `src/`, and
+    // `busbar-plane-*` is a protocol-crate shape, so the extra prefix below is redundant and kept
+    // only so these two rows say where their subject lives. The widening did what this comment
+    // used to say it would: `crates/busbar-plane-mcp/src/plane.rs`'s `FIELD_PROTOCOL_VERSION`
+    // beside `busbar-mcp`'s `H_PROTOCOL_VERSION` is a SECOND spelling of a wire word, and the
+    // header row below now counts 2 and says so. It is reported, not absorbed.
     let mut mcp_dialect_scope = tree.clone();
     mcp_dialect_scope.push("crates/busbar-plane-mcp/src/".to_string());
 
@@ -259,7 +260,7 @@ pub fn scan(cx: &Ctx, corpus: &Corpus, t: &Tables, f: &mut Findings) {
             continue;
         }
 
-        let files: Vec<&Candidate> = corpus.in_scope(&r.scope).collect();
+        let files: Vec<&Candidate> = corpus.production_in_scope(&r.scope).collect();
         if files.is_empty() {
             f.census_scan_set.push(finding_no_subject(&r.id));
             continue;

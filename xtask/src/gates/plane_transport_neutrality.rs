@@ -221,7 +221,11 @@ impl Gate for PlaneTransportNeutralityGate {
             ]);
         }
 
-        let files = match cx.walk(&WalkSpec::new(roots.clone()).ext("rs")) {
+        // `allow_empty`, because THE ZERO-FILE REFUSAL BELOW IS THIS GATE'S OWN ROW. Left to the
+        // walk, an empty scan set came back as a walk ERROR and was reported on the roots row as
+        // "could not be read" — the refusal happened, but on a row that does not own it, and the
+        // row that does (`zero-file-refusal`) had no red proof that reached it.
+        let files = match cx.walk(&WalkSpec::new(roots.clone()).ext("rs").allow_empty()) {
             Ok(f) => f,
             Err(e) => {
                 return Verdict::of(vec![

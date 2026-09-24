@@ -11,7 +11,7 @@ use crate::ctx::Ctx;
 use crate::gates::construction::model::{need_int, need_str, plain, py_list, CRow, Cfg, VACUOUS};
 use crate::gates::construction::rules::call_sites;
 use crate::gates::construction::tree::{
-    crate_name_of_dir, dirs_for_globs, fnmatch, read_cargo_deps_text, Tree,
+    crate_name_of_dir, dirs_for_globs, fnmatch, memo_file_scan, read_cargo_deps_text, Tree,
 };
 use crate::rx::{self, Regex};
 use crate::toml_doc::Table;
@@ -60,8 +60,6 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
     let caps_contract_ceiling = need_int(c, "caps_contract_ceiling", "loc-ceilings")?;
     let unit_glob = need_str(c, "unit_crate_glob", "loc-ceilings")?;
     let unit_total_ceiling = need_int(c, "unit_total_ceiling", "loc-ceilings")?;
-    let verbs_crate = need_str(c, "verbs_crate", "loc-ceilings")?;
-    let verbs_ceiling = need_int(c, "verbs_ceiling", "loc-ceilings")?;
     let union_ceiling = need_int(c, "union_ceiling", "loc-ceilings")?;
     let teller_file_names = c.list_of("teller_files");
 
@@ -254,34 +252,13 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
             .collect(),
     ));
 
-    // ASKED OF THE SCANNED TREE, NOT OF A DIRECTORY GLOB, and the difference is whether this row
-    // can go red at all. `unit_crates` comes from `dirs_for_globs`, which reads the FILESYSTEM;
-    // `crates/busbar-unit-verbs` went with the W2.c unit fold, so the glob missed it, `has_verbs`
-    // was false, the row reported a vacuous 0 against its ceiling and PASSED — and no self-test
-    // plant could change that, because an overlay cannot put a directory on disk. A row no plant
-    // can red is not a gate. The tree IS overlay-aware, and "did we measure any file of this
-    // crate" is the same question the note wanted to ask.
-    let has_verbs = !tree.crate_files(verbs_crate).is_empty();
-    let verbs_total = if has_verbs {
-        crate_total(verbs_crate)
-    } else {
-        0
-    };
-    let note = if has_verbs {
-        String::new()
-    } else {
-        format!(" -- {verbs_crate} does not exist yet (vacuous 0)")
-    };
-    rows.push(plain(
-        "loc-ceilings:unit-verbs",
-        verbs_total <= verbs_ceiling,
-        format!("{verbs_crate} stays within its LOC ceiling"),
-        format!("{verbs_crate}: {verbs_total} line(s) (ceiling {verbs_ceiling}){note}"),
-        verbs_total,
-        verbs_ceiling,
-        vec![],
-    ));
-
+    // `loc-ceilings:unit-verbs` IS STRUCK (item 3 of P1A-con). It was a sub-ceiling of the unit
+    // union for `busbar-unit-verbs`, and that crate left the unit set by OWNER-LOCKED DECISION #36
+    // ("EXITS from the unit set: `verbs` -> `busbar-core-admin`"), drained by 427cbe399 and folded
+    // into core-admin by 92e823cd5 — a cleanliness crate outside the kernel + contract + unit union
+    // this rule budgets. Nothing is left for the row to measure, and a `busbar-unit-verbs` that came
+    // back would match `unit_crate_glob` and spend `unit-total`, whose ceiling is today's one unit
+    // crate — so no line the row could ever have caught goes unmeasured.
     let union_total = kernel_total + caps_contract + unit_total;
     rows.push(plain(
         "loc-ceilings:union",
@@ -311,7 +288,20 @@ pub fn manifest_allowlist(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>,
     // so `crates/auth-admin-tokens` and `crates/auth-static-plugin` were scanned by nothing and
     // this rule printed twelve green rows where fourteen were owed. `Cfg::kind_globs` now refuses
     // a key the config does not declare, so the next such typo is a RED instead of a silence.
-    let kinds = ["plane", "store", "auth", "hook", "export", "secret"];
+    //
+    // AND `transport` WAS MISSING TOO (item 120): the list named six of the seven plugin kinds of
+    // `[gate.plugin_kinds]` (DECISIONS #3), so the seven `busbar-transport-*` crates got no row at
+    // all and this rule printed green while `busbar-transport-tls` path-depends on
+    // `busbar-unit-transport-key`. A transport is a plugin behind the wall like any other kind.
+    let kinds = [
+        "plane",
+        "store",
+        "auth",
+        "hook",
+        "export",
+        "secret",
+        "transport",
+    ];
     let unit_names: BTreeSet<String> = match cfg.rule("loc-ceilings") {
         Ok(lc) => dirs_for_globs(
             cx,
@@ -435,7 +425,7 @@ pub fn source_denylist(
     cx: &Ctx,
     tree: &Tree,
     cfg: &Cfg,
-    xtask_hits: Option<&BTreeMap<String, Vec<String>>>,
+    xtask_hits: Result<&BTreeMap<String, Vec<String>>, &str>,
 ) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("source-denylist")?;
     let patterns = c.list_of("patterns");
@@ -447,10 +437,9 @@ pub fn source_denylist(
             .join("|"),
     )?;
     let allow = cfg.doc.table_or_empty("rules.source-denylist.allowlist");
-    // `None` = the transitive-closure half never answered. Every row then says so and is RED: an
-    // unproven half of an invariant is not a met one.
-    let unproven = xtask_hits.is_none();
-
+    // `Err` = the transitive-closure half never answered (or answered with its own defects). Every
+    // row then says so, with the reason, and is RED: an unproven half of an invariant is not a met
+    // one.
     let mut rows = Vec::new();
     let mut seen: Vec<(String, String)> = Vec::new();
     for kind in c.list_of("kinds") {
@@ -476,12 +465,11 @@ pub fn source_denylist(
             }
         }
         match xtask_hits {
-            None => offenders.push(
+            Err(why) => offenders.push(format!(
                 "UNPROVEN: `cargo xtask denylist` did not answer, so no transitive dependency was \
-                 checked (reason on stderr)"
-                    .to_string(),
-            ),
-            Some(h) => offenders.extend(h.get(&crate_name).cloned().unwrap_or_default()),
+                 checked ({why})"
+            )),
+            Ok(h) => offenders.extend(h.get(&crate_name).cloned().unwrap_or_default()),
         }
         let current = offenders.len() as i64;
         let detail = format!(
@@ -509,7 +497,6 @@ pub fn source_denylist(
             vec![],
         ));
     }
-    let _ = unproven;
     Ok(rows)
 }
 
@@ -543,21 +530,35 @@ pub fn lean_core(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> 
     let (mut offenders, mut tracked) = (Vec::new(), Vec::new());
     for crate_name in &crates {
         for rel in tree.crate_files(crate_name) {
-            for l in tree.files[&rel].iter() {
-                if l.intest {
-                    continue;
-                }
-                for (_, (bs, be)) in tree.lexer.string_literals(&l.code) {
-                    let content = &l.code.as_bytes()[bs..be];
-                    if word_rx.is_match(content) {
-                        let where_ =
-                            format!("\"{}\" at {rel}:{}", String::from_utf8_lossy(content), l.no);
-                        if known_sites.iter().any(|s| s == &format!("{rel}:{}", l.no)) {
-                            tracked.push(where_);
-                        } else {
-                            offenders.push(where_);
+            // The per-file hits, memoised on the file's scan (`memo_file_scan`); the review list is
+            // applied after, so it is not an input of the memoised half.
+            let tag = format!("lean-core\u{1}{rel}\u{1}{}", word_rx.as_str());
+            let hits = memo_file_scan(tag, &tree.files[&rel], |lines| {
+                let mut out = Vec::new();
+                for l in lines {
+                    if l.intest {
+                        continue;
+                    }
+                    for (_, (bs, be)) in tree.lexer.string_literals(&l.code) {
+                        let content = &l.code.as_bytes()[bs..be];
+                        if word_rx.is_match(content) {
+                            out.push(format!(
+                                "{}\u{1}\"{}\" at {rel}:{}",
+                                l.no,
+                                String::from_utf8_lossy(content),
+                                l.no
+                            ));
                         }
                     }
+                }
+                out
+            });
+            for h in hits.iter() {
+                let (no, where_) = h.split_once('\u{1}').unwrap_or(("", h));
+                if known_sites.iter().any(|s| s == &format!("{rel}:{no}")) {
+                    tracked.push(where_.to_string());
+                } else {
+                    offenders.push(where_.to_string());
                 }
             }
         }
@@ -720,12 +721,15 @@ pub fn sealed_unit_traits(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("sealed-unit-traits")?;
     let max_unsealed = need_int(c, "max_unsealed", "sealed-unit-traits")?;
     let seal_word = Regex::new(r"[Ss]eal")?;
-    let (mut offenders, mut checked) = (Vec::new(), Vec::new());
+    let (mut offenders, mut checked, mut missing) = (Vec::new(), Vec::new(), Vec::new());
     for (_key, spec) in cfg.doc.children("rules.sealed-unit-traits.traits") {
         let rel = need_str(spec, "file", "sealed-unit-traits.traits")?;
         let trait_name = need_str(spec, "trait", "sealed-unit-traits.traits")?;
         let crate_name = need_str(spec, "crate", "sealed-unit-traits.traits")?;
         let Some(lines) = tree.files.get(rel) else {
+            missing.push(format!(
+                "{crate_name}::{trait_name} (file {rel} is not in the tree)"
+            ));
             continue;
         };
         let joined: String = lines
@@ -738,6 +742,9 @@ pub fn sealed_unit_traits(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             rx::escape(trait_name)
         ))?;
         let Some(m) = rx_trait.search(joined.as_bytes()) else {
+            missing.push(format!(
+                "{crate_name}::{trait_name} (no `trait {trait_name}` declaration in {rel})"
+            ));
             continue;
         };
         checked.push(trait_name.to_string());
@@ -749,18 +756,32 @@ pub fn sealed_unit_traits(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         }
     }
     let current = offenders.len() as i64;
-    let detail = if checked.is_empty() {
+    let unresolved = if missing.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; configured trait(s) NOT FOUND, so they were not judged at all: {} — a trait this \
+             rule cannot find is a trait it cannot judge. Point the entry's `file` at the trait's \
+             real home, or strike the entry in the same commit that deletes the trait",
+            missing.join(", ")
+        )
+    };
+    let detail = if checked.is_empty() && missing.is_empty() {
         "vacuous: none of the configured unit traits exist in this tree yet".to_string()
     } else {
         format!(
-            "{current} of {} configured unit trait(s) unsealed (ceiling {max_unsealed}): {}",
-            checked.len(),
+            "{current} of {} configured unit trait(s) unsealed (ceiling {max_unsealed}): {}{unresolved}",
+            checked.len() + missing.len(),
             join_or_none(&offenders)
         )
     };
+    // ITEMS 191/192: A MISSING TRAIT IS A FAILURE, the fix `no-default-bodies` above already
+    // carries. This dropped a configured trait whose file moved or whose header no longer matched
+    // — not counted, not named — and passed on the shrunken set: moving `Breaker`'s file made the
+    // one sealed trait vanish from the denominator and the row stayed green.
     Ok(vec![plain(
         "sealed-unit-traits",
-        current <= max_unsealed,
+        current <= max_unsealed && missing.is_empty(),
         "a unit's kernel-facing trait is sealed on a private supertrait",
         detail,
         current,
@@ -1012,8 +1033,19 @@ pub fn kernel_seal_impls(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 
 pub fn forbid_unsafe(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let c = cfg.rule("forbid-unsafe")?;
-    let forbid_rx = Regex::new(r"forbid\s*\(\s*unsafe_code\s*\)")?;
-    let deny_rx = Regex::new(r"(forbid|deny)\s*\(\s*unsafe_code\s*\)")?;
+    // THE CRATE-LEVEL INNER ATTRIBUTE, IN THE CRATE ROOT, AND NOTHING ELSE COUNTS (item 89).
+    //
+    // This matched `forbid(unsafe_code)` anywhere in any file of the crate, over the `code` text,
+    // which keeps string literals intact. So `assert!(lib.contains("#![forbid(unsafe_code)]"))` in
+    // `crates/busbar-plane-{a2a,llm,mcp,decision}/tests/*.rs` — a TEST ABOUT the attribute — was
+    // scored as the attribute itself, and stripping the real one from `src/lib.rs` left every one
+    // of those rows PASS: the self-test's "every crate of this kind loses its attribute" plant went
+    // GREEN, which is this rule unable to see the one thing it exists for. A module-level
+    // `#![forbid(unsafe_code)]` (busbar-contract's `json_grammar.rs`, `caps/mod.rs`) does not bind
+    // the crate either. So: the blanked text (literal bodies emptied), production lines only, the
+    // `#![...]` inner-attribute spelling, in `src/lib.rs` or `src/main.rs`.
+    let forbid_rx = Regex::new(r"#!\s*\[\s*forbid\s*\(\s*unsafe_code\s*\)\s*\]")?;
+    let deny_rx = Regex::new(r"#!\s*\[\s*(forbid|deny)\s*\(\s*unsafe_code\s*\)\s*\]")?;
     let mut rows = Vec::new();
     for (kinds_key, level, rid_prefix, label, missing_key, rx_pat) in [
         (
@@ -1041,10 +1073,13 @@ pub fn forbid_unsafe(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Stri
         let mut out = Vec::new();
         for d in seen {
             let crate_name = crate_name_of_dir(&d);
-            let has_it = tree.crate_files(&crate_name).iter().any(|rel| {
-                tree.files[rel]
-                    .iter()
-                    .any(|l| rx_pat.is_match(l.code_bytes()))
+            let roots = [format!("{d}/src/lib.rs"), format!("{d}/src/main.rs")];
+            let has_it = roots.iter().any(|rel| {
+                tree.files.get(rel.as_str()).is_some_and(|lines| {
+                    lines
+                        .iter()
+                        .any(|l| !l.intest && rx_pat.is_match(l.blank.as_bytes()))
+                })
             });
             let current = i64::from(!has_it);
             let is_known = known_missing.contains(&crate_name);
@@ -1433,28 +1468,41 @@ pub fn plane_no_money(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Str
     let mut offenders = Vec::new();
     for rel in &files {
         let here = allowlist.list_of(rel);
-        for l in tree.files[rel].iter() {
-            if l.intest {
-                continue;
-            }
-            let bytes = l.code_bytes();
-            for m in sym_rx.find_iter(bytes) {
-                let raw = m.str_of(bytes, 0).unwrap_or_default();
-                let w = identifier_at(&ident_rx, bytes, m.start).unwrap_or_else(|| raw.clone());
-                if allowed.contains(&w) || here.contains(&w) || here.contains(&raw) {
+        // Every input of the per-file scan is in the tag; see `memo_file_scan`.
+        let tag = format!(
+            "plane-no-money\u{1}{rel}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+            sym_rx.as_str(),
+            path_rx.as_str(),
+            allowed.join("\u{2}"),
+            here.join("\u{2}")
+        );
+        let found = memo_file_scan(tag, &tree.files[rel], |lines| {
+            let mut out = Vec::new();
+            for l in lines {
+                if l.intest {
                     continue;
                 }
-                offenders.push(format!("`{w}` at {rel}:{}", l.no));
-                break;
+                let bytes = l.code_bytes();
+                for m in sym_rx.find_iter(bytes) {
+                    let raw = m.str_of(bytes, 0).unwrap_or_default();
+                    let w = identifier_at(&ident_rx, bytes, m.start).unwrap_or_else(|| raw.clone());
+                    if allowed.contains(&w) || here.contains(&w) || here.contains(&raw) {
+                        continue;
+                    }
+                    out.push(format!("`{w}` at {rel}:{}", l.no));
+                    break;
+                }
+                if let Some(pm) = path_rx.search(bytes) {
+                    out.push(format!(
+                        "`{}` at {rel}:{}",
+                        pm.str_of(bytes, 0).unwrap_or_default(),
+                        l.no
+                    ));
+                }
             }
-            if let Some(pm) = path_rx.search(bytes) {
-                offenders.push(format!(
-                    "`{}` at {rel}:{}",
-                    pm.str_of(bytes, 0).unwrap_or_default(),
-                    l.no
-                ));
-            }
-        }
+            out
+        });
+        offenders.extend(found.iter().cloned());
     }
     let forbidden_deps = c.list_of("forbidden_deps");
     let mut crates: Vec<String> = files.iter().map(|rel| tree.crate_of(rel)).collect();

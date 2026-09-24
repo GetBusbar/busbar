@@ -658,70 +658,62 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // the rule is proven on PLANTED tables instead, and proven BOTH WAYS. A red arm alone would
     // not distinguish this rule from one that is simply always red.
     //
-    // ⚠ THE RED ARM REPORTS `IMPOSSIBLE` TODAY, AND THAT IS THE CORRECT ANSWER, NOT A BUG IN THE
-    // CASE. `design-bindings:note-witness` is ALREADY RED on the unplanted tree — PB-58 — so a
-    // planted red cannot be attributed to the plant, and the harness refuses to score it. It joins
-    // the two REGEN-CLEAN cases, which have been in exactly this state for the same structural
-    // reason. The case is kept rather than deleted precisely because the harness tells the next
-    // reader how to collect the proof: route PB-58, the standing red clears, and this case can be
-    // asked again. Deleting it would ship a rule whose red arm nobody ever has to demonstrate,
-    // which is the disease this gate treats. DO NOT weaken the rule to make this green.
+    // THE RED ARM IS ASKED OVER A GREEN BASELINE, NOT OVER THE SHIPPED TREE (item 89). Asked over
+    // the real tree it scored IMPOSSIBLE: `design-bindings:note-witness` is standing RED there on
+    // PB-58, so no plant could be credited with the red. That red is real -- PB-58's witness
+    // `a_spend_past_the_reservation_is_carried_out_as_an_overdraft` has never been a fn in any
+    // commit (19d894261; M3 in 1.6.0-LEDGER.md) -- and it is the money owner's to route, so it
+    // STAYS red on `gate`. What moves is the proof: the case's baseline is the fixture below, a
+    // control ledger and a note table whose one witness RESOLVES, on which the row is GREEN; the
+    // plant is that same fixture with the witness swapped for one that never existed. GREEN ->
+    // RED on the one row, over two trees that differ by one symbol. DO NOT weaken the rule.
     //
-    // The plant goes through the existing [`NOTE_TABLE_KEY`] overlay, which REPLACES the note
-    // table wholesale — so the green arm is a table with `PB-58` absent, and it is green because
-    // the symbol it does name resolves, not because the scan was switched off.
-    let mut ov = Overlay::new();
-    ov.set(
-        build::OUT_JSON_REL,
-        ledger(vec![binding(
-            CONTROL,
-            "a control binding beside the planted note",
-            "mapped",
-            // The note-witness rule reads the NOTE TABLE and the tree's symbols; it never reads a
-            // check ref. An empty check list keeps the fixture about the note and nothing else.
-            vec![],
-        )]),
-    );
-    ov.set_command(
-        NOTE_TABLE_KEY,
-        "PB-1\tResolved: the behavioural half is where the behaviour is, at admit.rs's \
-         a_witness_that_was_never_written_and_never_existed.",
-    );
+    // The note table goes through [`NOTE_TABLE_KEY`], which REPLACES the table wholesale, so
+    // PB-58 is absent from both the baseline and the plant and cannot colour either run.
+    let fixture = |note: &str| {
+        let mut ov = Overlay::new();
+        ov.set(
+            build::OUT_JSON_REL,
+            ledger(vec![binding(
+                CONTROL,
+                "a control binding beside the planted note",
+                "mapped",
+                // The note-witness rule reads the NOTE TABLE and the tree's symbols; it never
+                // reads a check ref. An empty check list keeps the fixture about the note.
+                vec![],
+            )]),
+        );
+        ov.set_command(
+            NOTE_TABLE_KEY,
+            format!(
+                "PB-1\tResolved: the behavioural half is where the behaviour is, at admit.rs's \
+                 {note}."
+            ),
+        );
+        ov
+    };
+    let green_base = cx.with_overlay(fixture(
+        "over_budget_refuses_with_no_charge_and_nothing_to_refund",
+    ));
     r.push(prove_rows_red(
-        cx,
+        &green_base,
         gate,
         "a note naming a test-shaped symbol that resolves to nothing is refused",
         &[super::ROW_NOTE_WITNESS],
-        ov,
+        fixture("a_witness_that_was_never_written_and_never_existed"),
         &["a_witness_that_was_never_written_and_never_existed"],
     ));
 
     // THE NON-VACUITY CONTROL. Same shape, same table, one difference: the symbol exists. Without
     // this the red arm above is satisfied by a rule that flags every four-word name in every note,
     // which would be unusable and would be switched off within a week.
-    let mut ov = Overlay::new();
-    ov.set(
-        build::OUT_JSON_REL,
-        ledger(vec![binding(
-            CONTROL,
-            "a control binding beside the planted note",
-            "mapped",
-            // The note-witness rule reads the NOTE TABLE and the tree's symbols; it never reads a
-            // check ref. An empty check list keeps the fixture about the note and nothing else.
-            vec![],
-        )]),
-    );
-    ov.set_command(
-        NOTE_TABLE_KEY,
-        "PB-1\tResolved: the behavioural half is where the behaviour is, at admit.rs's \
-         over_budget_refuses_with_no_charge_and_nothing_to_refund.",
-    );
+    // It is the red arm's baseline, asked as a plant over the real tree.
     r.push(prove_rows_green(
         cx,
         gate,
         "a note whose named witness resolves to a real fn is accepted",
         &[super::ROW_NOTE_WITNESS],
-        ov,
+        fixture("over_budget_refuses_with_no_charge_and_nothing_to_refund"),
     ));
 
     r

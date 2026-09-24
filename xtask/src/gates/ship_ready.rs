@@ -226,6 +226,11 @@ fn standing_row(target: &Posture, listed: &[&str], construction: &Verdict) -> Ro
 
 /// A construction verdict whose red rows are exactly `ids` — the self-test's and the unit tests'
 /// stand-in for running the construction gate.
+/// THE SELF-TEST'S EXAMPLE STANDING RED, SYNTHETIC ON PURPOSE. The cases used to spell
+/// `plane-no-money`, which left CONSTRUCTION_STANDING_REDS in 1dc4f14d3 and so read as a real row
+/// this gate still carried. A name no gate emits cannot go stale when a real row drains.
+const EXAMPLE_STANDING: &str = "selftest-example-standing-red";
+
 fn red_verdict(ids: &[&str]) -> Verdict {
     Verdict::of(
         ids.iter()
@@ -351,12 +356,12 @@ impl Gate for ShipReadyGate {
                 format!("a `{target}` target refuses a non-empty standing-red list"),
                 &[ROW_STANDING],
                 Expect::Red {
-                    naming: vec!["standing red".to_string(), "plane-no-money".to_string()],
+                    naming: vec!["standing red".to_string(), EXAMPLE_STANDING.to_string()],
                 },
                 standing_row(
                     &Posture::Named(target.to_string()),
-                    &["plane-no-money", "one-pick-site"],
-                    &red_verdict(&["plane-no-money", "one-pick-site"]),
+                    &[EXAMPLE_STANDING, "one-pick-site"],
+                    &red_verdict(&[EXAMPLE_STANDING, "one-pick-site"]),
                 ),
             ));
             report.push(unit_case(
@@ -393,8 +398,8 @@ impl Gate for ShipReadyGate {
             Expect::Green,
             standing_row(
                 &Posture::Named("dev".to_string()),
-                &["plane-no-money"],
-                &red_verdict(&["plane-no-money"]),
+                &[EXAMPLE_STANDING],
+                &red_verdict(&[EXAMPLE_STANDING]),
             ),
         ));
 
@@ -408,13 +413,13 @@ impl Gate for ShipReadyGate {
             Expect::Red {
                 naming: vec![
                     "could not be read".to_string(),
-                    "plane-no-money".to_string(),
+                    EXAMPLE_STANDING.to_string(),
                 ],
             },
             standing_row(
                 &Posture::Unknown("git exited 128: not a git repository".to_string()),
-                &["plane-no-money"],
-                &red_verdict(&["plane-no-money"]),
+                &[EXAMPLE_STANDING],
+                &red_verdict(&[EXAMPLE_STANDING]),
             ),
         ));
         report.push(unit_case(
@@ -436,8 +441,8 @@ impl Gate for ShipReadyGate {
             },
             standing_row(
                 &posture_of_branch_output(Ok("HEAD\n".to_string())),
-                &["plane-no-money"],
-                &red_verdict(&["plane-no-money"]),
+                &[EXAMPLE_STANDING],
+                &red_verdict(&[EXAMPLE_STANDING]),
             ),
         ));
         report.push(unit_case(
@@ -446,8 +451,8 @@ impl Gate for ShipReadyGate {
             Expect::Green,
             standing_row(
                 &posture_of_branch_output(Ok("consolidated/1.6.0\n".to_string())),
-                &["plane-no-money"],
-                &red_verdict(&["plane-no-money"]),
+                &[EXAMPLE_STANDING],
+                &red_verdict(&[EXAMPLE_STANDING]),
             ),
         ));
         // THE MATCHED PAIR, IN ONE PLACE. `Posture::Named("")` is EXACTLY what the old
@@ -462,8 +467,8 @@ impl Gate for ShipReadyGate {
             Expect::Green,
             standing_row(
                 &Posture::Named(String::new()),
-                &["plane-no-money"],
-                &red_verdict(&["plane-no-money"]),
+                &[EXAMPLE_STANDING],
+                &red_verdict(&[EXAMPLE_STANDING]),
             ),
         ));
         report.push(unit_case(
@@ -474,8 +479,8 @@ impl Gate for ShipReadyGate {
             },
             standing_row(
                 &posture_of_branch_output(Err("git rev-parse exited 128".to_string())),
-                &["plane-no-money"],
-                &red_verdict(&["plane-no-money"]),
+                &[EXAMPLE_STANDING],
+                &red_verdict(&[EXAMPLE_STANDING]),
             ),
         ));
 

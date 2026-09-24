@@ -58,7 +58,13 @@
 # umbrella's union is a SUPERSET of today's gate.
 #
 # Reserved -> release map:
-#   mcp-integrity -> 1.6.0    a2a -> 1.6.0    smart-router -> 1.5.6
+#   mcp-integrity -> 1.6.0    a2a -> 1.6.0
+# (smart-router struck at item 97: its reservation named a `qa_smart_router` test target that never
+# existed at any point in this repo's history — `git log --all --diff-filter=A -- '*qa_smart_router*'`
+# is empty — and its "-> active in 1.5.5/1.5.6" comment outlived two shipped releases without the
+# target ever landing. Not a rename: `examples/smart-router/` and the kind-isolation overlay path of
+# the same name are an unrelated hook example, never a QA test. Struck in the same commit as the
+# scripts/qa-segments.sh:454 roster edit that dropped it — see that script's header for the pairing.)
 
 # ── ACTIVE (green-on-completion) ─────────────────────────────────────────────────────────────────
 
@@ -251,9 +257,22 @@ tier   = "live-mock"
 # optimized build — an unoptimized vtable hop is dominated by missing inlining that has nothing to
 # do with the ABI cost being measured, and would flake this gate on debug noise.
 #
-# WHY THIS TIER. Compiling criterion for the bench targets is minutes of build the per-push suite
-# should not be paying; that is the qa cadence, not the per-push one.
-run    = "cargo bench --workspace --no-run && cargo test --release -p busbar-plugin --lib -- --ignored --test-threads=1 the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate"
+# EXECUTING MODE (item 10/169, landed 9bb473f04): `cargo bench --workspace --no-run` above only
+# compiled the criterion bench targets; it asserted nothing about their output. The hot-path perf and
+# alloc gates now have an EXECUTING twin per gate (`xtask/tests/hot_path_gates.rs`,
+# `the_hot_path_{perf,alloc}_gate_executes_its_bench_and_judges_the_real_output`) that RUNS
+# `cargo bench -p busbar-kernel --bench plane_host_vtable_{perf,alloc}` and judges the real numbers
+# against the committed budget — the step this segment was named for and did not do until now.
+# `--ignored` (same reason as the vtable-hop test above: each builds busbar-kernel's bench profile
+# and runs criterion, the qa cadence not the per-push one); `--test-threads=1` so the two criterion
+# runs do not contend for the CPU the wall-clock budget is measured against.
+#
+# WHY THIS TIER. Compiling criterion for the bench targets, and now actually running two criterion
+# benches to judgment, is minutes of build+run the per-push suite should not be paying; that is the
+# qa cadence. Measured cost: ~4 minutes cold build (criterion + release profile) + ~160s combined run
+# time for the three `--ignored` legs, comfortably inside qa-gate.yml's `slow` job's existing 180-
+# minute timeout (.github/workflows/qa-gate.yml, owned by another slot) — no timeout raise needed.
+run    = "cargo bench --workspace --no-run && cargo test --release -p busbar-plugin --lib -- --ignored --test-threads=1 the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate && cargo test -p xtask --test hot_path_gates -- --ignored --test-threads=1"
 
 [[segment]]
 id     = "core-data-plane"
@@ -309,12 +328,6 @@ id     = "a2a"
 status = "reserved"   # -> active in 1.6.0 (A2A)
 tier   = "live-mock"
 run    = "cargo test -p busbar --test qa_a2a"
-
-[[segment]]
-id     = "smart-router"
-status = "reserved"   # -> active in 1.5.6 (smart-router)
-tier   = "fast"
-run    = "cargo test -p busbar --test qa_smart_router"
 
 [[segment]]
 id     = "plane-purity"
@@ -513,23 +526,28 @@ tier   = "fast"
 # REFUSED) runs FIRST.
 run    = "cargo xtask gate teller-steps --selftest && cargo xtask gate teller-steps && cargo xtask teller-steps --root-legs-gating && cargo xtask teller-steps --root-legs"
 
-# ── RESERVED, and RED on the tip: named here rather than wired, because a segment armed on a gate
-# that cannot pass is a red that teaches people to ignore the manifest. Each names exactly what has
-# to become true, and arming is the documented status flip with no other edit.
-
 [[segment]]
 id     = "plane-config-noun"
-status = "reserved"   # -> active when the gate's own self-test passes (see below)
+status = "active"   # ARMED (item 87d/97): the stated blocker ("-> active when the gate's own
+# self-test passes") is satisfied — measured, not assumed. `bash scripts/plane-config-noun-gate.sh
+# --selftest` is ALL GREEN on the tip (and was already green at the 1.6.0 phase-start sha fd3455e53,
+# so the old "RED on the tip" comment was stale before this phase even began): `section_nouns` DOES
+# resolve all four section nouns today — `pools tools agents streams` — the old comment's claim that
+# the `agents` noun's declaring crate "carries no matching config_section: literal" no longer holds.
 tier   = "fast"
-# THE FOUR-NOUN CONFIG-PARSE DEBT METER (scripts/plane-config-noun-gate.sh). Its `--check` is
-# report-only by design (GREP_GATE_REPORT_ONLY=1: prints the debt, exits 0) and would therefore be
-# harmless to run — but its `--selftest` is RED on the tip, and a gate whose self-test fails has no
-# verdict worth wiring. The failing case is the LAST one: `section_nouns` resolves the four config
-# section nouns from each plane crate's `pub const PLANE_DECL` and finds only THREE (pools, tools,
-# streams). The `agents` noun's declaring crate carries no matching `config_section:` literal, so the
-# meter would scan for three nouns while calling itself a four-noun gate — the self-test is doing
-# exactly its job by refusing. Arming: make the fourth noun resolve (or teach section_nouns where it
-# lives), confirm `--selftest` green, flip status to "active".
+# THE FOUR-NOUN CONFIG-PARSE DEBT METER (scripts/plane-config-noun-gate.sh). This segment runs
+# report-only BY DESIGN (GREP_GATE_REPORT_ONLY=1: prints the per-noun debt table, exits 0 regardless
+# of count) — the same non-blocking posture as the `plane-grep` segment above, measuring debt toward a
+# future hard gate rather than enforcing it today. It is `active` (no longer an inert manifest slot)
+# because it now EXECUTES and REPORTS on every umbrella run, exactly as `plane-grep` does.
+#
+# TODAY'S MEASURED BASELINE (arming a ceiling for the first time, not relaxing one — §9.4): `--check`
+# reports FOUR-NOUN CONFIG-PARSE DEBT = 17 distinct parse-target lines across 8 files under
+# crates/busbar-kernel/src (pools 5, tools 3, agents 2, streams 7; the busiest files are config/mod.rs
+# (6) and config/prepass.rs (3)). This is the pre-Stage-A floor this meter measures from, not a value
+# this segment enforces — GREP_GATE_REPORT_ONLY stays 1 until Stage A evicts the four config sections
+# onto the seam and drives the count to 0, at which point (per the script's own header) arming the
+# hard gate is the documented one-flag flip (GREP_GATE_REPORT_ONLY=0), no ceiling number to edit here.
 run    = "scripts/plane-config-noun-gate.sh --selftest && GREP_GATE_REPORT_ONLY=1 scripts/plane-config-noun-gate.sh --check"
 
 [[segment]]

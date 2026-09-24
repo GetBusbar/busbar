@@ -20,6 +20,16 @@
 //! Narrowing the PATTERN instead would have quietly stopped catching `if transport ==`, which is
 //! the exact line this invariant exists to catch.
 //!
+//! THE SCOPE IS THE WHOLE TREE NOW (items 183, 224). It was `CORE + BIN + mcp + a2a + the
+//! protocol crates` — seven prefixes — so `busbar-contract` and every `busbar-kernel-*` crate, the
+//! money path included, could branch on a transport with this row green. Widening it did NOT widen
+//! what is legitimate: the arms are still the allowed prefixes, and `busbar-plane-*` joined them as
+//! the protocol crates it is. What it did surface is recorded, not waived: `busbar-contract`'s
+//! claim-overlap equality (the same shape the kernel `registry.rs` row below had to be argued
+//! for) and `plugin-loader`'s ABI-version `transport` noun collision are standing reds for their
+//! owners — the collision's honest fix is the rename the scope note above anticipates, not a
+//! narrower scope.
+//!
 //! ## The exception ledger is EMPTY, and that is the point
 //!
 //! It briefly carried one row — a NOUN COLLISION of exactly the shape the scope note above names —
@@ -280,7 +290,7 @@ pub fn scan(cx: &Ctx, corpus: &Corpus, t: &Tables, f: &mut Findings) {
         }
 
         let files: Vec<&Candidate> = corpus
-            .in_scope(&r.scope)
+            .production_in_scope(&r.scope)
             .filter(|c| !r.allowed.iter().any(|p| c.rel.starts_with(p.as_str())))
             .collect();
         if files.is_empty() {

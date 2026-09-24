@@ -31,6 +31,19 @@ mod the_posting_arithmetic;
 /// Where a reported quantity came from, and the three questions the crate asks about it.
 mod what_the_usage_report_says;
 
+/// A posting above its reservation carries the excess as its overdraft figure (item 318).
+mod settle_carries_the_excess;
+
+/// The take-site count the documentation states, against the kernel's own source (items 315, 320,
+/// 326).
+mod take_site_census;
+
+/// The crate's honesty table names only types that exist (items 319, 327).
+mod honesty_table;
+
+/// Every implementor of the sealed plugin seal trait, against the minter's documentation (item 329).
+mod seal_implementors;
+
 /// Everything a test needs to act as the kernel, in one place, so no test quietly reaches for the
 /// seal on its own.
 struct Kernel {

@@ -204,76 +204,17 @@ busbar-voice = ["busbar-voice-codec"]
 #
 # The re-baseline that struck them changed no ceiling upward, so nothing below needs a declaration.
 
-# ── THE P0 RE-BASELINE OF qa/kind-isolation.toml, 2026-09-22 ─────────────────────────────────────
+# ── THE P0 RE-BASELINE OF qa/kind-isolation.toml, 2026-09-22 — EXPIRED AND STRUCK ───────────────
 #
-# Ten `[[cell]]` ceilings in qa/kind-isolation.toml sat BELOW the count they govern — one of them by
-# 3,046 — so `kind-isolation:matrix` was red on every one and the ratchet under it could report
-# neither a rise nor a fall. `ceiling-rose` and `kind-isolation:matrix` disagree about the repair by
-# construction: matrix wants the ceiling to EQUAL the measurement, rose wants it never to go up, and
-# the only edit that satisfies both is DRAINING THE HITS — which is the engine split itself (Waves
-# A-F), not a baseline commit. So the correction lands here, as ten named transactions, which is
-# exactly the route this section is written to provide. Each expires by itself the moment this
-# commit reaches the base, and the commit after that strikes it.
-
-[gate.ceiling_raises."cell[crate=busbar-a2a,kind=api].count"]
-file    = "qa/kind-isolation.toml"
-from    = 210
-to      = 215
-because = "busbar-a2a x api: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. Heaviest today: a2a/tests/taskstore_tests.rs, client_leg_tests.rs, local_tests.rs."
-
-[gate.ceiling_raises."cell[crate=busbar-a2a,kind=plane].count"]
-file    = "qa/kind-isolation.toml"
-from    = 2811
-to      = 3177
-because = "busbar-a2a x plane: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. This is the cell the split drains to ZERO at Wave F. The plan quotes 2811 as a measurement; it is a ledger row that stopped tracking the tree."
-
-[gate.ceiling_raises."cell[crate=busbar-a2a,kind=transport].count"]
-file    = "qa/kind-isolation.toml"
-from    = 1268
-to      = 1274
-because = "busbar-a2a x transport: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. Drains to zero at Wave F with the crate."
-
-[gate.ceiling_raises."cell[crate=busbar-kernel,kind=plane].count"]
-file    = "qa/kind-isolation.toml"
-from    = 1
-to      = 3047
-because = "busbar-kernel x plane: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. THIS ONE IS THE CUT'S ORACLE and it is the reason the re-baseline had to happen before any move. The engine-split plan s0.1 says busbar-kernel x plane MEASURES 1 and makes 'a kernel-destined move that raises it is a misclassification' the entire safety net of the three-way cut. It cites the LEDGER ROW, not a measurement: the tree measures 3047 and has since W2.c. A ceiling pinned 3046 below its own cell is red on every commit and fires on nothing, so the safety net did not exist. Pinned at 3047 it fires at 3048, which is what the plan needed it to do."
-
-[gate.ceiling_raises."cell[crate=busbar-mcp,kind=api].count"]
-file    = "qa/kind-isolation.toml"
-from    = 135
-to      = 155
-because = "busbar-mcp x api: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. Drains to zero at Wave F with the crate."
-
-[gate.ceiling_raises."cell[crate=busbar-mcp,kind=plane].count"]
-file    = "qa/kind-isolation.toml"
-from    = 3294
-to      = 3877
-because = "busbar-mcp x plane: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. This is the cell the split drains to ZERO at Wave F. The plan quotes 3294 as a measurement; it is a ledger row that stopped tracking the tree."
-
-[gate.ceiling_raises."cell[crate=busbar-mcp,kind=secret].count"]
-file    = "qa/kind-isolation.toml"
-from    = 13
-to      = 14
-because = "busbar-mcp x secret: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. Heaviest today: mcp/config.rs, then the crate manifest."
-
-[gate.ceiling_raises."cell[crate=busbar-plane-a2a,kind=plane].count"]
-file    = "qa/kind-isolation.toml"
-from    = 77
-to      = 90
-because = "busbar-plane-a2a x plane: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. This cell RISES on purpose on every plane-bound move in Waves A-F (plan s7.5), so an honest starting number is the precondition for reading any of those moves."
-
-[gate.ceiling_raises."cell[crate=busbar-plane-a2a,kind=transport].count"]
-file    = "qa/kind-isolation.toml"
-from    = 103
-to      = 110
-because = "busbar-plane-a2a x transport: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable."
-
-[gate.ceiling_raises."cell[crate=busbar-plane-mcp,kind=plane].count"]
-file    = "qa/kind-isolation.toml"
-from    = 37
-to      = 49
-because = "busbar-plane-mcp x plane: the P0 re-baseline of qa/kind-isolation.toml for the busbar-mcp/busbar-a2a engine split (docs/design/1.6.0-engine-split-plan.md P0). This is NOT a landing that grew the coupling: the row was already BELOW the count it governs and kind-isolation:matrix was already RED on it, so the number was fiction and the ratchet it fed could not fire in either direction. The drain that lowers it is the wave that moves the code; this entry only makes the correction reviewable. Rises on purpose on every plane-bound move in Waves A-F, same as its a2a sibling."
+# Ten `[[cell]]` ceilings in qa/kind-isolation.toml were raised here as ten named transactions
+# (ed45a7952, the P0 re-baseline for the engine split): busbar-a2a x {api 210->215, plane
+# 2811->3177, transport 1268->1274}, busbar-kernel x plane 1->3047, busbar-mcp x {api 135->155,
+# plane 3294->3877, secret 13->14}, busbar-plane-a2a x {plane 77->90, transport 103->110},
+# busbar-plane-mcp x plane 37->49. Each said it "expires by itself the moment this commit reaches
+# the base, and the commit after that strikes it". It reached the base: at origin/predev
+# (b7200b496) every one of the ten cells already reads its `to` value, so `ceiling-rose` reported
+# all ten as "a declared raise ... that is not a raise at the base". This is the commit after.
+# Nothing here moved a ceiling; the numbers live in qa/kind-isolation.toml and did not change.
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -792,7 +733,12 @@ kernel_crate = "busbar-kernel"
 # `#[cfg(test)] impl` body in the crate. It now reads `cargo xtask loc`, which takes the item span
 # from the parse, and which is also the counter `[gate.surface_ceilings]` reads — one instrument,
 # so the two rows of this file's pair cannot disagree about a measurement again.
-kernel_ceiling = 52950
+# ── RE-PINNED (item 378): 52950 -> 51536, `cargo xtask gate construction --report` at e970ed0ae.
+# `ceiling-slack` was FAIL naming this row: "loc-ceilings:kernel measures 51536 against ceiling
+# 52950 (slack 1414)" — 1,414 lines the Teller/pump/admit surface could grow by with no row
+# reporting it. Downward only; this is the figure the crate measures, committed-tree, not the
+# working tree (whose uncommitted kernel edits read 51543 and are not this file's to bless).
+kernel_ceiling = 51536
 # `caps_crate = "busbar-caps"` WAS HERE AND IS STRUCK, 2026-09-22. The crate was folded into
 # busbar-contract by 2c9eddecf ("W2.c: fold busbar-caps into busbar-contract"); its types live at
 # `crates/busbar-contract/src/caps/`, whose own module header says "Folded from the former
@@ -843,20 +789,15 @@ unit_crate_glob = "busbar-unit-*"
 # `busbar-unit-transport-key`, at 268 lines. The ceiling had 14,155 lines of slack — room for the
 # whole unit family to come back without a single row going red. Pinned at the measurement.
 unit_total_ceiling = 268
-verbs_crate = "busbar-unit-verbs"
-# RAISED 1428 -> 1431 for D38 `amend_rate_history`: a new closed-table admin verb costs exactly
-# three surface lines in this crate — the `KernelVerb::AmendRateHistory` variant, its `NEW_VERBS`
-# membership (which gives it `full` scope and posture-gating) and its `IRREDUCIBLE_VERBS` membership
-# (which gives it the operator-key ceremony gate). None is removable, so the closed table cannot gain
-# a verb without this ratchet. Pinned to today's measurement, per `ceiling-slack`; declared here in
-# its own line so `ceiling-rose` reports the raise for review rather than absorbing it.
-# ── RE-BASELINED 2026-09-22: 1431 -> 0, and the ZERO is the point. ─────────────────────────────
-# `crates/busbar-unit-verbs` does not exist — the verb table went with the W2.c unit fold — so this
-# row measures the empty set and its own detail line says "vacuous 0". At 1431 it was a ceiling
-# nothing could ever spend, which this file elsewhere calls a ceiling that has been abolished rather
-# than met. At 0 it is a live ratchet: the day a `busbar-unit-verbs` reappears, its first line of
-# code reds this row and the owner decides the figure then, in a diff.
-verbs_ceiling = 0
+# `verbs_crate` / `verbs_ceiling` ARE STRUCK (P1A-con, 1.6.0 Phase 1). They budgeted
+# `busbar-unit-verbs` as a sub-ceiling of the unit union. OWNER-LOCKED DECISION #36 moved verb
+# execution OUT of the unit set ("EXITS from the unit set: `verbs` -> `busbar-core-admin`"):
+# 427cbe399 drained the crate into busbar-admin and 92e823cd5 folded that into busbar-core-admin, a
+# cleanliness crate outside the kernel + contract + unit union this rule budgets. There is no
+# subject to repoint the row at — core-admin as a whole is not "the verbs" — and a
+# `busbar-unit-verbs` that reappeared would match `unit_crate_glob` and spend `unit_total_ceiling`
+# (268, today's single unit crate) from its first line, so the ratchet the zero was kept for is
+# already held by that row.
 # ── RE-BASELINED 2026-09-22: 60545 -> 58870, AND RED, and red for exactly one reason. ──────────
 # This row adds no growth of its own; it is the arithmetic of its three members, and it is set to
 # the SUM OF THEIR CEILINGS rather than to what the union measures today:
@@ -868,7 +809,17 @@ verbs_ceiling = 0
 # have made the union green while one of its members was in breach, and the whole reason this row
 # exists is that a union can be over while every part of it looks reasonable. A union ceiling moves
 # WITH its members, per this file's own rule; it does not absorb their overage.
-union_ceiling = 58870
+# ── RE-PINNED (item 378): 58870 -> 57456, the same arithmetic, re-done with the new kernel figure:
+#
+#     51536 (kernel_ceiling) + 5652 (caps_contract_ceiling) + 268 (unit_total_ceiling) = 57456
+#
+# `ceiling-slack` named this row too ("loc-ceilings:union measures 58644 against ceiling 58870,
+# slack 226"), and the slack was the defect this paragraph warns about happening for real: the
+# kernel shrank by 1,414, the union's figure did not move, and the union went GREEN while its
+# contract member stood 1,188 over its ceiling — the union absorbing a member's overage through the
+# back door. Pinned to the sum of the member ceilings, the union reads 58644 against 57456 and is
+# RED by 1,188, which is the caps/contract breach and nothing else, exactly as stated above.
+union_ceiling = 57456
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -903,19 +854,14 @@ label = "recovery"
 patterns = ["recovery.rs"]
 ceiling = 177
 
-[rules.loc-ceilings.kernel_files.slice]
-label = "slice/lease"
-patterns = ["slice.rs"]
-# ── RE-BASELINED 2026-09-22: 397 -> 0, and the zero is a FINDING, not a tightening. ────────────
-# There is no `slice.rs` under `crates/busbar-kernel/src` any more. The only one in the tree is
-# `crates/busbar-contract/src/slice.rs`, in another crate, which this row (kernel files, by
-# basename) cannot and should not reach. So the row has been measuring the empty set and printing
-# "vacuous 0" against a 397-line allowance — a named piece of the kernel's own 8k budget that
-# nothing spends and nothing could fail. 0 keeps it a live ratchet against a slice file coming
-# BACK into the kernel. **Owner decision owed:** either the slice/lease budget moves with its
-# subject to `busbar-contract` and is counted there, or this row is struck; it should not stay a
-# kernel-file row for a file that is not in the kernel.
-ceiling = 0
+# `[rules.loc-ceilings.kernel_files.slice]` IS STRUCK (P1A-con, 1.6.0 Phase 1). `slice.rs` left
+# the kernel in b544c8bbf ("slice+Millis ABI types -> busbar-contract (#38)", a pure `git mv` to
+# `crates/busbar-contract/src/slice.rs`): SliceStore is implemented by the loader and consumed by
+# the loop, so it is ABI (DECISIONS #38), and its lines are counted, whole, by
+# `loc-ceilings:caps-contract`. A kernel-FILE row can only measure `busbar-kernel/src`; the one that
+# stood here measured the empty set against 0 and the scan-set floor scored it RED, correctly. A
+# `slice.rs` coming back into the kernel spends `kernel_ceiling` like any other kernel file.
+# `[gate.census] loc_ceilings_kernel_files` goes 9 -> 8 in the same commit, and says so there.
 
 [rules.loc-ceilings.kernel_files.registry]
 label = "registry + generations"
@@ -1086,8 +1032,19 @@ registered keys" (that union only exists at runtime; approximating it with the p
 the design's own doc-scan already does, so this rule reuses it rather than inventing a second one). \
 A literal used in an `if kind == …` or `match` arm is still a string literal and is caught the same \
 way."""
-crates_kernel = ["busbar-kernel"]
-crate_glob = "busbar-unit-*"
+# REPOINTED (item 379). The glob was `busbar-unit-*`, which since W2.c (2c9eddecf, twelve
+# `busbar-unit-*` crates became eight `busbar-kernel-<name>` crates) matches ONE crate,
+# `busbar-unit-transport-key` — so the eight crates the unit family became, 167 files, were
+# unscanned at `max_hits = 0` while this rule's two siblings (`unit-no-wall-clock`,
+# `unit-no-finding-ids`) had already been repointed at `busbar-kernel-*`. The glob now names the
+# family the units became, and the one surviving `busbar-unit-*` crate is kept BY NAME rather than
+# dropped, so the repoint narrows nothing — and a name, unlike a glob, goes red under `qa-names`
+# the day that crate is retired. Measured at e970ed0ae: the widening adds ZERO findings (the same 14
+# offenders, all in busbar-kernel); a planted `const PLANTED_LABEL: &str = "anthropic";` in
+# `crates/busbar-kernel-ledger/src/cost/mod.rs` now counts (14 -> 15), where the old scope never
+# opened the file (14 -> 14).
+crates_kernel = ["busbar-kernel", "busbar-unit-transport-key"]
+crate_glob = "busbar-kernel-*"
 # section 6's dialect names + the section 1.3 pinned word list, verbatim.
 words = [
   "anthropic", "openai", "responses", "gemini", "bedrock", "cohere", "mcp", "a2a", "voice",
@@ -1228,8 +1185,17 @@ yet is a vacuous PASS, not a lie): no `?` or early `return` between a HoldCell t
 no identifier typed `Hold` closed over by a `catch_unwind` closure; no `JoinHandle::abort`; no \
 `mem::forget`/`drop(...)` of a value whose name says it is a hold; and a cancellation-token check \
 before every `.await` inside the route step, wherever the route step is async."""
-scope_crates_kernel = ["busbar-kernel"]
-scope_crate_glob = "busbar-unit-*"
+# REPOINTED (item 380), the same dead glob as `lean-core`'s: `busbar-unit-*` matches only
+# `busbar-unit-transport-key`, which holds no hold, so the money settle site
+# (`crates/busbar-kernel-ledger/src/settle.rs`) and the budget crate's hold cell
+# (`crates/busbar-kernel-budget/src/lib.rs`) were outside every one of the five proxies. The glob
+# now names the eight `busbar-kernel-<name>` crates the units became, and the surviving unit crate
+# is kept by name so nothing leaves scope. Measured at e970ed0ae: all four rows that were PASS stay
+# PASS over the wider set (no finding added), and a planted `let hold = cell.take(); let x =
+# maybe()?; Posted::settle(hold, x)` in `settle.rs` now reds `hold-discipline:no-early-exit`, which
+# under the old glob stayed PASS.
+scope_crates_kernel = ["busbar-kernel", "busbar-unit-transport-key"]
+scope_crate_glob = "busbar-kernel-*"
 take_pattern = '\.take\('
 settle_pattern = '::settle\(|\.settle\('
 catch_unwind_pattern = 'catch_unwind'
@@ -1760,7 +1726,18 @@ allowed_vocabulary = [
   "as_nanos", "elapsed_nanos", "monotonic_nanos", "latency_nanos",
 ]
 # The cost crate and the cost host modules, named as module paths rather than as words.
-forbidden_module_paths = ["busbar_kernel_ledger::cost::", "busbar_core::cost::", "busbar_core::plane_host::cost_host"]
+#
+# REPOINTED (item 377): two of the three entries were `busbar_core::cost::` and
+# `busbar_core::plane_host::cost_host`, spellings of a crate `673ecdaaa` absorbed into busbar-kernel
+# — so they matched no line in any crate and the module-path half of this ban was two-thirds dead,
+# blind to the exact cost-host seam the `why` names. The rename is git's, not a judgement: that
+# commit carries `R100 crates/{busbar-core => busbar-kernel}/src/cost.rs` and
+# `R100 crates/{busbar-core => busbar-kernel}/src/plane_host/cost_host.rs`. Repointing adds NO
+# finding on today's tree (the only `busbar_kernel::cost::` spellings in scope are in
+# `crates/busbar-llm/src/unit/tests/meter.rs`, test code this rule skips); a planted
+# `busbar_kernel::cost::CostAmount::of(usage)` in `crates/busbar-plane-llm/src/lib.rs` now counts
+# (1 -> 2), where under the dead spelling it did not (1 -> 1).
+forbidden_module_paths = ["busbar_kernel_ledger::cost::", "busbar_kernel::cost::", "busbar_kernel::plane_host::cost_host"]
 # A manifest dependency is the same reach spelled where no source scan would see it.
 forbidden_deps = ["busbar-kernel-ledger"]
 max_hits = 0
@@ -2147,7 +2124,11 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 # that half, deleting a rule table and dropping its census number in one edit would be exactly as
 # silent as deleting the table alone was.
 [gate.census]
-loc_ceilings_kernel_files = 9
+# 9 -> 8 (P1A-con): `[rules.loc-ceilings.kernel_files.slice]` struck — its subject moved to
+# busbar-contract in b544c8bbf (#38) and is counted by `loc-ceilings:caps-contract`. This is the
+# named decrement the rule above asks for; the base comparison reports it until this commit is the
+# base, and then it is quiet.
+loc_ceilings_kernel_files = 8
 legacy_reach_prefixes = 3
 plane_crates = 4
 

@@ -5787,3 +5787,385 @@ count = 1
 category = "composition-root"
 wave = "keystone / composition-root — register_planes both-ways self-registration"
 
+
+# ── ARMED 2026-09-24 AT TODAY'S COUNT (item 197; KICKOFF §9.4 — a new row, not a raised one) ──────────
+# The store kind's two in-tree crates and the hook kind's one in-tree plugin had no Noun, so their
+# names were unpoliced. Measured at e970ed0ae with the emitter, rows for the three new nouns only:
+# `memory` (busbar_store_memory) 43 files, `store` (busbar_store_example_plugin) 3, `ranking`
+# (busbar_hooks_ranking) 1.
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-a2a/src/a2a/tests/adminverbs_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-a2a/src/a2a/tests/client_leg_tests.rs"
+count = 4
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-a2a/src/a2a/tests/ingress_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-a2a/src/a2a/tests/local_tests.rs"
+count = 2
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-a2a/src/a2a/tests/relay_harness.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-a2a/src/a2a/tests/sign_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-a2a/src/a2a/tests/taskstore_tests.rs"
+count = 5
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-kernel/src/audit/tests/boot_verify_golden.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-kernel/src/audit/tests/journal_tests.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-kernel/src/governance/mod.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-kernel/src/governance/tests/revocation_tests.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-kernel/src/plane/tests/auditlog_tests.rs"
+count = 4
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-kernel/src/plane/tests/demotion_tests.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-kernel/src/plane/tests/store_seam_tests.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-kernel/src/plane_host/tests/dispatch_tests.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-kernel/src/plane_host/tests/journal_tests.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-kernel/src/tests/calllog_tests.rs"
+count = 4
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-kernel/tests/spentledger_cross_plane.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/engine/engine_tests/crossproto_delivery_billing_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs"
+count = 10
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs"
+count = 7
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs"
+count = 2
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/engine/tests/hook_seat_order_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs"
+count = 9
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs"
+count = 16
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/engine/tests/reqlog_dispatch_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/engine/tests/stream_no_usage_bills_zero_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/engine/tests/usage_tap_tests.rs"
+count = 3
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/unit/tests/admit.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/unit/tests/audit.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/unit/tests/chain.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-llm/src/unit/tests/meter.rs"
+count = 2
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-mcp/src/mcp/tests/adminverbs_tests.rs"
+count = 2
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-mcp/src/mcp/tests/confirm_once_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-mcp/src/mcp/tests/deputy_pair_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-mcp/src/mcp/tests/method_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-mcp/src/mcp/tests/resource_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-mcp/src/mcp/tests/roots_changed_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-mcp/src/mcp/tests/sep2243_ask_merge_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-mcp/src/mcp/tests/stdio_serve_tests.rs"
+count = 3
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/busbar-mcp/src/mcp/tests/subscribe_tests.rs"
+count = 2
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "memory"
+kind = "store"
+file = "crates/plugin-sdk/src/tests/lib_tests.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "ranking"
+kind = "hook"
+file = "crates/busbar-kernel/src/hooks/mod.rs"
+count = 2
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/busbar-kernel/src/test_support/plugin_store.rs"
+count = 1
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
+
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/busbar-mcp/src/mcp/tests/calllog_dispatch_tests.rs"
+count = 1
+category = "cross-plugin"
+wave = "cross-plugin cleanup — broker law #8 (plugins never name each other)"
+
+[[leak]]
+noun = "store"
+kind = "store"
+file = "crates/plugin-loader/src/tests/lib_tests.rs"
+count = 3
+category = "core"
+wave = "core neutralization — DECISION #1 (core names no instance); auth schemes are DECISION #3 internal-unit debt"
