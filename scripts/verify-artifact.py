@@ -920,8 +920,13 @@ class Ctx:
     pass
 
 
-def selftest() -> int:
+def selftest(contract_path: str = DEFAULT_CONTRACT, targets_path: str = DEFAULT_TARGETS) -> int:
     """Prove the CONTRACT-WHOLENESS guards discriminate, by constructing each failure state.
+
+    It ALSO runs the coverage gate (`coverage_main`) over `contract_path` x `targets_path` — the real
+    files by default — and fails on a gap. `--coverage` was the only refusal in this file and no
+    workflow ever passed it, so a declared row that nothing executes could never go red. `--selftest`
+    is the invocation CI already makes, so the gate rides on it rather than waiting on a second step.
 
     Without this the guards are only ever exercised by a well-formed contract, so they would look
     identical to guards that parse nothing and return the rows unchanged. Every case below asserts
@@ -1100,6 +1105,46 @@ def selftest() -> int:
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
+    # ── THE COVERAGE GATE IS REACHABLE FROM THE INVOCATION CI MAKES ─────────────────────────────
+    # coverage_main() returned 1 on a gap, and nothing called it: every workflow mention of
+    # `--coverage` is a comment. So this self-test — which ci.yml does run — runs that SAME function
+    # over the contract and targets it was handed, and a gap fails the self-test.
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        gate_rc = coverage_main(["--coverage", "--targets", targets_path, "--contract", contract_path])
+    gaps_seen = [ln.split()[1] for ln in buf.getvalue().splitlines() if ln.startswith("GAP ")]
+    if gate_rc != 0:
+        print(buf.getvalue())
+    check("every declared row is executed somewhere",
+          gate_rc == 0,
+          "coverage gate over %s x %s: %s"
+          % (os.path.basename(contract_path), os.path.basename(targets_path),
+             "no gap" if gate_rc == 0 else "GAP(s): " + ", ".join(gaps_seen)))
+    # THE OTHER DIRECTION, through the real CLI: the very command CI runs, handed a targets file with
+    # the image targets removed, must exit non-zero naming the image rows as gaps. Run as a child
+    # process so it is the CLI's exit code being judged, not a function's return value. The child is
+    # told not to recurse into this case.
+    if os.environ.get("VERIFY_ARTIFACT_SELFTEST_NESTED") != "1":
+        gapdir = tempfile.mkdtemp(prefix="busbar-verify-coverage-")
+        try:
+            imageless_path = os.path.join(gapdir, "targets.json")
+            with open(imageless_path, "w", encoding="utf-8") as fh:
+                json.dump(dict(real_targets, targets=[t for t in real_targets["targets"]
+                                                      if t.get("kind") != "image"]), fh)
+            child = subprocess.run(
+                [sys.executable, os.path.abspath(__file__), "--selftest", "--targets", imageless_path],
+                capture_output=True, text=True, timeout=300,
+                env=dict(os.environ, VERIFY_ARTIFACT_SELFTEST_NESTED="1"))
+            named = all(("GAP      " + r) in child.stdout for r in image_rows)
+            check("--selftest refuses a contract with a gap",
+                  child.returncode != 0 and named,
+                  "with the image targets removed, `--selftest` exited %d and %s the image rows as GAPs"
+                  % (child.returncode, "named" if named else "did NOT name"))
+        finally:
+            shutil.rmtree(gapdir, ignore_errors=True)
+
     total = len(cases) + 1 + extra
     if failures:
         print("\nSELF-TEST FAILED: %d of %d checks did not hold" % (failures, total), file=sys.stderr)
@@ -1137,7 +1182,12 @@ def coverage_main(argv) -> int:
 def main(argv=None) -> int:
     args_now = argv if argv is not None else sys.argv[1:]
     if "--selftest" in args_now:
-        return selftest()
+        sp = argparse.ArgumentParser()
+        sp.add_argument("--selftest", action="store_true")
+        sp.add_argument("--targets", default=DEFAULT_TARGETS)
+        sp.add_argument("--contract", default=DEFAULT_CONTRACT)
+        sa = sp.parse_args(args_now)
+        return selftest(sa.contract, sa.targets)
     if "--coverage" in args_now:
         return coverage_main(args_now)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
