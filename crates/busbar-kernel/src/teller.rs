@@ -139,7 +139,7 @@ impl Kernel {
 
     /// The transport-key unit's token, as the composition root lends it.
     ///
-    /// The one token minted OUTSIDE the loop. Keys are resolved at listen, dial and upgrade, none
+    /// The first token minted OUTSIDE the loop. Keys are resolved at listen, dial and upgrade, none
     /// of which is a step of a unit, so there is no step whose token could stand in — and without
     /// this the unit's `provision_server` and `provision_client` have a parameter no caller in the
     /// tree can supply, which is why the only thing that ever registered a listener's TLS config
@@ -174,8 +174,8 @@ impl Kernel {
     /// reach for the seal itself, which is the one symbol that must not be spelled outside this
     /// crate.
     ///
-    /// Kept beside the other two and named the same way, so the source scan that accounts for every
-    /// mint sees this one too.
+    /// Kept beside the other three and named the same way, so the source scan that accounts for
+    /// every mint sees this one too.
     pub fn durability_token(&self) -> Grant<DurableWrite> {
         Grant::<DurableWrite>::mint(&self.seal)
     }
@@ -217,9 +217,14 @@ impl Kernel {
         Grant::<Consumption>::mint(&self.seal)
     }
 
-    /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
-    /// module, which materialises a hold from a journal record, and the node's sweep, which is the
-    /// second and last holder of an exit token.
+    /// The seal itself, for the other two places in the kernel that mint tokens. Between them they
+    /// mint seven, two of them `WriteMoney` — the source scan that accounts for every mint counts
+    /// these as well as the factories above:
+    ///
+    /// - the recovery module, which materialises a hold from a journal record and settles it:
+    ///   `Recover`, `Consumption` and `WriteMoney`;
+    /// - the node's sweep, which settles an abandoned unit: `Exit` for the take, `Consumption`,
+    ///   `WriteMoney`, and `Exit` again to seal the end.
     pub(crate) fn seal(&self) -> &KernelSeal {
         &self.seal
     }
@@ -1381,3 +1386,7 @@ mod call_binding_tests;
 #[cfg(test)]
 #[path = "tests/teller_verified_destination_tests.rs"]
 mod teller_verified_destination_tests;
+
+#[cfg(test)]
+#[path = "tests/teller_seal_doc_tests.rs"]
+mod teller_seal_doc_tests;
