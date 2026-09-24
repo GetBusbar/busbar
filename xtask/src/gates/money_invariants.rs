@@ -150,6 +150,11 @@ fn field_name(trimmed: &str) -> Option<&str> {
 }
 
 struct RecordScan {
+    /// The [`MONEY_RECORDS`] names whose `struct` was actually FOUND in the records file — the
+    /// measured denominator of both record rows. The constant's length is what the rows were asked
+    /// to scan; this is what they did scan, and only this may be printed as "scanned" (items
+    /// 210/211: a rename or a file split left both rows green over zero structs while printing 8).
+    found: Vec<&'static str>,
     /// Fields on a money record whose name carries a plugin/plane identity token (#77(1)).
     plugin_keyed: Vec<String>,
     /// Fields on a money record whose name carries a stored-price token (#77(3)).
@@ -159,13 +164,19 @@ struct RecordScan {
 fn scan_records(src: &str) -> RecordScan {
     let mut plugin_keyed = Vec::new();
     let mut stored_price = Vec::new();
-    let mut current: Option<&str> = None;
+    let mut found: Vec<&'static str> = Vec::new();
+    let mut current: Option<&'static str> = None;
     let mut in_block = false;
     for (i, raw) in src.lines().enumerate() {
         let code = scan::strip_comment_line(raw, &mut in_block);
         let trimmed = code.trim();
         if let Some(name) = struct_opens(trimmed) {
             current = MONEY_RECORDS.iter().copied().find(|m| *m == name);
+            if let Some(m) = current {
+                if !found.contains(&m) {
+                    found.push(m);
+                }
+            }
             continue;
         }
         let Some(rec) = current else { continue };
@@ -193,6 +204,7 @@ fn scan_records(src: &str) -> RecordScan {
     plugin_keyed.sort();
     stored_price.sort();
     RecordScan {
+        found,
         plugin_keyed,
         stored_price,
     }
@@ -264,6 +276,36 @@ impl MoneyInvariantsGate {
         };
         let scan = scan_records(&src);
 
+        // EXISTENCE BEFORE VERDICT. Both record rows are claims ABOUT the money records; a money
+        // record the scan did not find is a record neither row inspected, so each row refuses
+        // rather than passing over the gap. This is the record scan's floor: all of them, because
+        // the set is named, not sampled.
+        let missing: Vec<&str> = MONEY_RECORDS
+            .iter()
+            .copied()
+            .filter(|m| !scan.found.contains(m))
+            .collect();
+        if !missing.is_empty() {
+            let fail = |id| {
+                Row::fail(
+                    id,
+                    "a money record this row governs was not found — the scan cannot vouch for it",
+                    format!(
+                        "{} of {} money record type(s) found in {RECORDS_PATH}; no `struct` for: {} \
+                         (renamed, moved or split out — repoint MONEY_RECORDS/RECORDS_PATH at it)",
+                        scan.found.len(),
+                        MONEY_RECORDS.len(),
+                        missing.join(", ")
+                    ),
+                )
+            };
+            return vec![
+                fail(ROW_NO_PLUGIN_KEYED),
+                fail(ROW_NO_STORED_PRICE),
+                Self::seal_row(cx),
+            ];
+        }
+
         let no_plugin = if scan.plugin_keyed.is_empty() {
             Row::pass(
                 ROW_NO_PLUGIN_KEYED,
@@ -271,7 +313,7 @@ impl MoneyInvariantsGate {
                 format!(
                     "{} money record type(s) scanned; money is keyed by (principal, meter_class, \
                      units, timestamp) — per-plugin pricing is unrepresentable",
-                    MONEY_RECORDS.len()
+                    scan.found.len()
                 ),
             )
         } else {
@@ -290,8 +332,11 @@ impl MoneyInvariantsGate {
             Row::pass(
                 ROW_NO_STORED_PRICE,
                 "no money-path record stores a price/spend figure — price is read-time (#77(3))",
-                "the durable records carry RAW COUNTS only; spend = Σ count × rate_card at read time"
-                    .to_string(),
+                format!(
+                    "{} money record type(s) scanned; the durable records carry RAW COUNTS only; \
+                     spend = Σ count × rate_card at read time",
+                    scan.found.len()
+                ),
             )
         } else {
             Row::fail(
@@ -399,6 +444,27 @@ impl Gate for MoneyInvariantsGate {
             &[ROW_NO_STORED_PRICE],
             ov2,
             &["spend"],
+        ));
+
+        // RED (d) — items 210/211: a money record the scan cannot FIND is not a record it passed.
+        // Rename `UsageLedger` and give the renamed struct a plane-keyed field: before this case
+        // both record rows stayed green ("8 money record type(s) scanned") because the renamed
+        // struct was simply never inspected.
+        let mut ov4 = Overlay::new();
+        ov4.set(
+            RECORDS_PATH,
+            src.replace(
+                "pub struct UsageLedger {",
+                "pub struct UsageBook {\n    pub plane_id: String,",
+            ),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a renamed money record is RED on both record rows, not scanned-past",
+            &[ROW_NO_PLUGIN_KEYED, ROW_NO_STORED_PRICE],
+            ov4,
+            &["UsageLedger", "7 of 8"],
         ));
 
         // RED (c): a plane/plugin crate sealing its own facts line is caught (#77(2)).
