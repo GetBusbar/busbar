@@ -6,6 +6,7 @@
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use busbar_contract::transport::wire::ArrivalRecord;
 use busbar_contract::transport::wire::CloseReason;
@@ -32,7 +33,7 @@ use crate::{
     complete_message, deliver_refusal, finalise, map_egress_err, now_unix_secs, pump_response_body,
     read_ingress_message, request_target, retry_after_secs, status_class, EgressHead,
     ExchangeGuard, HttpConnHandle, HttpListenerHandle, HttpTransport, Inner, RawStartLine,
-    ReadSide, READ_CHUNK_BYTES,
+    ReadSide, READ_CHUNK_BYTES, REQUEST_TIMEOUT_SECS,
 };
 
 impl Transport for HttpTransport {
@@ -272,7 +273,18 @@ impl Transport for HttpTransport {
                     let req = builder
                         .body(Full::new(Bytes::from(raw.body)))
                         .map_err(|_| TransportError::Framing)?;
-                    let resp = client.request(req).await.map_err(|e| map_egress_err(&e))?;
+                    // TCP connect and HTTP/2 keepalive are both bounded on the client this dials
+                    // through; the wait for the response HEAD itself was not. An HTTP/1.1 upstream
+                    // that accepts the connection and then never answers held this future open
+                    // forever — a stalled response is now cut at the same ceiling 1.5.5's own
+                    // engine bounded this exact wait with.
+                    let resp = tokio::time::timeout(
+                        Duration::from_secs(REQUEST_TIMEOUT_SECS),
+                        client.request(req),
+                    )
+                    .await
+                    .map_err(|_| TransportError::Timeout)?
+                    .map_err(|e| map_egress_err(&e))?;
                     let status = resp.status().as_u16();
                     // Read against the instant the answer arrived: an HTTP-date `Retry-After`
                     // means "until then", and only this layer still holds both the header and the

@@ -17,6 +17,8 @@
 //! interval 30s / timeout 10s with the adaptive window on, `pool_max_idle_per_host` /
 //! `pool_idle_timeout` from [`ClientSettings`], and `upstream_http1_only` /
 //! `upstream_h2_prior_knowledge` selecting the connector's ALPN offer exactly as the engine did.
+//! The wait for a response HEAD is bounded too, at [`REQUEST_TIMEOUT_SECS`] — connect and keepalive
+//! were both bounded already; this is the one wait between them that was not.
 //!
 //! ## Bodies larger than one call
 //!
@@ -138,6 +140,19 @@ pub struct ClientSettings {
 /// historical value the config layer resolves `limits.request_body_max_bytes` to when no operator
 /// limit is installed, named here so the two never drift apart silently.
 pub const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+/// The ceiling on one egress exchange's `client.request().await` — from the moment the request
+/// leaves to the moment the response HEAD is in hand. Hardcoded, exactly the way `connect_timeout`
+/// (10s) and the HTTP/2 keep-alive interval/timeout (30s/10s) above it are: none of the three is on
+/// [`ClientSettings`] either, because none of them is a per-deployment knob today.
+///
+/// The value itself is not invented: it is the byte-identical ceiling 1.5.5's own engine used for
+/// this exact wait — the "client-level ceiling" its send path anchored at send start
+/// (`limits.upstream_request_timeout_secs`, still 300 by default in the config layer above this
+/// crate today). Only TCP connect and HTTP/2 keepalive bounded this call before; an HTTP/1.1
+/// upstream that accepted the connection and then never answered could hold it open forever. This
+/// is that bound, re-provisioned at the one place hyper's own client leaves none.
+pub const REQUEST_TIMEOUT_SECS: u64 = 300;
 
 impl Default for ClientSettings {
     fn default() -> Self {

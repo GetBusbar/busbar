@@ -128,6 +128,39 @@ async fn the_envelopes_own_method_and_path_are_what_reach_the_upstream() {
 /// floor: a write that failed silently, which is the one thing this transport's write path must
 /// never do. The same holds when the receiver has gone: the head frame's send fails, and that is a
 /// closed connection, not a delivery.
+/// Only TCP connect and HTTP/2 keepalive bounded `client.request(req).await`; an HTTP/1.1 upstream
+/// that accepts the connection and then never answers held it open forever (item 153). The clock is
+/// paused and the upstream is a listener that accepts and then never reads/writes another byte, so
+/// this proves the bound without a real five-minute wait: the runtime has nothing else pending once
+/// `write` blocks on the response, so pausing auto-advances straight to the timeout's own deadline.
+#[tokio::test(start_paused = true)]
+async fn a_stalled_upstream_response_is_cut_by_the_request_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    // Accepts the connection (so `dial`/`write` get a real socket to write the request on) and then
+    // holds it open, reading and answering nothing — the "hangs after connect" upstream.
+    tokio::spawn(async move {
+        let (_stream, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let uri = format!("http://{addr}/");
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    let req = b"POST / HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
+    let err = transport
+        .write(&conn, StreamId(0), ScratchBytes::new(req))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        TransportError::Timeout,
+        "a stalled upstream response must be cut at the request timeout, not held open forever"
+    );
+}
+
 #[tokio::test]
 async fn a_second_egress_exchange_with_nowhere_to_answer_is_reported_not_swallowed() {
     let uri = request_line_echo_server().await;
