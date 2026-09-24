@@ -245,6 +245,12 @@ pub struct LlmNode {
     /// them through it again.
     lane_names: Mutex<LaneNames>,
     next_key: AtomicU64,
+    /// How many slots the drop guard has MARKED since the sweep last walked the table.
+    ///
+    /// A counter rather than a walk on every arrival: a unit whose task went away leaves its slot
+    /// marked for the sweep (see [`Occupied`]), and the sweep only walks the table when there is
+    /// something marked in it, so the ordinary arrival pays one atomic read and nothing more.
+    marked: AtomicU64,
     /// THE NODE'S MONOTONIC CLOCK, for the second stamp on every audit record and every posting
     /// this node writes: a counter that only ever goes up, whatever the wall clock does.
     ///
@@ -343,6 +349,7 @@ impl LlmNode {
                 consulted: 0,
             }),
             next_key: AtomicU64::new(1),
+            marked: AtomicU64::new(0),
             mono: AtomicU64::new(0),
             // THE PRODUCTION HALF, which awaits the leg it is handed and returns that leg's own
             // value. Composed here because composing is what this file does: the plane names the
@@ -435,6 +442,83 @@ impl LlmNode {
         );
     }
 
+    /// THE SWEEP: the second holder of a key to every unit's hold cell, run over the slots the drop
+    /// guard MARKED (item 129).
+    ///
+    /// A unit whose task goes away without reaching its own end leaves its slot in the table,
+    /// marked, with whatever the cell still holds. This is what finds it: `tick::sweep` reads the
+    /// mark as `TaskLost`, `tick::sweep_settle` takes the hold by compare-and-set — the same cell
+    /// the exit path takes from, so whichever arrives second finds it empty and does nothing — and
+    /// what it settles is posted onto this node's book exactly as the exit arm posts, in the window
+    /// the unit ENTERED in. Then the slot leaves the table.
+    ///
+    /// A client that hangs up mid-dispatch is not usually this path: the loop's own guard reaches
+    /// that unit's terminal and hands the end to [`LlmUnit`]'s `abandoned`, so by the time the sweep
+    /// arrives the cell is already empty and the sweep only gives the slot back. What this path is
+    /// FOR is the unit whose end nobody reached — and it posts that unit's hold rather than leaving
+    /// it in a cell nothing will ever take it out of.
+    ///
+    /// Run by the next arrival (see [`LlmNode::answer_arriving_at`]), and only when something is
+    /// marked, so a lost task costs one arrival's delay and an ordinary arrival costs one atomic
+    /// read. The idle bound does not apply on this plane — a slow LLM stream was never cut, and the
+    /// sweep does not start cutting it — so only a MARKED slot is ever settled here.
+    ///
+    /// Returns how many slots it gave back.
+    pub fn sweep(&self, now: Arrived) -> usize {
+        if self.marked.swap(0, Ordering::AcqRel) == 0 {
+            return 0;
+        }
+        let mut swept = 0;
+        for slot in self.inflight.snapshot() {
+            if !slot.is_marked() {
+                continue;
+            }
+            let verdict = busbar_kernel::tick::sweep(
+                &slot,
+                busbar_contract::caps::StepName::Route,
+                now.ms(),
+                busbar_kernel::Millis::MAX,
+                false,
+            );
+            // The unit's own evidence went with its task, so the table's row for a lost unit reads
+            // nothing located and posts the floor it can defend — marked estimated, never guessed
+            // upward.
+            let end = busbar_kernel::tick::sweep_settle(
+                &self.kernel,
+                &slot,
+                verdict,
+                &Evidence::default(),
+                &self.canary,
+                &self.gauge,
+            );
+            if let Some(end) = end {
+                if let Ok(posted) = end.posted() {
+                    let principal = posted.principal().clone();
+                    // The window the unit ENTERED in, read off the slot rather than the clock: a
+                    // unit found gone after midnight was admitted, and is charged, in the day before.
+                    let entered =
+                        Arrived::at(slot.entered(), self.mono.fetch_add(1, Ordering::AcqRel));
+                    let card = crate::root::kernel::ROOT_CARD.pin();
+                    self.settle_end(
+                        &principal,
+                        entered,
+                        card.as_ref(),
+                        busbar_kernel::teller::Ended::Settled {
+                            end,
+                            // The request slot and the flat fee are the exit's to count, and a
+                            // unit the sweep ends never reached the exit that counts them.
+                            requests: 0,
+                            fee: 0,
+                        },
+                    );
+                }
+            }
+            self.inflight.remove(slot.key());
+            swept += 1;
+        }
+        swept
+    }
+
     /// Walk one request through the loop and answer with what the terminal posted.
     ///
     /// The whole of the kernel's ten steps, two audit doors and one exit, for a request that used to
@@ -483,6 +567,9 @@ impl LlmNode {
         seats: &[&(dyn approve::VetoSeat + Sync)],
         arrived: Arrived,
     ) -> Response {
+        // The sweep, before this unit takes a slot of its own: any slot a lost task left MARKED is
+        // settled and given back now. One atomic read when nothing is marked.
+        self.sweep(arrived);
         let proto = arrival.proto;
         let op_class = OpClassId::new(arrival.operation.name());
         let key = UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed));
@@ -519,6 +606,7 @@ impl LlmNode {
             // here, so the epoch this unit is billed in and the stamp the table enters it under
             // cannot be two different instants.
             charged_at: arrived.secs(),
+            principal: principal.clone(),
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
             walk: Walk::open(arrival),
@@ -550,9 +638,10 @@ impl LlmNode {
                 // how many units this node has in flight, so the one thing that must not depend on
                 // the unit finishing is giving the slot back — and a client that hangs up is exactly
                 // the case where it does not finish.
-                let _occupied = Occupied {
-                    table: &self.inflight,
-                    key,
+                let mut occupied = Occupied {
+                    node: self,
+                    slot: Arc::clone(&slot),
+                    reached_end: false,
                 };
                 let ctx = UnitCtx {
                     key,
@@ -585,6 +674,9 @@ impl LlmNode {
                 // follows it name one snapshot. Re-pinning here would read a history a live apply
                 // may have appended to since the door, which is the hazard the pin exists for.
                 self.settle_end(&principal, arrived, history.as_ref(), ended);
+                // The unit reached its own end and its posting is on the book: the slot goes
+                // straight back. Anything that leaves this function before here leaves it MARKED.
+                occupied.reached_end = true;
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -984,20 +1076,33 @@ impl Drop for LateBody {
     }
 }
 
-/// THE IN-FLIGHT SLOT, for the length of one unit.
+/// THE IN-FLIGHT SLOT, for the length of one unit — and the drop guard that MARKS it (item 129).
 ///
-/// The table is what bounds how many units this node has in flight, so the slot has to come back on
-/// every way out of the unit — the answer, a panic, and the one this seam exists for: the client
-/// hanging up mid-request, which drops the whole of `answer` where it stands. A `remove` written at
-/// the end of that function comes back on one of those three.
+/// A unit that reached its own end gives its slot straight back. Every other way out — a panic, or
+/// the client hanging up mid-request, which drops the whole of `answer` where it stands — leaves the
+/// slot in the table MARKED, and the node's sweep ([`LlmNode::sweep`]) is what gives it back.
+///
+/// It used to REMOVE the slot on every way out, and that is the half of the protocol that could not
+/// work: the sweep is the second holder of a key to the unit's hold cell, and a slot removed on the
+/// way out is a cell the sweep can never see — so a hold the exit never reached was left in a cell
+/// nothing would ever take it out of, and a disconnect mid-dispatch skipped its charge. A guard only
+/// ever MARKS: it runs during an unwind, where taking a hold and settling it is exactly what must not
+/// happen, so ending the unit is the sweep's job and marking is the whole of this one's.
 struct Occupied<'n> {
-    table: &'n busbar_kernel::inflight::InFlight,
-    key: UnitKey,
+    node: &'n LlmNode,
+    slot: Arc<busbar_kernel::inflight::UnitSlot>,
+    /// Set once the unit's end has been reached and settled on the ordinary path.
+    reached_end: bool,
 }
 
 impl Drop for Occupied<'_> {
     fn drop(&mut self) {
-        self.table.remove(self.key);
+        if self.reached_end {
+            self.node.inflight.remove(self.slot.key());
+        } else {
+            self.slot.mark();
+            self.node.marked.fetch_add(1, Ordering::AcqRel);
+        }
     }
 }
 
@@ -1063,6 +1168,12 @@ pub struct LlmUnit<'n> {
     /// back would place a unit that arrived in the last millisecond of a second at the start of it —
     /// on the wrong side of an entry appended in between.
     arrived: Arrived,
+    /// Whose unit this is — the principal the balance it settles onto is keyed by.
+    ///
+    /// Kept on the unit because the unit is what a caller going away leaves behind: the loop hands
+    /// the end of an ABANDONED unit to this unit's `abandoned`, and posting it needs the same
+    /// balance the returned end would have been posted to.
+    principal: PrincipalId,
     /// The handler-lookup refusal the arrival arm performed and the decode arm raises. See this
     /// module's header for why the two are apart.
     deferred: Mutex<Option<decode::DecodeRefusal>>,
@@ -1550,6 +1661,20 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
             self.op_class,
             Box::pin(async move { self.walk.route(token, &destination).await }),
         )
+    }
+
+    /// THE CALLER WENT AWAY MID-DISPATCH, and the end the loop reached for it is POSTED here (item
+    /// 99) — onto the same book, the same balance and the same window [`LlmNode::answer_arriving_at`]
+    /// posts a returned end to, through the same exit arm.
+    ///
+    /// The loop's guard has already sealed this end at the charged audit door, emptied the cell and
+    /// given the leases back; what it hands over is the posting, which has moved no balance and left
+    /// no record until something settles it. Nothing else will: the future that would have read it
+    /// is the one being dropped. Before this arm the end was bound to `let _ended` and dropped, so
+    /// an abandoned unit left no ledger row and no journal entry and its reservation stayed drawn.
+    fn abandoned(&self, _ctx: &UnitCtx, ended: busbar_kernel::teller::Ended) {
+        self.node
+            .settle_end(&self.principal, self.arrived, self.history.as_ref(), ended);
     }
 }
 

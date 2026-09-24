@@ -47,6 +47,9 @@
 //! everything the terminal needs, so a dropped unit leaves through the SAME audit door, the same
 //! settle and the same exit a finished one leaves through — named for what happened, the client
 //! went away — and the cell is emptied and the leases released before the loop's frame is gone.
+//! And the end it reaches is POSTED rather than discarded: the settle is a pure constructor and
+//! the books move only where somebody reads the [`Ended`], so the guard hands it to the leg's own
+//! [`RouteAwait::abandoned`] — the one party still standing that knows which book it belongs on.
 //!
 //! ## No early exits
 //!
@@ -633,6 +636,24 @@ pub trait RouteAwait {
         meter: &'a AccrualMeter,
         destinations: &'a [VerifiedDestination],
     ) -> RouteLeg<'a>;
+
+    /// THE END OF A UNIT THE CALLER WENT AWAY FROM — handed here so it is POSTED, not discarded.
+    ///
+    /// A caller that drops the loop drops it at the one await, and the loop's guard runs the unit's
+    /// terminal there: the audit door seals the end, the hold leaves the cell and the leases go
+    /// back. What the terminal RETURNS is the posting, and a posting is a value — `Posted::settle`
+    /// is a pure constructor that moves no book, and the books move only where somebody reads the
+    /// [`Ended`]. The caller that would have read it is the one that went away, so the guard hands it
+    /// here instead, to the plane whose leg the unit was waiting on: the one party still standing
+    /// that knows which book the unit settles onto. It used to be bound to `let _ended` and dropped,
+    /// which consumed the hold, emptied the cell, wrote no ledger row and no journal entry, and left
+    /// the reservation drawn against the principal's window (item 99).
+    ///
+    /// REQUIRED, with no default body, because the only default there is — dropping the end — is the
+    /// defect. An implementation settles it exactly as its own caller settles a returned end.
+    ///
+    /// Runs inside a `Drop`, possibly during an unwind: it must not panic and must not await.
+    fn abandoned(&self, ctx: &UnitCtx, ended: Ended);
 }
 
 /// The Route step's future, as the loop holds it while it waits.
@@ -660,6 +681,12 @@ impl<U: Units> RouteAwait for Blocking<'_, U> {
             destinations,
         )))
     }
+
+    /// Unreachable by a caller going away: the synchronous driver polls its one await once and it
+    /// is ready, so the guard's terminal is always taken back out by [`Abandoned::reached`]. The one
+    /// way here is an unwind out of a step, and on that path [`run_unit`]'s caller receives no end
+    /// either — the panic is the answer it gets — so there is no reader of this end to hand it to.
+    fn abandoned(&self, _ctx: &UnitCtx, _ended: Ended) {}
 }
 
 /// Everything one run of the loop borrows.
@@ -814,7 +841,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                     let meter = run.meter;
                     // THE ONE AWAIT is inside this scope, and so is the only place a caller that
                     // goes away can drop the loop. The guard owns the terminal for the length of it.
-                    let mut abandoned = Abandoned::arm(kernel, units, ctx, run, settling);
+                    let mut abandoned = Abandoned::arm(kernel, units, route, ctx, run, settling);
                     let outcome = under_hold(kernel, units, route, ctx, meter, &destinations).await;
                     abandoned.reached(outcome)
                 }
@@ -1110,22 +1137,29 @@ enum Settling {
 /// back to the gauge in the same breath. Both are done before the loop's frame is gone, so the cell
 /// the sweep also holds a key to is already empty and the caller's slot is free to give back.
 ///
+/// And the end is POSTED: it goes to the leg's [`RouteAwait::abandoned`], which settles it onto the
+/// book exactly as a returned end is settled. The sealed end IS the money write — the posting inside
+/// it has moved nothing until somebody reads it — so an end dropped here was a charge dropped here.
+///
 /// [`reached`](Abandoned::reached) is how a unit that finished on its own takes its end back out. A
 /// guard whose terminal has been taken does nothing when it is dropped, which is the whole of the
 /// arming.
-struct Abandoned<'k, 'r, U: Units> {
+struct Abandoned<'k, 'r, U: Units, R: RouteAwait> {
     kernel: &'k Kernel,
     units: &'k U,
+    /// Where an abandoned unit's end is handed, so it is posted rather than dropped.
+    route: &'k R,
     ctx: &'k UnitCtx,
     /// The terminal, until somebody runs it. `None` once one of the two callers has.
     ending: Option<(Run<'r>, Settling)>,
 }
 
-impl<'k, 'r, U: Units> Abandoned<'k, 'r, U> {
+impl<'k, 'r, U: Units, R: RouteAwait> Abandoned<'k, 'r, U, R> {
     /// Take the terminal, for the length of the await.
     fn arm(
         kernel: &'k Kernel,
         units: &'k U,
+        route: &'k R,
         ctx: &'k UnitCtx,
         run: Run<'r>,
         settling: Settling,
@@ -1133,6 +1167,7 @@ impl<'k, 'r, U: Units> Abandoned<'k, 'r, U> {
         Abandoned {
             kernel,
             units,
+            route,
             ctx,
             ending: Some((run, settling)),
         }
@@ -1153,13 +1188,14 @@ impl<'k, 'r, U: Units> Abandoned<'k, 'r, U> {
     }
 }
 
-impl<U: Units> Drop for Abandoned<'_, '_, U> {
+impl<U: Units, R: RouteAwait> Drop for Abandoned<'_, '_, U, R> {
     fn drop(&mut self) {
         if let Some((run, settling)) = self.ending.take() {
-            // The end is discarded because there is nobody left to hand it to: the caller that
-            // would have read it is the one that went away. What matters is that it was REACHED —
-            // the audit door sealed it, the cell is empty and the leases are back.
-            let _ended = terminal(
+            // The end is REACHED here — the audit door seals it, the cell is emptied and the leases
+            // go back — and then it is HANDED ON, because reaching it is not posting it. The value
+            // below carries the posting, and a posting moves no book until somebody reads it; the
+            // caller that would have is the one that went away, so the leg's own plane reads it.
+            let ended = terminal(
                 self.kernel,
                 self.units,
                 self.ctx,
@@ -1169,6 +1205,7 @@ impl<U: Units> Drop for Abandoned<'_, '_, U> {
                 }),
                 settling,
             );
+            self.route.abandoned(self.ctx, ended);
         }
     }
 }

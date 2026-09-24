@@ -267,6 +267,14 @@ impl RouteAwait for GauntletKernelUnit<'_> {
             Decision::proceed(token, RoutePlan::default())
         })
     }
+
+    /// The end of a unit whose caller went away, handed here by the loop's guard (item 99).
+    ///
+    /// Treated exactly as this rider treats a RETURNED end, which it drops: the rider opens a zero
+    /// hold, reports zero evidence and binds no money book (see the module note), so the end carries
+    /// no posting any book is owed, and the plane's own per-round metering inside `drive` remains the
+    /// sole authority. A rider that binds a book posts this end where it posts its returned one.
+    fn abandoned(&self, _ctx: &UnitCtx, _ended: busbar_kernel::teller::Ended) {}
 }
 
 /// Derive the caller's principal from the resolved gov, exactly as the sibling planes do: the

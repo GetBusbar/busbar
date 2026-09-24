@@ -1109,6 +1109,7 @@ async fn drive_keeping_the_unit<'n>(
         charged_at: EPOCH,
         history: crate::root::kernel::ROOT_CARD.pin(),
         arrived: Arrived::at(EPOCH * 1_000, 0),
+        principal: principal.clone(),
         deferred: Mutex::new(None),
         model: Mutex::new(String::new()),
         walk: Walk::open(arrival),
@@ -2869,6 +2870,7 @@ fn invoice_micros(
     let cost =
         busbar_kernel::cost::CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
     invoice::derive_spend_micros_row_at_card(&view, at, card, &cost, &report.lane, &row)
+        .expect("the invoice's card prices every lane the fixture serves")
 }
 
 /// The reconciliation: the second book's posting (nano-units) projected through the ONE
@@ -3023,4 +3025,114 @@ fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red(
         .is_err(),
         "a second book that dropped the fee was NOT caught disagreeing with the invoice"
     );
+}
+
+/// ITEM 129: THE DROP GUARD MARKS, AND THE SWEEP SETTLES WHAT IT MARKED.
+///
+/// A unit whose task goes away before its end is reached leaves its hold in its cell. The guard used
+/// to REMOVE the slot on every way out, so the sweep — the second holder of a key to that cell —
+/// could never see it, and nothing in production called the sweep anyway: the hold stayed in a cell
+/// nothing would ever take it out of and the unit posted nothing. Now the guard marks and leaves the
+/// slot, and the next arrival's sweep takes the hold, posts it onto the node's book, and gives the
+/// slot back.
+#[test]
+fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
+    let node = LlmNode::new();
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open"),
+    ));
+    node.bind_book(Arc::clone(&book));
+
+    let who = PrincipalId::new("acct:swept");
+    let key = UnitKey::new(41);
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, who),
+            now: EPOCH * 1_000,
+        })
+        .expect("the uncapped table takes the unit");
+
+    // The task goes away with its hold still in the cell: an end nobody reached.
+    drop(Occupied {
+        node: &node,
+        slot: Arc::clone(&slot),
+        reached_end: false,
+    });
+    assert!(slot.is_marked(), "the guard MARKS the slot it could not end");
+    assert!(
+        node.inflight.get(key).is_some(),
+        "and leaves it in the table, where the sweep can see it"
+    );
+    assert_ne!(
+        slot.cell().state(),
+        busbar_contract::caps::HoldCellState::Taken,
+        "the hold is still in the cell: nobody has settled it"
+    );
+
+    // The next arrival sweeps.
+    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), 1);
+    assert_eq!(
+        slot.cell().state(),
+        busbar_contract::caps::HoldCellState::Taken,
+        "the sweep took the hold out of the cell"
+    );
+    assert!(node.inflight.get(key).is_none(), "and gave the slot back");
+    {
+        let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies");
+        assert_eq!(
+            replayed
+                .iter()
+                .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
+                .count(),
+            1,
+            "the swept hold's posting is on the journal"
+        );
+        assert_eq!(durability.ledger.book().len(), 1, "and on the book");
+    }
+    // Nothing marked is left, so the next arrival's sweep walks nothing.
+    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 6, 100)), 0);
+
+    // A unit that reached its own end gives its slot straight back, unmarked.
+    let key = UnitKey::new(42);
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: busbar_kernel::inflight::arrival_hold(
+                &node.kernel,
+                &node.door,
+                PrincipalId::new("acct:finished"),
+            ),
+            now: EPOCH * 1_000,
+        })
+        .expect("the uncapped table takes the unit");
+    drop(Occupied {
+        node: &node,
+        slot: Arc::clone(&slot),
+        reached_end: true,
+    });
+    assert!(!slot.is_marked());
+    assert!(node.inflight.get(key).is_none());
 }
