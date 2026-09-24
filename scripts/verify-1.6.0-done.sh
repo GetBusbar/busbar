@@ -349,6 +349,28 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 #     (default `$HOME/.cache/busbar-oracle`). Point it at a cache seeded with a hand-edited "1.5.5"
 #     and `fetch-golden --check` calls it pinned.
 #
+# ELEVEN MORE (item 49), each with a reader in this tree:
+#   * BUSBAR_ORACLE_RUST_BIN / BUSBAR_RELEASE_CHECKOUT pick the oracle's Rust binary (bin/oracle,
+#     resolve step 1 and 2): a prebuilt path, or a checkout to build it from. That is the JUDGE
+#     itself, chosen by the operator — stronger than repointing its data.
+#   * BUSBAR_EMIT_OPENAPI makes `emit_openapi_artifact` (busbar-core-admin json tests) write the
+#     served doc to any path. BYTE-IDENTITY's `openapi` filter runs that test next to the
+#     json-matches-committed golden, so pointed at the committed openapi.json it rewrites the golden
+#     the same run compares against.
+#   * BUSBAR_UPDATE_GOLDEN (busbar-plugin tests/layout_golden.rs), UPDATE_KEYS_ERROR_GOLDEN
+#     (busbar-core-admin keys error wire) and UPDATE_DIAGNOSTICS (busbar-a2a diagnostics markdown)
+#     each write the fresh bytes over the committed golden and RETURN before asserting. The BUILD
+#     group's full-gate runs all three.
+#   * XTASK_INSN_EMIT_BASELINE / XTASK_PPB_EMIT_BASELINE switch instance-noun-neutrality and
+#     plane-pricing-blindness into their baseline-regeneration mode (the census printed as the
+#     qa/*.toml the gate compares against). The run is then a re-baselining run, not a DONE run.
+#   * GREP_GATE_REPORT_ONLY (plane-grep/noun/config-noun gates) and SECRET_GATE_REPORT_ONLY
+#     (secret-hygiene gate) turn a gate's RED into exit 0. This file pins GREP_GATE_REPORT_ONLY=0
+#     inline where it runs the config-noun --check; refusing the exported value means a refactor
+#     that drops the inline pin cannot quietly inherit a report-only gate.
+# BUSBAR_ARM64_BASELINE is NOT here: scripts/pgo-build.sh reads it to pick an armv8.0 target CPU for
+# a release artefact. No step in this file builds that artefact, and nothing compares against it.
+#
 # A DONE run means "this tree was measured against something outside itself". Any of these set means
 # it was measured against something the operator chose, which is a different claim.
 #
@@ -362,7 +384,11 @@ assert_bless_env_empty() {
   local v bad=0
   for v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
            SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP \
-           BUSBAR_ORACLE_DATA BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_TOOL_DIR BUSBAR_ORACLE_CACHE; do
+           BUSBAR_ORACLE_DATA BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_TOOL_DIR BUSBAR_ORACLE_CACHE \
+           BUSBAR_ORACLE_RUST_BIN BUSBAR_RELEASE_CHECKOUT BUSBAR_EMIT_OPENAPI \
+           BUSBAR_UPDATE_GOLDEN UPDATE_KEYS_ERROR_GOLDEN UPDATE_DIAGNOSTICS \
+           XTASK_INSN_EMIT_BASELINE XTASK_PPB_EMIT_BASELINE \
+           GREP_GATE_REPORT_ONLY SECRET_GATE_REPORT_ONLY; do
     if [ -n "${!v:-}" ]; then echo "regen/repoint env var $v is SET ('${!v}') — the comparison would be against something the operator chose, not the pinned reference"; bad=1; fi
   done
   return "$bad"
@@ -581,9 +607,15 @@ if [ "$SELFTEST" -eq 1 ]; then
     assert_bless_env_empty 2>&1 | sed 's/^/           /'
     st_fail=1
   fi
+  # This list is typed out AGAIN rather than read from the function: it is the independent
+  # expectation, so dropping a name from assert_bless_env_empty leaves it here and goes RED.
   for st_v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
               SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP \
-              BUSBAR_ORACLE_DATA BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_TOOL_DIR BUSBAR_ORACLE_CACHE; do
+              BUSBAR_ORACLE_DATA BUSBAR_ORACLE_PRODUCT_ROOT BUSBAR_ORACLE_TOOL_DIR BUSBAR_ORACLE_CACHE \
+              BUSBAR_ORACLE_RUST_BIN BUSBAR_RELEASE_CHECKOUT BUSBAR_EMIT_OPENAPI \
+              BUSBAR_UPDATE_GOLDEN UPDATE_KEYS_ERROR_GOLDEN UPDATE_DIAGNOSTICS \
+              XTASK_INSN_EMIT_BASELINE XTASK_PPB_EMIT_BASELINE \
+              GREP_GATE_REPORT_ONLY SECRET_GATE_REPORT_ONLY; do
     # A subshell so the plant cannot leak, driving the REAL assert_bless_env_empty — not a copy of
     # its rule, which would prove only that the copy agrees with itself.
     if ( export "$st_v=planted"; assert_bless_env_empty ) >/dev/null 2>&1; then
@@ -773,7 +805,7 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "BYTE-IDENTITY — the money path is byte-stable"
 if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
-  printf '  \033[32m[ok]\033[0m   bless/regen env (UPDATE_OPENAPI/BLESS_*/BUSBAR_BLESS_GOLDEN) is empty\n'
+  printf '  \033[32m[ok]\033[0m   bless/regen/repoint env (every var in assert_bless_env_empty) is empty\n'
   # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide, so the plane
   # crates' `openapi-schema` reaches busbar-core-admin's dev-dep edges) — the golden tests are
   # cfg-gated on it, so without both the filter selects ZERO of them. The three byte-identity goldens
