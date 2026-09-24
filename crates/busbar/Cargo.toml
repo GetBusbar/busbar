@@ -224,11 +224,14 @@ plane-voice = ["dep:busbar-voice", "dep:busbar-transport-ws", "busbar-voice?/run
 # declaration and a dependency edge; what it turns off is both, so the plane is strong-form
 # deletable on the day it lands rather than as a later cleanup.
 #
-# It carries no config key, no environment variable and no boot line. The declaration claims no
-# path, binds no audience and builds no runtime slot (see `src/root/plane_decision.rs`), so a
-# deployment cannot tell from the wire or from the logs which way it was built — which is what keeps
-# the neutrality cells answering the same on both legs, and is why this ships on rather than waiting
-# for a golden it could never move.
+# It carries ONE config key and nothing on the wire. With the switch on, the declaration owns the
+# `decisions:` section and wires its parse/default hooks (see `src/root/plane_decision.rs`), so a
+# malformed `decisions:` block fails `--validate` and boot, naming the key; with it off, the key is
+# the untyped raw capture every unowned section falls through to. That is the one place a
+# deployment can tell the two builds apart, and only with a malformed block. The declaration
+# claims no path, binds no audience and builds no runtime slot, so no request is answered
+# differently either way — which is what keeps the neutrality cells answering the same on both
+# legs, and is why this ships on rather than waiting for a golden it could never move.
 plane-decision = ["dep:busbar-plane-decision"]
 # THE VOICE PLANE, SERVED THROUGH THE COMPOSITION ROOT rather than through the previous release's
 # path, DEFAULT ON. `main()` seals the composition and mounts the voice plane's units at boot.
