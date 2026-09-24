@@ -30,20 +30,30 @@
 //! pragma never bleeds onto the next line, and **a marker with no reason is not a pragma** — the
 //! reason is the entire reviewability of the carve-out. All four properties have their own selftest
 //! case below.
+//!
+//! **THE REASON IS A CLAIM, AND THE CLAIM IS CHECKED** ([`ROW_FROZEN_WIRE_CLAIM`], see [`claims`]).
+//! A frozen-wire pragma must state `frozen since X.Y.Z` and name its wire key(s) as `key:`, and the
+//! config fingerprint at tag `vX.Y.Z` must carry every one. Eleven pragmas once exempted 1.6.0-new
+//! `mcp:`/`tools:`/`agents:` names as "frozen since 1.5.3" when neither 1.5.3 nor 1.5.5 had them.
 
+pub mod claims;
 pub mod freeze;
 pub mod scanner;
 pub mod strict;
+pub mod vocab;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::ctx::{Ctx, Edit, Overlay, SourceFile, WalkSpec};
-use crate::gates::{prove_green, prove_red, Case, Expect, Gate, LegacyRun, Report};
+use crate::gates::{
+    prove_green, prove_red, prove_rows_green, Case, Expect, Gate, LegacyRun, Report,
+};
 use crate::ledger::{Row, Verdict};
 use crate::planes;
 
-use scanner::{Hit, Mode, Scope};
+use scanner::{Hit, Mode};
+use vocab::Vocab;
 
 pub const ROW_ROOTS: &str = "plane-purity:roots";
 pub const ROW_DENOMINATOR: &str = "plane-purity:scan-denominator";
@@ -54,6 +64,7 @@ pub const ROW_KEY: &str = "plane-purity:key";
 pub const ROW_DIALECT: &str = "plane-purity:dialect";
 pub const ROW_BACKWARDS: &str = "plane-purity:backwards";
 pub const ROW_FREEZE: &str = "plane-purity:core-llm-family-freeze";
+pub const ROW_FROZEN_WIRE_CLAIM: &str = "plane-purity:frozen-wire-claim";
 
 /// The row id for one strict category, e.g. `plane-purity-strict:category:SYMBOL`.
 pub fn strict_category_row(category: &str) -> String {
@@ -92,6 +103,10 @@ pub struct Measurement {
     pub test_forward: Vec<Hit>,
     pub prod_reverse: Vec<Hit>,
     pub test_reverse: Vec<Hit>,
+    /// Every reasoned frozen-wire pragma in the neutral crates — the claims [`claims::row`] checks.
+    pub pragmas: Vec<claims::Pragma>,
+    /// The instance vocabulary the forward scan used, DERIVED from this tree (see [`vocab`]).
+    pub vocab: Vocab,
 }
 
 impl Measurement {
@@ -164,8 +179,11 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
         .filter(|r| cx.exists(r))
         .cloned()
         .collect();
+    // `allow_empty`, because THIS GATE REFUSES THE EMPTY SCAN ITSELF, by name, in
+    // [`ROW_DENOMINATOR`]. Left to the walk, a zero-file scan came back as an error and every row
+    // read "the tree could not be scanned" — true, but it is not the row that owns the finding.
     let neutral: Vec<SourceFile> = cx
-        .walk(&WalkSpec::new(present).ext("rs"))
+        .walk(&WalkSpec::new(present).ext("rs").allow_empty())
         .map_err(|e| e.to_string())?;
     let present: Vec<String> = plane_roots
         .iter()
@@ -173,17 +191,24 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
         .cloned()
         .collect();
     let plane: Vec<SourceFile> = cx
-        .walk(&WalkSpec::new(present).ext("rs"))
+        .walk(&WalkSpec::new(present).ext("rs").allow_empty())
         .map_err(|e| e.to_string())?;
+    // THE WORDS COME FROM THE TREE BEING SCANNED. Derived after the plane walk because the planes
+    // declare their own keys and dialects in the files that walk just read.
+    let vocab = vocab::derive(cx, &plane_roots, &plane);
+    let (prod_forward, test_forward) = scanner::scan(&neutral, Mode::Forward, &vocab);
+    let (prod_reverse, test_reverse) = scanner::scan(&plane, Mode::Reverse, &vocab);
     Ok(Measurement {
         neutral_files: neutral.len(),
         plane_files: plane.len(),
-        prod_forward: scanner::scan(&neutral, Mode::Forward, Scope::Production),
-        test_forward: scanner::scan(&neutral, Mode::Forward, Scope::Test),
-        prod_reverse: scanner::scan(&plane, Mode::Reverse, Scope::Production),
-        test_reverse: scanner::scan(&plane, Mode::Reverse, Scope::Test),
+        prod_forward,
+        test_forward,
+        prod_reverse,
+        test_reverse,
         neutral_roots,
         plane_roots,
+        pragmas: claims::collect(&neutral),
+        vocab,
     })
 }
 
@@ -251,8 +276,17 @@ fn roots_row(neutral_roots: usize, plane_roots: usize, missing: &[String]) -> Ro
     }
 }
 
-fn denominator_row(neutral_files: usize, plane_files: usize) -> Row {
-    let detail = format!("neutral_files={neutral_files} plane_files={plane_files}");
+/// The denominator: the files the scan opened, AND the words it had to scan them with. A scan with
+/// no plane keys, no transports or no dialects answers "clean" about that class whatever the tree
+/// says, which is the same false zero as a scan of no files — so the derived vocabulary is refused
+/// here, by class, beside the file counts. `vocab` is `None` only for the legacy half, which never
+/// had a vocabulary to report.
+fn denominator_row(neutral_files: usize, plane_files: usize, vocab: Option<&Vocab>) -> Row {
+    let mut detail = format!("neutral_files={neutral_files} plane_files={plane_files}");
+    let empty = vocab.map(Vocab::empty_classes).unwrap_or_default();
+    if let Some(v) = vocab {
+        detail.push_str(&format!(" vocabulary: {}", v.summary()));
+    }
     if neutral_files == 0 || plane_files == 0 {
         Row::fail(
             ROW_DENOMINATOR,
@@ -260,6 +294,17 @@ fn denominator_row(neutral_files: usize, plane_files: usize) -> Row {
             format!(
                 "{detail} — a scan of zero files reports zero violations, which is \
                  indistinguishable from a clean tree"
+            ),
+        )
+    } else if !empty.is_empty() {
+        Row::fail(
+            ROW_DENOMINATOR,
+            "the scan derived words to answer with",
+            format!(
+                "{detail} — the tree yielded NO {} to scan for, and a ban with no words bans \
+                 nothing. The vocabulary is derived from the instance crates and their \
+                 declarations; if they moved, fix the derivation, never hand-type a list here.",
+                empty.join(", no ")
             ),
         )
     } else {
@@ -308,6 +353,7 @@ impl Gate for PlanePurityGate {
             ROW_DIALECT,
             ROW_BACKWARDS,
             ROW_FREEZE,
+            ROW_FROZEN_WIRE_CLAIM,
         ]
         .iter()
         .map(|s| (*s).to_string())
@@ -323,7 +369,7 @@ impl Gate for PlanePurityGate {
             .into_iter()
             .chain(missing_roots(cx, &m.plane_roots))
             .collect();
-        let denominator = denominator_row(m.neutral_files, m.plane_files);
+        let denominator = denominator_row(m.neutral_files, m.plane_files, Some(&m.vocab));
         let scanned_nothing = denominator.status != crate::ledger::Status::Pass;
         let mut rows = vec![
             roots_row(m.neutral_roots.len(), m.plane_roots.len(), &missing),
@@ -351,8 +397,17 @@ impl Gate for PlanePurityGate {
                     ),
                 ));
             }
+            rows.push(Row::fail(
+                ROW_FROZEN_WIRE_CLAIM,
+                "the rule was not applied to anything",
+                format!(
+                    "neutral_files={} — zero pragmas over zero files is not a verified set",
+                    m.neutral_files
+                ),
+            ));
         } else {
             rows.extend(category_rows(&hits));
+            rows.push(claims::row(cx, ROW_FROZEN_WIRE_CLAIM, &m.pragmas));
         }
 
         // The hit artefact, for the one delegated consumer that reads hit COUNTS out of it. Written
@@ -380,10 +435,24 @@ impl Gate for PlanePurityGate {
         let mut report = Report::new();
         let owed: Vec<String> = self.owed();
         let all: Vec<&str> = owed.iter().map(String::as_str).collect();
+
+        // EVERY CASE BELOW IS ASKED OVER A BASELINE WHOSE ROWS ARE GREEN (1.6.0 item 89). The
+        // tree carries standing reds on some of these rows — `symbol` and `dialect` on the day this
+        // was written — and a plant into a row that is ALREADY red proves nothing: `prove_red`
+        // scores it PROOF IMPOSSIBLE, correctly, and the rule it names could be deleted with no
+        // case noticing. So the files the unplanted tree's hits sit in are set aside (blanked in
+        // the overlay) ONCE, and every plant is layered on top of that. The real tree is untouched
+        // and stays RED on `cargo xtask gate plane-purity`; what changes is that each case now has
+        // a green row to move. The set-aside is DERIVED from the gate's own hits, so a standing red
+        // that is drained shrinks it and a new one grows it — nothing here names a file.
+        let base = cx.with_overlay(standing_red_set_aside(cx));
+        let cx: &Ctx = &base;
+
         report.push(prove_green(
             cx,
             self,
-            "the neutral crates are clean and core names no LLM family",
+            "with the standing-red sites set aside, every row is green — the gate does not fire \
+             on everything",
             &all,
         ));
 
@@ -500,6 +569,61 @@ impl Gate for PlanePurityGate {
              + snapshot type\n",
         ));
 
+        // THE CLAIM IS CHECKED AGAINST THE TAG IT NAMES (item 2). Each of the three refusals is its
+        // own case, because a single plant that tripped all three would let any one of them be
+        // deleted with the selftest still green; the true claim beside them is the control that
+        // proves the row reads the tag rather than refusing every pragma. The plants name no plane
+        // or dialect, so no vocabulary row moves and the case is about the claim alone.
+        report.push(create(
+            cx,
+            self,
+            "a frozen-since claim naming a key absent at that tag is refused",
+            &[ROW_FROZEN_WIRE_CLAIM],
+            &plant_at,
+            "pub const K: u8 = 0; // plane-purity: frozen-wire the `brand_new_key:` wire key \
+             (frozen since 1.5.3)\n",
+            &[
+                ROW_FROZEN_WIRE_CLAIM,
+                "planted_plane_purity.rs:1",
+                "brand_new_key:",
+            ],
+        ));
+
+        report.push(create(
+            cx,
+            self,
+            "a frozen-wire pragma stating no frozen-since release is refused",
+            &[ROW_FROZEN_WIRE_CLAIM],
+            &plant_at,
+            "pub const K: u8 = 0; // plane-purity: frozen-wire the `protocol:` wire key\n",
+            &[
+                ROW_FROZEN_WIRE_CLAIM,
+                "planted_plane_purity.rs:1",
+                "no `frozen since X.Y.Z`",
+            ],
+        ));
+
+        report.push(create(
+            cx,
+            self,
+            "a frozen-since claim naming a tag that does not resolve is refused",
+            &[ROW_FROZEN_WIRE_CLAIM],
+            &plant_at,
+            "pub const K: u8 = 0; // plane-purity: frozen-wire the `protocol:` wire key \
+             (frozen since 9.9.9)\n",
+            &[ROW_FROZEN_WIRE_CLAIM, "planted_plane_purity.rs:1", "v9.9.9"],
+        ));
+
+        report.push(green_with(
+            cx,
+            self,
+            "a frozen-since claim whose key the tag carries is honoured",
+            &[ROW_FROZEN_WIRE_CLAIM],
+            &plant_at,
+            "pub const K: u8 = 0; // plane-purity: frozen-wire the omitted-`protocol:` default \
+             (frozen since 1.5.3)\n",
+        ));
+
         report.push(create(
             cx,
             self,
@@ -531,7 +655,7 @@ impl Gate for PlanePurityGate {
         // a tree it never read. They get separate fixtures on purpose: a root that VANISHED and a
         // root that is present but EMPTY are different failures, and a single case that happened to
         // trip both would let either one be deleted with the selftest still green.
-        let mut ov = Overlay::new();
+        let mut ov = layered(cx);
         ov.remove(&neutral[0]);
         report.push(prove_red(
             cx,
@@ -542,7 +666,7 @@ impl Gate for PlanePurityGate {
             &[ROW_ROOTS, &neutral[0]],
         ));
 
-        let mut ov = Overlay::new();
+        let mut ov = layered(cx);
         for root in neutral.iter().chain(planes::plane_src_roots().iter()) {
             for f in cx
                 .walk(&WalkSpec::new([root.clone()]).ext("rs"))
@@ -572,6 +696,90 @@ impl Gate for PlanePurityGate {
             // legacy witness prints and `--parity` compares this row against it. A named site here
             // would be a row the legacy half cannot produce, i.e. a parity diff by construction.
             &[ROW_FREEZE, "count=1"],
+        ));
+
+        // ── THE VOCABULARY IS THE TREE'S (1.6.0 item 3) ──────────────────────────────────────
+        //
+        // Before the derivation, a new plane, a new transport and a new dialect named in core moved
+        // ZERO rows: the scanner only knew the words somebody had typed into it. Each case below
+        // lands a NEW instance the way the tree would — a crate, or a declaration inside a plane —
+        // and names it in a neutral crate. No word in any of them appears anywhere in this gate's
+        // source, so the only way any of them can go red is that the gate READ it off the tree.
+        report.push(create_many(
+            cx,
+            self,
+            "a NEW plane crate is in the vocabulary: its key in a neutral crate is a KEY hit",
+            &[ROW_KEY],
+            &[
+                (
+                    "crates/busbar-plane-quux/Cargo.toml",
+                    "[package]\nname = \"busbar-plane-quux\"\nversion = \"0.0.0\"\n",
+                ),
+                (
+                    "crates/busbar-plane-quux/src/lib.rs",
+                    "pub struct QuuxPlane;\n",
+                ),
+                (&plant_at, "fn route() { let plane_key = \"quux\"; }\n"),
+            ],
+            &[ROW_KEY, "planted_plane_purity.rs:1"],
+        ));
+
+        report.push(create_many(
+            cx,
+            self,
+            "a NEW transport crate is in the vocabulary: binding it from a neutral crate is a \
+             SYMBOL hit",
+            &[ROW_SYMBOL, ROW_KEY],
+            &[
+                (
+                    "crates/busbar-transport-quic/Cargo.toml",
+                    "[package]\nname = \"busbar-transport-quic\"\nversion = \"0.0.0\"\n",
+                ),
+                (
+                    &plant_at,
+                    "use busbar_transport_quic::Dialer;\nfn pick() { let t = \"transport_quic\"; }\n",
+                ),
+            ],
+            &[ROW_SYMBOL, ROW_KEY, "planted_plane_purity.rs:1", "planted_plane_purity.rs:2"],
+        ));
+
+        report.push(create_many(
+            cx,
+            self,
+            "a NEW dialect a plane declares is in the vocabulary: naming it in a neutral crate is a \
+             DIALECT hit",
+            &[ROW_DIALECT],
+            &[
+                (
+                    "crates/busbar-plane-llm/src/planted_dialect.rs",
+                    "pub const PLANTED: Dialect = Dialect {\n    name: \"zephyrine\",\n};\n",
+                ),
+                (&plant_at, "fn d() { let dialect = \"zephyrine\"; }\n"),
+            ],
+            &[ROW_DIALECT, "planted_plane_purity.rs:1"],
+        ));
+
+        // AN EMPTY DERIVATION IS REFUSED. With every dialect declaration gone the scanner has no
+        // dialect to scan for, and the dialect row would read "clean" about a tree it could not
+        // judge — the same false zero as a scan of no files, and refused on the same row.
+        let mut ov = layered(cx);
+        let plane_roots =
+            crate::gates::kind_isolation::plane_kind_src_roots(cx).unwrap_or_default();
+        for f in cx
+            .walk(&WalkSpec::new(plane_roots).ext("rs").allow_empty())
+            .unwrap_or_default()
+        {
+            if f.text.contains("Dialect") {
+                ov.set(&f.rel, "");
+            }
+        }
+        report.push(prove_red(
+            cx,
+            self,
+            "a tree that yields no dialect to scan for is refused, not scanned as clean",
+            &[ROW_DENOMINATOR],
+            ov,
+            &[ROW_DENOMINATOR, "dialects=0"],
         ));
 
         report
@@ -670,7 +878,7 @@ fn legacy_check_rows(runs: &[LegacyRun]) -> Result<Vec<Row>, String> {
     // The legacy script ABORTS before writing the artefact when a root is missing, so an artefact
     // that exists at all is a run whose roots were all present. The rows say so explicitly rather
     // than leaving the reader to infer it.
-    let mut rows = vec![roots_row(nr, pr, &[]), denominator_row(nf, pf)];
+    let mut rows = vec![roots_row(nr, pr, &[]), denominator_row(nf, pf, None)];
     rows.extend(category_rows(&hits.iter().collect::<Vec<_>>()));
     rows.push(freeze_row(&parse_freeze_witness(witness)?));
     Ok(rows)
@@ -1086,7 +1294,7 @@ fn unscannable(owed: &[String], why: &str) -> Vec<Row> {
 
 /// Plant a NEW file inside a scanned root and require RED naming the plant.
 fn create<'a>(
-    cx: &'a Ctx,
+    cx: &Ctx,
     gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
@@ -1094,11 +1302,25 @@ fn create<'a>(
     content: &str,
     naming: &[&str],
 ) -> crate::gates::CasePlan<'a> {
-    let mut ov = Overlay::new();
-    if Edit::Create(content.to_string())
-        .apply(cx, path, &mut ov)
-        .is_err()
-    {
+    create_many(cx, gate, name, covers, &[(path, content)], naming)
+}
+
+/// [`create`] for a plant that needs more than one NEW file — a crate and the neutral line that
+/// names it. Every file must be new; one that already exists makes the whole case SKIPPED, never a
+/// plant over real source.
+fn create_many<'a>(
+    cx: &Ctx,
+    gate: &'a dyn Gate,
+    name: &str,
+    covers: &[&str],
+    files: &[(&str, &str)],
+    naming: &[&str],
+) -> crate::gates::CasePlan<'a> {
+    let mut ov = layered(cx);
+    let planted = files.iter().try_for_each(|(path, content)| {
+        Edit::Create((*content).to_string()).apply(cx, path, &mut ov)
+    });
+    if planted.is_err() {
         return Case {
             name: name.to_string(),
             covers: covers.iter().map(|s| (*s).to_string()).collect(),
@@ -1112,17 +1334,40 @@ fn create<'a>(
     prove_red(cx, gate, name, covers, ov, naming)
 }
 
+/// The overlay a plant starts from: whatever the case's context already carries — the standing-red
+/// set-aside, in this selftest — so a plant ADDS to the baseline it is judged against rather than
+/// replacing it (`Ctx::with_overlay` replaces).
+fn layered(cx: &Ctx) -> Overlay {
+    cx.overlay().cloned().unwrap_or_default()
+}
+
+/// THE STANDING-RED SET-ASIDE: every file the unplanted tree's `--check` hits sit in, blanked.
+///
+/// Blanked rather than removed, and that is load-bearing: a plant is judged against this baseline,
+/// and `prove_red` refuses a plant that REMOVES a path the baseline has already removed — so a
+/// removal here would turn every plant layered on it into an inert one. A blank file is present,
+/// counted in the denominator, and carries no hit.
+fn standing_red_set_aside(cx: &Ctx) -> Overlay {
+    let mut ov = Overlay::new();
+    if let Ok(m) = measure(cx) {
+        for h in m.check_hits() {
+            ov.set(&h.file, "");
+        }
+    }
+    ov
+}
+
 /// The control arm: the SAME shape planted with its excuse in place must be GREEN, or the RED case
 /// beside it proves only that the rule fires on everything.
 fn green_with<'a>(
-    cx: &'a Ctx,
+    cx: &Ctx,
     gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     path: &str,
     content: &str,
 ) -> crate::gates::CasePlan<'a> {
-    let mut ov = Overlay::new();
+    let mut ov = layered(cx);
     if Edit::Create(content.to_string())
         .apply(cx, path, &mut ov)
         .is_err()
@@ -1135,6 +1380,9 @@ fn green_with<'a>(
         }
         .into();
     }
-    let planted = cx.with_overlay(ov);
-    prove_green(&planted, gate, name, covers)
+    // NARROWED TO THE ROWS THE CONTROL IS ABOUT. A control proves that ONE rule does not fire on
+    // the excused shape; demanding every other row stay green as well held it hostage to rows it
+    // says nothing about — the frozen-wire-claim row, which judges the same pragma's back-compat
+    // claim, has its own green control.
+    prove_rows_green(cx, gate, name, covers, ov)
 }

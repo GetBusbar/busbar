@@ -23,10 +23,7 @@
 
 use crate::ctx::SourceFile;
 
-/// The plane keys as the scanner spells them in a crate/dir name (`busbar-<key>`) and in a crate
-/// identifier (`busbar_<key>`). Kept as literals rather than derived from [`crate::planes`]
-/// because these are the awk alternations' contents and drift between the two would be silent.
-pub const PLANE_ALTERNATION: [&str; 4] = ["llm", "mcp", "a2a", "voice"];
+use super::vocab::Vocab;
 
 /// The six category names, in the fixed report order the shell prints and
 /// `qa/plane-purity-strict.toml` keys its `[categories]` table by.
@@ -39,52 +36,14 @@ pub const CATEGORIES: [&str; 6] = [
     "BACKWARDS",
 ];
 
-/// The six dialect names the DIALECT rule bans as whole words.
-pub const DIALECTS: [&str; 6] = [
-    "openai",
-    "anthropic",
-    "gemini",
-    "bedrock",
-    "cohere",
-    "responses",
-];
+// THE INSTANCE WORDS ARE NOT HERE ANY MORE. `PLANE_ALTERNATION` (four hand-typed plane keys, one of
+// them a dialect and two of the five planes missing), the six-name dialect list, and the CamelCase
+// and acronym prefix lists built from both are all DERIVED now — see [`super::vocab`] — and handed
+// to [`scan`] as a [`Vocab`]. A new plane, transport or dialect is in the scan the day its crate or
+// its declaration is in the tree.
 
 /// The named plane record types the TYPE rule bans outright.
 const RECORD_TYPES: [&str; 4] = ["McpCallRecord", "McpDemotionRow", "TaskRow", "TaskEventRow"];
-
-/// The CamelCase plane/dialect prefixes: a prefix followed by an uppercase letter is a plane- or
-/// dialect-named type.
-const CAMEL_PREFIXES: [&str; 11] = [
-    "Mcp",
-    "A2a",
-    "A2A",
-    "Llm",
-    "Voice",
-    "Openai",
-    "Anthropic",
-    "Gemini",
-    "Bedrock",
-    "Cohere",
-    "Responses",
-];
-
-/// The SCREAMING/acronym spellings. `MCPCallRecord`, `OpenAIClient` and `LLMRouter` carried no
-/// prefix the CamelCase list knew, and the KEY rule could not save them either: `word_ci` needs the
-/// token to end at an identifier boundary, and in `mcpcallrecord` it does not. The
-/// SCREAMING_SNAKE carve-out survives — `MCP_RUNTIME_SLOT` is `MCP` followed by `_`, not by an
-/// uppercase letter, so it still does not match.
-const SCREAMING_PREFIXES: [&str; 10] = [
-    "MCP",
-    "LLM",
-    "VOICE",
-    "OpenAI",
-    "OPENAI",
-    "ANTHROPIC",
-    "GEMINI",
-    "BEDROCK",
-    "COHERE",
-    "RESPONSES",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -94,19 +53,13 @@ pub enum Mode {
     Reverse,
 }
 
-/// Which scope this pass reports. `Production` is the scan `--check` runs and is byte-identical to
-/// the scanner before `--strict` existed; `Test` FLIPS the same gate rather than dropping it, so a
-/// production pass and a test pass never double-count one hit.
+/// Which scope a hit belongs to. `Production` is the scan `--check` runs; `Test` is what `--strict`
+/// adds. One pass classifies every hit into exactly one of the two, so the two lists can never
+/// double-count a hit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Production,
     Test,
-}
-
-impl Scope {
-    fn is_test_pass(self) -> bool {
-        self == Scope::Test
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,18 +84,32 @@ impl Hit {
     }
 }
 
-/// Scan one file list. Callers pass the WALK's output, so a missing root or a below-floor scan has
-/// already been refused before a single line is read — the shell had to bolt both guards on in
-/// front of `find` and this crate gets them from [`crate::ctx::WalkSpec`].
-pub fn scan(files: &[SourceFile], mode: Mode, scope: Scope) -> Vec<Hit> {
-    let mut out = Vec::new();
+/// Scan one file list, BOTH scopes in one pass: `(production, test)`. Callers pass the WALK's
+/// output, so a missing root or a below-floor scan has already been refused before a single line is
+/// read — the shell had to bolt both guards on in front of `find` and this crate gets them from
+/// [`crate::ctx::WalkSpec`].
+///
+/// ONE PASS, NOT TWO. The two scopes used to be two full scans of the same files, each re-deciding
+/// every line's scope in order to throw half of the hits away; every line is now read once and its
+/// hits land in the list its scope names. The partition is the same one — a hit is test-scope
+/// exactly when it was, production exactly when it was — at half the reads.
+pub fn scan(files: &[SourceFile], mode: Mode, vocab: &Vocab) -> (Vec<Hit>, Vec<Hit>) {
+    let mut prod = Vec::new();
+    let mut test = Vec::new();
     for f in files {
-        scan_file(&f.rel_str(), &f.text, mode, scope, &mut out);
+        scan_file(&f.rel_str(), &f.text, mode, vocab, &mut prod, &mut test);
     }
-    out
+    (prod, test)
 }
 
-fn scan_file(name: &str, text: &str, mode: Mode, scope: Scope, out: &mut Vec<Hit>) {
+fn scan_file(
+    name: &str,
+    text: &str,
+    mode: Mode,
+    vocab: &Vocab,
+    prod: &mut Vec<Hit>,
+    test: &mut Vec<Hit>,
+) {
     // Per-FILE reset. The awk shares state across its file list and resets on `FNR == 1`; here the
     // state simply cannot outlive the file, which is the same rule made unrepresentable.
     let mut in_block = false;
@@ -156,8 +123,6 @@ fn scan_file(name: &str, text: &str, mode: Mode, scope: Scope, out: &mut Vec<Hit
     for (idx, raw) in text.lines().enumerate() {
         let lineno = idx + 1;
         let code = strip(raw, &mut in_block);
-        let padded = format!(" {code} ");
-        let lc = padded.to_lowercase();
         // `code` keeps literal contents because a plane key or dialect name spelled in a `"…"` is
         // still the crate naming it — that is what the categories below are counting. The
         // `#[cfg(test)] mod` DEPTH is a different question and reads the blanked copy, so a brace
@@ -184,8 +149,10 @@ fn scan_file(name: &str, text: &str, mode: Mode, scope: Scope, out: &mut Vec<Hit
         // then opens a test window over production source — every hit after it silently reclassified
         // out of the `--check` pass and into the ratcheted one. The attribute and the `mod` keyword
         // hold no literal of their own, so blanking cannot hide a real gate.
-        let counted_lc = format!(" {} ", counted.to_lowercase());
-        let is_cfgtest = counted.contains("#[cfg(") && word_ci(&counted_lc, "test");
+        let is_cfgtest = counted.contains("#[cfg(") && {
+            let counted_lc = format!(" {} ", counted.to_lowercase());
+            word_ci(&counted_lc, "test")
+        };
         let has_mod = has_bare_word_mod(&counted);
         let mut entered = false;
         // The attribute and its `mod` on ONE line, or the `mod` a prior `#[cfg(test)]` guarded —
@@ -206,79 +173,118 @@ fn scan_file(name: &str, text: &str, mode: Mode, scope: Scope, out: &mut Vec<Hit
         }
         let intest = istestfile || test_depth > 0 || entered;
 
-        let mut emit = |category: &'static str| {
-            out.push(Hit {
-                category,
-                file: name.to_string(),
-                line: lineno,
-                code: code.trim().to_string(),
-            });
-        };
+        if code.trim().is_empty() {
+            continue;
+        }
+        // The categories this line is guilty of, in rule order, and whether a test-scope
+        // PATH-INCLUDE must ALSO land in the production list (see (a)).
+        let mut found: Vec<&'static str> = Vec::new();
+        let mut include_in_prod_too = false;
+        let mut emit = |category: &'static str| found.push(category);
 
         if mode == Mode::Reverse {
             // No backwards reach: a plane crate must not name `busbar_core::` implementation items.
             // THE CRATE IS NAMED, NOT ONLY ITS PATHS — the two spellings that bind the crate with
             // no `::` on the line walked straight through the original rule, and either one
             // re-opens plane→core-internals wholesale.
-            let reach = path_of(&code, "busbar_core")
-                || extern_crate_of(&code, "busbar_core")
-                || bound_as(&code, "busbar_core");
-            if reach && (intest == scope.is_test_pass()) {
+            if code.contains("busbar_core")
+                && (path_of(&code, "busbar_core")
+                    || extern_crate_of(&code, "busbar_core")
+                    || bound_as(&code, "busbar_core"))
+            {
                 emit("BACKWARDS");
             }
-            continue;
+        } else {
+            forward_rules(
+                &code,
+                frozen,
+                vocab,
+                &mut emit,
+                &mut include_in_prod_too,
+                intest,
+            );
         }
 
-        // (a) PATH-INCLUDE — unconditional, test scope included: an instant fail wherever it lives,
-        //     and NEVER excusable by the pragma below, because a dual-compile is structural and no
-        //     config-freeze can justify it. Under a test pass it is restricted to test-scope hits
-        //     so the two passes never double-count.
-        let pathinclude = path_attr_include(&code) || macro_include(&code);
-        if pathinclude && (!scope.is_test_pass() || intest) {
-            emit("PATH-INCLUDE");
+        let trimmed = code.trim();
+        let hit = |category: &'static str| Hit {
+            category,
+            file: name.to_string(),
+            line: lineno,
+            code: trimmed.to_string(),
+        };
+        if include_in_prod_too {
+            prod.push(hit("PATH-INCLUDE"));
         }
+        let out: &mut Vec<Hit> = if intest { test } else { prod };
+        out.extend(found.into_iter().map(hit));
+    }
+}
 
-        // (b)/(c): which scope THIS pass reports.
-        if intest != scope.is_test_pass() {
-            continue;
-        }
+/// The five FORWARD rules over one neutral line, in the order they are reported.
+fn forward_rules(
+    code: &str,
+    frozen: bool,
+    vocab: &Vocab,
+    emit: &mut impl FnMut(&'static str),
+    include_in_prod_too: &mut bool,
+    intest: bool,
+) {
+    // (a) PATH-INCLUDE — unconditional, test scope included: an instant fail wherever it lives,
+    //     and NEVER excusable by the pragma below, because a dual-compile is structural and no
+    //     config-freeze can justify it. So a test-scope include lands in the PRODUCTION list
+    //     too — `--check` fails on it — exactly as the two-pass scanner counted it.
+    if (code.contains("#[") || code.contains("include"))
+        && (path_attr_include(code, vocab) || macro_include(code, vocab))
+    {
+        emit("PATH-INCLUDE");
+        *include_in_prod_too = intest;
+    }
 
-        // (b) SYMBOL — a plane-crate symbol path, an `extern crate`, or a `use … as` that renames
-        //     the crate out of this scanner's sight. Also never excusable: a frozen config FIELD or
-        //     TYPE never requires naming a plane crate.
-        if PLANE_ALTERNATION.iter().any(|p| {
-            let krate = format!("busbar_{p}");
-            path_of(&code, &krate) || extern_crate_of(&code, &krate) || bound_as(&code, &krate)
-        }) {
-            emit("SYMBOL");
-        }
+    // (b) SYMBOL — an instance-crate symbol path, an `extern crate`, or a `use … as` that
+    //     renames the crate out of this scanner's sight. Also never excusable: a frozen config
+    //     FIELD or TYPE never requires naming an instance crate.
+    if code.contains("busbar_")
+        && vocab.crate_idents.iter().any(|krate| {
+            code.contains(krate.as_str())
+                && (path_of(code, krate) || extern_crate_of(code, krate) || bound_as(code, krate))
+        })
+    {
+        emit("SYMBOL");
+    }
 
-        // THE FROZEN-WIRE CARVE-OUT: exempt from the VOCABULARY rules ONLY, and only below the two
-        // structural rules above.
-        if frozen {
-            continue;
-        }
+    // THE FROZEN-WIRE CARVE-OUT: exempt from the VOCABULARY rules ONLY, and only below the two
+    // structural rules above.
+    if frozen {
+        return;
+    }
 
-        // (c3) TYPE — checked before the bare-key rule so `McpFoo` reads as TYPE, not KEY.
-        if RECORD_TYPES.iter().any(|t| bare_word(&code, t))
-            || CAMEL_PREFIXES.iter().any(|p| prefix_then_upper(&code, p))
-            || SCREAMING_PREFIXES
-                .iter()
-                .any(|p| prefix_then_upper(&code, p))
-        {
-            emit("TYPE");
-        }
+    // (c3) TYPE — checked before the bare-key rule so `McpFoo` reads as TYPE, not KEY.
+    if RECORD_TYPES.iter().any(|t| bare_word(code, t))
+        || vocab
+            .camel_prefixes
+            .iter()
+            .any(|p| prefix_then_upper(code, p))
+        || vocab
+            .screaming_prefixes
+            .iter()
+            .any(|p| prefix_then_upper(code, p))
+    {
+        emit("TYPE");
+    }
 
-        // (c1) KEY — a concrete plane key as a bare token. Word-boundary, so it does NOT match
-        //      inside `busbar_mcp` / `plane_mcp` / `MCP_RUNTIME_SLOT`: `_` is not a boundary.
-        if PLANE_ALTERNATION.iter().any(|k| word_ci(&lc, k)) {
-            emit("KEY");
-        }
+    let lc = format!(" {} ", code.to_lowercase());
+    // (c1) KEY — a concrete plane key as a bare token, or a transport by its compound name.
+    //      Word-boundary, so it does NOT match inside `busbar_mcp` / `plane_mcp` /
+    //      `MCP_RUNTIME_SLOT`: `_` is not a boundary.
+    if vocab.key_words.iter().any(|k| word_ci(&lc, k))
+        || vocab.literal_words.iter().any(|q| lc.contains(q.as_str()))
+    {
+        emit("KEY");
+    }
 
-        // (c2) DIALECT — one of the six dialect names as a token.
-        if DIALECTS.iter().any(|d| word_ci(&lc, d)) {
-            emit("DIALECT");
-        }
+    // (c2) DIALECT — a dialect the tree declares, as a token.
+    if vocab.dialects.iter().any(|d| word_ci(&lc, d)) {
+        emit("DIALECT");
     }
 }
 
@@ -292,15 +298,20 @@ fn ends_with_tests_rs(name: &str) -> bool {
 /// span them); the in-string flag is per line, exactly as the awk resets it, which guards against a
 /// raw-string or char-literal desync running away with the rest of the file.
 pub fn strip(line: &str, in_block: &mut bool) -> String {
-    let chars: Vec<char> = line.chars().collect();
-    let mut res = String::with_capacity(line.len());
+    // BYTE-WISE, and the same scan. Every delimiter this reads (`/`, `*`, `"`, `\\`) is ASCII, and
+    // no byte of a multi-byte UTF-8 character equals an ASCII byte, so walking bytes finds exactly
+    // the delimiters walking characters did. What is kept is a set of whole byte runs cut at those
+    // ASCII delimiters, so it is still valid UTF-8. The per-character version built a `String` for
+    // every two-character lookahead, on every character of every line.
+    let b = line.as_bytes();
+    let mut res: Vec<u8> = Vec::with_capacity(b.len());
     let mut i = 0;
     let mut in_str = false;
-    while i < chars.len() {
-        let c = chars[i];
-        let two = |i: usize| -> String { chars[i..(i + 2).min(chars.len())].iter().collect() };
+    while i < b.len() {
+        let c = b[i];
+        let next = b.get(i + 1).copied();
         if *in_block {
-            if two(i) == "*/" {
+            if c == b'*' && next == Some(b'/') {
                 *in_block = false;
                 i += 2;
             } else {
@@ -310,37 +321,34 @@ pub fn strip(line: &str, in_block: &mut bool) -> String {
         }
         if in_str {
             res.push(c);
-            if c == '\\' {
-                if let Some(n) = chars.get(i + 1) {
-                    res.push(*n);
+            if c == b'\\' {
+                if let Some(n) = next {
+                    res.push(n);
                 }
                 i += 2;
                 continue;
             }
-            if c == '"' {
+            if c == b'"' {
                 in_str = false;
             }
             i += 1;
             continue;
         }
-        if two(i) == "/*" {
+        if c == b'/' && next == Some(b'*') {
             *in_block = true;
             i += 2;
             continue;
         }
-        if two(i) == "//" {
+        if c == b'/' && next == Some(b'/') {
             break;
         }
-        if c == '"' {
+        if c == b'"' {
             in_str = true;
-            res.push(c);
-            i += 1;
-            continue;
         }
         res.push(c);
         i += 1;
     }
-    res
+    String::from_utf8(res).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 /// `$0 ~ /plane-purity:[[:space:]]*frozen-wire[[:space:]]+[^[:space:]]/` — the marker, then at
@@ -366,83 +374,67 @@ pub fn has_frozen_wire_pragma(raw: &str) -> bool {
 /// `code ~ /(^|[^A-Za-z0-9_])mod([^A-Za-z0-9_])/` — note the awk requires a character AFTER `mod`,
 /// so a line ending in a bare `mod` is not a mod line.
 fn has_bare_word_mod(code: &str) -> bool {
-    let b: Vec<char> = code.chars().collect();
-    for i in 0..b.len() {
-        if b[i..].starts_with(&['m', 'o', 'd']) {
-            let before_ok = i == 0 || !is_ident(b[i - 1]);
-            let after = b.get(i + 3);
-            if before_ok && after.is_some_and(|c| !is_ident(*c)) {
-                return true;
-            }
-        }
-    }
-    false
+    let b = code.as_bytes();
+    code.match_indices("mod").any(|(i, _)| {
+        (i == 0 || !is_ident_b(b[i - 1])) && b.get(i + 3).is_some_and(|c| !is_ident_b(*c))
+    })
 }
 
 fn is_ident(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+/// [`is_ident`] over one BYTE. Every needle this scanner matches is ASCII, so a match always starts
+/// and ends on a character boundary, and a byte of a multi-byte character is never an identifier
+/// byte — exactly as the multi-byte character it belongs to is never an identifier character. The
+/// byte form is the character form, without a `Vec<char>` per needle per line.
+fn is_ident_b(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
 /// The awk's `[^a-z0-9_]` identifier boundary, applied to the LOWERCASED, space-padded line.
-fn is_ident_lc(c: char) -> bool {
-    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'
+fn is_ident_lc_b(b: u8) -> bool {
+    b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'
 }
 
 /// `function word_ci(lc, needle) { return (lc ~ ("[^a-z0-9_]" needle "[^a-z0-9_]")) }` — a
-/// whole-word, case-insensitive hit of a lowercase needle in the padded lowercased line.
+/// whole-word, case-insensitive hit of a lowercase needle in the padded lowercased line. The awk
+/// pattern needs a character on EACH side, which the padding supplies.
 pub fn word_ci(lc: &str, needle: &str) -> bool {
-    let hay: Vec<char> = lc.chars().collect();
-    let nee: Vec<char> = needle.chars().collect();
-    if nee.is_empty() || hay.len() < nee.len() + 2 {
+    if needle.is_empty() {
         return false;
     }
-    for i in 1..=(hay.len() - nee.len() - 1) {
-        if hay[i..i + nee.len()] == nee[..]
-            && !is_ident_lc(hay[i - 1])
-            && !is_ident_lc(hay[i + nee.len()])
-        {
-            return true;
-        }
-    }
-    false
+    let hay = lc.as_bytes();
+    lc.match_indices(needle).any(|(i, _)| {
+        let end = i + needle.len();
+        i >= 1 && end < hay.len() && !is_ident_lc_b(hay[i - 1]) && !is_ident_lc_b(hay[end])
+    })
 }
 
 /// `(^|[^A-Za-z0-9_])<word>([^A-Za-z0-9_]|$)` over the un-lowercased line.
 fn bare_word(code: &str, word: &str) -> bool {
-    let b: Vec<char> = code.chars().collect();
-    let w: Vec<char> = word.chars().collect();
-    if w.is_empty() || b.len() < w.len() {
+    if word.is_empty() {
         return false;
     }
-    for i in 0..=(b.len() - w.len()) {
-        if b[i..i + w.len()] == w[..]
-            && (i == 0 || !is_ident(b[i - 1]))
-            && b.get(i + w.len()).is_none_or(|c| !is_ident(*c))
-        {
-            return true;
-        }
-    }
-    false
+    let b = code.as_bytes();
+    code.match_indices(word).any(|(i, _)| {
+        let end = i + word.len();
+        (i == 0 || !is_ident_b(b[i - 1])) && b.get(end).is_none_or(|c| !is_ident_b(*c))
+    })
 }
 
 /// `(^|[^A-Za-z0-9_])<prefix>[A-Z][A-Za-z0-9_]*` — a prefix at an identifier boundary followed by
 /// an UPPERCASE letter. The trailing `[A-Za-z0-9_]*` matches zero-width, so the uppercase letter is
 /// the whole requirement, and that is what keeps `MCP_RUNTIME_SLOT` out.
 fn prefix_then_upper(code: &str, prefix: &str) -> bool {
-    let b: Vec<char> = code.chars().collect();
-    let p: Vec<char> = prefix.chars().collect();
-    if p.is_empty() || b.len() <= p.len() {
+    if prefix.is_empty() {
         return false;
     }
-    for i in 0..=(b.len() - p.len() - 1) {
-        if b[i..i + p.len()] == p[..]
-            && (i == 0 || !is_ident(b[i - 1]))
-            && b[i + p.len()].is_ascii_uppercase()
-        {
-            return true;
-        }
-    }
-    false
+    let b = code.as_bytes();
+    code.match_indices(prefix).any(|(i, _)| {
+        (i == 0 || !is_ident_b(b[i - 1]))
+            && b.get(i + prefix.len()).is_some_and(u8::is_ascii_uppercase)
+    })
 }
 
 /// `<krate>[[:space:]]*::` — unanchored, exactly as the awk wrote it. rustfmt will not produce
@@ -461,32 +453,25 @@ fn path_of(code: &str, krate: &str) -> bool {
 
 /// `(^|[^A-Za-z0-9_])extern[[:space:]]+crate[[:space:]]+<krate>([^A-Za-z0-9_]|$)`
 fn extern_crate_of(code: &str, krate: &str) -> bool {
-    let b: Vec<char> = code.chars().collect();
-    for i in 0..b.len() {
-        if !b[i..].starts_with(&['e', 'x', 't', 'e', 'r', 'n']) {
-            continue;
+    let b = code.as_bytes();
+    code.match_indices("extern").any(|(i, _)| {
+        if i > 0 && is_ident_b(b[i - 1]) {
+            return false;
         }
-        if i > 0 && is_ident(b[i - 1]) {
-            continue;
-        }
-        let tail: String = b[i + "extern".len()..].iter().collect();
-        let Some(t) = strip_required_space(&tail) else {
-            continue;
+        let Some(t) = strip_required_space(&code[i + "extern".len()..]) else {
+            return false;
         };
         let Some(t) = t.strip_prefix("crate") else {
-            continue;
+            return false;
         };
         let Some(t) = strip_required_space(t) else {
-            continue;
+            return false;
         };
         let Some(after) = t.strip_prefix(krate) else {
-            continue;
+            return false;
         };
-        if after.chars().next().is_none_or(|c| !is_ident(c)) {
-            return true;
-        }
-    }
-    false
+        after.chars().next().is_none_or(|c| !is_ident(c))
+    })
 }
 
 /// `[[:space:]]+` — at least one space or tab, or no match at all.
@@ -502,38 +487,32 @@ fn strip_required_space(s: &str) -> Option<&str> {
 /// `(^|[^A-Za-z0-9_])<krate>[[:space:]]+as[[:space:]]` — the alias that renames the crate out of
 /// every later line's sight.
 fn bound_as(code: &str, krate: &str) -> bool {
-    let b: Vec<char> = code.chars().collect();
-    let k: Vec<char> = krate.chars().collect();
-    if b.len() < k.len() {
+    if krate.is_empty() {
         return false;
     }
-    for i in 0..=(b.len() - k.len()) {
-        if b[i..i + k.len()] != k[..] || (i > 0 && is_ident(b[i - 1])) {
-            continue;
+    let b = code.as_bytes();
+    code.match_indices(krate).any(|(i, _)| {
+        if i > 0 && is_ident_b(b[i - 1]) {
+            return false;
         }
-        let tail: String = b[i + k.len()..].iter().collect();
+        let tail = &code[i + krate.len()..];
         let t = tail.trim_start_matches([' ', '\t']);
         if t.len() == tail.len() {
-            continue; // no whitespace after the crate name
+            return false; // no whitespace after the crate name
         }
-        if let Some(after) = t.strip_prefix("as") {
-            if after.starts_with([' ', '\t']) {
-                return true;
-            }
-        }
-    }
-    false
+        t.strip_prefix("as")
+            .is_some_and(|after| after.starts_with([' ', '\t']))
+    })
 }
 
-/// The plane directory spellings a dual-compile has to name: `busbar-llm/`, `busbar-mcp/`, …
-fn names_plane_dir(s: &str) -> bool {
-    PLANE_ALTERNATION
-        .iter()
-        .any(|p| s.contains(&format!("busbar-{p}/")))
+/// The instance directory spellings a dual-compile has to name: `busbar-llm/`, `busbar-plane-mcp/`,
+/// `busbar-transport-http/`, … — every one the tree derives, see [`super::vocab`].
+fn names_plane_dir(s: &str, vocab: &Vocab) -> bool {
+    vocab.dir_needles.iter().any(|d| s.contains(d.as_str()))
 }
 
-/// `#\[[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"]*busbar-(llm|mcp|a2a|voice)\/`
-fn path_attr_include(code: &str) -> bool {
+/// `#\[[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"]*busbar-<instance>\/`
+fn path_attr_include(code: &str, vocab: &Vocab) -> bool {
     let mut rest = code;
     while let Some(i) = rest.find("#[") {
         let t = rest[i + 2..].trim_start_matches([' ', '\t']);
@@ -543,7 +522,7 @@ fn path_attr_include(code: &str) -> bool {
                 let t = t.trim_start_matches([' ', '\t']);
                 if let Some(t) = t.strip_prefix('"') {
                     let quoted = t.split('"').next().unwrap_or("");
-                    if names_plane_dir(quoted) {
+                    if names_plane_dir(quoted, vocab) {
                         return true;
                     }
                 }
@@ -554,9 +533,9 @@ fn path_attr_include(code: &str) -> bool {
     false
 }
 
-/// `include(_str|_bytes)?![[:space:]]*[({[][^)}\]]*"[^"]*busbar-(llm|mcp|a2a|voice)\/` — the macro
+/// `include(_str|_bytes)?![[:space:]]*[({[][^)}\]]*"[^"]*busbar-<instance>\/` — the macro
 /// dual-compile, the spelling that splices a plane's source in with no attribute at all.
-fn macro_include(code: &str) -> bool {
+fn macro_include(code: &str, vocab: &Vocab) -> bool {
     let mut rest = code;
     while let Some(i) = rest.find("include") {
         let mut t = &rest[i + "include".len()..];
@@ -577,7 +556,7 @@ fn macro_include(code: &str) -> bool {
                     }
                     if c == '"' {
                         let quoted = inner[off + 1..].split('"').next().unwrap_or("");
-                        if names_plane_dir(quoted) {
+                        if names_plane_dir(quoted, vocab) {
                             return true;
                         }
                     }

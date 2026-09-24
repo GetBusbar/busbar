@@ -123,20 +123,16 @@ pub fn measure(files: &[SourceFile]) -> Freeze {
     out
 }
 
+/// `(^|[^A-Za-z0-9_])<word>([^A-Za-z0-9_]|$)`. Byte-wise: every word is ASCII, so a match starts
+/// and ends on a character boundary and no byte of a multi-byte character is an identifier byte —
+/// the same answer the per-character scan gave, without a `Vec<char>` per type per line.
 fn whole_word(hay: &str, word: &str) -> bool {
-    let h: Vec<char> = hay.chars().collect();
-    let w: Vec<char> = word.chars().collect();
-    if w.is_empty() || h.len() < w.len() {
+    if word.is_empty() {
         return false;
     }
-    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
-    for i in 0..=(h.len() - w.len()) {
-        if h[i..i + w.len()] == w[..]
-            && (i == 0 || !ident(h[i - 1]))
-            && h.get(i + w.len()).is_none_or(|c| !ident(*c))
-        {
-            return true;
-        }
-    }
-    false
+    let h = hay.as_bytes();
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    hay.match_indices(word).any(|(i, _)| {
+        (i == 0 || !ident(h[i - 1])) && h.get(i + word.len()).is_none_or(|b| !ident(*b))
+    })
 }
