@@ -72,7 +72,7 @@ fn the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session(
         )
     };
 
-    let table = InFlight::new(8, 0);
+    let table = InFlight::new(8);
     let scheduler = Scheduler::default();
 
     // Four times the ceiling, on the stream each transport would use, with no session in hand.

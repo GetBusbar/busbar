@@ -42,7 +42,6 @@ fn enter(key: UnitKey, kernel: &Kernel) -> Enter {
         origin: OriginKind::Client,
         session: None,
         admin_listener: false,
-        provider_of_open_session: false,
         zero_hold_tick: false,
         arrival: arrival_hold(kernel, &TestDoor, principal()),
         now: 0,
@@ -52,7 +51,7 @@ fn enter(key: UnitKey, kernel: &Kernel) -> Enter {
 #[test]
 fn a_duplicate_key_is_refused_and_the_original_entry_is_untouched() {
     let kernel = Kernel::new();
-    let table = InFlight::new(64, 0);
+    let table = InFlight::new(64);
     let key = UnitKey::new(1);
 
     let first = table
@@ -111,7 +110,7 @@ fn two_distinct_keys_both_enter_normally() {
     // The base case the fix must not break: two units with DIFFERENT keys both admit, and the
     // count reflects both.
     let kernel = Kernel::new();
-    let table = InFlight::new(64, 0);
+    let table = InFlight::new(64);
 
     let a = table
         .insert(enter(UnitKey::new(1), &kernel))

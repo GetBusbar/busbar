@@ -344,7 +344,7 @@ impl LlmNode {
             // table, because a hold still has to live somewhere, and it is still the thing the sweep
             // walks — what it is not is a second cap answering a question the listener already
             // answered.
-            inflight: busbar_kernel::inflight::InFlight::new(usize::MAX, 0),
+            inflight: busbar_kernel::inflight::InFlight::new(usize::MAX),
             gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
             canary: busbar_contract::caps::Canary::new(),
             door: crate::root::kernel::AdmissionDoor,
@@ -671,7 +671,6 @@ impl LlmNode {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: hold,
             // THE SAME READING the charge above is pinned from, in the units this table keeps. A

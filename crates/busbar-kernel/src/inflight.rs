@@ -11,12 +11,11 @@
 //! second lose.
 //!
 //! It is also the node's admission control on itself. A unit enters the table before it does
-//! anything, and if the table is full it does not enter. Two details matter and both are money:
-//!
-//! - A share of the table is RESERVED for provider frames of sessions that are already open. A node
-//!   under load should shed new arrivals, not the paying conversation it is already having.
-//! - The heartbeat sweep never occupies a slot at all. A node whose table is full still runs the
-//!   thing that empties it.
+//! anything, and if the table is full it does not enter — whatever its origin. The heartbeat sweep
+//! and the administrative listener never occupy a counted slot: a node whose table is full still
+//! runs the thing that empties it and still answers the operator asking why. (No share of the table
+//! is held back for open sessions: that reserve was never enabled by any caller, and item 280
+//! deleted it rather than leave a money claim nothing honoured.)
 //!
 //! The session table next to it holds what a session is: whether its principal is cached, which
 //! unit owns each direction, how many upstreams it has dialled, and when it last did anything that
@@ -48,20 +47,6 @@ pub use busbar_contract::MAX_SESSION_UPSTREAMS;
 /// How many shards the tables are split across. A power of two so the shard is a mask, not a
 /// division, and large enough that a busy node's units rarely queue behind each other.
 pub const SHARDS: usize = 16;
-
-/// The share of the table held back for provider frames of open sessions, in percent.
-pub const RESERVE_PERCENT: usize = 10;
-
-/// How big the reserve is: a tenth of the table where any claimed transport opens sessions, and
-/// nothing at all where none does — so a node that only ever serves one-shot requests behaves
-/// exactly as it did before the reserve existed.
-pub fn reserve_for(cap: usize, any_session_transport: bool) -> usize {
-    if any_session_transport {
-        cap * RESERVE_PERCENT / 100
-    } else {
-        0
-    }
-}
 
 /// The step a unit has reached, or the fact that something took its place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,9 +359,6 @@ pub struct Enter {
     pub session: Option<SessionId>,
     /// Whether it arrived on the administrative listener, which is outside the cap entirely.
     pub admin_listener: bool,
-    /// Whether it is a provider frame of a session that is already open, which is what the
-    /// reserve is held back for.
-    pub provider_of_open_session: bool,
     /// Whether it is a zero-hold heartbeat or sweep unit, which never occupies a slot.
     pub zero_hold_tick: bool,
     /// The arrival hold minted at the door of the table.
@@ -392,17 +374,15 @@ pub struct InFlight {
     shards: Vec<Mutex<HashMap<UnitKey, Arc<UnitSlot>>>>,
     count: AtomicUsize,
     cap: usize,
-    reserve: usize,
 }
 
 impl InFlight {
-    /// A table bounded at `cap`, with `reserve` of it held back for open sessions.
-    pub fn new(cap: usize, reserve: usize) -> Self {
+    /// A table bounded at `cap`.
+    pub fn new(cap: usize) -> Self {
         InFlight {
             shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
             count: AtomicUsize::new(0),
             cap,
-            reserve: reserve.min(cap),
         }
     }
 
@@ -421,22 +401,10 @@ impl InFlight {
         self.cap
     }
 
-    /// The reserve it was built with.
-    pub fn reserve(&self) -> usize {
-        self.reserve
-    }
-
-    /// The ceiling this unit is measured against: the whole table for a provider frame of a session
-    /// that is already open and for the exempt origins, the table less the reserve for everything
-    /// else.
+    /// The ceiling this unit is measured against: none for the exempt origins, the whole table for
+    /// everything else.
     fn ceiling(&self, request: &Enter) -> Option<usize> {
-        if request.admin_listener || request.zero_hold_tick {
-            None
-        } else if request.provider_of_open_session {
-            Some(self.cap)
-        } else {
-            Some(self.cap - self.reserve)
-        }
+        (!request.admin_listener && !request.zero_hold_tick).then_some(self.cap)
     }
 
     /// Would this unit fit right now?

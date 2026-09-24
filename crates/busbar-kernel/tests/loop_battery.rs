@@ -399,7 +399,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
         ..TestUnits::default()
     };
     // The child enters the table like every other unit, so its cell and its leases are its slot's.
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let child_slot = table
         .insert(client(1))
         .expect("the empty table takes the child");
@@ -596,7 +596,7 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
 
     // A table with room for exactly one unit, so the slot this unit occupies IS the node's in-flight
     // ceiling: a second arrival is refused while it is held and admitted the moment it is not.
-    let table = InFlight::new(1, 0);
+    let table = InFlight::new(1);
     let key = UnitKey::new(11);
     let slot = table
         .insert(Enter {
@@ -604,7 +604,6 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
             now: 0,
@@ -724,7 +723,7 @@ fn the_door_draws_the_in_flight_lease_and_the_end_gives_it_back() {
         units: &units,
         dropped: &dropped,
     };
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let slot = table
         .insert(client(21))
         .map_err(|_| ())
@@ -793,7 +792,7 @@ fn two_capped_groups_are_two_leases_while_the_unit_flies_and_none_after() {
         units: &units,
         dropped: &dropped,
     };
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let slot = table
         .insert(client(31))
         .map_err(|_| ())
@@ -958,7 +957,7 @@ fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
         units: &units,
         dropped: &dropped,
     };
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let first = table
         .insert(client(51))
         .map_err(|_| ())
@@ -1061,7 +1060,6 @@ fn client(key: u64) -> Enter {
         origin: OriginKind::Client,
         session: None,
         admin_listener: false,
-        provider_of_open_session: false,
         zero_hold_tick: false,
         arrival: arrival_hold(&Kernel::new(), &TestDoor, principal()),
         now: 0,

@@ -12,7 +12,7 @@ mod common;
 use busbar_contract::caps::{Canary, OriginKind, PostingFlags, ReasonCode, StepName};
 use busbar_kernel::grammar::DeepestPointer;
 use busbar_kernel::inflight::{
-    arrival_hold, cap_refusal_step, reserve_for, Binding, Enter, InFlight, Progression, Sessions,
+    arrival_hold, cap_refusal_step, Binding, Enter, InFlight, Progression, Sessions,
 };
 use busbar_kernel::pump::{
     BodySpool, Direction, Dispatch, Emission, EmissionClock, NestedPool, Scheduler, Shape,
@@ -28,55 +28,47 @@ fn enter(kernel: &Kernel, key: u64, origin: OriginKind) -> Enter {
         origin,
         session: None,
         admin_listener: false,
-        provider_of_open_session: false,
         zero_hold_tick: false,
         arrival: arrival_hold(kernel, &TestDoor, principal()),
         now: 0,
     }
 }
 
+/// NO SLOT IS HELD BACK (item 280). The table used to carry a "reserve" for provider frames of
+/// open sessions, but no caller ever built one or marked a frame as belonging to an open session,
+/// so it was deleted. What replaces it: the cap is the cap for every counted unit — a full table
+/// refuses the next client arrival AND a provider frame alike, at the step each was constructed
+/// at, and every one of the `cap` slots is available to the first arrivals.
 #[test]
-fn the_reserve_is_a_tenth_of_the_table_and_only_where_sessions_exist() {
-    assert_eq!(reserve_for(100, true), 10);
-    assert_eq!(reserve_for(100, false), 0);
-    // A tenth OF THE TABLE, and not the number ten: one table size cannot tell the two apart, and a
-    // constant reserve on a large node is a reserve of a tenth of a percent.
-    assert_eq!(reserve_for(1_000, true), 100);
-    assert_eq!(reserve_for(40, true), 4);
-    assert_eq!(reserve_for(1_000, false), 0);
-    // Below ten slots a tenth rounds down to nothing, which is the whole table serving arrivals.
-    assert_eq!(reserve_for(5, true), 0);
-    assert_eq!(reserve_for(0, true), 0);
-}
-
-#[test]
-fn a_full_table_sheds_new_arrivals_before_it_sheds_an_open_session() {
+fn a_full_table_refuses_every_counted_unit_at_the_cap_and_holds_no_slot_back() {
     let kernel = Kernel::new();
-    let table = InFlight::new(10, reserve_for(10, true));
-    // Nine client units fill the table up to the reserve.
-    for key in 0..9 {
+    let table = InFlight::new(10);
+    // All ten slots go to client arrivals: nothing is held back.
+    for key in 0..10 {
         table
             .insert(enter(&kernel, key, OriginKind::Client))
             .map(|_| ())
-            .expect("under the ceiling");
+            .expect("under the cap");
     }
-    // The tenth client unit is refused: the last slot is not for it.
     let refused = table
-        .insert(enter(&kernel, 9, OriginKind::Client))
-        .expect_err("the reserve is held back");
+        .insert(enter(&kernel, 10, OriginKind::Client))
+        .expect_err("the table is full");
     assert_eq!(refused.reason, ReasonCode::InFlightCap);
     assert_eq!(refused.step, StepName::Arrival);
 
-    // A provider frame of a session that is already open takes the reserved slot.
-    let mut push = enter(&kernel, 10, OriginKind::Provider);
-    push.provider_of_open_session = true;
-    assert!(table.insert(push).is_ok());
+    // A provider frame is refused at the same cap, stamped at Decode.
+    let refused = table
+        .insert(enter(&kernel, 11, OriginKind::Provider))
+        .expect_err("a provider frame gets no reserved slot");
+    assert_eq!(refused.reason, ReasonCode::InFlightCap);
+    assert_eq!(refused.step, StepName::Decode);
+    assert_eq!(table.len(), 10, "the refusals took no slot");
 }
 
 #[test]
 fn the_administrative_listener_and_the_heartbeat_are_outside_the_cap() {
     let kernel = Kernel::new();
-    let table = InFlight::new(2, 0);
+    let table = InFlight::new(2);
     for key in 0..2 {
         table
             .insert(enter(&kernel, key, OriginKind::Client))
@@ -115,7 +107,7 @@ fn an_in_flight_cap_refusal_is_stamped_at_the_step_the_unit_was_constructed_at()
 #[test]
 fn an_unsolicited_push_refused_at_the_cap_still_posts_the_floor_line() {
     let kernel = Kernel::new();
-    let table = InFlight::new(1, 0);
+    let table = InFlight::new(1);
     table
         .insert(enter(&kernel, 0, OriginKind::Client))
         .map(|_| ())
@@ -148,7 +140,7 @@ fn the_cap_holds_when_everything_arrives_at_once() {
     // four admissions, however the threads interleave.
     let kernel = Kernel::new();
     for _ in 0..200 {
-        let table = std::sync::Arc::new(InFlight::new(4, 0));
+        let table = std::sync::Arc::new(InFlight::new(4));
         let mut racers = Vec::new();
         for key in 0..16u64 {
             let table = std::sync::Arc::clone(&table);
@@ -193,7 +185,7 @@ fn a_session_pairs_no_ninth_upstream_however_the_dials_interleave() {
 #[test]
 fn the_table_empties_as_units_leave() {
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     for key in 0..4 {
         table
             .insert(enter(&kernel, key, OriginKind::Client))
@@ -211,7 +203,7 @@ fn the_table_empties_as_units_leave() {
 #[test]
 fn an_interrupt_is_one_compare_and_set_and_only_before_the_meter() {
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let slot = table
         .insert(enter(&kernel, 1, OriginKind::Client))
         .map_err(|_| ())
@@ -246,7 +238,7 @@ fn a_step_advancing_can_never_undo_the_interrupt() {
     // direction under two holds.
     let kernel = Kernel::new();
     for _ in 0..2_000 {
-        let table = InFlight::new(4, 0);
+        let table = InFlight::new(4);
         let slot = table
             .insert(enter(&kernel, 1, OriginKind::Client))
             .map_err(|_| ())
@@ -275,7 +267,7 @@ fn a_step_advancing_can_never_undo_the_interrupt() {
 #[test]
 fn a_second_open_on_an_occupied_direction_is_refused_and_the_session_stays_up() {
     let kernel = Kernel::new();
-    let table = InFlight::new(8, 0);
+    let table = InFlight::new(8);
     let sessions = Sessions::new(4);
     let session = sessions
         .open(kernel.session_id(1), Binding::Bound, 0)
@@ -321,7 +313,7 @@ fn a_peer_that_only_ever_asks_for_more_is_refused_at_the_declared_ceiling() {
     // anything yet" forever holds a session slot for as long as it cares to, so the ceiling has to
     // be a refusal rather than a number in a doc comment.
     let kernel = Kernel::new();
-    let table = InFlight::new(8, 0);
+    let table = InFlight::new(8);
     let sessions = Sessions::new(4);
     let session = sessions
         .open(kernel.session_id(11), Binding::Bound, 0)
@@ -366,7 +358,7 @@ fn any_other_shape_forgives_the_frames_that_asked_for_more() {
     // The ceiling counts CONSECUTIVE asks. A peer that is slow but making progress must never walk
     // into the refusal, however long the session runs.
     let kernel = Kernel::new();
-    let table = InFlight::new(8, 0);
+    let table = InFlight::new(8);
     let sessions = Sessions::new(4);
     let session = sessions
         .open(kernel.session_id(12), Binding::Bound, 0)
@@ -410,7 +402,7 @@ fn any_other_shape_forgives_the_frames_that_asked_for_more() {
 #[test]
 fn a_run_of_asks_ends_with_the_session_that_made_them() {
     let kernel = Kernel::new();
-    let table = InFlight::new(8, 0);
+    let table = InFlight::new(8);
     let sessions = Sessions::new(4);
     let scheduler = Scheduler::default();
     let id = kernel.session_id(13);
@@ -453,7 +445,7 @@ fn a_run_of_asks_ends_with_the_session_that_made_them() {
 #[test]
 fn a_superseding_open_reaches_the_compare_and_set_even_on_an_occupied_direction() {
     let kernel = Kernel::new();
-    let table = InFlight::new(8, 0);
+    let table = InFlight::new(8);
     let sessions = Sessions::new(4);
     let session = sessions
         .open(kernel.session_id(2), Binding::Bound, 0)
@@ -496,7 +488,7 @@ fn a_superseding_open_reaches_the_compare_and_set_even_on_an_occupied_direction(
 #[test]
 fn a_supersede_frees_only_the_direction_the_superseded_unit_was_holding() {
     let kernel = Kernel::new();
-    let table = InFlight::new(8, 0);
+    let table = InFlight::new(8);
     let sessions = Sessions::new(4);
     let session = sessions
         .open(kernel.session_id(3), Binding::Bound, 0)
@@ -547,7 +539,7 @@ fn opens_and_ends(scheduler: &Scheduler, table: &InFlight) -> bool {
 
 #[test]
 fn one_shots_run_under_a_small_fixed_concurrency() {
-    let table = InFlight::new(64, 0);
+    let table = InFlight::new(64);
     let scheduler = Scheduler::new(2);
     assert_eq!(scheduler.one_shots(), 0, "nothing has started yet");
     let first = scheduler.dispatch(
@@ -619,7 +611,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
 /// the next K must open, and the one after those, while they are all still running, is refused.
 #[test]
 fn a_one_shot_that_ends_gives_its_place_back_and_one_past_the_concurrency_is_refused() {
-    let table = InFlight::new(64, 0);
+    let table = InFlight::new(64);
     let scheduler = Scheduler::new(2);
     for round in 0..3 {
         for _ in 0..2 {
@@ -688,7 +680,7 @@ fn k_parents_blocked_on_children_wait_rather_than_deadlock() {
 #[test]
 fn a_discarded_frame_changes_no_state() {
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let sessions = Sessions::new(4);
     let session = sessions
         .open(kernel.session_id(3), Binding::Unbound, 0)
@@ -992,7 +984,7 @@ fn a_forged_datagram_is_discarded_and_the_session_stands() {
 
     // And the frame itself is dropped without touching the table or the session.
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let sessions = Sessions::new(4);
     let session = sessions
         .open(kernel.session_id(7), Binding::Unbound, 0)

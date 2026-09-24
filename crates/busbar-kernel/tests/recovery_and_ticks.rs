@@ -169,7 +169,7 @@ fn a_checksum_failure_in_the_middle_is_not_the_answer_a_cut_off_tail_gets() {
 #[test]
 fn a_lost_task_is_settled_within_one_tick() {
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let canary = Canary::new();
     let slot = table
         .insert(Enter {
@@ -177,7 +177,6 @@ fn a_lost_task_is_settled_within_one_tick() {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
             now: 0,
@@ -245,7 +244,7 @@ fn a_lost_task_is_settled_within_one_tick() {
 #[test]
 fn the_sweep_gives_back_the_lease_the_door_drew_on_a_lost_task() {
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let canary = Canary::new();
     let units = common::TestUnits::passing();
     let dropped = std::sync::atomic::AtomicBool::new(false);
@@ -261,7 +260,6 @@ fn the_sweep_gives_back_the_lease_the_door_drew_on_a_lost_task() {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
             now: 0,
@@ -329,7 +327,7 @@ fn the_sweep_gives_back_the_lease_the_door_drew_on_a_lost_task() {
 #[test]
 fn the_sweep_gives_back_the_group_leases_of_a_lost_task_too() {
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let canary = Canary::new();
     let units = common::TestUnits::in_groups(&["tenant", "team"]);
     let dropped = std::sync::atomic::AtomicBool::new(false);
@@ -347,7 +345,6 @@ fn the_sweep_gives_back_the_group_leases_of_a_lost_task_too() {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             now: 0,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
@@ -406,7 +403,7 @@ fn the_sweep_gives_back_the_group_leases_of_a_lost_task_too() {
 #[test]
 fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let canary = Canary::new();
     let group = common::CappedGroup::at(1);
     let units = common::TestUnits::behind(&group);
@@ -423,7 +420,6 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             now: 0,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
@@ -509,7 +505,7 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
 #[test]
 fn a_sweep_racing_a_running_unit_reclaims_nothing_of_it() {
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let canary = Canary::new();
     let slot = table
         .insert(Enter {
@@ -517,7 +513,6 @@ fn a_sweep_racing_a_running_unit_reclaims_nothing_of_it() {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
             now: 0,
@@ -566,7 +561,7 @@ fn a_sweep_racing_a_running_unit_reclaims_nothing_of_it() {
 #[test]
 fn a_unit_that_just_entered_is_never_already_stalled() {
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     // A node that has been up for a day, and a unit arriving on it right now.
     let now = 86_400_000;
     let slot = table
@@ -575,7 +570,6 @@ fn a_unit_that_just_entered_is_never_already_stalled() {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
             now,
@@ -601,14 +595,13 @@ fn a_unit_that_just_entered_is_never_already_stalled() {
 #[test]
 fn a_slow_unit_is_not_a_lost_one() {
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let slot = table
         .insert(Enter {
             key: UnitKey::new(2),
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
             now: 0,
@@ -660,7 +653,7 @@ fn a_slow_unit_is_not_a_lost_one() {
 #[test]
 fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
     let kernel = Kernel::new();
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let canary = Canary::new();
     let slot = table
         .insert(Enter {
@@ -668,7 +661,6 @@ fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
             now: 0,

@@ -66,7 +66,7 @@ fn one_unit(went_away: bool) -> Figures {
         },
         ..TestUnits::default()
     };
-    let table = InFlight::new(4, 0);
+    let table = InFlight::new(4);
     let key = UnitKey::new(1);
     let slot = table
         .insert(Enter {
@@ -74,7 +74,6 @@ fn one_unit(went_away: bool) -> Figures {
             origin: OriginKind::Client,
             session: None,
             admin_listener: false,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
             now: 0,

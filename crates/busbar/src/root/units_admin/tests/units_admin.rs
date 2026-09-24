@@ -1178,7 +1178,6 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
         origin: OriginKind::Client,
         session: None,
         admin_listener: false,
-        provider_of_open_session: false,
         zero_hold_tick: false,
         now: 0,
         arrival: arrival_hold(

@@ -268,7 +268,7 @@ fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arr
     let seal = KernelSeal::acquire_for_kernel();
 
     // One slot, none held back: a table this plane can fill and then be measured against.
-    let table = InFlight::new(1, 0);
+    let table = InFlight::new(1);
     // What an a2a unit asks the table for. The data listener is the whole point — an a2a unit
     // that claimed the admin listener's exemption would be outside the cap the deployment set.
     let entering = |key: u64| Enter {
@@ -276,7 +276,6 @@ fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arr
         origin: OriginKind::Client,
         session: None,
         admin_listener: false,
-        provider_of_open_session: false,
         zero_hold_tick: false,
         now: 0,
         arrival: arrival_hold(&kernel, &door, PrincipalId::new("caller")),

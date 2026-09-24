@@ -302,7 +302,7 @@ pub async fn run_gauntlet_via_kernel(
     let kernel = crate::root::kernel::new_kernel();
     let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
     let canary = busbar_contract::caps::Canary::new();
-    let inflight = busbar_kernel::inflight::InFlight::new(usize::MAX, 0);
+    let inflight = busbar_kernel::inflight::InFlight::new(usize::MAX);
     let meter = AccrualMeter::new();
     let table = PlaneInFlight::new();
 
@@ -337,7 +337,6 @@ pub async fn run_gauntlet_via_kernel(
         origin: OriginKind::Client,
         session: None,
         admin_listener: false,
-        provider_of_open_session: false,
         zero_hold_tick: false,
         arrival,
         now: busbar_substrate_values::store::now_ms(),
@@ -404,7 +403,7 @@ pub fn open_gauntlet_via_kernel(
     let kernel = crate::root::kernel::new_kernel();
     let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
     let canary = busbar_contract::caps::Canary::new();
-    let inflight = busbar_kernel::inflight::InFlight::new(usize::MAX, 0);
+    let inflight = busbar_kernel::inflight::InFlight::new(usize::MAX);
     let meter = AccrualMeter::new();
     let table = PlaneInFlight::new();
 
@@ -437,7 +436,6 @@ pub fn open_gauntlet_via_kernel(
         origin: OriginKind::Client,
         session: None,
         admin_listener: false,
-        provider_of_open_session: false,
         zero_hold_tick: false,
         arrival,
         now: busbar_substrate_values::store::now_ms(),

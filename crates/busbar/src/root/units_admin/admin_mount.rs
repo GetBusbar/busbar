@@ -41,7 +41,7 @@ impl AdminNode {
             // so, and for the reason the exemption exists: the surface an operator reaches to find
             // out why the node is shedding has to answer while it is shedding. The table is still
             // real, because a hold still has to live somewhere.
-            inflight: busbar_kernel::inflight::InFlight::new(0, 0),
+            inflight: busbar_kernel::inflight::InFlight::new(0),
             gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
             canary: busbar_contract::caps::Canary::new(),
             next_key: std::sync::atomic::AtomicU64::new(1),
@@ -96,7 +96,6 @@ impl AdminNode {
             origin: busbar_contract::caps::OriginKind::Client,
             session: None,
             admin_listener: true,
-            provider_of_open_session: false,
             zero_hold_tick: false,
             arrival,
             now: arrived_at,
