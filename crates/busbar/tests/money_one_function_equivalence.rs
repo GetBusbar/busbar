@@ -417,8 +417,11 @@ fn d2_an_open_meter_class_bills_as_nothing_on_the_enforcement_side() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// D3 — TWO COPIES OF `reserved_nanos`, ONE SATURATING AND ONE NOT. The door pins at the top; the
-//      admin read and the metrics gauge wrap or panic on the same numbers.
+// D3 — TWO COPIES OF `reserved_nanos`, NOW ONE FOLD. This pair was red-first: the kernel copy
+//      summed with a plain `+` and wrapped or panicked where the door pinned at the top. Commit
+//      8f083cc38 made both copies delegate to `busbar_kernel_ledger::cost::nanos_sum`, which
+//      saturates, so the pair is now an EQUIVALENCE the consolidation must preserve. (The test
+//      name is kept because `docs/design/1.6.0-test-vacuity.md` cites it.)
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -457,9 +460,9 @@ fn d3_the_two_copies_of_reserved_nanos_disagree_at_the_top_of_the_range() {
         budget_nanos,
     );
     match &kernel_result {
-        Ok(v) => row("kernel  reserved_nanos (plain `+`)      [nano-units]", v),
+        Ok(v) => row("kernel  reserved_nanos (saturating)     [nano-units]", v),
         Err(_) => row(
-            "kernel  reserved_nanos (plain `+`)      ",
+            "kernel  reserved_nanos                  ",
             "PANIC (overflow)",
         ),
     }
@@ -469,14 +472,62 @@ fn d3_the_two_copies_of_reserved_nanos_disagree_at_the_top_of_the_range() {
         u128::MAX,
         "the door pins at the top and blocks"
     );
-    assert!(
-        kernel_result.is_err(),
-        "the kernel copy has no saturation: `acc + (n as u128) * (rate as u128)` at \
-         crates/busbar-kernel/src/cost.rs:178. In a debug build it PANICS — which on the admin \
-         read path is a 500 on `GET /groups/{{g}}/usage`, `GET /keys/{{id}}/usage` and every \
-         `/metrics` scrape. In a release build (this workspace sets no `overflow-checks`) it WRAPS, \
-         and a wrapped total lands back near zero: an over-the-top ledger deriving as nearly free."
+    let kernel_nanos = match kernel_result {
+        Ok(v) => v,
+        Err(_) => panic!(
+            "the kernel copy of `reserved_nanos` PANICKED on overflow. It must saturate exactly as \
+             the budget copy does (both delegate to `busbar_kernel_ledger::cost::nanos_sum`). A \
+             panic here is a 500 on `GET /groups/{{g}}/usage`, `GET /keys/{{id}}/usage` and every \
+             `/metrics` scrape; in a release build the same sum WRAPS and an over-the-top ledger \
+             derives as nearly free."
+        ),
+    };
+    assert_eq!(
+        kernel_nanos, budget_nanos,
+        "the kernel copy and the budget copy of `reserved_nanos` must answer the same figure at the \
+         top of the range: the door and the admin/metrics reads price one ledger with one fold"
     );
+    assert_eq!(
+        kernel_nanos,
+        u128::MAX,
+        "the kernel copy pins at the top too — a wrapped total would read an astronomical ledger \
+         as nearly free"
+    );
+
+    // Below the ceiling the two copies are the same exact integer arithmetic.
+    let small = enforcement_units(&[
+        (INPUT, 1_000),
+        (OUTPUT, 100),
+        (CACHE_READ, 10),
+        (CACHE_WRITE, 1),
+    ]);
+    let small_rates = [2.5f64, 10.0, 1.25, 3.75];
+    let budget_small = busbar_kernel_budget::RateNanos::from_micros_per_token(
+        small_rates[0],
+        small_rates[1],
+        small_rates[2],
+        small_rates[3],
+    )
+    .reserved_nanos(&small);
+    let kernel_small =
+        busbar_kernel::cost::RateNanos::from_raw(&busbar_substrate_values::billing::RawTierRates {
+            input: small_rates[0],
+            output: small_rates[1],
+            cache_read: small_rates[2],
+            cache_write: small_rates[3],
+        })
+        .reserved_nanos(&small);
+    row(
+        "budget  reserved_nanos (ordinary)       [nano-units]",
+        budget_small,
+    );
+    row(
+        "kernel  reserved_nanos (ordinary)       [nano-units]",
+        kernel_small,
+    );
+    // 1000×2.5 + 100×10 + 10×1.25 + 1×3.75 = 3516.25 micro-units = 3_516_250 nano-units.
+    assert_eq!(budget_small, 3_516_250);
+    assert_eq!(kernel_small, budget_small);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
