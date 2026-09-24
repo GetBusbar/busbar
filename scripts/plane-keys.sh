@@ -12,8 +12,9 @@
 # arriving as a skeleton crate is exactly that day. There is one list of plane keys and it lives
 # here; every gate that enumerates the planes SOURCES this file instead of restating the set.
 #
-# This is the shell twin of scripts/plane-roots.sh (which answers WHERE a plane lives); this answers
-# WHICH planes exist. Between them, no gate hard-codes the plane set or its locations.
+# This answers WHICH planes exist. WHERE a plane lives is answered by `xtask/src/planes.rs`
+# (`PlaneRoots`), whose tests in `xtask/tests/infra.rs` carry the zero/ambiguous/missing refusals;
+# its old shell twin scripts/plane-roots.sh was sourced by nothing and is deleted (item 549).
 #
 # CONTRACT. Sourcing this file exports `PLANE_KEYS` (all plane keys, canonical order) and
 # `PLANE_KEYS_PROTOCOL` (every key EXCEPT `llm` — busbar-llm owns the LLM dialect names and is never
