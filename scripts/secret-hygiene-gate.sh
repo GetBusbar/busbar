@@ -851,8 +851,16 @@ check_scan_floor() {
 }
 
 # Production .rs under the roots, minus test files.
+#
+# THE TEST-FILE SHAPE (item 506, twin of the plane meters' fix). It used to be `_tests?\.rs$` — a
+# literal underscore before `test` — so a module-style `tests.rs` (`#[cfg(test)] mod tests;` beside
+# its parent) was scanned as PRODUCTION code, and its fixtures counted as secret-hygiene debt. The
+# separator is now `/` or `_`: `foo/tests.rs`, `foo/test.rs` and `foo_tests.rs` are test code;
+# `contests.rs` is not. Every `tests.rs`/`test.rs` under crates/ outside a `/tests/` dir was checked
+# to be declared behind `#[cfg(test)]`.
+TEST_FILE_RE='(^|[/_])tests?\.rs$'
 prod_files() {
-  find "$@" -name '*.rs' 2>/dev/null | grep -v '/tests/' | grep -Ev '_tests?\.rs$' | grep -v '^$' | sort
+  find "$@" -name '*.rs' 2>/dev/null | grep -v '/tests/' | grep -Ev "$TEST_FILE_RE" | grep -v '^$' | sort
 }
 
 # ── ALLOWLIST LIVENESS — a row that excuses nothing must be LOUD, not invisible ────────────────────
@@ -1391,11 +1399,25 @@ LEXG
     fail=1; note "GREEN floor FAILED: the floor fired on a live, clean root — it over-fires"
   fi
 
+  # ── TEST-FILE SHAPE (item 506): a module-style tests.rs is test code, not production. ──
+  mkdir -p "$tmp/shape/src/sub"
+  printf 'pub struct Clean { pub n: usize }\n' >"$tmp/shape/src/lib.rs"
+  printf 'pub struct Clean { pub n: usize }\n' >"$tmp/shape/src/contests.rs"
+  printf 'pub struct Fixture { pub api_key: String }\n' >"$tmp/shape/src/sub/tests.rs"
+  printf 'pub struct Fixture { pub api_key: String }\n' >"$tmp/shape/src/test.rs"
+  printf 'pub struct Fixture { pub api_key: String }\n' >"$tmp/shape/src/sub/wire_tests.rs"
+  local shape; shape="$(prod_files "$tmp/shape" | sed "s|^$tmp/shape/||" | tr '\n' ' ')"
+  if [ "$shape" = "src/contests.rs src/lib.rs " ]; then
+    note "RED/GREEN shape: tests.rs, test.rs and *_tests.rs are excluded; lib.rs and contests.rs are scanned"
+  else
+    fail=1; note "SHAPE FAILED: production listing was \`$shape\` (want: src/contests.rs src/lib.rs)"
+  fi
+
   if [ "$fail" -ne 0 ]; then
     red "secret-hygiene-gate SELF-TEST FAILED — the scanner would let a bare secret / a logged secret / a secret in a returned message through"
     return 1
   fi
-  grn "secret-hygiene-gate self-test: ALL GREEN (Check-1 field RED/GREEN + Check-2 sink RED/GREEN + Check-3 message RED/GREEN incl. BOTH real leaks pre-fix and post-fix + lexer RED/GREEN + allowlist-liveness RED/GREEN + scan-floor RED/GREEN proven)"
+  grn "secret-hygiene-gate self-test: ALL GREEN (Check-1 field RED/GREEN + Check-2 sink RED/GREEN + Check-3 message RED/GREEN incl. BOTH real leaks pre-fix and post-fix + lexer RED/GREEN + allowlist-liveness RED/GREEN + scan-floor RED/GREEN + test-file shape proven)"
   return 0
 }
 
