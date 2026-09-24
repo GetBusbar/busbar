@@ -37,6 +37,7 @@
 #   siblings              registry-driven sibling checkouts (plugins.yaml + busbar-admin).
 #   segment ID            run exactly one segment by id (delegates to qa-segments.sh).
 #   loader                the loader-mechanism tests against the real sibling-built sqlite plugin.
+#   selftest              prove the sibling policy on fixtures (no network, no real cargo build).
 #
 # Every subcommand is runnable locally, which is the other half of the point: the gate is no longer
 # a thing that only exists inside GitHub's YAML.
@@ -64,6 +65,20 @@ export BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS="${BUSBAR_RELEASE_CHECK_REQUIRE_SIB
 log()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
 die()  { printf '\033[31mqa-gate-run: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# Where the siblings live: next to this checkout. Overridable only so `selftest` can point the
+# sibling policy at fixtures; CI never sets it. Read at CALL time, so a per-call override reaches it.
+sibling_root() { printf '%s' "${QA_GATE_SIBLING_ROOT:-..}"; }
+
+# A sibling that is missing, unbuildable or not what the gate asked for is a HOLE in the soak's
+# evidence, so it obeys the policy above: fatal under BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS=1 (this
+# script's default), a loud ::warning:: only when a caller has explicitly turned that off. A
+# ::warning:: alone never fails a job, which is how the loader leg used to go green without the
+# plugin it exists to load (item 520).
+sibling_gap() {
+  if [ "${BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS:-1}" = "1" ]; then die "$*"; fi
+  echo "::warning::$*"
+}
 
 # Echo `-p <crate>` for every workspace member that builds a cdylib, DERIVED from cargo metadata.
 #
@@ -444,15 +459,23 @@ cmd_segment() {
 # constraint here, wall clock only the objective, so they get their own job. It is cheap: it
 # hydrates the same build-once artifact, so the only real work is the sibling sqlite cdylib and the
 # scoped loader test.
+# The REAL sqlite cdylib the loader tests dlopen, built from THIS run's sibling checkout. Missing, or
+# a build that failed (leaving whatever an EARLIER build put in its target/), is a sibling gap: the
+# loader tests would skip (off CI) or dlopen a stale artifact, and the leg would still report green.
+loader_sibling_cdylib() {
+  local root; root="$(sibling_root)"
+  if [ ! -d "${root}/store-sqlite" ]; then
+    sibling_gap "no ${root}/store-sqlite sibling checkout - the loader leg cannot load the real sqlite plugin it exists to prove"
+    return 0
+  fi
+  # package-selector: busbar-store-sqlite-plugin -- scripts/qa-gate-run.sh -- store-sqlite left this tree and lives in a sibling checkout; this `cd ../store-sqlite` resolves the selector against THAT workspace, not this one
+  (cd "${root}/store-sqlite" && cargo build --release -p busbar-store-sqlite-plugin) || \
+    sibling_gap "the store-sqlite sibling cdylib build FAILED - any cdylib in its target/ is from an earlier build, not this run's"
+}
+
 cmd_loader() {
   log "build the sibling store-sqlite-plugin cdylib (the loader tests dlopen the REAL one)"
-  if [ -d ../store-sqlite ]; then
-    # package-selector: busbar-store-sqlite-plugin -- scripts/qa-gate-run.sh -- store-sqlite left this tree and lives in a sibling checkout; this `cd ../store-sqlite` resolves the selector against THAT workspace, not this one
-    (cd ../store-sqlite && cargo build --release -p busbar-store-sqlite-plugin) || \
-      echo "::warning::store-sqlite sibling cdylib build failed"
-  else
-    echo "::warning::no ../store-sqlite sibling checkout - loader tests will fall back"
-  fi
+  loader_sibling_cdylib
 
   # Hydration should already have supplied these, but build them explicitly anyway: these crates
   # hard-panic via their own path-discovery helpers under CI if they are ever missing, so a future
@@ -470,7 +493,43 @@ cmd_loader() {
   DEV_GATE=1 cargo test --release -p busbar-plugin-loader
 }
 
+# ── selftest: the sibling policy, proven on fixtures ─────────────────────────────────────────────
+# Every case runs in a SUBSHELL, because `die` exits and a selftest that cannot observe its own
+# REDs proves nothing. `cargo` is a stub on PATH, so nothing is built and nothing is fetched.
+cmd_selftest() {
+  local tmp fails=0 ran=0
+  tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
+  mkdir -p "$tmp/bin"
+  st() { # name, want-rc, command...
+    local nm="$1" want="$2" got=0; shift 2; ran=$((ran + 1))
+    ( "$@" ) >"$tmp/out" 2>&1 || got=$?
+    if [ "$got" = "$want" ]; then
+      printf '  ok   %s (rc %s)\n' "$nm" "$got"
+    else printf '  FAIL %s (rc %s, wanted %s)\n' "$nm" "$got" "$want"; sed 's/^/       /' "$tmp/out"; fails=$((fails + 1)); fi
+  }
+  cargo_stub() { printf '#!/usr/bin/env bash\nexit %s\n' "$1" >"$tmp/bin/cargo"; chmod +x "$tmp/bin/cargo"; }
+  in_root() { # root, require, fn...
+    local root="$1" req="$2"; shift 2
+    PATH="$tmp/bin:$PATH" QA_GATE_SIBLING_ROOT="$root" BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS="$req" "$@"
+  }
+  echo "qa-gate-run selftest"
+
+  # ITEM 520: the loader leg's sibling cdylib. Missing or unbuildable is a hole in the soak.
+  mkdir -p "$tmp/none" "$tmp/have/store-sqlite"
+  cargo_stub 0
+  st "loader: no ../store-sqlite on the soak is RED"          1 in_root "$tmp/none" 1 loader_sibling_cdylib
+  st "loader: a sibling that builds is green"                 0 in_root "$tmp/have" 1 loader_sibling_cdylib
+  cargo_stub 101
+  st "loader: a sibling whose cdylib build FAILS is RED"      1 in_root "$tmp/have" 1 loader_sibling_cdylib
+  st "loader: off the soak (REQUIRE_SIBLINGS=0) it only warns" 0 in_root "$tmp/none" 0 loader_sibling_cdylib
+
+  [ "$ran" -ge 4 ] || { echo "qa-gate-run selftest: only $ran case(s) ran"; return 1; }
+  [ "$fails" = 0 ] || { echo "qa-gate-run selftest: $fails FAILED"; return 1; }
+  echo "qa-gate-run selftest: all $ran case(s) green"
+}
+
 case "${1:-}" in
+  selftest) cmd_selftest ;;
   matrix)   cmd_matrix ;;
   fast)     cmd_fast ;;
   build)    shift; cmd_build "$@" ;;
