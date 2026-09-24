@@ -455,7 +455,11 @@ impl LlmNode {
     /// will settle it with ([`settle`]), so the posting that ends the unit closes this record on the
     /// chain. A journal that will not take it is not a refusal: the log retains the record and
     /// offers it again, and the previous release served through a store hiccup.
-    fn open_on_book(&self, principal: &PrincipalId, arrived: Arrived, reserved: u64) {
+    ///
+    /// The record carries the COUNTS the reservation was sized for, never a figure (#71): the door
+    /// on this plane reserves nothing (its arrival hold opens at zero and no step sizes it), so the
+    /// counts are none and the book derives a reservation of nothing from them.
+    fn open_on_book(&self, principal: &PrincipalId, arrived: Arrived) {
         let Some(book) = self.book.get() else {
             return;
         };
@@ -475,7 +479,12 @@ impl LlmNode {
             },
         };
         let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-        let _opened = durability.open_hold(&at, principal, reserved);
+        let _opened = durability.open_hold(
+            &at,
+            principal,
+            &crate::root::durability::UnitCounts::default(),
+            arrived.ms(),
+        );
     }
 
     /// THE SWEEP: the second holder of a key to every unit's hold cell, run over the slots the drop
@@ -661,11 +670,6 @@ impl LlmNode {
 
         let hold =
             busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
-        // What this unit reserves, read off the hold it enters the table with. The door on this
-        // plane has its hold opened at ZERO (this file's `Units::admit` row), so the arrival hold's
-        // figure is the unit's reservation for its whole life; a door that reserved would be the
-        // place to journal the difference.
-        let reserved = hold.reserved();
         let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
             origin: OriginKind::Client,
@@ -692,7 +696,7 @@ impl LlmNode {
                 // THE HOLD, ON THE JOURNAL, before the unit runs (item 127): what this unit holds
                 // is written down now, so a node killed mid-unit leaves a record the next boot
                 // recovers and posts rather than a hold that only ever existed in memory.
-                self.open_on_book(&principal, arrived, reserved);
+                self.open_on_book(&principal, arrived);
                 let mut occupied = Occupied {
                     node: self,
                     slot: Arc::clone(&slot),
@@ -1110,12 +1114,18 @@ fn post_late(
                 "late accrual refused at settlement: the card cannot price these counts; \
                  the counts row is posted with no figure"
             );
-            let _row = book.post_counts(&at, principal, &counts, Some(format!("{refusal:?}")));
+            let _row = book.post_counts(
+                &at,
+                principal,
+                &counts,
+                arrived.ms(),
+                Some(format!("{refusal:?}")),
+            );
             return;
         }
     };
     if amount == 0 {
-        let _row = book.post_counts(&at, principal, &counts, None);
+        let _row = book.post_counts(&at, principal, &counts, arrived.ms(), None);
         return;
     }
     let accrual = busbar_contract::caps::HoldAccrual::after_terminal(
@@ -1126,7 +1136,7 @@ fn post_late(
     let posted = busbar_contract::caps::Posted::settle_late(accrual, tokens.ledger);
     // Through the money-book seam, as the terminal exit arm does — the same shared book, the same
     // posting, the lock taken and released behind the seam — with the counts on the record.
-    let _settled = book.settle_counted(&at, posted, &counts);
+    let _settled = book.settle_counted(&at, posted, &counts, arrived.ms());
 }
 
 /// The answer's body, with the late arm riding on it.

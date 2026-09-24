@@ -2456,6 +2456,7 @@ fn post_a_refused_counts_row_on(units: &crate::root::kernel::ProductionUnits, bu
             },
             &PrincipalId::new(bucket),
             &counts,
+            1_700_000_000_000,
             Some("ClassUnpriced(cache_read)".to_string()),
         )
         .expect("the memory-buffered journal takes it");

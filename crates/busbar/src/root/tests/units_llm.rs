@@ -3316,7 +3316,9 @@ fn late_post(
     principal: &str,
     report: &LateReport,
 ) -> crate::root::durability::NodeBook {
-    let node = crate::root::durability::node_book();
+    // The book prices its chain against the same history the arm priced the unit against.
+    let pinned = history.clone();
+    let node = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
     let kernel = busbar_kernel::teller::Kernel::new();
     let (durability, ledger, usage) = (
         kernel.durability_token(),
@@ -3339,18 +3341,15 @@ fn late_post(
 }
 
 /// The unit records the second book's chain holds (settlements and counts rows), read back off the
-/// journal.
+/// journal — each with the figure the book derives from its counts at its epoch (the chain itself
+/// holds no money, #71).
 fn second_book_rows(
     node: &crate::root::durability::NodeBook,
 ) -> Vec<crate::root::durability::Posting> {
     let durability = node.durability.lock().expect("unpoisoned");
     durability
-        .journal
-        .replay()
-        .expect("reads")
-        .expect("verifies")
-        .iter()
-        .filter_map(crate::root::durability::Posting::from_record)
+        .read_back()
+        .into_iter()
         // The overdraft CARRY beside a late settlement repeats its unreserved part and carries no
         // counts; it is the same unit's second record, not a second unit.
         .filter(|p| p.kind != crate::root::durability::PostingKind::Carry)
@@ -3793,7 +3792,8 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     // 2,000 micro-units per search unit and a 3-unit fee, over the serving lane.
     let history = rerank_history_on(RERANK_LANE, 3, Some(2_000_000));
     let node = Node::new();
-    let book = crate::root::durability::node_book();
+    let pinned = history.clone();
+    let book = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
     node.bind_book(Arc::clone(&book.durability));
 
     let arrival = WalkArrival {

@@ -91,9 +91,12 @@
 
 use std::path::{Path, PathBuf};
 
-use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
+use crate::root::kernel::PinnedHistory;
+
+use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, PostingFlags, StepName};
 use busbar_kernel_audit::{AuditChain, AuditRecord};
 use busbar_kernel_ledger::checkpoint::Checkpoint;
+use busbar_kernel_ledger::cost::{HistoryView, MoneyError};
 use busbar_kernel_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_kernel_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_kernel_ledger::settle::{Ledger, Settlement};
@@ -164,6 +167,21 @@ pub struct Durability {
     /// confirmed), and each moves back when a later append succeeds — the log re-offers a retained
     /// batch ahead of the next one, so a later success is the confirmation.
     unconfirmed: Vec<(TotalsKey, WindowStart, i128)>,
+    /// WHERE A REPLAY READS THE DATED RATE-CARD HISTORY IT PRICES THE CHAIN'S COUNTS AGAINST (#71,
+    /// #79). The chain carries no money: a posting is a unit's raw counts and the arrival instant
+    /// they price at, so rebuilding the book is `Σ count × rate(card_at(arrived_ms))` through the
+    /// one spend function. Asked at the moment of the rebuild, never cached, so a card appended
+    /// after boot is in the view a later reconciliation prices against.
+    history: HistorySource,
+}
+
+/// Where the book reads the dated rate-card history a replay prices against: a snapshot pinned
+/// at the moment of the read.
+pub type HistorySource = Box<dyn Fn() -> Option<PinnedHistory> + Send + Sync>;
+
+/// The process's own history: the one every unit's exit priced against.
+fn root_history() -> HistorySource {
+    Box::new(|| crate::root::kernel::ROOT_CARD.pin())
 }
 
 impl std::fmt::Debug for Durability {
@@ -283,6 +301,12 @@ impl Durability {
     /// carry the same one on the same balance and window: with the incarnation, that names the unit
     /// on the chain.
     ///
+    /// THE RECORD HOLDS NO MONEY (#71, #77(3)). What the reservation was sized for is a set of raw
+    /// counts — `reservation` — and `arrived_ms` is the instant they price at (#79). The figure the
+    /// book moves by is DERIVED from the two through the one spend function, here and again on
+    /// every replay, so a restart rebuilds the same reservation from the same fact. A reservation
+    /// the card cannot price moves no balance, on this side and on the replay alike.
+    ///
     /// # Errors
     ///
     /// As [`Durability::journal_audit`]. The book has moved either way, and a failed append is
@@ -291,18 +315,24 @@ impl Durability {
         &mut self,
         at: &Settling<'_>,
         principal: &busbar_contract::caps::PrincipalId,
-        reserved: u64,
+        reservation: &UnitCounts,
+        arrived_ms: u64,
     ) -> Result<JournalAck, DurabilityLost> {
         let opened = HoldOpened {
             key: at.key.clone(),
             window: at.window,
             principal: principal.as_str().to_string(),
-            reserved,
+            held: Held::Counts {
+                counts: reservation.clone(),
+                arrived_ms,
+            },
             incarnation: self.incarnation,
             wall: at.stamp.wall,
             mono: at.stamp.mono,
         };
-        apply_opened(&mut self.ledger, &opened);
+        let pinned = (self.history)();
+        let reserved = opened.reserved(pinned.as_ref().map(PinnedHistory::view).as_ref());
+        apply_opened(&mut self.ledger, &opened.key, opened.window, reserved);
         let entry =
             Entry::new(RecordClass::Transaction, opened.body()).at(opened.wall, opened.mono);
         let appended = self.journal.append(at.durability, at.step, &[entry]);
@@ -338,13 +368,21 @@ impl Durability {
             }
         };
         let mut rebuilt = Ledger::new();
-        let replay = replay_into(&mut rebuilt, &records);
+        let pinned = (self.history)();
+        let view = pinned.as_ref().map(PinnedHistory::view);
+        let replay = replay_into(&mut rebuilt, &records, view.as_ref(), false);
         let mut findings: Vec<JournalDisagreement> = replay
             .unreadable
             .into_iter()
             .map(JournalDisagreement::Unreadable)
             .collect();
-        if replay.refused != self.refused {
+        // Compared by WHICH unit's row, not by the refusal's wording: the reason a replay gives is
+        // the one spend function's, derived at the read, and the live row carries the reason the
+        // settling arm was handed.
+        let unit = |row: &Posting| (row.incarnation, row.key.clone(), row.window, row.mono);
+        if replay.refused.iter().map(unit).collect::<Vec<_>>()
+            != self.refused.iter().map(unit).collect::<Vec<_>>()
+        {
             findings.push(JournalDisagreement::RefusedRows {
                 journal: replay.refused.len(),
                 book: self.refused.len(),
@@ -368,6 +406,20 @@ impl Durability {
             }
         }
         findings
+    }
+
+    /// THE CHAIN, READ BACK AND PRICED: every posting on it, in chain order, with the figures a
+    /// replay derives for it from its counts at its epoch (#71, #79) — the money as a view over
+    /// the records, never a figure any record holds. A chain that will not read back reads as
+    /// nothing; [`Durability::reconcile_with_journal`] is the read that says why.
+    #[must_use]
+    pub fn read_back(&self) -> Vec<Posting> {
+        let Ok(Ok(records)) = self.journal.replay() else {
+            return Vec::new();
+        };
+        let pinned = (self.history)();
+        let view = pinned.as_ref().map(PinnedHistory::view);
+        replay_into(&mut Ledger::new(), &records, view.as_ref(), true).read
     }
 
     /// Note what a journal append said about the settled figures the log had not confirmed.
@@ -396,12 +448,16 @@ impl Durability {
         let token = kernel.durability_token();
         let canary = busbar_contract::caps::Canary::new();
         let current = busbar_contract::slice::Epoch(self.incarnation);
+        let pinned = (self.history)();
+        let view = pinned.as_ref().map(PinnedHistory::view);
         let records: Vec<busbar_kernel::recovery::HoldRecord> = open
             .iter()
             .map(|hold| busbar_kernel::recovery::HoldRecord {
                 unit: busbar_contract::UnitKey::new(hold.mono),
                 principal: busbar_contract::caps::PrincipalId::new(hold.principal.as_str()),
-                reserved: hold.reserved,
+                // The reservation as the replay derived it from the hold's counts — the same
+                // figure the rebuilt book already holds open for it.
+                reserved: hold.reserved(view.as_ref()),
                 // No accrual checkpoint and no dispatch record is journalled, so the table's
                 // recovery row posts zero, marked void: a crash is not evidence of consumption.
                 checkpointed: 0,
@@ -483,8 +539,9 @@ impl Durability {
     }
 
     /// [`Durability::settle_posted`] for a unit whose RAW COUNTS are known (#71): the posting record
-    /// carries them, per class string — the reserved four and every open class — beside the figure
-    /// they were priced to, so the chain holds the fact and not only its price.
+    /// carries them, per class string — the reserved four and every open class — and `arrived_ms`,
+    /// the instant they price at (#79). The record carries NO figure: the book moves by the posting
+    /// here, and a replay re-derives the same figure from the counts through the one spend function.
     ///
     /// # Errors
     ///
@@ -494,9 +551,10 @@ impl Durability {
         at: &Settling<'_>,
         posted: busbar_contract::caps::Posted,
         counts: &UnitCounts,
+        arrived_ms: u64,
     ) -> Result<Settled, DurabilityLost> {
         let settlement = self.ledger.post(at.key, at.window, posted);
-        self.journal_settlement_counted(at, settlement, self.incarnation, Some(counts))
+        self.journal_settlement_counted(at, settlement, self.incarnation, Some(counts), arrived_ms)
     }
 
     /// PUT A UNIT'S COUNTS ON THE CHAIN WITH NO FIGURE BEHIND THEM (#43: the write is unconditional).
@@ -517,6 +575,7 @@ impl Durability {
         at: &Settling<'_>,
         principal: &busbar_contract::caps::PrincipalId,
         counts: &UnitCounts,
+        arrived_ms: u64,
         refusal: Option<String>,
     ) -> Result<Posting, DurabilityLost> {
         let posting = Posting {
@@ -531,8 +590,11 @@ impl Durability {
             rate_card_version: at.stamp.rate_card_version,
             wall: at.stamp.wall,
             mono: at.stamp.mono,
+            arrived_ms,
+            flags: PostingFlags::NONE,
             counts: Some(counts.clone()),
             refusal,
+            era: RecordEra::Counts,
         };
         if posting.refusal.is_some() {
             self.refused.push(posting.clone());
@@ -602,7 +664,7 @@ impl Durability {
         settlement: Settlement,
         incarnation: u64,
     ) -> Result<Settled, DurabilityLost> {
-        self.journal_settlement_counted(at, settlement, incarnation, None)
+        self.journal_settlement_counted(at, settlement, incarnation, None, 0)
     }
 
     /// [`Durability::journal_settlement_as`], with the unit's raw counts on the settlement's record
@@ -614,6 +676,7 @@ impl Durability {
         settlement: Settlement,
         incarnation: u64,
         counts: Option<&UnitCounts>,
+        arrived_ms: u64,
     ) -> Result<Settled, DurabilityLost> {
         let stamp = at.stamp;
         let principal = settlement.posted.principal().as_str().to_string();
@@ -629,13 +692,16 @@ impl Durability {
             rate_card_version: stamp.rate_card_version,
             wall: stamp.wall,
             mono: stamp.mono,
+            arrived_ms: counts.map_or(0, |_| arrived_ms),
+            flags: settlement.posted.flags(),
             counts: counts.cloned(),
             refusal: None,
+            era: RecordEra::Counts,
         };
-        // The overdraft's own record. Reserved and settled are zero on it deliberately: the
-        // settlement above already carries both, and repeating them here would double every figure
-        // a replay adds up. What this record holds that nothing else does is the carry, on the
-        // chain, in order, beside the posting it came out of.
+        // The overdraft's own record. It carries no counts and no figure: the settlement above
+        // already carries the fact, and the carry is DERIVED from it, so repeating anything here
+        // would double what a replay adds up. What this record holds that nothing else does is the
+        // carry's POSITION, on the chain, in order, beside the posting it came out of.
         let overdraft = settlement.overdraft.as_ref().map(|note| Posting {
             principal: principal.clone(),
             kind: PostingKind::Carry,
@@ -648,8 +714,11 @@ impl Durability {
             rate_card_version: stamp.rate_card_version,
             wall: stamp.wall,
             mono: stamp.mono,
+            arrived_ms: 0,
+            flags: PostingFlags::NONE,
             counts: None,
             refusal: None,
+            era: RecordEra::Counts,
         });
         // ONE BATCH, both records. A batch is the unit of durability — one store round trip
         // memory-buffered, one fsync on disk — and the settlement and its carry are two entries of
@@ -798,6 +867,7 @@ pub trait MoneyBook: Send + Sync {
         at: &Settling<'_>,
         posted: busbar_contract::caps::Posted,
         counts: &UnitCounts,
+        arrived_ms: u64,
     ) -> Result<Settled, DurabilityLost>;
 
     /// The unit's raw counts with no figure behind them — priced to nothing, or REFUSED (#42/#43).
@@ -811,6 +881,7 @@ pub trait MoneyBook: Send + Sync {
         at: &Settling<'_>,
         principal: &busbar_contract::caps::PrincipalId,
         counts: &UnitCounts,
+        arrived_ms: u64,
         refusal: Option<String>,
     ) -> Result<Posting, DurabilityLost>;
 }
@@ -859,9 +930,10 @@ impl MoneyBook for SharedBook {
         at: &Settling<'_>,
         posted: busbar_contract::caps::Posted,
         counts: &UnitCounts,
+        arrived_ms: u64,
     ) -> Result<Settled, DurabilityLost> {
         let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-        durability.settle_counted(at, posted, counts)
+        durability.settle_counted(at, posted, counts, arrived_ms)
     }
 
     fn post_counts(
@@ -869,10 +941,11 @@ impl MoneyBook for SharedBook {
         at: &Settling<'_>,
         principal: &busbar_contract::caps::PrincipalId,
         counts: &UnitCounts,
+        arrived_ms: u64,
         refusal: Option<String>,
     ) -> Result<Posting, DurabilityLost> {
         let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-        durability.post_counts(at, principal, counts, refusal)
+        durability.post_counts(at, principal, counts, arrived_ms, refusal)
     }
 }
 
@@ -881,6 +954,12 @@ impl MoneyBook for SharedBook {
 /// A value rather than a reference to the ledger's books, because a posting is a thing that happened
 /// at a moment and the books are what they are now. The two are different facts and a record built
 /// out of the second could not be replayed.
+///
+/// **THE RECORD IS COUNTS AND AN INSTANT, NEVER MONEY (#71, #77(3)).** What reaches the chain
+/// ([`Posting::body`]) is whose unit it was, which balance and window, the unit's raw counts per
+/// class and the arrival instant they price at (#79). The three figures below are this node's
+/// READING of the posting — what the book moved by, live, or what a replay derived from the counts
+/// through the one spend function — and none of them is written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Posting {
     /// Whose unit it was.
@@ -893,25 +972,42 @@ pub struct Posting {
     pub key: TotalsKey,
     /// Which window it moved in.
     pub window: WindowStart,
-    /// What had been reserved.
+    /// What had been reserved — a reading, never written.
     pub reserved: i128,
-    /// What was settled.
+    /// What was settled — a reading, never written.
     pub settled: i128,
-    /// What was spent with no reservation behind it.
+    /// What was spent with no reservation behind it — a reading, never written.
     pub overdraft: i128,
-    /// Which card version priced it.
+    /// Which card version the unit arrived under: reporting provenance, never a pricing input (#79).
     pub rate_card_version: u64,
     /// The wall clock, in whole seconds.
     pub wall: u64,
     /// The node's monotonic clock.
     pub mono: u64,
-    /// THE UNIT'S RAW COUNTS, per class string (#71) — `None` on a record written before they were
-    /// carried, and on a record whose writer did not know them (the carry, and every plane that
-    /// settles through [`Durability::settle_posted`]).
+    /// THE CARD EPOCH: the unit's arrival instant in milliseconds, which is what the dated history
+    /// resolves the card its counts price against (#79). 0 on a record with no counts — there is
+    /// nothing on it to price.
+    pub arrived_ms: u64,
+    /// How far the posting is believed: recovered, voided, estimated, late.
+    pub flags: PostingFlags,
+    /// THE UNIT'S RAW COUNTS, per class string (#71) — `None` on a record whose writer did not know
+    /// them (the carry, and every plane that settles through [`Durability::settle_posted`]), which
+    /// prices at nothing.
     pub counts: Option<UnitCounts>,
-    /// Why the counts on a [`PostingKind::Counted`] row could not be priced; `None` on every other
-    /// record, and on a counts row that priced to nothing.
+    /// Why the counts could not be priced; `None` on a row that priced.
     pub refusal: Option<String>,
+    /// Which era of the record this was read from. See [`RecordEra`].
+    pub era: RecordEra,
+}
+
+/// Which shape of posting record a [`Posting`] came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordEra {
+    /// A record carrying counts and the card epoch, and no money: its figures are derived.
+    Counts,
+    /// A record written while the chain still carried settled FIGURES. Read as written — the
+    /// figure is the fact that record holds, and there are no counts to derive another from.
+    Figures,
 }
 
 /// A unit's raw counts, as its posting record carries them (#71): the lane that served it, the
@@ -940,6 +1036,35 @@ impl UnitCounts {
             )
             .with_fee_count(self.fee_count)
     }
+
+    /// Whether the counts say nothing at all: no class and no fee.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.fee_count == 0 && self.classes.is_empty()
+    }
+}
+
+/// **THE BOOK'S MONEY, AS A VIEW** (#71): what `counts` cost at the card in force at `arrived_ms`
+/// (#79), in nano-units, through the one spend function.
+///
+/// Counts that say nothing cost nothing, with or without a history. Anything else needs the dated
+/// history, and a node that has none has no entry to price at — a refusal, never a zero (#42).
+///
+/// # Errors
+///
+/// Every refusal of the one function: no entry covers the instant, a present card silent about
+/// the lane or a hit class, a figure past the range.
+pub fn price_counts(
+    history: Option<&HistoryView<'_>>,
+    counts: &UnitCounts,
+    arrived_ms: u64,
+) -> Result<u128, MoneyError> {
+    if counts.is_empty() {
+        return Ok(0);
+    }
+    let history = history.ok_or(MoneyError::NoCardInForce { at: arrived_ms })?;
+    let exact = busbar_kernel_ledger::cost::price_exact(&[counts.entry(arrived_ms)], history)?;
+    busbar_kernel_ledger::cost::nanos_of_exact(exact)
 }
 
 /// A read that met a counts row the card refused to price (#42). Never a figure.
@@ -968,58 +1093,171 @@ impl std::fmt::Display for RefusedCounts {
 
 impl std::error::Error for RefusedCounts {}
 
+/// The posting flags, as the record carries them: one bit per flag, in a fixed order.
+const FLAG_BITS: [PostingFlags; 8] = [
+    PostingFlags::ESTIMATED,
+    PostingFlags::METER_DISPUTED,
+    PostingFlags::OVERDRAFT,
+    PostingFlags::LATE_ACCRUAL,
+    PostingFlags::RECOVERED,
+    PostingFlags::VOIDED,
+    PostingFlags::UNPOSTED,
+    PostingFlags::DOWNGRADED,
+];
+
+fn flags_to_bits(flags: PostingFlags) -> u64 {
+    FLAG_BITS
+        .iter()
+        .enumerate()
+        .filter(|(_, flag)| flags.contains(**flag))
+        .fold(0, |bits, (at, _)| bits | (1 << at))
+}
+
+fn flags_from_bits(bits: u64) -> Option<PostingFlags> {
+    // A bit this build does not name is not a body this build wrote.
+    if bits >> FLAG_BITS.len() != 0 {
+        return None;
+    }
+    Some(
+        FLAG_BITS
+            .iter()
+            .enumerate()
+            .filter(|(at, _)| bits & (1 << at) != 0)
+            .fold(PostingFlags::NONE, |flags, (_, flag)| flags.with(*flag)),
+    )
+}
+
+/// A counts block: present or not, then the lane, the fee count and each class.
+fn write_counts(body: &mut BodyWriter, counts: Option<&UnitCounts>) {
+    let Some(counts) = counts else {
+        body.num(0);
+        return;
+    };
+    body.num(1);
+    body.text(&counts.lane);
+    body.num(counts.fee_count);
+    body.num(counts.classes.len() as u64);
+    for (class, count) in &counts.classes {
+        body.text(class);
+        body.num(*count);
+    }
+}
+
+/// A counts block, read back. `None` for a block this build did not write.
+fn read_counts_block(body: &mut BodyReader<'_>) -> Option<Option<UnitCounts>> {
+    match body.num()? {
+        0 => return Some(None),
+        1 => {}
+        _ => return None,
+    }
+    let lane = body.text()?.to_string();
+    let fee_count = body.num()?;
+    let n = body.num()?;
+    let mut classes = std::collections::BTreeMap::new();
+    for _ in 0..n {
+        let class = body.text()?.to_string();
+        let count = body.num()?;
+        // One class twice is not a body this build wrote: the writer iterates a map.
+        if classes.insert(class, count).is_some() {
+            return None;
+        }
+    }
+    Some(Some(UnitCounts {
+        lane,
+        fee_count,
+        classes,
+    }))
+}
+
 impl Posting {
-    /// The journal body: the balance it moved, the window, and the three figures — and then what a
-    /// restart needs to rebuild the book from it.
+    /// The journal body: whose unit, which balance and window, the unit's raw counts and the instant
+    /// they price at — and no figure (#71, #77(3)).
     ///
-    /// The first six fields are the record every reader already knew, unchanged and in the same
-    /// place. What follows them is the tail a boot reads (items 127/128): which of the two records
-    /// of one settlement this is (only the settlement moves the book — the carry repeats its
-    /// overdraft), which incarnation wrote it and whose unit it was (which, with the record's
-    /// monotonic reading, names the hold it closes), and the balance as FIELDS rather than as the
-    /// display string above, which a rebuild could not parse back unambiguously.
+    /// The record opens with its own tag, so it can never be read as a record of the era that
+    /// carried figures (which opened with a balance display) and a replay knows which of the two it
+    /// holds without guessing. The balance is written as FIELDS, which a rebuild parses back
+    /// unambiguously.
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
         let mut body = BodyWriter::new();
-        body.text(&self.key.to_string());
-        body.num(self.window);
-        body.figure(self.reserved);
-        body.figure(self.settled);
-        body.figure(self.overdraft);
-        body.num(self.rate_card_version);
-        body.text(POSTING_TAIL);
+        body.text(POSTING_COUNTS);
         body.num(self.kind.code());
         body.num(self.incarnation);
         body.text(&self.principal);
         write_key(&mut body, &self.key);
-        // THE COUNTS TAIL (#71), appended after the v2 tail exactly as that one was appended after
-        // the original six fields: a record without it is a record written before it existed and
-        // reads back with no counts, so a journal written by an earlier build rebuilds the same
-        // book. Written only where the counts are known, so every other record is byte-identical.
-        if let Some(counts) = &self.counts {
-            body.text(POSTING_COUNTS_TAIL);
-            body.text(&counts.lane);
-            body.num(counts.fee_count);
-            body.num(counts.classes.len() as u64);
-            for (class, count) in &counts.classes {
-                body.text(class);
-                body.num(*count);
-            }
-            body.num(u64::from(self.refusal.is_some()));
-            body.text(self.refusal.as_deref().unwrap_or(""));
-        }
+        body.num(self.window);
+        body.num(self.rate_card_version);
+        body.num(self.arrived_ms);
+        body.num(flags_to_bits(self.flags));
+        write_counts(&mut body, self.counts.as_ref());
         body.finish()
     }
 
     /// Read a posting back off the chain. `None` for a record that is not one — an audit record, a
-    /// hold, or a posting written before the tail existed, which a rebuild cannot place.
+    /// hold, or a posting written before the chain could place it on a balance.
+    ///
+    /// A record of the counts era comes back with its three figures at ZERO and its counts: the
+    /// figures are a derivation a replay makes against the dated history ([`price_counts`]), not a
+    /// fact the record holds. A record of the figures era comes back as written.
     #[must_use]
     pub fn from_record(record: &JournalRecord) -> Option<Posting> {
         if record.class != RecordClass::Transaction {
             return None;
         }
         let mut body = BodyReader::new(&record.body);
-        let shown = body.text()?;
+        let first = body.text()?;
+        if first == POSTING_COUNTS {
+            return Posting::read_counts_era(&mut body, record);
+        }
+        Posting::read_figures_era(first, &mut body, record)
+    }
+
+    fn read_counts_era(body: &mut BodyReader<'_>, record: &JournalRecord) -> Option<Posting> {
+        let kind = PostingKind::from_code(body.num()?)?;
+        let incarnation = body.num()?;
+        let principal = body.text()?.to_string();
+        let key = read_key(body)?;
+        let window = body.num()?;
+        let rate_card_version = body.num()?;
+        let arrived_ms = body.num()?;
+        let flags = flags_from_bits(body.num()?)?;
+        let counts = read_counts_block(body)?;
+        if !body.is_done() {
+            return None;
+        }
+        // A counts row carries its counts by definition; one without them is not a body this build
+        // wrote.
+        if kind == PostingKind::Counted && counts.is_none() {
+            return None;
+        }
+        Some(Posting {
+            principal,
+            kind,
+            incarnation,
+            key,
+            window,
+            reserved: 0,
+            settled: 0,
+            overdraft: 0,
+            rate_card_version,
+            wall: record.wall,
+            mono: record.mono,
+            arrived_ms,
+            flags,
+            counts,
+            refusal: None,
+            era: RecordEra::Counts,
+        })
+    }
+
+    /// A record of the era that carried settled figures: the balance display, the window, three
+    /// figures and a version, then the tail that places it, and possibly the counts tail. Migrated
+    /// on read: the figures are what that record says, and nothing is rewritten.
+    fn read_figures_era(
+        shown: &str,
+        body: &mut BodyReader<'_>,
+        record: &JournalRecord,
+    ) -> Option<Posting> {
         let window = body.num()?;
         let reserved = body.figure()?;
         let settled = body.figure()?;
@@ -1031,20 +1269,18 @@ impl Posting {
         let kind = PostingKind::from_code(body.num()?)?;
         let incarnation = body.num()?;
         let principal = body.text()?.to_string();
-        let key = read_key(&mut body)?;
+        let key = read_key(body)?;
         let (counts, refusal) = if body.is_done() {
             // A record written before the counts tail: no counts, and nothing refused.
             (None, None)
         } else {
-            read_counts(&mut body)?
+            read_counts_tail(body)?
         };
         // The two spellings of the balance must name the same one, or this is not a body this
-        // build wrote and reading it would be guessing.
+        // build can read and reading it would be guessing.
         if !body.is_done() || key.to_string() != shown {
             return None;
         }
-        // A counts row carries its counts by definition; one without them is not a body this
-        // build wrote.
         if kind == PostingKind::Counted && counts.is_none() {
             return None;
         }
@@ -1060,14 +1296,17 @@ impl Posting {
             rate_card_version,
             wall: record.wall,
             mono: record.mono,
+            arrived_ms: 0,
+            flags: PostingFlags::NONE,
             counts,
             refusal,
+            era: RecordEra::Figures,
         })
     }
 }
 
-/// The counts tail, read back. `None` for a tail this build did not write.
-fn read_counts(body: &mut BodyReader<'_>) -> Option<(Option<UnitCounts>, Option<String>)> {
+/// The counts tail of the figures era, read back. `None` for a tail this build did not write.
+fn read_counts_tail(body: &mut BodyReader<'_>) -> Option<(Option<UnitCounts>, Option<String>)> {
     if body.text()? != POSTING_COUNTS_TAIL {
         return None;
     }
@@ -1078,7 +1317,6 @@ fn read_counts(body: &mut BodyReader<'_>) -> Option<(Option<UnitCounts>, Option<
     for _ in 0..n {
         let class = body.text()?.to_string();
         let count = body.num()?;
-        // One class twice is not a body this build wrote: the writer iterates a map.
         if classes.insert(class, count).is_some() {
             return None;
         }
@@ -1103,13 +1341,15 @@ fn read_counts(body: &mut BodyReader<'_>) -> Option<(Option<UnitCounts>, Option<
 /// Which of a settlement's two records a [`Posting`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostingKind {
-    /// The settlement: what was reserved and what was posted. The one a rebuild moves the book by.
+    /// The settlement: what the unit consumed, closing whatever hold it opened. The one a rebuild
+    /// moves the book by.
     Settlement,
-    /// The overdraft carry beside it, repeating the part nothing reserved. Replaying it as well
-    /// would count that part twice.
+    /// The overdraft carry beside it, marking where the part nothing reserved was carried out.
+    /// Replaying it as well would count that part twice.
     Carry,
-    /// A unit's raw counts with NO figure behind them (#43: the write is unconditional): the counts
-    /// priced to nothing, or the card REFUSED to price them (#42). It moves no balance.
+    /// A unit's raw counts with no hold behind them and NO figure the book moved by when they
+    /// were written (#43: the write is unconditional): the counts priced to nothing, or the card
+    /// REFUSED to price them (#42).
     Counted,
 }
 
@@ -1132,15 +1372,35 @@ impl PostingKind {
     }
 }
 
-/// The tag between a posting's original fields and the tail a rebuild reads.
+/// The tag a posting of the counts era opens with. No record of the figures era can begin with
+/// it: that record's first field is a balance's display, which always carries a `/`.
+const POSTING_COUNTS: &str = "posting.v3";
+
+/// The tag between a figures-era posting's original fields and the tail a rebuild reads.
 const POSTING_TAIL: &str = "posting.v2";
 
-/// The tag between the v2 tail and the unit's raw counts (#71).
+/// The tag between the figures-era tail and the unit's raw counts.
 const POSTING_COUNTS_TAIL: &str = "posting.counts.v1";
 
-/// The tag a hold's journal record opens with. No posting can begin with it: a posting's first
-/// field is a balance's display, which always carries a `/`.
+/// The tag a figures-era hold's journal record opens with. No posting can begin with it.
 const HOLD_OPENED: &str = "hold.open";
+
+/// The tag a counts-era hold's journal record opens with.
+const HOLD_OPENED_COUNTS: &str = "hold.open.v2";
+
+/// What a hold reserved, as its record carries it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Held {
+    /// The counts the reservation was sized for and the instant they price at (#71, #79).
+    Counts {
+        /// The raw counts.
+        counts: UnitCounts,
+        /// The unit's arrival, in milliseconds: the card epoch.
+        arrived_ms: u64,
+    },
+    /// A record of the era that carried the reserved FIGURE. Read as written.
+    Figure(u64),
+}
 
 /// A hold as the journal carries it (item 127): opened, and not yet closed by a posting.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1151,8 +1411,8 @@ pub struct HoldOpened {
     pub window: WindowStart,
     /// Whose unit it is.
     pub principal: String,
-    /// What was reserved.
-    pub reserved: u64,
+    /// What was reserved: counts and their epoch, never money.
+    pub held: Held,
     /// Which boot of this node's journal opened it.
     pub incarnation: u64,
     /// The unit's arrival, whole seconds.
@@ -1167,12 +1427,25 @@ impl HoldOpened {
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
         let mut body = BodyWriter::new();
-        body.text(HOLD_OPENED);
-        body.num(self.incarnation);
-        body.text(&self.principal);
-        write_key(&mut body, &self.key);
-        body.num(self.window);
-        body.num(self.reserved);
+        match &self.held {
+            Held::Counts { counts, arrived_ms } => {
+                body.text(HOLD_OPENED_COUNTS);
+                body.num(self.incarnation);
+                body.text(&self.principal);
+                write_key(&mut body, &self.key);
+                body.num(self.window);
+                body.num(*arrived_ms);
+                write_counts(&mut body, Some(counts));
+            }
+            Held::Figure(reserved) => {
+                body.text(HOLD_OPENED);
+                body.num(self.incarnation);
+                body.text(&self.principal);
+                write_key(&mut body, &self.key);
+                body.num(self.window);
+                body.num(*reserved);
+            }
+        }
         body.finish()
     }
 
@@ -1183,23 +1456,46 @@ impl HoldOpened {
             return None;
         }
         let mut body = BodyReader::new(&record.body);
-        if body.text()? != HOLD_OPENED {
+        let tag = body.text()?;
+        if tag != HOLD_OPENED && tag != HOLD_OPENED_COUNTS {
             return None;
         }
         let incarnation = body.num()?;
         let principal = body.text()?.to_string();
         let key = read_key(&mut body)?;
         let window = body.num()?;
-        let reserved = body.num()?;
+        let held = if tag == HOLD_OPENED_COUNTS {
+            let arrived_ms = body.num()?;
+            Held::Counts {
+                counts: read_counts_block(&mut body)??,
+                arrived_ms,
+            }
+        } else {
+            Held::Figure(body.num()?)
+        };
         body.is_done().then_some(HoldOpened {
             key,
             window,
             principal,
-            reserved,
+            held,
             incarnation,
             wall: record.wall,
             mono: record.mono,
         })
+    }
+
+    /// What the hold reserves, as the book reads it: the counts priced at their epoch through the
+    /// one spend function, or the figure a record of the earlier era holds. A reservation the card
+    /// cannot price reserves nothing on this book — the same answer live and on every replay.
+    #[must_use]
+    pub fn reserved(&self, history: Option<&HistoryView<'_>>) -> u64 {
+        match &self.held {
+            Held::Figure(reserved) => *reserved,
+            Held::Counts { counts, arrived_ms } => price_counts(history, counts, *arrived_ms)
+                .ok()
+                .and_then(|nanos| u64::try_from(nanos).ok())
+                .unwrap_or(0),
+        }
     }
 
     /// The name of the unit on the chain: which boot, which balance and window, and which arrival.
@@ -1249,11 +1545,17 @@ fn read_key(body: &mut BodyReader<'_>) -> Option<TotalsKey> {
 }
 
 /// A reservation's movement on the book: drawn into the slice and spent out of it into the hold.
-fn apply_opened(ledger: &mut Ledger, hold: &HoldOpened) {
-    let amount = i128::from(hold.reserved);
-    ledger.record_draw(&hold.key, hold.window, amount);
-    ledger.record_slice_spent(&hold.key, hold.window, amount);
-    ledger.record_hold_opened(&hold.key, hold.window, hold.reserved);
+fn apply_opened(ledger: &mut Ledger, key: &TotalsKey, window: WindowStart, reserved: u64) {
+    let amount = i128::from(reserved);
+    ledger.record_draw(key, window, amount);
+    ledger.record_slice_spent(key, window, amount);
+    ledger.record_hold_opened(key, window, reserved);
+}
+
+/// A hold the replay found open, with the reservation it derived for it.
+struct OpenHold {
+    hold: HoldOpened,
+    reserved: u64,
 }
 
 /// What replaying a chain into a book left over.
@@ -1266,6 +1568,9 @@ struct Replayed {
     unreadable: Vec<String>,
     /// Counts rows whose pricing refused, in chain order.
     refused: Vec<Posting>,
+    /// Every posting read, with the figures the replay derived for it, in chain order — kept only
+    /// when the caller asked to read the chain back.
+    read: Vec<Posting>,
 }
 
 impl Replayed {
@@ -1276,67 +1581,111 @@ impl Replayed {
             incarnation: 0,
             unreadable: Vec::new(),
             refused: Vec::new(),
+            read: Vec::new(),
         }
     }
 }
 
-/// REBUILD A BOOK FROM THE CHAIN, in chain order: every hold opened, every settlement posted.
+/// REBUILD A BOOK FROM THE CHAIN, in chain order: every hold opened, every settlement posted — each
+/// figure DERIVED from the record's counts at its epoch against `history` (#71, #79).
 ///
-/// Reads every `Transaction` record, not only the migration marker (the two replays this module
-/// had filtered `Migration` alone, so a restart read nothing a unit had done). Audit records share
-/// the class and are passed over; a posting written before the tail existed cannot be placed on a
-/// balance, and is named rather than silently skipped.
-fn replay_into(ledger: &mut Ledger, records: &[JournalRecord]) -> Replayed {
-    let mut open: Vec<HoldOpened> = Vec::new();
+/// Reads every `Transaction` record, not only the migration marker. Audit records share the class
+/// and are passed over; a posting the chain cannot place on a balance is named rather than
+/// silently skipped. A record of the era that carried figures is read as written.
+///
+/// A settlement closes the hold its unit opened, and releases what that hold reserved; what it
+/// settled is its counts priced, and what nothing reserved is carried out — the settlement's own
+/// arithmetic, restated over derived figures. A counts row whose pricing refuses is kept as a
+/// refused row, and moves no figure (#42).
+fn replay_into(
+    ledger: &mut Ledger,
+    records: &[JournalRecord],
+    history: Option<&HistoryView<'_>>,
+    keep: bool,
+) -> Replayed {
+    let mut open: Vec<OpenHold> = Vec::new();
     let mut incarnation = 0;
     let mut unreadable = Vec::new();
     let mut refused = Vec::new();
+    let mut read = Vec::new();
     for record in records
         .iter()
         .filter(|r| r.class == RecordClass::Transaction)
     {
         if let Some(hold) = HoldOpened::from_record(record) {
             incarnation = incarnation.max(hold.incarnation);
-            apply_opened(ledger, &hold);
-            open.push(hold);
-        } else if let Some(posting) = Posting::from_record(record) {
+            let reserved = hold.reserved(history);
+            apply_opened(ledger, &hold.key, hold.window, reserved);
+            open.push(OpenHold { hold, reserved });
+        } else if let Some(mut posting) = Posting::from_record(record) {
             incarnation = incarnation.max(posting.incarnation);
-            if posting.kind == PostingKind::Counted {
-                // No balance moves for a counts row; a refused one is kept, so the reads over its
-                // balance refuse after a restart exactly as they did before it.
-                if posting.refusal.is_some() {
-                    refused.push(posting);
+            if posting.kind == PostingKind::Carry {
+                if keep {
+                    read.push(posting);
                 }
                 continue;
             }
-            if posting.kind == PostingKind::Settlement {
-                let (Ok(reserved), Ok(settled), Ok(overdraft)) = (
-                    u64::try_from(posting.reserved),
-                    u64::try_from(posting.settled),
-                    u64::try_from(posting.overdraft),
-                ) else {
-                    unreadable.push(format!(
-                        "node {} record {}: a posting with a negative figure",
-                        record.node, record.node_seq
-                    ));
-                    continue;
-                };
-                ledger.replay_post(
-                    &posting.key,
-                    posting.window,
-                    &posting.principal,
-                    reserved,
-                    settled,
-                    overdraft,
-                );
-                let unit = (
-                    posting.incarnation,
-                    posting.key.clone(),
-                    posting.window,
-                    posting.mono,
-                );
-                if let Some(at) = open.iter().position(|hold| hold.unit() == unit) {
-                    open.remove(at);
+            // The hold this posting closes, if it closes one: a settlement of the same unit.
+            let unit = (
+                posting.incarnation,
+                posting.key.clone(),
+                posting.window,
+                posting.mono,
+            );
+            let closes = (posting.kind == PostingKind::Settlement)
+                .then(|| open.iter().position(|held| held.hold.unit() == unit))
+                .flatten()
+                .map(|at| open.remove(at).reserved);
+            let figures = match posting.era {
+                RecordEra::Figures => figures_as_written(&posting),
+                RecordEra::Counts => derived_figures(&posting, closes.unwrap_or(0), history),
+            };
+            match figures {
+                Ok(Some((reserved, settled, overdraft))) => {
+                    ledger.replay_post(
+                        &posting.key,
+                        posting.window,
+                        &posting.principal,
+                        reserved,
+                        settled,
+                        overdraft,
+                    );
+                    if keep {
+                        posting.reserved = i128::from(reserved);
+                        posting.settled = i128::from(settled);
+                        posting.overdraft = i128::from(overdraft);
+                        read.push(posting);
+                    }
+                }
+                // A counts row that priced to nothing moves nothing.
+                Ok(None) => {
+                    if keep {
+                        read.push(posting);
+                    }
+                }
+                Err(Negative) => unreadable.push(format!(
+                    "node {} record {}: a posting with a negative figure",
+                    record.node, record.node_seq
+                )),
+                Err(Refused(why)) => {
+                    // The fact is kept and every read over its balance refuses. A settlement that
+                    // closed a hold still hands its reservation back: what it consumed has no
+                    // figure, and the reservation is not a charge.
+                    if let Some(reserved) = closes {
+                        ledger.replay_post(
+                            &posting.key,
+                            posting.window,
+                            &posting.principal,
+                            reserved,
+                            0,
+                            0,
+                        );
+                    }
+                    posting.refusal = Some(why);
+                    if keep {
+                        read.push(posting.clone());
+                    }
+                    refused.push(posting);
                 }
             }
         } else if looks_like_a_posting(record) {
@@ -1347,18 +1696,74 @@ fn replay_into(ledger: &mut Ledger, records: &[JournalRecord]) -> Replayed {
         }
     }
     Replayed {
-        open,
+        open: open.into_iter().map(|held| held.hold).collect(),
         incarnation,
         unreadable,
         refused,
+        read,
     }
 }
 
-/// A posting without the tail: a balance display, a window and three figures and a version, and
-/// nothing else. An audit record never has this shape — it opens with two digests.
+/// Why a posting read back moves no figure.
+enum Unplaced {
+    /// A figures-era record holding a negative figure.
+    Negative,
+    /// A counts-era record whose counts the card refuses to price, and why.
+    Refused(String),
+}
+use Unplaced::{Negative, Refused};
+
+/// The three figures a figures-era record holds, as written. `None` for a counts row, which
+/// moved no balance when it was written.
+fn figures_as_written(posting: &Posting) -> Result<Option<(u64, u64, u64)>, Unplaced> {
+    if posting.kind == PostingKind::Counted {
+        return match &posting.refusal {
+            Some(why) => Err(Refused(why.clone())),
+            None => Ok(None),
+        };
+    }
+    match (
+        u64::try_from(posting.reserved),
+        u64::try_from(posting.settled),
+        u64::try_from(posting.overdraft),
+    ) {
+        (Ok(reserved), Ok(settled), Ok(overdraft)) => Ok(Some((reserved, settled, overdraft))),
+        _ => Err(Negative),
+    }
+}
+
+/// The three figures a counts-era record DERIVES: the reservation of the hold it closes, its counts
+/// priced at their epoch, and the part nothing reserved. `None` for a counts row that priced to
+/// nothing.
+fn derived_figures(
+    posting: &Posting,
+    reserved: u64,
+    history: Option<&HistoryView<'_>>,
+) -> Result<Option<(u64, u64, u64)>, Unplaced> {
+    let settled = match &posting.counts {
+        None => 0,
+        Some(counts) => price_counts(history, counts, posting.arrived_ms)
+            .and_then(|nanos| u64::try_from(nanos).map_err(|_| MoneyError::Overflow))
+            .map_err(|refused| Refused(format!("{refused:?}")))?,
+    };
+    if posting.kind == PostingKind::Counted && settled == 0 {
+        return Ok(None);
+    }
+    Ok(Some((reserved, settled, settled.saturating_sub(reserved))))
+}
+
+/// A posting of the figures era without the tail: a balance display, a window and three figures and
+/// a version, and nothing else — or a counts-era record this build cannot parse. An audit record
+/// never has either shape: it opens with two digests.
 fn looks_like_a_posting(record: &JournalRecord) -> bool {
     let mut body = BodyReader::new(&record.body);
-    body.text().is_some_and(|shown| shown.contains('/'))
+    let Some(first) = body.text() else {
+        return false;
+    };
+    if first == POSTING_COUNTS || first == HOLD_OPENED_COUNTS {
+        return true;
+    }
+    first.contains('/')
         && body.num().is_some()
         && body.figure().is_some()
         && body.figure().is_some()
@@ -1617,11 +2022,19 @@ pub struct NodeBook {
 /// that there is no store to make either decision against.
 #[must_use]
 pub fn node_book() -> NodeBook {
+    node_book_over(root_history())
+}
+
+/// [`node_book`], naming where its money view reads the dated rate-card history.
+#[must_use]
+pub fn node_book_over(history: HistorySource) -> NodeBook {
     let rows = std::sync::Arc::new(RecordingRows::new());
-    let durability = build(
+    let durability = build_priced(
         &DurabilityConfig { data_dir: None },
+        0,
         Box::new(busbar_kernel_wal::NullShipper::new()),
         Box::new(RecordingRows::clone(&rows)),
+        history,
     )
     .expect("a memory-buffered journal cannot fail to open");
     NodeBook {
@@ -1650,6 +2063,23 @@ pub fn build_for_node(
     shipper: Box<dyn Shipper>,
     legacy_rows: Box<dyn LegacyRows>,
 ) -> Result<Durability, OpenError> {
+    build_priced(cfg, node, shipper, legacy_rows, root_history())
+}
+
+/// [`build_for_node`], naming where the book reads the dated rate-card history its replay prices
+/// the chain's counts against. The process's own is the root's holder; a caller that holds a
+/// history of its own — a test, a tool re-deriving a node's book — hands it here.
+///
+/// # Errors
+///
+/// As [`build_for_node`].
+pub fn build_priced(
+    cfg: &DurabilityConfig,
+    node: u64,
+    shipper: Box<dyn Shipper>,
+    legacy_rows: Box<dyn LegacyRows>,
+    history: HistorySource,
+) -> Result<Durability, OpenError> {
     let journal = match cfg.data_dir.as_deref() {
         // The previous release's shape: nothing is opened, nothing is probed, and durability is
         // whatever the store the batches are shipped to provides.
@@ -1671,6 +2101,7 @@ pub fn build_for_node(
         recovered_holds: 0,
         refused: Vec::new(),
         unconfirmed: Vec::new(),
+        history,
     };
 
     // THE BOOK IS REBUILT FROM THE CHAIN, not opened empty (item 128). An empty book here was the
@@ -1678,8 +2109,13 @@ pub fn build_for_node(
     // sides were zero. Every hold opened and every settlement posted is replayed through the
     // ledger's own arithmetic, the dual write included, so the book and the rows it feeds are what
     // they were when the node stopped. A memory-buffered journal replays nothing: it starts empty.
+    let pinned = (durability.history)();
+    let view = pinned.as_ref().map(PinnedHistory::view);
     let (replayed, unreadable) = match durability.journal.replay() {
-        Ok(Ok(records)) => (replay_into(&mut durability.ledger, &records), None),
+        Ok(Ok(records)) => (
+            replay_into(&mut durability.ledger, &records, view.as_ref(), false),
+            None,
+        ),
         Ok(Err(broken)) => (
             Replayed::nothing(),
             Some(format!("the journal does not verify: {broken:?}")),
