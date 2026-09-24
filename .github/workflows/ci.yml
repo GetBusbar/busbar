@@ -3738,6 +3738,74 @@ jobs:
       - name: Design bindings (existence; unmapped bindings listed as named gaps; regen-clean)
         run: cargo xtask gate design-bindings
 
+  content-debt-gates:
+    name: registered gates red on content (${{ matrix.gate }} — REPORT-ONLY in the umbrella, never softened here)
+    # THREE REGISTERED GATES RAN NOWHERE. `unconstructed`, `map-proof` and `sweep-coverage` were in
+    # the registry with no call site and no written excuse, so `cargo xtask full-gate --selftest`
+    # — whose registry-vs-ci.yml SET EQUALITY is what this job satisfies — exited 1, and a gate
+    # nothing runs is a gate that cannot fail (item 6a).
+    #
+    # ALL THREE ARE RED ON HEAD, SELF-TEST AND VERDICT BOTH, measured 2026-09-23 on predev:
+    #   unconstructed   stale-declaration: `money-one-function-view` is declared unshipped and now
+    #                   has a production construction site; its self-test scores 2 cases PROOF
+    #                   IMPOSSIBLE on that standing red.
+    #   sweep-coverage  swept / no-phantoms / reachability-axis FAIL (files with no verdict, verdicts
+    #                   naming files the tree no longer has); self-test red.
+    #   map-proof       its corpus documents are absent, so `extraction` is red; self-test red.
+    # Draining that content is item 6b (Phase 5). None of them has a `gates::REPORT_ONLY` posture, so
+    # `--posture` is not available, and `--report` would withhold the exit code — a hidden red.
+    #
+    # SO THIS JOB RUNS EACH GATE PLAINLY AND IS ALLOWED TO GO RED. No `continue-on-error`, no
+    # `|| true`, no `--report`: every red is this job's red, visible on every run. What is withheld
+    # is only its COUNT in the umbrella — it is in `needs` and declared `# report-only:` there, the
+    # same footing `ship-ready` stands on outside `needs`, because a required check that is red on
+    # every push for debt a later phase owns is a check somebody learns to ignore.
+    #
+    # FLIP CONDITION: when a gate is green on HEAD (item 6b), give this job a RESULTS row in the
+    # umbrella (or move the two steps into a counted job) and strike its `# report-only:` line and
+    # the matching CARGO_CI_ONLY entries in xtask/src/full_gate.rs, in the same commit.
+    needs: [preflight]
+    runs-on: latchkey-large
+
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [unconstructed, sweep-coverage, map-proof]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # sweep-coverage's denominator is git's tracked set and map-proof re-runs the commands its
+          # corpus prints, some of which read history; a shallow clone would measure a different tree.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Resolve cargo home (Latchkey image sets CARGO_HOME off $HOME)
+        uses: ./.github/actions/cargo-home
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
+      # Spelled out per gate rather than `cargo xtask gate ${{ matrix.gate }}`: full-gate's
+      # set-equality check reads gate NAMES off executed lines, and a matrix expression names none.
+      - name: unconstructed self-test
+        if: matrix.gate == 'unconstructed'
+        run: cargo xtask gate unconstructed --selftest
+      - name: unconstructed (every declared capability has a production construction site)
+        # `!cancelled()`: the verdict is printed even when the self-test above is red, so the log
+        # carries both. It does not soften either — the job is red if either step is.
+        if: ${{ !cancelled() && matrix.gate == 'unconstructed' }}
+        run: cargo xtask gate unconstructed
+      - name: sweep-coverage self-test
+        if: matrix.gate == 'sweep-coverage'
+        run: cargo xtask gate sweep-coverage --selftest
+      - name: sweep-coverage (every tracked file carries a sweep verdict)
+        if: ${{ !cancelled() && matrix.gate == 'sweep-coverage' }}
+        run: cargo xtask gate sweep-coverage
+      - name: map-proof self-test
+        if: matrix.gate == 'map-proof'
+        run: cargo xtask gate map-proof --selftest
+      - name: map-proof (every printed figure re-derived from the command that prints it)
+        if: ${{ !cancelled() && matrix.gate == 'map-proof' }}
+        run: cargo xtask gate map-proof
+
   ship-ready:
     name: ship-ready
     # THE SHIP CRITERION, AS A CHECK RATHER THAN A CHECKLIST. The criterion used to be prose that
@@ -3840,6 +3908,11 @@ jobs:
       - design-bindings
       - teller-steps
       - construction-gate
+      - content-debt-gates
+    # report-only: content-debt-gates -- unconstructed, map-proof and sweep-coverage are RED ON HEAD on
+    #   content that item 6b (Phase 5) drains, self-test and verdict both, and none has a
+    #   gates::REPORT_ONLY posture to score against. The job runs them plainly and goes red; the
+    #   umbrella waits for it and prints its result, and does not count it until each is green.
     # ── THE JOBS DELIBERATELY OUTSIDE THIS LIST ───────────────────────────────────────────────────
     # scripts/ci-umbrella-lint.py reads these two lines and requires that EVERY job in this file is
     # either in `needs` above or named here with a reason. `deletion-test-matrix` -- an enforcement
@@ -3864,6 +3937,8 @@ jobs:
       # Report-only: printed, never counted. Flip condition is on the construction-gate job.
       CONSTRUCTION_VERDICT: ${{ needs.construction-gate.outputs.verdict }}
       CONSTRUCTION_RESULT: ${{ needs.construction-gate.result }}
+      # Report-only: printed, never counted. Flip condition is on the content-debt-gates job.
+      CONTENT_DEBT_GATES_RESULT: ${{ needs.content-debt-gates.result }}
       # 'true' on any run where the full tier is expected to execute: every event except a push,
       # plus pushes to the three promotion branches. Mirrors the `if:` on the full-tier jobs above,
       # so "expected to run" and "required to have run" cannot drift apart.
@@ -3933,6 +4008,7 @@ jobs:
           # detail behind that row: `verdict` is what `--posture` decided, and a red there means a
           # row went red that the gate's standing list does not name.
           printf '  %-24s %s\n' "construction-gate" "posture verdict=${CONSTRUCTION_VERDICT:-unset} (job result ${CONSTRUCTION_RESULT:-unset}; SCORED)"
+          printf '  %-24s %s\n' "content-debt-gates" "job result ${CONTENT_DEBT_GATES_RESULT:-unset} (REPORT-ONLY until item 6b drains it; NOT COUNTED)"
           if [ "$fails" -ne 0 ]; then
             echo "::error::ci umbrella: RED — ${fails} required job(s) did not pass on this ref."
             echo "::error::A skipped, failed, or cancelled required job is NOT a pass. DO NOT PROMOTE."

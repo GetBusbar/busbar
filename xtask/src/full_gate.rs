@@ -155,7 +155,10 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate construction --posture",
     "cargo xtask gate design-bindings --selftest",
     "cargo xtask gate design-bindings",
-    "cargo build --locked -p busbar-store-example-plugin -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-secret-example-plugin -p busbar-export-example-plugin",
+    // The feature-sets job's plugin cdylibs. `busbar-plugin-example-plane` joined the list in
+    // ci.yml at 4e39e1a11 (the kind:plane rider `plane_abi_rider.rs` dlopens) and the local copy
+    // was never moved with it, so the CI line went unclassified. One list, both places.
+    "cargo build --locked -p busbar-store-example-plugin -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-secret-example-plugin -p busbar-export-example-plugin -p busbar-plugin-example-plane",
     "cargo xtask gate feature-sets --selftest",
     "cargo xtask gate feature-sets",
     "cargo xtask gate field-inventory --selftest",
@@ -206,7 +209,18 @@ pub const CARGO_CI_ONLY: &[(&str, &str)] = &[
     ("cargo clippy --workspace --all-targets --features \"${{ matrix.features }}\" --locked -- -D warnings", "the FEATURE-SETS matrix clippy. '${{ matrix.features }}' expands per feature set -- a CI matrix construct with no single local form, and the literal string is not a runnable command. Its rows are mirrored locally by 'cargo xtask gate feature-sets', which asserts that every non-default feature in the tree is in that matrix or declared covered: the gate holds the matrix's CONTENTS here, and only CI can run its six expansions."),
     ("cargo test ${{ matrix.tests }} --features \"${{ matrix.features }}\" --locked", "the same FEATURE-SETS matrix's test step; '${{ matrix.tests }}' is the row's own package list. Same reason, same local mirror."),
     ("cargo xtask gate construction", "the SCORED-AGAINST-ZERO form of the construction gate, which is RED BY DESIGN on HEAD while the construction work it measures is in flight; running it here would red the whole local gate on a fact nothing scores that way. ci.yml and keep-proof.yml no longer run this form at all: they run 'cargo xtask gate construction --posture' as a BLOCKING step, which is green while the gate is red on exactly the rows gates::REPORT_ONLY names and red on any other row — and that form IS in CARGO_LOCAL and does run locally, alongside '--report'. DELETE this entry when CONSTRUCTION_STANDING_REDS is empty and the bare form is green on HEAD."),
+    ("cargo test --workspace --locked --no-run --message-format=json", "the INPUT to the unix `check` job's collected-vs-ran census. It re-resolves the binaries `cargo test --workspace --locked` (above, run locally) has already built and emits cargo's JSON artifact stream; alone it has no verdict. The verdict is the inline python census and the per-binary `--list` loop that read that stream, which are step logic in ci.yml with no local form. Running the bare line here would rebuild nothing and prove nothing."),
+    ("cargo xtask gate unconstructed --selftest", CONTENT_DEBT_GATE),
+    ("cargo xtask gate unconstructed", CONTENT_DEBT_GATE),
+    ("cargo xtask gate sweep-coverage --selftest", CONTENT_DEBT_GATE),
+    ("cargo xtask gate sweep-coverage", CONTENT_DEBT_GATE),
+    ("cargo xtask gate map-proof --selftest", CONTENT_DEBT_GATE),
+    ("cargo xtask gate map-proof", CONTENT_DEBT_GATE),
 ];
+
+/// The one reason the three `content-debt-gates` gates share (item 6a). Written once so the six
+/// lines cannot drift into six stories.
+const CONTENT_DEBT_GATE: &str = "run by ci.yml's `content-debt-gates` job, PLAINLY — no --report, no continue-on-error, no `|| true` — which the umbrella waits for and declares `# report-only:`. All three gates (`unconstructed`, `sweep-coverage`, `map-proof`) are RED ON HEAD, self-test and verdict both, on content item 6b (Phase 5) drains, and none has a gates::REPORT_ONLY posture, so neither a `--posture` form nor a green local form exists. In CARGO_LOCAL they would red every local full-gate run on debt this runner cannot excuse. DELETE the gate's two entries, move them to CARGO_LOCAL and give the job a RESULTS row in the same commit, when that gate is green on HEAD.";
 
 /// WHERE AN EXCUSED GATE IS ACTUALLY RUN — the checkable half of a written reason.
 ///
