@@ -2420,7 +2420,7 @@ struct HopContext {
 /// THE HOP'S ONE CHARGE AND ITS ONE AUDIT RECORD, SETTLED ONLY ONCE THE HOP'S FATE IS KNOWN.
 ///
 /// A hop is billed if busbar ATTEMPTED it — the call reached the transport — and not otherwise. The
-/// ledger is what the plane did (§8.4): a hop the breaker refused, the SSRF guard refused, a
+/// ledger is what the plane did: a hop the breaker refused, the SSRF guard refused, a
 /// demotion or an unleasable credential stopped before the socket, was never made, so it writes no
 /// metering row and is audited `rejected`, never `applied`. A hop that left is billed whatever the
 /// backend then answered, exactly as before.
@@ -2474,9 +2474,9 @@ impl HopCharge {
     }
 }
 
-/// LEDGER ONE HOP'S PAYLOAD BYTES under the plane's one declared class, `bytes` (#71) — OWNER
-/// RULING §13/Q30c (Q35): *a billed A2A byte = payload bytes relayed BOTH ways per hop (request +
-/// response), class `bytes`, priced by `agents.rate_card`; no card → 0.* What a payload byte is,
+/// LEDGER ONE HOP'S PAYLOAD BYTES under the plane's one declared class, `bytes`: a billed A2A byte
+/// is payload bytes relayed BOTH ways per hop (request + response), class `bytes`, priced by
+/// `agents.rate_card`; no card → 0. What a payload byte is,
 /// exactly, is [`super::relay::HopBytes`]'s doc.
 ///
 /// The plane's whole money obligation, and the MCP plane's `ledger_tool_call` twin: one raw count on

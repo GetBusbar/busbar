@@ -156,7 +156,7 @@ pub(crate) fn ledger_and_meter(
     // record of what the plane did, and BILLING OFF is the money VIEW reading it as 0 (#42), never a
     // missing row. This used to route through the kernel's `meter_series_billed`, which dropped the
     // row whenever the pinned card was absent — the same card-gated write item 36 removed from the
-    // MCP/A2A charge (0ee95aafd). The flat/counted arm of `record_resp_usage` above already wrote its
+    // MCP/A2A charge. The flat/counted arm of `record_resp_usage` above already wrote its
     // row this way; the token arm now matches it. The budget/ledger accrual ABOVE is not switched
     // either: token-COUNT rate caps enforce off that accrual, and #42 keeps admission, concurrency and
     // breaker on for an unbilled plane.

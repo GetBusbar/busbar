@@ -87,7 +87,7 @@ pub trait HistoryArchive {
 ///
 /// It holds cards and nothing else. The TIER is not here, and that is the rule rather than an
 /// omission: a tier is a property of the chain a request was admitted through, the line records it
-/// as it records its quantities (the ledger is what happened, KICKOFF §8.4), and the statement
+/// as it records its quantities (the ledger is what happened), and the statement
 /// ([`crate::totals_as_of`]) and the adjusting entries ([`crate::adjusting_entries`]) both price at
 /// the line's own tier. An archive-held tier was a second source of the same fact that nothing in
 /// production ever filled, so the recompute — the arbiter — priced by a different rule from the

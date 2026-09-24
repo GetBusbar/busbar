@@ -1,10 +1,10 @@
 //! A GENERATION THE UPSTREAM REPORTS AS FAILED SURFACES AS AN ERROR AND CHARGES WHAT IT USED.
 //!
-//! OWNER RULING Q31 (docs/design/1.6.0-QUESTIONS.md, Q32): a 2xx whose own stop reason says the
+//! A 2xx whose own stop reason says the
 //! generation FAILED — a Cohere `finish_reason: "ERROR"`, a Gemini `MALFORMED_FUNCTION_CALL` — is
 //! not a success. The client gets an error (never a success terminator in its own dialect), the
 //! serving lane's breaker records a fault, and the usage the upstream reported is still charged:
-//! the #62 rule (a failed stream bills what it streamed) applied to both delivery arms.
+//! a failed stream bills what it streamed, applied to both delivery arms.
 //!
 //! Driven end to end through [`crate::engine::forward_with_pool`] against a scripted upstream, so
 //! each assertion reads the real seam: the response the client receives, the pool cell's breaker,

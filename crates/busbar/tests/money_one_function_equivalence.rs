@@ -651,7 +651,7 @@ fn d8_the_gauge_figure_is_the_one_functions_integer_up_to_the_egress_boundary() 
     );
 }
 
-/// D9 — M32, PARKED-OWNER (Q14): the admin read resolves a row at a BUCKET-level instant, not at
+/// PARKED: the admin read resolves a row at a BUCKET-level instant, not at
 /// each posting's own `arrived_ms`, so a sub-day back-dated correction cannot reach its rows. Kept
 /// verbatim as the parked measurement; not this collapse's to resolve.
 #[test]
@@ -1045,7 +1045,7 @@ fn census(sources: &[(String, String)]) -> Vec<String> {
 }
 
 /// Derivation-named functions the census SEES and that are not routed through the one function,
-/// each owned outside this collapse and named with its reason. Armed at today's count (§9.4).
+/// each owned outside this collapse and named with its reason. Armed at today's measured count.
 ///
 /// EMPTY: the last entry (busbar-voice's `#[cfg(test)]` MockMeteringHost `price_usage`) went with the
 /// D2 lease (OWNER RULING Q21b, P2-voice f87fd3800) — struck, as the census asks of a fixed one.

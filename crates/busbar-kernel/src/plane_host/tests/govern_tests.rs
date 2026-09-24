@@ -458,7 +458,7 @@ fn billing_off_charge_still_appends_the_counts_to_the_ledger() {
     assert_eq!(counts.requests, 1, "the request is on the ledger");
     assert_eq!(
         counts.tokens_input, 42,
-        "the ledger is exactly what the plane did (§8.4): 42 means 42, card or no card"
+        "the ledger is exactly what the plane did: 42 means 42, card or no card"
     );
 }
 

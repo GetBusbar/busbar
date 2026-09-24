@@ -2510,7 +2510,7 @@ mod front_door_chain_tests;
 #[path = "tests/pushback_tests.rs"]
 mod pushback_tests;
 
-// THE HOP'S BILLED BYTES (Q35) — every hop that left ledgers its payload bytes, both ways, under the
+// THE HOP'S BILLED BYTES — every hop that left ledgers its payload bytes, both ways, under the
 // plane's `bytes` class. Mounted here for the reason every block above is: the counts are read off
 // the shared harness's recorded wire, and only a hop through the production ingress settles a charge.
 #[cfg(all(test, feature = "test-support"))]

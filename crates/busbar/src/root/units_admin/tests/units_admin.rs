@@ -4478,7 +4478,7 @@ fn the_derived_figure_equals_the_settled_balance_while_the_history_has_not_moved
     );
 }
 
-/// Item 28, the replacing behaviour (§15.3), at the served surface: a ledger row whose micro-unit
+/// The replacing behaviour, at the served surface: a ledger row whose micro-unit
 /// figure is past the `i64` it is served in FAILS the totals and reconciliation reads (`Store`, the
 /// 500 the other money reads answer with) — it was served as `"priced_micros":"9223372036854775807"`
 /// by the pinning projection. A legacy side that cannot project refuses the reconciliation the same

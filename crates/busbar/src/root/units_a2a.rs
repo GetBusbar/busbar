@@ -1722,9 +1722,9 @@ fn fee_evidence(
 /// This plane's one metered line: how many bytes, and which side of the exchange they came off.
 ///
 /// One class, one line. THE QUANTITY IS THE PAYLOAD RELAYED BOTH WAYS — the request document plus
-/// the answer document — per the owner's billed-byte ruling (Q30c/Q35: *a billed A2A byte = payload
-/// bytes relayed BOTH ways per hop (request + response), class `bytes`, priced by
-/// `agents.rate_card`; no card → 0*), the same count the relay ledgers in `busbar-a2a` (72178d0ed).
+/// the answer document: a billed A2A byte is payload bytes relayed BOTH ways per hop (request +
+/// response), class `bytes`, priced by `agents.rate_card`; no card → 0, the same count the relay
+/// ledgers in `busbar-a2a`.
 /// It used to be the answer alone, so the request half of every exchange was never metered. There is
 /// no pointer to walk, so the locator carries the value. Saturating: a count is never a refusal.
 ///

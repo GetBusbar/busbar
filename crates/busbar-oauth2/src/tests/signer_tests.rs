@@ -238,7 +238,7 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
         format!(
             r#"{{"keys":[{{"kty":"EC","crv":"P-256","x":"{x}","y":"{y}","kid":"{kid}","use":"sig","alg":"ES256"}}]}}"#
         ),
-        "the served JWKS document is not byte-identical to 1.5.5's; this is a §9.5 customer-visible \
+        "the served JWKS document is not byte-identical to 1.5.5's; this is a customer-visible \
          change and must be queued, not absorbed"
     );
 

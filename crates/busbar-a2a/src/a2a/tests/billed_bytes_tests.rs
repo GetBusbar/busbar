@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **A HOP LEDGERS THE PAYLOAD BYTES IT RELAYED, BOTH WAYS** — OWNER RULING §13/Q30c (Q35): *a
-//! billed A2A byte = payload bytes relayed BOTH ways per hop (request + response), class `bytes`,
-//! priced by `agents.rate_card`; no card → 0.* Items 136 and 268, A2A half.
+//! **A HOP LEDGERS THE PAYLOAD BYTES IT RELAYED, BOTH WAYS**: a billed A2A byte is payload bytes
+//! relayed BOTH ways per hop (request + response), class `bytes`, priced by `agents.rate_card`; no
+//! card → 0.
 //!
 //! Before this, the plane's one charge was a `Queries` meter at amount 0: the declared `bytes` class
 //! was never counted, so `Σ count × rate` over it was 0 whatever an agent moved, and a `budget:` cap

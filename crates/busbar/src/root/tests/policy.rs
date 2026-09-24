@@ -148,7 +148,7 @@ fn the_transport_client_reads_the_operators_limits_and_not_a_default() {
     assert_eq!(settings.pool_idle_timeout_secs, 11);
     assert!(settings.upstream_http1_only);
     assert!(!settings.upstream_h2_prior_knowledge);
-    // The request timeout is the operator's too (5e3518f5e): a figure the transport hardcoded would
+    // The request timeout is the operator's too: a figure the transport hardcoded would
     // cut a slow upstream at a number nobody configured. 13 is neither the resolved default nor the
     // transport's own, so reading either instead of the operator's goes red here.
     assert_ne!(
