@@ -375,9 +375,8 @@ impl<'de> serde::Deserialize<'de> for DecisionsSection {
 /// neutral seam the owning plane's own endpoint-config type deserializes through. Absent/null ⇒
 /// `None` (endpoint not configured), byte-identical to the pre-seam typed field's `Default`.
 #[derive(Debug, Default)]
-pub struct McpEndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>); // plane-purity: frozen-wire McpEndpointSection is recorded verbatim in config-schema.snapshot.json as the mcp: field type
+pub struct McpEndpointSection(pub Option<Box<dyn PlaneEndpointCfg>>);
 
-// plane-purity: frozen-wire the impl below is for McpEndpointSection, the snapshot-recorded mcp: field type
 impl<'de> serde::Deserialize<'de> for McpEndpointSection {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -389,20 +388,21 @@ impl<'de> serde::Deserialize<'de> for McpEndpointSection {
             busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
             deserializer,
         )
-        .map(McpEndpointSection) // plane-purity: frozen-wire the snapshot-recorded mcp: field type
+        .map(McpEndpointSection)
     }
 }
 
 /// THE FROZEN TOP-LEVEL WIRE KEY the `mcp:` endpoint block is lifted from — owned HERE, in the config
 /// seam beside its frozen carrier, so core's config PRE-PASS routes the lift through a plane-neutral
-/// spelling and names no concrete plane in its parse machinery (DECISIONS #1). Frozen since 1.5.3:
-/// recorded verbatim in `config-schema.snapshot.json` as the `mcp:` field, which is why it is a
-/// frozen-wire literal and cannot move.
-pub(crate) const ENDPOINT_SECTION_KEY: &str = "mcp"; // plane-purity: frozen-wire the mcp: top-level wire key, recorded verbatim in config-schema.snapshot.json (frozen since 1.5.3)
+/// spelling and names no concrete plane in its parse machinery (DECISIONS #1). NOT frozen: the
+/// `mcp:` key is 1.6.0-additive — `v1.5.3` and `v1.5.5` both ship a 26-field `DeployCfg` with no
+/// `mcp:` field (item 2) — so this literal carries no frozen-wire exemption and `plane-purity:key`
+/// counts it as the core-names-a-plane debt it is.
+pub(crate) const ENDPOINT_SECTION_KEY: &str = "mcp";
 
 /// The NEUTRAL ALIAS of the `mcp:` endpoint carrier type — the spelling the pre-pass lifts through so
 /// its generic lift machinery names no plane. Resolves to the snapshot-recorded [`McpEndpointSection`].
-pub(crate) type EndpointSection = McpEndpointSection; // plane-purity: frozen-wire alias of the snapshot-recorded mcp: field type
+pub(crate) type EndpointSection = McpEndpointSection;
 
 /// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto, DERIVED from the two
 /// tables that declare the config grammar rather than written as a literal.
