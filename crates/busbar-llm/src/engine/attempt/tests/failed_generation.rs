@@ -27,6 +27,17 @@ struct Outcome {
 /// Drive one openai-ingress chat request through a single-member pool whose lane speaks `egress`,
 /// the upstream answering `reply`, on a governed key; drain the body and read every seam back.
 async fn drive(egress: &'static str, reply: MockResponse, stream: bool) -> Outcome {
+    drive_from(crate::proto_codec::PROTO_OPENAI, egress, reply, stream).await
+}
+
+/// [`drive`] from an `ingress` dialect of the caller's choosing — `ingress == egress` is the
+/// same-protocol relay.
+async fn drive_from(
+    ingress: &'static str,
+    egress: &'static str,
+    reply: MockResponse,
+    stream: bool,
+) -> Outcome {
     crate::testkit::install_test_seams();
     let state = Arc::new(MockServerState::new());
     state.push(reply);
@@ -67,7 +78,7 @@ async fn drive(egress: &'static str, reply: MockResponse, stream: bool) -> Outco
         None,
         "p",
         None,
-        crate::proto_codec::PROTO_OPENAI,
+        ingress,
         crate::test_support::CHAT,
         Some(sink),
     )
@@ -161,6 +172,59 @@ async fn buffered_cohere_complete_is_a_success_and_charges_10_5() {
     )
     .await;
     assert_eq!(out.status, 200, "{}", out.body);
+    assert!(!out.breaker_faulted, "a completed generation is no fault");
+    assert_eq!(out.finish, Some(TapFinish::Complete));
+    assert_eq!(out.reported, Some((10, 5)));
+    assert_eq!(out.ledger_tokens, 15);
+}
+
+/// SAME-PROTOCOL NON-STREAM (owner ruling Q31 follow-up). A Cohere `finish_reason: "ERROR"` relayed
+/// to a Cohere client is passed through BYTE FOR BYTE — the client reads its own dialect's failure
+/// token — but the lane's breaker records the fault, the end is `Error`, and the 10/5 the upstream
+/// reported is charged. At the pin the breaker counted a success and the end was `Complete`.
+#[tokio::test]
+async fn same_protocol_cohere_error_relays_verbatim_faults_the_breaker_and_charges_10_5() {
+    let reply = cohere_body("ERROR");
+    let MockResponse::Ok { body: upstream, .. } = &reply else {
+        unreachable!()
+    };
+    let upstream = upstream.to_string();
+    let out = drive_from(
+        crate::proto_codec::PROTO_COHERE,
+        crate::proto_codec::PROTO_COHERE,
+        reply,
+        false,
+    )
+    .await;
+    assert_eq!(out.status, 200, "the relay is served on its headers");
+    assert_eq!(
+        out.body, upstream,
+        "the upstream body reaches the client byte-for-byte unchanged"
+    );
+    assert!(
+        out.breaker_faulted,
+        "the serving lane's breaker must record a fault for a failed generation"
+    );
+    assert_eq!(out.finish, Some(TapFinish::Error), "the end is an Error");
+    assert_eq!(
+        out.reported,
+        Some((10, 5)),
+        "the charge is what the upstream reported"
+    );
+    assert_eq!(out.ledger_tokens, 15, "the ledger holds 10 in + 5 out");
+}
+
+/// CONTROL for the same-protocol relay: `COMPLETE` is a clean success, no fault, 10/5.
+#[tokio::test]
+async fn same_protocol_cohere_complete_is_a_success_and_charges_10_5() {
+    let out = drive_from(
+        crate::proto_codec::PROTO_COHERE,
+        crate::proto_codec::PROTO_COHERE,
+        cohere_body("COMPLETE"),
+        false,
+    )
+    .await;
+    assert_eq!(out.status, 200);
     assert!(!out.breaker_faulted, "a completed generation is no fault");
     assert_eq!(out.finish, Some(TapFinish::Complete));
     assert_eq!(out.reported, Some((10, 5)));

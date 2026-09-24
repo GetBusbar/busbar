@@ -4904,6 +4904,38 @@ fn finish_reason_malformed_function_call_stream_is_error() {
     );
 }
 
+/// `raw_stop_reason` reads the FIRST candidate's `finishReason` off the RAW bytes and maps it
+/// exactly as `read_response` does (owner ruling Q31 follow-up: the same-protocol relay's breaker
+/// fault), with bounded work after locating the key.
+#[test]
+fn raw_stop_reason_agrees_with_read_response() {
+    for token in [
+        GEMINI_FINISH_MALFORMED_FUNCTION_CALL,
+        "STOP",
+        "MAX_TOKENS",
+        "SAFETY",
+        "OTHER",
+    ] {
+        let body = serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "x"}]},
+                "finishReason": token
+            }],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5}
+        });
+        let parsed = GeminiReader.read_response(&body).expect("read_response");
+        assert_eq!(
+            GeminiReader.raw_stop_reason(body.to_string().as_bytes()),
+            parsed.stop_reason,
+            "{token}"
+        );
+    }
+    // A value too long to be a stop token is not read at all.
+    let long = format!("{{\"finishReason\":\"{}\"}}", "A".repeat(4096));
+    assert_eq!(GeminiReader.raw_stop_reason(long.as_bytes()), None);
+    assert_eq!(GeminiReader.raw_stop_reason(b"{}"), None);
+}
+
 /// The Error event is scoped to the failed-generation reason: a SAFETY stop is a correctly-served
 /// refusal and a MAX_TOKENS stop a truncation, neither a lane fault.
 #[test]

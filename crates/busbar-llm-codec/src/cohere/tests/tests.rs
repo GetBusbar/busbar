@@ -5399,3 +5399,62 @@ fn cohere_writer_emits_every_citation_in_a_multi_citation_delta() {
         "each citation-start keeps its paired citation-end, got {frames:?}"
     );
 }
+
+/// `raw_stop_reason` reads the top-level `finish_reason` off the RAW bytes and maps it exactly as
+/// `read_response` does (owner ruling Q31 follow-up: the same-protocol relay's breaker fault).
+#[test]
+fn raw_stop_reason_agrees_with_read_response() {
+    for token in [
+        "ERROR",
+        "COMPLETE",
+        "MAX_TOKENS",
+        "TOOL_CALL",
+        "ERROR_TOXIC",
+        "NOVEL",
+    ] {
+        let body = serde_json::json!({
+            "id": "c-1",
+            "finish_reason": token,
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "x"}]},
+            "usage": {"tokens": {"input_tokens": 10, "output_tokens": 5}}
+        });
+        let parsed = CohereReader.read_response(&body).expect("read_response");
+        assert_eq!(
+            CohereReader.raw_stop_reason(body.to_string().as_bytes()),
+            parsed.stop_reason,
+            "{token}"
+        );
+    }
+    // Pretty-printed spacing around the colon still reads.
+    assert_eq!(
+        CohereReader.raw_stop_reason(b"{\"finish_reason\" :  \"ERROR\"}"),
+        Some(crate::ir::IrStopReason::Error)
+    );
+    // No field, an empty token, a non-string value: no reason.
+    assert_eq!(CohereReader.raw_stop_reason(b"{\"id\":\"c\"}"), None);
+    assert_eq!(
+        CohereReader.raw_stop_reason(b"{\"finish_reason\":\"\"}"),
+        None
+    );
+    assert_eq!(
+        CohereReader.raw_stop_reason(b"{\"finish_reason\":null}"),
+        None
+    );
+}
+
+/// The key spelled INSIDE delivered text is not the field: there its quotes are escaped. A body
+/// whose text says `"finish_reason":"ERROR"` and which completed reads `COMPLETE`.
+#[test]
+fn raw_stop_reason_ignores_the_key_inside_delivered_text() {
+    let body = serde_json::json!({
+        "id": "c-1",
+        "message": {"role": "assistant",
+            "content": [{"type": "text", "text": "{\"finish_reason\":\"ERROR\"}"}]},
+        "finish_reason": "COMPLETE",
+        "usage": {"tokens": {"input_tokens": 10, "output_tokens": 5}}
+    });
+    assert_eq!(
+        CohereReader.raw_stop_reason(body.to_string().as_bytes()),
+        Some(crate::ir::IrStopReason::EndTurn)
+    );
+}

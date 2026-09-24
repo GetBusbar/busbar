@@ -826,6 +826,10 @@ where
                     // recovery, `op.extract_usage`) still hand back the concrete `IrUsage`, projected
                     // here. Either way the billing consumers below speak token totals and name zero
                     // concrete IR. Byte-identical (the projection carries the four billed totals).
+                    // A SAME-PROTOCOL NON-STREAM body whose own stop reason says the generation
+                    // FAILED (owner ruling Q31 follow-up) — set below, from the relayed bytes this
+                    // body already holds, never from a second parse of them.
+                    let mut nonstream_generation_failed = false;
                     let token_usage: Option<busbar_substrate_values::billing::TokenUsage> =
                         if this.usage_sink.is_none() {
                             None
@@ -851,6 +855,19 @@ where
                             // flat-fee op returns None and bills nothing.
                             let truncated = this.nonstream_buf_truncated;
                             let buf: Vec<u8> = std::mem::take(&mut this.nonstream_buf);
+                            // The relayed body's stop reason, read off ITS FIELD ONLY: the dialect's
+                            // reader locates the stop-reason key in the bytes and maps its token the
+                            // way `read_response` does — one scan to find the key, bounded work
+                            // after it, no document parse. The body already went to the client
+                            // byte-for-byte; this decides the breaker and the end, never the charge.
+                            // A head-truncated buffer whose field fell off the front reads `None`
+                            // and is not a fault.
+                            nonstream_generation_failed =
+                                crate::proto_codec::with_reader(this.ingress_protocol, |r| {
+                                    r.raw_stop_reason(&buf)
+                                })
+                                .flatten()
+                                    == Some(crate::ir::IrStopReason::Error);
                             if truncated {
                                 // The buffer is a TAIL FRAGMENT (its head was dropped to stay within
                                 // cap), not a well-formed top-level document — `Op::extract_usage`'s
@@ -905,7 +922,27 @@ where
                         .as_ref()
                         .and_then(|t| t.terminal_error())
                         .is_some()
-                        || translate_aborted;
+                        || translate_aborted
+                        || nonstream_generation_failed;
+                    // The same-protocol non-stream failed generation's BREAKER FAULT (owner ruling
+                    // Q31 follow-up). The streamed ends record theirs above from the translator's
+                    // terminal error; this relay has no translator, so its fault is recorded here,
+                    // compensating the optimistic success recorded at headers time — exactly as
+                    // the buffered arm's failed-generation exit does, under the same reason.
+                    if nonstream_generation_failed {
+                        if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
+                            let tripped = host.lane_store().record_transient_in(
+                                &this.pool,
+                                this.lane_idx,
+                                "upstream-generation-failed",
+                                &this.breaker_cfg,
+                                None,
+                            );
+                            if tripped {
+                                emit_breaker_trip(host, rt, &this.pool, this.lane_idx);
+                            }
+                        }
+                    }
                     if let Some(sink) = this.usage_sink.take() {
                         // Ledger + meter the SERVING lane (`lane_idx` is the lane that
                         // actually answered, post-failover) through the one accrual seam.

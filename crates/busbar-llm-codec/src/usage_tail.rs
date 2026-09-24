@@ -84,3 +84,48 @@ pub fn isolate_tail_usage_object(tail: &[u8], key: &[u8]) -> Option<serde_json::
     let obj = balanced_object_after(tail, key_pos + key.len())?;
     busbar_substrate_values::json::parse(obj).ok()
 }
+
+/// The longest string value [`first_string_value_after`] reads. A stop-reason token is a short enum
+/// member (`ERROR`, `MALFORMED_FUNCTION_CALL`); a value that runs past this is not one, and reading
+/// it would be work proportional to the body rather than to the field.
+const MAX_TOKEN_BYTES: usize = 64;
+
+/// The string value of the FIRST `key` (quotes included, e.g. `b"\"finish_reason\""`) in `buf`,
+/// without parsing the document: locate the key, skip `:` and whitespace, and read the quoted value
+/// that follows, bounded at [`MAX_TOKEN_BYTES`]. `None` when the key is absent, its value is not a
+/// plain string, or the value is longer than a token.
+///
+/// The one scan the key location costs is the only body-size-proportional work; everything after it
+/// is bounded. A key spelled inside a delivered string value cannot match: there its closing quote
+/// is escaped (`\"`), and the needle requires a bare `"` right after the key's last letter.
+pub fn first_string_value_after<'b>(buf: &'b [u8], key: &[u8]) -> Option<&'b str> {
+    if key.is_empty() || buf.len() < key.len() {
+        return None;
+    }
+    let key_pos = (0..=buf.len() - key.len()).find(|&i| &buf[i..i + key.len()] == key)?;
+    let mut i = key_pos + key.len();
+    while i < buf.len() && buf[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if buf.get(i) != Some(&b':') {
+        return None;
+    }
+    i += 1;
+    while i < buf.len() && buf[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if buf.get(i) != Some(&b'"') {
+        return None;
+    }
+    let start = i + 1;
+    let end = buf
+        .get(start..buf.len().min(start + MAX_TOKEN_BYTES + 1))?
+        .iter()
+        .position(|&c| c == b'"' || c == b'\\')
+        .map(|n| start + n)?;
+    if buf[end] != b'"' {
+        // An escape inside the value: not a plain enum token.
+        return None;
+    }
+    std::str::from_utf8(&buf[start..end]).ok()
+}

@@ -104,6 +104,17 @@ pub trait ProtocolReader: Send + Sync {
         None
     }
 
+    /// The stop reason of a non-stream response read from its RAW BYTES, without parsing the
+    /// document: locate this dialect's stop-reason field and map its token exactly as
+    /// [`Self::read_response`] maps it. For the same-protocol relay, which passes the body through
+    /// verbatim and holds only its bytes, to tell a failed generation (owner ruling Q31) from a
+    /// completed one at the cost of finding one field. `None` when the field is absent or not a
+    /// plain token. Defaulted to `None`: only a dialect whose stop vocabulary can say
+    /// [`crate::ir::IrStopReason::Error`] needs to answer.
+    fn raw_stop_reason(&self, _body: &[u8]) -> Option<crate::ir::IrStopReason> {
+        None
+    }
+
     /// Read a single response/stream event from already-de-framed SSE data.
     ///
     /// Default: delegate to the canonical fan-out [`read_response_events`] over a fresh decode

@@ -1,6 +1,14 @@
 use super::*;
 
 impl ProtocolReader for GeminiReader {
+    /// The FIRST `finishReason` is the first candidate's — the one `read_response` reads its stop
+    /// reason from — mapped through the same `map_gemini_finish_reason`.
+    fn raw_stop_reason(&self, body: &[u8]) -> Option<crate::ir::IrStopReason> {
+        // `FIELD_FINISH_REASON`, quoted — spelled as bytes so the lookup allocates nothing.
+        super::super::usage_tail::first_string_value_after(body, b"\"finishReason\"")
+            .map(map_gemini_finish_reason)
+    }
+
     fn recover_truncated_usage(
         &self,
         tail: &[u8],

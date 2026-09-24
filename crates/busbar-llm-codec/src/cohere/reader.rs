@@ -1,6 +1,14 @@
 use super::*;
 
 impl ProtocolReader for CohereReader {
+    /// The top-level `finish_reason`, mapped through the same `read_cohere_stop_reason`
+    /// `read_response` uses. An empty token is no reason, exactly as `read_response` reads it.
+    fn raw_stop_reason(&self, body: &[u8]) -> Option<crate::ir::IrStopReason> {
+        super::super::usage_tail::first_string_value_after(body, b"\"finish_reason\"")
+            .filter(|t| !t.is_empty())
+            .map(read_cohere_stop_reason)
+    }
+
     fn recover_truncated_usage(
         &self,
         tail: &[u8],
