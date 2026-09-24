@@ -194,6 +194,45 @@ pub const MONEY_INTAKE: &[MoneyIntake] = &[
     },
 ];
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// THE MONEY-EGRESS BOUNDARIES — WHERE A STORED INTEGER IS HANDED TO A FLOAT-ONLY SINK
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// ONE PLACE A MONEY FIGURE LEAVES THIS SYSTEM THROUGH AN API THAT ONLY TAKES A FLOAT.
+///
+/// The mirror of [`MoneyIntake`]. The `/metrics` exposition is the case that made this table: the
+/// `metrics` facade stores every gauge as floating-point bits (`Gauge::set<T: IntoF64>`, with no
+/// `IntoF64` for a 64-bit integer) and the Prometheus exporter prints that value, so the served
+/// spend figure has been a float since 1.5.x through no arithmetic of busbar's. The money stays an
+/// integer right up to that sink, and the conversion is ONE named function per listed file. The
+/// file is scanned whole; a float anywhere outside the named body — including a second function
+/// that does the same conversion under another name — is a finding.
+///
+/// AND THE RULE THAT MAKES "AT THE BOUNDARY" MEAN SOMETHING, mirrored from the intake's return-type
+/// rule: an egress boundary's PARAMETERS are checked, and a float in them is a finding. Integers go
+/// in; a boundary that TAKES a float was handed a figure that was already a float before it got
+/// there, which is a float on the money path one frame down the stack.
+pub struct MoneyEgress {
+    /// The repo-relative file the boundary lives in. It must also be in a scan set — an egress
+    /// exemption over a file nobody scans exempts nothing and hides that nobody scans it.
+    pub file: &'static str,
+    /// The FUNCTION that is the boundary, found by name. Absent is REFUSED, never "exempts nothing".
+    pub boundary: &'static str,
+    /// Why this sink forces a float at all.
+    pub why: &'static str,
+}
+
+/// EVERY MONEY-EGRESS BOUNDARY IN THE TREE, at most one per file. Read this table and [`MONEY_INTAKE`]
+/// and you have read the gate's whole exempt surface.
+pub const MONEY_EGRESS: &[MoneyEgress] = &[MoneyEgress {
+    file: "crates/busbar-kernel/src/metrics/money.rs",
+    boundary: "set_gauge",
+    why: "The `/metrics` money gauges (spend, budget-remaining, token counts): an `i64`/`u64` figure \
+          widened to `i128`, then handed to the `metrics` facade, whose gauge stores and the \
+          Prometheus exporter prints a float. Byte-identical to 1.5.5, which cast the same integer \
+          into the same gauge (item 24).",
+}];
+
 /// The `*_tests.rs` sibling, the `tests.rs` module and the `/tests/` tree are fixtures: a float in a
 /// test is a test's number, not the money path's, and a wire value a fixture spells any way it likes
 /// is the fixture's business.
@@ -324,6 +363,13 @@ const WAL_FLOOR: usize = 6;
 /// (`5fa320208`, R100) and was in no money scan set on either side of the move. MEASURED: zero
 /// `f64`/`f32` in it today.
 ///
+/// THE FOURTH ENTRY, ADDED 2026-09-23 (item 24): `metrics/money.rs` — THE SERVED MONEY GAUGES.
+/// `busbar_key_spend_cents`, `busbar_bucket_spend_cents` and `busbar_bucket_budget_remaining_cents`
+/// are money a customer scrapes, and they were published from `metrics.rs`, a file of routing
+/// weights and durations this list could not take whole (armed over it, it named fourteen floats,
+/// three of them money). The money gauges were split into their own file so it could be taken whole,
+/// and the one conversion the `metrics` facade forces is the declared [`MONEY_EGRESS`] boundary in it.
+///
 /// THE REST OF THE KERNEL STAYS OFF THIS LIST for the reason the paragraph above gives, and the
 /// measurement backs it: the kernel is 350-odd files of routing weights, health scores and backoff
 /// curves, all of them legitimate floats. PARK: this is SHAPE D and it is unclosed — nothing in the
@@ -332,6 +378,7 @@ const KERNEL_MONEY_FILES: &[&str] = &[
     "crates/busbar-kernel/src/billing.rs",
     "crates/busbar-kernel/src/cost.rs",
     "crates/busbar-kernel/src/rate_apply.rs",
+    "crates/busbar-kernel/src/metrics/money.rs",
 ];
 
 /// The float tokens a money path may not name. Word-boundary matched so `nf64` or an identifier that
@@ -773,6 +820,8 @@ struct Boundary {
     last_line: usize,
     /// The return type as declared, or `""` for a boundary that returns unit.
     returns: String,
+    /// The parameter list as declared, from the first `(` to the last `)` of the header.
+    params: String,
 }
 
 /// Is this line the declaration of `fn <name>`?
@@ -839,10 +888,17 @@ fn find_boundary(text: &str, name: &str) -> Option<Boundary> {
         .map(|at| header[at..].trim().to_string())
         .unwrap_or_default();
 
+    // THE PARAMETERS are the header from its first `(` to that same last `)`.
+    let params = match (header.find('('), header.rfind(')')) {
+        (Some(open), Some(close)) if open < close => header[open..=close].to_string(),
+        _ => String::new(),
+    };
+
     Some(Boundary {
         first_line: start + 1,
         last_line: last? + 1,
         returns,
+        params,
     })
 }
 
@@ -856,6 +912,17 @@ fn returns_float(intake: &MoneyIntake, b: &Boundary) -> Option<String> {
          INTEGER; a float returned from the intake is a float that survived it, and every caller of \
          it is runtime money path",
         intake.file, b.first_line, intake.boundary, b.returns, token
+    ))
+}
+
+/// THE EGRESS MIRROR OF [`returns_float`]: integers go IN to an egress boundary. A boundary that
+/// takes a float was handed a figure that was already a float, which is the finding one frame down.
+fn takes_float(egress: &MoneyEgress, b: &Boundary) -> Option<String> {
+    let token = FLOAT_TOKENS.iter().find(|t| word_hit(&b.params, t))?;
+    Some(format!(
+        "{}:{}: the money-egress boundary `fn {}` TAKES a float (`{}` in `{}`) — money reaches an \
+         egress boundary as an INTEGER; a float handed to it is a float on the money path before it",
+        egress.file, b.first_line, egress.boundary, token, b.params
     ))
 }
 
@@ -1357,6 +1424,55 @@ impl Gate for NoFloatMoneyGate {
             }
         }
 
+        // ── THE MONEY-EGRESS BOUNDARIES ───────────────────────────────────────────────────────
+        //
+        // Each one is FOUND by name in its file, holds to "integers go in", and exempts exactly its
+        // own body. Its file must already be in a scan set: the exemption is a span inside a scanned
+        // file, never a way to name a file nobody reads. One boundary per file — a second row for the
+        // same file would be a second exempt conversion, which is what the table exists to refuse.
+        let mut egress_seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for egress in MONEY_EGRESS {
+            if !egress_seen.insert(egress.file) {
+                float_scan_problems.push(format!(
+                    "{}: declares a SECOND money-egress boundary (`fn {}`) — one conversion per \
+                     file, and a second is a float outside the first",
+                    egress.file, egress.boundary
+                ));
+                continue;
+            }
+            let Some(src) = named_files
+                .iter()
+                .chain(ledger_files.iter())
+                .chain(budget_files.iter())
+                .chain(whole_crate_files.iter())
+                .find(|f| f.rel_str() == egress.file)
+            else {
+                float_scan_problems.push(format!(
+                    "{}: a declared money-egress boundary in a file no money scan set reads (or a \
+                     file that is not there) — add the file to a scan set, or move the row with \
+                     the file",
+                    egress.file
+                ));
+                continue;
+            };
+            let Some(b) = find_boundary(&src.text, egress.boundary) else {
+                float_scan_problems.push(format!(
+                    "{}: the declared money-egress boundary `fn {}` is not in that file — the \
+                     exemption names a function that is not there, so either the boundary moved \
+                     (move this row with it, in the diff that moves it) or the table is stale",
+                    egress.file, egress.boundary
+                ));
+                continue;
+            };
+            if let Some(escaped) = takes_float(egress, &b) {
+                offenders.push(escaped);
+            }
+            intake_spans
+                .entry(egress.file.to_string())
+                .or_default()
+                .push((b.first_line, b.last_line));
+        }
+
         for f in &ledger_files {
             scan_file(&f.rel_str(), &f.text, &intake_spans, &mut offenders);
         }
@@ -1657,6 +1773,123 @@ impl Gate for NoFloatMoneyGate {
             )),
         }
 
+        // ── THE MONEY-EGRESS BOUNDARY (`metrics/money.rs` :: `set_gauge`, item 24) ─────────────
+        //
+        // Six claims, one case each: the file is scanned and a float outside the boundary goes red;
+        // a SECOND conversion under another name goes red; the boundary's own body does not; the
+        // boundary must still be where the table says; integers go in; and the file itself cannot
+        // drop out of the scan set.
+        let egress = &MONEY_EGRESS[0];
+
+        // 1. A FLOAT IN THE EGRESS FILE, OUTSIDE ITS BOUNDARY, IS FLAGGED. This is the case that
+        //    could not exist before item 24: the served spend gauges were in no scan set at all.
+        report.push(plant(
+            cx,
+            self,
+            "a float in the money-egress file, outside its boundary, is flagged",
+            &[ROW_NO_FLOAT],
+            egress.file,
+            Edit::Append(format!(
+                "\npub fn planted_spend(cents: i64) -> {float_ty} {{ cents as {float_ty} / 100.0 }}\n"
+            )),
+            &[&float_ty, "metrics/money.rs"],
+        ));
+
+        // 2. A SECOND BOUNDARY — the same conversion under another name — IS FLAGGED. One named
+        //    function is the exemption; a copy of it beside the original is a float outside it.
+        report.push(plant(
+            cx,
+            self,
+            "a second conversion function beside the money-egress boundary is flagged",
+            &[ROW_NO_FLOAT],
+            egress.file,
+            Edit::Append(format!(
+                "\npub(super) fn set_gauge_too(gauge: metrics::Gauge, value: i64) {{\n    gauge.set(value as {float_ty});\n}}\n"
+            )),
+            &[&float_ty, "metrics/money.rs"],
+        ));
+
+        // 3. A FLOAT INSIDE THE BOUNDARY'S OWN BODY STAYS GREEN — that is the one conversion the
+        //    float-only sink forces. Planted inside the measured span, so this and case 1 differ in
+        //    exactly where in the file the float sits.
+        match body_plant(
+            cx,
+            egress.file,
+            egress.boundary,
+            &format!("let _planted_again: {float_ty} = exact as {float_ty};"),
+        ) {
+            Ok(ov) => report.push(Case {
+                name:
+                    "a float INSIDE the money-egress boundary stays green (the sink's conversion)"
+                        .to_string(),
+                covers: vec![ROW_NO_FLOAT.to_string()],
+                expected: crate::gates::Expect::Green,
+                got: verdict_expect(self, &cx.with_overlay(ov)),
+            }),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not plant inside {}'s egress boundary ({e})",
+                egress.file
+            )),
+        }
+
+        // 4. A DECLARED EGRESS BOUNDARY THAT IS NOT THERE EXEMPTS NOTHING AND IS REFUSED.
+        match rename_fn(cx, egress.file, egress.boundary) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a declared money-egress boundary that is no longer in its file is refused",
+                &[ROW_SCAN_FLOOR],
+                ov,
+                &["is not in that file"],
+            )),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not rename {}'s egress boundary ({e})",
+                egress.file
+            )),
+        }
+
+        // 5. AN EGRESS BOUNDARY THAT TAKES A FLOAT WAS HANDED ONE: the money was a float before it.
+        match cx.read(egress.file) {
+            Ok(text) => {
+                let from = "value: impl Into<i128>)";
+                let to = format!("value: {float_ty})");
+                if text.contains(from) {
+                    let mut ov = Overlay::new();
+                    ov.set(egress.file, text.replacen(from, &to, 1));
+                    report.push(prove_red(
+                        cx,
+                        self,
+                        "a money-egress boundary that TAKES a float is refused",
+                        &[ROW_NO_FLOAT],
+                        ov,
+                        &["TAKES"],
+                    ));
+                } else {
+                    report.note_infra_failure(format!(
+                        "no-float-money selftest: {}'s boundary no longer spells `{from}`, so the \
+                         float-parameter plant has nothing to replace",
+                        egress.file
+                    ));
+                }
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not read the egress file {} ({e})",
+                egress.file
+            )),
+        }
+
+        // 6. AND THE EGRESS FILE VANISHING IS A SCAN-SET INTEGRITY FAILURE, not an empty scan.
+        let mut ov = Overlay::new();
+        ov.remove(std::path::Path::new(egress.file));
+        report.push(prove_red(
+            cx,
+            self,
+            "the money-egress file dropping out of the tree is refused",
+            &[ROW_SCAN_FLOOR],
+            ov,
+            &["metrics/money.rs"],
+        ));
+
         // A FLOAT UNDER A `/tests/` DIRECTORY IS A FIXTURE'S NUMBER, not the money path's.
         let mut ov = Overlay::new();
         ov.set(
@@ -1897,42 +2130,45 @@ const CARD_BUILD_BOUNDARY_REL: &str = "crates/busbar-kernel-ledger/src/cost/rate
 /// before the line the body closes on. Textual, like the scan it is planted for: the point is where
 /// the line SITS, not what it compiles to.
 fn intake_body_plant(cx: &Ctx, intake: &MoneyIntake, stmt: &str) -> Result<Overlay, String> {
-    let text = cx.read(intake.file)?;
-    let b = find_boundary(&text, intake.boundary).ok_or_else(|| {
-        format!(
-            "{}: `fn {}` is not in the file, so there is no body to plant inside",
-            intake.file, intake.boundary
-        )
+    body_plant(cx, intake.file, intake.boundary, stmt)
+}
+
+/// The same plant for any named boundary — intake or egress.
+fn body_plant(cx: &Ctx, file: &str, boundary: &str, stmt: &str) -> Result<Overlay, String> {
+    let text = cx.read(file)?;
+    let b = find_boundary(&text, boundary).ok_or_else(|| {
+        format!("{file}: `fn {boundary}` is not in the file, so there is no body to plant inside")
     })?;
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     if b.last_line == 0 || b.last_line > lines.len() {
-        return Err(format!(
-            "{}: the boundary's body has no last line",
-            intake.file
-        ));
+        return Err(format!("{file}: the boundary's body has no last line"));
     }
     lines.insert(b.last_line - 1, format!("    {stmt}"));
     let mut ov = Overlay::new();
-    ov.set(intake.file, format!("{}\n", lines.join("\n")));
+    ov.set(file, format!("{}\n", lines.join("\n")));
     Ok(ov)
 }
 
 /// An overlay in which the declared boundary has been renamed out from under the table row that
 /// names it.
 fn rename_boundary(cx: &Ctx, intake: &MoneyIntake) -> Result<Overlay, String> {
-    let text = cx.read(intake.file)?;
+    rename_fn(cx, intake.file, intake.boundary)
+}
+
+/// The same rename for any named boundary — intake or egress.
+fn rename_fn(cx: &Ctx, file: &str, boundary: &str) -> Result<Overlay, String> {
+    let text = cx.read(file)?;
     let renamed = text.replace(
-        &format!("fn {}", intake.boundary),
-        &format!("fn {}_moved_away", intake.boundary),
+        &format!("fn {boundary}"),
+        &format!("fn {boundary}_moved_away"),
     );
     if renamed == text {
         return Err(format!(
-            "{}: nothing to rename — `fn {}` is not spelled in that file",
-            intake.file, intake.boundary
+            "{file}: nothing to rename — `fn {boundary}` is not spelled in that file"
         ));
     }
     let mut ov = Overlay::new();
-    ov.set(intake.file, renamed);
+    ov.set(file, renamed);
     Ok(ov)
 }
 
@@ -2082,6 +2318,65 @@ mod tests {
         let src = "fn not_the_rate(x: u64) -> u64 { x }\nfn the_rate(x: f64) -> u64 { x as u64 }\n";
         let b = find_boundary(src, "the_rate").expect("the boundary");
         assert_eq!(b.first_line, 2);
+    }
+
+    /// THE EGRESS TABLE IS SURFACE TOO, so it has to be true of the tree: every declared egress
+    /// boundary is where it says it is, takes no float, is the only one in its file, and its file
+    /// is in a money scan set.
+    #[test]
+    fn every_declared_egress_boundary_is_found_takes_an_integer_and_is_scanned() {
+        let cx = cx();
+        let mut seen = std::collections::BTreeSet::new();
+        for egress in MONEY_EGRESS {
+            assert!(
+                seen.insert(egress.file),
+                "{}: two egress boundaries",
+                egress.file
+            );
+            assert!(
+                KERNEL_MONEY_FILES.contains(&egress.file)
+                    || BINARY_MONEY_FILES.contains(&egress.file)
+                    || CONTRACT_MONEY_FILES.contains(&egress.file),
+                "{}: the egress file is in no named money scan set",
+                egress.file
+            );
+            let text = cx
+                .read(egress.file)
+                .unwrap_or_else(|e| panic!("{}: {e}", egress.file));
+            let b = find_boundary(&text, egress.boundary).unwrap_or_else(|| {
+                panic!("{}: `fn {}` was not found", egress.file, egress.boundary)
+            });
+            assert!(
+                b.first_line < b.last_line,
+                "{}: measured backwards",
+                egress.file
+            );
+            assert!(
+                takes_float(egress, &b).is_none(),
+                "{}: `fn {}` takes `{}`",
+                egress.file,
+                egress.boundary,
+                b.params
+            );
+        }
+    }
+
+    /// A float outside the egress boundary is a finding; the same float inside it is not.
+    #[test]
+    fn a_float_outside_the_egress_boundary_is_a_finding_and_inside_is_not() {
+        let src = "pub(super) fn set_gauge(g: G, value: i64) {\n    g.set(value as f64);\n}\n\
+                   pub fn leak(c: i64) -> f64 {\n    c as f64\n}\n";
+        let b = find_boundary(src, "set_gauge").expect("boundary");
+        let mut spans: IntakeSpans = std::collections::BTreeMap::new();
+        spans.insert("m.rs".into(), vec![(b.first_line, b.last_line)]);
+        let mut offenders = Vec::new();
+        scan_file("m.rs", src, &spans, &mut offenders);
+        assert_eq!(offenders.len(), 2, "{offenders:?}");
+        assert!(offenders
+            .iter()
+            .all(|o| o.starts_with("m.rs:4:") || o.starts_with("m.rs:5:")));
+        let taking = find_boundary("fn set_gauge(g: G, v: f64) {\n}\n", "set_gauge").unwrap();
+        assert!(takes_float(&MONEY_EGRESS[0], &taking).is_some());
     }
 
     /// Both arms of the framework, over the real tree.
