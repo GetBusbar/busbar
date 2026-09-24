@@ -43,3 +43,35 @@ fn every_teller_step_is_importable_through_the_drain_facade() {
     // The `use` block above names every step's facade path; if a step were missing from the facade
     // the crate would not compile and this test could not exist. The compile is the assertion.
 }
+
+/// THE FACADE DOES NOT DOCUMENT A SWAP THAT ALREADY HAPPENED ELSEWHERE (item 289).
+///
+/// The header used to describe relocating the authenticate step as a pending one-line edit here
+/// ("swap `pub use crate::auth;` for `pub use busbar_kernel_identity;`") and to call itself the
+/// target consumers migrate onto. The relocated crate was already live in the composition root and
+/// its consumers went around the facade, so a maintainer reading it concluded the step had not moved
+/// and fixed only `crate::auth`. While the binary depends on the relocated crate, the facade must say
+/// so and must not present that swap as still to come.
+#[test]
+fn the_facade_names_the_relocated_authenticate_step_it_does_not_point_at() {
+    let binary = include_str!("../../../busbar/Cargo.toml");
+    let facade = include_str!("../drain.rs");
+    let relocated_is_live = binary
+        .lines()
+        .any(|l| l.trim_start().starts_with("busbar-kernel-identity"));
+    if !relocated_is_live {
+        return;
+    }
+    assert!(
+        !facade.contains("for `pub use busbar_kernel_identity;`"),
+        "drain.rs still presents the authenticate swap as pending while the binary runs the relocated crate"
+    );
+    assert!(
+        !facade.contains("stable target consumers migrate ONTO"),
+        "drain.rs still claims consumers migrate onto it; they migrated around it"
+    );
+    assert!(
+        facade.contains("ALREADY RELOCATED") && facade.contains("`busbar-kernel-identity`"),
+        "drain.rs's authenticate step must say it already runs from `busbar-kernel-identity`"
+    );
+}

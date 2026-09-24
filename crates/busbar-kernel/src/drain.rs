@@ -18,20 +18,21 @@
 //!
 //! The busbar-core DRAIN relocates each engine step out to its own `busbar-unit-<step>` crate. If
 //! every consumer named the step through this facade instead of reaching straight into
-//! `crate::auth`, `crate::egress`, … then relocating a step becomes a ONE-LINE edit here (swap
-//! `pub use crate::auth;` for `pub use busbar_kernel_identity;`), and the steps can move **in ANY order**
-//! with nothing downstream moving — exactly the property W1.e's GREEN condition requires
-//! ("steps relocatable in any order"). It is the same behavior-neutral visibility-lift discipline
-//! the sibling [`crate::engine_facade`] uses for the plane→core DOWN edge — wire the seam in place
-//! FIRST, relocate LATER.
+//! `crate::auth`, `crate::egress`, … then relocating a step would be a one-line edit here, and the
+//! steps could move **in ANY order** with nothing downstream moving. It is the same
+//! behavior-neutral visibility-lift discipline the sibling [`crate::engine_facade`] uses for the
+//! plane→core DOWN edge.
 //!
 //! ## What it is NOT
 //!
-//! Pure, additive, DORMANT plumbing: every line is a `pub use` of an ALREADY-`pub` module at its
-//! existing declared visibility. It moves no code, rewrites no step, and changes no behavior — the
-//! shipped execution path is byte-untouched (money sacred), so the oracle stays byte-identical.
-//! Nothing in core consumes this module yet; it is the stable target consumers migrate ONTO ahead
-//! of the physical drain, not a swap of the shipped path.
+//! A pointer to where a step's LIVE implementation is. Every line is a `pub use` of an
+//! ALREADY-`pub` kernel module; it moves no code and changes no behavior. Nothing consumes it — not
+//! core and not the composition root — and the consumers that did migrate went around it, straight
+//! onto the relocated crates. The authenticate step is the one that has: the composition root's
+//! plane and admin paths run the relocated `busbar-kernel-identity` crate (a dependency of the
+//! `busbar` binary, not of this crate), while `authenticate` below still names the kernel's own
+//! `auth`/`auth_cache` — so a maintainer fixing the authenticate step fixes it THERE as well as in
+//! `crate::auth`, and must not read this facade as saying the step has not moved.
 //!
 //! Each `pub use` re-exports the source module under its OWN name (`drain::audit::calllog`, not a
 //! renamed alias) so the facade transparently mirrors core's real module layout: the facade path is
@@ -55,7 +56,9 @@ pub mod decode {
 }
 
 // ── step 2: authenticate — principal resolution + the pass cache ─────────────────────────────────
-// Relocates to `busbar-unit-auth` (the `AuthUnit::resolve` seam + its digest/pass cache).
+// ALREADY RELOCATED for the plane and admin paths: they run `busbar-kernel-identity` (its crate doc
+// calls itself busbar-unit-auth) from the composition root. These two lines name the kernel's own
+// copy, which the relocated crate has not yet replaced — see "What it is NOT" above.
 pub mod authenticate {
     pub use crate::auth;
     pub use crate::auth_cache;
