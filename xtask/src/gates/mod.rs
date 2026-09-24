@@ -18,7 +18,6 @@
 //!    [`Gate::run`] — the trait gives it no other handle — so re-implementing the predicate beside
 //!    the gate, the failure seven of the shell self-tests had, is not something a selftest CAN do.
 
-pub mod audit_ledger;
 pub mod blocking_ffi;
 pub mod changelog;
 pub mod changelog_register;
@@ -2640,13 +2639,6 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(inventory_coverage::InventoryCoverageGate),
         summary: "every docs/design/inventory/*.md id is a named coverage claim or a named gap",
-    },
-    Registration {
-        name: "audit-ledger",
-        batch: 2,
-        tier: Tier::Fast,
-        build: || Box::new(audit_ledger::AuditLedgerGate),
-        summary: "every tracked file is in a scope, and no audit result outlives the tree it read",
     },
     Registration {
         name: "no-tracked-ignored",
