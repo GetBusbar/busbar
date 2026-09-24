@@ -676,8 +676,11 @@ internal`; no figure moves, only the status and code the caller sees change.
 > plane are: `pools` (LLM) = `input`, `output`, `cache_read`, `cache_write`, `search_units`; `tools`
 > (MCP) = `tool_calls`, `bytes`; `agents` (A2A) = `bytes`; `decisions` = `decision`; `streams`
 > (voice) = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`, `text_tokens_out`,
-> `cached_tokens`, `audio_seconds_in`, `tool_calls`. A plane with no `rate_card` of its own is
-> unaffected (absent = billing off, no refusal).
+> `audio_seconds_in`, `tool_calls`. (`cached_tokens` is reported by both duplex dialects but is
+> a SUBSET of the input token classes above, not a class beside them — pricing it too would
+> double-bill the same cached input, so it is not a declared billable class; it is carried,
+> unbilled, as attribution only.) A plane with no `rate_card` of its own is unaffected (absent =
+> billing off, no refusal).
 
 ---
 
