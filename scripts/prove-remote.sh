@@ -168,6 +168,29 @@ tests = [\"busbar-llm\", \"busbar\"]"
   if [ "$SCOPE_FAM" = . ]; then ok "an untracked scope file does not narrow a tip that has none"
   else nope "an untracked working-tree scope file narrowed the proof to '$SCOPE_FAM'"; fi
 
+  # THE ORACLE LEG, extracted from the remote body this script ships and driven here: a missing or
+  # non-executable bin/oracle must be RED, and only a runnable one may pass. `cargo` is stubbed; the
+  # stub oracle records its argv so the green case proves the leg really ran it.
+  leg="$(sed -n '/^oracle_leg() {$/,/^}$/p' "$HERE/prove-remote.sh")"
+  if [ -z "$leg" ]; then
+    nope "could not extract oracle_leg from the remote body — nothing to test"
+  else
+    run_leg() {  # run_leg <dir>  → exit code of oracle_leg run in <dir>
+      ( cd "$1" && cargo() { return 0; } && FAMILIES=. && eval "$leg" && oracle_leg ) >/dev/null 2>&1
+    }
+    mkdir -p "$st_tmp/o-missing" "$st_tmp/o-mode/bin" "$st_tmp/o-ok/bin"
+    printf '#!/usr/bin/env bash\necho "$@" >>"$(dirname "$0")/ran"\n' >"$st_tmp/o-mode/bin/oracle"
+    chmod 644 "$st_tmp/o-mode/bin/oracle"
+    cp "$st_tmp/o-mode/bin/oracle" "$st_tmp/o-ok/bin/oracle"; chmod 755 "$st_tmp/o-ok/bin/oracle"
+    if run_leg "$st_tmp/o-missing"; then nope "the oracle leg PASSED with no bin/oracle in the tree"
+    else ok "no bin/oracle: the oracle leg is RED, not skipped"; fi
+    if run_leg "$st_tmp/o-mode"; then nope "the oracle leg PASSED with a non-executable bin/oracle"
+    else ok "bin/oracle without its exec bit: the oracle leg is RED, not skipped"; fi
+    if run_leg "$st_tmp/o-ok" && grep -q '^record ' "$st_tmp/o-ok/bin/ran" && grep -q '^replay ' "$st_tmp/o-ok/bin/ran"; then
+      ok "a runnable bin/oracle: the leg records and replays, and passes"
+    else nope "a runnable bin/oracle did not record+replay green"; fi
+  fi
+
   if [ "$st_bad" = 0 ]; then echo "prove-remote selftest: every case discriminates"; exit 0; fi
   echo "prove-remote selftest: FAILED"; exit 1
 fi
@@ -259,8 +282,23 @@ cargo run -q -p xtask -- selftest || exit 1
 mark selftest
 
 step "shadow oracle (filter: $FAMILIES)"
-if [ -x ./bin/oracle ]; then
-  cargo build -p busbar --release --locked || exit 1
+# THE ORACLE LEG IS NOT OPTIONAL. It used to run only `if [ -x ./bin/oracle ]` and otherwise print
+# "(the oracle leg is NOT part of this verdict)" -- five lines above an unconditional "PROVE-REMOTE:
+# GREEN". A bin/oracle that lost its exec bit (a tracked 100644 makes `[ -x ]` false on every
+# checkout; two scripts in this tree are tracked that way today) or went missing turned an
+# eight-leg proof into seven with a GREEN verdict, while manual-keep-proof.yml runs ./bin/oracle
+# unconditionally. A missing or non-executable oracle is a RED, never a skip. `--selftest` extracts
+# this exact function and drives it.
+oracle_leg() {
+  if [ ! -e ./bin/oracle ]; then
+    echo "   ✗ no ./bin/oracle in this tree — the oracle leg cannot run, and a proof without it is not GREEN"
+    return 1
+  fi
+  if [ ! -x ./bin/oracle ]; then
+    echo "   ✗ ./bin/oracle is not executable (mode lost?) — the oracle leg cannot run, and a proof without it is not GREEN"
+    return 1
+  fi
+  cargo build -p busbar --release --locked || return 1
   rm -rf target/oracle/recordings/candidate
   mkdir -p target/oracle/recordings/candidate
   # THE BOX'S OWN PORTS. Four proofs may run here at once and the recorder binds a fixed block;
@@ -268,12 +306,11 @@ if [ -x ./bin/oracle ]; then
   # same knob land.sh documents for two worktrees on one laptop.
   export LAND_ORACLE_PORT_BASE=$(( 40000 + ( $$ % 40 ) * 200 ))
   ./bin/oracle record --plane all --bin target/release/busbar \
-     --filter "$FAMILIES" --out target/oracle/recordings/candidate || exit 1
+     --filter "$FAMILIES" --out target/oracle/recordings/candidate || return 1
   ./bin/oracle replay --golden target/oracle/recordings/golden --strict \
-     --candidate target/oracle/recordings/candidate --out target/oracle/reports/prove || exit 1
-else
-  echo "   (no ./bin/oracle in this tree — the oracle leg is NOT part of this verdict)"
-fi
+     --candidate target/oracle/recordings/candidate --out target/oracle/reports/prove || return 1
+}
+oracle_leg || exit 1
 mark oracle
 
 echo
