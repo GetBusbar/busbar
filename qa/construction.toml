@@ -1076,8 +1076,19 @@ registered keys" (that union only exists at runtime; approximating it with the p
 the design's own doc-scan already does, so this rule reuses it rather than inventing a second one). \
 A literal used in an `if kind == …` or `match` arm is still a string literal and is caught the same \
 way."""
-crates_kernel = ["busbar-kernel"]
-crate_glob = "busbar-unit-*"
+# REPOINTED (item 379). The glob was `busbar-unit-*`, which since W2.c (2c9eddecf, twelve
+# `busbar-unit-*` crates became eight `busbar-kernel-<name>` crates) matches ONE crate,
+# `busbar-unit-transport-key` — so the eight crates the unit family became, 167 files, were
+# unscanned at `max_hits = 0` while this rule's two siblings (`unit-no-wall-clock`,
+# `unit-no-finding-ids`) had already been repointed at `busbar-kernel-*`. The glob now names the
+# family the units became, and the one surviving `busbar-unit-*` crate is kept BY NAME rather than
+# dropped, so the repoint narrows nothing — and a name, unlike a glob, goes red under `qa-names`
+# the day that crate is retired. Measured at e970ed0ae: the widening adds ZERO findings (the same 14
+# offenders, all in busbar-kernel); a planted `const PLANTED_LABEL: &str = "anthropic";` in
+# `crates/busbar-kernel-ledger/src/cost/mod.rs` now counts (14 -> 15), where the old scope never
+# opened the file (14 -> 14).
+crates_kernel = ["busbar-kernel", "busbar-unit-transport-key"]
+crate_glob = "busbar-kernel-*"
 # section 6's dialect names + the section 1.3 pinned word list, verbatim.
 words = [
   "anthropic", "openai", "responses", "gemini", "bedrock", "cohere", "mcp", "a2a", "voice",
