@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Re-export shim. THE CATALOGUE — the "what may this caller SEE" walk and its judgement — moved
-//! DOWN into `busbar-substrate` in Phase-B B1; this module re-exports it (glob) so every
-//! `crate::catalogue::…` name resolves unchanged and hosts the core-only catalogue tests, which name
-//! `crate::trust::validate::validate_visibility` (resolved here through core's own `trust::validate`
-//! re-export).
+//! THE CATALOGUE — the "what may this caller SEE" walk and its judgement, defined inline HERE, in
+//! core. It moved down into `busbar-substrate` in Phase-B B1 and was merged back by the W4.b P2
+//! engine drain; this file is its only home, not a re-export of one elsewhere. It also hosts the
+//! core-only catalogue tests, which name `crate::trust::validate::validate_visibility`.
 
 // The catalogue serves whichever protocol planes are installed and nothing else; with none installed
-// the glob re-export names nothing any in-core caller uses, exactly as the pre-split module read dead
-// there. `unused_imports` rather than `dead_code` because this is now a re-export; unconditional (the
-// neutral seam names no plane feature — the re-export is public API whichever planes are compiled in).
+// no in-core caller uses what it defines or imports, exactly as the pre-split module read dead
+// there. Unconditional (the neutral seam names no plane feature — the items are public API whichever
+// planes are compiled in).
 #![allow(unused_imports)]
 #![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 #[cfg(test)]
