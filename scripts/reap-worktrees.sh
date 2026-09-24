@@ -500,6 +500,11 @@ if [ -d /private/tmp ]; then
       /private/tmp/claude-501/|/private/tmp/com.apple.*|/private/tmp/.*) continue ;;
     esac
     [ -d "$d" ] || continue
+    # A PINNED TREE IS NOT SCRATCH. On 2026-09-23 this sweep deleted
+    # /tmp/codeaudit-live mid-run and truncated 6 of 10 audit finders; the agents
+    # could not tell "found nothing" from "tree vanished". Any dir carrying the
+    # marker is off limits for as long as the marker exists.
+    [ -e "$d/.codeaudit-pin" ] && continue
     [ -n "$(find "$d" -maxdepth 0 -mmin -10 2>/dev/null)" ] && continue
     sz=$(du -sxm "$d" 2>/dev/null | cut -f1); sz=${sz:-0}
     if [ "$REAP" = "1" ]; then
