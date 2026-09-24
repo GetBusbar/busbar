@@ -826,6 +826,30 @@ scan_msgs() {
   ' "$@"
 }
 
+# ── SCAN FLOOR — a scan of zero files is RED, never a clean PASS ─────────────────────────────────
+# THE FAILURE THIS EXISTS FOR (item 484). Every sibling gate in the plane/secret slice
+# (plane-grep-gate.sh, plane-noun-gate.sh, plane-config-noun-gate.sh) refuses a zero-file scan. This
+# one did not: when prod_files came back empty (a root renamed, a layout move, an exclusion that
+# swallowed the tree) all three checks were skipped by their `[ -n "$files" ] &&` guards, the totals
+# were 0+0+0, and the verdict printed the green PASS line. "Measured nothing" and "measured everything
+# and it passed" must never be the same output. check_scan_floor ROOTS FILES returns 1 (and says why)
+# when any root is not a directory or when the file listing is empty.
+check_scan_floor() {
+  local roots="$1" files="$2" r bad=0
+  for r in $roots; do
+    if [ ! -d "$r" ]; then
+      red "secret-hygiene gate: FAIL — scan root \`$r\` is not a directory in this tree."
+      bad=1
+    fi
+  done
+  if [ -z "$files" ]; then
+    red "secret-hygiene gate: FAIL — scanned 0 production .rs file(s) under \`$roots\`; zero is RED"
+    note "A scan of zero files reports zero violations, which is indistinguishable from a clean tree."
+    bad=1
+  fi
+  return "$bad"
+}
+
 # Production .rs under the roots, minus test files.
 prod_files() {
   find "$@" -name '*.rs' 2>/dev/null | grep -v '/tests/' | grep -Ev '_tests?\.rs$' | grep -v '^$' | sort
@@ -1344,11 +1368,34 @@ LEXG
     fail=1; note "GREEN allowlist FAILED: the shipped allowlist has a stale row (run --check to see it)"
   fi
 
+  # ── SCAN FLOOR (item 484): a zero-file scan must be RED through the REAL run_report path. ──
+  # RED: a root that exists but holds no production .rs (only a tests/ file, which prod_files drops).
+  mkdir -p "$tmp/floor_empty/tests" "$tmp/floor_live/src"
+  printf 'pub struct Clean { pub n: usize }\n' >"$tmp/floor_empty/tests/only_test.rs"
+  printf 'pub struct Clean { pub n: usize }\n' >"$tmp/floor_live/src/lib.rs"
+  if ( ROOTS="$tmp/floor_empty"; SCAN_BROKEN=0; run_report >/dev/null 2>&1; [ "$SCAN_BROKEN" -ne 0 ] ); then
+    note "RED floor: a root holding ZERO production .rs is a broken scan, not a PASS"
+  else
+    fail=1; note "RED floor FAILED: a zero-file scan reported a clean 0+0+0 — the silent-zero class is back"
+  fi
+  # RED: a root that does not exist at all.
+  if ( ROOTS="$tmp/floor_missing"; SCAN_BROKEN=0; run_report >/dev/null 2>&1; [ "$SCAN_BROKEN" -ne 0 ] ); then
+    note "RED floor: a scan root that is not on disk is a broken scan, not a PASS"
+  else
+    fail=1; note "RED floor FAILED: a missing scan root reported a clean 0+0+0"
+  fi
+  # GREEN: a root with one clean production .rs scans, is not broken, and totals 0.
+  if ( ROOTS="$tmp/floor_live"; SCAN_BROKEN=0; REPORT_TOTAL=x; run_report >/dev/null 2>&1; [ "$SCAN_BROKEN" -eq 0 ] && [ "$REPORT_TOTAL" = "0" ] ); then
+    note "GREEN floor: a root with one clean production .rs scans and is NOT flagged broken"
+  else
+    fail=1; note "GREEN floor FAILED: the floor fired on a live, clean root — it over-fires"
+  fi
+
   if [ "$fail" -ne 0 ]; then
     red "secret-hygiene-gate SELF-TEST FAILED — the scanner would let a bare secret / a logged secret / a secret in a returned message through"
     return 1
   fi
-  grn "secret-hygiene-gate self-test: ALL GREEN (Check-1 field RED/GREEN + Check-2 sink RED/GREEN + Check-3 message RED/GREEN incl. BOTH real leaks pre-fix and post-fix + lexer RED/GREEN + allowlist-liveness RED/GREEN proven)"
+  grn "secret-hygiene-gate self-test: ALL GREEN (Check-1 field RED/GREEN + Check-2 sink RED/GREEN + Check-3 message RED/GREEN incl. BOTH real leaks pre-fix and post-fix + lexer RED/GREEN + allowlist-liveness RED/GREEN + scan-floor RED/GREEN proven)"
   return 0
 }
 
@@ -1359,6 +1406,11 @@ run_report() {
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   : >"$tmp/c1"; : >"$tmp/c2"; : >"$tmp/c3"
   local files; files="$(prod_files $ROOTS)"
+  # THE FLOOR, BEFORE ANY CHECK RUNS: an empty listing would otherwise skip all three checks below.
+  if ! check_scan_floor "$ROOTS" "$files"; then
+    SCAN_BROKEN=1
+    return 0
+  fi
   # shellcheck disable=SC2086
   [ -n "$files" ] && scan_fields "$STRONG_NEEDLES" "$CONTEXT_NEEDLES" "$CONTEXT_STRUCT_RE" $files >>"$tmp/c1"
   # shellcheck disable=SC2086
