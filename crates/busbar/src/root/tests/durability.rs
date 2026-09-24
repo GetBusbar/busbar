@@ -562,7 +562,7 @@ fn journalling_carries_no_admin_row_and_the_root_holds_no_second_admin_ring() {
     assert_eq!(replayed.len(), 3);
     assert!(replayed.iter().all(|r| r.class == RecordClass::Transaction));
 
-    let source = include_str!("../durability.rs");
+    let source = include_str!("../durability/mod.rs");
     let code: String = source
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
