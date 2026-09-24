@@ -128,6 +128,7 @@ fn a_call<'a>(
         host: Some(host),
         host_scope: Some(scope),
         admission: busbar_plugin::hot::AdmissionId::NONE,
+        bytes: None,
     }
 }
 

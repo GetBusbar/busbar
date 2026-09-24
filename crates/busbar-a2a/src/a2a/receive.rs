@@ -2085,6 +2085,9 @@ async fn admitted(
     //    left — every refusal before that is audited `rejected` and metered nothing.
     let charge = HopCharge {
         billed_key_id: hop.billed_key_id.clone(),
+        // The PRESENTING key `hop.billed_key_id` names (`inbound::admit` copies `key.id` into it), as
+        // the value the budget chain is walked from — its group is what a `budget:` cap sits on.
+        key: Arc::clone(key),
         resource: resource.clone(),
         actor: actor.clone(),
     };
@@ -2417,6 +2420,8 @@ struct HopContext {
 #[derive(Clone)]
 struct HopCharge {
     billed_key_id: String,
+    /// The key whose budget chain the hop's `bytes` are ledgered on — the one `billed_key_id` names.
+    key: Arc<busbar_api::VirtualKey>,
     resource: String,
     actor: String,
 }
@@ -2424,18 +2429,21 @@ struct HopCharge {
 impl HopCharge {
     /// Settle the charge for a hop whose relay outcome is `left`. Metered through the same
     /// [`meter_request`] every other admitted call on this plane uses; the scope is the hop's own
-    /// shared scope, which the amount-0 request charge registers nothing into.
+    /// shared scope, which the amount-0 request charge registers nothing into. AND the hop's payload
+    /// bytes, both ways, are ledgered under the plane's declared `bytes` class ([`ledger_hop_bytes`]).
     fn settle(
         &self,
         engine_host: &dyn busbar_kernel::plane_host::EngineHost,
         scope: &busbar_kernel::plane_host::DispatchScope,
         left: bool,
+        bytes: &super::relay::HopBytes,
     ) {
         if !left {
             self.refused(engine_host);
             return;
         }
         meter_request(engine_host, scope, &self.billed_key_id, &self.resource);
+        ledger_hop_bytes(engine_host, &self.key, &self.resource, bytes.total());
         engine_host.audit_emit(
             AUDIT_ACTION,
             &self.resource,
@@ -2453,6 +2461,60 @@ impl HopCharge {
             &self.actor,
         );
     }
+}
+
+/// LEDGER ONE HOP'S PAYLOAD BYTES under the plane's one declared class, `bytes` (#71) — OWNER
+/// RULING §13/Q30c (Q35): *a billed A2A byte = payload bytes relayed BOTH ways per hop (request +
+/// response), class `bytes`, priced by `agents.rate_card`; no card → 0.* What a payload byte is,
+/// exactly, is [`super::relay::HopBytes`]'s doc.
+///
+/// The plane's whole money obligation, and the MCP plane's `ledger_tool_call` twin: one raw count on
+/// the class it declares ([`busbar_plane_a2a::meta::CLASS_BYTES`]), appended to the caller's budget
+/// chain through the SAME host `meter_ledger` seam every other plane ledgers through. The card is
+/// never consulted here (#43), and the write does not depend on one. The view prices the row with
+/// the A2A plane's OWN card — the lane is plane-qualified — which is the operator's
+/// `agents.rate_card`, lifted off the section by core before this plane parses it: present, it
+/// prices `bytes` on the named agent or REFUSES an agent it is silent about (#42); absent, A2A
+/// billing is OFF and the count reads 0, the row still there for a count cap.
+///
+/// Called only for a hop that LEFT ([`HopCharge::settle`], 135): a hop refused before the socket
+/// moved no byte and ledgers nothing. A hop that left and moved nothing measurable (a transport
+/// failure) writes no row — a zero count is not an event. Keyed exactly as the admission was:
+/// `pool` is the admitted resource (`agent:<id>`, so pool-scoped buckets see the predicate the door
+/// judged), and the lane is that resource qualified by the plane, so the card entry an operator
+/// writes is the same `agent:<id>` the usage rows already name.
+fn ledger_hop_bytes(
+    engine_host: &dyn busbar_kernel::plane_host::EngineHost,
+    key: &busbar_api::VirtualKey,
+    resource: &str,
+    bytes: u64,
+) {
+    if bytes == 0 {
+        return;
+    }
+    // No governance: nothing to ledger against — the plane refuses to admit without it anyway.
+    let Some(pin) = engine_host.meter_pin() else {
+        return;
+    };
+    let usage = busbar_substrate_values::billing::Usage {
+        usage_units: std::collections::BTreeMap::from([(
+            busbar_plane_a2a::meta::CLASS_BYTES.as_str().to_string(),
+            bytes,
+        )]),
+    };
+    let lane = format!(
+        "{}{}{resource}",
+        crate::PLANE_KEY,
+        busbar_kernel::governance::PLANE_LANE_SEP
+    );
+    engine_host.meter_ledger(
+        &pin,
+        key,
+        resource,
+        &lane,
+        &usage,
+        engine_host.clock_now_secs(),
+    );
 }
 
 /// WHETHER A RELAY OUTCOME MEANS THE CALL LEFT BUSBAR. An answer did; so did every refusal that is
@@ -2585,6 +2647,8 @@ async fn unary_hop(
     let walk_admission_id = ctx.walk_admission_id;
     let charge = ctx.charge.clone();
     let relayed = tokio::task::spawn_blocking(move || {
+        // What this hop moved, both ways — counted by the relay, billed by the settle below.
+        let bytes = super::relay::HopBytes::default();
         // The ONE bare shared scope rides onto the blocking thread; its arena reclaims when this
         // closure ends (reclaim at HOP end, after the outcome was recorded). Both the walk admit
         // (already registered) and `prepare`'s un-pooled admit settle by a host AdmissionId here.
@@ -2605,11 +2669,12 @@ async fn unary_hop(
                 host: Some(engine_host.as_ref()),
                 host_scope: Some(&hop_scope),
                 admission: walk_admission_id,
+                bytes: Some(&bytes),
             },
             seam.as_ref(),
             now_ms,
         );
-        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out));
+        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out), &bytes);
         out
     })
     .await;
@@ -2815,6 +2880,8 @@ async fn stream_hop(
         // `prepare`'s un-pooled admit settle by a host AdmissionId here. The durable journal writes
         // ride the neutral `engine_host` (moved in below), which mints its own transient host per call.
         let hop_scope = hop_scope;
+        // What this hop moved, both ways — every streamed chunk included. See `relay::HopBytes`.
+        let bytes = super::relay::HopBytes::default();
         let mut sink = |ev: super::relay::RelayEvent| -> super::relay::ChunkFlow {
             // THE PAIRING, off the stream too. A streaming submission is the one case where the
             // caller is MOST likely to follow up by id - a resubscribe, a cancel - and a mapping
@@ -2941,6 +3008,7 @@ async fn stream_hop(
                 host: Some(engine_host.as_ref()),
                 host_scope: Some(&hop_scope),
                 admission: walk_admission_id,
+                bytes: Some(&bytes),
             },
             seam.as_ref(),
             &task_id,
@@ -2949,7 +3017,7 @@ async fn stream_hop(
             now_ms,
             &mut sink,
         );
-        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out));
+        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out), &bytes);
         out
     });
 

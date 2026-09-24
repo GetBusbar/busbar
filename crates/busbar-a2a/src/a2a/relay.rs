@@ -289,6 +289,71 @@ pub(crate) struct RelayCall<'a> {
     /// [`AdmissionId::NONE`](busbar_plugin::hot::AdmissionId::NONE) for an un-pooled hop (whose id
     /// [`prepare`] mints directly through the host `breaker_admit` seam) and in the originate direction.
     pub(crate) admission: busbar_plugin::hot::AdmissionId,
+    /// WHERE THIS HOP COUNTS THE PAYLOAD BYTES IT MOVED — the tally the ingress bills the hop's
+    /// `bytes` class from (see [`HopBytes`]). `None` counts nothing: busbar's own housekeeping hops
+    /// (`super::originate`) have no caller whose budget they could bill.
+    pub(crate) bytes: Option<&'a HopBytes>,
+}
+
+/// **THE PAYLOAD BYTES ONE HOP MOVED, BOTH WAYS** — the quantity A2A's one declared class, `bytes`,
+/// ledgers (OWNER RULING §13/Q30c, recorded as Q35: *a billed A2A byte = payload bytes relayed BOTH
+/// ways per hop, request + response*).
+///
+/// **A PAYLOAD BYTE is a BODY byte on the hop's wire, and nothing else:**
+///
+/// - SENT: the length of the request body busbar handed the transport for THIS hop — the framed
+///   body (JSON-RPC envelope, REST document or gRPC length-prefixed message, whichever binding the
+///   backend's card declares), after any identity translation or hook rewrite. Counted once the
+///   transport has carried the exchange (it returned an answer, or a streamed chunk arrived).
+/// - RECEIVED: the length of the response body the backend answered, as the transport delivered it
+///   (content bytes, after the HTTP transfer coding is removed) — for a unary hop the whole body, for
+///   a stream the SUM OF EVERY CHUNK received, whether or not busbar then relayed it (a caller that
+///   hangs up mid-stream stops the hop; what had already arrived is counted).
+/// - EXCLUDED: the request line, the status line and every header in both directions (transport
+///   framing, not payload), TLS and TCP overhead, and anything busbar answers itself.
+///
+/// A hop refused before the socket — the guard, the live trust gate, the breaker, an unframable
+/// method, an unleasable credential — never reaches the transport, so it counts ZERO by
+/// construction: the counters below are only touched after the transport call.
+///
+/// Atomic rather than `Cell` because the streaming hop counts from inside the transport's chunk
+/// sink, which is `Send`; the counts are read once, after the relay returns, on the same thread.
+#[derive(Debug, Default)]
+pub(crate) struct HopBytes {
+    sent: std::sync::atomic::AtomicU64,
+    received: std::sync::atomic::AtomicU64,
+}
+
+impl HopBytes {
+    fn add_sent(&self, n: usize) {
+        self.sent.fetch_add(
+            u64::try_from(n).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    fn add_received(&self, n: usize) {
+        self.received.fetch_add(
+            u64::try_from(n).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// The request body bytes this hop put on the wire.
+    pub(crate) fn sent(&self) -> u64 {
+        self.sent.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The response body bytes this hop read off the wire.
+    pub(crate) fn received(&self) -> u64 {
+        self.received.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Both ways: the one figure the hop's `bytes` class ledgers. Saturating — a count is never a
+    /// wrap.
+    pub(crate) fn total(&self) -> u64 {
+        self.sent().saturating_add(self.received())
+    }
 }
 
 /// The breaker cell one relayed hop admits against and records into — plane-qualified key plus
@@ -1745,24 +1810,30 @@ fn relay_once(
 
     // The PINNED ADDRESS goes to the transport beside the URL. The transport connects to the
     // address and sends the URL's host as `Host` and as TLS SNI; see `transport.rs`.
-    let resp = seam
-        .transport()
-        .send(
-            request.http_method,
-            &url,
-            pin.addr(),
-            &request.headers,
-            &request.body,
+    let sent = seam.transport().send(
+        request.http_method,
+        &url,
+        pin.addr(),
+        &request.headers,
+        &request.body,
+    );
+    // THE HOP'S PAYLOAD BYTES, both ways, the moment the exchange is known to have happened — BEFORE
+    // any reading of the answer can refuse it: a backend that answered a 5xx or an oversized body was
+    // still sent this request and still sent those bytes back. A transport failure carried no
+    // exchange busbar can measure, so it counts nothing. See [`HopBytes`].
+    if let (Some(bytes), Ok(resp)) = (call.bytes, sent.as_ref()) {
+        bytes.add_sent(request.body.len());
+        bytes.add_received(resp.body.len());
+    }
+    let resp = sent.map_err(|err| {
+        count_leg_failure(
+            call,
+            RelayRefusal::Transport {
+                url: url.to_string(),
+                err,
+            },
         )
-        .map_err(|err| {
-            count_leg_failure(
-                call,
-                RelayRefusal::Transport {
-                    url: url.to_string(),
-                    err,
-                },
-            )
-        })?;
+    })?;
 
     if !(200..300).contains(&resp.status) {
         // Including a 3xx. A redirect on a task submission is a fresh, fully untrusted URL that the
@@ -2214,8 +2285,17 @@ fn relay_stream_once(
     // the closure's only vocabulary is `ChunkFlow`, and the refusal has to survive to the decision
     // below — where it outranks "the stream ended normally", exactly as `overflow` does.
     let mut uncorrelated: Option<String> = None;
+    // Whether ANY response byte arrived: a stream whose transport then failed mid-body still carried
+    // the request and the chunks before the failure, and both are counted.
+    let mut chunked = false;
     let head = {
         let mut on_chunk = |chunk: &[u8]| -> ChunkFlow {
+            // EVERY CHUNK, counted as it arrives and before anything reads it: a frame the reader then
+            // refuses, or one the caller hung up on, still crossed the hop's wire. See [`HopBytes`].
+            if let Some(bytes) = call.bytes {
+                bytes.add_received(chunk.len());
+            }
+            chunked = true;
             for frame in reader.feed(chunk) {
                 streamed_any = true;
                 let event =
@@ -2239,23 +2319,32 @@ fn relay_stream_once(
             }
             ChunkFlow::Continue
         };
-        seam.transport()
-            .post_stream(
-                &url,
-                pin.addr(),
-                &request.headers,
-                &request.body,
-                &mut on_chunk,
+        let streamed = seam.transport().post_stream(
+            &url,
+            pin.addr(),
+            &request.headers,
+            &request.body,
+            &mut on_chunk,
+        );
+        if let Some(bytes) = call.bytes {
+            if streamed.is_ok() || chunked {
+                bytes.add_sent(request.body.len());
+            }
+            // A backend that answered the streaming request with ONE document (or a non-2xx) handed
+            // its body back on the head rather than to the sink; empty on a real stream.
+            if let Ok(head) = streamed.as_ref() {
+                bytes.add_received(head.body.len());
+            }
+        }
+        streamed.map_err(|err| {
+            count_leg_failure(
+                call,
+                RelayRefusal::Transport {
+                    url: url.to_string(),
+                    err,
+                },
             )
-            .map_err(|err| {
-                count_leg_failure(
-                    call,
-                    RelayRefusal::Transport {
-                        url: url.to_string(),
-                        err,
-                    },
-                )
-            })?
+        })?
     };
 
     if !(200..300).contains(&head.status) {
@@ -2420,3 +2509,10 @@ mod front_door_chain_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/pushback_tests.rs"]
 mod pushback_tests;
+
+// THE HOP'S BILLED BYTES (Q35) — every hop that left ledgers its payload bytes, both ways, under the
+// plane's `bytes` class. Mounted here for the reason every block above is: the counts are read off
+// the shared harness's recorded wire, and only a hop through the production ingress settles a charge.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/billed_bytes_tests.rs"]
+mod billed_bytes_tests;

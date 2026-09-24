@@ -166,6 +166,9 @@ fn issue_originated(
             host: None,
             host_scope: None,
             admission: busbar_plugin::hot::AdmissionId::NONE,
+            // busbar's own housekeeping hop: no caller asked for it, so no caller's `bytes` class is
+            // billed for it (see `relay::HopBytes`).
+            bytes: None,
         },
         at.seam.as_ref(),
         at.now_ms,

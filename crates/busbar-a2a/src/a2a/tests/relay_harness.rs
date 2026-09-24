@@ -537,6 +537,9 @@ pub(super) struct Harness {
     pub(super) plane: Arc<crate::a2a::plane::A2aPlane>,
     /// The built App, kept so the pool batteries can read the plane breaker cells directly.
     pub(super) app: Arc<dyn EngineAppPlus>,
+    /// The cost model a [`harness_priced`] deployment was built with, so a money test can read the
+    /// caller's bucket through the one pricing function. `None` on every other harness.
+    pub(super) cost: Option<Arc<dyn busbar_kernel::test_support::engine_kit::CostKit>>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -648,6 +651,44 @@ pub(super) async fn harness_billed(outcome: Outcome, with_credential: bool) -> H
     .await
 }
 
+/// A rate-card map as `CostModel::resolve_parts` is handed it — the node's composed card.
+pub(super) type Card =
+    std::collections::BTreeMap<String, busbar_kernel::config::sections::RateEntryCfg>;
+
+/// THE DEFAULT DEPLOYMENT WITH MONEY ON IT: the caller's key sits in group `g`, which carries
+/// `limits`; the node's card is `card` (`None` = no card at all, billing off); the flat fee is 0, so
+/// every figure a test reads is the classes' alone. Everything else is [`harness`]'s deployment.
+pub(super) async fn harness_priced(
+    outcome: Outcome,
+    card: Option<Card>,
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+) -> Harness {
+    harness_core(
+        outcome,
+        false,
+        &["planner"],
+        None,
+        &[("planner", BACKEND), ("payments", OTHER_BACKEND)],
+        &[],
+        false,
+        Some((card, limits)),
+    )
+    .await
+}
+
+/// The node's card map exactly as boot builds it from config text: core lifts `agents.rate_card`
+/// off the section (the plane never sees it, #43) and composes it beside the flat card.
+pub(super) fn composed_card(yaml: &str) -> Option<Card> {
+    crate::testkit::install_test_seams();
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(&format!(
+        "providers: {{}}\nmodels: {{}}\n{yaml}"
+    ))
+    .expect("the config parses");
+    busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the config resolves")
+        .rate_card
+}
+
 /// The fully-general constructor: the AGENT DEFINITIONS and `agent_pools:` declarations are the
 /// caller's. Every narrower constructor above builds exactly the deployment it always built by
 /// passing the historical two-agent set and no pools.
@@ -659,6 +700,30 @@ pub(super) async fn harness_full(
     defs: &[(&str, &str)],
     pools: &[(&str, &[&str])],
     billed: bool,
+) -> Harness {
+    harness_core(
+        outcome,
+        with_credential,
+        granted,
+        gates,
+        defs,
+        pools,
+        billed,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // the fully-general fixture: each arg is one deployment fact
+async fn harness_core(
+    outcome: Outcome,
+    with_credential: bool,
+    granted: &[&str],
+    gates: Option<Gates>,
+    defs: &[(&str, &str)],
+    pools: &[(&str, &[&str])],
+    billed: bool,
+    money: Option<(Option<Card>, Vec<busbar_kernel::config::groups::LimitCfg>)>,
 ) -> Harness {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_kernel::governance::NewKeySpec;
@@ -696,6 +761,9 @@ pub(super) async fn harness_full(
     // THE GRANT. `agent:<id>` is what `inbound::authorize`, the catalogue and the EGRESS gate all
     // ask about, and a test that wants to prove the third is separable hands it a narrower list.
     let mut scoped = key.clone();
+    if money.is_some() {
+        scoped.group = Some("g".to_string());
+    }
     scoped.allowed_scopes = Some(
         granted
             .iter()
@@ -751,6 +819,21 @@ pub(super) async fn harness_full(
             std::collections::BTreeMap::new();
         builder = builder.cost(engine().cost_parts(Some(&card), 1, &groups));
     }
+    let mut cost = None;
+    if let Some((card, limits)) = money {
+        let groups: std::collections::BTreeMap<String, busbar_kernel::config::groups::GroupCfg> =
+            [(
+                "g".to_string(),
+                busbar_kernel::config::groups::GroupCfg {
+                    limits,
+                    ..Default::default()
+                },
+            )]
+            .into();
+        let priced = engine().cost_parts(card.as_ref(), 0, &groups);
+        builder = builder.cost(priced.clone());
+        cost = Some(priced);
+    }
     let app = builder.build();
     // The front door writes the A2A task chain through the process-wide `TASKS` registry; the plane
     // owns it now and mints each chain's `seq`/`prev_hash` on `submit`/`transition` regardless of any
@@ -789,6 +872,7 @@ pub(super) async fn harness_full(
         gov,
         plane,
         app,
+        cost,
         server,
     }
 }
