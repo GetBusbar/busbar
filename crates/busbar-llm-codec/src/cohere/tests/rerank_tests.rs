@@ -356,6 +356,9 @@ fn oversized_top_n_drops_to_none_not_wrapped() {
 /// ingress and egress alike (the deletion-switch symmetry).
 #[test]
 fn no_rerank_handler_on_the_other_four() {
+    // `request_handler` reads the shared protocol registry; install this plugin's declarations
+    // here so the test does not depend on another test having filled it first.
+    crate::ensure_test_protocols_registered();
     for proto in ["openai", "anthropic", "gemini", "responses"] {
         let rh = busbar_substrate_values::handlers::request_handler(proto).expect(proto);
         assert!(
