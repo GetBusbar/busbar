@@ -380,9 +380,6 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     "loc-ceilings:caps-contract",
     "loc-ceilings:union",
     "surface-ceiling:contract",
-    // `loc-ceilings:kernel:teller`: teller.rs is 685 lines against its 661 ceiling. Drains with the
-    // Teller loop's split in the fold.
-    "loc-ceilings:kernel:teller",
 ];
 
 /// THE `qa-names` GATE'S STANDING REDS, BY NAME.
