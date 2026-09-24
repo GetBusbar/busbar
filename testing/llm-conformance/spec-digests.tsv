@@ -1,4 +1,4 @@
-# spec	format	sha256	url
+# spec	format	sha256	url	[upstream]
 # The providers' PUBLIC machine-readable specifications the LLM-plane conformance gate validates
 # busbar's wire output against. vendor.sh fetches each URL with curl, digests it, and REFUSES
 # (exit 3, download deleted) if the digest is not byte-for-byte what this file pins — the same
@@ -29,12 +29,17 @@
 #             change. Every change is ADDITIVE (new optional properties, new enum values, deprecated /
 #             readOnly annotations, Part.mediaResolution retargeted to V1mainMediaResolution): no property
 #             removed, no enum value removed, no type changed, no `required` added.
+#             VENDORED (url `vendored:specs/...`, live URL in the fifth column): Google serves only the
+#             live document and bumps `revision` every few days, so a URL pin went RED on every branch
+#             at every bump. The reviewed copy is committed; this digest pins THAT file (the whole
+#             document, canonicalized, exactly as before); the judge never touches the network for it;
+#             `vendor.sh --drift` is the separate check that live upstream still equals it (exit 5 if not).
 # bedrock     botocore's service model for bedrock-runtime (Converse, ConverseStream and the
 #             ConverseStreamOutput event union), github.com/boto/botocore, develop @ e5c8122617a2c5c7e40bd364a835d5e38fd6e038
 # cohere      github.com/cohere-ai/cohere-developer-experience, main @ b5d0e3bc0b64e5d9ad3c05b5c364641822593c94
 #             (/v2/chat: request, ChatResponseV2, StreamedChatResponseV2, per-status error bodies)
 openai	raw	5f2358ee412d4220e5673068c02fc34c36653cdc60e18f72bddc707caec587ae	https://raw.githubusercontent.com/openai/openai-openapi/91cc0564f0e7ea0c53890061f1847162cf93cea7/openapi.yaml
 anthropic	raw	d1d189d791d1b551b33edebe9a60d63836d167070863ef366969e0df1e9c4f55	https://storage.googleapis.com/stainless-sdk-openapi-specs/anthropic/anthropic-e50cf35b74cc0471a2b5af7ea03765aa81c035f82588e9a1ba1b29aeaa17d064.yml
-gemini	json-canonical	fe47cc9542473ba8dc9c03830fee204a6e9386a596f9ec2c040daac615d46085	https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta
+gemini	json-canonical	fe47cc9542473ba8dc9c03830fee204a6e9386a596f9ec2c040daac615d46085	vendored:specs/gemini-v1beta-20260923.json	https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta
 bedrock	raw	618bf3a6f4cb6e4987a01bd8ea2ce1f070e854991c750c67babf03520315dead	https://raw.githubusercontent.com/boto/botocore/e5c8122617a2c5c7e40bd364a835d5e38fd6e038/botocore/data/bedrock-runtime/2023-09-30/service-2.json
 cohere	raw	6f64ec87c66df5857f14283d43c816da5d6a729ca98edd25f23807cd4989a599	https://raw.githubusercontent.com/cohere-ai/cohere-developer-experience/b5d0e3bc0b64e5d9ad3c05b5c364641822593c94/cohere-openapi.yaml

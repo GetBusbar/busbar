@@ -57,6 +57,16 @@
 #       document it was measured against, so a body the PINNED spec rejects may never come back
 #       green because the cached copy of that spec was widened underneath it.
 #
+# And the VENDORED spec (gemini: Google serves only the live discovery document, so the reviewed copy
+# is committed under specs/ and pinned there; see vendor.sh). The judge and the drift detector are
+# two separate things and each is planted:
+#
+#   (r) the committed copy installs with the network unreachable -> judged offline, exit 0
+#   (s) the committed copy TAMPERED (one enum value removed)     -> REFUSED (exit 3), named as the
+#                                                                  committed copy, nothing installed
+#   (t) live upstream DRIFTED from the committed copy             -> `--drift` exits 5, says LIVE DRIFT
+#   (u) live upstream == committed, keys served in another order  -> `--drift` exits 0 (no false alarm)
+#
 # Needs the vendored specs (run.sh vendors them; cached by digest, so this is offline after once).
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -64,8 +74,8 @@ FIX="${here}/fixtures/selftest-recording"
 FIX2="${here}/fixtures/selftest-errors-recording"
 W="$(mktemp -d "${TMPDIR:-/tmp}/llm-conformance-selftest.XXXXXX")"
 trap 'rm -rf "$W"' EXIT
-fails=0
-say() { printf '%s  %s\n' "$1" "$2"; [ "$1" = PASS ] || fails=$((fails+1)); }
+fails=0 total=0
+say() { printf '%s  %s\n' "$1" "$2"; total=$((total+1)); [ "$1" = PASS ] || fails=$((fails+1)); }
 RUN_ARGS=""   # extra run.sh args for one case (see (n)/(o)); reset by each caller that sets it
 run() {  # run <recording> <out> [cells.json] -> rc
   local cells="${3:-$1/cells.json}"
@@ -448,5 +458,73 @@ else
   say FAIL "(o) drifted pre-parse rc=$rc fails=$(count "$W/o" FAIL): $rows"; tail -8 "$W/o.log"
 fi
 
+# ── THE VENDORED SPEC: THE JUDGE IS OFFLINE, THE DRIFT DETECTOR IS SEPARATE AND LOUD ────────────
+# A throwaway pin file holding only the gemini row, beside a copy of specs/, so each case can plant
+# its own committed copy or its own "upstream" (a file:// URL) without touching the tracked tree.
+vrow="$(awk -F'\t' '!/^#/ && $1=="gemini"' "${here}/spec-digests.tsv")"
+vsrc="${here}/$(printf '%s' "$vrow" | cut -f4 | sed 's/^vendored://')"
+vpin() {  # vpin <dir> <upstream-url>: a pin file + specs/ copy in <dir>
+  mkdir -p "$1/specs"; cp "$vsrc" "$1/specs/"
+  printf '%s\t%s\n' "$(printf '%s' "$vrow" | cut -f1-4)" "$2" >"$1/spec-digests.tsv"
+}
+if [ -z "$vrow" ] || [ ! -s "$vsrc" ]; then
+  say FAIL "(r) gemini is not a vendored row with a committed copy (row: '${vrow}')"
+else
+  # (r) offline install: every proxy points at a closed port, so any network use fails the case
+  vpin "$W/r" "file:///nonexistent"
+  out="$(http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 \
+         bash "${here}/vendor.sh" --digests "$W/r/spec-digests.tsv" --cache-dir "$W/r/cache" 2>&1)"; rc=$?
+  if [ "$rc" = 0 ] && grep -q '^installed  *gemini' <<<"$out"; then
+    say PASS "(r) the committed gemini copy installs with the network unreachable -> the judge needs no network"
+  else
+    say FAIL "(r) offline vendored install rc=$rc: $out"
+  fi
+  # (s) the committed copy tampered: one finishReason value removed
+  vpin "$W/s" "file:///nonexistent"
+  python3 - "$W/s/specs/$(basename "$vsrc")" <<'EOF'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["schemas"]["Candidate"]["properties"]["finishReason"]["enum"].remove("STOP")
+json.dump(d, open(p, "w"))
+EOF
+  out="$(bash "${here}/vendor.sh" --digests "$W/s/spec-digests.tsv" --cache-dir "$W/s/cache" 2>&1)"; rc=$?
+  if [ "$rc" = 3 ] && grep -q 'COMMITTED copy' <<<"$out" && [ -z "$(find "$W/s/cache" -name 'spec.json' 2>/dev/null)" ]; then
+    say PASS "(s) a tampered committed copy -> REFUSED (exit 3), nothing installed"
+  else
+    say FAIL "(s) tampered committed copy rc=$rc: $out"
+  fi
+  # (t) live drift planted: "upstream" serves the committed document with one enum value added
+  mkdir -p "$W/t-up"
+  python3 - "$vsrc" "$W/t-up/live.json" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["schemas"]["Candidate"]["properties"]["finishReason"]["enum"].append("PLANTED_DRIFT")
+json.dump(d, open(sys.argv[2], "w"))
+EOF
+  vpin "$W/t" "file://$W/t-up/live.json"
+  out="$(bash "${here}/vendor.sh" --digests "$W/t/spec-digests.tsv" --drift 2>&1)"; rc=$?
+  if [ "$rc" = 5 ] && grep -q 'LIVE DRIFT for gemini' <<<"$out"; then
+    say PASS "(t) planted live drift -> --drift exits 5 and names it"
+  else
+    say FAIL "(t) planted live drift rc=$rc: $out"
+  fi
+  # (u) same document, keys in reverse order (Google varies key order per request): not drift
+  python3 - "$vsrc" "$W/t-up/reordered.json" <<'EOF'
+import json, sys
+def rev(o):
+    if isinstance(o, dict): return {k: rev(o[k]) for k in reversed(list(o))}
+    if isinstance(o, list): return [rev(x) for x in o]
+    return o
+json.dump(rev(json.load(open(sys.argv[1]))), open(sys.argv[2], "w"), indent=1)
+EOF
+  vpin "$W/u" "file://$W/t-up/reordered.json"
+  out="$(bash "${here}/vendor.sh" --digests "$W/u/spec-digests.tsv" --drift 2>&1)"; rc=$?
+  if [ "$rc" = 0 ] && grep -q '^in-sync  *gemini' <<<"$out"; then
+    say PASS "(u) live == committed with keys reordered -> --drift exits 0"
+  else
+    say FAIL "(u) reordered live copy rc=$rc: $out"
+  fi
+fi
+
 echo
-if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (20/20)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi
+if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (${total}/${total})"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi

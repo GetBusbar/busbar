@@ -12,8 +12,23 @@
 #   vendor.sh                 fetch whatever is not cached; verify; exit 0 when all five are present
 #   vendor.sh --check         verify the cache only (no network); exit 3 if anything is absent/wrong
 #   vendor.sh --repin <spec>  fetch the current upstream document and PRINT the row you would pin
-#                             (nothing is installed; paste the row into spec-digests.tsv on purpose)
+#                             (nothing is installed; paste the row into spec-digests.tsv on purpose).
+#                             For a VENDORED spec the download is kept and its path printed, so the
+#                             reviewed bytes are the ones that get committed.
 #   vendor.sh --paths         print "<spec>\t<path>" for every pinned spec (what validate.py reads)
+#   vendor.sh --drift         THE LIVE-DRIFT DETECTOR, separate from the judge: for every VENDORED
+#                             spec, fetch the live upstream document and compare it (same digest
+#                             format) with the committed copy's pin. Exit 5 and say DRIFT when they
+#                             differ, 4 when upstream cannot be fetched, 0 when live == committed.
+#   --digests <file>          read pins from <file> instead of spec-digests.tsv (the selftest plants
+#                             drift this way); vendored paths resolve relative to that file.
+#
+# VENDORED specs (url column `vendored:<path>`, fifth column = the live upstream URL). Some
+# upstreams cannot be pinned by URL: Google serves only the LIVE discovery document and bumps its
+# `revision` field every few days, so a URL pin went RED on every branch at every bump (item 116)
+# and the judge could judge nothing. Those documents are committed under specs/ after review; the
+# digest pins the committed file, the judge installs it from the tree with NO network, and
+# `--drift` is the separate, loud check that upstream has moved on from what was reviewed.
 #
 # Refuses (exit 3) on any digest mismatch and deletes the download: a spec that silently changed
 # under the gate would change what "conformant" means without anyone reviewing the change.
@@ -28,6 +43,8 @@ while [ $# -gt 0 ]; do
     --paths) MODE=paths; shift ;;
     --repin) MODE=repin; REPIN="$2"; shift 2 ;;
     --cache-dir) CACHE_ROOT="$2"; shift 2 ;;
+    --drift) MODE=drift; shift ;;
+    --digests) DIGESTS="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -54,11 +71,57 @@ ext_for() { case "$1" in *.json|*'$discovery'*|*'?version='*) echo json ;; *) ec
 
 rows() { awk -F'\t' '!/^#/ && NF>=4 {print}' "$DIGESTS"; }
 [ -s "$DIGESTS" ] || { echo "vendor: no digest file at $DIGESTS" >&2; exit 2; }
+DIGESTS_DIR="$(cd "$(dirname "$DIGESTS")" && pwd)"
+# vendored_src <url-column> -> absolute path of the committed copy, or empty when not vendored
+vendored_src() { case "$1" in vendored:*) printf '%s/%s' "$DIGESTS_DIR" "${1#vendored:}" ;; esac; }
+
+if [ "$MODE" = drift ]; then
+  drifted=0 unreachable=0 checked=0
+  while IFS=$'\t' read -r spec fmt want url upstream; do
+    [ -n "$spec" ] || continue
+    [ -n "$(vendored_src "$url")" ] || continue
+    checked=$((checked+1))
+    if [ -z "$upstream" ]; then
+      echo "vendor: ${spec} is vendored but names no upstream URL (fifth column); drift cannot be measured" >&2
+      unreachable=$((unreachable+1)); continue
+    fi
+    tmp="$(mktemp "${TMPDIR:-/tmp}/busbar-llm-drift.XXXXXX")"
+    if ! curl -fsSL -m 300 -o "$tmp" "$upstream"; then
+      echo "vendor: LIVE DRIFT UNMEASURED for ${spec}: download failed for ${upstream}" >&2
+      rm -f "$tmp"; unreachable=$((unreachable+1)); continue
+    fi
+    live="$(digest_of "$fmt" "$tmp")"; rm -f "$tmp"
+    if [ "$live" = "$want" ]; then
+      echo "in-sync    ${spec}  ${want:0:12}  live upstream == the committed, reviewed copy"
+    else
+      echo "::error title=llm spec LIVE DRIFT (${spec})::upstream ${upstream} is no longer the reviewed copy ${url#vendored:}" >&2
+      echo "vendor: LIVE DRIFT for ${spec} (${fmt})" >&2
+      echo "  upstream  ${upstream}" >&2
+      echo "  committed ${want}  (${url#vendored:})" >&2
+      echo "  live      ${live}" >&2
+      echo "  The judge still validates against the committed copy. Review the change, then: vendor.sh --repin ${spec}" >&2
+      drifted=$((drifted+1))
+    fi
+  done < <(rows)
+  [ "$checked" -gt 0 ] || { echo "vendor: --drift found no vendored spec to measure" >&2; exit 2; }
+  [ "$drifted" -eq 0 ] || exit 5
+  [ "$unreachable" -eq 0 ] || exit 4
+  exit 0
+fi
 
 if [ "$MODE" = repin ]; then
   row="$(rows | awk -F'\t' -v s="$REPIN" '$1==s{print; exit}')"
   [ -n "$row" ] || { echo "vendor: no row for spec '$REPIN' in $DIGESTS" >&2; exit 2; }
-  fmt="$(printf '%s' "$row" | cut -f2)"; url="$(printf '%s' "$row" | cut -f4)"
+  fmt="$(printf '%s' "$row" | cut -f2)"; url="$(printf '%s' "$row" | cut -f4)"; upstream="$(printf '%s' "$row" | cut -f5)"
+  if [ -n "$(vendored_src "$url")" ]; then
+    # keep the download: it is the candidate to diff against the committed copy and, once reviewed,
+    # to commit in its place under a new name, with this row pointing at it
+    tmp="$(mktemp "${TMPDIR:-/tmp}/busbar-llm-spec-${REPIN}.XXXXXX")"
+    curl -fsSL -m 300 -o "$tmp" "$upstream" || { echo "vendor: download failed for $upstream" >&2; rm -f "$tmp"; exit 4; }
+    echo "vendor: candidate kept at $tmp — diff it against ${url#vendored:}, commit it under specs/, point the row at it" >&2
+    printf '%s\t%s\t%s\t%s\t%s\n' "$REPIN" "$fmt" "$(digest_of "$fmt" "$tmp")" "vendored:specs/<new file>" "$upstream"
+    exit 0
+  fi
   tmp="$(mktemp "${TMPDIR:-/tmp}/busbar-llm-spec.XXXXXX")"; trap 'rm -f "$tmp"' EXIT
   curl -fsSL -m 300 -o "$tmp" "$url" || { echo "vendor: download failed for $url" >&2; exit 4; }
   printf '%s\t%s\t%s\t%s\n' "$REPIN" "$fmt" "$(digest_of "$fmt" "$tmp")" "$url"
@@ -66,9 +129,10 @@ if [ "$MODE" = repin ]; then
 fi
 
 fails=0
-while IFS=$'\t' read -r spec fmt want url; do
+while IFS=$'\t' read -r spec fmt want url upstream; do
   [ -n "$spec" ] || continue
-  ext="$(ext_for "$url")"
+  src="$(vendored_src "$url")"
+  ext="$(ext_for "${src:-$url}")"
   dir="${CACHE_ROOT}/${spec}/${want}"
   file="${dir}/spec.${ext}"
   if [ "$MODE" = paths ]; then printf '%s\t%s\n' "$spec" "$file"; continue; fi
@@ -100,7 +164,13 @@ while IFS=$'\t' read -r spec fmt want url; do
 
   mkdir -p "$dir"
   tmp="$(mktemp "${dir}/.download.XXXXXX")"
-  if ! curl -fsSL -m 300 -o "$tmp" "$url"; then
+  if [ -n "$src" ]; then
+    # VENDORED: the committed, reviewed copy is the source. No network, ever; the same digest check
+    # below refuses it if the committed bytes are not the ones the pin names.
+    if ! cp "$src" "$tmp" 2>/dev/null; then
+      echo "vendor: vendored copy for ${spec} is missing: ${src}" >&2; rm -f "$tmp"; fails=$((fails+1)); continue
+    fi
+  elif ! curl -fsSL -m 300 -o "$tmp" "$url"; then
     echo "vendor: download failed for ${spec}: ${url}" >&2; rm -f "$tmp"; fails=$((fails+1)); continue
   fi
   got="$(digest_of "$fmt" "$tmp")"
@@ -109,7 +179,11 @@ while IFS=$'\t' read -r spec fmt want url; do
     echo "  url      ${url}" >&2
     echo "  expected ${want}" >&2
     echo "  actual   ${got}" >&2
-    echo "  The upstream document changed since it was pinned. Review it, then: vendor.sh --repin ${spec}" >&2
+    if [ -n "$src" ]; then
+      echo "  The COMMITTED copy ${src} is not the document the pin names. Nothing may be validated against it." >&2
+    else
+      echo "  The upstream document changed since it was pinned. Review it, then: vendor.sh --repin ${spec}" >&2
+    fi
     rm -f "$tmp"; fails=$((fails+1)); continue
   fi
   mv "$tmp" "$file"
