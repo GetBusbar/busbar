@@ -18,6 +18,17 @@
 //! `create_dir_all` of a temp fixture as a durability bypass — the lint being right about a pattern
 //! and wrong about the file.
 //!
+//! TEST FILES ARE NOT PRODUCTION BY NAME OR BY DECLARATION, and the second half is the one a path
+//! filter misses. `#[cfg(test)] mod tests;` puts a module in `tests.rs`, which sits in no `tests/`
+//! directory; `#[cfg(test)] #[path = "voice_d2_billing_oracle.rs"] mod …;` names a file whose path
+//! says nothing about test at all; `#[cfg(any(test, feature = "test-support"))] pub mod testkit;`
+//! is a whole directory of doubles. While this lint's tree-wide scope was seven prefixes none of
+//! them happened to sit in it. Once the scope became every crate (items 183, 224) a test double's
+//! `fn serves` in the voice runtime's `tests.rs` was counted as a second trust decision — the
+//! lint right about the pattern and wrong about the file. [`test_scoped`] answers both halves, and
+//! the tree-wide rules read [`Corpus::production_in_scope`]; the inline-test and choke-point rules
+//! read the candidate set unchanged.
+//!
 //! ## The scanners
 //!
 //! Three, matching the shell's three, each reading [`crate::scan::test_scope`] and nothing else so
@@ -69,6 +80,10 @@ impl Candidate {
 #[derive(Debug, Clone)]
 pub struct Corpus {
     pub files: Vec<Candidate>,
+    /// The candidates that are TEST SCOPE by name or by declaration ([`test_scoped`]). They stay in
+    /// [`Corpus::files`] — the inline-test and choke-point rules read the candidate set exactly as
+    /// before — and the tree-wide rules ask [`Corpus::production_in_scope`] instead.
+    pub test_only: std::collections::BTreeSet<String>,
 }
 
 impl Corpus {
@@ -78,7 +93,9 @@ impl Corpus {
             .exclude([EXCLUDE_TESTS, EXCLUDE_BENCHES])
             .min_files(CANDIDATE_FLOOR);
         let files = cx.walk(&spec).map_err(|e| finding_floor(&e.to_string()))?;
+        let test_only = test_scoped(&files);
         Ok(Corpus {
+            test_only,
             files: files
                 .into_iter()
                 .map(|s| Candidate {
@@ -95,6 +112,16 @@ impl Corpus {
         self.files
             .iter()
             .filter(move |c| prefixes.iter().any(|p| c.rel.starts_with(p.as_str())))
+    }
+
+    /// [`Corpus::in_scope`] without the test-scoped files: what the TREE-WIDE rules (the axis bans
+    /// and the census) judge, now that their scope is every crate rather than seven prefixes.
+    pub fn production_in_scope<'a>(
+        &'a self,
+        prefixes: &'a [String],
+    ) -> impl Iterator<Item = &'a Candidate> {
+        self.in_scope(prefixes)
+            .filter(move |c| !self.test_only.contains(&c.rel))
     }
 
     /// THE PATTERN BAN. One pass per rule over the files it is given, one `(file, line)` per hit.
@@ -120,6 +147,108 @@ impl Corpus {
         }
         out
     }
+}
+
+/// Is this a test file BY NAME: `tests.rs`, `test.rs`, `*_tests.rs`, `*_test.rs`.
+pub fn is_test_file_name(rel: &str) -> bool {
+    rel.ends_with("/tests.rs")
+        || rel.ends_with("/test.rs")
+        || rel.ends_with("_tests.rs")
+        || rel.ends_with("_test.rs")
+}
+
+/// An attribute that compiles what follows ONLY for tests or for the test-support feature.
+/// `not(test)` is the opposite claim and never counts.
+fn is_test_cfg(attr: &str) -> bool {
+    let a: String = attr.chars().filter(|c| !c.is_whitespace()).collect();
+    a.starts_with("#[cfg(")
+        && !a.contains("not(")
+        && (a == "#[cfg(test)]" || a.contains("any(test") || a.contains("feature=\"test-support\""))
+}
+
+/// Every file in `files` that is TEST SCOPE: named as a test, or declared as a module under a
+/// test-only `cfg` by a file in the same list (the module's `name.rs`, and everything under its
+/// `name/` directory). A `#[path = "…"]` between the attribute and the `mod` line is followed.
+pub fn test_scoped(files: &[crate::ctx::SourceFile]) -> std::collections::BTreeSet<String> {
+    let mut prefixes: Vec<String> = Vec::new();
+    let mut exact: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for f in files {
+        let rel = f.rel_str();
+        let Some((dir, file)) = rel.rsplit_once('/') else {
+            continue;
+        };
+        // A module declared in `foo.rs` lives in `foo/`; one declared in `mod.rs`/`lib.rs`/`main.rs`
+        // lives beside it.
+        let stem = file.strip_suffix(".rs").unwrap_or(file);
+        let base = if matches!(stem, "mod" | "lib" | "main") {
+            dir.to_string()
+        } else {
+            format!("{dir}/{stem}")
+        };
+        let lines: Vec<&str> = f.text.lines().collect();
+        for (i, raw) in lines.iter().enumerate() {
+            let t = raw.trim();
+            if !t.starts_with("#[cfg(") || !is_test_cfg(t) {
+                continue;
+            }
+            let mut path_override: Option<String> = None;
+            for probe in lines.iter().skip(i + 1).take(4) {
+                let t = probe.trim();
+                if let Some(rest) = t.strip_prefix("#[path") {
+                    path_override = rest.split('"').nth(1).map(str::to_string);
+                    continue;
+                }
+                if t.starts_with("#[") {
+                    continue;
+                }
+                let t = t
+                    .strip_prefix("pub(crate) ")
+                    .or_else(|| t.strip_prefix("pub "))
+                    .unwrap_or(t);
+                let Some(rest) = t.strip_prefix("mod ") else {
+                    break;
+                };
+                let name = rest.trim_end_matches(';').trim();
+                if name.is_empty() || name.contains('{') || !rest.trim_end().ends_with(';') {
+                    break;
+                }
+                match &path_override {
+                    Some(p) => {
+                        exact.insert(normalize(&format!("{dir}/{p}")));
+                    }
+                    None => {
+                        exact.insert(format!("{base}/{name}.rs"));
+                        prefixes.push(format!("{base}/{name}/"));
+                    }
+                }
+                break;
+            }
+        }
+    }
+    files
+        .iter()
+        .map(crate::ctx::SourceFile::rel_str)
+        .filter(|rel| {
+            is_test_file_name(rel)
+                || exact.contains(rel)
+                || prefixes.iter().any(|p| rel.starts_with(p.as_str()))
+        })
+        .collect()
+}
+
+/// `a/b/../c` -> `a/c`, so a `#[path]` that climbs resolves to the key the walk yields.
+fn normalize(p: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in p.split('/') {
+        match seg {
+            "." | "" => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
 }
 
 /// The finding, spelled once — the translator reads the shell's own refusal and calls this.

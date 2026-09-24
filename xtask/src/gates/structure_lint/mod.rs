@@ -78,6 +78,7 @@ pub const OWED: &[&str] = &[
     corpus::ROW_CANDIDATE_FLOOR,
     hybrid::ROW_HYBRID,
     oversized::ROW_OVERSIZED,
+    oversized::ROW_GRANDFATHERED,
     inline_tests::ROW_INLINE_TEST,
     inline_tests::ROW_ALLOW_REASON,
     choke_points::ROW_ROW_INTEGRITY,
@@ -138,6 +139,7 @@ pub struct Findings {
     pub candidate_floor: Vec<String>,
     pub hybrid: Vec<String>,
     pub oversized: Vec<String>,
+    pub grandfathered: Vec<String>,
     pub inline_tests: Vec<String>,
     pub allow_reason: Vec<String>,
     pub choke_row_integrity: Vec<String>,
@@ -184,6 +186,7 @@ impl Findings {
             &mut self.candidate_floor,
             &mut self.hybrid,
             &mut self.oversized,
+            &mut self.grandfathered,
             &mut self.inline_tests,
             &mut self.allow_reason,
             &mut self.choke_row_integrity,
@@ -338,7 +341,7 @@ impl StructureLintGate {
                 inline_tests::scan(&corpus, &mut f);
                 choke_points::scan(cx, &corpus, &tables, &mut f);
                 fn_scoped::scan(cx, &tables, &mut f);
-                plane_dups::scan(cx, &addresses, &tables, &mut f);
+                plane_dups::scan(cx, &addresses, Some(&corpus), &tables, &mut f);
                 axis::scan(cx, &corpus, &tables, &mut f);
                 census::scan(cx, &corpus, &tables, &mut f);
                 plane_store::scan(cx, &addresses, &mut f);
@@ -350,7 +353,7 @@ impl StructureLintGate {
                 // an empty candidate list says nothing about whether a subject file exists.
                 oversized::scan(cx, &tables, &mut f);
                 fn_scoped::scan(cx, &tables, &mut f);
-                plane_dups::scan(cx, &addresses, &tables, &mut f);
+                plane_dups::scan(cx, &addresses, None, &tables, &mut f);
                 choke_points::scan_class_tests(cx, &tables, &mut f);
                 plane_store::scan(cx, &addresses, &mut f);
             }
@@ -402,5 +405,7 @@ impl Gate for StructureLintGate {
     }
 }
 
+#[cfg(test)]
+mod exit_tests;
 mod selftest;
 mod translate;
