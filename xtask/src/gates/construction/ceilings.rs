@@ -121,11 +121,6 @@ pub fn pins(cfg: &Cfg) -> Vec<Pin> {
             "rules.loc-ceilings",
             "unit_total_ceiling",
         ),
-        Pin::new(
-            "loc-ceilings:unit-verbs",
-            "rules.loc-ceilings",
-            "verbs_ceiling",
-        ),
         Pin::new("loc-ceilings:union", "rules.loc-ceilings", "union_ceiling"),
         Pin::new("legacy-reach", "rules.legacy-reach", "ceiling"),
     ];

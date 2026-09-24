@@ -202,7 +202,6 @@ impl ConstructionGate {
             "loc-ceilings:kernel",
             "loc-ceilings:caps-contract",
             "loc-ceilings:unit-total",
-            "loc-ceilings:unit-verbs",
             "loc-ceilings:union",
             "lean-core",
             "no-default-bodies",

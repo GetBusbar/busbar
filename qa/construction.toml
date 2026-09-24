@@ -843,20 +843,15 @@ unit_crate_glob = "busbar-unit-*"
 # `busbar-unit-transport-key`, at 268 lines. The ceiling had 14,155 lines of slack — room for the
 # whole unit family to come back without a single row going red. Pinned at the measurement.
 unit_total_ceiling = 268
-verbs_crate = "busbar-unit-verbs"
-# RAISED 1428 -> 1431 for D38 `amend_rate_history`: a new closed-table admin verb costs exactly
-# three surface lines in this crate — the `KernelVerb::AmendRateHistory` variant, its `NEW_VERBS`
-# membership (which gives it `full` scope and posture-gating) and its `IRREDUCIBLE_VERBS` membership
-# (which gives it the operator-key ceremony gate). None is removable, so the closed table cannot gain
-# a verb without this ratchet. Pinned to today's measurement, per `ceiling-slack`; declared here in
-# its own line so `ceiling-rose` reports the raise for review rather than absorbing it.
-# ── RE-BASELINED 2026-09-22: 1431 -> 0, and the ZERO is the point. ─────────────────────────────
-# `crates/busbar-unit-verbs` does not exist — the verb table went with the W2.c unit fold — so this
-# row measures the empty set and its own detail line says "vacuous 0". At 1431 it was a ceiling
-# nothing could ever spend, which this file elsewhere calls a ceiling that has been abolished rather
-# than met. At 0 it is a live ratchet: the day a `busbar-unit-verbs` reappears, its first line of
-# code reds this row and the owner decides the figure then, in a diff.
-verbs_ceiling = 0
+# `verbs_crate` / `verbs_ceiling` ARE STRUCK (P1A-con, 1.6.0 Phase 1). They budgeted
+# `busbar-unit-verbs` as a sub-ceiling of the unit union. OWNER-LOCKED DECISION #36 moved verb
+# execution OUT of the unit set ("EXITS from the unit set: `verbs` -> `busbar-core-admin`"):
+# 427cbe399 drained the crate into busbar-admin and 92e823cd5 folded that into busbar-core-admin, a
+# cleanliness crate outside the kernel + contract + unit union this rule budgets. There is no
+# subject to repoint the row at — core-admin as a whole is not "the verbs" — and a
+# `busbar-unit-verbs` that reappeared would match `unit_crate_glob` and spend `unit_total_ceiling`
+# (268, today's single unit crate) from its first line, so the ratchet the zero was kept for is
+# already held by that row.
 # ── RE-BASELINED 2026-09-22: 60545 -> 58870, AND RED, and red for exactly one reason. ──────────
 # This row adds no growth of its own; it is the arithmetic of its three members, and it is set to
 # the SUM OF THEIR CEILINGS rather than to what the union measures today:
@@ -903,19 +898,14 @@ label = "recovery"
 patterns = ["recovery.rs"]
 ceiling = 177
 
-[rules.loc-ceilings.kernel_files.slice]
-label = "slice/lease"
-patterns = ["slice.rs"]
-# ── RE-BASELINED 2026-09-22: 397 -> 0, and the zero is a FINDING, not a tightening. ────────────
-# There is no `slice.rs` under `crates/busbar-kernel/src` any more. The only one in the tree is
-# `crates/busbar-contract/src/slice.rs`, in another crate, which this row (kernel files, by
-# basename) cannot and should not reach. So the row has been measuring the empty set and printing
-# "vacuous 0" against a 397-line allowance — a named piece of the kernel's own 8k budget that
-# nothing spends and nothing could fail. 0 keeps it a live ratchet against a slice file coming
-# BACK into the kernel. **Owner decision owed:** either the slice/lease budget moves with its
-# subject to `busbar-contract` and is counted there, or this row is struck; it should not stay a
-# kernel-file row for a file that is not in the kernel.
-ceiling = 0
+# `[rules.loc-ceilings.kernel_files.slice]` IS STRUCK (P1A-con, 1.6.0 Phase 1). `slice.rs` left
+# the kernel in b544c8bbf ("slice+Millis ABI types -> busbar-contract (#38)", a pure `git mv` to
+# `crates/busbar-contract/src/slice.rs`): SliceStore is implemented by the loader and consumed by
+# the loop, so it is ABI (DECISIONS #38), and its lines are counted, whole, by
+# `loc-ceilings:caps-contract`. A kernel-FILE row can only measure `busbar-kernel/src`; the one that
+# stood here measured the empty set against 0 and the scan-set floor scored it RED, correctly. A
+# `slice.rs` coming back into the kernel spends `kernel_ceiling` like any other kernel file.
+# `[gate.census] loc_ceilings_kernel_files` goes 9 -> 8 in the same commit, and says so there.
 
 [rules.loc-ceilings.kernel_files.registry]
 label = "registry + generations"
@@ -2147,7 +2137,11 @@ because = "a type alias over the rows the loop posted, and a reader of it; the n
 # that half, deleting a rule table and dropping its census number in one edit would be exactly as
 # silent as deleting the table alone was.
 [gate.census]
-loc_ceilings_kernel_files = 9
+# 9 -> 8 (P1A-con): `[rules.loc-ceilings.kernel_files.slice]` struck — its subject moved to
+# busbar-contract in b544c8bbf (#38) and is counted by `loc-ceilings:caps-contract`. This is the
+# named decrement the rule above asks for; the base comparison reports it until this commit is the
+# base, and then it is quiet.
+loc_ceilings_kernel_files = 8
 legacy_reach_prefixes = 3
 plane_crates = 4
 

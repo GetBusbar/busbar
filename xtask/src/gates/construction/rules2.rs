@@ -60,8 +60,6 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
     let caps_contract_ceiling = need_int(c, "caps_contract_ceiling", "loc-ceilings")?;
     let unit_glob = need_str(c, "unit_crate_glob", "loc-ceilings")?;
     let unit_total_ceiling = need_int(c, "unit_total_ceiling", "loc-ceilings")?;
-    let verbs_crate = need_str(c, "verbs_crate", "loc-ceilings")?;
-    let verbs_ceiling = need_int(c, "verbs_ceiling", "loc-ceilings")?;
     let union_ceiling = need_int(c, "union_ceiling", "loc-ceilings")?;
     let teller_file_names = c.list_of("teller_files");
 
@@ -254,34 +252,13 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
             .collect(),
     ));
 
-    // ASKED OF THE SCANNED TREE, NOT OF A DIRECTORY GLOB, and the difference is whether this row
-    // can go red at all. `unit_crates` comes from `dirs_for_globs`, which reads the FILESYSTEM;
-    // `crates/busbar-unit-verbs` went with the W2.c unit fold, so the glob missed it, `has_verbs`
-    // was false, the row reported a vacuous 0 against its ceiling and PASSED — and no self-test
-    // plant could change that, because an overlay cannot put a directory on disk. A row no plant
-    // can red is not a gate. The tree IS overlay-aware, and "did we measure any file of this
-    // crate" is the same question the note wanted to ask.
-    let has_verbs = !tree.crate_files(verbs_crate).is_empty();
-    let verbs_total = if has_verbs {
-        crate_total(verbs_crate)
-    } else {
-        0
-    };
-    let note = if has_verbs {
-        String::new()
-    } else {
-        format!(" -- {verbs_crate} does not exist yet (vacuous 0)")
-    };
-    rows.push(plain(
-        "loc-ceilings:unit-verbs",
-        verbs_total <= verbs_ceiling,
-        format!("{verbs_crate} stays within its LOC ceiling"),
-        format!("{verbs_crate}: {verbs_total} line(s) (ceiling {verbs_ceiling}){note}"),
-        verbs_total,
-        verbs_ceiling,
-        vec![],
-    ));
-
+    // `loc-ceilings:unit-verbs` IS STRUCK (item 3 of P1A-con). It was a sub-ceiling of the unit
+    // union for `busbar-unit-verbs`, and that crate left the unit set by OWNER-LOCKED DECISION #36
+    // ("EXITS from the unit set: `verbs` -> `busbar-core-admin`"), drained by 427cbe399 and folded
+    // into core-admin by 92e823cd5 — a cleanliness crate outside the kernel + contract + unit union
+    // this rule budgets. Nothing is left for the row to measure, and a `busbar-unit-verbs` that came
+    // back would match `unit_crate_glob` and spend `unit-total`, whose ceiling is today's one unit
+    // crate — so no line the row could ever have caught goes unmeasured.
     let union_total = kernel_total + caps_contract + unit_total;
     rows.push(plain(
         "loc-ceilings:union",

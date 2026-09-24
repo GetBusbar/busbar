@@ -250,13 +250,6 @@ pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
     // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
     // the route step" that found no `.await` in scope at all, and passed on that basis.
     "hold-discipline:cancellation-before-await",
-    // TWO CEILINGS WHOSE SUBJECT IS NOT IN THE TREE. `slice.rs` under busbar-kernel/src and the
-    // `busbar-unit-verbs` crate do not exist, so each row measures a vacuous 0 against a ceiling of
-    // 0 and the scan-set floor scores that RED, correctly. Drain: slot W1.1 corrects the two
-    // entries in qa/construction.toml (re-point to the subject's real home or strike the row), and
-    // strikes both names here on the same commit.
-    "loc-ceilings:kernel:slice",
-    "loc-ceilings:unit-verbs",
     // SEVEN ROWS THAT RUN AND ARE RED ON THEIR MANIFESTS. Until item 120 the allowlist rule did not
     // read the `transport` kind, so these were "owed but no row was recorded — DID NOT RUN". It
     // reads it now, and every one of the seven FAILS for a real reason, measured: each names

@@ -714,7 +714,6 @@ fn ceiling_cases<'a>(
         "loc-ceilings:kernel",
         "loc-ceilings:caps-contract",
         "loc-ceilings:unit-total",
-        "loc-ceilings:unit-verbs",
         "loc-ceilings:union",
     ]);
     // The row prints its label and its file patterns, never its offender list, so the naming is
@@ -762,27 +761,10 @@ fn ceiling_cases<'a>(
         format!("crates/{contract}/src/zz_planted_loc.rs"),
         bulk(200),
     );
-    let verbs = cfg
-        .rule("loc-ceilings")
-        .ok()
-        .and_then(|t| t.str_of("verbs_crate").map(String::from))
-        .unwrap_or_default();
     for d in dirs_for_globs(cx, &strings(&["crates/busbar-unit-*"])) {
         let name = crate_name_of_dir(&d);
-        let n = if name == verbs { 16_000 } else { 2_600 };
-        ov.set(format!("crates/{name}/src/zz_planted_loc.rs"), bulk(n));
+        ov.set(format!("crates/{name}/src/zz_planted_loc.rs"), bulk(2_600));
     }
-    // AND THE VERBS CRATE WHETHER OR NOT IT IS ON DISK, for the same reason as the kernel files
-    // above: `busbar-unit-verbs` went with the W2.c unit fold, so the glob above stopped matching
-    // it, its row measured 0 and passed every plant. `Overlay::set` overwrites, so this is a no-op
-    // on a tree where the crate is present and the glob already planted it.
-    if !verbs.is_empty() {
-        ov.set(
-            format!("crates/{verbs}/src/zz_planted_loc.rs"),
-            bulk(16_000),
-        );
-    }
-    naming.push(format!("{verbs} stays within its LOC ceiling"));
     r.push(prove_red(
         cx,
         gate,

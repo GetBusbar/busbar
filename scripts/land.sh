@@ -224,8 +224,6 @@ land_construction_standing_reds() {
   local reds
   reds="$(cat <<'EOF'
 hold-discipline:cancellation-before-await
-loc-ceilings:kernel:slice
-loc-ceilings:unit-verbs
 manifest-allowlist:busbar-transport-grpc
 manifest-allowlist:busbar-transport-http
 manifest-allowlist:busbar-transport-sse
