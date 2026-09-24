@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The usage unit under test: the fold, the lane cross-check, the settlement table and the
-//! metering series.
+//! The usage unit under test: the fold, the lane cross-check and the metering series — and the
+//! settlement table's absence from it.
 
 use busbar_contract::caps::step::MeterClassId;
 use busbar_contract::caps::{Consumption, Grant, KernelSeal, Usage, UsageLine};
@@ -14,8 +14,8 @@ use crate::usage::{
 
 mod lane_tests;
 mod meter_tests;
+mod one_table_tests;
 mod series_tests;
-mod settlement_tests;
 
 /// The classes the older release priced, under the names it used.
 pub(crate) const INPUT: &str = "input";
@@ -76,11 +76,6 @@ pub(crate) fn counts(lines: Vec<KernelLine>) -> KernelCounts {
 /// A report built directly, for the settlement cases that are handed one.
 pub(crate) fn usage(lines: &[(&'static str, u64)]) -> Usage {
     Usage::report(&token(), plain(lines)).expect("within the line bound")
-}
-
-/// The same, marked as the kernel's own floor.
-pub(crate) fn estimated_usage(lines: &[(&'static str, u64)]) -> Usage {
-    Usage::estimate(&token(), plain(lines)).expect("within the line bound")
 }
 
 /// Plain report lines.

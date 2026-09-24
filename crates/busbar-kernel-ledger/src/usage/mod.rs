@@ -11,7 +11,7 @@
 //! the ledger settles against — and it produces it by rules that are written down rather than
 //! negotiated per plane.
 //!
-//! # The four rules
+//! # The three rules
 //!
 //! **The sources are closed.** A quantity may come from a located value, from kernel bytes divided
 //! by a declared divisor, from kernel frames times a declared factor, from a transport that
@@ -28,14 +28,15 @@
 //! or far above it, raises a dispute, and neither changes the amount. See
 //! [`MeterPolicy::locator_floor_ratio`].
 //!
-//! **The end decides the amount.** How a unit ended, and which evidence survived, together pick a
-//! row of one table. See [`settle`].
+//! How a unit ENDED is not decided here. The settlement table is one function, the kernel teller's
+//! `settle_amount`, and the request slot beside it is the teller's too. This unit once carried a
+//! second table of its own that nothing in production called, and it disagreed with the live one
+//! about a durability-lost unit (item 436): two tables for one amount is one table too many.
 
 mod evidence;
 mod lane;
 mod meter;
 mod series;
-mod settlement;
 mod source;
 
 pub use evidence::{
@@ -45,9 +46,6 @@ pub use evidence::{
 pub use lane::{cross_check_lane, LaneCheck, LaneLegs, LegDeclaration};
 pub use meter::{meter, Dispute, DisputeReason, Metered};
 pub use series::MeterCounts;
-pub use settlement::{
-    posting_flags, requests_settled, settle, Evidence, SettleFlag, Settlement, UnitEndKind,
-};
 pub use source::{quantity_from_raw, Direction, LocatorPtr, QuantitySource};
 
 /// Basis points in a whole: the scale every ratio in this crate is expressed on, so no comparison
