@@ -17,7 +17,8 @@
 //! provable: a self-test can empty a protocol crate, or take the grammar out of a plane's `mod.rs`,
 //! and watch the rule go red. The shell's globs asked `[ -d ]`, which no overlay can answer — and a
 //! directory holding no Rust contributes nothing to any scan below, so "has a source file in it" is
-//! the same question asked honestly (it is the question `plane-roots.sh` already had to add).
+//! the same question asked honestly (it is the question the plane resolver in `xtask/src/planes.rs`
+//! — the Rust port of the deleted `scripts/plane-roots.sh` — already had to add).
 
 use std::collections::BTreeSet;
 

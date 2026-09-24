@@ -16,12 +16,13 @@
 //!   planted table exactly as the shell's `selftest_case` drove the shipped `scan_rule` over a
 //!   planted fixture.
 
-use crate::ctx::{Ctx, Overlay};
+use crate::ctx::{Change, Ctx, Overlay};
 use crate::gates::structure_lint::{
     axis, census, choke_points, corpus, fn_scoped, hybrid, inline_tests, oversized, plane_dups,
     plane_store, roots, StructureLintGate, Tables,
 };
 use crate::gates::{prove_rows_green, prove_rows_red, Gate, Report};
+use crate::ledger::Verdict;
 
 /// A tree plant: the overlay, and the strings the ROWS THIS CASE COVERS must name.
 fn tree_case<'a>(
@@ -84,13 +85,12 @@ fn green_case<'a>(
 /// the case would be deleted rather than fixed the first time somebody legitimately added an entry
 /// to the grandfathered list. So the plant starts from a tree holding none of that rule's current
 /// offenders, and the only thing left for the row to judge is what the case planted.
-fn without_existing(
-    cx: &Ctx,
-    gate: &StructureLintGate,
-    pick: fn(&crate::gates::structure_lint::Findings) -> &Vec<String>,
-) -> Overlay {
+///
+/// The unplanted tree's findings are measured ONCE per battery and handed in, rather than re-run
+/// per case: every call used to be one more whole-tree scan charged to the self-test's budget.
+fn without_existing(existing: &[String]) -> Overlay {
     let mut ov = Overlay::new();
-    for finding in pick(&gate.findings(cx)) {
+    for finding in existing {
         if let Some(path) = offender_path(finding) {
             ov.remove(path);
         }
@@ -98,15 +98,108 @@ fn without_existing(
     ov
 }
 
-/// The file a finding is about, for the two shapes these rules' findings take.
+/// The file a finding is about: the first `crates/…/*.rs` path it names.
+///
+/// Every file-shaped finding in this gate names its offender that way — `OVERSIZED: <p> (…`,
+/// `<p>:<n>: INLINE-TEST`, `<tag>: <p>:<n>: <what>`, `PLANE-DUPLICATE (…) — mcp:<p>:<n> a2a:…` —
+/// so one reader serves them all. A finding that names no file (a table rule's) answers `None`,
+/// and the base it contributes to is simply smaller.
 fn offender_path(finding: &str) -> Option<String> {
-    if let Some(rest) = finding.strip_prefix("OVERSIZED: ") {
-        return rest.split_once(" (").map(|(p, _)| p.to_string());
+    finding.split_whitespace().find_map(|tok| {
+        let start = tok.find(&format!("{}/", roots::CRATES))?;
+        let tail = &tok[start..];
+        let end = tail.find(".rs")? + ".rs".len();
+        Some(tail[..end].to_string())
+    })
+}
+
+/// THE CURE FOR STANDING-RED POISONING (item 89). A red case over a row the real tree ALREADY
+/// carries debt in cannot be a proof — the unplanted run is red too, and `prove_red` rightly scores
+/// that PROOF IMPOSSIBLE. The rule is not weakened and the case is not dropped: the case is moved
+/// onto a sub-population the debt does not touch.
+///
+/// `base` takes that row's CURRENT offenders out of view. [`DebtFree`] applies it underneath
+/// whatever the harness plants, so BOTH halves of the proof — the unplanted baseline and the
+/// planted run — see the tree without the debt, and the green -> red transition is the plant's
+/// alone. The real tree's debt stays RED on `cargo xtask gate structure-lint`; only the proof moved.
+///
+/// An EMPTY base — a row with no standing debt today — is the ordinary tree plant, sharing the
+/// battery's one cached baseline, so the cure costs nothing on a clean row.
+fn debt_free_case<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
+    name: &str,
+    covers: &[&str],
+    base: Overlay,
+    plant: Overlay,
+    naming: &[&str],
+) -> crate::gates::CasePlan<'a> {
+    if base.is_empty() {
+        return tree_case(cx, gate, name, covers, plant, naming);
     }
-    if finding.contains(": INLINE-TEST") || finding.contains(": ALLOW-WITHOUT-REASON") {
-        return finding.split(':').next().map(str::to_string);
+    let name = name.to_string();
+    let covers: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let naming: Vec<String> = naming.iter().map(|s| (*s).to_string()).collect();
+    crate::gates::CasePlan::new(move || {
+        let debt_free = DebtFree {
+            inner: StructureLintGate::new(),
+            base,
+        };
+        let covers: Vec<&str> = covers.iter().map(String::as_str).collect();
+        let naming: Vec<&str> = naming.iter().map(String::as_str).collect();
+        prove_rows_red(cx, &debt_free, name, &covers, plant, &naming).take()
+    })
+}
+
+/// The shipped gate, run over the tree with one row's standing debt out of view. See
+/// [`debt_free_case`]. The plant the harness hands in is laid OVER the base, so a plant that
+/// touches a hidden path wins — the base can hide debt, never a plant.
+struct DebtFree {
+    inner: StructureLintGate,
+    base: Overlay,
+}
+
+impl DebtFree {
+    fn over(&self, cx: &Ctx) -> Ctx {
+        let mut merged = Overlay::new();
+        let planted = cx.overlay();
+        for layer in std::iter::once(&self.base).chain(planted) {
+            for (path, change) in layer.changes() {
+                match change {
+                    Change::Content(c) => merged.set(path, c.clone()),
+                    Change::Absent => merged.remove(path),
+                    Change::Unreadable(why) => merged.unreadable(path, why.clone()),
+                }
+            }
+        }
+        cx.with_overlay(merged)
     }
-    None
+}
+
+impl Gate for DebtFree {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    /// ITS OWN BASELINE, keyed by what it hides: the shipped gate's cached baseline is the real
+    /// tree's, debt and all, and serving it here would put the IMPOSSIBLE straight back.
+    fn baseline_key(&self) -> Option<String> {
+        self.inner
+            .baseline_key()
+            .map(|k| format!("{k}\u{3}debt-free\u{3}{}", self.base.fingerprint()))
+    }
+
+    fn owed(&self) -> Vec<String> {
+        self.inner.owed()
+    }
+
+    fn run(&self, cx: &Ctx) -> Verdict {
+        self.inner.run(&self.over(cx))
+    }
+
+    fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
+        Report::new()
+    }
 }
 
 /// The real tables, resolved against this tree, as the base every table plant edits.
@@ -118,6 +211,8 @@ fn base_tables(cx: &Ctx) -> Tables {
 pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     let mut report = Report::new();
     let t = base_tables(cx);
+    // The unplanted tree's findings, ONCE: every debt-free base below is read off this.
+    let existing = gate.findings(cx);
 
     // ── where this lint looks ────────────────────────────────────────────────────────────────────
     //
@@ -224,11 +319,12 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         format!("{}/planted_monster.rs", roots::CORE),
         "pub fn f() {}\n".repeat(oversized::MAX_LINES_IMPL + 1),
     );
-    report.push(tree_case(
+    report.push(debt_free_case(
         cx,
         gate,
         "a file over the cap that is not pre-existing debt is a finding",
         &[oversized::ROW_OVERSIZED],
+        without_existing(&existing.oversized),
         ov,
         &["OVERSIZED", "planted_monster.rs"],
     ));
@@ -236,7 +332,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // A GRANDFATHERED FILE STAYS GREEN, which is the half of the rule an exception list can get
     // wrong in the expensive direction.
     if let Some(first) = t.grandfathered.first() {
-        let mut ov = without_existing(cx, gate, |f| &f.oversized);
+        let mut ov = without_existing(&existing.oversized);
         ov.set(
             first,
             format!(
@@ -259,11 +355,12 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         format!("{}/planted_inline_test.rs", roots::CORE),
         "pub fn prod() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {}\n}\n",
     );
-    report.push(tree_case(
+    report.push(debt_free_case(
         cx,
         gate,
         "an inline test body in an implementation file is a finding",
         &[inline_tests::ROW_INLINE_TEST],
+        without_existing(&existing.inline_tests),
         ov,
         &["INLINE-TEST", "planted_inline_test.rs:3"],
     ));
@@ -274,18 +371,19 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         "pub fn prod() {}\n\n// structure-lint: allow inline-test\n#[cfg(test)]\nmod tests {\n    \
          #[test]\n    fn t() {}\n}\n",
     );
-    report.push(tree_case(
+    report.push(debt_free_case(
         cx,
         gate,
         "an allow marker with no reason is its own violation, not a weaker pass",
         &[inline_tests::ROW_ALLOW_REASON],
+        without_existing(&existing.allow_reason),
         ov,
         &["ALLOW-WITHOUT-REASON", "planted_bare_allow.rs:4"],
     ));
 
     // A MARKER THAT NAMES ITS REASON is the arm an allow mechanism has to get right, and the
     // DECLARATION shape must not trip the rule either.
-    let mut ov = without_existing(cx, gate, |f| &f.inline_tests);
+    let mut ov = without_existing(&existing.inline_tests);
     ov.set(
         format!("{}/planted_reasoned_allow.rs", roots::CORE),
         "pub fn prod() {}\n\n// structure-lint: allow inline-test: the harness cannot reach a \
@@ -309,18 +407,19 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         format!("{}/planted_bypass.rs", roots::CORE),
         "pub fn publish() {\n    std::fs::rename(&tmp, &dst).unwrap();\n}\n",
     );
-    report.push(tree_case(
+    report.push(debt_free_case(
         cx,
         gate,
         "a hand-rolled durable-write bypass is named by file and line",
         &[choke_points::ROW_BYPASS],
+        without_existing(&existing.choke_bypass),
         ov,
         &["DURABLE-BYPASS", "planted_bypass.rs:2"],
     ));
 
     // A LINE INSIDE A `#[cfg(test)]` REGION IS NOT A BYPASS, and neither is one in a comment. Both
     // shapes were provably exploitable against the scanner this replaces.
-    let mut ov = Overlay::new();
+    let mut ov = without_existing(&existing.choke_bypass);
     ov.set(
         format!("{}/planted_not_a_bypass.rs", roots::CORE),
         "// prose may say std::fs::rename( without being one\n#[cfg(test)]\nmod tests {\n    \
@@ -445,11 +544,12 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         format!("{}/planted_shared_concern.rs", addresses.a2a),
         "pub fn planted_shared_concern() {}\n",
     );
-    report.push(tree_case(
+    report.push(debt_free_case(
         cx,
         gate,
         "one name declared at file scope in two planes is a duplicate nobody signed for",
         &[plane_dups::ROW_UNLEDGERED],
+        without_existing(&existing.unledgered),
         ov,
         &["PLANE-DUPLICATE", "planted_shared_concern"],
     ));
@@ -475,11 +575,12 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         format!("{}/planted_axis_branch.rs", roots::CORE),
         "pub fn pick(transport: Transport) -> u8 {\n    if transport == Transport::Http { 1 } else { 0 }\n}\n",
     );
-    report.push(tree_case(
+    report.push(debt_free_case(
         cx,
         gate,
         "the agnostic core asking a transport its identity is a finding",
         &[axis::ROW_PURITY],
+        without_existing(&existing.axis_purity),
         ov,
         &["TRANSPORT-BRANCH", "planted_axis_branch.rs:2"],
     ));
