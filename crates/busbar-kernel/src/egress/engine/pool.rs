@@ -23,7 +23,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -78,6 +78,40 @@ pub(crate) struct PoolMap {
     /// exits when the pool holds nothing expirable — config-off planes and idle-empty pools run
     /// ZERO background tasks.
     pub(crate) reaper_running: bool,
+}
+
+/// Take the pool lock, RECOVERING a poisoned one instead of cascading it. Every pool access goes
+/// through here — there is no `.expect` on this mutex anywhere.
+///
+/// Why recover: std poisons the mutex when a panic unwinds while it is held, and every later
+/// `.lock().expect(..)` then panics too — one panic under the lock (the 2^63-second
+/// `limits.pool_idle_timeout_secs` overflow in the reaper was the proven trigger) killed this
+/// shard's egress for every subsequent request until restart.
+///
+/// Why RESET rather than resume: the panic may have interrupted a multi-step update (a dial
+/// counted but never spawned, a reaper flag left set by a reaper that no longer runs), so the
+/// contents cannot be trusted to satisfy the coalescing invariant. Everything in the map is soft
+/// state, so the pool is restored to its fresh-client shape: idle conns and h2 handles are
+/// dropped (their sockets FIN), parked waiters' senders drop (each fails with the pool-teardown
+/// connect error `checkout` already classifies), in-flight dials find no authority and drop their
+/// conn, and the next checkout starts from an empty authority — the shard keeps serving.
+pub(crate) fn lock_pool(inner: &ClientInner) -> MutexGuard<'_, PoolMap> {
+    match inner.pool.lock() {
+        Ok(pm) => pm,
+        Err(poisoned) => {
+            let mut pm = poisoned.into_inner();
+            let authorities = pm.map.len();
+            pm.map.clear();
+            pm.reaper_running = false;
+            inner.pool.clear_poison();
+            tracing::error!(
+                authorities,
+                "egress engine pool lock was poisoned by a panic while held; pool state reset \
+                 (idle connections closed, parked waiters failed) so the shard keeps serving"
+            );
+            pm
+        }
+    }
 }
 
 /// What the pool has learned about an authority's protocol. `H2` is evidence-backed only while
@@ -314,7 +348,7 @@ pub(crate) async fn checkout(
 ) -> Result<CheckedOut, EngineError> {
     loop {
         let rx = {
-            let mut pm = inner.pool.lock().expect("engine pool lock");
+            let mut pm = lock_pool(inner);
             let h2_pinned = inner.h2_pinned();
             // Hit-path first: every checkout after an authority's first goes through `get_mut`
             // and never clones the PoolKey; only the once-per-authority miss pays the
@@ -464,11 +498,10 @@ impl Drop for DialGuard {
         if !self.armed {
             return;
         }
-        if let Ok(mut pm) = self.inner.pool.lock() {
-            if let Some(st) = pm.map.get_mut(&self.key) {
-                st.inflight_dials = st.inflight_dials.saturating_sub(1);
-                ensure_dials(&self.inner, &self.key, st);
-            }
+        let mut pm = lock_pool(&self.inner);
+        if let Some(st) = pm.map.get_mut(&self.key) {
+            st.inflight_dials = st.inflight_dials.saturating_sub(1);
+            ensure_dials(&self.inner, &self.key, st);
         }
     }
 }
@@ -577,7 +610,7 @@ fn deliver_dial_outcome(
     outcome: DialOutcome,
     guard: &mut DialGuard,
 ) {
-    let mut pm = inner.pool.lock().expect("engine pool lock");
+    let mut pm = lock_pool(inner);
     guard.armed = false;
     let Some(st) = pm.map.get_mut(key) else {
         return; // unreachable: the authority entry that spawned this dial is never evicted
@@ -720,7 +753,7 @@ pub(crate) fn return_h1_conn(
     sender: http1::SendRequest<Full<Bytes>>,
     extras: ConnSnapshot,
 ) {
-    let mut pm = inner.pool.lock().expect("engine pool lock");
+    let mut pm = lock_pool(inner);
     let Some(st) = pm.map.get_mut(key) else {
         return;
     };
@@ -735,7 +768,7 @@ pub(crate) fn return_h1_conn(
 /// (the transition rule): a cleared authority redials with the full ALPN offer and no
 /// residual assumptions, exactly as legacy would.
 pub(crate) fn clear_h2_generation(inner: &Arc<ClientInner>, key: &PoolKey, generation: u64) {
-    let mut pm = inner.pool.lock().expect("engine pool lock");
+    let mut pm = lock_pool(inner);
     let Some(st) = pm.map.get_mut(key) else {
         return;
     };
@@ -776,7 +809,7 @@ async fn reap_loop(weak: Weak<ClientInner>) {
     loop {
         let next = {
             let Some(inner) = weak.upgrade() else { return };
-            let mut pm = inner.pool.lock().expect("engine pool lock");
+            let mut pm = lock_pool(&inner);
             let now = Instant::now();
             let timeout = inner.idle_timeout;
             let h2_pinned = inner.h2_pinned();
@@ -789,8 +822,14 @@ async fn reap_loop(weak: Weak<ClientInner>) {
                 }) {
                     st.idle.pop_front();
                 }
-                if let Some(front) = st.idle.front() {
-                    let due = front.idle_since + timeout;
+                // `checked_add`: an idle timeout past what `Instant` can represent (the 2^63-second
+                // admin value that used to overflow HERE, under the lock, poisoning it) is an
+                // expiry that never comes — it contributes no wakeup rather than a panic.
+                if let Some(due) = st
+                    .idle
+                    .front()
+                    .and_then(|front| front.idle_since.checked_add(timeout))
+                {
                     earliest = Some(earliest.map_or(due, |e| e.min(due)));
                 }
                 // The h2 idle clock: evict on time-since-last-CHECKOUT. Dropping our handle
@@ -802,8 +841,7 @@ async fn reap_loop(weak: Weak<ClientInner>) {
                         if !h2_pinned {
                             st.proto = KnownProto::Unknown;
                         }
-                    } else {
-                        let due = entry.last_checkout + timeout;
+                    } else if let Some(due) = entry.last_checkout.checked_add(timeout) {
                         earliest = Some(earliest.map_or(due, |e| e.min(due)));
                     }
                 }
@@ -817,7 +855,8 @@ async fn reap_loop(weak: Weak<ClientInner>) {
             }
         };
         // A hair past the deadline: expiry is strict (`>`), so waking exactly AT it would spin.
-        tokio::time::sleep_until(tokio::time::Instant::from_std(next + EXPIRY_SLACK)).await;
+        let wake = next.checked_add(EXPIRY_SLACK).unwrap_or(next);
+        tokio::time::sleep_until(tokio::time::Instant::from_std(wake)).await;
     }
 }
 
@@ -842,7 +881,7 @@ pub(crate) struct AuthoritySnapshot {
 /// the first checkout, and the return path deliberately drops conns for unknown authorities).
 #[cfg(test)]
 pub(crate) fn ensure_authority_for_tests(inner: &Arc<ClientInner>, key: &PoolKey) {
-    let mut pm = inner.pool.lock().expect("engine pool lock");
+    let mut pm = lock_pool(inner);
     let h2_pinned = inner.h2_pinned();
     pm.map
         .entry(key.clone())
@@ -861,7 +900,7 @@ pub(crate) fn deliver_fresh_h1_for_tests(
     sender: http1::SendRequest<Full<Bytes>>,
     extras: ConnSnapshot,
 ) {
-    let mut pm = inner.pool.lock().expect("engine pool lock");
+    let mut pm = lock_pool(inner);
     let Some(st) = pm.map.get_mut(key) else {
         return;
     };
@@ -873,7 +912,7 @@ pub(crate) fn deliver_fresh_h1_for_tests(
 
 #[cfg(test)]
 pub(crate) fn snapshot_authority(inner: &ClientInner, key: &PoolKey) -> Option<AuthoritySnapshot> {
-    let pm = inner.pool.lock().expect("engine pool lock");
+    let pm = lock_pool(inner);
     pm.map.get(key).map(|st| AuthoritySnapshot {
         proto: st.proto,
         inflight_dials: st.inflight_dials,
