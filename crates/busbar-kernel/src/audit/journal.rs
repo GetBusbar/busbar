@@ -192,11 +192,7 @@ impl<R: ChainedRecord> Journal<R> {
     /// its event chain) and must reach the same backend — the journal owns the one sink handle so
     /// there is not a second to keep in sync.
     pub(crate) fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
-        self.sink
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .cloned()
+        self.sink.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Attach the configured durable store as the write-through SINK. Called once at boot.
@@ -360,11 +356,14 @@ impl<R: ChainedRecord> Journal<R> {
     /// DROP one scope's cached position. For a stream whose scopes have a lifecycle the journal does
     /// not (a task reaches a terminal state and is evicted from the working set, or a retention sweep
     /// collects it): the durable records stay in the store, but the RAM position is released so the
-    /// cache does not grow one entry per scope ever seen. Never call it on a scope that may still be
-    /// appended to — reopening it would resume from the store tail (with a sink) or FORK at seq 1
-    /// (without one).
+    /// cache does not grow one entry per scope ever seen. A forget IS an eviction, so it latches
+    /// `overflowed` exactly as the LRU in [`Journal::commit_position`] does: a later write to the scope
+    /// resumes from the store tail (with a sink) instead of reopening at seq 1 and forking the durable
+    /// chain. That latch is the ONLY one a `usize::MAX` stream (every ABI-registered one) ever gets,
+    /// since its LRU never evicts. Without a sink there is no durable log, so a fresh chain is honest.
     pub(crate) fn forget(&self, scope: &str) {
         self.positions().shift_remove(scope);
+        self.overflowed.store(true, Ordering::Relaxed);
     }
 
     /// RECORD one entry: chain it to MINT the sequence and link, write it through, and advance the

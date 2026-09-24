@@ -776,3 +776,59 @@ fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
         "the fresh record must still be present after the retention sweep"
     );
 }
+
+/// ITEM 274: `forget` dropped a scope's cached position WITHOUT latching `overflowed`, and both resume
+/// paths short-circuit to a fresh seq-1 chain while `overflowed` is false. On a `usize::MAX` stream —
+/// the cap `journal_register` hardcodes for every ABI-registered stream, whose LRU therefore never
+/// latches it — a forget-then-append minted a SECOND seq-1 row beside the store's seq 1..N, and every
+/// later restore reported busbar's own write as a chain break. Both paths (neutral and typed) must
+/// instead resume from the persisted tail, and the store's chain must still verify end to end.
+#[test]
+fn a_forgotten_scope_on_an_uncapped_stream_resumes_from_the_store_not_seq_one() {
+    let store = Arc::new(MockStore::new());
+    let j: Journal<NeutralRec> = Journal::new(usize::MAX);
+    j.set_sink(store.clone());
+    write_neutral(&j, "acme", b"|one");
+    write_neutral(&j, "acme", b"|two");
+    j.forget("acme");
+    assert_eq!(j.len(), 0);
+    let late = write_neutral(&j, "acme", b"|late");
+    assert_eq!(
+        late.seq, 3,
+        "the forgotten scope resumed from its tail (seq 2), not a forked seq 1"
+    );
+    let restored = Journal::<NeutralRec>::new(usize::MAX)
+        .restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
+        .unwrap();
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "no fork: {:?}",
+        restored.chain_breaks
+    );
+
+    // The typed twin (`resume_missing`) carries the same short-circuit and the same cure.
+    let typed_store = Arc::new(MockStore::new());
+    let t: Journal<Widget> = Journal::new(usize::MAX);
+    t.set_sink(typed_store.clone());
+    write(&t, "acme", 1);
+    t.forget("acme");
+    assert_eq!(
+        write(&t, "acme", 2).seq,
+        2,
+        "the typed resume continued the persisted chain"
+    );
+    let typed = Journal::<Widget>::new(usize::MAX)
+        .restore_from_store(typed_store.as_ref())
+        .unwrap();
+    assert!(
+        typed.chain_breaks.is_empty(),
+        "no typed fork: {:?}",
+        typed.chain_breaks
+    );
+
+    // Without a sink there is no durable log to fork: a fresh chain stays the honest answer.
+    let bare: Journal<NeutralRec> = Journal::new(usize::MAX);
+    write_neutral(&bare, "acme", b"|one");
+    bare.forget("acme");
+    assert_eq!(write_neutral(&bare, "acme", b"|again").seq, 1);
+}
