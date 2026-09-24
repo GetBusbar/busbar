@@ -693,6 +693,13 @@ def build_report(records: list, *, repo: str, period_days: int, since: datetime,
             f"{sorted({c.key for c in unknown})} have no rate -- the banded total excludes them "
             f"and is a lower bound, not the period's spend"
         )
+    if fetch_errors:
+        # A run whose jobs could not be fetched is a run whose spend is missing from the total --
+        # the file's own contract reserves 4 for "a `gh api` call failed" (item 472).
+        incomplete.append(
+            f"{len(fetch_errors)} `gh api` fetch(es) failed -- those runs' jobs are missing from "
+            f"the banded total, which is a lower bound, not the period's spend"
+        )
     if incomplete:
         exit_code = 4
 
@@ -941,6 +948,9 @@ def _install_fake_gh(tmp: Path, *, runs: list, jobs_by_run: dict, private: bool)
     jobs_dir = fixtures / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
     for run_id, jobs in jobs_by_run.items():
+        if jobs is None:
+            (jobs_dir / f"{run_id}.fail").write_text("", encoding="utf-8")
+            continue
         (jobs_dir / f"{run_id}.ndjson").write_text(
             "\n".join(json.dumps(j) for j in jobs) + ("\n" if jobs else ""), encoding="utf-8"
         )
@@ -966,6 +976,7 @@ def _install_fake_gh(tmp: Path, *, runs: list, jobs_by_run: dict, private: bool)
         'done\n'
         'if [[ "$path" == *"/actions/runs/"*"/jobs"* ]]; then\n'
         '  run_id="$(printf %s "$path" | sed -E "s#.*/actions/runs/([0-9]+)/jobs.*#\\1#")"\n'
+        '  if [ -f "$JOBS_DIR/$run_id.fail" ]; then echo "fake gh: HTTP 502" >&2; exit 1; fi\n'
         '  f="$JOBS_DIR/$run_id.ndjson"\n'
         '  [ -f "$f" ] && cat "$f"\n'
         '  exit 0\n'
@@ -1324,6 +1335,21 @@ def selftest() -> int:
                                           runs=runs, jobs_by_run=jobs, private=False)
         say(code == 4, f"end-to-end: a job on an unrecognised runner label exits 4, not a money band (got {code})")
         say("INCOMPLETE" in out, "end-to-end: the unpriced-label report says INCOMPLETE")
+
+        # 7g. one run's job fetch fails: its jobs are missing from the total, so the total is a
+        # lower bound -- the tool must refuse (4), not band what it could fetch (item 472).
+        runs = [_mk_run(707, "fetched-ok"), _mk_run(708, "fetch-fails")]
+        jobs = {707: [_mk_job("build", "latchkey-small", 10)], 708: None}
+        code, out = _run_main_under_shim(tmp, ["--repo", "acme/example", "--period", "7", "--json"],
+                                          runs=runs, jobs_by_run=jobs, private=False)
+        say(code == 4, f"end-to-end: a failed per-run job fetch exits 4, not a money band (got {code})")
+        try:
+            doc = json.loads(out)
+            say(len(doc.get("fetch_errors", [])) == 1 and doc.get("exit_code") == 4,
+                f"end-to-end --json: the fetch error is recorded and exit_code is 4 "
+                f"(got {doc.get('fetch_errors')}, {doc.get('exit_code')})")
+        except json.JSONDecodeError as e:
+            say(False, f"end-to-end --json (7g): output did not parse as JSON ({e})")
 
     print()
     if bad:
