@@ -2077,25 +2077,17 @@ async fn admitted(
         super::pushdeliver::remember_auth(&task_id, callback_auth.as_ref());
     }
 
-    // METER through the host meter_charge seam (CLUSTER-4). A pure request meter with no token split
-    // (component `Queries` → `None`), so the recorded (key_id, model, provider) row is byte-identical
-    // to the in-place `record_metering(&hop.billed_key_id, &resource, Plane::A2a.key(), None, ..)`:
-    // the attribution tail carries those exact three words, and the amount-0 charge validates an empty
-    // breakdown and always accrues one request. Fire-and-forget, exactly as the direct call was.
-    meter_request(
-        engine_host.as_ref(),
-        &cap_scope,
-        &hop.billed_key_id,
-        &resource,
-    );
-
-    // 6. AUDIT. One record per admitted call, under this plane's own action and resource spelling.
-    engine_host.audit_emit(
-        AUDIT_ACTION,
-        &resource,
-        busbar_contract::vocab::OUTCOME_APPLIED,
-        &actor,
-    );
+    // 6. METER AND AUDIT — NOT HERE. They used to be, and five gates below this line (the target
+    //    member's facts, the credential lease, the binding, the pool walk's breaker refusal and the
+    //    pin check) could still refuse the hop after it had been billed and stamped `applied`: a
+    //    tripped breaker billed a hop busbar never attempted. The ledger records what the plane DID,
+    //    so the hop's charge is settled by [`HopCharge`] once the relay has said whether the call
+    //    left — every refusal before that is audited `rejected` and metered nothing.
+    let charge = HopCharge {
+        billed_key_id: hop.billed_key_id.clone(),
+        resource: resource.clone(),
+        actor: actor.clone(),
+    };
 
     // 7. RELAY. Everything above this line DECIDED; this is the line that reaches the backend.
     //
@@ -2131,6 +2123,9 @@ async fn admitted(
         Ok(f) => f,
         Err(refusal) => {
             return refusal.map(|resp| *resp).unwrap_or_else(|| {
+                // `Err(Some(..))` was audited `rejected` inside `hop_facts`; this arm (the pinned
+                // member's registration is gone) had no record at all.
+                charge.refused(engine_host.as_ref());
                 // A card fetch opened no task, so a hop that cannot be set up is a plain `502`, not
                 // an `end_task` (via `fail_task`) against a row that never existed.
                 if card_fetch {
@@ -2162,6 +2157,7 @@ async fn admitted(
             Ok(lease) => Some(lease),
             Err(e) => {
                 diag_warn!(A2A_OUTBOUND_CRED_UNLEASED, agent = %target_agent, error = %e, "a2a: the outbound credential could not be leased");
+                charge.refused(engine_host.as_ref());
                 // A card fetch opened no task: render the failure without journaling one.
                 if card_fetch {
                     return super::rpcerror::respond(
@@ -2209,6 +2205,7 @@ async fn admitted(
             binding = %binding,
             "a2a: the registered agent's card declares no binding busbar can speak"
         );
+        charge.refused(engine_host.as_ref());
         return refuse_hop_early(
             &rpc_id,
             &super::relay::RelayRefusal::Unframable {
@@ -2253,15 +2250,18 @@ async fn admitted(
         // Established by the envelope reader at the top of this handler, where `null` and absent
         // were still distinguishable. It is a string or a number, never `null`.
         rpc_id,
+        charge,
     };
 
     // ── THE WALK'S REFUSAL, fired AFTER the task row exists so the caller keeps an id to poll —
     //    through the exact rendering the degenerate breaker refusal decided (`rejected` + 503 +
     //    Retry-After naming the POOL, because the pool is the unit with nothing left).
     if let Some(refusal) = walk_refusal {
+        hop_ctx.charge.refused(hop_ctx.engine_host.as_ref());
         return refuse_hop(&hop_ctx, &refusal);
     }
     if let Some(reason) = pin_mismatch {
+        hop_ctx.charge.refused(hop_ctx.engine_host.as_ref());
         return super::route::render_pin_mismatch(
             &hop_ctx.engine_host,
             &hop_ctx.seam,
@@ -2399,6 +2399,73 @@ struct HopContext {
     now: u64,
     now_ms: u64,
     rpc_id: serde_json::Value,
+    /// WHAT THIS HOP BILLS, settled by the relay thread once it knows whether the call left.
+    charge: HopCharge,
+}
+
+/// THE HOP'S ONE CHARGE AND ITS ONE AUDIT RECORD, SETTLED ONLY ONCE THE HOP'S FATE IS KNOWN.
+///
+/// A hop is billed if busbar ATTEMPTED it — the call reached the transport — and not otherwise. The
+/// ledger is what the plane did (§8.4): a hop the breaker refused, the SSRF guard refused, a
+/// demotion or an unleasable credential stopped before the socket, was never made, so it writes no
+/// metering row and is audited `rejected`, never `applied`. A hop that left is billed whatever the
+/// backend then answered, exactly as before.
+///
+/// Settled ON THE RELAY THREAD, not in the request future: a caller that hangs up mid-hop drops the
+/// request future, but the blocking relay still runs to completion — and a hop that ran must still
+/// be billed. Settling in the future would have let a caller cancel its way out of the charge.
+#[derive(Clone)]
+struct HopCharge {
+    billed_key_id: String,
+    resource: String,
+    actor: String,
+}
+
+impl HopCharge {
+    /// Settle the charge for a hop whose relay outcome is `left`. Metered through the same
+    /// [`meter_request`] every other admitted call on this plane uses; the scope is the hop's own
+    /// shared scope, which the amount-0 request charge registers nothing into.
+    fn settle(
+        &self,
+        engine_host: &dyn busbar_kernel::plane_host::EngineHost,
+        scope: &busbar_kernel::plane_host::DispatchScope,
+        left: bool,
+    ) {
+        if !left {
+            self.refused(engine_host);
+            return;
+        }
+        meter_request(engine_host, scope, &self.billed_key_id, &self.resource);
+        engine_host.audit_emit(
+            AUDIT_ACTION,
+            &self.resource,
+            busbar_contract::vocab::OUTCOME_APPLIED,
+            &self.actor,
+        );
+    }
+
+    /// A hop refused before it left: one `rejected` record, and nothing metered.
+    fn refused(&self, engine_host: &dyn busbar_kernel::plane_host::EngineHost) {
+        engine_host.audit_emit(
+            AUDIT_ACTION,
+            &self.resource,
+            busbar_contract::vocab::OUTCOME_REJECTED,
+            &self.actor,
+        );
+    }
+}
+
+/// WHETHER A RELAY OUTCOME MEANS THE CALL LEFT BUSBAR. An answer did; so did every refusal that is
+/// about the hop's result (transport, status, body, correlation). The four refusals that are decided
+/// BEFORE the socket did not: an open breaker, the SSRF guard, a demotion, an unleasable credential.
+/// `Unframable` is kept on the billed side because it is raised both before the send and on reading
+/// the answer back, and this arm cannot tell which.
+fn hop_left<T>(outcome: &Result<T, super::relay::RelayRefusal>) -> bool {
+    use super::relay::RelayRefusal as R;
+    !matches!(
+        outcome,
+        Err(R::BreakerOpen { .. } | R::Guard(_) | R::Demoted(_) | R::Lease(_))
+    )
 }
 
 /// VERIFY-ON-CALL for one A2A delegation: re-verify `agent_id`'s card within `verify_ttl`,
@@ -2516,12 +2583,13 @@ async fn unary_hop(
     // The pre-admitted WALK id (if this is a pooled fresh submission); its probe already rides in
     // the shared scope. NONE for an un-pooled/pinned hop, whose probe `prepare` re-homes itself.
     let walk_admission_id = ctx.walk_admission_id;
+    let charge = ctx.charge.clone();
     let relayed = tokio::task::spawn_blocking(move || {
         // The ONE bare shared scope rides onto the blocking thread; its arena reclaims when this
         // closure ends (reclaim at HOP end, after the outcome was recorded). Both the walk admit
         // (already registered) and `prepare`'s un-pooled admit settle by a host AdmissionId here.
         let hop_scope = hop_scope;
-        super::relay::relay(
+        let out = super::relay::relay(
             &super::relay::RelayCall {
                 agent_id: &agent_id,
                 backend_url: &backend_url,
@@ -2540,7 +2608,9 @@ async fn unary_hop(
             },
             seam.as_ref(),
             now_ms,
-        )
+        );
+        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out));
+        out
     })
     .await;
 
@@ -2730,6 +2800,7 @@ async fn stream_hop(
     let breaker = ctx.breaker.clone();
     // The pre-admitted WALK id (if pooled); its probe already rides in `host`'s shared scope.
     let walk_admission_id = ctx.walk_admission_id;
+    let charge = ctx.charge.clone();
 
     // THE CURSOR RESUMES WHERE THE TASK LEFT OFF rather than at zero. On a resumed stream, starting
     // at zero would spend the first N advances re-asserting a position the store already holds —
@@ -2854,7 +2925,7 @@ async fn stream_hop(
                 }
             }
         };
-        super::relay::relay_stream(
+        let out = super::relay::relay_stream(
             &super::relay::RelayCall {
                 agent_id: &agent_id,
                 backend_url: &backend_url,
@@ -2877,7 +2948,9 @@ async fn stream_hop(
             matched_skill.as_deref(),
             now_ms,
             &mut sink,
-        )
+        );
+        charge.settle(engine_host.as_ref(), &hop_scope, hop_left(&out));
+        out
     });
 
     // THE FIRST EVENT IS THE COMMITMENT. Nothing before it has been written to the caller, so a

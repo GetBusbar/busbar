@@ -169,3 +169,42 @@ async fn an_ordinary_hop_is_still_metered_exactly_once() {
     assert_eq!(rows[0].model, "agent:planner");
     assert_eq!(rows[0].requests, 1);
 }
+
+/// Every a2a request this plane has metered in the current bucket, summed across its rows.
+async fn a2a_requests(h: &Harness) -> u64 {
+    a2a_rows(h).await.iter().map(|r| r.requests).sum()
+}
+
+/// **A HOP THE BREAKER REFUSED IS NOT BILLED.**
+///
+/// The hop's charge used to be written before five gates that could still refuse it, and before
+/// the relay's own breaker admission — so the second submission to a tripped agent, refused `503`
+/// without a byte reaching the backend, still wrote a metering row as though the hop had been made.
+/// The ledger is what the plane did.
+///
+/// The CONTROL is the first submission: it DID reach the backend (which answered 401 and tripped
+/// the breaker), so it is billed — a fix that simply stopped billing failed hops would fail here.
+#[tokio::test]
+async fn a_hop_the_breaker_refused_bills_nothing() {
+    crate::testkit::install_test_seams();
+    let h = harness_billed(Outcome::Answers(401, "denied".to_string()), false).await;
+
+    let (s1, b1) = call(&h).await;
+    assert_eq!(s1, 502, "the first hop reaches the dying backend: {b1}");
+    let sent = h.sent().len();
+    assert!(sent >= 1, "the first hop must reach the transport");
+    assert_eq!(
+        a2a_requests(&h).await,
+        1,
+        "a hop that left busbar is billed, whatever the backend answered"
+    );
+
+    let (s2, b2) = call(&h).await;
+    assert_eq!(s2, 503, "the tripped agent refuses before the socket: {b2}");
+    assert_eq!(h.sent().len(), sent, "and the backend saw nothing");
+    assert_eq!(
+        a2a_requests(&h).await,
+        1,
+        "a hop the breaker refused was never attempted, so it must write no metering row"
+    );
+}
