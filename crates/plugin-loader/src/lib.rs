@@ -134,12 +134,24 @@ thread_local! {
     pub(crate) static UNLOADS_ON_WORKER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Run an FFI call `f` across the plugin ABI boundary under `catch_unwind`, converting a plugin panic
-/// into a fail-closed `Err` string instead of a process abort. EFFECTIVE only because the ABI fn
-/// pointers are `extern "C-unwind"` (see [`busbar_plugin::cold`]): a Rust plugin's panic unwinds as a
-/// DEFINED forced unwind that lands here; a plain `extern "C"` boundary would have aborted at the
-/// plugin frame BEFORE returning. `op` names the crossing (`open`/`call`/`close`/`free`/`abi`/`kind`)
-/// for the diagnostic. Every host-side ABI call site routes through this so no crossing is unguarded.
+/// Run an FFI call `f` across the plugin ABI boundary under `catch_unwind`, converting a panic that
+/// unwinds out of `f` into a fail-closed `Err` string. `op` names the crossing
+/// (`open`/`call`/`close`/`free`/`abi`/`kind`) for the diagnostic. Every host-side ABI call site
+/// routes through this so no crossing is unguarded.
+///
+/// WHAT IT CAN AND CANNOT CATCH — measured, not assumed (`loader_seam_tests`):
+///
+/// - An unwind raised by THIS process's Rust runtime — a compiled-in module, or host code on the
+///   far side of the fn pointer — is caught and becomes `Err`. The ABI fn pointers are
+///   `extern "C-unwind"`, so such an unwind is defined and reaches this frame.
+/// - An unwind raised by a DLOPENED plugin's own panic runtime is NOT. A plugin cdylib statically
+///   links its own copy of std, and std's `catch_unwind` recognises only exceptions its own copy
+///   threw: anything else is a foreign exception, and the runtime ABORTS the process ("Rust cannot
+///   catch foreign exceptions"). So for a dropped-in plugin, failing closed on a panic is the
+///   PLUGIN's obligation, discharged on the plugin side of the boundary — the SDK's dispatchers
+///   catch every panic in plugin code and answer `STATUS_PANIC`. A plugin not built with the SDK
+///   that lets a panic escape its exported fns takes the engine down with it, and nothing on this
+///   side of the seam can prevent that.
 fn ffi_guard<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| {
         format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
@@ -268,15 +280,12 @@ impl RawPlugin {
             .map_err(|e| TransportError::engine(format!("plugin request encode failed: {e}")))?;
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
-        // Catch any panic that unwinds across the `busbar_call` ABI boundary, for PARITY with the
-        // hook seam (`DlopenPolicy::call`). SDK-built plugins catch panics plugin-side, but a signed
-        // third-party (trust=signature, in-process) plugin NOT built with the busbar SDK that panics
-        // outside a caught region would otherwise unwind across the boundary. This `catch_unwind` is
-        // EFFECTIVE because the ABI fn-pointer types are `extern "C-unwind"` (plugin-abi): the unwind is
-        // DEFINED and propagates here to be caught, rather than aborting at the plugin frame (which
-        // plain `extern "C"` would force). All kinds (store/secret/auth) route their FFI call through
-        // here, so this is the single seam that fails such a plugin CLOSED instead of aborting the
-        // engine. (Non-Rust C/Go/Zig plugins don't unwind, so they still abort — unchanged.)
+        // Guard the `busbar_call` crossing, for PARITY with the hook seam (`DlopenPolicy::call`).
+        // What this can catch is stated on `ffi_guard`: an unwind from this process's own runtime.
+        // A dlopened plugin's panic is caught by the SDK on the PLUGIN side (answered as
+        // `STATUS_PANIC`, classified below); one that escapes a non-SDK plugin is a foreign
+        // exception to this runtime and aborts the process — no host-side guard can turn that into
+        // an error. All kinds (store/secret/auth) route their FFI call through here.
         let status = match ffi_guard(&self.path, "call", || unsafe {
             (self.call)(
                 self.handle,
@@ -753,12 +762,46 @@ fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
     })?;
     // Guarded: `busbar_plugin_kind()` runs plugin code; a panic fails the load CLOSED, not an abort.
     let ptr = ffi_guard_confined(display, "kind", || unsafe { (*f)() })?;
+    // SAFETY: `ptr` came from the plugin's `busbar_plugin_kind()`, whose contract is a 'static
+    // string; `kind_from_ptr` reads at most `MAX_PLUGIN_KIND_LEN + 1` bytes of it.
+    unsafe { kind_from_ptr(ptr, display) }
+}
+
+/// Hard cap on the `busbar_plugin_kind()` string, NUL excluded. The kind is the ONE plugin-supplied
+/// buffer in this ABI that crosses without a length, so the loader cannot cap a length the way it
+/// caps a response (`MAX_PLUGIN_RESPONSE_LEN`), an open error, a plane vocabulary string or a log
+/// record — it caps the SCAN instead. Every kind is a short closed-set identifier (`store`,
+/// `secret`, ...); a pointer with no NUL inside this many bytes is not a kind, and is refused rather
+/// than walked until some zero byte or an unmapped page turns up (the hand-written
+/// `kind::EXPORT.as_ptr()` trap `busbar_plugin::cold` warns about).
+const MAX_PLUGIN_KIND_LEN: usize = 32;
+
+/// Read a plugin kind string from `ptr`, scanning at most [`MAX_PLUGIN_KIND_LEN`] + 1 bytes for its
+/// NUL. Refuses a null pointer, a string with no NUL inside the cap, and non-UTF-8 bytes.
+///
+/// # Safety
+/// `ptr`, when non-null, must address readable bytes up to its NUL or up to
+/// `MAX_PLUGIN_KIND_LEN + 1` bytes, whichever comes first.
+unsafe fn kind_from_ptr(ptr: *const u8, display: &str) -> Result<String, String> {
     if ptr.is_null() {
         return Err(format!("plugin '{display}' returned a null kind string"));
     }
-    // SAFETY: the plugin contract requires a NUL-terminated 'static string.
-    let cstr = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::os::raw::c_char) };
-    cstr.to_str()
+    let mut len = 0;
+    // SAFETY: the caller's contract covers every byte up to the NUL or the cap; the loop stops at
+    // the first of the two, so it never reads past either.
+    while unsafe { *ptr.add(len) } != 0 {
+        len += 1;
+        if len > MAX_PLUGIN_KIND_LEN {
+            return Err(format!(
+                "plugin '{display}' kind string has no NUL terminator within \
+                 {MAX_PLUGIN_KIND_LEN} bytes — refusing to load (a kind is a short \
+                 NUL-terminated identifier)"
+            ));
+        }
+    }
+    // SAFETY: `len` bytes from `ptr` were just read one by one above.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    std::str::from_utf8(bytes)
         .map(str::to_string)
         .map_err(|_| format!("plugin '{display}' kind string is not valid UTF-8"))
 }
@@ -1455,9 +1498,20 @@ impl busbar_api::SecretModule for DynSecret {
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
     ) -> busbar_api::SecretResult<Vec<u8>> {
+        self.resolve_with_deadline(settings, None)
+    }
+
+    /// The ONE host-side producer of `SecretRequest::Resolve`, so it is where the caller's advisory
+    /// deadline is written onto the wire. The SDK dispatcher hands it to the module's own
+    /// `resolve_with_deadline`; a module that cannot bound itself ignores it (the trait default).
+    fn resolve_with_deadline(
+        &self,
+        settings: &serde_json::Map<String, serde_json::Value>,
+        deadline_ms: Option<u64>,
+    ) -> busbar_api::SecretResult<Vec<u8>> {
         let req = busbar_plugin::cold::SecretRequest::Resolve {
             settings: settings.clone(),
-            deadline_ms: None,
+            deadline_ms,
         };
         match self
             .raw
@@ -1809,6 +1863,12 @@ pub fn inventory(dir: &Path) -> Vec<PluginInfo> {
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;
+
+/// The loader's own crossings pinned against in-test fakes: the bounded kind read, the secret
+/// deadline on the wire, and what the panic guard can and cannot catch.
+#[cfg(test)]
+#[path = "tests/loader_seam_tests.rs"]
+mod loader_seam_tests;
 
 /// DECISIONS #11's real test: ONE crate built both ways must be observationally identical. Declared
 /// at the crate root rather than under `export` because it is not a test OF the export seam — it is

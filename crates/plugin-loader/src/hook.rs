@@ -10,9 +10,10 @@
 //!
 //! A hook GATE can be CPU-heavy (a compressor, a classifier), so the synchronous `busbar_call` runs on
 //! [`tokio::task::spawn_blocking`], never on a runtime worker. The FFI call is additionally wrapped in
-//! [`std::panic::catch_unwind`] on the ENGINE side (defense in depth — the SDK already catches inside
-//! the plugin): a panic that somehow crosses becomes a PROTOCOL-style error the caller coerces to the
-//! hook's `on_error`, never a torn-down runtime.
+//! [`std::panic::catch_unwind`] on the ENGINE side, for panics in the engine's own (de)serialization
+//! around the call. A panic in PLUGIN code is caught by the SDK inside the plugin and answered as
+//! `STATUS_PANIC`; one that escapes a non-SDK plugin is a foreign exception to the engine's runtime,
+//! which aborts rather than unwinding into any engine-side guard (see `ffi_guard`).
 //!
 //! ## The contract is the engine's, not the plugin's
 //!
@@ -129,10 +130,9 @@ impl DlopenPolicy {
         };
         let joined = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            // Defense-in-depth `catch_unwind`: since the `extern "C-unwind"` ABI landed, the ACTUAL FFI
-            // boundary is guarded inside `transport_call` (via `ffi_guard`), which converts a plugin
-            // panic into a `TransportError` — so the C-unwind path this method documents is now caught
-            // there and never reaches here. This outer guard is retained as a belt-and-braces net for
+            // Defense-in-depth `catch_unwind`: the FFI crossing itself is guarded inside
+            // `transport_call` (via `ffi_guard`, whose doc states what an engine-side guard can and
+            // cannot catch). This outer guard is retained as a belt-and-braces net for
             // any panic that could arise in the engine-side (de)serialization wrapper around that call
             // (`transport_call`'s encode/decode), which runs on this blocking thread OUTSIDE the FFI
             // guard; catching it here fails the hook CLOSED rather than aborting the blocking-pool worker.
