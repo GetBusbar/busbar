@@ -492,8 +492,9 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_openai_omits_max_tokens_injects_fallback_for_anthropic", "injection on a cross-protocol forward"),
     ]),
     ("PB-87", &[
-        ("test", "rerank_resp_billing_is_flat", "rerank projects Billing::Flat"),
-        ("test", "rerank_resp_billing_flat_regardless_of_search_units", "Flat survives reported search units"),
+        ("test", "rerank_resp_billing_is_flat", "a rerank reporting no search units projects Billing::Flat"),
+        ("test", "rerank_resp_billing_counts_search_units_as_an_open_class", "reported search units leave as the counted class search_units (item 134)"),
+        ("test", "a_reranks_search_units_reach_the_price", "search units are priced by a present card, refused by a card silent about them (#42), read 0 with no card"),
     ]),
     ("PB-88", &[
         ("test", "bad_request_reject_keeps_the_unchanged_generic_400", "the literal 400 We could not process the content of your request"),

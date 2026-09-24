@@ -2253,28 +2253,21 @@
   {
    "id": "PB-44",
    "surface": "`in_flight_reserve`",
-   "binding": "0 unless a claimed transport declares `SESSION = true`; a 1.5.5 config sheds at exactly `max_inbound_concurrent`; the reserve is drawn only against session Unit 0 arrivals",
+   "binding": "none — the provider reserve is deleted (item 280): every counted unit, a session's provider frame included, draws the one cap and no slot is held back; a 1.5.5 config sheds at exactly `max_inbound_concurrent`",
    "inventory": "config",
    "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "the_reserve_is_a_tenth_of_the_table_and_only_where_sessions_exist",
-     "proves": "the reserve is a tenth of the table where a claimed transport opens sessions and exactly 0 where none does",
+     "ref": "a_full_table_refuses_every_counted_unit_at_the_cap_and_holds_no_slot_back",
+     "proves": "no slot is held back: all cap slots go to client arrivals, and a full table refuses the next client arrival and a provider frame alike with InFlightCap, the refusals taking no slot",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
      "ref": "the_administrative_listener_and_the_heartbeat_are_outside_the_cap",
-     "proves": "with a reserve of 0 the table sheds at exactly the cap, and the admin listener and the zero-hold tick are outside it",
-     "source": "hand",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "a_full_table_sheds_new_arrivals_before_it_sheds_an_open_session",
-     "proves": "the reserved slots are drawn only by a provider frame of a session already open; a new client arrival is refused InFlightCap at Arrival",
+     "proves": "the table sheds at exactly the cap, and the admin listener and the zero-hold tick are outside it",
      "source": "hand",
      "status": "mapped"
     },
@@ -2287,7 +2280,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:the_reserve_is_a_tenth_of_the_table_and_only_where_sessions_exist, test:the_administrative_listener_and_the_heartbeat_are_outside_the_cap, test:a_full_table_sheds_new_arrivals_before_it_sheds_an_open_session, test:the_cap_holds_when_everything_arrives_at_once"
+   "verdict_detail": "test:a_full_table_refuses_every_counted_unit_at_the_cap_and_holds_no_slot_back, test:the_administrative_listener_and_the_heartbeat_are_outside_the_cap, test:the_cap_holds_when_everything_arrives_at_once"
   },
   {
    "id": "PB-45",
@@ -4127,27 +4120,34 @@
   {
    "id": "PB-87",
    "surface": "non-chat billing classes",
-   "binding": "`Billing::Flat` (moderation) and the per-op meters for embeddings / image / transcription / speech / rerank are sealed into the migrated card's declared set at `Migration` with 1.5.5's projection, so no class 1.5.5 billed is `Refused(Admit, Unpriced)` and no figure changes",
+   "binding": "`Billing::Flat` (moderation) and the per-op meters for embeddings / image / transcription / speech / rerank are sealed into the migrated card's declared set at `Migration` with 1.5.5's projection, so no class 1.5.5 billed is `Refused(Admit, Unpriced)` and no figure changes — except the rerank search units 1.5.5 discarded: a rerank reporting them bills the counted class `search_units` (item 134, #42/#71: a present card prices it or, silent about it, refuses; no card reads 0), and one reporting none stays `Flat`",
    "inventory": "dialects (:824-830)",
    "status": "mapped",
    "checks": [
     {
      "kind": "test",
      "ref": "rerank_resp_billing_is_flat",
-     "proves": "rerank projects Billing::Flat",
+     "proves": "a rerank reporting no search units projects Billing::Flat",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "rerank_resp_billing_flat_regardless_of_search_units",
-     "proves": "Flat survives reported search units",
+     "ref": "rerank_resp_billing_counts_search_units_as_an_open_class",
+     "proves": "reported search units leave as the counted class search_units (item 134)",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "a_reranks_search_units_reach_the_price",
+     "proves": "search units are priced by a present card, refused by a card silent about them (#42), read 0 with no card",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:rerank_resp_billing_is_flat, test:rerank_resp_billing_flat_regardless_of_search_units"
+   "verdict_detail": "test:rerank_resp_billing_is_flat, test:rerank_resp_billing_counts_search_units_as_an_open_class, test:a_reranks_search_units_reach_the_price"
   },
   {
    "id": "PB-88",
