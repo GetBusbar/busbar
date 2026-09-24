@@ -128,6 +128,12 @@ case "$arm_on" in
     if [ "$on_status" = "200" ]; then
       failures=$((failures+1))
       detail="${detail}arm 2 (billing ON, classes 'tool_calls'/'bytes' unpriced) was SERVED 200 and billed spend_cents=${on_spend} -- the flat fee alone, with both hit classes silently priced at zero. #42: a silent 0 is ONLY ever correct when rate_card is ABSENT, and here it is PRESENT; the call owed a refusal (or the node owed a boot refusal, #77(5)); "
+    elif ! [[ "$on_status" =~ ^4[0-9][0-9]$ ]]; then
+      # STRICT, like ARM 1: only a 4xx IS a call refusal. Anything else -- curl's 000 for "no
+      # connection", a 5xx node failure, any other 2xx/3xx -- is not evidence the node refused an
+      # unpriced class, and the permissive "anything but 200" let every one of them pass (item 500).
+      failures=$((failures+1))
+      detail="${detail}arm 2 (billing ON, classes unpriced) answered ${on_status}, which is neither a served 200 nor a refusal (want a 4xx call refusal or a boot refusal, #42/#77(5); 000 is no connection, 5xx is a node failure); "
     fi
     ;;
 esac
