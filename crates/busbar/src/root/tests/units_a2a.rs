@@ -726,6 +726,77 @@ fn every_ending_has_an_audited_spelling() {
     );
 }
 
+/// A unit whose answer arrives as a run of events is refused at decode (item 253).
+///
+/// The draft's `streaming` flag was read by nothing but its `Debug`: every step that prices the
+/// unit reads `response_bytes` as one reply, so a streamed answer would have been metered as its
+/// first event. The step that reads the shape now decides it, and the same draft answered once
+/// still proceeds — the refusal is the flag, not the operation.
+#[test]
+fn a_streamed_answer_is_refused_at_decode_and_a_single_reply_proceeds() {
+    use busbar_kernel::teller::Units as _;
+
+    let deployment = deployment(one_call_at_a_time("team"));
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    for (streaming, proceeds) in [(false, true), (true, false)] {
+        let mut shaped = draft(ops::OP_MESSAGE_SEND);
+        shaped.streaming = streaming;
+        let unit = deployment.calling_draft_at(None, 1_700_000_000, shaped);
+        let answered = unit
+            .decode(&busbar_contract::caps::Pass::mint(&seal), &a2a_ctx())
+            .into_result(&seal);
+        assert_eq!(answered.is_ok(), proceeds, "streaming = {streaming}");
+        if let Err(refusal) = answered {
+            assert_eq!(refusal.reason(), ReasonCode::DecodeFailed);
+        }
+    }
+}
+
+/// The sentence that justifies the hand-written mapping states facts the tree bears out (item 265).
+///
+/// It used to say the two crates did not depend on each other and that the mapping was written
+/// once. The audit crate depends on the contract crate, and the root maps the two in three places;
+/// a reviewer deciding whether to look would have been told not to. This reads the manifest the
+/// claim is about, so the doc cannot drift back to a crate edge that is not there.
+#[test]
+fn the_finish_mapping_doc_matches_the_crate_edge_it_describes() {
+    // This module's own source, found from the path the compiler gives it.
+    let stem = module_path!()
+        .rsplit("::")
+        .nth(1)
+        .expect("a test module sits inside its parent");
+    let own = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/root")
+            .join(format!("{stem}.rs")),
+    )
+    .expect("the module's own source");
+    let at = own
+        .find("fn audit_finish(")
+        .expect("the mapping is in this module");
+    let doc: String = own[..at]
+        .lines()
+        .rev()
+        .take_while(|l| l.trim_start().starts_with("///"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let manifest = include_str!("../../../../busbar-kernel-audit/Cargo.toml");
+    assert!(
+        manifest.contains("busbar-contract"),
+        "the audit crate depends on the contract crate"
+    );
+    for false_claim in ["neither depends on the other", "written once"] {
+        assert!(
+            !doc.contains(false_claim),
+            "the mapping's doc still says {false_claim:?}"
+        );
+    }
+    assert!(
+        doc.contains("three places"),
+        "the doc names how many times the root maps the two"
+    );
+}
+
 /// A record leg has no address, so the guard has nothing to have judged and says so.
 #[test]
 fn a_record_leg_is_not_a_network_hop() {

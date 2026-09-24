@@ -536,7 +536,8 @@ pub struct A2aDraft {
     pub response_bytes: u64,
     /// How the plane says the unit finished.
     pub finish: FinishClass,
-    /// Whether the answer arrives as a run of events rather than one reply.
+    /// Whether the answer arrives as a run of events rather than one reply. Read at decode, which
+    /// refuses such a unit: nothing after it can price an answer that is still arriving.
     pub streaming: bool,
     /// What the transport recorded about the arrival.
     pub arrival: ArrivalRecord,
@@ -1215,9 +1216,12 @@ const _: () = assert!(NANOS_PER_CENT as u128 == busbar_kernel_ledger::cost::NANO
 
 /// The audit unit's spelling of a finish class.
 ///
-/// Two crates name the same four endings and neither depends on the other, so the mapping is
-/// written once, here, where both are in scope. Totality is what makes it safe: a fifth ending
-/// would not compile.
+/// The audit crate declares its own four endings rather than re-exporting the contract's. The
+/// crate edge is not what keeps them apart — `busbar-kernel-audit` depends on `busbar-contract` and
+/// already re-exports its `QuantitySource` and `UsageLine` — so this is a choice that crate made,
+/// and the composition root pays for it by mapping between the two in three places: here, the MCP
+/// bindings' `record_finish` and the streaming bindings' `audit_finish`. Totality is what keeps the
+/// three honest: a fifth ending on either side fails to compile at every one of them.
 fn audit_finish(finish: FinishClass) -> busbar_kernel_audit::FinishClass {
     match finish {
         FinishClass::Complete => busbar_kernel_audit::FinishClass::Complete,
@@ -1276,7 +1280,16 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
         // The plane read the bytes; this is its answer. A body carrying a method this plane does
         // not name is a refusal at the step that read it, not a guess at the nearest class.
+        //
+        // An answer that arrives as a run of events is refused here too. Every step after this one
+        // prices the unit off one reply — `response_bytes` is the size of the answer the plane
+        // read, once — and none of them has an arm for an answer still arriving, so a streamed
+        // unit reaching them would be metered and settled as though its first event were its
+        // whole cost. The step that knows the shape is the one that decides it.
         match self.draft.op {
+            Some(_) if self.draft.streaming => {
+                Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
+            }
             Some(op) => Decision::proceed(token, op),
             None => Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
         }
