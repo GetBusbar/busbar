@@ -1038,15 +1038,13 @@ fn census(sources: &[(String, String)]) -> Vec<String> {
 
 /// Derivation-named functions the census SEES and that are not routed through the one function,
 /// each owned outside this collapse and named with its reason. Armed at today's count (§9.4).
-const KNOWN_OUTSIDE_THIS_COLLAPSE: &[(&str, &str, usize, &str)] = &[
-    (
-        "crates/busbar-voice/src/runtime/metering.rs",
-        "price_usage",
-        1,
-        "a `#[cfg(test)]` MockMeteringHost (LocalLease's stand-in and voice-conform's mock host \
+const KNOWN_OUTSIDE_THIS_COLLAPSE: &[(&str, &str, usize, &str)] = &[(
+    "crates/busbar-voice/src/runtime/metering.rs",
+    "price_usage",
+    1,
+    "a `#[cfg(test)]` MockMeteringHost (LocalLease's stand-in and voice-conform's mock host \
          went with 1ee8dac1d, the session meter)",
-    ),
-];
+)];
 
 /// THE TREE HOLDS ONE `f`. Every derivation routes through it; no copy of the tier rule or the
 /// fold is called anywhere the census does not name.
