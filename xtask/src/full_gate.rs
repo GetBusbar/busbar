@@ -145,7 +145,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate config-schema --selftest",
     "cargo xtask gate config-schema",
     "cargo xtask gate conformance-sync --selftest",
-    "cargo xtask gate conformance-sync",
+    "cargo xtask gate conformance-sync --posture",
     "cargo xtask gate construction --selftest",
     "cargo xtask gate construction --report",
     // The POSTURE form, which is what ci.yml and keep-proof.yml now run as a blocking step. It
@@ -235,8 +235,84 @@ pub enum Excuse {
     /// `cargo test -p xtask` runs it: the needle must appear under `xtask/tests/`. That test run is
     /// part of `cargo test --workspace --locked`, which ci.yml executes on every push.
     XtaskTest(&'static str),
-    /// It is a release-time claim: the needle must appear in the named script.
+    /// A FACT IN A NAMED FILE: the needle must appear on an executed line of it. Used where the
+    /// file's content IS the claim — a workflow line (`ci.yml` runs `ship-ready`), a branch
+    /// protection context — never to claim that a gate RUNS somewhere; that is [`Excuse::ReleaseRun`].
     ReleaseScript(&'static str, &'static str),
+    /// A GATE RUN BY A RELEASE SCRIPT, AND THE SCRIPT RUN BY A WORKFLOW. The needle must appear on
+    /// an executed line of the script (as for [`Excuse::ReleaseScript`]) AND some
+    /// `.github/workflows/*.yml` must execute that script in a form that runs its gates — not its
+    /// `--selftest`, `--help` or `--fast` arm. See [`script_run_site`] for why the second half
+    /// exists (item 161).
+    ReleaseRun(&'static str, &'static str),
+}
+
+/// The arms of a release script that do NOT run the gates it names. `--selftest` proves the
+/// script's own plumbing, `--help` prints, and `--fast` is PROVISIONAL by its own contract (exit 3,
+/// KICKOFF §17.1) — none of them is the DONE run a [`Excuse::ReleaseRun`] entry rests on.
+const NOT_A_GATE_RUN: &[&str] = &["--selftest", "--help", "-h", "--fast"];
+
+/// WHERE A WORKFLOW RUNS `script` IN A FORM THAT EXECUTES ITS GATES — `Ok(<file>: <line>)`, or the
+/// sentence a reader needs.
+///
+/// `Excuse::ReleaseScript` used to be the whole claim for five registered gates
+/// (`plane-purity-strict`, `kind-isolation-ship`, `no-deferral-strict-done`, `reachability`,
+/// `instance-noun-neutrality`): "`scripts/verify-1.6.0-done.sh` runs it". It checked the needle was
+/// on an executed line of the script and never that anything ran the SCRIPT — and every workflow
+/// mention of it was a `#` comment or its `--selftest`, which runs none of the gates (item 161).
+/// Five instruments ran on no automated path while `full-gate --selftest` printed that each still
+/// named a place this tree runs it. A script is a place a gate runs only when something runs the
+/// script.
+///
+/// A run site is a logical workflow line (comments, `echo` and step `name:` labels dropped by
+/// [`crate::yaml_lite::logical_lines`], trailing `#` comments stripped) on which the script path is
+/// the COMMAND — at the start, after `bash`/`sh`, or after a shell separator — and whose first
+/// argument is not one of [`NOT_A_GATE_RUN`]. A `grep`, `shellcheck` or `cat` of the path is not a
+/// run of it.
+pub fn script_run_site(cx: &Ctx, script: &str) -> Result<String, String> {
+    let files = cx
+        .walk(
+            &crate::ctx::WalkSpec::new([".github/workflows"])
+                .ext("yml")
+                .min_files(1),
+        )
+        .map_err(|e| format!("{e}"))?;
+    let mut partial: Vec<String> = Vec::new();
+    for f in &files {
+        for line in crate::yaml_lite::logical_lines(&f.text) {
+            let line = strip_shell_comment(&line);
+            let words: Vec<&str> = line.split_whitespace().collect();
+            for (i, w) in words.iter().enumerate() {
+                if w.trim_start_matches("./") != script {
+                    continue;
+                }
+                let before = if i == 0 { "" } else { words[i - 1] };
+                let is_command = matches!(
+                    before,
+                    "" | "run:" | "-" | "bash" | "sh" | "&&" | "||" | ";" | "then" | "do" | "exec"
+                ) || before.ends_with(';');
+                if !is_command {
+                    continue;
+                }
+                let arg = words.get(i + 1).copied().unwrap_or("");
+                if NOT_A_GATE_RUN.contains(&arg) {
+                    partial.push(format!("{} runs only `{script} {arg}`", f.rel_str()));
+                    continue;
+                }
+                return Ok(format!("{}: {}", f.rel_str(), line.trim()));
+            }
+        }
+    }
+    Err(format!(
+        "no workflow RUNS {script} in a form that executes its gates{} — a gate named by a script \
+         nothing runs is a gate that runs nowhere. Wire the script's full run into a workflow, or \
+         strike the entry and let the gate be reported",
+        if partial.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", partial.join("; "))
+        }
+    ))
 }
 
 /// WHAT A COMMENT LOOKS LIKE IN THE FILE AN EXCUSE POINTS AT.
@@ -333,7 +409,9 @@ impl Excuse {
     pub fn holds(&self, cx: &Ctx) -> Result<(), String> {
         let (where_, needle) = match self {
             Excuse::XtaskTest(needle) => ("xtask/tests", *needle),
-            Excuse::ReleaseScript(path, needle) => (*path, *needle),
+            Excuse::ReleaseScript(path, needle) | Excuse::ReleaseRun(path, needle) => {
+                (*path, *needle)
+            }
         };
         // `in_text` is kept ALONGSIDE the verdict so the refusal can tell the two failures apart.
         // "the call site is gone" and "the call site is now a comment" want different edits, and a
@@ -354,7 +432,7 @@ impl Excuse {
                     files.iter().any(|f| f.text.contains(needle)),
                 )
             }
-            Excuse::ReleaseScript(path, _) => {
+            Excuse::ReleaseScript(path, _) | Excuse::ReleaseRun(path, _) => {
                 let text = cx.read(path)?;
                 (
                     executed_lines(&text, Comments::Shell).contains(needle),
@@ -363,7 +441,10 @@ impl Excuse {
             }
         };
         match (found, in_text) {
-            (true, _) => Ok(()),
+            (true, _) => match self {
+                Excuse::ReleaseRun(path, _) => script_run_site(cx, path).map(|_| ()),
+                _ => Ok(()),
+            },
             (false, true) => Err(format!(
                 "the excuse says it runs there, and `{needle}` appears in {where_} ONLY INSIDE A \
                  COMMENT. A gate named in a comment is documentation, not an invocation — the same \
@@ -408,7 +489,7 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
          scripts/verify-1.6.0-done.sh (`cargo xtask gate plane-purity-strict`) as part of the DONE \
          oracle, not on every push: its ceilings move with the busbar-core retirement and a per-push \
          red would only restate that the retirement is in flight.",
-        Excuse::ReleaseScript(
+        Excuse::ReleaseRun(
             "scripts/verify-1.6.0-done.sh",
             "cargo xtask gate plane-purity-strict",
         ),
@@ -423,7 +504,7 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
          scripts/verify-1.6.0-done.sh, on the same terms as plane-purity-strict: a per-push red \
          would only restate that the work is in flight, and a gate that is red every push is a \
          gate somebody puts a `|| true` in front of.",
-        Excuse::ReleaseScript(
+        Excuse::ReleaseRun(
             "scripts/verify-1.6.0-done.sh",
             "cargo xtask gate kind-isolation-ship",
         ),
@@ -434,7 +515,7 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
          DONE claim scripts/verify-1.6.0-done.sh makes at release time (`cargo xtask gate \
          no-deferral-strict-done`); ci.yml runs the per-push `no-deferral` whose waivers name the \
          tracker rows that retire them.",
-        Excuse::ReleaseScript(
+        Excuse::ReleaseRun(
             "scripts/verify-1.6.0-done.sh",
             "cargo xtask gate no-deferral-strict-done",
         ),
@@ -475,7 +556,7 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
          reachability`), not on every push, because a gate that is red every push is a gate \
          somebody puts a `|| true` in front of. MOVE IT TO ci.yml when qa/reachability.toml's \
          findings are drained to declarations or switch-ons.",
-        Excuse::ReleaseScript(
+        Excuse::ReleaseRun(
             "scripts/verify-1.6.0-done.sh",
             "cargo xtask gate reachability",
         ),
@@ -509,7 +590,7 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
          footing as plane-purity-strict and kind-isolation-ship above: run by \
          scripts/verify-1.6.0-done.sh (`cargo xtask gate instance-noun-neutrality`), not on every \
          push, because a gate that is red every push is a gate somebody puts a `|| true` in front of.",
-        Excuse::ReleaseScript(
+        Excuse::ReleaseRun(
             "scripts/verify-1.6.0-done.sh",
             "cargo xtask gate instance-noun-neutrality",
         ),
@@ -588,6 +669,12 @@ pub struct GateSetDiff {
     /// SEPARATELY from `registered_but_absent` because the fix is a different one: the gate may be
     /// perfectly well covered by some route nobody wrote down, and the entry is what has to change.
     pub unproven_excuses: Vec<String>,
+    /// Gate names invoked OUTSIDE ci.yml — any other workflow, a `scripts/**/*.sh`, a dispatcher
+    /// test under `xtask/tests/` — that the registry does not know, each as `<name> (<file>)`.
+    /// See [`invoked_elsewhere`].
+    pub invoked_elsewhere_but_unregistered: Vec<String>,
+    /// `Tier::Fast` gates whose only route is not a per-push one. See [`tier_contradictions`].
+    pub tier_contradictions: Vec<String>,
 }
 
 impl GateSetDiff {
@@ -595,7 +682,129 @@ impl GateSetDiff {
         self.registered_but_absent.is_empty()
             && self.invoked_but_unregistered.is_empty()
             && self.unproven_excuses.is_empty()
+            && self.invoked_elsewhere_but_unregistered.is_empty()
+            && self.tier_contradictions.is_empty()
     }
+}
+
+/// A gate name as the registry spells one: `[a-z0-9][a-z0-9-]*`, after the punctuation a shell or
+/// Markdown line leaves stuck to it. A `$var`, a `%s`, a `<name>` or a `[a-z…]` regex is not a name
+/// and is not reported as an unregistered one.
+fn as_gate_name(token: &str) -> Option<&str> {
+    let t =
+        token.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | ';' | ')' | ',' | '.' | ':'));
+    let mut chars = t.chars();
+    let first = chars.next()?;
+    (first.is_ascii_lowercase() || first.is_ascii_digit())
+        .then_some(())
+        .filter(|()| {
+            t.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        })
+        .map(|()| t)
+}
+
+/// EVERY `cargo xtask gate <name>` THE TREE RUNS OUTSIDE ci.yml, as `(name, file)`.
+///
+/// The registry-vs-workflow equality reconciled only against `ci.yml` (item 162). `audit-ledger`
+/// was deleted from the registry in 647f2fae9 while `scripts/verify-1.6.0-done.sh` still ran
+/// `cargo xtask gate audit-ledger --selftest` as a DONE step and `xtask/tests/cli.rs` still asserted
+/// it exited 0 — two live callers of a dead name, and nothing compared either with the registry,
+/// although every `Excuse::ReleaseScript` entry already pointed the runner at that very script.
+/// The scan set is now every place a gate is invoked:
+///
+/// * every `.github/workflows/*.yml` (the same [`discovery::xtask_gate_names`] reading as ci.yml);
+/// * every `scripts/**/*.sh`, over its EXECUTED lines (`#` comments stripped, quoting respected);
+/// * every `xtask/tests/*.rs` dispatcher call ASSERTED TO EXIT 0 — `assert_eq!(run(&["gate",
+///   "<name>", …]), 0)` / the same for `"selftest"` — over executed lines (comments stripped).
+pub fn invoked_elsewhere(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut push = |name: &str, file: String| {
+        if !out.iter().any(|(n, f)| n == name && *f == file) {
+            out.push((name.to_string(), file));
+        }
+    };
+    let walk = |root: &str, ext: &str| {
+        cx.walk(&crate::ctx::WalkSpec::new([root]).ext(ext).min_files(1))
+            .map_err(|e| format!("{e}"))
+    };
+    for f in walk(".github/workflows", "yml")? {
+        for name in discovery::xtask_gate_names(&f.text) {
+            if let Some(name) = as_gate_name(&name) {
+                push(name, f.rel_str());
+            }
+        }
+    }
+    for f in walk("scripts", "sh")? {
+        let executed = executed_lines(&f.text, Comments::Shell);
+        let mut rest = executed.as_str();
+        while let Some(i) = rest.find("cargo xtask gate ") {
+            rest = &rest[i + "cargo xtask gate ".len()..];
+            let token = rest.split_whitespace().next().unwrap_or("");
+            if let Some(name) = as_gate_name(token) {
+                push(name, f.rel_str());
+            }
+        }
+    }
+    for f in walk("xtask/tests", "rs")? {
+        let executed = executed_lines(&f.text, Comments::Rust);
+        for lead in ["run(&[\"gate\", \"", "run(&[\"selftest\", \""] {
+            let mut rest = executed.as_str();
+            while let Some(i) = rest.find(lead) {
+                rest = &rest[i + lead.len()..];
+                let token = rest.split('"').next().unwrap_or("");
+                // Only a call ASSERTED TO SUCCEED claims the gate exists. `cli.rs` drives
+                // deliberately unknown names (`denylst`, `no-such-gate`) and pins them at 2; those
+                // are the dispatcher's own negative controls, not callers of a gate.
+                let statement = rest.split(';').next().unwrap_or("");
+                let asserts_green = statement.contains("]), 0)");
+                if let (Some(name), true) = (as_gate_name(token), asserts_green) {
+                    push(name, f.rel_str());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A `Tier::Fast` GATE IS AN EVERY-PUSH GATE, SO ITS ROUTE MUST BE AN EVERY-PUSH ROUTE (item 185).
+///
+/// `Registration::tier` was read at exactly one place — the `--list` printout — so the field that
+/// exists to say "this is a per-push check" or "this is a release-path claim" was a label nothing
+/// acted on. It is acted on here, in the one place that knows where each gate runs. `Tier::Fast`
+/// is documented as "every push", and a gate is judged every push exactly when `ci.yml` invokes it
+/// or its excuse is an [`Excuse::XtaskTest`] that drives its VERDICT (not only its `--selftest`)
+/// under `cargo test --workspace --locked`. A `Fast` gate whose only route is a release script, or
+/// a self-test, is either mis-tiered or mis-wired; either way the label is false and is reported.
+pub fn tier_contradictions(invoked_by_ci: &BTreeSet<String>) -> Vec<String> {
+    let tiers: Vec<(&str, gates::Tier)> =
+        gates::REGISTRY.iter().map(|r| (r.name, r.tier)).collect();
+    tier_contradictions_in(&tiers, REGISTRY_NOT_IN_CI, invoked_by_ci)
+}
+
+/// [`tier_contradictions`] over an explicit registry and excuse list, so the rule can be put to a
+/// synthetic population whose right answer is known.
+fn tier_contradictions_in(
+    tiers: &[(&str, gates::Tier)],
+    excuses: &[(&str, &str, Excuse)],
+    invoked_by_ci: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for &(name, tier) in tiers {
+        if tier != gates::Tier::Fast || invoked_by_ci.contains(name) {
+            continue;
+        }
+        let per_push = excuses.iter().find(|(n, _, _)| *n == name).is_some_and(
+            |(_, _, e)| matches!(e, Excuse::XtaskTest(needle) if !needle.contains("--selftest")),
+        );
+        if !per_push {
+            out.push(format!(
+                "{name}: Tier::Fast (every push) but ci.yml does not invoke it and its only route \
+                 is not a per-push run of its verdict"
+            ));
+        }
+    }
+    out
 }
 
 /// Compare `{cargo xtask gate <name> in ci.yml}` against `{REGISTRY names}`, and PUT EACH EXCUSE TO
@@ -622,10 +831,22 @@ pub fn gate_set_diff(cx: &Ctx, ci_text: &str) -> GateSetDiff {
         }
     }
 
+    let invoked_elsewhere_but_unregistered = match invoked_elsewhere(cx) {
+        Ok(found) => found
+            .into_iter()
+            .filter(|(n, _)| !registered.contains(n))
+            .map(|(n, f)| format!("{n} ({f})"))
+            .collect(),
+        // A scan that could not read is not a scan that found nothing.
+        Err(e) => vec![format!("the scan outside ci.yml could not run: {e}")],
+    };
+
     GateSetDiff {
         registered_but_absent,
         invoked_but_unregistered: invoked.difference(&registered).cloned().collect(),
         unproven_excuses,
+        invoked_elsewhere_but_unregistered,
+        tier_contradictions: tier_contradictions(&invoked),
     }
 }
 
@@ -1009,6 +1230,26 @@ fn selftest(
             diff.invoked_but_unregistered
         ),
     );
+    ok(
+        diff.invoked_elsewhere_but_unregistered.is_empty(),
+        "every `cargo xtask gate` invocation in the other workflows, scripts/**/*.sh and \
+         xtask/tests names a registered gate"
+            .to_string(),
+        format!(
+            "invoked outside ci.yml but not registered: {:?} -- a dead gate name exits 2 at \
+             whatever runs it, which is an argument error standing where a verdict should be",
+            diff.invoked_elsewhere_but_unregistered
+        ),
+    );
+    ok(
+        diff.tier_contradictions.is_empty(),
+        "every Tier::Fast gate is judged on every push".to_string(),
+        format!(
+            "Tier::Fast gate(s) with no per-push route: {:?} -- re-tier the gate in \
+             xtask/src/gates/mod.rs or wire its verdict into ci.yml",
+            diff.tier_contradictions
+        ),
+    );
 
     // The continuation fixture's three assertions, verbatim.
     let fixture = "xtask/fixtures/full-gate/continuation-ci.yml";
@@ -1124,8 +1365,198 @@ mod tests {
     fn needle_of(e: &Excuse) -> &'static str {
         match e {
             Excuse::XtaskTest(n) => n,
-            Excuse::ReleaseScript(_, n) => n,
+            Excuse::ReleaseScript(_, n) | Excuse::ReleaseRun(_, n) => n,
         }
+    }
+
+    /// THE WORKFLOW HALF OF A `ReleaseRun` EXCUSE, PLANTED. `overlay` gets a job appended to
+    /// ci.yml whose one step RUNS `script` in full — the shape a release workflow would carry — so
+    /// the shell plants below have a baseline where the excuse HOLDS, whatever today's workflows
+    /// say. Without it those plants would move a row that is already red (item 89's PROOF
+    /// IMPOSSIBLE): no workflow on this tree runs `verify-1.6.0-done.sh` in full (item 161).
+    fn plant_full_run(cx: &Ctx, ov: &mut Overlay, script: &str) {
+        let ci = cx.read(CI_YML).expect("ci.yml");
+        ov.set(
+            CI_YML,
+            format!(
+                "{ci}\n  planted-release-run:\n    runs-on: ubuntu-latest\n    steps:\n      \
+                 - run: bash {script}\n"
+            ),
+        );
+    }
+
+    /// Every workflow line that names `script` rewritten to its `--selftest` arm: the baseline in
+    /// which no workflow runs the script's gates, independent of what today's workflows carry.
+    fn only_selftest_runs(cx: &Ctx, ov: &mut Overlay, script: &str) {
+        let files = cx
+            .walk(&WalkSpec::new([".github/workflows"]).ext("yml").min_files(1))
+            .expect("workflows");
+        for f in &files {
+            if !f.text.contains(script) {
+                continue;
+            }
+            let out: String = f
+                .text
+                .lines()
+                .map(|l| match l.find(script) {
+                    Some(i) if !l.trim_start().starts_with('#') => {
+                        format!("{}{script} --selftest\n", &l[..i])
+                    }
+                    _ => format!("{l}\n"),
+                })
+                .collect();
+            ov.set(&f.rel, out);
+        }
+    }
+
+    /// ITEM 161: A RELEASE SCRIPT NOTHING RUNS IS NOT A PLACE A GATE RUNS. With every workflow
+    /// running the script only as `--selftest` — which is this tree — each of the five
+    /// release-script excuses must FAIL, naming that no workflow runs the script; plant one full
+    /// run and the same excuses hold. A `grep` or `shellcheck` of the path is not a run of it.
+    #[test]
+    fn a_release_script_excuse_holds_only_while_a_workflow_runs_the_script() {
+        let cx = tree();
+        let release: Vec<(&str, Excuse)> = REGISTRY_NOT_IN_CI
+            .iter()
+            .filter(|(_, _, e)| matches!(e, Excuse::ReleaseRun(..)))
+            .map(|(n, _, e)| (*n, *e))
+            .collect();
+        assert_eq!(
+            release.len(),
+            5,
+            "the five release-script gates: {:?}",
+            release.iter().map(|r| r.0).collect::<Vec<_>>()
+        );
+        let script = "scripts/verify-1.6.0-done.sh";
+
+        let mut ov = Overlay::new();
+        only_selftest_runs(&cx, &mut ov, script);
+        let base = cx.with_overlay(ov.clone()).read(CI_YML).expect("ci.yml");
+        ov.set(
+            CI_YML,
+            format!(
+                "{base}\n  not-a-run:\n    runs-on: ubuntu-latest\n    steps:\n      \
+                 - run: shellcheck {script}\n      - run: grep -c gate {script}\n"
+            ),
+        );
+        let unrun = cx.with_overlay(ov.clone());
+        for (name, e) in &release {
+            let why = e.holds(&unrun).expect_err(&format!(
+                "{name}: a script no workflow runs still excused the gate"
+            ));
+            assert!(why.contains("no workflow RUNS"), "{name}: {why}");
+        }
+
+        plant_full_run(&unrun, &mut ov, script);
+        let run = cx.with_overlay(ov);
+        for (name, e) in &release {
+            assert!(e.holds(&run).is_ok(), "{name}: {:?}", e.holds(&run));
+        }
+    }
+
+    /// ITEM 162: A DEAD GATE NAME IN THE RELEASE ORACLE IS REPORTED. The exact shape the audit
+    /// measured — `cargo xtask gate audit-ledger --selftest` on an executed line of
+    /// `verify-1.6.0-done.sh`, after the registry dropped `audit-ledger` — plus the same name in
+    /// another workflow and in a dispatcher test asserted green. The same name inside a `#` comment
+    /// or pinned at exit 2 is NOT a caller.
+    #[test]
+    fn a_gate_name_the_registry_dropped_is_reported_wherever_it_is_still_invoked() {
+        let cx = tree();
+        let before: Vec<String> = gate_set_diff(&cx, &cx.read(CI_YML).expect("ci.yml"))
+            .invoked_elsewhere_but_unregistered;
+        assert!(before.is_empty(), "the control is already red: {before:?}");
+
+        let script = "scripts/verify-1.6.0-done.sh";
+        let mut ov = Overlay::new();
+        let text = cx.read(script).expect(script);
+        ov.set(
+            script,
+            format!(
+                "{text}\n# cargo xtask gate commented-dead-gate\nstep audit cargo xtask gate \
+                 audit-ledger --selftest\n"
+            ),
+        );
+        let wf = ".github/workflows/sched-oracle-store-cells.yml";
+        let wtext = cx.read(wf).expect(wf);
+        ov.set(
+            wf,
+            format!(
+                "{wtext}\n  dead:\n    steps:\n      - run: cargo xtask gate workflow-dead-gate\n"
+            ),
+        );
+        let t = "xtask/tests/cli.rs";
+        let ttext = cx.read(t).expect(t);
+        ov.set(
+            t,
+            format!(
+                "{ttext}\n#[test]\nfn planted() {{\n    assert_eq!(run(&[\"gate\", \"test-dead-gate\"]), 0);\n    \
+                 assert_eq!(run(&[\"gate\", \"negative-control\"]), 2);\n}}\n"
+            ),
+        );
+        let planted = cx.with_overlay(ov);
+        let diff = gate_set_diff(&planted, &planted.read(CI_YML).expect("ci.yml"));
+        let got = diff.invoked_elsewhere_but_unregistered.join(" | ");
+        for want in [
+            "audit-ledger (scripts/verify-1.6.0-done.sh)",
+            "workflow-dead-gate (.github/workflows/sched-oracle-store-cells.yml)",
+            "test-dead-gate (xtask/tests/cli.rs)",
+        ] {
+            assert!(got.contains(want), "missing {want}: {got}");
+        }
+        for not in ["commented-dead-gate", "negative-control"] {
+            assert!(!got.contains(not), "{not} is not a caller: {got}");
+        }
+        assert!(!diff.agrees());
+    }
+
+    /// ITEM 185: `Tier::Fast` is ACTED ON. A Fast gate is judged every push only when ci.yml runs
+    /// it or an `XtaskTest` excuse drives its verdict; a Fast gate whose route is a release script
+    /// or a self-test alone is a contradiction, and a Full/Release gate on a release route is not.
+    #[test]
+    fn a_fast_gate_without_a_per_push_route_is_a_tier_contradiction() {
+        use crate::gates::Tier;
+        let tiers = [
+            ("in-ci", Tier::Fast),
+            ("test-verdict", Tier::Fast),
+            ("test-selftest-only", Tier::Fast),
+            ("release-only", Tier::Fast),
+            ("unexcused", Tier::Fast),
+            ("release-full", Tier::Full),
+            ("release-release", Tier::Release),
+        ];
+        let excuses: [(&str, &str, Excuse); 5] = [
+            (
+                "test-verdict",
+                "r",
+                Excuse::XtaskTest("run(&[\"gate\", \"test-verdict\"])"),
+            ),
+            (
+                "test-selftest-only",
+                "r",
+                Excuse::XtaskTest("run(&[\"gate\", \"test-selftest-only\", \"--selftest\"])"),
+            ),
+            (
+                "release-only",
+                "r",
+                Excuse::ReleaseRun("scripts/x.sh", "cargo xtask gate release-only"),
+            ),
+            (
+                "release-full",
+                "r",
+                Excuse::ReleaseRun("scripts/x.sh", "cargo xtask gate release-full"),
+            ),
+            (
+                "release-release",
+                "r",
+                Excuse::ReleaseRun("scripts/x.sh", "cargo xtask gate release-release"),
+            ),
+        ];
+        let ci: BTreeSet<String> = ["in-ci".to_string()].into_iter().collect();
+        let got: Vec<String> = tier_contradictions_in(&tiers, &excuses, &ci)
+            .into_iter()
+            .map(|l| l.split(':').next().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(got, ["test-selftest-only", "release-only", "unexcused"]);
     }
 
     /// THE CONTROL. Every excuse on the register still holds over the tree as it stands — which is
@@ -1213,12 +1644,16 @@ mod tests {
     /// header comment on line 30. Deleting both real invocations left the excuse holding.
     #[test]
     fn a_shell_call_site_that_is_only_a_comment_does_not_hold() {
-        let cx = tree();
+        let tree_cx = tree();
         let excuse = excuse_for("no-deferral-strict-done");
         let (path, needle) = match excuse {
-            Excuse::ReleaseScript(p, n) => (p, n),
-            Excuse::XtaskTest(_) => panic!("no-deferral-strict-done is a release-script excuse"),
+            Excuse::ReleaseRun(p, n) => (p, n),
+            _ => panic!("no-deferral-strict-done is a release-script excuse"),
         };
+        // THE BASELINE WHERE THE WORKFLOW HALF HOLDS, so the plant moves only the script half.
+        let mut base = Overlay::new();
+        plant_full_run(&tree_cx, &mut base, path);
+        let cx = tree_cx.with_overlay(base.clone());
         assert!(
             excuse.holds(&cx).is_ok(),
             "the control failed BEFORE the plant: {:?}",
@@ -1259,10 +1694,10 @@ mod tests {
             "read-back: the needle must SURVIVE in the planted text, in a comment"
         );
 
-        let mut ov = Overlay::new();
+        let mut ov = base;
         ov.set(path, out);
         let why = excuse
-            .holds(&cx.with_overlay(ov))
+            .holds(&tree_cx.with_overlay(ov))
             .expect_err("a needle surviving only inside a `#` comment still satisfied the excuse");
         assert!(
             why.contains("ONLY INSIDE A COMMENT"),
@@ -1275,14 +1710,19 @@ mod tests {
     /// tighter grep would read as a fix while quietly revoking excuses that were never false.
     #[test]
     fn a_trailing_comment_on_an_executed_line_still_holds() {
-        let cx = tree();
+        let tree_cx = tree();
+        // The workflow half of `reachability`'s ReleaseRun excuse, planted, so this case judges
+        // only the comment stripper (item 161: no workflow on this tree runs the script in full).
+        let mut base = Overlay::new();
+        plant_full_run(&tree_cx, &mut base, "scripts/verify-1.6.0-done.sh");
+        let cx = tree_cx.with_overlay(base.clone());
 
         let rust = excuse_for("hot-path-alloc");
         let rust_needle = needle_of(&rust);
         let files = cx
             .walk(&WalkSpec::new(["xtask/tests"]).ext("rs").min_files(1))
             .expect("xtask/tests");
-        let mut ov = Overlay::new();
+        let mut ov = base.clone();
         let mut touched = 0usize;
         for f in &files {
             if !f.text.contains(rust_needle) {
@@ -1305,8 +1745,8 @@ mod tests {
 
         let shell = excuse_for("reachability");
         let (path, shell_needle) = match shell {
-            Excuse::ReleaseScript(p, n) => (p, n),
-            Excuse::XtaskTest(_) => panic!("reachability is a release-script excuse"),
+            Excuse::ReleaseRun(p, n) => (p, n),
+            _ => panic!("reachability is a release-script excuse"),
         };
         let text = cx.read(path).expect(path);
         let mut out = String::new();
@@ -1324,7 +1764,7 @@ mod tests {
         assert!(shell_touched >= 1, "nothing was planted for the shell half");
         ov.set(path, out);
 
-        let planted = cx.with_overlay(ov);
+        let planted = tree_cx.with_overlay(ov);
         assert!(
             rust.holds(&planted).is_ok(),
             "a Rust call site with a trailing comment stopped counting: {:?}",
