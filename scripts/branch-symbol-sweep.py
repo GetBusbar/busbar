@@ -435,11 +435,21 @@ class Haystack:
         self.n_code_files, self.n_doc_files = n_code_files, n_doc_files
 
 
+# The instrument's own source.  It carries the selftest's fixtures -- the T1/T5 markers
+# and the T3 trap symbols -- as string literals, so indexing it would put into
+# trunk_hay.code exactly the names every falsification case needs ABSENT from trunk, and
+# in a real sweep it would turn any branch symbol that merely matches a fixture into a
+# false HARVESTED.  The tool measures trunk; it is not part of what it measures.
+SELF_PATH = "scripts/%s.py" % TOOL
+
+
 def build_haystack(git: Git, rev: str, verbose: bool = False) -> Haystack:
     code: set[str] = set()
     docs: set[str] = set()
     nc = nd = 0
     for path, data in git.tree_blobs(rev):
+        if path == SELF_PATH:
+            continue
         if is_binary_path(path):
             continue
         if b"\0" in data[:8000]:          # undeclared binary
@@ -545,6 +555,31 @@ def added_lines_by_file(git: Git, base: str, tip: str):
 MAX_ABSENT_IN_ROW = 500
 
 
+def summarise_absent(absent: list[Needle], trunk_docs: set[str]) -> dict:
+    """The per-row absence fields.  `absent` (the listed rows) is capped at
+    MAX_ABSENT_IN_ROW; every COUNT is taken over the whole list, never over the cap --
+    a count read off the capped rows silently stops at 500."""
+    absent = sorted(absent, key=lambda n: (n.kind == "lit", n.path, n.line, n.sym))
+    money = 0
+    docs_only = 0
+    rows = []
+    for i, n in enumerate(absent):
+        is_money = is_money_path(n.path) or bool(MONEY_NAME_RE.search(n.sym))
+        is_docs_only = n.sym in trunk_docs
+        money += is_money
+        docs_only += is_docs_only
+        if i < MAX_ABSENT_IN_ROW:
+            rows.append({
+                "sym": n.sym, "kind": n.kind, "path": n.path, "line": n.line,
+                "docs_only": is_docs_only,
+                **({"money": True} if is_money else {}),
+            })
+    out = {"absent": rows, "docs_only_absent": docs_only, "money_hits": money}
+    if len(absent) > MAX_ABSENT_IN_ROW:
+        out["absent_truncated"] = len(absent) - MAX_ABSENT_IN_ROW
+    return out
+
+
 def sweep_branch(git: Git, trunk_sha: str, trunk_hay: Haystack, branch: str,
                  mb_hay_for, include_docs: bool) -> dict:
     t0 = time.time()
@@ -575,6 +610,8 @@ def sweep_branch(git: Git, trunk_sha: str, trunk_hay: Haystack, branch: str,
 
     needles: list[Needle] = []
     for path, added in files.items():
+        if path == SELF_PATH:      # excluded from the haystack, so from the needles too
+            continue
         needles.extend(extract_needles(path, added))
     row["needles_raw"] = len(needles)
 
@@ -608,26 +645,7 @@ def sweep_branch(git: Git, trunk_sha: str, trunk_hay: Haystack, branch: str,
     else:
         row["bucket"] = "SURVIVOR"
 
-    absent.sort(key=lambda n: (n.kind == "lit", n.path, n.line, n.sym))
-    money = 0
-    rows = []
-    for n in absent[:MAX_ABSENT_IN_ROW]:
-        is_money = is_money_path(n.path) or bool(MONEY_NAME_RE.search(n.sym))
-        if is_money:
-            money += 1
-        rows.append({
-            "sym": n.sym, "kind": n.kind, "path": n.path, "line": n.line,
-            "docs_only": n.sym in trunk_hay.docs,
-            **({"money": True} if is_money else {}),
-        })
-    for n in absent[MAX_ABSENT_IN_ROW:]:
-        if is_money_path(n.path) or MONEY_NAME_RE.search(n.sym):
-            money += 1
-    row["absent"] = rows
-    if len(absent) > MAX_ABSENT_IN_ROW:
-        row["absent_truncated"] = len(absent) - MAX_ABSENT_IN_ROW
-    row["docs_only_absent"] = sum(1 for r in rows if r["docs_only"])
-    row["money_hits"] = money
+    row.update(summarise_absent(absent, trunk_hay.docs))
     row["notes"] = notes
     row["elapsed_ms"] = int((time.time() - t0) * 1000)
     row["ts"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -950,6 +968,16 @@ def cmd_selftest(a) -> int:
         results.append((name, bool(ok), detail))
         print("  %-4s %-46s %s" % ("PASS" if ok else "FAIL", name, detail))
 
+    # ---- T0  the instrument is not in its own haystack ----------------------
+    # Its fixtures are literals in SELF_PATH; indexed, they poison T1/T3/T5 (item 470).
+    self_blob = git.run("ls-tree", trunk, "--", SELF_PATH).strip()
+    if self_blob:
+        self_toks = haystack_tokens(git.run("show", "%s:%s" % (trunk, SELF_PATH)))
+        check("T0.self-not-in-haystack",
+              all(SELFTEST_MARKERS[k] in self_toks for k in ("fn", "struct", "real"))
+              and not any(SELFTEST_MARKERS[k] in trunk_hay.code for k in ("fn", "struct", "real")),
+              "%s carries the fixtures; trunk_hay.code does not" % SELF_PATH)
+
     # ---- T0  anti-false-zero floors -------------------------------------
     print("\nT0 — floors (a small haystack manufactures false SURVIVORs)")
     check("T0.trunk-code-haystack", len(trunk_hay.code) > 100000,
@@ -989,7 +1017,7 @@ def cmd_selftest(a) -> int:
     print("\nT2 — KNOWN HARVESTED: everything trunk gained since base, RELOCATED")
     added = git.run("diff", "--name-only", "--diff-filter=A", base_old, trunk).split("\n")
     added = [p for p in added if p and not is_doc(p) and not is_binary_path(p)
-             and not is_generated(p)]
+             and not is_generated(p) and p != SELF_PATH]
     bysha = {p: (m, s) for m, s, p in _tree_entries(git, trunk)}
     ents, mapping = [], {}
     for p in added:
@@ -1153,6 +1181,22 @@ def cmd_selftest(a) -> int:
     check("T6.struct-field.DOCUMENTED", True,
           "struct fields and enum variants are deliberately NOT needles (they collide "
           "with struct-literal initialisers and match arms)")
+
+    # ---- T7  COUNTS ARE NOT CAPPED --------------------------------------
+    # `absent` lists at most MAX_ABSENT_IN_ROW rows; the counts must cover every absence.
+    print("\nT7 — COUNTS PAST THE ROW CAP: docs_only_absent and money_hits see every absence")
+    n7 = MAX_ABSENT_IN_ROW + 137
+    docs7 = {"bsweep_t7_docs_only_%d" % i for i in range(n7)}
+    need7 = [Needle("bsweep_t7_docs_only_%d" % i, "fn", "crates/busbar-kernel-ledger/src/t7.rs", i)
+             for i in range(n7)]
+    s7 = summarise_absent(need7, docs7)
+    check("T7.rows-capped", len(s7["absent"]) == MAX_ABSENT_IN_ROW
+          and s7.get("absent_truncated") == n7 - MAX_ABSENT_IN_ROW,
+          "rows=%d truncated=%s" % (len(s7["absent"]), s7.get("absent_truncated")))
+    check("T7.docs_only-counts-all", s7["docs_only_absent"] == n7,
+          "docs_only_absent=%d of %d docs-only absences" % (s7["docs_only_absent"], n7))
+    check("T7.money-counts-all", s7["money_hits"] == n7,
+          "money_hits=%d of %d money-path absences" % (s7["money_hits"], n7))
 
     git.close()
     bad = [n for n, ok, _ in results if not ok]
