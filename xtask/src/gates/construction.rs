@@ -487,18 +487,9 @@ impl ConstructionGate {
         // row that legitimately has no subject must say so with a ceiling and a measurement, not by
         // passing on absence.
         //
-        // Zero rows on this tree are vacuous, measured 2026-09-09, so this costs nothing today and
-        // is entirely a guard on the direction of travel.
         // An INFORMATIONAL row is PASS by construction and its title carries `WARN ` — it is a
         // report, not a claim, so there is nothing for a floor to hold it to.
-        for r in &mut rows {
-            if r.detail.starts_with(model::VACUOUS)
-                && !r.informational
-                && r.status == crate::ledger::Status::Pass
-            {
-                r.status = crate::ledger::Status::Fail;
-            }
-        }
+        score_absent_subjects(&mut rows);
 
         // THE CENSUS BEFORE THE ROSE. It counts the rule tables the rest of the gate was derived
         // from, so a run that lost one says so next to the ceilings that went with it.
@@ -507,6 +498,43 @@ impl ConstructionGate {
         let slack = ceilings::ceiling_slack(&cfg, &rows);
         rows.extend(slack);
         Ok((rows, problems))
+    }
+}
+
+/// Every spelling a rule uses to say "my subject is not in this tree", and the floor reads them
+/// all (item 189).
+///
+/// The floor used to match the `vacuous: ` PREFIX only, and the comment above it said zero rows on
+/// this tree were vacuous. Two rows were, spelled as a SUFFIX: `loc-ceilings:kernel:slice` (`-- no
+/// matching file under busbar-kernel/src yet (vacuous 0)`) and `loc-ceilings:unit-verbs` (`-- busbar-
+/// unit-verbs does not exist yet (vacuous 0)`), each measuring 0 against a ceiling of 0 and
+/// PASSING — two of the nine named pieces of the kernel's section 1.1 size budget asserting nothing.
+/// Two more sites append `glob(s) matching no file yet (not a finding)`: a scope glob that names
+/// nothing is a scope narrowed to less than it claims, which is the shape this floor refuses.
+///
+/// Each needle is a DECLARATION the rule writes about itself, so matching it anywhere in the detail
+/// is safe: no rule prints one to describe something else.
+pub const ABSENCE_DECLARATIONS: &[&str] = &[model::VACUOUS, "(vacuous 0)", "matching no file yet"];
+
+/// Does this row's detail declare that its subject is absent, in any of the spellings in
+/// [`ABSENCE_DECLARATIONS`]?
+pub fn declares_absent_subject(detail: &str) -> bool {
+    detail.starts_with(model::VACUOUS)
+        || ABSENCE_DECLARATIONS[1..]
+            .iter()
+            .any(|needle| detail.contains(needle))
+}
+
+/// THE SCAN-SET FLOOR: a gating row that PASSED while declaring an absent subject is a FAIL. See
+/// the block in [`ConstructionGate::measure`] that calls this, and [`ABSENCE_DECLARATIONS`].
+pub fn score_absent_subjects(rows: &mut [CRow]) {
+    for r in rows {
+        if declares_absent_subject(&r.detail)
+            && !r.informational
+            && r.status == crate::ledger::Status::Pass
+        {
+            r.status = crate::ledger::Status::Fail;
+        }
     }
 }
 
@@ -641,4 +669,68 @@ fn legacy_out_dir(scratch: &std::path::Path) -> std::path::PathBuf {
 /// The measured rows keyed by id, for the self-test's own arithmetic.
 pub fn by_id(rows: &[CRow]) -> BTreeMap<&str, &CRow> {
     rows.iter().map(|r| (r.id.as_str(), r)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ledger::Status;
+
+    fn passing(detail: &str) -> CRow {
+        plain("rule:row", true, "a rule", detail, 0, 0, vec![])
+    }
+
+    /// ITEM 189: EVERY SPELLING OF AN ABSENT SUBJECT IS SCORED, not only the prefix. The two
+    /// suffix spellings below are the live `loc-ceilings` details, verbatim.
+    #[test]
+    fn a_passing_row_that_declares_an_absent_subject_in_any_spelling_fails() {
+        let mut rows = vec![
+            passing("vacuous: crates/x does not exist yet; nothing to seal"),
+            passing(
+                "slice/lease (slice.rs): 0 line(s) (ceiling 0) -- no matching file under \
+                 busbar-kernel/src yet (vacuous 0)",
+            ),
+            passing(
+                "busbar-unit-verbs: 0 line(s) (ceiling 0) -- busbar-unit-verbs does not exist yet \
+                 (vacuous 0)",
+            ),
+            passing("0 function(s) over 60 lines; worst none: glob(s) matching no file yet (not a finding): a/*.rs"),
+            passing("teller (teller.rs): 812 line(s) (ceiling 900)"),
+        ];
+        score_absent_subjects(&mut rows);
+        let got: Vec<Status> = rows.iter().map(|r| r.status).collect();
+        assert_eq!(
+            got,
+            vec![
+                Status::Fail,
+                Status::Fail,
+                Status::Fail,
+                Status::Fail,
+                Status::Pass
+            ]
+        );
+    }
+
+    /// ITEM 189, OVER THE REAL TREE: no gating row the gate emits passes while declaring an absent
+    /// subject. On the unfixed floor the two `loc-ceilings` rows did exactly that.
+    #[test]
+    fn no_row_on_the_tree_passes_over_an_absent_subject() {
+        let cx = Ctx::workspace().expect("workspace");
+        let (rows, _) = ConstructionGate::measure(&cx).expect("the construction gate measures");
+        let passing_over_nothing: Vec<&str> = rows
+            .iter()
+            .filter(|r| {
+                !r.informational
+                    && r.status == Status::Pass
+                    && (r.detail.starts_with(model::VACUOUS)
+                        || r.detail.contains("(vacuous 0)")
+                        || r.detail.contains("matching no file yet"))
+            })
+            .map(|r| r.id.as_str())
+            .collect();
+        assert!(
+            passing_over_nothing.is_empty(),
+            "rows PASS over an absent subject: {passing_over_nothing:?}"
+        );
+    }
 }
