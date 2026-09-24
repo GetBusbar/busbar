@@ -800,6 +800,15 @@ fn priced_amount(
 /// It needs no hold and no slot, and that is not an accommodation — it is what the flags SAY. The
 /// reservation went back at the terminal, so the whole amount books as overdraft with nothing behind
 /// it, which is the honest description of a spend the node learned about after it had let go.
+///
+/// **THIS BOOK IS NOT THE INVOICE.** One delivered unit leaves two records: the tap's accrual of
+/// raw counts onto the GOVERNANCE LEDGER (the metering series `GET /api/v1/admin/usage` prices at
+/// read time, and what 1.5.5 billed) and this priced posting onto the Durability book. The money
+/// model (BUSBAR-1.6.0.md Part 0; #43/#71: the ledger stores counts; #77(3): a price is never
+/// stored) makes the governance ledger the invoice and this posting a derived reading of it. The
+/// two must agree cell by cell —
+/// `the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red` holds this book's
+/// figure against the served read's own derivation, and a divergence is RED.
 struct LateAccrual {
     book: Arc<Mutex<crate::root::durability::Durability>>,
     /// THE HISTORY SNAPSHOT the report is resolved against — the deployment's dated card history as
@@ -1928,8 +1937,16 @@ pub static BODY_INGRESS: &[(&str, busbar_kernel::ingress::arrival::BodyIngress)]
 /// resolved `model` is carried as the loop's `model_hint`, exactly as `run()` carries its resolved
 /// `model`; `path: None`, because a native arrival's model rides its body.
 ///
-/// IT IS DORMANT. Nothing mounts it, and it is NOT the shipped authority: the shipped `run()` still
-/// calls `run_gauntlet`. DECISION #28 unified the loop plane-neutrally; DECISION #29 gates the
+/// CORRECTION (item 125, measured 2026-09-24): `run_gauntlet` is no longer "the SUBSTRATE loop" —
+/// `gauntlet_install::install()` registers the kernel-loop runner for the LLM capability key at
+/// boot, money-neutrally (a `ZeroHold`, no evidence). And on a default build (`root-llm` on) the
+/// body- and path-model arrivals do not reach `run()` at all: they are driven through [`LlmNode`]
+/// and this module's late accrual. Measured: `root-llm` OFF returns
+/// `billing|rate-card|history-mid-window` to its 1.5.5 figures; the `install()` flips do not move
+/// it.
+///
+/// THIS FUNCTION is test-only. Nothing mounts it, and it is NOT the shipped authority: the shipped
+/// `run()` still calls `run_gauntlet`. DECISION #28 unified the loop plane-neutrally; DECISION #29 gates the
 /// money-authority flip on the fleet-box oracle — the flip is thrown only once loop==legacy is proven
 /// byte-identical on that box (`bin/oracle` record+replay), never here. This entry exists so the
 /// entry-level shadow proof can drive it beside `run()` on the same fixtures and prove exactly that

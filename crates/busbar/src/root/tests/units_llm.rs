@@ -2778,3 +2778,249 @@ fn the_llm_provenance_stamp_names_the_card_in_force_when_the_unit_arrived() {
          settle path resolves at `Arrived::ms()` and never at `Arrived::secs()`"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// ITEM 126 — TWO BOOKS OVER ONE EVENT: WHICH ONE IS THE INVOICE, AND A DISAGREEMENT IS RED
+// ---------------------------------------------------------------------------------------------
+
+/// A dated history of `(effective_from_ms, input rate, output rate, flat fee)` entries over the one
+/// lane `"lane"`, built outside the process holder so the proof names its own instants. `present`
+/// is the #42 switch: `false` builds the ABSENT card (billing off — every class at nothing, the flat
+/// fee still carried, `card_from_config`'s documented shape).
+fn fee_history_of(
+    entries: &[(u64, f64, f64, i64)],
+    present: bool,
+) -> crate::root::kernel::PinnedHistory {
+    let mut history = busbar_kernel_ledger::cost::History::new();
+    for (n, (from, input, output, fee)) in entries.iter().enumerate() {
+        let card = crate::root::kernel::card_from_config(
+            [(
+                "lane",
+                busbar_substrate_values::billing::RawTierRates {
+                    input: *input,
+                    output: *output,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            )],
+            *fee,
+            present,
+        );
+        history.append(busbar_kernel_ledger::cost::CardEntryDraft {
+            effective_from: if n == 0 { 0 } else { *from },
+            effective_until: None,
+            card,
+            appended_at: *from,
+            author: busbar_kernel_ledger::cost::Author::Config {
+                policy_epoch: n as u64,
+            },
+        });
+    }
+    crate::root::kernel::PinnedHistory::for_test(
+        std::sync::Arc::new(history),
+        busbar_kernel_ledger::cost::HistorySeq((entries.len() - 1) as u64),
+    )
+}
+
+/// A late report of `input`/`output` tokens and `fee_count` billable requests on `"lane"`.
+fn split_report(input: u64, output: u64, fee_count: u32) -> LateReport {
+    let mut units = std::collections::BTreeMap::new();
+    if input != 0 {
+        units.insert(busbar_api::UNIT_INPUT.to_string(), input);
+    }
+    if output != 0 {
+        units.insert(busbar_api::UNIT_OUTPUT.to_string(), output);
+    }
+    LateReport {
+        usage: busbar_substrate_values::billing::Usage { usage_units: units },
+        fee_count,
+        lane: "lane".to_string(),
+        provider: "provider".to_string(),
+    }
+}
+
+/// **THE INVOICE'S FIGURE for one unit** — what `GET /api/v1/admin/usage` serves for the metering
+/// row this unit lands on, computed by the admin read's OWN function (`read_path_money`, a `pub use`
+/// of the served derivation, never a copy) at the instant that read resolves the row at:
+/// `row_priced_at_ms(bucket start, era start)`, where the era is the `effective_from` of the entry
+/// in force when the unit accrued (what `record_metering` stamps as `priced_from_ms`).
+fn invoice_micros(
+    history: &crate::root::kernel::PinnedHistory,
+    arrived_ms: u64,
+    report: &LateReport,
+) -> i64 {
+    use busbar_core_admin::v1::service::read_path_money as invoice;
+    let view = history.view();
+    let era = view
+        .entry_at(arrived_ms)
+        .map_or(0, busbar_kernel_ledger::cost::CardEntry::effective_from);
+    let bucket_start_secs = arrived_ms / 1_000 / 86_400 * 86_400;
+    let at = invoice::row_priced_at_ms(bucket_start_secs, era);
+    let (_, card) = view.card_at(at).expect("a card covers every instant");
+    let unit = |k: &str| report.usage.usage_units.get(k).copied().unwrap_or(0);
+    let row = busbar_kernel::admin::v1::contract::UsageBreakdown {
+        tokens_input: unit(busbar_api::UNIT_INPUT),
+        tokens_output: unit(busbar_api::UNIT_OUTPUT),
+        tokens_cache_read: unit(busbar_api::UNIT_CACHE_READ),
+        tokens_cache_creation: unit(busbar_api::UNIT_CACHE_WRITE),
+        requests: u64::from(report.fee_count),
+        spend_micros: 0,
+    };
+    let cost =
+        busbar_kernel::cost::CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
+    invoice::derive_spend_micros_row_at_card(&view, at, card, &cost, &report.lane, &row)
+}
+
+/// The reconciliation: the second book's posting (nano-units) projected through the ONE
+/// micro-projection must equal the invoice's figure. `Err` names the cell and both figures.
+fn books_agree(label: &str, second_book_nanos: u64, invoice: i64) -> Result<(), String> {
+    let projected = busbar_kernel_ledger::cost::micros_of(u128::from(second_book_nanos));
+    if projected == invoice {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label}: the kernel-loop book posted {second_book_nanos} nano-units ({projected} micro) \
+             but the invoice (/admin/usage over the governance ledger) serves {invoice} micro"
+        ))
+    }
+}
+
+/// **TWO BOOKS, ONE EVENT — THE INVOICE IS THE GOVERNANCE LEDGER, AND THE SECOND BOOK MUST AGREE WITH
+/// IT CELL BY CELL.**
+///
+/// A delivered LLM unit leaves two records. The walk's completion tap accrues its counts onto the
+/// GOVERNANCE LEDGER (the metering series + usage ledger) — raw counts, no price, which is what
+/// `/usage` serves and what 1.5.5 billed. Then [`LateAccrual`] PRICES the same reading and posts
+/// the priced amount onto the kernel-loop Durability book. By the money model (BUSBAR-1.6.0.md
+/// Part 0: *money = f(ledger, ratecard), derived at read time*; #43/#71: the ledger stores counts;
+/// #77(3): a price is NEVER stored) only the first can be the invoice: it holds the facts and the
+/// served figure is the read-time view over them. The Durability posting carries a priced figure,
+/// so it is a derived reading — sound exactly while it agrees with the invoice, and a defect the
+/// moment it does not.
+///
+/// The cells mirror `billing|rate-card|history-mid-window`: a boot card, a 10x card, then a 100x card
+/// with a 3-unit flat fee, and a unit arriving in each window — plus a fee-only unit (a failed
+/// billing that still carries its request), a token-only provider-origin unit (fee count 0), and a
+/// billing-OFF deployment (absent card, #42: tokens at nothing, fee still carried).
+///
+/// THE NEGATIVE CONTROL is inside the test: the same comparator fed a PLANTED divergence — the
+/// second book priced against the head card instead of the card in force at arrival, and the second
+/// book dropping the fee — must report RED. A comparator that could not see those would make the
+/// green above meaningless.
+#[test]
+fn the_second_book_agrees_with_the_invoice_cell_by_cell_and_a_divergence_is_red() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let billed = fee_history_of(
+        &[
+            (0, 0.5, 1.0, 0),
+            (5_000, 5.0, 10.0, 0),
+            (9_000, 50.0, 100.0, 3),
+        ],
+        true,
+    );
+    let billing_off = fee_history_of(&[(0, 0.0, 0.0, 1)], false);
+
+    let cells: [(&str, &crate::root::kernel::PinnedHistory, u64, LateReport); 7] = [
+        (
+            "boot card, before A",
+            &billed,
+            1_000,
+            split_report(11, 7, 1),
+        ),
+        (
+            "card A, between A and B",
+            &billed,
+            6_000,
+            split_report(11, 7, 1),
+        ),
+        (
+            "card B + fee, after B",
+            &billed,
+            10_000,
+            split_report(11, 7, 1),
+        ),
+        (
+            "fee only (billing failed)",
+            &billed,
+            10_000,
+            split_report(0, 0, 1),
+        ),
+        (
+            "provider origin (no fee)",
+            &billed,
+            10_000,
+            split_report(11, 7, 0),
+        ),
+        (
+            "billing off, tokens + fee",
+            &billing_off,
+            10_000,
+            split_report(11, 7, 1),
+        ),
+        (
+            "billing off, fee only",
+            &billing_off,
+            10_000,
+            split_report(0, 0, 1),
+        ),
+    ];
+
+    let mut failures = Vec::new();
+    for (label, history, at, report) in &cells {
+        let second = priced_amount(history, Arrived::at(*at, 1), &token, report);
+        let invoice = invoice_micros(history, *at, report);
+        if let Err(e) = books_agree(label, second, invoice) {
+            failures.push(e);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "the second book disagrees with the invoice on {} cell(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+
+    // A NON-VACUITY FLOOR: the billed cells are not all zero, so agreement is not 0 == 0.
+    assert_eq!(
+        invoice_micros(&billed, 10_000, &split_report(11, 7, 1)),
+        // 11 x 50 + 7 x 100 + the 3-unit fee at the one scale.
+        busbar_kernel_ledger::cost::micros_of(u128::from(priced_amount(
+            &billed,
+            Arrived::at(10_000, 1),
+            &token,
+            &split_report(11, 7, 1)
+        ))),
+    );
+    assert_ne!(invoice_micros(&billed, 10_000, &split_report(11, 7, 1)), 0);
+
+    // THE PLANTED DIVERGENCES — each must go RED.
+    // (1) the second book prices a unit that arrived under the boot card at the HEAD card.
+    let early = split_report(11, 7, 1);
+    let at_head = priced_amount(&billed, Arrived::at(10_000, 1), &token, &early);
+    assert!(
+        books_agree(
+            "planted: priced at head",
+            at_head,
+            invoice_micros(&billed, 1_000, &early)
+        )
+        .is_err(),
+        "a second book priced at the head card was NOT caught disagreeing with the invoice"
+    );
+    // (2) the second book drops the flat fee.
+    let fee_dropped = priced_amount(
+        &billed,
+        Arrived::at(10_000, 1),
+        &token,
+        &split_report(11, 7, 0),
+    );
+    assert!(
+        books_agree(
+            "planted: fee dropped",
+            fee_dropped,
+            invoice_micros(&billed, 10_000, &split_report(11, 7, 1))
+        )
+        .is_err(),
+        "a second book that dropped the fee was NOT caught disagreeing with the invoice"
+    );
+}
