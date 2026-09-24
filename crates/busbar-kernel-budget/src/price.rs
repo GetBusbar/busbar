@@ -98,24 +98,6 @@ impl RateNanos {
             _ => 0,
         }
     }
-
-    /// The nano-unit cost of a unit map's reserved four at this rate.
-    ///
-    /// THE ARITHMETIC IS [`busbar_kernel_ledger::cost::nanos_sum`]'S, on the same terms the rate
-    /// projection above already reads [`busbar_kernel_ledger::cost::nano_rate`]: what is left here
-    /// is which rate each reserved key prices at, and the multiply, the sum and the saturation at
-    /// both steps belong to the one fold. This function's own copy of that fold was correct, which
-    /// is exactly what made it dangerous to keep — a THIRD copy in the kernel's cost projection had
-    /// no overflow guard at all, and two right copies are no evidence about a third. One
-    /// implementation is the only arrangement in which there is nothing left to drift.
-    #[inline]
-    pub fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
-        busbar_kernel_ledger::cost::nanos_sum(
-            RESERVED_UNITS
-                .iter()
-                .map(|u| (units.get(*u).copied().unwrap_or(0), self.reserved_rate(u))),
-        )
-    }
 }
 
 /// The rate table plus the flat per-request fee: everything the budget comparison needs to turn a
@@ -125,44 +107,64 @@ impl RateNanos {
 /// caps still work (they count tokens, not money) and the flat fee still bills. `rates` present
 /// means the table is authoritative: a model with no entry derives at zero, which is the operator's
 /// rate-card edit taking effect retroactively, by design.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Pricer {
-    rates: Option<BTreeMap<String, RateNanos>>,
-    price_per_request_cents: i64,
+    /// THE CARD, in the one function's own type. Every figure this pricer answers is
+    /// [`busbar_kernel_ledger::cost::Tally`] over it (items 104, 25, 124); the per-model
+    /// [`RateNanos`] view is read off it, never the other way round.
+    card: busbar_kernel_ledger::cost::RateCard,
+}
+
+impl Default for Pricer {
+    fn default() -> Self {
+        Pricer::flat(0)
+    }
 }
 
 impl Pricer {
     /// A pricer with no rate card: token pricing is zero everywhere, the flat fee still applies.
     pub fn flat(price_per_request_cents: i64) -> Self {
         Self {
-            rates: None,
-            price_per_request_cents: price_per_request_cents.max(0),
+            card: busbar_kernel_ledger::cost::RateCard::absent(price_per_request_cents),
         }
     }
 
     /// A pricer with a rate card.
+    ///
+    /// The rates are ALREADY quantised nano-units ([`RateNanos::from_micros_per_token`] ran
+    /// [`busbar_kernel_ledger::cost::nano_rate`] once), so the card is built from them without a
+    /// second rounding. A negative fee is clamped by the card's constructor, exactly where the
+    /// ledger's card clamps it — a request judged at one fee and billed at another is the drift
+    /// one card rules out.
     pub fn with_card(price_per_request_cents: i64, rates: BTreeMap<String, RateNanos>) -> Self {
-        Self {
-            rates: Some(rates),
-            // Clamped here, once, in both constructors — exactly where the tag's cost model clamps
-            // it. A negative fee is not a discount: the derivation ADDS the fee times the billable
-            // count to the token spend, so an unclamped one subtracts, and a bucket already over
-            // its cap on tokens alone derives back under it and is admitted. The ledger's own
-            // pricing card clamps at resolve too, so leaving it unclamped here would also mean a
-            // request judged at one fee and billed at another.
-            price_per_request_cents: price_per_request_cents.max(0),
-        }
+        use busbar_kernel_ledger::cost::LaneClass;
+        let card = busbar_kernel_ledger::cost::RateCard::from_nano_rates(
+            rates.iter().flat_map(|(model, r)| {
+                RESERVED_UNITS
+                    .iter()
+                    .map(move |u| (LaneClass::new(model.as_str(), *u), r.reserved_rate(u)))
+            }),
+            price_per_request_cents,
+        );
+        Self { card }
+    }
+
+    /// A pricer holding THE card the ledger built — `RateCard::from_config`, the one card
+    /// constructor, with its quantisation, its representability refusal (item 22) and its fee
+    /// clamp. The door and the bill then hold one card rather than two copies of one.
+    pub fn from_card(card: busbar_kernel_ledger::cost::RateCard) -> Self {
+        Self { card }
     }
 
     /// Whether a rate card is configured.
     pub fn pricing_enabled(&self) -> bool {
-        self.rates.is_some()
+        self.card.pricing_enabled()
     }
 
     /// The flat per-request fee, in cents. This is the fee lookahead the budget check adds to a
     /// bucket's derived spend before comparing against the cap.
     pub fn price_per_request_cents(&self) -> i64 {
-        self.price_per_request_cents
+        self.card.fee()
     }
 
     /// The effective rate for a model. Card absent: a zero rate, so every model prices at 0 — the
@@ -181,10 +183,15 @@ impl Pricer {
     /// states it — and fails closed. See [`Self::derive_spend_cents`].
     #[inline]
     pub fn rate_for(&self, model: &str) -> Option<RateNanos> {
-        match &self.rates {
-            None => Some(RateNanos::default()),
-            Some(table) => table.get(model).copied(),
+        if !self.card.pricing_enabled() {
+            return Some(RateNanos::default());
         }
+        self.card.lane_rates(model).map(|r| RateNanos {
+            input: r.nanos_per_unit(UNIT_INPUT),
+            output: r.nanos_per_unit(UNIT_OUTPUT),
+            cache_read: r.nanos_per_unit(UNIT_CACHE_READ),
+            cache_write: r.nanos_per_unit(UNIT_CACHE_WRITE),
+        })
     }
 
     /// Whether a request for this model must be refused because the rate card is present but has
@@ -192,61 +199,45 @@ impl Pricer {
     /// nothing or price everything.
     #[inline]
     pub fn model_unpriced(&self, model: &str) -> bool {
-        match &self.rates {
-            None => false,
-            Some(table) => !table.contains_key(model),
-        }
+        self.card.lane_unpriced(model)
     }
 
-    /// Derive the spend, in cents, of a ledger view: a few multiply-adds over the models the
-    /// bucket actually used, plus — when `include_request_fee` — the flat fee times the billable
-    /// request count. Every enforcement path passes `true`; the flag exists for callers that want
-    /// a tokens-only projection.
+    /// Derive the spend, in cents, of a ledger view: every model the bucket used, plus — when
+    /// `include_request_fee` — the flat fee times the billable request count. Every enforcement
+    /// path passes `true`; the flag exists for callers that want a tokens-only projection.
     ///
-    /// **AN UNPRICED MODEL BLOCKS; IT DOES NOT COST NOTHING.** This loop used to read
-    /// `if let Some(rate) = self.rate_for(model)`, which reaches "price at nothing" through a
-    /// control-flow arm indistinguishable from "there was nothing to price": a present card with no
-    /// entry for a model dropped that model's whole consumption, and the bucket derived as free.
-    /// This function GATES ADMISSION, so that arm admitted a model against a `budget:` cap it never
-    /// accrued against — the exact silent 0 #42 (`docs/design/BUSBAR-1.6.0.md:370`) confines to a
-    /// card that is ABSENT. The question "is this model unpriced?" is not answered again here; it
-    /// is [`Self::model_unpriced`]'s, once, and the answer is resolved the way this function
-    /// already resolves its other fail-closed case — pinned at the top, an astronomically over-cap
-    /// spend that blocks — rather than at the bottom, where it would admit.
+    /// **THE ONE FUNCTION** (items 104, 25, 124): [`busbar_kernel_ledger::cost::Tally`] over
+    /// this pricer's card, one row per model (its reserved-four counts, the enforcement book's
+    /// posture until item 123 converges the open classes), then the fee row.
     ///
-    /// The saturation matters and is not decoration. An adversarially large ledger (u64-scale token
-    /// counts against a large configured rate) can push the cent total past the signed maximum, and
-    /// a wrapping cast would land negative, which the floor below would then turn into zero — an
-    /// over-the-top ledger deriving as FREE and bypassing every budget cap. Pinning at the maximum
-    /// instead gives an astronomically over-cap spend that blocks.
+    /// **AN UNPRICED MODEL REFUSES; IT DOES NOT COST NOTHING — AND IT DOES NOT COST `i64::MAX`
+    /// EITHER.** The first answer was #42's silent zero on the admission path. The second, which
+    /// replaced it, blocked correctly but said so by pinning the figure at the top of the range —
+    /// a spend nobody consumed, indistinguishable from a real one to any reader of the number. The
+    /// door now receives the refusal itself (`Err`) and blocks on it; an overflow is the same
+    /// refusal (item 28), never a pinned bill.
     pub fn derive_spend_cents<'m>(
         &self,
         models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
         fee_requests: u64,
         include_request_fee: bool,
-    ) -> i64 {
-        let mut nanos: u128 = 0;
+    ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+        use busbar_kernel_ledger::cost::{whole, Tally, STANDARD_TIER_BP};
+        let mut tally = Tally::at_card(&self.card);
         for (model, units) in models {
-            if self.model_unpriced(model) {
-                return i64::MAX;
-            }
-            // `rate_for` cannot be `None` past the guard above: with the card absent it answers a
-            // zero rate, and with the card present `model_unpriced` already returned for every
-            // model the table does not hold. The `unwrap_or_default` is the unreachable arm made
-            // total, not a second resolution of the ruling.
-            nanos = nanos.saturating_add(
-                self.rate_for(model)
-                    .unwrap_or_default()
-                    .reserved_nanos(units),
-            );
+            tally.row(
+                model,
+                0,
+                STANDARD_TIER_BP,
+                RESERVED_UNITS
+                    .iter()
+                    .filter_map(|u| units.get(*u).map(|n| (*u, whole(*n)))),
+                whole(0),
+            )?;
         }
-        let mut cents = i64::try_from(nanos / NANOS_PER_CENT).unwrap_or(i64::MAX);
         if include_request_fee {
-            let fee = self
-                .price_per_request_cents
-                .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
-            cents = cents.saturating_add(fee);
+            tally.fee(0, STANDARD_TIER_BP, whole(fee_requests))?;
         }
-        cents.max(0)
+        tally.money()?.minor_i64()
     }
 }

@@ -239,6 +239,19 @@ pub enum Unpriceable {
         /// The lane the card is silent about.
         lane: String,
     },
+    /// A present card names the lane but not a class the posting HIT — the fail-closed rule for a
+    /// class (#42: *"a hit class not priced ⇒ REFUSE"*), reached through [`price_fail_closed`].
+    ClassUnpriced {
+        /// The entry that was in force.
+        card_seq: HistorySeq,
+        /// The lane the class was reported on.
+        lane: String,
+        /// The class the card is silent about.
+        class: String,
+    },
+    /// The priced figure does not fit the arithmetic. A REFUSAL, never a figure pinned at the
+    /// ceiling (item 28): the one function is checked, and so is every reader of it.
+    Overflow,
 }
 
 /// **THE TIER ARITHMETIC — the one implementation in the tree.**
@@ -381,7 +394,8 @@ pub fn price_at_card(
     for quantity in &posting.quantities {
         let class = quantity.class.as_str();
         // A lane a present card does not name prices at nothing, and every one of its lines is
-        // reported unpriced — the caller decides whether that is a refusal.
+        // reported unpriced — the caller decides whether that is a refusal
+        // ([`price_fail_closed`] does).
         let (unit_price_nanos, priced) = match &rates {
             Some(r) => (u128::from(r.nanos_per_unit(class)), r.class_priced(class)),
             None => (0u128, false),
@@ -390,18 +404,16 @@ pub fn price_at_card(
             class: class.to_string(),
             quantity: quantity.amount,
             unit_price_nanos,
-            amount_nanos: u128::from(quantity.amount).saturating_mul(unit_price_nanos),
+            // A `u64` quantity times a `u64` rate is inside a `u128` by a whole bit: exact, with
+            // no saturation to hide behind. The SUM is the one function's, below.
+            amount_nanos: u128::from(quantity.amount) * unit_price_nanos,
             unpriced: !priced,
         });
     }
 
-    // The fee is a usage line, not a scalar bolted onto the total. Its unit price is an exact
-    // multiple of one minor unit, which is why summing it in before the single truncation gives the
-    // same answer as truncating the quantities first and adding the fee after.
-    //
-    // A card carries exactly ONE fee and every constructor sets it, so this line is never a silent
-    // zero read out of a map that does not hold the key: a fee of nothing is a fee the operator
-    // configured at nothing (#77(5) `BUSBAR-1.6.0.md:420`), which is legitimately free.
+    // The fee is a usage line, not a scalar bolted onto the total. A card carries exactly ONE fee
+    // and every constructor sets it, so this line is never a silent zero read out of a map that
+    // does not hold the key (#77(5) `BUSBAR-1.6.0.md:420`).
     let fee_unit_price_nanos = card.fee_unit_price_nanos();
     lines.push(PricedLine {
         class: FEE_CLASS.to_string(),
@@ -411,15 +423,46 @@ pub fn price_at_card(
         unpriced: false,
     });
 
-    let pre_tier_nanos = lines
-        .iter()
-        .fold(0u128, |acc, l| acc.saturating_add(l.amount_nanos));
+    // **THE FIGURE IS THE ONE FUNCTION'S** (items 104, 27, 28). This lookup used to carry its own
+    // multiply-and-sum, its own saturating overflow policy and its own tier call: the sixth copy.
+    // It now lists the lines (which is what a statement shows) and hands the SAME quantities to
+    // [`crate::cost::Tally`] at the same card, tier and instant — so the settled figure and every
+    // read's figure are one arithmetic, one tier rule, one overflow refusal.
+    //
+    // The READ posture is kept, and stated rather than hidden: a line this card cannot price is
+    // FLAGGED (`unpriced`) and contributes nothing to the figure; a lane the card does not name
+    // contributes only its fee. [`price_fail_closed`] — the settlement posture — refuses both.
+    let mut tally = crate::cost::Tally::at_card_seq(card_seq, card);
+    let tallied = match &rates {
+        Some(_) => tally.row(
+            &posting.lane,
+            posting.arrived_ms,
+            posting.tier_bp,
+            lines
+                .iter()
+                .take(posting.quantities.len())
+                .filter(|l| !l.unpriced)
+                .map(|l| (l.class.as_str(), crate::cost::whole(l.quantity))),
+            crate::cost::whole(posting.fee_count),
+        ),
+        None => tally.fee(
+            posting.arrived_ms,
+            posting.tier_bp,
+            crate::cost::whole(posting.fee_count),
+        ),
+    };
+    let figures = tallied.and_then(|()| {
+        let pre = crate::cost::nanos_of_exact(tally.pre_tier_exact()?)?;
+        let priced = crate::cost::nanos_of_exact(tally.exact()?)?;
+        Ok((pre, priced))
+    });
+    let (pre_tier_nanos, priced_nanos) = figures.map_err(|_| Unpriceable::Overflow)?;
 
     Ok(Priced {
         card_seq,
         lines,
         pre_tier_nanos,
-        priced_nanos: apply_tier(pre_tier_nanos, posting.tier_bp),
+        priced_nanos,
         lane_unpriced: rates.is_none(),
         tier_bp: posting.tier_bp,
         fee_count: posting.fee_count,
@@ -442,6 +485,15 @@ pub fn price_fail_closed(view: &HistoryView<'_>, posting: &Posting) -> Result<Pr
         return Err(Unpriceable::LaneUnpriced {
             card_seq: priced.card_seq,
             lane: posting.lane.clone(),
+        });
+    }
+    // #42 for a CLASS as well as a lane: a present card silent about a class the posting hit
+    // refuses here exactly as the one function refuses it (`MoneyError::ClassUnpriced`).
+    if let Some(line) = priced.lines.iter().find(|l| l.unpriced) {
+        return Err(Unpriceable::ClassUnpriced {
+            card_seq: priced.card_seq,
+            lane: posting.lane.clone(),
+            class: line.class.clone(),
         });
     }
     Ok(priced)

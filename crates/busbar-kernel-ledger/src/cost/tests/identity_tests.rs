@@ -83,13 +83,15 @@ fn the_lookup_over_a_single_entry_history_equals_the_legacy_derivation() {
             [("lane", plain.as_slice())].into_iter(),
             fee_count,
             true,
-        );
+        )
+        .expect("the one function prices");
         let derived_micros = derive_spend_micros(
             &card,
             [("lane", plain.as_slice())].into_iter(),
             fee_count,
             true,
-        );
+        )
+        .expect("the one function prices");
 
         assert_eq!(
             derived_cents,
@@ -110,7 +112,8 @@ fn the_lookup_over_a_single_entry_history_equals_the_legacy_derivation() {
             [("lane", plain.as_slice())].into_iter(),
             fee_count,
             false,
-        );
+        )
+        .expect("the one function prices");
         let stored_usage: u128 = posted
             .lines
             .iter()
@@ -227,7 +230,8 @@ fn the_identity_holds_at_the_neutral_tier_and_the_tier_is_the_only_divergence() 
     let c = card("m", 2.0, 5.0, 3);
     let report = usage(&[(INPUT, 3), (OUTPUT, 4)]);
     let plain = lines(&[(INPUT, 3), (OUTPUT, 4)]);
-    let derived = derive_spend_cents(&c, [("m", plain.as_slice())].into_iter(), 1, true);
+    let derived = derive_spend_cents(&c, [("m", plain.as_slice())].into_iter(), 1, true)
+        .expect("the one function prices");
 
     let neutral = priced(&c, "m", &report, 1, STANDARD_TIER_BP);
     assert_eq!(derived, neutral.minor());

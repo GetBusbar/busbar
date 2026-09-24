@@ -101,7 +101,9 @@ fn absent_rate_card_prices_tokens_at_zero() {
     assert!(!cm.pricing_enabled());
     assert!(!cm.model_unpriced("anything"), "no card = nothing to miss");
     let t = toks(1_000_000, 1_000_000);
-    let spend = cm.derive_spend_cents([("anything", &t)].into_iter(), 5, true);
+    let spend = cm
+        .derive_spend_cents([("anything", &t)].into_iter(), 5, true)
+        .expect("the one function prices");
     assert_eq!(spend, 15, "tokens derive to 0; 5 requests x 3c fee remain");
 }
 
@@ -113,10 +115,14 @@ fn present_rate_card_derives_integer_spend() {
     let cm = resolve_card_fee(Some(&c), 0);
     assert!(cm.pricing_enabled());
     let t = toks(1_000_000, 1_000_000);
-    let spend = cm.derive_spend_cents([("gpt-5", &t)].into_iter(), 0, false);
+    let spend = cm
+        .derive_spend_cents([("gpt-5", &t)].into_iter(), 0, false)
+        .expect("the one function prices");
     assert_eq!(spend, 1250);
     // Micro projection: 12.5 units = 12_500_000 micro-units.
-    let micros = cm.derive_spend_micros([("gpt-5", &t)].into_iter(), 0, false);
+    let micros = cm
+        .derive_spend_micros([("gpt-5", &t)].into_iter(), 0, false)
+        .expect("the one function prices");
     assert_eq!(micros, 12_500_000);
 }
 
@@ -137,14 +143,15 @@ fn nano_scale_keeps_sub_micro_precision() {
     let t = toks(8, 0);
     assert_eq!(
         cm.derive_spend_micros([("m", &t)].into_iter(), 0, false),
-        25
+        Ok(25)
     );
 }
 
-/// Runtime model NOT in a present card => `model_unpriced` (the admission path rejects); the
-/// derive paths price it at 0 (ledger rows from a previous config).
+/// Runtime model NOT in a present card => `model_unpriced` (the admission path rejects), and the
+/// derive paths REFUSE it (#42, items 25/31/124). They used to price it at 0 — a million tokens as
+/// nothing, on the live admission gate and on every customer read.
 #[test]
-fn unknown_model_with_card_is_unpriced_and_derives_zero() {
+fn unknown_model_with_card_is_unpriced_and_refuses() {
     let c = card(&[("gpt-5", 1.0, 1.0)]);
     let cm = resolve_card_fee(Some(&c), 0);
     assert!(cm.model_unpriced("mystery-model"));
@@ -152,7 +159,10 @@ fn unknown_model_with_card_is_unpriced_and_derives_zero() {
     let t = toks(1_000_000, 0);
     assert_eq!(
         cm.derive_spend_cents([("mystery-model", &t)].into_iter(), 0, false),
-        0
+        Err(busbar_kernel_ledger::cost::MoneyError::LaneUnpriced {
+            card_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
+            lane: "mystery-model".to_string(),
+        })
     );
 }
 
@@ -165,34 +175,32 @@ fn reprice_on_read_recomputes_derived_spend() {
     let fixed = resolve_card_fee(Some(&card(&[("m", 5.0, 0.0)])), 0);
     assert_eq!(
         wrong.derive_spend_cents([("m", &t)].into_iter(), 0, false),
-        1000
+        Ok(1000)
     );
     assert_eq!(
         fixed.derive_spend_cents([("m", &t)].into_iter(), 0, false),
-        500,
+        Ok(500),
         "same tokens, corrected rate: derived spend halves on next read"
     );
 }
 
-/// A cent total past i64::MAX SATURATES at i64::MAX
-/// (fail-closed: an astronomical ledger blocks). The pre-fix `as i64` cast wrapped - a large
-/// (u64-scale tokens x large configured rate) ledger could land NEGATIVE, be floored to 0 by
-/// `.max(0)`, and derive as FREE, bypassing every budget cap.
+/// A total past the range REFUSES (item 28): never a wrap toward 0 (free, the pre-1.5 defect) and
+/// never a pin at `i64::MAX` (a bill nobody consumed, the defect the saturation introduced). The
+/// door blocks on the refusal; a read fails on it.
 #[test]
-fn derive_spend_cents_saturates_never_wraps_free() {
+fn derive_spend_cents_refuses_an_overflow_never_wraps_or_pins() {
     // 1e15 micro-units/token -> 1e18 nano-units/token; x u64::MAX tokens ~= 1.8e37 nanos
     // -> ~1.8e30 cents, far past i64::MAX.
     let cm = resolve_card_fee(Some(&card(&[("m", 1e15, 0.0)])), 0);
     let t = toks(u64::MAX, 0);
     assert_eq!(
         cm.derive_spend_cents([("m", &t)].into_iter(), 0, false),
-        i64::MAX,
-        "an over-i64 cent total must pin at i64::MAX (blocks), never wrap toward 0 (free)"
+        Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
+        "an over-range total is a refusal, never a pinned figure"
     );
-    // The micro projection already saturated correctly; pin it too.
     assert_eq!(
         cm.derive_spend_micros([("m", &t)].into_iter(), 0, false),
-        i64::MAX
+        Err(busbar_kernel_ledger::cost::MoneyError::Overflow)
     );
 }
 
@@ -387,7 +395,7 @@ fn four_tier_card_prices_each_tier_against_its_own_rate() {
     // sum 15_000_000_000 nanos / 10_000_000 = 1500 cents exactly.
     assert_eq!(
         cm.derive_spend_cents([("quad", &t)].into_iter(), 0, false),
-        1500,
+        Ok(1500),
         "each tier must bill against its own rate; a swapped cache_read/cache_write mapping changes this"
     );
     let r = cm.rate_for("quad").unwrap();
@@ -407,14 +415,20 @@ fn four_tier_card_prices_each_tier_against_its_own_rate() {
 #[test]
 fn cent_derivation_truncates_toward_zero_never_rounds_up() {
     let cm = resolve_card_fee(Some(&card(&[("m", 1.0, 0.0)])), 0);
-    let just_under = cm.derive_spend_cents([("m", &toks(19_999, 0))].into_iter(), 0, false);
+    let just_under = cm
+        .derive_spend_cents([("m", &toks(19_999, 0))].into_iter(), 0, false)
+        .expect("the one function prices");
     assert_eq!(
         just_under, 1,
         "1.9999 cents must floor to 1, not round up to 2"
     );
-    let on_boundary = cm.derive_spend_cents([("m", &toks(20_000, 0))].into_iter(), 0, false);
+    let on_boundary = cm
+        .derive_spend_cents([("m", &toks(20_000, 0))].into_iter(), 0, false)
+        .expect("the one function prices");
     assert_eq!(on_boundary, 2, "exactly 2.0 cents is 2");
-    let just_over = cm.derive_spend_cents([("m", &toks(20_001, 0))].into_iter(), 0, false);
+    let just_over = cm
+        .derive_spend_cents([("m", &toks(20_001, 0))].into_iter(), 0, false)
+        .expect("the one function prices");
     assert_eq!(just_over, 2, "2.0001 cents still floors to 2");
 }
 
@@ -430,12 +444,12 @@ fn sub_cent_contributions_across_models_sum_before_flooring() {
     let tb = toks(1_000, 0);
     assert_eq!(
         cm.derive_spend_cents([("a", &ta)].into_iter(), 0, false),
-        0,
+        Ok(0),
         "one 0.5-cent model alone floors to 0"
     );
     assert_eq!(
         cm.derive_spend_cents([("a", &ta), ("b", &tb)].into_iter(), 0, false),
-        1,
+        Ok(1),
         "two 0.5-cent models sum to a whole cent — nanos accumulate before the single divide"
     );
 }
@@ -463,17 +477,17 @@ fn explicit_zero_rate_model_is_known_and_derives_zero() {
     let t = toks4(u64::MAX, u64::MAX, u64::MAX, u64::MAX);
     assert_eq!(
         cm.derive_spend_cents([("freebie", &t)].into_iter(), 0, false),
-        0,
+        Ok(0),
         "a zero-rated model bills nothing regardless of volume"
     );
 }
 
 /// A PARTIAL card (some models priced, one absent): `model_unpriced` is true ONLY for the missing
-/// model, and a mixed derivation prices the KNOWN model and contributes 0 for the missing one
-/// (`rate_for` = None is skipped by the saturating add), so the total is exactly the known model's
-/// spend — never a panic, never the missing model priced by a sibling's rate.
+/// model, and a mixed derivation REFUSES on the missing one (#42) — it used to skip it, so 9,999,999
+/// tokens vanished from the bucket's spend. The known model alone still prices exactly; nothing
+/// panics and no model is priced by a sibling's rate.
 #[test]
-fn partial_card_prices_known_models_and_zeroes_the_missing_one() {
+fn partial_card_prices_known_models_and_refuses_the_missing_one() {
     let c = card(&[("priced", 2.0, 0.0)]);
     let cm = resolve_card_fee(Some(&c), 0);
     assert!(!cm.model_unpriced("priced"));
@@ -486,27 +500,34 @@ fn partial_card_prices_known_models_and_zeroes_the_missing_one() {
             0,
             false
         ),
-        200,
-        "only the priced model contributes; the missing one derives 0"
+        Err(busbar_kernel_ledger::cost::MoneyError::LaneUnpriced {
+            card_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
+            lane: "absent".to_string(),
+        }),
+        "the missing model refuses the derivation; it never derives 0"
+    );
+    assert_eq!(
+        cm.derive_spend_cents([("priced", &known)].into_iter(), 0, false),
+        Ok(200),
+        "the priced model alone prices as it always did"
     );
 }
 
 /// The flat per-request fee is `price_per_request_cents * fee_requests`, added ONLY when
-/// `include_request_fee`. Both the multiply and the add SATURATE at i64::MAX — an astronomically
-/// large billable-request count can never wrap the fee negative (which `.max(0)` would then floor to
-/// 0, billing an over-cap bucket as FREE). With the flag off, the fee contributes nothing.
+/// `include_request_fee`. A product past the range REFUSES (item 28) — never a wrap toward free,
+/// never a pinned figure. With the flag off, the fee contributes nothing.
 #[test]
-fn flat_fee_saturates_and_is_gated_by_the_flag() {
+fn flat_fee_refuses_an_overflow_and_is_gated_by_the_flag() {
     let cm = resolve_card_fee(None, i64::MAX);
     let z = toks(0, 0);
     assert_eq!(
         cm.derive_spend_cents([("m", &z)].into_iter(), u64::MAX, true),
-        i64::MAX,
-        "i64::MAX fee * u64::MAX requests must pin at i64::MAX, never wrap toward 0"
+        Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
+        "i64::MAX fee * u64::MAX requests is refused, never wrapped and never pinned"
     );
     assert_eq!(
         cm.derive_spend_cents([("m", &z)].into_iter(), u64::MAX, false),
-        0,
+        Ok(0),
         "with include_request_fee=false the flat fee contributes nothing"
     );
 }
@@ -520,7 +541,7 @@ fn negative_per_request_fee_clamps_to_zero() {
     assert_eq!(cm.price_per_request_cents(), 0);
     assert_eq!(
         cm.derive_spend_cents([("m", &toks(0, 0))].into_iter(), 100, true),
-        0,
+        Ok(0),
         "a negative fee must never credit a bucket: 100 requests at a clamped-0 fee is 0"
     );
 }
@@ -535,16 +556,16 @@ fn micro_projection_fee_is_cents_times_ten_thousand() {
     // 3 cents/request * 5 requests = 15 cents = 150_000 micro-units.
     assert_eq!(
         cm.derive_spend_micros([("m", &z)].into_iter(), 5, true),
-        150_000
+        Ok(150_000)
     );
     assert_eq!(
         cm.derive_spend_cents([("m", &z)].into_iter(), 5, true),
-        15,
+        Ok(15),
         "the same fee in cents is 15 — the micro projection is exactly 10_000x"
     );
     assert_eq!(
         cm.derive_spend_micros([("m", &z)].into_iter(), 5, false),
-        0,
+        Ok(0),
         "flag off: no fee in the micro projection either"
     );
 }
@@ -560,12 +581,12 @@ fn derived_spend_lands_exactly_on_an_integer_budget_cap() {
     let cm = resolve_card_fee(Some(&card(&[("m", 1.0, 0.0)])), 0);
     assert_eq!(
         cm.derive_spend_cents([("m", &toks(1_000_000, 0))].into_iter(), 0, false),
-        100,
+        Ok(100),
         "spend lands exactly on the integer cap value the budget check compares against"
     );
     assert_eq!(
         cm.derive_spend_cents([("m", &toks(1_010_000, 0))].into_iter(), 0, false),
-        101,
+        Ok(101),
         "one full cent more of tokens derives strictly above the cap"
     );
 }
@@ -639,8 +660,8 @@ fn price_reserved_four_is_byte_identical_to_cost_nanos() {
     let bd = price(&rate, &ExtraRates::new(), STANDARD_TIER_BP, &usage).expect("valid breakdown");
     assert_eq!(
         bd.total(),
-        CostAmount(rate.reserved_nanos(&tt)),
-        "reserved-four pricing must equal the shared reserved_nanos summation"
+        CostAmount(26_000),
+        "reserved-four pricing must equal the one function's figure: 3×2000 + 4×5000"
     );
     // Two disjoint top-level lines (Prompt, Output); a zero tier is omitted.
     assert_eq!(
@@ -769,11 +790,43 @@ fn price_discount_is_single_divide_not_sum_of_per_component_floors() {
 // -------------------------------------------------------------------------------------------
 // MONEY: THE RESERVED-FOUR SUMMATION AND THE RATE PROJECTION IT IS SUMMED AT.
 //
-// Both of these guard a DELEGATION rather than a local guard. The arithmetic used to live here
-// as a second copy of the ledger's, and a second copy of a money rule is how a request comes to
-// be judged at one figure and billed at another. These tests are what makes the copy coming
-// back a red build rather than a silent divergence.
+// Both of these guard a DELEGATION rather than a local guard. The summation used to live here as
+// `RateNanos::reserved_nanos` — a copy of the fold that SATURATED — and it is gone (items 104,
+// 25): every figure is `busbar_kernel_ledger::cost::Tally`, THE ONE FUNCTION, which REFUSES an
+// overflow (item 28). `one_nanos` below drives it exactly as `CostModel` does, over one model.
 // -------------------------------------------------------------------------------------------
+
+/// The one function's figure, in nano-units, for one model's reserved-four counts at these
+/// already-quantised rates — the same drive `CostModel::derive_spend_*` performs.
+fn one_nanos(
+    rate: &RateNanos,
+    units: &BTreeMap<String, u64>,
+) -> Result<u128, busbar_kernel_ledger::cost::MoneyError> {
+    use busbar_kernel_ledger::cost::{
+        nanos_of_exact, whole, LaneClass, RateCard, Tally, STANDARD_TIER_BP,
+    };
+    let card = RateCard::from_nano_rates(
+        RESERVED_UNITS
+            .iter()
+            .map(|u| (LaneClass::new("m", *u), rate.reserved_rate(u))),
+        0,
+    );
+    let mut tally = Tally::at_card(&card);
+    tally.row(
+        "m",
+        0,
+        STANDARD_TIER_BP,
+        RESERVED_UNITS
+            .iter()
+            .filter_map(|u| units.get(*u).map(|n| (*u, whole(*n)))),
+        whole(0),
+    )?;
+    nanos_of_exact(tally.exact()?)
+}
+
+/// The largest nano-unit figure the one function holds: its exact accumulator is an `i128` at
+/// scale 15, six decimal places finer than a nano-unit.
+const ONE_FUNCTION_MAX_NANOS: u128 = (i128::MAX / 1_000_000) as u128;
 
 /// All four reserved units present at the largest count a `u64` holds.
 fn maxed_units() -> BTreeMap<String, u64> {
@@ -792,7 +845,7 @@ const MAX_RATE: RateNanos = RateNanos {
 };
 
 #[test]
-fn reserved_nanos_saturates_on_four_maximal_products_rather_than_wrapping() {
+fn four_maximal_products_are_refused_rather_than_wrapped_or_pinned() {
     // ONE product of a u64 count and a u64 rate fits a u128 with a whole bit to spare —
     // (2^64-1)^2 is 2^128 - 2^65 + 1 — and that is the true sentence the old comment made. Their
     // SUM is what it was silent about: four of them reach ~2^130 against a 2^128 ceiling. A plain
@@ -800,10 +853,13 @@ fn reserved_nanos_saturates_on_four_maximal_products_rather_than_wrapping() {
     // lands back near zero — an astronomical ledger deriving as very nearly free and clearing
     // every budget cap on the way past. Pinning at the top is the only reading that cannot
     // under-bill.
+    //
+    // The old copy pinned at the top — which cannot under-bill, but bills a ceiling nobody
+    // consumed. The one function refuses instead (item 28), and the door blocks on the refusal.
     assert_eq!(
-        MAX_RATE.reserved_nanos(&maxed_units()),
-        u128::MAX,
-        "four maximal reserved products must SATURATE, never wrap"
+        one_nanos(&MAX_RATE, &maxed_units()),
+        Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
+        "four maximal reserved products must be REFUSED, never wrapped and never pinned"
     );
 }
 
@@ -833,7 +889,7 @@ fn from_raw_clamps_a_finite_but_overflowing_rate_to_zero_not_to_u64_max() {
 }
 
 #[test]
-fn reserved_nanos_is_byte_identical_to_the_unguarded_sum_wherever_that_sum_has_an_answer() {
+fn the_one_function_is_byte_identical_to_the_unguarded_sum_wherever_that_sum_fits() {
     // THE EQUIVALENCE THE DELEGATION OWES. The reference below is the arithmetic this function
     // USED to carry, spelled out with checked operations: multiply in u128, add in u128, no
     // saturation anywhere. Where it does not overflow it is exact, so every input for which it
@@ -876,26 +932,27 @@ fn reserved_nanos_is_byte_identical_to_the_unguarded_sum_wherever_that_sum_has_a
     ];
 
     let mut agreed_ordinary = 0usize;
-    let mut saturated = 0usize;
+    let mut refused = 0usize;
 
     let mut check = |rate: RateNanos, units: &BTreeMap<String, u64>| {
-        let got = rate.reserved_nanos(units);
+        let got = one_nanos(&rate, units);
         match unguarded_reference(&rate, units) {
-            Some(want) => {
+            Some(want) if want <= ONE_FUNCTION_MAX_NANOS => {
                 assert_eq!(
-                    got, want,
+                    got,
+                    Ok(want),
                     "delegation changed an ORDINARY answer: rate={rate:?} units={units:?}"
                 );
                 agreed_ordinary += 1;
             }
-            None => {
+            _ => {
                 assert_eq!(
                     got,
-                    u128::MAX,
-                    "an input past the accumulator must pin at the top: \
+                    Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
+                    "an input past the one function's range must be REFUSED: \
                      rate={rate:?} units={units:?}"
                 );
-                saturated += 1;
+                refused += 1;
             }
         }
     };
@@ -962,16 +1019,18 @@ fn reserved_nanos_is_byte_identical_to_the_unguarded_sum_wherever_that_sum_has_a
     // ordinary cards alone guarantee the first figure; the boundary sweep and the in-range tail of
     // the adversarial draw carry it the rest of the way.
     println!(
-        "reserved_nanos equivalence: {agreed_ordinary} ordinary inputs agreed exactly, \
-         {saturated} inputs past the accumulator pinned at the top"
+        "one-function equivalence: {agreed_ordinary} ordinary inputs agreed exactly, \
+         {refused} inputs past the range refused"
     );
     assert!(
-        agreed_ordinary > 15_000,
+        // The one function's range is an `i128` at scale 15 — narrower than the old fold's `u128`
+        // of nano-units — so fewer of the adversarial draws fit; the ordinary ten thousand still do.
+        agreed_ordinary > 10_000,
         "expected the ordinary-input agreement arm to run in bulk, ran {agreed_ordinary}"
     );
     assert!(
-        saturated > 100,
-        "expected the saturating arm to be exercised, ran {saturated}"
+        refused > 100,
+        "expected the refusing arm to be exercised, ran {refused}"
     );
 }
 
@@ -1034,7 +1093,7 @@ fn from_raw_is_byte_identical_to_the_unclamped_projection_for_every_in_range_rat
 }
 
 #[test]
-fn reserved_nanos_does_not_wrap_an_astronomical_bill_down_to_nearly_free() {
+fn the_one_function_does_not_wrap_an_astronomical_bill_down_to_nearly_free() {
     // THE RELEASE-BUILD CONSEQUENCE, in exact numbers. A debug build panics on the overflowing
     // add, which is loud. A release build WRAPS, which is silent, and silence is the dangerous
     // half: the total lands back near zero and an enormous ledger derives as very nearly free,
@@ -1065,8 +1124,8 @@ fn reserved_nanos_does_not_wrap_an_astronomical_bill_down_to_nearly_free() {
     );
 
     assert_eq!(
-        rate.reserved_nanos(&units),
-        u128::MAX,
-        "a total one past the ceiling must pin at the top, NOT wrap to 1"
+        one_nanos(&rate, &units),
+        Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
+        "a total one past the ceiling is REFUSED — never wrapped to 1, never pinned at the top"
     );
 }

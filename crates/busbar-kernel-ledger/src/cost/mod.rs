@@ -70,6 +70,9 @@ mod project;
 mod rate;
 mod view;
 
+/// The exact count type the one function prices — re-exported so a caller driving a
+/// [`Tally`] names it through the crate that prices it.
+pub use busbar_contract::count::Count;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
 pub use posting::{
     apply_tier, apply_tier_signed, checked_apply_tier, price, price_at_card, price_fail_closed,
@@ -83,8 +86,8 @@ pub use rate::{
     TierRates, CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
 };
 pub use view::{
-    price as price_ledger, price_exact, price_in_view, LedgerEntry, Money, MoneyError, EXACT_SCALE,
-    MONEY_SCALE,
+    nanos_of_exact, price as price_ledger, price_exact, price_in_view, whole, LedgerEntry, Money,
+    MoneyError, Tally, EXACT_SCALE, MONEY_SCALE,
 };
 
 /// **THE ONE SCALE.** Nano-units in one minor unit: ten million.

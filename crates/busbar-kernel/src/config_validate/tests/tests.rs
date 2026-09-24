@@ -4228,12 +4228,18 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
     // …and here is what that acceptance costs, in the units the ledger bills in. A prompt-caching
     // workload of ten million cache-read tokens in a day, against a card whose `cache_read_utok`
     // was never written.
-    let entry = cfg.rate_card.as_ref().unwrap()["claude-sonnet"];
-    let rate = crate::cost::RateNanos::from_cfg(&entry);
+    // Measured through THE ONE FUNCTION (the kernel's cost model prices every figure with it), in
+    // micro-units: 1,000 micro-units is one whole unit.
+    let micros = |card: &std::collections::BTreeMap<String, config::RateEntryCfg>,
+                  units: &std::collections::BTreeMap<String, u64>| {
+        crate::cost::CostModel::resolve_parts(Some(card), 0, &std::collections::BTreeMap::new())
+            .derive_spend_micros([("claude-sonnet", units)].into_iter(), 0, false)
+            .expect("the model is on the card")
+    };
     let a_day_of_cache_reads =
         std::collections::BTreeMap::from([("cache_read".to_string(), 10_000_000u64)]);
     assert_eq!(
-        rate.reserved_nanos(&a_day_of_cache_reads),
+        micros(cfg.rate_card.as_ref().unwrap(), &a_day_of_cache_reads),
         0,
         "the silent zero, measured: ten million cache-read tokens bill at nothing"
     );
@@ -4244,9 +4250,12 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
     )
     .unwrap();
     assert_eq!(
-        crate::cost::RateNanos::from_cfg(&priced).reserved_nanos(&a_day_of_cache_reads),
-        3_000_000_000,
-        "three whole units (1e9 nano-units each) a day is what the silent zero swallowed"
+        micros(
+            &std::collections::BTreeMap::from([("claude-sonnet".to_string(), priced)]),
+            &a_day_of_cache_reads
+        ),
+        3_000_000,
+        "three whole units (1e6 micro-units each) a day is what the silent zero swallowed"
     );
 }
 

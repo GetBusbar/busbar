@@ -362,12 +362,20 @@ impl<S: CellStore> Door<S> {
                                 true,
                             )
                         } else {
-                            0
+                            Ok(0)
                         },
                     ),
                     // stale or absent cell = fresh window = nothing used
-                    _ => (0, 0, 0, 0, 0, 0, 0),
+                    _ => (0, 0, 0, 0, 0, 0, Ok(0)),
                 };
+            // #42 AT THE DOOR (item 124): a spend the one function REFUSES — the card present and
+            // silent about a model or class this bucket holds, or an overflow — BLOCKS on the budget
+            // metric, and is never downgraded: a cheaper pool is no answer to "this cannot be
+            // priced". The refusal arrives as itself, not as a spend pinned at `i64::MAX`.
+            let (derived, refused) = match derived {
+                Ok(d) => (d, false),
+                Err(_) => (0, true),
+            };
             let blocked_metric = if bucket
                 .requests_cap
                 .is_some_and(|cap| requests.saturating_add(1) > cap)
@@ -391,7 +399,7 @@ impl<S: CellStore> Door<S> {
                 Some(Metric::TokensCacheWrite)
             } else if bucket
                 .budget_cap
-                .is_some_and(|cap| derived >= cap || derived.saturating_add(fee) > cap)
+                .is_some_and(|cap| refused || derived >= cap || derived.saturating_add(fee) > cap)
             {
                 Some(Metric::Budget)
             } else {
@@ -410,7 +418,7 @@ impl<S: CellStore> Door<S> {
                     pool: bucket.scope.clone(),
                     // A downgrade is declared on, and validated against, the BUDGET metric only;
                     // a requests or tokens block on the same bucket still blocks.
-                    downgrade_to: if metric == Metric::Budget {
+                    downgrade_to: if metric == Metric::Budget && !refused {
                         bucket.downgrade_to.clone()
                     } else {
                         None
@@ -466,9 +474,13 @@ impl<S: CellStore> Door<S> {
                 Some(cell) if cell.window_start >= window => {
                     pricer.derive_spend_cents(cell.model_views(), cell.billable_requests, true)
                 }
-                _ => 0,
+                _ => Ok(0),
             };
-            let left = cap.saturating_sub(derived).max(0);
+            // A refused spend (#42 / overflow) leaves NO room to grow into: fail closed.
+            let left = match derived {
+                Ok(derived) => cap.saturating_sub(derived).max(0),
+                Err(_) => 0,
+            };
             tightest = Some(tightest.map_or(left, |t: i64| t.min(left)));
         }
         tightest

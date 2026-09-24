@@ -303,7 +303,8 @@ fn it_equals_the_legacy_micro_derivation_on_a_single_entry_history() {
     let history = History::opening(card.clone(), 0);
     let usage = [(INPUT, 1_000u64), (OUTPUT, 250), (CACHE_READ, 7_000)];
 
-    let legacy = derive_spend_micros(&card, [(LANE, &lines(&usage)[..])].into_iter(), 3, true);
+    let legacy = derive_spend_micros(&card, [(LANE, &lines(&usage)[..])].into_iter(), 3, true)
+        .expect("the one function prices");
 
     let slice = vec![usage
         .iter()
@@ -326,7 +327,8 @@ fn it_equals_the_legacy_cent_derivation_on_a_single_entry_history() {
     let history = History::opening(card.clone(), 0);
     let usage = [(INPUT, 1_000_000u64), (OUTPUT, 250_000)];
 
-    let legacy = derive_spend_cents(&card, [(LANE, &lines(&usage)[..])].into_iter(), 3, true);
+    let legacy = derive_spend_cents(&card, [(LANE, &lines(&usage)[..])].into_iter(), 3, true)
+        .expect("the one function prices");
 
     let slice = vec![usage
         .iter()

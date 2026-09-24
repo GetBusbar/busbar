@@ -1,25 +1,37 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE EQUIVALENCE PROOF.** Every implementation of `f` in this tree, run side by side on one
-//! constructed ledger slice and one constructed card history, with the figures each answers.
+//! **THE EQUIVALENCE PROOF.** `money = f(ledger counts, dated ratecard)` — ONE function, and every
+//! former copy of it in this tree now answers through it.
 //!
-//! `f` is `money = f(ledger, rate_card)`. The governing design says there is ONE of it. A census
-//! taken on 2026-09-22 found it implemented more than twenty times across five crates, which is why
-//! this file exists: a disagreement nobody can reproduce is a rumour, so each pair below is
-//! CONSTRUCTED, RUN, and its two figures asserted. Where the numbers are equal that is an
-//! equivalence the consolidation must preserve; where they differ that is a defect with a size.
+//! A census taken on 2026-09-22 found `f` implemented more than twenty times across five crates;
+//! the six that survived into Phase 2 (item 104) answered a card silent about a model in THREE
+//! ways — `i64::MAX` (block), the flat fee alone (free), `Err(LaneUnpriced)` (refuse) — with three
+//! rounding rules and two overflow policies. They are collapsed onto
+//! `busbar_kernel_ledger::cost::Tally`, the one function, and this file proves it two ways:
 //!
-//! The composition root is the only crate entitled to name all five, which is why the proof lives
-//! here rather than beside any one of them.
+//! 1. **BEHAVIOURALLY** — every former copy is RUN on one constructed ledger slice and one card, and
+//!    must answer exactly what the one function answers: the same figure, or the same refusal. The
+//!    fixtures cover the cases the copies used to disagree on: an unpriced lane and an unpriced
+//!    class (#42), an overflow (item 28), a rate below the card's quantum (item 22), a non-standard
+//!    tier on the settlement path and on the read path (item 27), and billing off (#42's one
+//!    silent zero). A copy that DIVERGES reddens here.
+//! 2. **STRUCTURALLY** — the production source is walked and every function that derives money must
+//!    route through the one function; the tier arithmetic and the multiply-and-sum fold may be
+//!    CALLED only where the census names. A planted SEVENTH COPY — a new `derive_spend_*` with its
+//!    own arithmetic, a new call to the tier rule, a new fold — reddens here even if it happens to
+//!    agree on every fixture above. The census proves it can see one: it is run over the real tree
+//!    plus a planted copy and must flag it.
 //!
-//! Run `cargo test -p busbar --test money_one_function_equivalence -- --nocapture` to print the
-//! table. The assertions are the contract; the printing is for the reader.
+//! The composition root is the only crate entitled to name all five crates, which is why the proof
+//! lives here. Run with `-- --nocapture` to print the table.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use busbar_kernel_ledger::cost::{
-    self as ledger_cost, Author, CardEntryDraft, History, LaneClass, LedgerEntry, RateCard,
+    self as ledger_cost, Author, CardEntryDraft, History, HistorySeq, LaneClass, LedgerEntry,
+    MoneyError, RateCard,
 };
 
 /// The lane every case serves on.
@@ -34,13 +46,12 @@ const CACHE_WRITE: &str = "cache_write";
 // THE FIXTURES — one consumption, expressed in each of the shapes the tree's pricers consume.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// The counts, as the ENFORCEMENT ledger (`UsageLedger` / `ModelTokens.usage_units`) holds them:
-/// a name-keyed map of whole counts, with no instant on it.
+/// The counts as the ENFORCEMENT ledger (`UsageLedger` / `ModelTokens.usage_units`) holds them.
 fn enforcement_units(pairs: &[(&'static str, u64)]) -> BTreeMap<String, u64> {
     pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
 }
 
-/// The same counts as the LEDGER CRATE's read-time derivation consumes them.
+/// The same counts as the ledger crate's read-time derivation consumes them.
 fn usage_lines(pairs: &[(&'static str, u64)]) -> Vec<busbar_contract::caps::UsageLine> {
     pairs
         .iter()
@@ -53,20 +64,36 @@ fn usage_lines(pairs: &[(&'static str, u64)]) -> Vec<busbar_contract::caps::Usag
         .collect()
 }
 
+/// The same counts as a sealed usage report, for the settlement posting.
+fn usage_report(pairs: &[(&'static str, u64)]) -> busbar_contract::caps::Usage {
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    let token = busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal);
+    busbar_contract::caps::Usage::report(&token, usage_lines(pairs))
+        .expect("a report within the line bound")
+}
+
 /// The same counts as a [`LedgerEntry`] for the ONE function, dated at an instant.
-fn one_entry(pairs: &[(&'static str, u64)], arrived_ms: u64, fee_count: u64) -> LedgerEntry {
+fn one_entry(
+    lane: &str,
+    pairs: &[(&'static str, u64)],
+    arrived_ms: u64,
+    fee_count: u64,
+) -> LedgerEntry {
     pairs
         .iter()
-        .fold(LedgerEntry::new(LANE, arrived_ms), |e, (class, q)| {
+        .fold(LedgerEntry::new(lane, arrived_ms), |e, (class, q)| {
             e.with_whole(*class, *q)
         })
         .with_fee_count(fee_count)
 }
 
-/// A `busbar-kernel` cost model — the pricer behind `derived_bucket_usage`, and therefore behind
-/// `GET /groups/{g}/usage`, `GET /keys/{id}/usage`, `budget_state` and the `/metrics` gauges.
+/// One lane's four reserved rates, in configured micro-units per token.
+type Rates4 = [f64; 4];
+
+/// A `busbar-kernel` cost model — behind `GET /groups/{g}/usage`, `GET /keys/{id}/usage`, the
+/// `/metrics` gauges, the hook seam's `budget_state`, and the live LLM door `try_admit`.
 fn kernel_cost_model(
-    rates: Option<&[(&str, [f64; 4])]>,
+    rates: Option<&[(&str, Rates4)]>,
     per_request_fee: i64,
 ) -> busbar_kernel::cost::CostModel {
     let card: Option<BTreeMap<String, busbar_kernel::config::RateEntryCfg>> = rates.map(|rows| {
@@ -87,69 +114,37 @@ fn kernel_cost_model(
     busbar_kernel::cost::CostModel::resolve_parts(card.as_ref(), per_request_fee, &BTreeMap::new())
 }
 
-/// A `busbar-kernel-budget` pricer — the ADMISSION door's own copy, the one the budget gate
-/// compares against a cap.
+/// A `busbar-kernel-budget` pricer — the BUDGET door's — holding the card the ledger built.
 fn budget_pricer(
-    rates: Option<&[(&str, [f64; 4])]>,
+    rates: Option<&[(&str, Rates4)]>,
     per_request_fee: i64,
 ) -> busbar_kernel_budget::Pricer {
-    match rates {
-        None => busbar_kernel_budget::Pricer::flat(per_request_fee),
-        Some(rows) => {
-            let table: BTreeMap<String, busbar_kernel_budget::RateNanos> = rows
-                .iter()
-                .map(|(model, r)| {
-                    (
-                        (*model).to_string(),
-                        busbar_kernel_budget::RateNanos::from_micros_per_token(
-                            r[0], r[1], r[2], r[3],
-                        ),
-                    )
-                })
-                .collect();
-            busbar_kernel_budget::Pricer::with_card(per_request_fee, table)
-        }
-    }
+    busbar_kernel_budget::Pricer::from_card(ledger_card(rates, per_request_fee))
 }
 
-/// A `busbar-kernel-ledger` card over one lane's four reserved classes.
-fn ledger_card(rates: [f64; 4], fee: i64) -> RateCard {
-    RateCard::from_micro_rates(
-        [
-            (LaneClass::new(LANE, INPUT), rates[0]),
-            (LaneClass::new(LANE, OUTPUT), rates[1]),
-            (LaneClass::new(LANE, CACHE_READ), rates[2]),
-            (LaneClass::new(LANE, CACHE_WRITE), rates[3]),
-        ],
+/// The ledger crate's card over lanes' four reserved classes — the card the one function prices.
+fn ledger_card(rates: Option<&[(&str, Rates4)]>, fee: i64) -> RateCard {
+    RateCard::from_config(
+        rates.map(|rows| {
+            rows.iter().map(|(lane, r)| {
+                (
+                    *lane,
+                    ledger_cost::TierRates {
+                        input: r[0],
+                        output: r[1],
+                        cache_read: r[2],
+                        cache_write: r[3],
+                    },
+                )
+            })
+        }),
         fee,
     )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE ADMIN READ — CALLED, NEVER REPRODUCED.
-//
-// These three used to be COPIES of `busbar-core-admin`'s private `derive_spend_micros_row`,
-// `derive_spend_micros_row_at_card` and `row_priced_at_ms`, carried here because the test could
-// not reach a private item. The copy is the thing this file exists to disprove: it drifted — the
-// real dated pricer grew `cost.resolve_model_alias(model)` and the copy never did, invisible
-// because every fixture below serves one unaliased lane — and neutering ALL THREE real pricers to
-// `Default::default()` reddened eight tests in `busbar-core-admin` and left every case in this
-// file byte-identical, including `d1`'s "the endpoint agrees with the function".
-//
-// So the admin crate now exposes them through its existing `test-support` feature, as the
-// `#[cfg]`-gated `v1::service::read_path_money` — a `pub use` and deliberately not a wrapper,
-// because a wrapper restates each signature and a restated signature is the same copy in a smaller
-// place. What is left HERE is the ARGUMENT SHAPING only: a metering row's four tier fields, which
-// is what the endpoint hands its pricers. No arithmetic, no alias resolution, no instant rule —
-// those are the endpoint's, reached by name, and a change to any of them reaches this file as a
-// compile error rather than as two numbers that quietly stopped meaning the same thing.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
 use busbar_core_admin::v1::service::read_path_money as admin;
 
-/// One metering row in the shape `GET /api/v1/admin/usage` aggregates before it prices: the four
-/// reserved tier counts under the row's OWN JSON-contract field names, plus the request count.
-/// `spend_micros` is the field the pricers WRITE, so it starts at zero here and is never read.
+/// One metering row in the shape `GET /api/v1/admin/usage` aggregates before it prices.
 fn admin_row(
     counts: &[(&'static str, u64)],
     requests: u64,
@@ -172,41 +167,15 @@ fn admin_row(
     }
 }
 
-/// The alias seam the admin read resolves a row's CONFIGURED model name through before it looks up
-/// a rate. `CostModel::resolve_model_alias` is the identity today and these fixtures configure no
-/// alias, so it moves no figure here — but the call is the endpoint's own, so the day the seam
-/// stops being the identity this proof moves with it instead of silently disagreeing.
-fn alias_seam() -> busbar_kernel::cost::CostModel {
-    kernel_cost_model(None, 0)
-}
-
-/// `GET /admin/usage`'s FLAT derivation — `v1/service.rs:109 derive_spend_micros_row`, CALLED.
-fn admin_row_flat(
-    cost: &busbar_kernel::cost::CostModel,
-    model: &str,
-    counts: &[(&'static str, u64)],
-    requests: u64,
-) -> i64 {
-    admin::derive_spend_micros_row(cost, model, &admin_row(counts, requests))
-}
-
-/// `GET /admin/usage`'s DATED derivation (#79) — `v1/service.rs`'s
-/// `derive_spend_micros_row_at_card`, CALLED, alias seam and all.
-///
-/// That function now prices through `busbar_kernel_ledger::cost::price_in_view` — THE ONE
-/// FUNCTION — and so it resolves the card ITSELF, from a history view and the row's instant,
-/// because #79 belongs in one place and that place is `HistoryView::card_at`. "Price this row at
-/// THIS card" is therefore spelled here as what it has always meant: price it against a history
-/// whose only entry is that card, in force from instant zero. Every instant resolves to the same
-/// entry in a one-entry history, so no figure below moves — the spelling changed, not the
-/// arithmetic.
+/// `GET /admin/usage`'s DATED derivation — `v1/service.rs`'s `derive_spend_micros_row_at_card`,
+/// CALLED, against a history whose only entry is `card`.
 fn admin_row_at_card(
     card: &RateCard,
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     counts: &[(&'static str, u64)],
     requests: u64,
-) -> i64 {
+) -> Result<i64, MoneyError> {
     let only = History::opening(card.clone(), 0);
     admin::derive_spend_micros_row_at_card(
         &only.current(),
@@ -218,15 +187,8 @@ fn admin_row_at_card(
     )
 }
 
-/// The instant `GET /admin/usage` resolves a metering row at — `v1/service.rs:201
-/// row_priced_at_ms`, CALLED.
-fn admin_row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
-    admin::row_priced_at_ms(bucket_start_secs, priced_from_ms)
-}
-
-/// One row of the printed table.
-fn row(label: &str, figure: impl std::fmt::Display) {
-    eprintln!("  {label:<62} {figure:>22}");
+fn row(label: &str, figure: impl std::fmt::Debug) {
+    eprintln!("  {label:<58} {figure:>30?}");
 }
 
 fn rule(title: &str) {
@@ -237,390 +199,231 @@ fn rule(title: &str) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// D1 — THE DATED HISTORY vs THE CURRENT CARD. The headline park: two admin reads, one
-//      consumption, two figures.
+// THE BEHAVIOURAL HALF — every former copy, run, against the one function.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Card A, in force from instant zero; card B appended effective from instant 1,000,000.
-fn edit_history() -> History {
-    let mut history = History::opening(ledger_card([3.0, 16.0, 0.0, 0.0], 2), 0);
-    history.append(CardEntryDraft {
-        effective_from: 1_000_000,
-        effective_until: None,
-        card: ledger_card([1.0, 4.0, 0.0, 0.0], 1),
-        appended_at: 1_000_000,
-        author: Author::Config { policy_epoch: 1 },
-    });
-    history
+/// What every former copy answered for one case, projected to the one function's vocabulary:
+/// `Ok(micro-units)` or the refusal. A copy that only speaks whole minor units is compared at the
+/// minor projection instead (see [`Case::check`]).
+struct Answers {
+    one_micros: Result<i128, MoneyError>,
+    one_minor: Result<i128, MoneyError>,
+    micros: Vec<(&'static str, Result<i128, MoneyError>)>,
+    minor: Vec<(&'static str, Result<i128, MoneyError>)>,
+    /// Copies with their own refusal vocabulary: they must refuse exactly when the one function
+    /// refuses, and otherwise match its figure (in micro-units).
+    refuse_alike: Vec<(&'static str, Option<i128>)>,
 }
 
-#[test]
-fn d1_a_rate_card_edit_splits_the_tree_into_two_answers() {
-    rule("D1  a rate-card edit: the dated read vs every flat read");
-
-    // ONE consumption, recorded in both books: 1,000 input + 250 output, twice — once before the
-    // card edit and once after it, one billable request each.
-    let counts: [(&str, u64); 2] = [(INPUT, 1_000), (OUTPUT, 250)];
-
-    // ── THE DATED READ (#79): each row prices against the card in force when it arrived.
-    let history = edit_history();
-    let dated = ledger_cost::price_ledger(
-        &[
-            one_entry(&counts, 500_000, 1),
-            one_entry(&counts, 2_000_000, 1),
-        ],
-        &history,
-    )
-    .expect("every class is priced on both cards");
-
-    // The same thing said through the admin endpoint's own two lines, row by row.
-    let view = history.current();
-    let admin_dated: i64 = [500_000u64, 2_000_000]
-        .iter()
-        .map(|arrived| {
-            let (_seq, card) = view.card_at(*arrived).expect("both instants are covered");
-            admin_row_at_card(card, &alias_seam(), LANE, &counts, 1)
-        })
-        .sum();
-
-    // ── THE FLAT READS: `get_group_usage`, `GET /keys/{id}/usage`, `budget_state` and the
-    //    `busbar_bucket_spend_cents` gauge all price the WHOLE window at whatever card is
-    //    configured at the moment of the read — which is card B.
-    let current = kernel_cost_model(Some(&[(LANE, [1.0, 4.0, 0.0, 0.0])]), 1);
-    let units = enforcement_units(&counts);
-    let flat_micros = current.derive_spend_micros(
-        [(LANE, &units), (LANE, &units)].into_iter(),
-        2, // two billable requests
-        true,
-    );
-    let flat_cents =
-        current.derive_spend_cents([(LANE, &units), (LANE, &units)].into_iter(), 2, true);
-
-    // And the door's own copy, which must agree with the gate it feeds.
-    let door = budget_pricer(Some(&[(LANE, [1.0, 4.0, 0.0, 0.0])]), 1);
-    let door_cents = door.derive_spend_cents([(LANE, &units), (LANE, &units)].into_iter(), 2, true);
-
-    row(
-        "ONE function  price(ledger, history)   [micro-units]",
-        dated.micros(),
-    );
-    row(
-        "GET /admin/usage  (dated, #79)         [micro-units]",
-        admin_dated,
-    );
-    row(
-        "GET /groups/{g}/usage  (flat)          [micro-units]",
-        flat_micros,
-    );
-    row(
-        "GET /keys/{id}/usage   (flat)          [cents]      ",
-        flat_cents,
-    );
-    row(
-        "budget gate  Pricer::derive_spend_cents [cents]     ",
-        door_cents,
-    );
-
-    // Row one at card A: 1000×3 + 250×16 + 1 fee×2 minor = 3,000 + 4,000 + 20,000 = 27,000.
-    // Row two at card B: 1000×1 + 250×4  + 1 fee×1 minor = 1,000 + 1,000 + 10,000 = 12,000.
-    assert_eq!(dated.micros(), 39_000, "the dated answer");
-    assert_eq!(
-        i128::from(admin_dated),
-        dated.micros(),
-        "the endpoint agrees with the function"
-    );
-
-    // Both rows at card B: 2 × 12,000 = 24,000 micro-units.
-    assert_eq!(flat_micros, 24_000, "the flat answer");
-    assert_eq!(flat_cents, 2, "the same thing truncated to whole cents");
-    assert_eq!(
-        door_cents, flat_cents,
-        "the door and the group read agree with each other"
-    );
-
-    row(
-        "DISAGREEMENT  dated − flat             [micro-units]",
-        dated.micros() - i128::from(flat_micros),
-    );
-    assert_eq!(dated.micros() - i128::from(flat_micros), 15_000);
-    // 15,000 micro-units of 39,000 — 38.5% of the bill — is the size of the park, for this slice.
+/// One consumption on one card, fed to every copy.
+struct Case {
+    title: &'static str,
+    rates: Option<&'static [(&'static str, Rates4)]>,
+    fee: i64,
+    lane: &'static str,
+    counts: &'static [(&'static str, u64)],
+    fee_count: u64,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// D2 — THE RESERVED FOUR. Every `derive_spend_*` on the ENFORCEMENT side prices only
-//      input/output/cache_read/cache_write and silently drops every other declared meter class.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
+impl Case {
+    fn run(&self) -> Answers {
+        let card = ledger_card(self.rates, self.fee);
+        let history = History::opening(card.clone(), 0);
+        let kernel = kernel_cost_model(self.rates, self.fee);
+        let door = budget_pricer(self.rates, self.fee);
+        let lines = usage_lines(self.counts);
+        let units = enforcement_units(self.counts);
 
-#[test]
-fn d2_an_open_meter_class_bills_as_nothing_on_the_enforcement_side() {
-    rule("D2  an open meter class (a2a `hops`, mcp `calls`, streaming `audio-seconds`)");
+        // THE ONE FUNCTION.
+        let one = ledger_cost::price_ledger(
+            &[one_entry(self.lane, self.counts, 0, self.fee_count)],
+            &history,
+        );
+        let one_micros = one.clone().map(|m| m.micros());
+        let one_minor = one.map(|m| m.minor());
 
-    // A card that prices `output` at 2 micro-units and `hops` at 5.
-    let card = RateCard::from_micro_rates(
-        [
-            (LaneClass::new(LANE, OUTPUT), 2.0),
-            (LaneClass::new(LANE, "hops"), 5.0),
-        ],
-        0,
-    );
-    let counts: [(&str, u64); 2] = [(OUTPUT, 100), ("hops", 1_000)];
+        let micros: Vec<(&'static str, Result<i128, MoneyError>)> = vec![
+            (
+                "ledger  derive_spend_micros",
+                ledger_cost::derive_spend_micros(
+                    &card,
+                    [(self.lane, &lines[..])].into_iter(),
+                    self.fee_count,
+                    true,
+                )
+                .map(i128::from),
+            ),
+            (
+                "kernel  CostModel::derive_spend_micros (hooks, reads)",
+                kernel
+                    .derive_spend_micros([(self.lane, &units)].into_iter(), self.fee_count, true)
+                    .map(i128::from),
+            ),
+            (
+                "admin   derive_spend_micros_row (current card)",
+                admin::derive_spend_micros_row(
+                    &kernel,
+                    self.lane,
+                    &admin_row(self.counts, self.fee_count),
+                )
+                .map(i128::from),
+            ),
+            (
+                "admin   derive_spend_micros_row_at_card (dated, #79)",
+                admin_row_at_card(&card, &kernel, self.lane, self.counts, self.fee_count)
+                    .map(i128::from),
+            ),
+        ];
+        let minor: Vec<(&'static str, Result<i128, MoneyError>)> = vec![
+            (
+                "ledger  derive_spend_cents",
+                ledger_cost::derive_spend_cents(
+                    &card,
+                    [(self.lane, &lines[..])].into_iter(),
+                    self.fee_count,
+                    true,
+                )
+                .map(i128::from),
+            ),
+            (
+                "kernel  CostModel::derive_spend_cents (the LLM door)",
+                kernel
+                    .derive_spend_cents([(self.lane, &units)].into_iter(), self.fee_count, true)
+                    .map(i128::from),
+            ),
+            (
+                "budget  Pricer::derive_spend_cents (the budget door)",
+                door.derive_spend_cents([(self.lane, &units)].into_iter(), self.fee_count, true)
+                    .map(i128::from),
+            ),
+        ];
 
-    // ── THE ONE FUNCTION: both classes are ordinary card entries.
-    let one = ledger_cost::price_ledger(
-        &[one_entry(&counts, 0, 0)],
-        &History::opening(card.clone(), 0),
-    )
-    .expect("the card prices both classes");
+        // THE SETTLEMENT LOOKUP, in its settlement posture — it refuses exactly where the one
+        // function refuses, and otherwise posts the one function's figure.
+        let posting = ledger_cost::Posting::from_usage(
+            self.lane,
+            &usage_report(self.counts),
+            self.fee_count,
+            ledger_cost::STANDARD_TIER_BP,
+            0,
+            0,
+        );
+        let settled = ledger_cost::price_fail_closed(&history.current(), &posting)
+            .ok()
+            .map(|p| i128::from(p.micros()));
+        // THE HOST METERING SEAM (`MeteringHost::price_usage`): nano-units, no fee.
+        let metered = kernel
+            .price_usage_nanos(
+                self.lane,
+                &busbar_substrate_values::billing::Usage {
+                    usage_units: units.clone(),
+                },
+            )
+            .map(|nanos| {
+                // Lift to the case's micro figure: the seam prices the tokens; the fee is the
+                // door's, added here from the card so the two are comparable.
+                i128::try_from(nanos / 1_000).expect("fits")
+                    + i128::from(card.fee()) * 10_000 * i128::from(self.fee_count)
+            });
 
-    // ── THE LEDGER CRATE's read-time derivation: also sees both, because it walks the lines.
-    let lines = usage_lines(&counts);
-    let ledger_micros =
-        ledger_cost::derive_spend_micros(&card, [(LANE, &lines[..])].into_iter(), 0, true);
-
-    // ── THE ENFORCEMENT SIDE: `RateNanos` has four fields and `reserved_nanos` folds over four
-    //    names. `hops` cannot be represented, let alone priced.
-    let kernel = kernel_cost_model(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
-    let units = enforcement_units(&counts);
-    let kernel_micros = kernel.derive_spend_micros([(LANE, &units)].into_iter(), 0, true);
-    let door = budget_pricer(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
-    let door_cents = door.derive_spend_cents([(LANE, &units)].into_iter(), 0, true);
-
-    row(
-        "ONE function                            [micro-units]",
-        one.micros(),
-    );
-    row(
-        "ledger  derive_spend_micros             [micro-units]",
-        ledger_micros,
-    );
-    row(
-        "kernel  CostModel::derive_spend_micros  [micro-units]",
-        kernel_micros,
-    );
-    row(
-        "budget  Pricer::derive_spend_cents      [cents]      ",
-        door_cents,
-    );
-
-    assert_eq!(one.micros(), 5_200, "100×2 + 1000×5");
-    assert_eq!(i128::from(ledger_micros), one.micros());
-    assert_eq!(kernel_micros, 200, "only the 100 output tokens are visible");
-    assert_eq!(door_cents, 0, "and in whole cents that is nothing at all");
-
-    row(
-        "DISAGREEMENT  one − kernel              [micro-units]",
-        one.micros() - i128::from(kernel_micros),
-    );
-    assert_eq!(one.micros() - i128::from(kernel_micros), 5_000);
-    // 96.15% of this slice's bill is invisible to the budget gate and to two of the three admin
-    // money reads. This is what "the oracle is structurally blind to plane money" costs in figures.
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// D3 — TWO COPIES OF `reserved_nanos`, NOW ONE FOLD. This pair was red-first: the kernel copy
-//      summed with a plain `+` and wrapped or panicked where the door pinned at the top. Commit
-//      8f083cc38 made both copies delegate to `busbar_kernel_ledger::cost::nanos_sum`, which
-//      saturates, so the pair is now an EQUIVALENCE the consolidation must preserve. (The test
-//      name is kept because `docs/design/1.6.0-test-vacuity.md` cites it.)
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn d3_the_two_copies_of_reserved_nanos_disagree_at_the_top_of_the_range() {
-    rule("D3  `RateNanos::reserved_nanos` — kernel copy vs budget copy");
-
-    // A rate at the top of what `nano_rate` will build (1e16 micro-units a token is 1e19
-    // nano-units), against counts at the top of `u64`. Two such products already exceed `u128`.
-    let rates = [1.0e16f64; 4];
-    let big = u64::MAX;
-    let units = enforcement_units(&[
-        (INPUT, big),
-        (OUTPUT, big),
-        (CACHE_READ, big),
-        (CACHE_WRITE, big),
-    ]);
-
-    let budget_rate = busbar_kernel_budget::RateNanos::from_micros_per_token(
-        rates[0], rates[1], rates[2], rates[3],
-    );
-    let budget_nanos = budget_rate.reserved_nanos(&units);
-
-    let kernel_rate =
-        busbar_kernel::cost::RateNanos::from_raw(&busbar_substrate_values::billing::RawTierRates {
-            input: rates[0],
-            output: rates[1],
-            cache_read: rates[2],
-            cache_write: rates[3],
-        });
-    let kernel_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        kernel_rate.reserved_nanos(&units)
-    }));
-
-    row(
-        "budget  reserved_nanos (saturating)     [nano-units]",
-        budget_nanos,
-    );
-    match &kernel_result {
-        Ok(v) => row("kernel  reserved_nanos (saturating)     [nano-units]", v),
-        Err(_) => row(
-            "kernel  reserved_nanos                  ",
-            "PANIC (overflow)",
-        ),
+        Answers {
+            one_micros,
+            one_minor,
+            micros,
+            minor,
+            refuse_alike: vec![
+                ("ledger  price_fail_closed (settlement)", settled),
+                ("kernel  price_usage_nanos (metering seam)", metered),
+            ],
+        }
     }
 
-    assert_eq!(
-        budget_nanos,
-        u128::MAX,
-        "the door pins at the top and blocks"
-    );
-    let kernel_nanos = match kernel_result {
-        Ok(v) => v,
-        Err(_) => panic!(
-            "the kernel copy of `reserved_nanos` PANICKED on overflow. It must saturate exactly as \
-             the budget copy does (both delegate to `busbar_kernel_ledger::cost::nanos_sum`). A \
-             panic here is a 500 on `GET /groups/{{g}}/usage`, `GET /keys/{{id}}/usage` and every \
-             `/metrics` scrape; in a release build the same sum WRAPS and an over-the-top ledger \
-             derives as nearly free."
-        ),
-    };
-    assert_eq!(
-        kernel_nanos, budget_nanos,
-        "the kernel copy and the budget copy of `reserved_nanos` must answer the same figure at the \
-         top of the range: the door and the admin/metrics reads price one ledger with one fold"
-    );
-    assert_eq!(
-        kernel_nanos,
-        u128::MAX,
-        "the kernel copy pins at the top too — a wrapped total would read an astronomical ledger \
-         as nearly free"
-    );
-
-    // Below the ceiling the two copies are the same exact integer arithmetic.
-    let small = enforcement_units(&[
-        (INPUT, 1_000),
-        (OUTPUT, 100),
-        (CACHE_READ, 10),
-        (CACHE_WRITE, 1),
-    ]);
-    let small_rates = [2.5f64, 10.0, 1.25, 3.75];
-    let budget_small = busbar_kernel_budget::RateNanos::from_micros_per_token(
-        small_rates[0],
-        small_rates[1],
-        small_rates[2],
-        small_rates[3],
-    )
-    .reserved_nanos(&small);
-    let kernel_small =
-        busbar_kernel::cost::RateNanos::from_raw(&busbar_substrate_values::billing::RawTierRates {
-            input: small_rates[0],
-            output: small_rates[1],
-            cache_read: small_rates[2],
-            cache_write: small_rates[3],
-        })
-        .reserved_nanos(&small);
-    row(
-        "budget  reserved_nanos (ordinary)       [nano-units]",
-        budget_small,
-    );
-    row(
-        "kernel  reserved_nanos (ordinary)       [nano-units]",
-        kernel_small,
-    );
-    // 1000×2.5 + 100×10 + 10×1.25 + 1×3.75 = 3516.25 micro-units = 3_516_250 nano-units.
-    assert_eq!(budget_small, 3_516_250);
-    assert_eq!(kernel_small, budget_small);
+    /// Every copy answers what the one function answers: the same figure, or the same refusal.
+    fn check(&self) -> Answers {
+        rule(self.title);
+        let a = self.run();
+        row("THE ONE FUNCTION  [micro]", &a.one_micros);
+        for (label, got) in &a.micros {
+            row(label, got);
+            assert_eq!(
+                got, &a.one_micros,
+                "{}: `{label}` diverges from the one function",
+                self.title
+            );
+        }
+        row("THE ONE FUNCTION  [minor]", &a.one_minor);
+        for (label, got) in &a.minor {
+            row(label, got);
+            assert_eq!(
+                got, &a.one_minor,
+                "{}: `{label}` diverges from the one function",
+                self.title
+            );
+        }
+        for (label, got) in &a.refuse_alike {
+            row(label, got);
+            assert_eq!(
+                *got,
+                a.one_micros.clone().ok(),
+                "{}: `{label}` must refuse exactly when the one function refuses, and otherwise \
+                 answer its figure",
+                self.title
+            );
+        }
+        a
+    }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// D4 — A PRESENT CARD SILENT ABOUT A LANE. #42 says REFUSE. The one function refuses; the BUDGET
-// DOOR now blocks (it decides admission, so it must not admit what it cannot price); the two READ
-// projections still say 0, and that residual is what M-16 still holds open.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
+/// E — one card, whole counts, the standard tier, every class priced. The case all six copies were
+/// written for, and the figure the consolidation must not move.
 #[test]
-fn d4_an_unpriced_lane_blocks_at_the_door_refuses_in_the_one_function_and_still_reads_free() {
-    rule("D4  a present card that does not name the lane (#42)");
+fn e_every_former_copy_answers_the_one_functions_figure() {
+    let a = Case {
+        title: "E  every class priced",
+        rates: Some(&[(LANE, [3.0, 16.0, 0.5, 4.0])]),
+        fee: 2,
+        lane: LANE,
+        counts: &[
+            (INPUT, 1_000_000),
+            (OUTPUT, 250_000),
+            (CACHE_READ, 7_000_000),
+            (CACHE_WRITE, 30_000),
+        ],
+        fee_count: 3,
+    }
+    .check();
+    // 3,000,000 + 4,000,000 + 3,500,000 + 120,000 + 3 fees × 2 minor × 10,000 = 10,680,000.
+    assert_eq!(a.one_micros, Ok(10_680_000));
+    assert_eq!(a.one_minor, Ok(1_068));
+}
 
-    let card = ledger_card([3.0, 16.0, 0.0, 0.0], 2);
-    let counts: [(&str, u64); 2] = [(INPUT, 1_000_000), (OUTPUT, 1_000_000)];
-    let unknown = "a-model-nobody-priced";
-
-    let lines = usage_lines(&counts);
-    let ledger_micros =
-        ledger_cost::derive_spend_micros(&card, [(unknown, &lines[..])].into_iter(), 1, true);
-
-    let kernel = kernel_cost_model(Some(&[(LANE, [3.0, 16.0, 0.0, 0.0])]), 2);
-    let units = enforcement_units(&counts);
-    let kernel_micros = kernel.derive_spend_micros([(unknown, &units)].into_iter(), 1, true);
-
-    let door = budget_pricer(Some(&[(LANE, [3.0, 16.0, 0.0, 0.0])]), 2);
-    let door_cents = door.derive_spend_cents([(unknown, &units)].into_iter(), 1, true);
-
-    let one = ledger_cost::price_ledger(
-        &[counts
-            .iter()
-            .fold(LedgerEntry::new(unknown, 0), |e, (c, q)| {
-                e.with_whole(*c, *q)
-            })
-            .with_fee_count(1)],
-        &History::opening(card.clone(), 0),
-    );
-
-    row(
-        "ledger  derive_spend_micros             [micro-units]",
-        ledger_micros,
-    );
-    row(
-        "kernel  CostModel::derive_spend_micros  [micro-units]",
-        kernel_micros,
-    );
-    row(
-        "budget  Pricer::derive_spend_cents      [cents]      ",
-        door_cents,
-    );
-    row(
-        "ONE function                                        ",
-        format!("{:?}", one.as_ref().err()),
-    );
-
-    // Nineteen million micro-units of real consumption. The two READ projections still charge the
-    // flat fee and nothing else — M-16, unchanged here, and PARKed because moving them moves the
-    // row count and the spend figure on `GET /admin/usage`.
-    assert_eq!(ledger_micros, 20_000, "the fee alone");
-    assert_eq!(kernel_micros, 20_000, "the fee alone");
-    // THE DOOR NO LONGER ADMITS WHAT IT CANNOT PRICE. `Pricer::derive_spend_cents` gates admission
-    // against a `budget:` cap, so an unpriced model deriving as FREE ran uncapped on spend — #42's
-    // silent 0 on the one path where the answer decides whether the request happens at all. It now
-    // pins at the top, which is the fail-closed value this function already uses for its overflow
-    // arm: an astronomically over-cap spend that blocks rather than one that admits.
-    assert_eq!(
-        door_cents,
-        i64::MAX,
-        "#42: a present card silent about the lane must not price it at the flat fee on the \
-         ADMISSION path — it blocks"
-    );
+/// D4 / items 124, 25, 31 — A PRESENT CARD SILENT ABOUT THE LANE. The copies used to answer three
+/// ways: the kernel door and every read the flat fee alone (FREE — 19 million micro-units of
+/// consumption dropped), the budget door `i64::MAX`, the one function a refusal. Now every copy
+/// refuses: BOTH admission doors block, every read fails.
+#[test]
+fn d4_an_unpriced_lane_refuses_at_both_doors_and_on_every_read() {
+    let a = Case {
+        title: "D4  a present card that does not name the lane (#42)",
+        rates: Some(&[(LANE, [3.0, 16.0, 0.0, 0.0])]),
+        fee: 2,
+        lane: "a-model-nobody-priced",
+        counts: &[(INPUT, 1_000_000), (OUTPUT, 1_000_000)],
+        fee_count: 1,
+    }
+    .check();
     assert!(
-        matches!(one, Err(ledger_cost::MoneyError::LaneUnpriced { .. })),
-        "#42: rate_card PRESENT and the class is not priced ⇒ REFUSE, never a silent 0"
+        matches!(a.one_micros, Err(MoneyError::LaneUnpriced { .. })),
+        "#42: rate_card PRESENT and the lane is not priced ⇒ REFUSE, never a silent 0"
     );
-    // The consumption that went unbilled, had the lane been priced at the card's own rates:
-    let priced_instead =
-        ledger_cost::derive_spend_micros(&card, [(LANE, &lines[..])].into_iter(), 1, true);
-    row(
-        "  …the same counts, had the lane been priced         ",
-        priced_instead,
-    );
-    assert_eq!(priced_instead, 19_020_000);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// D5 — A PRESENT CARD SILENT ABOUT A CLASS IT DOES NAME THE LANE FOR.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
+/// D5 / item 37 — A PRESENT CARD SILENT ABOUT A CLASS IT NAMES THE LANE FOR. The ledger and kernel
+/// derivations used to price the ten million cache-reads at 0 (7,000 micro-units served for the
+/// input and output alone). #42 inverts it: every copy REFUSES.
 #[test]
-fn d5_an_unpriced_class_on_a_priced_lane_bills_as_free_everywhere_but_the_one_function() {
-    rule("D5  a priced lane, a class the card is silent about (#42)");
-
-    // The card prices input and output. The row reports cache_read too.
+fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
+    // The card the operator wrote names input and output and nothing else for this lane.
     let card = RateCard::from_micro_rates(
         [
             (LaneClass::new(LANE, INPUT), 3.0),
@@ -629,103 +432,317 @@ fn d5_an_unpriced_class_on_a_priced_lane_bills_as_free_everywhere_but_the_one_fu
         0,
     );
     let counts: [(&str, u64); 3] = [(INPUT, 1_000), (OUTPUT, 250), (CACHE_READ, 10_000_000)];
-
-    let lines = usage_lines(&counts);
-    let ledger_micros =
-        ledger_cost::derive_spend_micros(&card, [(LANE, &lines[..])].into_iter(), 0, true);
-    let kernel = kernel_cost_model(Some(&[(LANE, [3.0, 16.0, 0.0, 0.0])]), 0);
-    let units = enforcement_units(&counts);
-    let kernel_micros = kernel.derive_spend_micros([(LANE, &units)].into_iter(), 0, true);
-
-    let one = ledger_cost::price_ledger(&[one_entry(&counts, 0, 0)], &History::opening(card, 0));
-
-    row(
-        "ledger  derive_spend_micros             [micro-units]",
-        ledger_micros,
+    let one = ledger_cost::price_ledger(
+        &[one_entry(LANE, &counts, 0, 0)],
+        &History::opening(card.clone(), 0),
     );
-    row(
-        "kernel  CostModel::derive_spend_micros  [micro-units]",
-        kernel_micros,
+    let derived = ledger_cost::derive_spend_micros(
+        &card,
+        [(LANE, &usage_lines(&counts)[..])].into_iter(),
+        0,
+        true,
     );
-    row(
-        "ONE function                                        ",
-        format!("{:?}", one.as_ref().err()),
+    let posting = ledger_cost::Posting::from_usage(
+        LANE,
+        &usage_report(&counts),
+        0,
+        ledger_cost::STANDARD_TIER_BP,
+        0,
+        0,
     );
+    let settled = ledger_cost::price_fail_closed(&History::opening(card, 0).current(), &posting);
 
+    rule("D5  a priced lane, a class the card is silent about (#42)");
+    row("THE ONE FUNCTION", &one);
+    row("ledger  derive_spend_micros", &derived);
+    row(
+        "ledger  price_fail_closed (settlement)",
+        settled.as_ref().err(),
+    );
+    let refusal = MoneyError::ClassUnpriced {
+        card_seq: HistorySeq::OPENING,
+        lane: LANE.to_string(),
+        class: CACHE_READ.to_string(),
+    };
     assert_eq!(
-        ledger_micros, 7_000,
-        "3,000 + 4,000; the ten million cache-reads price at nothing"
-    );
-    assert_eq!(kernel_micros, 7_000, "identically silent");
-    assert!(matches!(
         one,
-        Err(ledger_cost::MoneyError::ClassUnpriced { .. })
-    ));
+        Err(refusal.clone()),
+        "#42: a hit class not priced ⇒ REFUSE"
+    );
+    assert_eq!(
+        derived,
+        Err(refusal),
+        "the read-time derivation refuses too — never 7,000"
+    );
+    assert!(
+        matches!(settled, Err(ledger_cost::Unpriceable::ClassUnpriced { ref class, .. }) if class == CACHE_READ),
+        "settlement refuses the same class"
+    );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// D6 — THE TIER MULTIPLIER EXISTS ON ONE PRICER AND NOT THE OTHER.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
+/// Item 22 — A RATE BELOW THE CARD'S QUANTUM. `0.0004` micro-units a token used to become a cell
+/// priced at 0 while the card called the class PRICED. It is an unpriced cell now, and every copy
+/// — the kernel door included, which used to hold its own rate table — refuses a hit on it.
 #[test]
-fn d6_the_tier_multiplier_is_applied_by_the_lookup_and_ignored_by_every_derivation() {
-    rule("D6  the service-tier multiplier");
+fn i22_a_sub_quantum_rate_refuses_everywhere_instead_of_pricing_at_zero() {
+    let a = Case {
+        title: "22  a configured rate below the half-nano quantum",
+        rates: Some(&[(LANE, [0.0004, 16.0, 0.0, 0.0])]),
+        fee: 0,
+        lane: LANE,
+        counts: &[(INPUT, 1_000_000_000), (OUTPUT, 10)],
+        fee_count: 0,
+    }
+    .check();
+    assert!(
+        matches!(a.one_micros, Err(MoneyError::ClassUnpriced { ref class, .. }) if class == INPUT),
+        "the card cannot represent 0.0004 and must not price it at zero: {:?}",
+        a.one_micros
+    );
+}
 
-    let card = ledger_card([3.0, 16.0, 0.0, 0.0], 0);
-    let history = History::opening(card.clone(), 0);
+/// Item 28 — OVERFLOW REFUSES, NEVER SATURATES. The copies used to pin at `i64::MAX` (≈ $92
+/// quadrillion served as a figure) — on the success arm. Every copy refuses now.
+#[test]
+fn i28_an_overflow_refuses_everywhere_and_is_never_billed_at_the_ceiling() {
+    let a = Case {
+        title: "28  u64::MAX tokens at 1e15 micro-units a token",
+        rates: Some(&[(LANE, [1.0e15, 0.0, 0.0, 0.0])]),
+        fee: 0,
+        lane: LANE,
+        counts: &[(INPUT, u64::MAX)],
+        fee_count: 0,
+    }
+    .check();
+    assert_eq!(a.one_micros, Err(MoneyError::Overflow));
+}
+
+/// #42's ONE SILENT ZERO — rate_card ABSENT: tokens read 0, the fee still posts, nothing refuses.
+#[test]
+fn e_billing_off_is_zero_everywhere_and_the_fee_still_posts() {
+    let a = Case {
+        title: "E  rate_card ABSENT",
+        rates: None,
+        fee: 2,
+        lane: LANE,
+        counts: &[(INPUT, 1_000_000), (OUTPUT, 1_000_000)],
+        fee_count: 3,
+    }
+    .check();
+    assert_eq!(a.one_micros, Ok(60_000));
+    assert_eq!(a.one_minor, Ok(6));
+}
+
+/// D6 / item 27 — THE TIER APPLIES IDENTICALLY FOR SETTLE AND READ. `with_tier` used to have no
+/// production caller and the settlement lookup carried its own tier call: settlement could apply a
+/// tier no read applied. Both are the one function's tier rule now, over the same pre-tier sum,
+/// and a half-price posting settles and reads at the same figure.
+#[test]
+fn d6_the_tier_is_one_rule_for_settlement_and_for_every_read() {
+    rule("D6  the service-tier multiplier (item 27)");
+    let card = ledger_card(Some(&[(LANE, [3.0, 16.0, 0.0, 0.0])]), 1);
+    let history = History::opening(card, 0);
+    let counts: [(&str, u64); 2] = [(INPUT, 1_001), (OUTPUT, 251)];
+    for tier in [5_000u32, 8_000, 10_000, 15_000] {
+        let posting = ledger_cost::Posting::from_usage(LANE, &usage_report(&counts), 1, tier, 0, 0);
+        let settled = ledger_cost::price(&history.current(), &posting).expect("settles");
+        let read = ledger_cost::price_exact(
+            &[one_entry(LANE, &counts, 0, 1).with_tier(tier)],
+            &history.current(),
+        )
+        .expect("reads");
+        row(
+            &format!("tier {tier} bp  settled / read  [nano]"),
+            (settled.priced_nanos, read / 1_000_000),
+        );
+        assert_eq!(
+            settled.priced_nanos,
+            ledger_cost::nanos_of_exact(read).expect("fits"),
+            "tier {tier}: the settlement posting and the read must be one tier rule"
+        );
+    }
+    // Hand-computed at half price: (1,001×3,000 + 251×16,000 + 10,000,000) × ½ = 8,509,500 nano.
+    let half = ledger_cost::price_exact(
+        &[one_entry(LANE, &counts, 0, 1).with_tier(5_000)],
+        &history.current(),
+    )
+    .expect("reads");
+    assert_eq!(ledger_cost::nanos_of_exact(half), Ok(8_509_500));
+}
+
+/// D1 — A RATE-CARD EDIT. The dated read (#79) prices each row at its own card; the enforcement
+/// book carries no instant and prices the window at the current card. Both are the one function
+/// now — the difference is the INPUT (which card), not the arithmetic, and it is item 23's park.
+#[test]
+fn d1_a_rate_card_edit_is_one_function_over_two_different_inputs() {
+    rule("D1  a rate-card edit: the dated read vs every current-card read");
     let counts: [(&str, u64); 2] = [(INPUT, 1_000), (OUTPUT, 250)];
-    let half = busbar_kernel_ledger::cost::STANDARD_TIER_BP / 2;
+    let mut history = History::opening(ledger_card(Some(&[(LANE, [3.0, 16.0, 0.0, 0.0])]), 2), 0);
+    history.append(CardEntryDraft {
+        effective_from: 1_000_000,
+        effective_until: None,
+        card: ledger_card(Some(&[(LANE, [1.0, 4.0, 0.0, 0.0])]), 1),
+        appended_at: 1_000_000,
+        author: Author::Config { policy_epoch: 1 },
+    });
+    let dated = ledger_cost::price_ledger(
+        &[
+            one_entry(LANE, &counts, 500_000, 1),
+            one_entry(LANE, &counts, 2_000_000, 1),
+        ],
+        &history,
+    )
+    .expect("every class is priced on both cards");
 
-    let usage = {
-        let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-        let token = busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal);
-        busbar_contract::caps::Usage::report(&token, usage_lines(&counts))
-            .expect("a report within the line bound")
-    };
-    let posting = ledger_cost::Posting::from_usage(LANE, &usage, 0, half, 0, 0);
-    let lookup = ledger_cost::price(&history.current(), &posting).expect("the lookup prices");
-
-    let lines = usage_lines(&counts);
-    let derived =
-        ledger_cost::derive_spend_micros(&card, [(LANE, &lines[..])].into_iter(), 0, true);
-
-    let one = ledger_cost::price_ledger(&[one_entry(&counts, 0, 0).with_tier(half)], &history)
+    // The current card, both rows — the one function at the current card, and the copies at it.
+    let current = ledger_card(Some(&[(LANE, [1.0, 4.0, 0.0, 0.0])]), 1);
+    let at_current = ledger_cost::price_ledger(
+        &[
+            one_entry(LANE, &counts, 0, 1),
+            one_entry(LANE, &counts, 0, 1),
+        ],
+        &History::opening(current, 0),
+    )
+    .expect("prices");
+    let kernel = kernel_cost_model(Some(&[(LANE, [1.0, 4.0, 0.0, 0.0])]), 1);
+    let units = enforcement_units(&counts);
+    let flat_micros = kernel
+        .derive_spend_micros([(LANE, &units), (LANE, &units)].into_iter(), 2, true)
         .expect("prices");
 
-    row(
-        "cost::price  (lookup, tier applied)     [micro-units]",
-        lookup.micros(),
-    );
-    row(
-        "derive_spend_micros  (no tier at all)   [micro-units]",
-        derived,
-    );
-    row(
-        "ONE function  (tier applied)            [micro-units]",
-        one.micros(),
-    );
-
-    assert_eq!(derived, 7_000, "full price");
-    assert_eq!(lookup.micros(), 3_500, "half price");
-    assert_eq!(
-        one.micros(),
-        3_500,
-        "the one function agrees with the lookup"
-    );
-    // A deployment that ever uses a non-standard tier bills double on every read that derives.
+    row("ONE function, dated history  [micro]", dated.micros());
+    row("ONE function, current card   [micro]", at_current.micros());
+    row("kernel derive (current card) [micro]", flat_micros);
+    assert_eq!(dated.micros(), 39_000);
+    assert_eq!(i128::from(flat_micros), at_current.micros());
+    assert_eq!(at_current.micros(), 24_000);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// D7 — `nano_rate` TAKES AN `f64`. #77(8)/#81 ban binary floating point on any money path, and
-//      the ban is not decoration: the double picks the wrong side of a rounding boundary.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
+/// D8 — THE METRICS GAUGE IS THE ONE FUNCTION'S INTEGER, UP TO THE ONE EGRESS BOUNDARY. Item 24
+/// moved the money gauges to `metrics/money.rs`, where the only float is `set_gauge` — the declared
+/// `MONEY_EGRESS` boundary the exporter forces. Everything before it is integer: the figure the
+/// gauge is handed is `CostModel::derive_spend_cents`, which is the one function, exact above 2^53
+/// where a float would have lost the ones digit.
+#[test]
+fn d8_the_gauge_figure_is_the_one_functions_integer_up_to_the_egress_boundary() {
+    rule("D8  `busbar_*_spend_cents` — integer up to MONEY_EGRESS");
+    let requests: u64 = (1u64 << 53) + 1;
+    let kernel = kernel_cost_model(None, 1);
+    let gauge_input = kernel
+        .derive_spend_cents(std::iter::empty(), requests, true)
+        .expect("a fee-only bucket prices");
+    let mut tally = ledger_cost::Tally::at_card(kernel.card());
+    tally
+        .fee(
+            0,
+            ledger_cost::STANDARD_TIER_BP,
+            ledger_cost::whole(requests),
+        )
+        .expect("prices");
+    let one = tally.money().expect("fits").minor_i64().expect("fits");
+    row("one function  [minor]", one);
+    row("gauge input   [minor]", gauge_input);
+    assert_eq!(gauge_input, one);
+    assert_eq!(
+        gauge_input, 9_007_199_254_740_993,
+        "2^53 + 1, exact — no float before egress"
+    );
+}
 
-/// The exact decimal answer `nano_rate` is specified to give: the configured decimal times a
-/// thousand, rounded half AWAY FROM ZERO, computed over the digit text with no double in it.
+/// D9 — M32, PARKED-OWNER (Q14): the admin read resolves a row at a BUCKET-level instant, not at
+/// each posting's own `arrived_ms`, so a sub-day back-dated correction cannot reach its rows. Kept
+/// verbatim as the parked measurement; not this collapse's to resolve.
+#[test]
+fn d9_a_sub_day_back_dated_correction_is_a_no_op_for_the_admin_read() {
+    rule("D9  `row_priced_at_ms` clips to the bucket; #79 resolves at the posting");
+    const DAY: u64 = 86_400;
+    let bucket_start_secs = DAY;
+    let bucket_start_ms = bucket_start_secs * 1_000;
+    let mut history = History::opening(ledger_card(Some(&[(LANE, [3.0, 16.0, 0.0, 0.0])]), 0), 0);
+    history.append(CardEntryDraft {
+        effective_from: bucket_start_ms + 3 * 3_600_000,
+        effective_until: Some(bucket_start_ms + 6 * 3_600_000),
+        card: ledger_card(Some(&[(LANE, [30.0, 160.0, 0.0, 0.0])]), 0),
+        appended_at: bucket_start_ms + 48 * 3_600_000,
+        author: Author::Amend {
+            operator_fingerprint: "operator".to_string(),
+            reason_hash: [0u8; 32],
+        },
+    });
+    let view = history.current();
+    let counts: [(&str, u64); 2] = [(INPUT, 1_000), (OUTPUT, 250)];
+    let arrived_ms = bucket_start_ms + 4 * 3_600_000;
+
+    let admin_instant = admin::row_priced_at_ms(bucket_start_secs, 0);
+    let (_seq, admin_card) = view.card_at(admin_instant).expect("covered");
+    let alias_seam = kernel_cost_model(None, 0);
+    let admin_figure =
+        admin_row_at_card(admin_card, &alias_seam, LANE, &counts, 0).expect("prices");
+    let one = ledger_cost::price_ledger(&[one_entry(LANE, &counts, arrived_ms, 0)], &history)
+        .expect("prices");
+    row("GET /admin/usage  (resolves at bucket start)", admin_figure);
+    row("ONE function      (resolves at arrived_ms)", one.micros());
+    assert_eq!(admin_instant, bucket_start_ms);
+    assert_eq!(admin_figure, 7_000);
+    assert_eq!(one.micros(), 70_000);
+}
+
+/// D2 — ITEM 123's BASELINE, KEPT AS A MEASUREMENT. The enforcement side (the kernel's cost model
+/// and the budget door) projects its unit map onto the RESERVED FOUR before it hands the row to the
+/// one function, so an open meter class (a2a `hops`, mcp `calls`, streaming `audio-seconds`) never
+/// reaches it there. That is the keyed-unit/open-class convergence (item 123), which builds on the
+/// one function and is not this collapse's; the arithmetic is one function on both sides — the
+/// difference is which counts each side hands it.
+#[test]
+fn d2_an_open_meter_class_is_not_handed_to_the_one_function_by_the_enforcement_side() {
+    rule("D2  an open meter class — item 123's residue");
+    let card = RateCard::from_micro_rates(
+        [
+            (LaneClass::new(LANE, OUTPUT), 2.0),
+            (LaneClass::new(LANE, "hops"), 5.0),
+        ],
+        0,
+    );
+    let counts: [(&str, u64); 2] = [(OUTPUT, 100), ("hops", 1_000)];
+    let one = ledger_cost::price_ledger(
+        &[one_entry(LANE, &counts, 0, 0)],
+        &History::opening(card.clone(), 0),
+    )
+    .expect("the card prices both classes");
+    let ledger_micros = ledger_cost::derive_spend_micros(
+        &card,
+        [(LANE, &usage_lines(&counts)[..])].into_iter(),
+        0,
+        true,
+    );
+    let units = enforcement_units(&counts);
+    let kernel = kernel_cost_model(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
+    let kernel_micros = kernel.derive_spend_micros([(LANE, &units)].into_iter(), 0, true);
+    let door = budget_pricer(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
+    let door_cents = door.derive_spend_cents([(LANE, &units)].into_iter(), 0, true);
+    row("ONE function                 [micro]", one.micros());
+    row("ledger derive (every class)  [micro]", &ledger_micros);
+    row("kernel derive (reserved four)[micro]", &kernel_micros);
+    row("budget door   (reserved four)[minor]", &door_cents);
+    assert_eq!(one.micros(), 5_200, "100×2 + 1000×5");
+    assert_eq!(ledger_micros.map(i128::from), Ok(one.micros()));
+    assert_eq!(
+        kernel_micros,
+        Ok(200),
+        "item 123: only the reserved four are handed over"
+    );
+    assert_eq!(
+        door_cents,
+        Ok(0),
+        "item 123: and in whole minor units that is nothing"
+    );
+}
+
+/// D7 — `nano_rate` TAKES AN `f64` (#77(8), #81). PARKED (`1.6.0-money-sweep.md`): the double picks
+/// the wrong side of a decimal half-boundary. Kept verbatim as the parked measurement — card-build
+/// quantisation is outside this collapse, which keeps it byte-identical (#44).
 fn nano_rate_exact_from_text(decimal: &str) -> u64 {
     let count = busbar_contract::count::Count::parse(decimal).expect("a decimal literal");
-    // A `Count` is a mantissa at scale 6. ×1000 lands at scale 3; rounding half away from zero at
-    // scale 0 is (mantissa×1000 + 500_000) / 1_000_000 for a positive value.
     let scaled = count.micros() * 1_000;
     let rounded = (scaled + 500_000) / 1_000_000;
     u64::try_from(rounded).expect("inside the range")
@@ -734,14 +751,8 @@ fn nano_rate_exact_from_text(decimal: &str) -> u64 {
 #[test]
 fn d7_the_f64_rate_conversion_rounds_the_wrong_way_at_a_decimal_half_boundary() {
     rule("D7  `nano_rate(f64)` vs the exact decimal conversion (#77(8), #81)");
-
-    // Search the neighbourhood of the half-boundary for a configured rate whose exact decimal
-    // conversion and whose `f64` conversion differ. The value is not cherry-picked out of thin
-    // air — it is whatever the scan finds first, so the defect is a property of the conversion and
-    // not of one unlucky literal.
     let mut disagreements: Vec<(String, u64, u64)> = Vec::new();
     for thousandths in 1u64..200_000 {
-        // A configured rate with exactly four decimal places, i.e. ending in a half-nano boundary.
         let text = format!(
             "{}.{:04}",
             thousandths / 10_000,
@@ -756,287 +767,371 @@ fn d7_the_f64_rate_conversion_rounds_the_wrong_way_at_a_decimal_half_boundary() 
             }
         }
     }
-
     for (text, exact, through_f64) in &disagreements {
         row(
             &format!("rate `{text}` micro-units/token  exact / via f64"),
-            format!("{exact} / {through_f64}"),
+            (exact, through_f64),
         );
     }
-
     assert!(
         !disagreements.is_empty(),
         "the scan found no disagreement — which would mean the f64 path is exact, and it is not"
     );
-    // Every one of these is one nano-unit per token, forever, on a rate an operator typed exactly.
     for (_, exact, through_f64) in &disagreements {
         assert_eq!(exact.abs_diff(*through_f64), 1);
     }
-    let (text, exact, through_f64) = &disagreements[0];
-    eprintln!(
-        "  → over a billion tokens, `{text}` bills {} nano-units too {} \
-         ({exact} vs {through_f64} per token)",
-        1_000_000_000u64,
-        if exact > through_f64 {
-            "little"
-        } else {
-            "much"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE STRUCTURAL HALF — the census. A copy that AGREES is still a copy.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The workspace root, from this crate's manifest directory.
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crates/busbar sits two below the workspace root")
+        .to_path_buf()
+}
+
+/// Every PRODUCTION `.rs` file under `crates/*/src`, as (workspace-relative path, source). Test
+/// modules are excluded by the tree's own conventions: a `tests/` directory, `*_tests.rs`, and the
+/// `tests.rs` leaf files a parent mounts under `#[cfg(test)]`.
+fn production_sources() -> Vec<(String, String)> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if matches!(name, "tests" | "testkit" | "test_support" | "target") {
+                    continue;
+                }
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
         }
-    );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// D8 — THE METRICS GAUGES CAST MONEY THROUGH AN `f64`.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn d8_the_metrics_gauge_serves_a_different_number_than_the_admin_read() {
-    rule("D8  `busbar_key_spend_cents` / `busbar_bucket_spend_cents` — `spend_cents as f64`");
-
-    // `metrics.rs:401` and `metrics.rs:462` set the gauge to `spend_cents as f64`. Above 2^53 an
-    // `f64` has no room for the ones digit, so the gauge and the admin JSON serve two numbers for
-    // one figure.
-    let spend_cents: i64 = 9_007_199_254_740_993; // 2^53 + 1
-    let served = spend_cents as f64;
-    let read_back = served as i64;
-
-    row(
-        "admin read   (i64)                      [cents]      ",
-        spend_cents,
-    );
-    row(
-        "/metrics gauge  (f64)                   [cents]      ",
-        read_back,
-    );
-
-    assert_ne!(
-        read_back, spend_cents,
-        "#77(8): no f32/f64 on any money path — and the gauge is a served money byte"
-    );
-    assert_eq!(read_back, 9_007_199_254_740_992);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// D9 — THE ADMIN READ RESOLVES AT A BUCKET-LEVEL INSTANT, NOT AT EACH POSTING'S OWN
-//      `arrived_ms`, so a sub-day back-dated correction cannot reach the rows it was written for.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn d9_a_sub_day_back_dated_correction_is_a_no_op_for_the_admin_read() {
-    rule("D9  `row_priced_at_ms` clips to the bucket; #79 resolves at the posting");
-
-    const DAY: u64 = 86_400;
-    let bucket_start_secs = DAY; // the second UTC day
-    let bucket_start_ms = bucket_start_secs * 1_000;
-
-    // The deployment's opening card, effective from zero. Every row accrued under it carries
-    // `priced_from_ms == 0`, which is that entry's own `effective_from`.
-    let mut history = History::opening(ledger_card([3.0, 16.0, 0.0, 0.0], 0), 0);
-    // A SIGNED BACK-DATED CORRECTION over three hours of that day — the sanctioned repair path for
-    // "the ratecard was wrong" (#79).
-    history.append(CardEntryDraft {
-        effective_from: bucket_start_ms + 3 * 3_600_000,
-        effective_until: Some(bucket_start_ms + 6 * 3_600_000),
-        card: ledger_card([30.0, 160.0, 0.0, 0.0], 0),
-        appended_at: bucket_start_ms + 48 * 3_600_000,
-        author: Author::Amend {
-            operator_fingerprint: "operator".to_string(),
-            reason_hash: [0u8; 32],
-        },
-    });
-    let view = history.current();
-
-    let counts: [(&str, u64); 2] = [(INPUT, 1_000), (OUTPUT, 250)];
-    // A row genuinely accrued at 04:00 on that day, inside the corrected window.
-    let arrived_ms = bucket_start_ms + 4 * 3_600_000;
-    let priced_from_ms = 0; // the opening entry's `effective_from`, which is what the row carries
-
-    // ── WHAT THE ADMIN READ DOES.
-    let admin_instant = admin_row_priced_at_ms(bucket_start_secs, priced_from_ms);
-    let (_seq, admin_card) = view.card_at(admin_instant).expect("covered");
-    let admin_figure = admin_row_at_card(admin_card, &alias_seam(), LANE, &counts, 0);
-
-    // ── WHAT #79 SAYS: the posting's OWN instant.
-    let one =
-        ledger_cost::price_ledger(&[one_entry(&counts, arrived_ms, 0)], &history).expect("prices");
-
-    row(
-        "GET /admin/usage  (resolves at bucket start)         ",
-        admin_figure,
-    );
-    row(
-        "ONE function      (resolves at arrived_ms)           ",
-        one.micros(),
-    );
-
-    assert_eq!(
-        admin_instant, bucket_start_ms,
-        "clipped to midnight, outside the corrected window"
-    );
-    assert_eq!(admin_figure, 7_000, "the uncorrected card");
-    assert_eq!(one.micros(), 70_000, "the correction, applied");
-    // The sanctioned repair path moves nothing for exactly the rows it was written to repair, and
-    // it is a tenfold difference on this slice.
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// E — THE EQUIVALENCES. Where every implementation is supposed to agree, it does, and the ONE
-//     function is one of them. These are the rows the consolidation must not move.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn e_every_implementation_agrees_on_the_case_they_were_all_written_for() {
-    rule("E  one card, whole counts, the standard tier, every class priced");
-
-    let rates = [3.0f64, 16.0, 0.5, 4.0];
-    let fee = 2i64;
-    let counts: [(&str, u64); 4] = [
-        (INPUT, 1_000_000),
-        (OUTPUT, 250_000),
-        (CACHE_READ, 7_000_000),
-        (CACHE_WRITE, 30_000),
-    ];
-    let requests = 3u64;
-
-    let card = ledger_card(rates, fee);
-    let history = History::opening(card.clone(), 0);
-    let lines = usage_lines(&counts);
-    let units = enforcement_units(&counts);
-    let kernel = kernel_cost_model(Some(&[(LANE, rates)]), fee);
-    let door = budget_pricer(Some(&[(LANE, rates)]), fee);
-
-    // ── MICRO-UNITS
-    let ledger_micros =
-        ledger_cost::derive_spend_micros(&card, [(LANE, &lines[..])].into_iter(), requests, true);
-    let kernel_micros = kernel.derive_spend_micros([(LANE, &units)].into_iter(), requests, true);
-    let admin_flat = admin_row_flat(&kernel, LANE, &counts, requests);
-    let admin_dated = admin_row_at_card(&card, &kernel, LANE, &counts, requests);
-    let usage = {
-        let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
-        let token = busbar_contract::caps::Grant::<busbar_contract::caps::Consumption>::mint(&seal);
-        busbar_contract::caps::Usage::report(&token, usage_lines(&counts))
-            .expect("a report within the line bound")
+    }
+    let root = workspace_root();
+    let mut files = Vec::new();
+    let Ok(crates) = std::fs::read_dir(root.join("crates")) else {
+        panic!("the census must see the tree: crates/ is not readable");
     };
-    let posting = ledger_cost::Posting::from_usage(
-        LANE,
-        &usage,
-        requests,
-        ledger_cost::STANDARD_TIER_BP,
-        0,
-        0,
-    );
-    let lookup = ledger_cost::price(&history.current(), &posting).expect("the lookup prices");
-    let one =
-        ledger_cost::price_ledger(&[one_entry(&counts, 0, requests)], &history).expect("prices");
-
-    row(
-        "ledger  derive_spend_micros             [micro-units]",
-        ledger_micros,
-    );
-    row(
-        "kernel  CostModel::derive_spend_micros  [micro-units]",
-        kernel_micros,
-    );
-    row(
-        "admin   derive_spend_micros_row         [micro-units]",
-        admin_flat,
-    );
-    row(
-        "admin   derive_spend_micros_row_at_card [micro-units]",
-        admin_dated,
-    );
-    row(
-        "ledger  cost::price (the lookup)        [micro-units]",
-        lookup.micros(),
-    );
-    row(
-        "ONE function                            [micro-units]",
-        one.micros(),
-    );
-
-    // 1,000,000×3 + 250,000×16 + 7,000,000×0.5 + 30,000×4 = 3,000,000 + 4,000,000 + 3,500,000
-    // + 120,000 = 10,620,000, plus 3 fees × 2 minor units × 10,000 = 60,000 ⇒ 10,680,000.
-    for (label, figure) in [
-        ("ledger derive", i128::from(ledger_micros)),
-        ("kernel derive", i128::from(kernel_micros)),
-        ("admin flat row", i128::from(admin_flat)),
-        ("admin dated row", i128::from(admin_dated)),
-        ("the lookup", i128::from(lookup.micros())),
-        ("the one function", one.micros()),
-    ] {
-        assert_eq!(figure, 10_680_000, "{label} answers the same figure");
+    for c in crates.flatten() {
+        walk(&c.path().join("src"), &mut files);
     }
-
-    // ── AND THE CENT PROJECTION, WHICH IS WHERE THE ENFORCEMENT SIDE READS.
-    let ledger_cents =
-        ledger_cost::derive_spend_cents(&card, [(LANE, &lines[..])].into_iter(), requests, true);
-    let kernel_cents = kernel.derive_spend_cents([(LANE, &units)].into_iter(), requests, true);
-    let door_cents = door.derive_spend_cents([(LANE, &units)].into_iter(), requests, true);
-    row(
-        "ledger  derive_spend_cents              [cents]      ",
-        ledger_cents,
-    );
-    row(
-        "kernel  CostModel::derive_spend_cents   [cents]      ",
-        kernel_cents,
-    );
-    row(
-        "budget  Pricer::derive_spend_cents      [cents]      ",
-        door_cents,
-    );
-    row(
-        "ONE function  .minor(USD)               [cents]      ",
-        one.minor(),
-    );
-
-    for (label, figure) in [
-        ("ledger derive", i128::from(ledger_cents)),
-        ("kernel derive", i128::from(kernel_cents)),
-        ("the door", i128::from(door_cents)),
-        ("the one function", one.minor()),
-    ] {
-        assert_eq!(figure, 1_068, "{label} answers the same figure");
-    }
+    files.sort();
+    files
+        .into_iter()
+        .filter_map(|p| {
+            let rel = p
+                .strip_prefix(&root)
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let leaf = rel.rsplit('/').next().unwrap_or("");
+            if leaf == "tests.rs" || leaf.ends_with("_tests.rs") || leaf.ends_with("_test.rs") {
+                return None;
+            }
+            Some((rel, std::fs::read_to_string(&p).ok()?))
+        })
+        .collect()
 }
 
+/// Strip `//` comments so prose that NAMES a function is never read as a call to it.
+fn code_only(src: &str) -> String {
+    src.lines()
+        .map(|l| match l.find("//") {
+            Some(i) => &l[..i],
+            None => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The body of every `fn <name>` in a source, by brace matching from the signature.
+fn fn_bodies(code: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let bytes = code.as_bytes();
+    let mut i = 0;
+    while let Some(off) = code[i..].find("fn ") {
+        let at = i + off;
+        i = at + 3;
+        // `fn` must be a whole word.
+        if at > 0 && (bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_') {
+            continue;
+        }
+        let name: String = code[at + 3..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        // The body opens at the first `{` after the signature (or the item is a declaration `;`).
+        let rest = &code[at..];
+        let (Some(brace), semi) = (rest.find('{'), rest.find(';')) else {
+            continue;
+        };
+        if semi.is_some_and(|s| s < brace) {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut end = None;
+        for (k, ch) in rest[brace..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(brace + k + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(end) = end {
+            out.push((name, rest[brace..end].to_string()));
+        }
+    }
+    out
+}
+
+/// Is this function name a money derivation? The six surviving copies and every name a seventh
+/// would plausibly take.
+fn is_derivation_name(name: &str) -> bool {
+    name.starts_with("derive_spend")
+        || name.starts_with("price_usage")
+        || name.starts_with("spend_micros")
+        || name.starts_with("spend_cents")
+        || matches!(
+            name,
+            "price_exact" | "price_at_card" | "price_in_view" | "one_function_total"
+        )
+}
+
+/// **THE CENSUS.** Every finding is a copy of `f` outside the one function.
+///
+/// - **R1** — a function named like a derivation must reach the one function: its body names
+///   `Tally`, or calls another derivation / the local `tally` helper (which itself names `Tally`),
+///   or `price_in_view` / `price_ledger`. A derivation that does its own arithmetic is a copy.
+/// - **R2** — the tier rule (`checked_apply_tier` / `apply_tier` / `apply_tier_signed`) is CALLED
+///   only inside the one function (`cost/view.rs`) and its own definition file (`cost/posting.rs`).
+/// - **R3** — the multiply-and-sum fold (`nanos_sum`) is called only by its definition file and by
+///   the budget HOLD estimate (`estimate.rs`), which sizes a reservation and is not a spend figure.
+/// - **R4** — the one function's accumulator is constructed only by the callers the collapse
+///   registered. A new `Tally` user is a new route onto the one function, which is fine — but it
+///   must be seen, so the list is exact.
+fn census(sources: &[(String, String)]) -> Vec<String> {
+    const TIER_RULE_HOMES: &[&str] = &[
+        "crates/busbar-kernel-ledger/src/cost/view.rs",
+        "crates/busbar-kernel-ledger/src/cost/posting.rs",
+    ];
+    const FOLD_HOMES: &[&str] = &[
+        "crates/busbar-kernel-ledger/src/cost/rate.rs",
+        "crates/busbar-kernel-budget/src/estimate.rs",
+    ];
+    const TALLY_ROUTES: &[&str] = &[
+        "crates/busbar-kernel-ledger/src/cost/view.rs",
+        "crates/busbar-kernel-ledger/src/cost/project.rs",
+        "crates/busbar-kernel-ledger/src/cost/posting.rs",
+        "crates/busbar-kernel/src/cost.rs",
+        "crates/busbar-kernel-budget/src/price.rs",
+    ];
+    let mut findings = Vec::new();
+    let mut exempt_seen: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    for (path, src) in sources {
+        let code = code_only(src);
+        let bodies = fn_bodies(&code);
+        let has_tally_helper = bodies
+            .iter()
+            .any(|(n, b)| n == "tally" && b.contains("Tally"));
+        for (name, body) in &bodies {
+            if !is_derivation_name(name) {
+                continue;
+            }
+            let routes = body.contains("Tally")
+                || (has_tally_helper && (body.contains("tally(") || body.contains(".tally(")))
+                || body.contains("price_in_view(")
+                || body.contains("price_exact(")
+                || body.contains("price_ledger(")
+                || body.contains("price_usage_nanos(")
+                // Delegation to the host metering seam, whose kernel implementation is
+                // `price_usage_nanos` (the one function) — see `plane_host`.
+                || body.contains(".price_usage(")
+                || body.contains("derive_spend_micros(")
+                || body.contains("derive_spend_minor(")
+                || body.contains("one_function_total(");
+            if !routes {
+                if let Some((file, fname, _, _)) = KNOWN_OUTSIDE_THIS_COLLAPSE
+                    .iter()
+                    .find(|(f, n, _, _)| *f == path.as_str() && *n == name.as_str())
+                {
+                    *exempt_seen.entry((file, fname)).or_default() += 1;
+                    continue;
+                }
+                findings.push(format!(
+                    "R1 {path}: `fn {name}` derives money without reaching the one function"
+                ));
+            }
+        }
+        for rule_fn in ["checked_apply_tier(", "apply_tier(", "apply_tier_signed("] {
+            if !TIER_RULE_HOMES.contains(&path.as_str()) && code.contains(rule_fn) {
+                findings.push(format!("R2 {path}: calls the tier rule `{rule_fn}..)`"));
+            }
+        }
+        if !FOLD_HOMES.contains(&path.as_str()) && code.contains("nanos_sum(") {
+            findings.push(format!(
+                "R3 {path}: calls the multiply-and-sum fold `nanos_sum`"
+            ));
+        }
+        if !TALLY_ROUTES.contains(&path.as_str()) && code.contains("Tally::") {
+            findings.push(format!(
+                "R4 {path}: a new route onto the one function — register it in the census"
+            ));
+        }
+    }
+    // An exemption is a MEASUREMENT, armed at today's count: one more such function in that file is
+    // a new copy (RED), and one fewer means the residue was fixed and the entry must be struck.
+    for (file, name, count, why) in KNOWN_OUTSIDE_THIS_COLLAPSE {
+        let seen = exempt_seen.get(&(*file, *name)).copied().unwrap_or(0);
+        if seen != *count && sources.iter().any(|(p, _)| p == file) {
+            findings.push(format!(
+                "R1 {file}: `fn {name}` seen {seen} time(s) outside the one function, the census \
+                 names {count} ({why}) — a new copy, or a fixed one whose entry must be struck"
+            ));
+        }
+    }
+    findings
+}
+
+/// Derivation-named functions the census SEES and that are not routed through the one function,
+/// each owned outside this collapse and named with its reason. Armed at today's count (§9.4).
+const KNOWN_OUTSIDE_THIS_COLLAPSE: &[(&str, &str, usize, &str)] = &[
+    (
+        "crates/busbar-voice/src/runtime/metering.rs",
+        "price_usage",
+        2,
+        "LocalLease's dev stand-in answers `Some(0)` with no card — a plane-side billing-off \
+         answer (#43, the busbar-voice owner's); and a `#[cfg(test)]` MockMeteringHost",
+    ),
+    (
+        "crates/busbar-voice/src/bin/voice-conform.rs",
+        "price_usage",
+        1,
+        "the conformance harness's mock host — a test double compiled into a bin",
+    ),
+];
+
+/// THE TREE HOLDS ONE `f`. Every derivation routes through it; no copy of the tier rule or the
+/// fold is called anywhere the census does not name.
 #[test]
-fn e_billing_off_is_zero_everywhere_and_the_fee_still_posts() {
-    rule("E  rate_card ABSENT — the one place a silent zero is right (#42)");
-
-    let counts: [(&str, u64); 2] = [(INPUT, 1_000_000), (OUTPUT, 1_000_000)];
-    let card = RateCard::absent(2);
-    let lines = usage_lines(&counts);
-    let units = enforcement_units(&counts);
-    let kernel = kernel_cost_model(None, 2);
-    let door = budget_pricer(None, 2);
-
-    let ledger_micros =
-        ledger_cost::derive_spend_micros(&card, [(LANE, &lines[..])].into_iter(), 3, true);
-    let kernel_micros = kernel.derive_spend_micros([(LANE, &units)].into_iter(), 3, true);
-    let door_cents = door.derive_spend_cents([(LANE, &units)].into_iter(), 3, true);
-    let one = ledger_cost::price_ledger(&[one_entry(&counts, 0, 3)], &History::opening(card, 0))
-        .expect("an absent card prices everything at nothing");
-
-    row(
-        "ledger  derive_spend_micros             [micro-units]",
-        ledger_micros,
+fn census_every_former_copy_routes_to_the_one_function() {
+    let sources = production_sources();
+    assert!(
+        sources.len() > 500,
+        "the census must walk the real tree, walked {}",
+        sources.len()
     );
-    row(
-        "kernel  CostModel::derive_spend_micros  [micro-units]",
-        kernel_micros,
+    // Positive control: the census SEES the derivations it certifies, by name, in their files.
+    let seen: Vec<(String, String)> = sources
+        .iter()
+        .flat_map(|(p, s)| {
+            fn_bodies(&code_only(s))
+                .into_iter()
+                .filter(|(n, _)| is_derivation_name(n))
+                .map(|(n, _)| (p.clone(), n))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (file, name) in [
+        (
+            "crates/busbar-kernel-ledger/src/cost/view.rs",
+            "price_exact",
+        ),
+        (
+            "crates/busbar-kernel-ledger/src/cost/project.rs",
+            "derive_spend_micros",
+        ),
+        (
+            "crates/busbar-kernel-ledger/src/cost/posting.rs",
+            "price_at_card",
+        ),
+        ("crates/busbar-kernel/src/cost.rs", "derive_spend_cents"),
+        ("crates/busbar-kernel/src/cost.rs", "price_usage_nanos"),
+        (
+            "crates/busbar-kernel-budget/src/price.rs",
+            "derive_spend_cents",
+        ),
+        (
+            "crates/busbar-core-admin/src/v1/service.rs",
+            "derive_spend_micros_row",
+        ),
+        (
+            "crates/busbar-core-admin/src/v1/service.rs",
+            "derive_spend_micros_row_at_card",
+        ),
+    ] {
+        assert!(
+            seen.iter().any(|(p, n)| p == file && n == name),
+            "positive control: the census must see `{name}` in {file}; saw {seen:?}"
+        );
+    }
+    let findings = census(&sources);
+    for f in &findings {
+        eprintln!("  {f}");
+    }
+    assert!(
+        findings.is_empty(),
+        "a copy of `money = f(ledger, card)` outside the one function:\n{}",
+        findings.join("\n")
     );
-    row(
-        "budget  Pricer::derive_spend_cents      [cents]      ",
-        door_cents,
-    );
-    row(
-        "ONE function                            [micro-units]",
-        one.micros(),
-    );
+}
 
-    assert_eq!(ledger_micros, 60_000);
-    assert_eq!(kernel_micros, 60_000);
-    assert_eq!(door_cents, 6);
-    assert_eq!(one.micros(), 60_000);
-    assert_eq!(one.minor(), 6);
+/// THE CENSUS CAN SAY NO. The real tree plus one planted SEVENTH COPY — a derivation doing its own
+/// multiply, a second call to the tier rule, a second fold — must be flagged on every rule. A census
+/// that cannot fail proves nothing.
+#[test]
+fn census_flags_a_planted_seventh_copy() {
+    let mut sources = production_sources();
+    sources.push((
+        "crates/busbar-kernel/src/seventh.rs".to_string(),
+        r#"
+        pub fn derive_spend_seventh(units: u64, rate: u64) -> u128 {
+            let pre = u128::from(units).saturating_mul(u128::from(rate));
+            busbar_kernel_ledger::cost::apply_tier(pre, 10_000)
+        }
+        pub fn spend_cents_elsewhere(pairs: Vec<(u64, u64)>) -> u128 {
+            busbar_kernel_ledger::cost::nanos_sum(pairs)
+        }
+        pub fn quietly(card: &busbar_kernel_ledger::cost::RateCard) {
+            let _ = busbar_kernel_ledger::cost::Tally::at_card(card);
+        }
+        "#
+        .to_string(),
+    ));
+    let findings = census(&sources);
+    for rule in ["R1", "R2", "R3", "R4"] {
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.starts_with(rule) && f.contains("seventh.rs")),
+            "the planted copy must trip {rule}; findings: {findings:?}"
+        );
+    }
+    assert!(
+        findings.iter().any(|f| f.contains("derive_spend_seventh")),
+        "the planted derivation must be named"
+    );
+    // And the prose of a comment naming the tier rule is NOT a call to it.
+    let only_prose = vec![(
+        "crates/busbar-kernel/src/prose.rs".to_string(),
+        "// see `apply_tier(` and `nanos_sum(` in the ledger\nfn nothing() {}\n".to_string(),
+    )];
+    assert!(census(&only_prose).is_empty());
 }

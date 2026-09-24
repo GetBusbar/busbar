@@ -103,14 +103,15 @@ use super::named_def_views::{export_def_view, identity_provider_view, unparseabl
 /// This derivation is what the read answers when there is no dated history to resolve against — a
 /// build whose composition root installed no [`UsageRateHistory`], or a row whose instant falls in
 /// a hole no entry of the snapshot covers.
-/// It is the previous release's arithmetic, kept byte-for-byte so that such a build answers
-/// exactly what it always did; it is NOT the statement that a rate-card correction is supposed to
-/// reprice history, which is precisely what #79 ruled out.
+/// It prices at the CURRENT card — the previous release's reading — but through THE ONE FUNCTION
+/// (`CostModel::derive_spend_micros` is `busbar_kernel_ledger::cost::Tally` at that card): a model
+/// or class the present card does not price REFUSES (#42, item 31) instead of reading as the flat
+/// fee alone, and an overflow refuses instead of pinning (item 28).
 pub fn derive_spend_micros_row(
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     b: &UsageBreakdown,
-) -> i64 {
+) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
     // Project the metering row's flat tier fields (its OWN JSON-contract names, unchanged) onto the
     // name-keyed unit map the pricer now consumes. `tokens_cache_creation` is the row's field name;
     // it maps onto the canonical `cache_write` unit key.
@@ -240,27 +241,23 @@ fn row_counts(b: &UsageBreakdown) -> impl Iterator<Item = (&'static str, u64)> +
 /// The lane is the row's CONFIGURED model name through the same `upstream_model` alias resolution
 /// the flat derivation uses, so a card entry is found by the same name on both paths.
 ///
-/// # The one case that does NOT change, and why it is a PARK
+/// # A refusal is the answer (#42, items 31 and 28)
 ///
-/// `price_in_view` REFUSES where the legacy projection answered a number: an unnamed lane
-/// ([`busbar_kernel_ledger::cost::MoneyError::LaneUnpriced`]), an unnamed class, or an accumulator
-/// that left the representable range. #42 (`:367`) says that refusal is
-/// the correct answer and that a silent zero is right ONLY when the card is ABSENT. But 1.5.5
-/// answered a FIGURE for each of those, and turning a served figure into a refusal is a
-/// customer-visible money-byte change, which is the owner's under #10 (`:328`) and #59 (`:391`) and
-/// not this function's. So a refusal falls back to the legacy projection AT THE SAME CARD — the
-/// exact figure this read served before — and the divergence is named here rather than resolved.
-///
-/// It is deliberately NOT routed to [`derive_spend_micros_row`] instead: that would price the row at
-/// the CURRENT card, which is a different wrong answer and would silently pick a side.
+/// `price_in_view` REFUSES an unnamed lane, an unnamed class, and an accumulator that left the
+/// range. This read used to catch that refusal and fall back to the LEGACY projection at the same
+/// card — which priced the unnamed lane at the flat fee alone, the silent zero #42 confines to a
+/// card that is ABSENT, served on the customer's `GET /admin/usage` as though it were a figure. The
+/// fallback is gone: the refusal is returned, and the endpoint fails the read rather than serving a
+/// number nobody priced. `card` is kept in the signature for the callers that resolved it; the one
+/// function resolves its own.
 pub fn derive_spend_micros_row_at_card(
     view: &busbar_kernel_ledger::cost::HistoryView<'_>,
     arrived_ms: u64,
-    card: &busbar_kernel_ledger::cost::RateCard,
+    _card: &busbar_kernel_ledger::cost::RateCard,
     cost: &busbar_kernel::cost::CostModel,
     model: &str,
     b: &UsageBreakdown,
-) -> i64 {
+) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
     let lane = cost.resolve_model_alias(model);
     // ONE ROW OF A LEDGER SLICE, which is what the metering book projects onto without arithmetic:
     // a lane, counts keyed by meter class, a fee count, and THE INSTANT (#79's resolution key, in
@@ -271,31 +268,7 @@ pub fn derive_spend_micros_row_at_card(
             |e, (class, quantity)| e.with_whole(class, quantity),
         )
         .with_fee_count(b.requests);
-    match busbar_kernel_ledger::cost::price_in_view(std::slice::from_ref(&entry), view) {
-        Ok(money) => i64::try_from(money.micros()).unwrap_or(i64::MAX),
-        // THE #42 PARK. See the doc above: the refusal is the ruled-correct answer and the figure
-        // below is the one 1.5.5 served. Neither is this function's to choose between.
-        Err(_) => {
-            let lines: Vec<busbar_contract::caps::UsageLine> = row_counts(b)
-                .map(|(class, quantity)| busbar_contract::caps::UsageLine {
-                    class: busbar_contract::caps::MeterClassId::new(class),
-                    quantity,
-                    // A metering row is a COUNT the node derived from what the destination
-                    // reported; the mark travels with the line because the card prices by class and
-                    // a reader reads the mark, and neither is served by inventing a locator this
-                    // read never saw.
-                    source: busbar_contract::caps::QuantitySource::Count,
-                    estimated: false,
-                })
-                .collect();
-            busbar_kernel_ledger::cost::derive_spend_micros(
-                card,
-                [(cost.resolve_model_alias(model), &lines[..])].into_iter(),
-                b.requests,
-                true,
-            )
-        }
-    }
+    busbar_kernel_ledger::cost::price_in_view(std::slice::from_ref(&entry), view)?.micros_i64()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

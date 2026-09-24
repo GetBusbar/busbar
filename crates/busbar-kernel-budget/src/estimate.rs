@@ -81,8 +81,12 @@ impl Estimate {
     ///
     /// THE FOLD IS [`busbar_kernel_ledger::cost::nanos_sum`]'S, not this file's. What is left here
     /// is which quantity pairs with which price; the multiply, the sum and the saturation at both
-    /// steps belong to the one implementation, exactly as [`crate::price::RateNanos::reserved_nanos`]
-    /// beside it already reads.
+    /// steps belong to the one implementation.
+    ///
+    /// This sizes a RESERVATION, not a spend figure: an over-estimate a unit gives back at
+    /// settlement, rounded UP (see [`Self::hold_nanos`]). Every spend figure — what the door
+    /// compares to a cap and what a read serves — is the one function's
+    /// ([`busbar_kernel_ledger::cost::Tally`], through [`crate::price::Pricer::derive_spend_cents`]).
     ///
     /// The fee enters as a LINE rather than as a scalar seed — `(fee_nanos, 1)`, a quantity of
     /// `fee_nanos` at a price of one — so it is summed by the same guarded fold as everything else

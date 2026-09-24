@@ -439,13 +439,14 @@ fn the_neutral_tier_is_the_identity_at_the_ceiling_in_both_signs() {
     assert_eq!(apply_tier_signed(10_000, 9_999), 9_999);
 }
 
-/// A figure too large to hold is a DISAGREEMENT, not a wrap.
+/// A figure too large to hold is a DISAGREEMENT, not a wrap — and not a pinned figure either.
 ///
 /// The recompute is the arbiter the rest of the money path is checked against, so it is the last
 /// place that may answer with a wrapped number: a product of a hostile quantity and an absurd price
-/// that wrapped into the cached figure would report a clean pass over a line that is wrong. It
-/// saturates instead, exactly as the pricing path it is checking already does, and a saturated
-/// figure can only ever disagree.
+/// that wrapped into the cached figure would report a clean pass over a line that is wrong. It used
+/// to SATURATE, and offer the pinned ceiling as the "corrected" figure — a bill nobody consumed.
+/// The lookup it rechecks with is the one function now, which REFUSES an overflow (item 28), so the
+/// recheck reports [`Divergence::Overflow`], offers no correction, and cannot agree.
 #[test]
 fn a_figure_too_large_to_hold_is_reported_rather_than_wrapped() {
     let archive = SealedHistory::new(History::opening(
@@ -467,11 +468,14 @@ fn a_figure_too_large_to_hold_is_reported_rather_than_wrapped() {
     line.cached = DerivedPrice::default();
 
     let outcome = recheck(&line, &archive);
+    assert_eq!(
+        outcome.divergences,
+        vec![Divergence::Overflow],
+        "the figure is refused and reported as a disagreement, got {outcome:?}"
+    );
     assert!(
-        outcome
-            .corrected
-            .is_some_and(|p| p.priced_nanos > i128::from(u64::MAX)),
-        "the figure saturates upward and is reported as a disagreement, got {outcome:?}"
+        outcome.corrected.is_none(),
+        "no pinned ceiling is offered as a correction"
     );
     assert!(!outcome.agrees());
 }

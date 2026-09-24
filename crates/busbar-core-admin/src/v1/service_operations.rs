@@ -1481,6 +1481,21 @@ impl AdminService {
                     derive_spend_micros_row_at_card(v, at, card, &cost, &r.model, &row_view)
                 })
                 .unwrap_or_else(|| derive_spend_micros_row(&cost, &r.model, &row_view));
+            // A REFUSED figure fails the read (#42, item 31): the card is present and silent about
+            // this row's model or class, or the figure left the range (item 28). The response does
+            // not carry a number nobody priced; the refusal is logged with the row it came from.
+            let row_spend = match row_spend {
+                Ok(spend) => spend,
+                Err(e) => {
+                    diag_error!(
+                        ADMIN_STORE_OPERATION_FAILED,
+                        operation = "usage.price",
+                        error = %e,
+                        "admin store operation failed"
+                    );
+                    return Err(AdminError::Internal);
+                }
+            };
             for b in [
                 &mut total,
                 by_model
@@ -1494,7 +1509,20 @@ impl AdminService {
                 b.tokens_cache_creation =
                     b.tokens_cache_creation.saturating_add(r.tokens_cache_write);
                 b.requests = b.requests.saturating_add(r.requests);
-                b.spend_micros = b.spend_micros.saturating_add(row_spend);
+                // CHECKED, like the one function it sums (item 28): a rollup past the range is a
+                // refused read, never a figure pinned at the ceiling.
+                b.spend_micros = match b.spend_micros.checked_add(row_spend) {
+                    Some(sum) => sum,
+                    None => {
+                        diag_error!(
+                            ADMIN_STORE_OPERATION_FAILED,
+                            operation = "usage.price",
+                            error = "the spend rollup left the representable range",
+                            "admin store operation failed"
+                        );
+                        return Err(AdminError::Internal);
+                    }
+                };
             }
         }
         let by_model = by_model

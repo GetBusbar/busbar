@@ -53,13 +53,6 @@ fn reserved_label(unit: &str) -> &'static str {
     }
 }
 
-/// Nano-units (1e-9 abstract cost unit) per cent (1e-2 unit): the divisor that lands a derived
-/// nano-unit total in whole cents.
-const NANOS_PER_CENT: u128 = 10_000_000;
-
-/// Nano-units per micro-unit, for the hook seam's `spend_micros` projection.
-const NANOS_PER_MICRO: u128 = 1_000;
-
 /// The service-tier multiplier basis points for the neutral `standard` tier: ×1.0000. A tier's
 /// config multiplier resolves to integer basis points (×10_000) at load; the one pricer applies it
 /// as `× bp / 10_000` in integer, so no per-key float drift compounds (§7/§10 of `billing-unified.md`).
@@ -175,40 +168,28 @@ impl RateNanos {
             _ => 0,
         }
     }
+}
 
-    /// The nano-unit cost of a unit map's RESERVED FOUR at this rate. Opens are NOT priced here
-    /// (they need the per-model `ExtraRates`); the enforcement/derive summation prices only the
-    /// reserved four.
-    ///
-    /// THE ARITHMETIC IS [`busbar_kernel_ledger::cost::nanos_sum`]'S. What is left here is the only
-    /// thing this type knows that the ledger does not: WHICH rate each reserved key prices at. The
-    /// multiply, the sum and the saturation at both steps are the one fold every money path shares.
-    ///
-    /// THE COMMENT THIS REPLACES IS WHY THE DEFECT SURVIVED. It said a `u64` count times a `u64`
-    /// nano rate cannot overflow a `u128`, which is TRUE — and it is a true sentence about the
-    /// MULTIPLY, standing where a reader looks for a sentence about the SUM. The sum was the
-    /// unguarded operation: four maximal products reach about 2^130 against a 2^128 ceiling, a
-    /// plain `+` panics in a debug build and WRAPS in a release one, and a total one past the
-    /// ceiling wraps to ONE nano-unit — an astronomical ledger deriving as very nearly free and
-    /// clearing every budget cap on the way past. Saturating is the only reading of an over-the-top
-    /// bill that cannot UNDER-bill.
-    ///
-    /// No ordinary answer moves: below the ceiling this is the same exact integer arithmetic it has
-    /// always been, so every bill a deployment actually produces is byte-identical to 1.5.5.
-    #[inline]
-    pub fn reserved_nanos(&self, units: &BTreeMap<String, u64>) -> u128 {
-        busbar_kernel_ledger::cost::nanos_sum(
-            RESERVED_UNITS
-                .iter()
-                .map(|u| (units.get(*u).copied().unwrap_or(0), self.reserved_rate(u))),
-        )
-    }
+/// The enforcement book's per-model unit map, projected onto the row the one function prices: the
+/// reserved four keys it CARRIES, as exact whole counts.
+///
+/// The filter is the enforcement side's existing posture and it is deliberately kept verbatim: an
+/// OPEN key in this map was never priced by the enforcement derivations, and converging the open
+/// classes onto the card is the keyed-unit convergence (item 123), which builds on this function.
+fn reserved_counts(
+    units: &BTreeMap<String, u64>,
+) -> impl Iterator<Item = (&'static str, busbar_kernel_ledger::cost::Count)> + '_ {
+    RESERVED_UNITS.iter().filter_map(|u| {
+        units
+            .get(*u)
+            .map(|n| (*u, busbar_kernel_ledger::cost::whole(*n)))
+    })
 }
 
 /// THE ONE ENFORCEMENT PRICER every plane's neutral [`busbar_substrate_values::billing::Usage`] reaches
 /// (§4.1 of `billing-unified.md`). Since M1b `Usage` is a SINGLE name-keyed map: the reserved four
-/// price via the [`RateNanos`] tiers (looked up by canonical key through [`RateNanos::reserved_rate`],
-/// the SAME arithmetic [`RateNanos::reserved_nanos`] gives the enforcement/derive summation), and
+/// price via the [`RateNanos`] tiers (looked up by canonical key through [`RateNanos::reserved_rate`];
+/// the TOTAL is the one function's — `busbar_kernel_ledger::cost::Tally` — as every derivation's is), and
 /// every OPEN key prices via an OPAQUE `extras.get(k)` lookup. Each priced key becomes at most one
 /// DISJOINT top-level [`CostComponent`], so `Σ top_level == total` holds by [`CostBreakdown::new`]
 /// construction — no post-hoc scalar ever touches `total`.
@@ -230,7 +211,7 @@ pub fn price(
     tier_bp: u32,
     usage: &busbar_substrate_values::billing::Usage,
 ) -> Result<crate::plane::cost::CostBreakdown, crate::plane::cost::CostError> {
-    use crate::plane::cost::{CostAmount, CostBreakdown, CostComponent};
+    use crate::plane::cost::{CostAmount, CostBreakdown, CostComponent, CostError};
 
     // Assemble the UNDISCOUNTED (label, nanos) components in deterministic order: the reserved four
     // first (canonical order, priced via the `RateNanos` tiers), then the OPEN keys (BTreeMap sorted,
@@ -268,6 +249,14 @@ pub fn price(
         }
     }
 
+    // **THE TOTAL IS THE ONE FUNCTION'S** (items 104, 27). The components below are the statement's
+    // split of it; the figure itself — the multiply, the sum, the tier, the overflow policy — is
+    // `busbar_kernel_ledger::cost::Tally`'s, at a card holding exactly the rates this call prices
+    // with. For whole counts the tier divide is exact at the one function's scale, so its total is
+    // `floor(base × bp / 10_000)`, which is what the marginal split below sums to by construction;
+    // `CostBreakdown::new` re-checks that the parts add up to it. An overflow is a refusal.
+    let one_total = one_function_total(rate, extras, tier_bp, usage)
+        .map_err(|_| CostError::SumOverflow { parent: None })?;
     let base_total: u128 = raw.iter().fold(0u128, |a, (_, amt)| a.saturating_add(*amt));
     let mut components: Vec<CostComponent> = Vec::with_capacity(raw.len() + 1);
 
@@ -309,7 +298,50 @@ pub fn price(
         t
     };
 
-    CostBreakdown::new(CostAmount(total), components)
+    debug_assert_eq!(
+        total, one_total,
+        "the split sums to the one function's figure"
+    );
+    CostBreakdown::new(CostAmount(one_total), components)
+}
+
+/// The one function's figure for [`price`]'s inputs, in nano-units: a card holding the reserved
+/// tier rates and every PRICED open key on one lane, and one row of exactly the keys `price` prices.
+///
+/// The present-but-unpriced open key is left off the row, as `price` leaves it off the split —
+/// that open-class posture is the keyed-unit convergence's (item 123), not this collapse's.
+fn one_function_total(
+    rate: &RateNanos,
+    extras: &ExtraRates,
+    tier_bp: u32,
+    usage: &busbar_substrate_values::billing::Usage,
+) -> Result<u128, busbar_kernel_ledger::cost::MoneyError> {
+    use busbar_kernel_ledger::cost::{nanos_of_exact, whole, LaneClass, RateCard, Tally};
+    const LANE: &str = "";
+    let card = RateCard::from_nano_rates(
+        RESERVED_UNITS
+            .iter()
+            .map(|u| (LaneClass::new(LANE, *u), rate.reserved_rate(u)))
+            .chain(
+                extras
+                    .iter()
+                    .map(|(k, r)| (LaneClass::new(LANE, k.as_str()), *r)),
+            ),
+        0,
+    );
+    let mut tally = Tally::at_card(&card);
+    tally.row(
+        LANE,
+        0,
+        tier_bp,
+        usage
+            .usage_units
+            .iter()
+            .filter(|(k, _)| RESERVED_UNITS.contains(&k.as_str()) || extras.contains_key(*k))
+            .map(|(k, n)| (k.as_str(), whole(*n))),
+        whole(0),
+    )?;
+    nanos_of_exact(tally.exact()?)
 }
 
 /// One (group, window, pool?) ENFORCEMENT BUCKET, resolved from the group's windowed limits:
@@ -436,9 +468,12 @@ impl<'a> Chain<'a> {
 /// The resolved cost model: the effective integer rate table + the group limit topology + the
 /// flat per-request fee. Immutable once resolved; rebuilt with the config on apply/reload.
 pub struct CostModel {
-    /// `None` = `rate_card` absent = token pricing 0 for every model. `Some` = the AUTHORITATIVE
-    /// effective table, straight from the top-level `rate_card:` (the ONLY cost source).
-    rates: Option<HashMap<String, RateNanos>>,
+    /// THE CARD, in the one function's own type (items 104, 25). ABSENT = `rate_card` absent =
+    /// token pricing 0 for every model, fee still posts. PRESENT = the AUTHORITATIVE effective
+    /// table, straight from the top-level `rate_card:` (the ONLY cost source). It used to be a
+    /// private `HashMap<String, RateNanos>` that this module priced with its own copy of the
+    /// arithmetic; every figure is now `busbar_kernel_ledger::cost::Tally` over this card.
+    card: busbar_kernel_ledger::cost::RateCard,
     groups: Vec<GroupRuntime>,
     group_idx: HashMap<String, usize>,
     /// The ids of every LIVE bucket that still carries at least one windowed cap — the exact set
@@ -446,7 +481,6 @@ pub struct CostModel {
     /// "does this ledger cell still back an enforced cap?" an IDENTITY question (is this id one of
     /// the ids the model produces?) instead of a parse of the id's internal structure.
     capped_bucket_ids: std::collections::HashSet<String>,
-    price_per_request_cents: i64,
 }
 
 impl CostModel {
@@ -459,19 +493,32 @@ impl CostModel {
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
         // rate_card is the ONLY cost source: no per-entry cost override lives anywhere else in
-        // config.
-        let rates = rate_card.map(|card| {
-            card.iter()
-                .map(|(model, r)| (model.clone(), RateNanos::from_cfg(r)))
-                .collect::<HashMap<String, RateNanos>>()
-        });
+        // config. The card is built by the one constructor that owns card-building — the class
+        // fan-out, the quantisation (#44), the representability refusal (item 22) and the fee's
+        // clamp are all `RateCard::from_config`'s, so the door and the bill hold ONE card.
+        let card = busbar_kernel_ledger::cost::RateCard::from_config(
+            rate_card.map(|card| {
+                card.iter().map(|(model, r)| {
+                    let raw = r.raw_tier_rates();
+                    (
+                        model.as_str(),
+                        busbar_kernel_ledger::cost::TierRates {
+                            input: raw.input,
+                            output: raw.output,
+                            cache_read: raw.cache_read,
+                            cache_write: raw.cache_write,
+                        },
+                    )
+                })
+            }),
+            per_request_fee,
+        );
         let (groups, group_idx) = Self::project_groups(groups_cfg);
         Self {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
-            rates,
+            card,
             groups,
             group_idx,
-            price_per_request_cents: per_request_fee.max(0),
         }
     }
 
@@ -486,10 +533,9 @@ impl CostModel {
         let (groups, group_idx) = Self::project_groups(groups_cfg);
         Self {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
-            rates: self.rates.clone(),
+            card: self.card.clone(),
             groups,
             group_idx,
-            price_per_request_cents: self.price_per_request_cents,
         }
     }
 
@@ -644,11 +690,10 @@ impl CostModel {
     #[cfg(any(test, feature = "test-support"))]
     pub fn flat(price_per_request_cents: i64) -> Self {
         Self {
-            rates: None,
+            card: busbar_kernel_ledger::cost::RateCard::absent(price_per_request_cents),
             groups: Vec::new(),
             group_idx: HashMap::new(),
             capped_bucket_ids: std::collections::HashSet::new(),
-            price_per_request_cents: price_per_request_cents.max(0),
         }
     }
 
@@ -666,11 +711,16 @@ impl CostModel {
     /// [`BudgetHost::cost_pricing_enabled`](busbar_kernel::plane_host::BudgetHost::cost_pricing_enabled)
     /// seam, which downcasts the opaque cost handle and drives this same read.
     pub fn pricing_enabled(&self) -> bool {
-        self.rates.is_some()
+        self.card.pricing_enabled()
     }
 
     pub fn price_per_request_cents(&self) -> i64 {
-        self.price_per_request_cents
+        self.card.fee()
+    }
+
+    /// The card every figure this model derives is priced against — the one function's own type.
+    pub fn card(&self) -> &busbar_kernel_ledger::cost::RateCard {
+        &self.card
     }
 
     pub fn groups(&self) -> &[GroupRuntime] {
@@ -681,40 +731,52 @@ impl CostModel {
         self.group_idx.get(name).map(|&i| &self.groups[i])
     }
 
-    /// The effective rate for `model` (the resolved rate-card key). Semantics of the three
-    /// outcomes:
+    /// The effective rate for `model` (the resolved rate-card key), read off the card. Semantics of
+    /// the three outcomes:
     /// - card absent: `Some(zero)` - every model prices at 0.
     /// - card present, model priced: `Some(rate)`.
-    /// - card present, model UNKNOWN: `None` - fail-closed; the admission path rejects an
-    ///   unpriced passthrough model, and the derive paths price it at 0 with a warn (it can only
-    ///   arise from ledger rows written before a config change).
+    /// - card present, model UNKNOWN: `None` - fail-closed.
+    ///
+    /// A VIEW of the card for callers that size an estimate from per-tier rates; no figure in this
+    /// module is priced through it. A class the card could not represent (item 22) reads 0 here
+    /// and REFUSES in every figure, because the figures are the one function's.
     #[inline]
     pub fn rate_for(&self, model: &str) -> Option<RateNanos> {
-        match &self.rates {
-            None => Some(RateNanos::default()),
-            Some(table) => table.get(model).copied(),
+        if !self.card.pricing_enabled() {
+            return Some(RateNanos::default());
         }
+        self.card.lane_rates(model).map(|r| RateNanos {
+            input: r.nanos_per_unit(UNIT_INPUT),
+            output: r.nanos_per_unit(UNIT_OUTPUT),
+            cache_read: r.nanos_per_unit(UNIT_CACHE_READ),
+            cache_write: r.nanos_per_unit(UNIT_CACHE_WRITE),
+        })
     }
 
-    /// PRICE a neutral [`busbar_substrate_values::billing::Usage`] for `model` into nanodollars — the host-side
-    /// entry point the [`MeteringHost::price_usage`](busbar_kernel::plane_host::MeteringHost::price_usage)
-    /// seam a live carrier drives folds through. Byte-for-byte the SAME arithmetic the
-    /// enforcement/derive summation uses ([`Self::rate_for`] → [`RateNanos::reserved_nanos`], exactly as
-    /// [`Self::derive_spend_cents`]/[`derive_spend_micros`](Self::derive_spend_micros) price each model),
-    /// so this is a new READER over the existing pricer — the existing money path is untouched.
+    /// PRICE a neutral [`busbar_substrate_values::billing::Usage`] for `model` into nano-units — the
+    /// host-side entry point the [`MeteringHost::price_usage`](busbar_kernel::plane_host::MeteringHost::price_usage)
+    /// seam a live carrier drives folds through.
     ///
-    /// The three `rate_for` outcomes carry straight through: card absent ⇒ `Some(0)` (every model prices
-    /// at 0); card present + model priced ⇒ `Some(nanos)`; card present + model UNKNOWN ⇒ `None` (the
-    /// caller fails closed on an unpriced passthrough model). Only the reserved four price here — the
-    /// carrier maps its own unit classes onto the reserved keys before calling, so no open-key
-    /// `ExtraRates` lookup (and thus no `CostBreakdown`) is involved.
+    /// **THE ONE FUNCTION** over one row at this card: `None` is every refusal it can give — a
+    /// present card that does not name the model, a hit class it cannot price (#42), an overflow
+    /// (item 28) — and the caller fails closed on it. Card absent ⇒ `Some(0)`. Only the reserved
+    /// four reach the row, exactly as before: the open-class convergence is item 123's.
     pub fn price_usage_nanos(
         &self,
         model: &str,
         usage: &busbar_substrate_values::billing::Usage,
     ) -> Option<u128> {
-        self.rate_for(model)
-            .map(|rate| rate.reserved_nanos(&usage.usage_units))
+        let mut tally = busbar_kernel_ledger::cost::Tally::at_card(&self.card);
+        tally
+            .row(
+                model,
+                0,
+                busbar_kernel_ledger::cost::STANDARD_TIER_BP,
+                reserved_counts(&usage.usage_units),
+                busbar_kernel_ledger::cost::whole(0),
+            )
+            .ok()?;
+        busbar_kernel_ledger::cost::nanos_of_exact(tally.exact().ok()?).ok()
     }
 
     /// Whether a request for `model` must be REJECTED because the rate card is present but has no
@@ -727,48 +789,31 @@ impl CostModel {
     /// seam over the same opaque handle.
     #[inline]
     pub fn model_unpriced(&self, model: &str) -> bool {
-        match &self.rates {
-            None => false,
-            Some(table) => !table.contains_key(model),
-        }
+        self.card.lane_unpriced(model)
     }
 
-    /// DERIVE the spend (in cents, abstract minor units) of a ledger view: a few multiply-adds
-    /// over the models the bucket actually used, plus - when `include_request_fee` - the flat
-    /// per-request fee times the BILLABLE request count (`fee_requests`: admitted minus refunded,
-    /// so the fee bills 2xx only). Every enforcement/read path passes `true` (each bucket counts
-    /// its own billable requests, so its fee component is its own); the flag exists for callers
-    /// that want a tokens-only projection. Pure recompute from tokens x current rates: no spend is
-    /// ever cached or stored.
+    /// DERIVE the spend (in cents, abstract minor units) of a ledger view: every model the bucket
+    /// used, plus - when `include_request_fee` - the flat per-request fee times the BILLABLE request
+    /// count (`fee_requests`: admitted minus refunded, so the fee bills 2xx only).
     ///
-    /// A model with no rate (card present, entry missing - only possible for ledger rows written
-    /// under a previous config) derives at 0; the mismatch is the operator's rate-card edit
-    /// taking effect retroactively, which is the designed behavior.
+    /// **THE ONE FUNCTION, NOT A COPY OF IT** (items 104, 25, 124, 28, 31). This used to be its own
+    /// loop, and its loop answered #42 backwards: `if let Some(rate) = self.rate_for(model)` DROPPED
+    /// a model the present card did not name, so its whole consumption derived as nothing — on the
+    /// live LLM admission gate (`try_admit`) and on every customer read ("the designed behavior").
+    /// It is now `busbar_kernel_ledger::cost::Tally` at this card, so:
+    ///
+    /// - card ABSENT: tokens price at 0, the fee posts — #42's only silent zero;
+    /// - card PRESENT, model or hit class unpriced: `Err` — the door BLOCKS and a read FAILS (#42);
+    /// - overflow: `Err(Overflow)` — never pinned at `i64::MAX` (item 28).
     pub fn derive_spend_cents<'m>(
         &self,
         models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
         fee_requests: u64,
         include_request_fee: bool,
-    ) -> i64 {
-        let mut nanos: u128 = 0;
-        for (model, units) in models {
-            if let Some(rate) = self.rate_for(model) {
-                nanos = nanos.saturating_add(rate.reserved_nanos(units));
-            }
-        }
-        // SATURATE into i64 (never `as`-cast): an adversarially large ledger (u64-scale token
-        // counts x a large configured rate) can push the cent total past i64::MAX, and a wrapping
-        // cast would land NEGATIVE - which `.max(0)` below then floors to 0, i.e. an over-the-top
-        // ledger would derive as FREE and bypass every budget cap. Pin at i64::MAX instead (an
-        // astronomically over-cap spend that blocks, fail-closed).
-        let mut cents = i64::try_from(nanos / NANOS_PER_CENT).unwrap_or(i64::MAX);
-        if include_request_fee {
-            let fee = self
-                .price_per_request_cents
-                .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
-            cents = cents.saturating_add(fee);
-        }
-        cents.max(0)
+    ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+        self.tally(models, fee_requests, include_request_fee)?
+            .money()?
+            .minor_i64()
     }
 
     /// As [`Self::derive_spend_cents`] but in MICRO-units, for the hook seam / admin projections.
@@ -777,24 +822,29 @@ impl CostModel {
         models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
         fee_requests: u64,
         include_request_fee: bool,
-    ) -> i64 {
-        let mut nanos: u128 = 0;
+    ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
+        self.tally(models, fee_requests, include_request_fee)?
+            .money()?
+            .micros_i64()
+    }
+
+    /// Drive the one function over a bucket view: one row per model (its reserved-four counts, at
+    /// the standard tier — the enforcement book carries no tier), then the bucket's fee row.
+    fn tally<'m>(
+        &self,
+        models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
+        fee_requests: u64,
+        include_request_fee: bool,
+    ) -> Result<busbar_kernel_ledger::cost::Tally<'_>, busbar_kernel_ledger::cost::MoneyError> {
+        use busbar_kernel_ledger::cost::{whole, Tally, STANDARD_TIER_BP};
+        let mut tally = Tally::at_card(&self.card);
         for (model, units) in models {
-            if let Some(rate) = self.rate_for(model) {
-                nanos = nanos.saturating_add(rate.reserved_nanos(units));
-            }
+            tally.row(model, 0, STANDARD_TIER_BP, reserved_counts(units), whole(0))?;
         }
-        let micros = i64::try_from(nanos / NANOS_PER_MICRO).unwrap_or(i64::MAX);
         if include_request_fee {
-            // 1 cent = 10_000 micro-units.
-            let fee_micros = self
-                .price_per_request_cents
-                .saturating_mul(10_000)
-                .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
-            micros.saturating_add(fee_micros)
-        } else {
-            micros
+            tally.fee(0, STANDARD_TIER_BP, whole(fee_requests))?;
         }
+        Ok(tally)
     }
 
     /// Resolve the ENFORCEMENT CHAIN for a key: [key's attribution bucket] -> key.group's window

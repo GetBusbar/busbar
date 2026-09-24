@@ -282,7 +282,7 @@ impl RateCard {
             refused: Vec::new(),
         };
         for (cell, micro) in entries {
-            card.set_rate(cell, micro);
+            card.place_rate(cell, micro);
         }
         card
     }
@@ -361,6 +361,11 @@ impl RateCard {
     /// A value the card cannot represent leaves the cell UNPRICED (and records it in
     /// [`Self::refused_cells`]) — it never sets a zero the operator did not configure (item 22).
     pub fn set_rate(&mut self, cell: LaneClass, micro_per_unit: f64) {
+        self.place_rate(cell, micro_per_unit);
+    }
+
+    /// The one placement of a configured rate into a cell — the constructor's and the mutator's.
+    fn place_rate(&mut self, cell: LaneClass, micro_per_unit: f64) {
         self.present = true;
         let slot = self
             .prices

@@ -199,7 +199,8 @@ fn drive(
                 [(row.lane.as_str(), l.as_slice())].into_iter(),
                 billable,
                 true,
-            );
+            )
+            .expect("the opening card prices every lane the fixture serves");
             (
                 row,
                 LegacyRow {

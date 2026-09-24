@@ -3296,31 +3296,35 @@ mod one_recorded_usage_every_surface {
             .expect("the key bucket reads")
             .spend_cents;
         //    THE BUDGET GATE — governance/state.rs:1970, the figure `try_admit` compares to a cap.
-        let gate_cents = cost.derive_spend_cents(
-            [(
-                LANE,
-                &std::collections::BTreeMap::from([(
-                    busbar_api::UNIT_INPUT.to_string(),
-                    TOKENS * 2,
-                )]),
-            )]
-            .into_iter(),
-            2,
-            true,
-        );
+        let gate_cents = cost
+            .derive_spend_cents(
+                [(
+                    LANE,
+                    &std::collections::BTreeMap::from([(
+                        busbar_api::UNIT_INPUT.to_string(),
+                        TOKENS * 2,
+                    )]),
+                )]
+                .into_iter(),
+                2,
+                true,
+            )
+            .expect("the one function prices");
         //    THE HOOK SEAM / budget_state — governance/state.rs:1691, the same fold in micro-units.
-        let hook_micros = cost.derive_spend_micros(
-            [(
-                LANE,
-                &std::collections::BTreeMap::from([(
-                    busbar_api::UNIT_INPUT.to_string(),
-                    TOKENS * 2,
-                )]),
-            )]
-            .into_iter(),
-            2,
-            true,
-        );
+        let hook_micros = cost
+            .derive_spend_micros(
+                [(
+                    LANE,
+                    &std::collections::BTreeMap::from([(
+                        busbar_api::UNIT_INPUT.to_string(),
+                        TOKENS * 2,
+                    )]),
+                )]
+                .into_iter(),
+                2,
+                true,
+            )
+            .expect("the one function prices");
 
         eprintln!("\n── ONE RECORDED USAGE: 2 x {TOKENS} input tokens on `{LANE}`, one posting");
         eprintln!("   under a {RATE_EARNED} card and one under a {RATE_CURRENT} card ────────────");

@@ -203,14 +203,22 @@ fn the_cent_projection_truncates_toward_zero() {
 /// Both projections pin at the top of the signed range rather than wrapping. A wrapping conversion
 /// would land negative, the cent floor would turn that into nothing, and an over-the-top ledger
 /// would bill as free — escaping every cap it should have blocked.
+///
+/// And a POSTING that large is never priced at all (item 28): the lookup's figure is the one
+/// function's, which REFUSES an overflow rather than billing the ceiling — so there is no pinned
+/// posting for these projections to be asked about.
 #[test]
 fn both_projections_saturate_rather_than_wrap() {
     assert_eq!(cents_of(u128::MAX), i64::MAX);
     assert_eq!(micros_of(u128::MAX), i64::MAX);
     let c = card("m", 1e15, 0.0, 0);
-    let posted = priced(&c, "m", &usage(&[(INPUT, u64::MAX)]), 0, STANDARD_TIER_BP);
-    assert_eq!(posted.minor(), i64::MAX);
-    assert_eq!(posted.micros(), i64::MAX);
+    let history = crate::cost::History::opening(c, 0);
+    let posting = Posting::from_usage("m", &usage(&[(INPUT, u64::MAX)]), 0, STANDARD_TIER_BP, 0, 0);
+    assert_eq!(
+        crate::cost::price(&history.current(), &posting),
+        Err(crate::cost::Unpriceable::Overflow),
+        "an overflowing posting is refused, never billed at the ceiling"
+    );
 }
 
 /// Sub-micro precision survives, because the working scale is nano-units. Three and an eighth
@@ -333,7 +341,10 @@ fn the_neutral_tier_is_the_identity_at_every_magnitude() {
 fn only_a_genuinely_unrepresentable_tiered_amount_pins_at_the_ceiling() {
     assert_eq!(apply_tier(u128::MAX, 20_000), u128::MAX);
     assert_eq!(checked_apply_tier(u128::MAX, 20_000), None);
-    assert_eq!(checked_apply_tier(u128::MAX, STANDARD_TIER_BP), Some(u128::MAX));
+    assert_eq!(
+        checked_apply_tier(u128::MAX, STANDARD_TIER_BP),
+        Some(u128::MAX)
+    );
     assert_eq!(apply_tier(0, 20_000), 0);
     // Half the ceiling at double price is exactly the ceiling plus one, which is the first value
     // that does not fit — the boundary stated as arithmetic rather than as a literal.
@@ -399,7 +410,11 @@ fn the_tier_does_not_use_the_card_builds_rounding_rule() {
     // At 7.5, half-away-from-zero gives 8 and half-to-even gives 8 too: agreement, not evidence.
     assert_eq!(apply_tier(15, 5_000), 8);
     // At 2.5 they part: half-away-from-zero gives 3, half-to-even gives 2. The tier gives 2.
-    assert_eq!(apply_tier(5, 5_000), 2, "not 3 — the tier is not card-build quantisation");
+    assert_eq!(
+        apply_tier(5, 5_000),
+        2,
+        "not 3 — the tier is not card-build quantisation"
+    );
     assert_eq!(apply_tier(25, 5_000), 12, "not 13");
     assert_eq!(apply_tier(45, 5_000), 22, "not 23");
 }

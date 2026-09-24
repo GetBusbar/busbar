@@ -1911,15 +1911,24 @@ fn test_negative_fee_and_rate_clamp_to_zero() {
     assert_eq!(u.spend_cents, 0, "negative fee clamps to 0 derived spend");
     assert_eq!(u.requests, 5, "requests are still counted");
 
-    // A negative per-token rate likewise derives 0 (never subtracts).
+    // A negative per-token rate never subtracts — and it no longer reads as 0 either. It is not a
+    // rate the card can represent (item 22), so the card holds the class UNPRICED and the read
+    // REFUSES (#42) rather than deriving a figure nobody configured. The tokens are still counted.
     let neg_rate = card_cost("m", -100.0);
     gov.record_usage(&neg_rate, &k, "", "m", &tt(5000), 1_700_000_000);
-    let u = gov
-        .usage_for(&neg_rate, "k1", 1_700_000_000)
-        .unwrap()
-        .unwrap();
-    assert_eq!(u.spend_cents, 0, "negative token rate clamps to 0");
-    assert_eq!(u.tokens, 5000, "tokens are still counted");
+    let refused = gov.usage_for(&neg_rate, "k1", 1_700_000_000);
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("names no price for class")),
+        "a negative token rate is an unpriced class, and the read refuses: {refused:?}"
+    );
+    let tokens: u64 = gov
+        .bucket_model_tokens("k1", crate::governance::WINDOW_TOTAL, 1_700_000_000)
+        .iter()
+        .flat_map(|(_, units)| units.values())
+        .sum();
+    assert_eq!(tokens, 5000, "tokens are still counted");
 }
 
 #[test]
