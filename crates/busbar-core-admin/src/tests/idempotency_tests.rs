@@ -6,10 +6,32 @@
 //! double-run, a cleared/expired reservation frees the key for a fresh mint, and the 600 s TTL is
 //! honoured exactly.
 
-use crate::idempotency::{IdempotencyCache, Probe, IDEMPOTENCY_TTL_SECS};
+use std::sync::{Arc, Mutex};
+
+use crate::idempotency::{ClaimJournal, IdempotencyCache, Probe, IDEMPOTENCY_TTL_SECS};
 
 fn key(actor: &str, header: &str) -> (String, String) {
     (actor.to_string(), header.to_string())
+}
+
+/// A [`ClaimJournal`] fake that records every `(key, now)` it is called with, for asserting the
+/// writer side of item 271: the cache journals a claim exactly once per first sighting, never on a
+/// replay or an in-flight refusal.
+#[derive(Default, Clone)]
+struct RecordingJournal {
+    calls: Arc<Mutex<Vec<((String, String), u64)>>>,
+}
+
+impl RecordingJournal {
+    fn calls(&self) -> Vec<((String, String), u64)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl ClaimJournal for RecordingJournal {
+    fn journal_claim(&self, key: &(String, String), now: u64) {
+        self.calls.lock().unwrap().push((key.clone(), now));
+    }
 }
 
 #[test]
@@ -128,6 +150,100 @@ fn create_and_rotate_scoped_keys_never_replay_each_other() {
     match cache.probe(rotate_key, 1_000) {
         Probe::Reserved(_) => {}
         _ => panic!("a rotate's scoped key must not see the create's committed slot"),
+    };
+}
+
+#[test]
+fn first_sighting_journals_the_claim_exactly_once() {
+    let journal = RecordingJournal::default();
+    let cache: IdempotencyCache<String> = IdempotencyCache::with_journal(Arc::new(journal.clone()));
+    let k = key("alice", "idem-journal-1");
+
+    let reservation = match cache.probe(k.clone(), 1_000) {
+        Probe::Reserved(r) => r,
+        _ => panic!("first sighting must reserve"),
+    };
+    assert_eq!(
+        journal.calls(),
+        vec![(k.clone(), 1_000)],
+        "the claim must be journalled exactly once, under the same (key, now) probe used"
+    );
+    reservation.commit("first-response".to_string(), 1_000);
+
+    // A replay of an already-committed key never re-journals — a completed claim is not taken
+    // again.
+    match cache.probe(k, 1_100) {
+        Probe::Replay(v) => assert_eq!(v, "first-response"),
+        _ => panic!("expected a replay"),
+    }
+    assert_eq!(
+        journal.calls().len(),
+        1,
+        "a replay of a committed key must never journal a second claim"
+    );
+}
+
+#[test]
+fn in_flight_refusal_never_journals_a_second_claim() {
+    let journal = RecordingJournal::default();
+    let cache: IdempotencyCache<String> = IdempotencyCache::with_journal(Arc::new(journal.clone()));
+    let k = key("alice", "idem-journal-2");
+
+    let _first = match cache.probe(k.clone(), 1_000) {
+        Probe::Reserved(r) => r,
+        _ => panic!("first sighting must reserve"),
+    };
+    match cache.probe(k, 1_005) {
+        Probe::InFlight => {}
+        _ => panic!("a concurrent retry against a live reservation must be InFlight"),
+    }
+    assert_eq!(
+        journal.calls().len(),
+        1,
+        "a concurrent in-flight probe must never journal a second claim for the same key"
+    );
+}
+
+#[test]
+fn a_dropped_and_retried_reservation_journals_the_fresh_claim() {
+    let journal = RecordingJournal::default();
+    let cache: IdempotencyCache<String> = IdempotencyCache::with_journal(Arc::new(journal.clone()));
+    let k = key("alice", "idem-journal-3");
+
+    {
+        let _reservation = match cache.probe(k.clone(), 1_000) {
+            Probe::Reserved(r) => r,
+            _ => panic!("first sighting must reserve"),
+        };
+        // Dropped without commit/clear/leak.
+    }
+    match cache.probe(k.clone(), 1_001) {
+        Probe::Reserved(_) => {}
+        _ => panic!("a dropped (uncommitted) reservation must free the key"),
+    }
+    assert_eq!(
+        journal.calls(),
+        vec![(k.clone(), 1_000), (k, 1_001)],
+        "a fresh reservation after a dropped one is a NEW claim and must be journalled again"
+    );
+}
+
+#[test]
+fn no_journal_bound_takes_no_calls_and_behaves_exactly_as_before() {
+    // Exactly `IdempotencyCache::new()`, the constructor every existing call site (and a node with
+    // no data dir) still uses: no journal is ever consulted, and every prior assertion in this file
+    // (proved against `IdempotencyCache::new()`) is unaffected by this seam's existence.
+    let cache: IdempotencyCache<String> = IdempotencyCache::new();
+    let k = key("alice", "idem-journal-4");
+
+    let reservation = match cache.probe(k.clone(), 1_000) {
+        Probe::Reserved(r) => r,
+        _ => panic!("first sighting must reserve"),
+    };
+    reservation.commit("first-response".to_string(), 1_000);
+    match cache.probe(k, 1_100) {
+        Probe::Replay(v) => assert_eq!(v, "first-response"),
+        _ => panic!("expected a replay"),
     };
 }
 
