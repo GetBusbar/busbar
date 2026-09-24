@@ -7,7 +7,7 @@
 //! differently. A verifier that returns a boolean tells nobody anything, gets run once, and is then
 //! ignored — so this one returns findings.
 
-use crate::checkpoint::Checkpoint;
+use crate::checkpoint::{AnchoredHead, Checkpoint};
 use crate::identity::{closed_window_is_settled, residual, ClosedWindowMoved, Imbalance};
 use crate::totals::{Totals, TotalsKey, WindowStart};
 
@@ -110,16 +110,37 @@ impl WindowState for AllWindowsOpen {
 /// balance in either of them is checked, so a balance that appeared since the checkpoint is not
 /// skipped, and one that is no longer in the book is named as such rather than measured against
 /// zeros — see [`Finding::Retired`] for why those are different answers.
+///
+/// `anchor` is what the anchor sink says the last anchored checkpoint was — the head read back out
+/// of [`crate::checkpoint::CheckpointAnchor::head`] — and it is what makes a ROLLED-BACK checkpoint
+/// detectable. A node restored from an old backup verifies its books perfectly against the old
+/// checkpoint it was restored with: every figure is self-consistent, the digest verifies, and the
+/// only fact that says the history went backwards is held outside the node's own write authority.
+/// So the anchored head is compared with the checkpoint being verified against, by sequence AND
+/// body digest, and any disagreement is [`Finding::AnchorHeadDiffers`]. This parameter used to not
+/// exist: the finding was declared and rendered and never constructed, so the rollback detector
+/// could not fire. `None` is a caller stating it holds no anchor, which is an answer the caller has
+/// to write down rather than a check that silently did not run.
 pub fn verify(
     since: &Checkpoint,
     now: &std::collections::BTreeMap<(TotalsKey, WindowStart), Totals>,
     windows: &dyn WindowState,
+    anchor: Option<&AnchoredHead>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     if !since.body_hash_verifies() {
         findings.push(Finding::CheckpointEdited {
             checkpoint_seq: since.checkpoint_seq,
         });
+    }
+    if let Some(anchored) = anchor {
+        if anchored.checkpoint_seq != since.checkpoint_seq || anchored.body_hash != since.body_hash
+        {
+            findings.push(Finding::AnchorHeadDiffers {
+                anchored: anchored.checkpoint_seq,
+                expected: since.checkpoint_seq,
+            });
+        }
     }
 
     let mut keys: Vec<&(TotalsKey, WindowStart)> = since.totals.keys().collect();
