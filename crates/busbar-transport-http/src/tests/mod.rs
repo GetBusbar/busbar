@@ -118,6 +118,85 @@ async fn the_envelopes_own_method_and_path_are_what_reach_the_upstream() {
     );
 }
 
+/// Only TCP connect and HTTP/2 keepalive bounded `client.request(req).await`; an HTTP/1.1 upstream
+/// that accepts the connection and then never answers held it open forever (item 153). The bound is
+/// the OPERATOR'S configured `ClientSettings::request_timeout_secs`, not a value this crate invents
+/// — set to 1s here (rather than the 300s production default) so the test proves the cut in real
+/// time instead of needing a paused clock, and proves the CONFIGURED value drives it: a build using
+/// the 300s default would not cut this upstream inside any test's real budget.
+#[tokio::test]
+async fn a_stalled_upstream_response_is_cut_at_the_configured_request_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    // Accepts the connection (so `dial`/`write` get a real socket to write the request on) and then
+    // holds it open, reading and answering nothing — the "hangs after connect" upstream.
+    tokio::spawn(async move {
+        let (_stream, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let uri = format!("http://{addr}/");
+    let settings = ClientSettings {
+        request_timeout_secs: 1,
+        ..ClientSettings::default()
+    };
+    let transport = HttpTransport::new(settings);
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    let req = b"POST / HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        transport.write(&conn, StreamId(0), ScratchBytes::new(req)),
+    )
+    .await
+    .expect(
+        "the transport's own 1s configured bound must cut this well inside the test's 5s budget",
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        TransportError::Timeout,
+        "a stalled upstream response must be cut at the configured request timeout, not held open forever"
+    );
+}
+
+/// The mirror of the above: a response that lands WITHIN the configured bound must not be cut.
+/// Configured at 2s against an upstream that answers after ~200ms — proves the bound only fires on
+/// an upstream that actually stalls, not on every exchange, and that a bound far shorter than the
+/// 300s default (so a wrongly-hardcoded 300s would make this indistinguishable from "never cut" and
+/// prove nothing) is honoured for the ALLOW side too.
+#[tokio::test]
+async fn a_response_within_the_configured_request_timeout_is_not_cut() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        tokio::io::AsyncWriteExt::write_all(&mut stream, resp)
+            .await
+            .unwrap();
+    });
+    let uri = format!("http://{addr}/");
+    let settings = ClientSettings {
+        request_timeout_secs: 2,
+        ..ClientSettings::default()
+    };
+    let transport = HttpTransport::new(settings);
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    let req = b"POST / HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
+    transport
+        .write(&conn, StreamId(0), ScratchBytes::new(req))
+        .await
+        .expect("an upstream that answers inside the configured bound must not be cut");
+}
+
 /// A second exchange on a connection whose answer can no longer be delivered is an ERROR, not an
 /// `Ok` the caller will read as sent-and-answered.
 ///
@@ -128,39 +207,6 @@ async fn the_envelopes_own_method_and_path_are_what_reach_the_upstream() {
 /// floor: a write that failed silently, which is the one thing this transport's write path must
 /// never do. The same holds when the receiver has gone: the head frame's send fails, and that is a
 /// closed connection, not a delivery.
-/// Only TCP connect and HTTP/2 keepalive bounded `client.request(req).await`; an HTTP/1.1 upstream
-/// that accepts the connection and then never answers held it open forever (item 153). The clock is
-/// paused and the upstream is a listener that accepts and then never reads/writes another byte, so
-/// this proves the bound without a real five-minute wait: the runtime has nothing else pending once
-/// `write` blocks on the response, so pausing auto-advances straight to the timeout's own deadline.
-#[tokio::test(start_paused = true)]
-async fn a_stalled_upstream_response_is_cut_by_the_request_timeout() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    // Accepts the connection (so `dial`/`write` get a real socket to write the request on) and then
-    // holds it open, reading and answering nothing — the "hangs after connect" upstream.
-    tokio::spawn(async move {
-        let (_stream, _) = listener.accept().await.unwrap();
-        std::future::pending::<()>().await;
-    });
-    let uri = format!("http://{addr}/");
-    let transport = HttpTransport::new(ClientSettings::default());
-    let conn = transport
-        .dial(&upstream_dest(&uri), &fixture_key())
-        .await
-        .unwrap();
-    let req = b"POST / HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
-    let err = transport
-        .write(&conn, StreamId(0), ScratchBytes::new(req))
-        .await
-        .unwrap_err();
-    assert_eq!(
-        err,
-        TransportError::Timeout,
-        "a stalled upstream response must be cut at the request timeout, not held open forever"
-    );
-}
-
 #[tokio::test]
 async fn a_second_egress_exchange_with_nowhere_to_answer_is_reported_not_swallowed() {
     let uri = request_line_echo_server().await;

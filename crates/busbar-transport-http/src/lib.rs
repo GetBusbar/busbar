@@ -17,8 +17,8 @@
 //! interval 30s / timeout 10s with the adaptive window on, `pool_max_idle_per_host` /
 //! `pool_idle_timeout` from [`ClientSettings`], and `upstream_http1_only` /
 //! `upstream_h2_prior_knowledge` selecting the connector's ALPN offer exactly as the engine did.
-//! The wait for a response HEAD is bounded too, at [`REQUEST_TIMEOUT_SECS`] — connect and keepalive
-//! were both bounded already; this is the one wait between them that was not.
+//! The wait for a response HEAD is bounded too, at [`ClientSettings::request_timeout_secs`] —
+//! connect and keepalive were both bounded already; this is the one wait between them that was not.
 //!
 //! ## Bodies larger than one call
 //!
@@ -134,6 +134,20 @@ pub struct ClientSettings {
     /// — that answers past it ends the frame stream instead of growing this node's heap. Defaults
     /// to the same value as the request cap.
     pub response_body_max_bytes: usize,
+    /// The ceiling on one egress exchange's `client.request().await` — from the moment the request
+    /// leaves to the moment the response HEAD is in hand, in seconds.
+    ///
+    /// This is the operator's own `limits.upstream_request_timeout_secs`, carried here rather than
+    /// read off a constant of this crate's own — the same reason `request_body_max_bytes` is a
+    /// field and not a literal: a deployment that raised the knob for long generations must have
+    /// this wait raised with it, not silently re-capped at whatever this crate shipped with.
+    /// `connect_timeout` and the HTTP/2 keepalive bounds stay hardcoded beside it, because neither
+    /// of those is a knob 1.5.5 exposed either — only the request-level ceiling was. Only TCP
+    /// connect and HTTP/2 keepalive bounded `client.request()` before this field existed; an
+    /// HTTP/1.1 upstream that accepted the connection and then never answered could hold it open
+    /// forever. Defaults to the same historical value the config layer resolves the knob to when
+    /// unset.
+    pub request_timeout_secs: u64,
 }
 
 /// The uninstalled-config fallback for [`ClientSettings::request_body_max_bytes`] — the same
@@ -141,18 +155,11 @@ pub struct ClientSettings {
 /// limit is installed, named here so the two never drift apart silently.
 pub const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 32 * 1024 * 1024;
 
-/// The ceiling on one egress exchange's `client.request().await` — from the moment the request
-/// leaves to the moment the response HEAD is in hand. Hardcoded, exactly the way `connect_timeout`
-/// (10s) and the HTTP/2 keep-alive interval/timeout (30s/10s) above it are: none of the three is on
-/// [`ClientSettings`] either, because none of them is a per-deployment knob today.
-///
-/// The value itself is not invented: it is the byte-identical ceiling 1.5.5's own engine used for
-/// this exact wait — the "client-level ceiling" its send path anchored at send start
-/// (`limits.upstream_request_timeout_secs`, still 300 by default in the config layer above this
-/// crate today). Only TCP connect and HTTP/2 keepalive bounded this call before; an HTTP/1.1
-/// upstream that accepted the connection and then never answered could hold it open forever. This
-/// is that bound, re-provisioned at the one place hyper's own client leaves none.
-pub const REQUEST_TIMEOUT_SECS: u64 = 300;
+/// The uninstalled-config fallback for [`ClientSettings::request_timeout_secs`] — the same
+/// historical value the config layer resolves `limits.upstream_request_timeout_secs` to when no
+/// operator limit is installed (and the byte-identical ceiling 1.5.5's own engine anchored this
+/// exact wait with), named here so the two never drift apart silently.
+pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
 
 impl Default for ClientSettings {
     fn default() -> Self {
@@ -163,6 +170,7 @@ impl Default for ClientSettings {
             upstream_h2_prior_knowledge: false,
             request_body_max_bytes: DEFAULT_REQUEST_BODY_MAX_BYTES,
             response_body_max_bytes: DEFAULT_REQUEST_BODY_MAX_BYTES,
+            request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
         }
     }
 }
@@ -272,6 +280,9 @@ pub struct HttpTransport {
     max_body_bytes: usize,
     /// The cap on one exchange's response body, carried from [`ClientSettings`].
     max_response_bytes: usize,
+    /// The bound on the egress `client.request()` wait, carried from
+    /// [`ClientSettings::request_timeout_secs`].
+    request_timeout_secs: u64,
 }
 
 impl std::fmt::Debug for HttpTransport {
@@ -292,6 +303,7 @@ impl HttpTransport {
             egress_client: Arc::new(build_egress_client(&settings)),
             max_body_bytes: settings.request_body_max_bytes,
             max_response_bytes: settings.response_body_max_bytes,
+            request_timeout_secs: settings.request_timeout_secs,
         }
     }
 

@@ -33,7 +33,7 @@ use crate::{
     complete_message, deliver_refusal, finalise, map_egress_err, now_unix_secs, pump_response_body,
     read_ingress_message, request_target, retry_after_secs, status_class, EgressHead,
     ExchangeGuard, HttpConnHandle, HttpListenerHandle, HttpTransport, Inner, RawStartLine,
-    ReadSide, READ_CHUNK_BYTES, REQUEST_TIMEOUT_SECS,
+    ReadSide, READ_CHUNK_BYTES,
 };
 
 impl Transport for HttpTransport {
@@ -276,10 +276,10 @@ impl Transport for HttpTransport {
                     // TCP connect and HTTP/2 keepalive are both bounded on the client this dials
                     // through; the wait for the response HEAD itself was not. An HTTP/1.1 upstream
                     // that accepts the connection and then never answers held this future open
-                    // forever — a stalled response is now cut at the same ceiling 1.5.5's own
-                    // engine bounded this exact wait with.
+                    // forever — a stalled response is now cut at the operator's own configured
+                    // ceiling, the same one this instance was built with.
                     let resp = tokio::time::timeout(
-                        Duration::from_secs(REQUEST_TIMEOUT_SECS),
+                        Duration::from_secs(self.request_timeout_secs),
                         client.request(req),
                     )
                     .await
