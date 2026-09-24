@@ -10,6 +10,7 @@
 
 use crate::engine::*;
 
+use busbar_kernel::store::BreakerCfg;
 use busbar_substrate_values::diag_debug;
 use busbar_substrate_values::diagnostics::{
     CROSSPROTO_BINARY_CODEC_FAILED, CROSSPROTO_JSON_CODEC_FAILED,
@@ -127,7 +128,7 @@ pub(crate) async fn translate_response_cross_protocol(
     ingress_protocol: &str,
     op: busbar_substrate_values::handlers::Op,
     pool: &str,
-    breaker_cfg: &busbar_kernel::store::BreakerCfg,
+    breaker_cfg: &BreakerCfg,
     r: axum::http::Response<hyper::body::Incoming>,
     read_deadline: tokio::time::Instant,
     permit: Permit,
@@ -222,6 +223,9 @@ pub(crate) async fn translate_response_cross_protocol(
                 eh,
                 ingress_op.is_some(),
                 rv,
+                op.operation == busbar_api::operation::Operation::CHAT,
+                pool,
+                breaker_cfg,
                 &usage_sink,
                 budget_guard,
                 wants_stream,
@@ -359,7 +363,7 @@ async fn read_capped_body(
     pool: &str,
     ingress_protocol: &str,
     egress_name: &str,
-    breaker_cfg: &busbar_kernel::store::BreakerCfg,
+    breaker_cfg: &BreakerCfg,
     r: axum::http::Response<hyper::body::Incoming>,
     read_deadline: tokio::time::Instant,
     permit: Permit,
@@ -447,7 +451,7 @@ fn not_translatable(
     pool: &str,
     ingress_protocol: &str,
     egress_name: &str,
-    breaker_cfg: &busbar_kernel::store::BreakerCfg,
+    breaker_cfg: &BreakerCfg,
     status: StatusCode,
     degraded: bool,
     tap: &TapCell,
@@ -485,6 +489,71 @@ fn not_translatable(
     )
 }
 
+/// Did the upstream REPORT this buffered chat generation as failed? True exactly when the egress
+/// dialect's own reader reads the body's stop reason as [`crate::ir::IrStopReason::Error`] — the
+/// one canonical reason that means "the generation failed", as opposed to a refusal, a safety stop
+/// or a truncation, each of which is a correctly-served answer. A body the reader refuses answers
+/// `false`: the translate above already accepted it, and this is a question about its stop reason,
+/// not a second opinion on its shape.
+fn generation_failed(egress_name: &str, rv: &Value) -> bool {
+    crate::proto_codec::with_reader(egress_name, |r| r.read_response(rv))
+        .and_then(Result::ok)
+        .is_some_and(|ir| ir.stop_reason == Some(crate::ir::IrStopReason::Error))
+}
+
+/// The failed-generation exit (owner ruling Q31). The upstream answered 2xx with a whole body whose
+/// stop reason says the generation FAILED:
+/// - the CHARGE is what the upstream reported it used — ledgered through the same seam, from the
+///   same `usage`, a delivery bills from (#62 applied to the buffered arm), and the headers-time
+///   budget unit is kept, because the upstream did serve (and charge for) the request;
+/// - the END is `Error`, with that usage riding it as the charge;
+/// - the lane's BREAKER records a transient fault, compensating the optimistic success recorded
+///   at headers time, exactly as the stream-end arm does for a stream's terminal error;
+/// - the CLIENT gets an ingress-native error and no completion, as it does on the transport-failure
+///   exit: the failure is the upstream's, so a 502.
+#[allow(clippy::too_many_arguments)]
+fn failed_generation(
+    host: &Arc<dyn EngineHost>,
+    d: &Delivery<'_>,
+    pool: &str,
+    breaker_cfg: &BreakerCfg,
+    usage: Option<busbar_substrate_values::billing::Billing>,
+    usage_sink: &Option<UsageSink>,
+    budget_guard: &mut BudgetSpendGuard<'_>,
+    tap: &TapCell,
+) -> Response {
+    let (rt, i, ingress_protocol) = (d.rt, d.i, d.ingress_protocol);
+    tap.report(TapReport {
+        lane: i,
+        usage: token_usage_of(&usage),
+        open_units: crate::engine::usage::open_units_of(&usage),
+        finish: TapFinish::Error,
+    });
+    record_resp_usage(
+        host,
+        usage,
+        usage_sink,
+        EngineTables::new(rt).lanes().get(i),
+    );
+    budget_guard.disarm();
+    let tripped = host.lane_store().record_transient_in(
+        pool,
+        i,
+        "upstream-generation-failed",
+        breaker_cfg,
+        None,
+    );
+    if tripped {
+        emit_breaker_trip(host, rt, pool, i);
+    }
+    ingress_error(
+        ingress_protocol,
+        StatusCode::BAD_GATEWAY,
+        KIND_API_ERROR,
+        GENERIC_RESPONSE_ERROR_DETAIL,
+    )
+}
+
 /// The JSON-body delivery: translate, bill on a delivering variant, and build the client response.
 /// `None` when the codec rejected the body or the delivery is `Untranslatable` (the caller's 500).
 #[allow(clippy::too_many_arguments)]
@@ -494,6 +563,9 @@ fn deliver_json(
     eh: &dyn busbar_substrate_values::handlers::OperationHandler,
     ingress_serves_op: bool,
     rv: &Value,
+    is_chat: bool,
+    pool: &str,
+    breaker_cfg: &BreakerCfg,
     usage_sink: &Option<UsageSink>,
     budget_guard: &mut BudgetSpendGuard<'_>,
     wants_stream: bool,
@@ -541,12 +613,33 @@ fn deliver_json(
     // Bill ONLY when the resolved delivery hands bytes to the client. `IngressUnsupported` (a 404)
     // and `Untranslatable` (the 500) deliver no completion: leave the guard armed so the budget unit
     // is refunded, mirroring the streaming wrapper's refund-on-non-delivery.
-    if matches!(
+    let delivers = matches!(
         delivered,
         busbar_substrate_values::wire::TranslatedResponse::StreamFrames(_)
             | busbar_substrate_values::wire::TranslatedResponse::Typed(_)
             | busbar_substrate_values::wire::TranslatedResponse::Json(_)
-    ) {
+    );
+    // A FAILED GENERATION (owner ruling Q31): the upstream's own stop reason says the generation
+    // failed (a Cohere `finish_reason: "ERROR"`, a Gemini `MALFORMED_FUNCTION_CALL`). No ingress
+    // writer has a native token for that reason, so relaying the translated body would hand the
+    // client a SUCCESS terminator (`stop` / `end_turn` / `OTHER`) for a failure. It surfaces as an
+    // error instead, the lane's breaker records the fault, and the usage the upstream reported it
+    // used is still charged — the #62 rule (a failed stream bills what it streamed) applied to the
+    // buffered arm. Read only where a delivery would otherwise happen, so the one-predicate rule
+    // between the charge and the recorded end below still holds.
+    if delivers && is_chat && generation_failed(egress_name, rv) {
+        return Some(failed_generation(
+            host,
+            d,
+            pool,
+            breaker_cfg,
+            usage,
+            usage_sink,
+            budget_guard,
+            tap,
+        ));
+    }
+    if delivers {
         // THE REPORT-BACK, on the JSON delivery, gated by the SAME predicate the accrual is: an
         // exit that hands the client bytes is `Complete` and bills, and the two that hand it an
         // error (`IngressUnsupported`, `Untranslatable`) fall through to the caller's failed-transfer

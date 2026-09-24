@@ -232,3 +232,9 @@ pub(crate) fn attempt<'a>(
 #[cfg(test)]
 #[path = "../tests/attempt_identity_tests.rs"]
 mod attempt_identity_tests;
+
+/// OWNER RULING Q31 — a generation the upstream reports as failed surfaces as an error, faults the
+/// breaker and charges what the upstream reported it used, on both delivery arms.
+#[cfg(test)]
+#[path = "tests/failed_generation.rs"]
+mod failed_generation_tests;
