@@ -7,8 +7,8 @@
 # green") and the gate designs (gate-no-deferral.md, gate-isomorphism.md).
 #
 # WHAT "DONE" MEANS HERE — the umbrella asserts, as ONE verdict, that every sub-gate is green:
-#   build            the full-gate cargo battery (shell out to `cargo xtask full-gate`; else an explicit
-#                    cargo build/clippy/test-compile battery).
+#   build            the full-gate cargo battery (`cargo xtask full-gate`, driven by qa/full-gate.toml).
+#                    No register, no battery: BUILD is RED, never a silent downgrade to plain builds.
 #   plane-purity     cargo xtask gate plane-purity  (neutral crates 0 side channels / 0 backwards),
 #                    plus the strict ratchet, which nothing invoked while it was a shell flag.
 #   plane-delete     scripts/plane-delete-test.sh --all, plus a roster-coverage check that the
@@ -91,8 +91,14 @@ ylw()  { printf '\033[33m%s\033[0m\n' "$*"; }
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 hdr()  { printf '\n\033[1m══ %s ══\033[0m\n' "$*"; }
 
+# --help prints the WHOLE header comment -- every line from 2 up to the first non-comment line --
+# rather than a hand-typed range. The range was `2,66`, and the header grew past it: the FLAGS block
+# (--fast, --selftest, and the rule that a --fast run is PROVISIONAL and exits 3, the one contract a
+# wrapper author most needs) sat below the cut and --help never showed it.
+print_help() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$SELF"; }
+
 FAST=0 SELFTEST=0
-case "${1:-}" in --fast) FAST=1 ;; --selftest) SELFTEST=1 ;; "" ) ;; -h|--help) sed -n '2,66p' "$0"; exit 0 ;; *) echo "usage: $0 [--fast|--selftest]" >&2; exit 2 ;; esac
+case "${1:-}" in --fast) FAST=1 ;; --selftest) SELFTEST=1 ;; "" ) ;; -h|--help) print_help; exit 0 ;; *) echo "usage: $0 [--fast|--selftest]" >&2; exit 2 ;; esac
 
 # Results accumulators (parallel arrays — bash 3.2 has no assoc arrays).
 G_NAME=(); G_STATE=(); G_NOTE=()
@@ -289,6 +295,71 @@ fi
 
 # A step that is RED simply because an artifact does not exist yet (a not-yet-built sub-gate).
 absent_step() { printf '  \033[31m[RED]\033[0m  %s — NOT PRESENT YET (%s)\n' "$1" "$2"; CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="$1 (absent)"; }
+
+# THE BUILD GROUP, as a function so --selftest can drive its arms. Without --fast the ONLY green
+# BUILD is the full-gate battery. A missing qa/full-gate.toml used to fall through to three plain
+# `cargo build`s -- no clippy, no test tier -- and still report GREEN, print the unqualified DONE
+# banner and exit 0: the exact downgrade --fast was demoted to PROVISIONAL / exit 3 for, reachable by
+# deleting one file. A missing register is now RED, named, like every other absent sub-gate.
+run_build_group() {  # $1 = the full-gate register path
+  local register="$1"
+  if [ "$FAST" -eq 1 ]; then
+    ylw "  --fast: substituting 'cargo build --workspace' for the full ci battery"
+    step "cargo build --workspace" cargo build --workspace --quiet
+  elif [ -f "$register" ]; then
+    step "cargo xtask full-gate --selftest" cargo xtask full-gate --selftest
+    step "cargo xtask full-gate"            cargo xtask full-gate
+  else
+    absent_step "full-gate register (BUILD without it is three plain builds: no clippy, no test tier)" "$register"
+  fi
+}
+
+# THE VOICE LEGS ARE =READY, READ OFF THE RIG'S OWN --list. The CONFORMANCE group is titled
+# "voice legs =ready", and its only voice step was the rig's --selftest, whose last check accepts a
+# battery in which EVERY leg is LEG_STATUS=pending (it prints "NOT a conformance pass" to a stdout it
+# then discards, and returns 0). So nothing compared LEG_STATUS to `ready` anywhere. This does.
+# VOICE_LEGS_DIR is the rig's own fixture override; it is cleared for the real read so an operator
+# cannot point the DONE run at a hand-made legs directory. --selftest passes a fixture dir.
+voice_legs_all_ready() {  # $1 = runner ; $2 = legs dir (selftest fixture) or empty for the shipped legs
+  local runner="$1" dir="${2:-}" out n notready
+  if [ -n "$dir" ]; then
+    out="$(VOICE_LEGS_DIR="$dir" bash "$runner" --list 2>&1)" || { printf '%s\n' "$out"; echo "the voice rig could not list its legs"; return 1; }
+  else
+    out="$(env -u VOICE_LEGS_DIR bash "$runner" --list 2>&1)" || { printf '%s\n' "$out"; echo "the voice rig could not list its legs"; return 1; }
+  fi
+  n="$(printf '%s\n' "$out" | grep -c ' status=' || true)"
+  if [ "${n:-0}" -lt 1 ]; then
+    printf '%s\n' "$out"; echo "the voice rig listed ZERO legs — nothing is =ready because nothing is there"; return 1
+  fi
+  notready="$(printf '%s\n' "$out" | grep ' status=' | grep -v ' status=ready ' || true)"
+  if [ -n "$notready" ]; then
+    echo "voice leg(s) NOT LEG_STATUS=ready — a pending leg asserts no conformance at all:"
+    printf '%s\n' "$notready"
+    return 1
+  fi
+  echo "all $n voice leg(s) are LEG_STATUS=ready"
+}
+
+# EVERY `cargo xtask gate <name>` THIS FILE RUNS IS A REGISTERED GATE, per the registry's own
+# `--list` (the instrument, not a grep of its source). The AUDIT-LEDGER group ran
+# `cargo xtask gate audit-ledger --selftest` for a gate deleted with its register (647f2fae9); it
+# was masked only because the `if` around it guarded on that deleted register too, so a restored
+# register would have met a step that can only fail. Flags (`--all`, `--list`) are not gate names.
+xtask_gates_invoked_are_registered() {  # $1 = file to scan
+  local file="$1" listed invoked g bad=""
+  listed="$(cargo xtask gate --list 2>/dev/null | awk '{print $1}')" || true
+  [ -n "$listed" ] || { echo "cargo xtask gate --list printed nothing — the registry cannot be read, so nothing can be checked against it"; return 1; }
+  invoked="$(grep -v '^[[:space:]]*#' "$file" | grep -oE 'cargo xtask gate [a-z0-9][a-z0-9-]*' | awk '{print $4}' | sort -u)"
+  [ -n "$invoked" ] || { echo "found no \`cargo xtask gate <name>\` invocation in $file — the scan read nothing"; return 1; }
+  for g in $invoked; do
+    printf '%s\n' "$listed" | grep -qx -- "$g" || bad="${bad:+$bad }$g"
+  done
+  if [ -n "$bad" ]; then
+    echo "invoked but NOT registered (cargo xtask gate --list): $bad"
+    return 1
+  fi
+  echo "$(printf '%s\n' "$invoked" | grep -c .) gate name(s) invoked, every one registered"
+}
 
 # NON-VACUITY FOR A FILTERED `cargo test`. A name filter selects by substring across every target
 # cargo builds, and a filter that matches NOTHING still exits 0 — "running 0 tests ... 0 passed; N
@@ -679,6 +750,50 @@ if [ "$SELFTEST" -eq 1 ]; then
   st_expect refuse "a report carrying unaccepted divergences"                    assert_parity_verdict "$st_tmp/rep-diverging"
   st_expect refuse "a report that compared ZERO cells (the zero that is not one)" assert_parity_verdict "$st_tmp/rep-nothing"
   st_expect refuse "no report at all"                                            assert_parity_verdict "$st_tmp/rep-missing"
+
+  # ── BUILD: no full-gate register is RED, not three plain builds (item 529) ────────────────────
+  # Driven through the REAL run_build_group with `step` stubbed to a recorder, so no cargo runs.
+  st_build() {  # $1 = FAST ; $2 = register path  -> exit 0 iff the group came out GREEN
+    ( FAST="$1"; CUR_RED=0; CUR_FIRST_NOTE=""; step() { echo "STEP $1"; }
+      run_build_group "$2" >/dev/null 2>&1; [ "$CUR_RED" -eq 0 ] )
+  }
+  printf 'version = 1\n' > "$st_tmp/full-gate.toml"
+  st_expect accept "BUILD with the full-gate register present runs the battery"   st_build 0 "$st_tmp/full-gate.toml"
+  st_expect refuse "BUILD with NO full-gate register (the silent plain-build downgrade)" st_build 0 "$st_tmp/no-full-gate.toml"
+
+  # ── the CONFORMANCE group's voice legs are =ready (item 530) ──────────────────────────────────
+  if [ -f testing/voice-conformance/voice-conformance.sh ]; then
+    mkdir -p "$st_tmp/legs-ready" "$st_tmp/legs-pending" "$st_tmp/legs-none"
+    for st_l in a b c; do
+      printf 'LEG_KIND=conformance\nLEG_STATUS=ready\nLEG_SLICES=(x)\nleg_execute(){ :; }\n' > "$st_tmp/legs-ready/$st_l.sh"
+      printf 'LEG_KIND=conformance\nLEG_STATUS=ready\nLEG_SLICES=(x)\nleg_execute(){ :; }\n' > "$st_tmp/legs-pending/$st_l.sh"
+    done
+    printf 'LEG_KIND=conformance\nLEG_STATUS=pending\nLEG_SLICES=(x)\nleg_execute(){ :; }\n' > "$st_tmp/legs-pending/b.sh"
+    # EVERY leg pending: the exact state the rig's --selftest accepts (its zero-ready branch returns 0).
+    mkdir -p "$st_tmp/legs-allpending"
+    for st_l in a b c; do
+      printf 'LEG_KIND=conformance\nLEG_STATUS=pending\nLEG_SLICES=(x)\nleg_execute(){ :; }\n' > "$st_tmp/legs-allpending/$st_l.sh"
+    done
+    st_expect accept "voice legs all LEG_STATUS=ready"                  voice_legs_all_ready testing/voice-conformance/voice-conformance.sh "$st_tmp/legs-ready"
+    st_expect refuse "a voice leg LEG_STATUS=pending under the '=ready' claim" voice_legs_all_ready testing/voice-conformance/voice-conformance.sh "$st_tmp/legs-pending"
+    st_expect refuse "EVERY voice leg LEG_STATUS=pending (the rig's --selftest accepts this)" voice_legs_all_ready testing/voice-conformance/voice-conformance.sh "$st_tmp/legs-allpending"
+    st_expect refuse "a voice rig with ZERO legs"                       voice_legs_all_ready testing/voice-conformance/voice-conformance.sh "$st_tmp/legs-none"
+  else
+    printf '  [FAILED] testing/voice-conformance/voice-conformance.sh is absent — the =ready check cannot be proven\n'; st_fail=1
+  fi
+
+  # ── every `cargo xtask gate <name>` this file runs is registered (item 468) ───────────────────
+  # The planted name goes through %s so this line is not itself an invocation the real scan finds.
+  printf 'step x cargo xtask gate %s --selftest\n' no-such-gate-planted > "$st_tmp/plant.sh"
+  st_expect refuse "a planted unregistered gate name is caught"                   xtask_gates_invoked_are_registered "$st_tmp/plant.sh"
+  st_expect accept "every gate name THIS file invokes is in cargo xtask gate --list" xtask_gates_invoked_are_registered "$SELF"
+
+  # ── --help shows the FLAGS contract (item 551) ────────────────────────────────────────────────
+  st_help() { local h; h="$(bash "$SELF" --help 2>&1)" || return 1
+    case "$h" in *"--fast"*) ;; *) return 1 ;; esac
+    case "$h" in *"--selftest"*) ;; *) return 1 ;; esac
+    case "$h" in *"PROVISIONAL"*"exits 3"*) ;; *) return 1 ;; esac; }
+  st_expect accept "--help prints --fast, --selftest and the PROVISIONAL / exit-3 rule" st_help
   rm -rf "$st_tmp"
   _st_fails=$((_st_fails + st_fail))
   if [ "$_st_fails" -eq 0 ]; then
@@ -691,17 +806,7 @@ fi
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "BUILD — the cargo battery"
-if [ "$FAST" -eq 1 ]; then
-  ylw "  --fast: substituting 'cargo build --workspace' for the full ci battery"
-  step "cargo build --workspace" cargo build --workspace --quiet
-elif [ -f qa/full-gate.toml ]; then
-  step "cargo xtask full-gate --selftest" cargo xtask full-gate --selftest
-  step "cargo xtask full-gate"            cargo xtask full-gate
-else
-  step "cargo build --workspace"                 cargo build --workspace --quiet
-  step "cargo build -p busbar --no-default-features" cargo build -p busbar --no-default-features --quiet
-  step "cargo build --features openapi-schema"   cargo build -p busbar --features openapi-schema --quiet
-fi
+run_build_group qa/full-gate.toml
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -857,6 +962,7 @@ if [ -f testing/verdict-covers-every-leg.py ]; then
 fi
 if [ -f testing/voice-conformance/voice-conformance.sh ]; then
   step "voice conformance selftest (anti-vacuity)" bash testing/voice-conformance/voice-conformance.sh --selftest
+  step "voice legs =ready (every declared leg LEG_STATUS=ready)" voice_legs_all_ready testing/voice-conformance/voice-conformance.sh ""
 else
   absent_step "voice conformance selftest" "testing/voice-conformance/voice-conformance.sh — voice conformance rig not built yet"
 fi
@@ -1072,7 +1178,10 @@ if [ -f qa/audit-ledger.json ]; then
   # REGISTER (is the instrument believable); `--check` below judges those five plus the two about
   # the AUDIT (is coverage complete, is anything still open at HIGH/MEDIUM) — which are the ones
   # that are red until the audit finishes, and this DONE claim is where that red belongs.
-  step "audit-ledger selftest" cargo xtask gate audit-ledger --selftest
+  # The `audit-ledger` GATE was deleted with the old register (647f2fae9); what survives, and what
+  # judges a restored register, is `cargo xtask ledger`. Its rules' own RED proofs are its unit
+  # tests, declared by count so a filter that drifts off them is RED rather than vacuously green.
+  step "audit ledger rules (xtask audit + audit_cmd tests)" filtered_cargo_test 20 cargo test -p xtask --lib audit
   step "audit-ledger --check"  cargo xtask ledger --check
 else
   absent_step "audit ledger" "qa/audit-ledger.json"
