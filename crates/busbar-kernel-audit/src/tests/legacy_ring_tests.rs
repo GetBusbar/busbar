@@ -268,6 +268,20 @@ fn a_restore_at_the_top_of_the_range_saturates_instead_of_panicking() {
         1,
         "the snapshot is seeded rather than rejected"
     );
+
+    // The other half of the name: the resume point SATURATES at the top of the range. The next
+    // mutation recorded is allocated the saturated position, u64::MAX — not a wrapped one. A
+    // wrapping `+ 1` would make the resume point 0, the `fetch_max` a no-op, and the next mutation
+    // position 1: a position that sits below the restored entry, so the ring would call itself
+    // out of order.
+    restored.record_by("hook.register", "hook:b", OUTCOME_APPLIED, "admin");
+    let after = restored.export();
+    assert_eq!(after.len(), 2);
+    assert_eq!(
+        after[1].seq,
+        u64::MAX,
+        "the resume point after a snapshot at the top of the range is the saturated position"
+    );
 }
 
 #[test]
