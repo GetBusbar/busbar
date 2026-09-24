@@ -7,6 +7,10 @@
 //! 0 for it. That is a LEDGER fault (the book says no work happened). It now bills what the
 //! truncated-tail path bills when the document cannot be read whole — the usage recovered from the
 //! bytes in hand, else the floor over them — and the report-back carries the same figure (#71).
+//!
+//! DECISION #43 / #42 (architect-carried, same as item 36) — with NO `rate_card:` the delivered
+//! response still writes its metering row: the plane always ledgers, and billing off is the money
+//! VIEW reading 0, never a missing row.
 use super::*;
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::test_support::engine_kit::EngineTestKit as _;
@@ -170,4 +174,41 @@ async fn a_same_protocol_nonstream_body_relayed_whole_bills_its_own_usage_once()
     assert_eq!(served.len(), 1);
     assert_eq!(ledgered_tokens(&gov, &cost, &key_id).await, 1590);
     assert_eq!(tap.get().expect("reported").finish, TapFinish::Complete);
+}
+
+/// DECISION #43 / #42 (architect-carried, the LLM twin of item 36). With NO `rate_card:` a delivered
+/// response still writes its metering row with the plane's own counts, and the money view of that
+/// row reads 0. The row used to be dropped kernel-side whenever the pinned card was absent.
+#[tokio::test]
+async fn a_billing_off_delivery_still_writes_its_metering_row_and_the_view_reads_zero() {
+    let whole = message_with_usage(r#"{"input_tokens":1500,"output_tokens":90}"#);
+    let inner = futures::stream::iter(vec![Ok::<Bytes, hyper::Error>(Bytes::from(whole.clone()))]);
+    let (fbb, gov, cost, key_id, _tap) = body_over(inner);
+    let _: Vec<_> = fbb.collect().await;
+    assert_eq!(ledgered_tokens(&gov, &cost, &key_id).await, 1590);
+
+    gov.flush_metering();
+    let rows: Vec<String> = gov
+        .metering_for(busbar_kernel::governance::metering_bucket(CHARGED_AT))
+        .expect("metering read")
+        .into_iter()
+        .filter(|r| r.key_id == key_id)
+        .map(|r| {
+            format!(
+                "{} in={} out={} req={}",
+                r.model, r.tokens_input, r.tokens_output, r.requests
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec!["claude-x in=1500 out=90 req=1".to_string()],
+        "billing off still writes the plane's counts: the ledger is what the plane did (#43)"
+    );
+    let spend = gov
+        .usage_for(cost.as_ref(), &key_id, CHARGED_AT)
+        .expect("usage read")
+        .expect("the key exists")
+        .spend_cents;
+    assert_eq!(spend, 0, "billing off is the VIEW reading 0 (#42)");
 }

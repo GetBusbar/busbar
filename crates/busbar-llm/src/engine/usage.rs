@@ -150,16 +150,18 @@ pub(crate) fn ledger_and_meter(
     // Metering (raw per-model consumption series, token SPLIT preserved) — even a zero-token
     // delivered response counts its request. Same pinned epoch as the budget charges (#29).
     //
-    // The plane hands its counts over UNCONDITIONALLY (DECISION #43: no branch, no knowledge of
-    // billing state). Whether the row is written — BILLING OFF ⇒ NO METERING ROW, #42 — is the
-    // kernel's question, answered in `meter_series_billed` over the card the sink pinned at the
-    // door; with a card PRESENT the row is recorded byte-for-byte as before. The budget/ledger
-    // accrual ABOVE is not switched at all: token-COUNT rate caps (a non-money limit, like
-    // `concurrent`) enforce off that accrual, and #42 keeps admission, concurrency and breaker on for
-    // an unbilled plane — only the money surface goes quiet.
-    busbar_kernel::plane_host::meter_series_billed(
-        &**host,
-        &sink.pin,
+    // THE ROW IS WRITTEN UNCONDITIONALLY (DECISION #43, owner ruling 2026-09-22: "planes always
+    // ledger"). The plane hands its counts over with no branch and no knowledge of billing state, and
+    // nothing between here and the series asks either: with no `rate_card:` the row is still the
+    // record of what the plane did, and BILLING OFF is the money VIEW reading it as 0 (#42), never a
+    // missing row. This used to route through the kernel's `meter_series_billed`, which dropped the
+    // row whenever the pinned card was absent — the same card-gated write item 36 removed from the
+    // MCP/A2A charge (0ee95aafd). The flat/counted arm of `record_resp_usage` above already wrote its
+    // row this way; the token arm now matches it. The budget/ledger accrual ABOVE is not switched
+    // either: token-COUNT rate caps enforce off that accrual, and #42 keeps admission, concurrency and
+    // breaker on for an unbilled plane.
+    host.meter_series(
+        sink.pin.gov(),
         &sink.key.id,
         &lane.model,
         &lane.provider,
