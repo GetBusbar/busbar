@@ -202,18 +202,25 @@ def c_dupkeys(tree):
 def c332(tree):
     """Each verify-deploy check (a)-(n) runs independently: `!cancelled()` on every check step."""
     ls = lines(tree, VD)
-    sp = job_span(ls, "verify")
-    if not sp:
+    # `verify-site` (OWNER RULING Q5 / item 333: getbusbar.com checks moved to the self-hosted
+    # runner Cloudflare trusts) carries checks (g)(h)(i)(k)(l.1)(n) under `needs.verify.outputs.*`
+    # instead of `steps.ver.outputs.*` -- both are a resolved-version guard, just from a different
+    # job's outputs, so this reader accepts either spelling and scans both job spans as one pool.
+    spans = [sp for sp in (job_span(ls, "verify"), job_span(ls, "verify-site")) if sp]
+    if not spans:
         return ["%s: no `verify` job" % VD]
     bad, n = [], 0
-    for s, e in steps_in(ls, *sp):
-        if not re.match(r'^      - name: "?\(', ls[s]):
-            continue
-        n += 1
-        cond = next((ls[q] for q in range(s, e) if re.match(r"^        if:", ls[q])), "")
-        if "!cancelled()" not in cond or "steps.ver.outputs.version" not in cond:
-            bad.append("%s:%d %s -- no `!cancelled()` + resolved-version guard, so the first failing "
-                       "check skips it" % (VD, s + 1, ls[s].strip()))
+    for sp in spans:
+        for s, e in steps_in(ls, *sp):
+            if not re.match(r'^      - name: "?\(', ls[s]):
+                continue
+            n += 1
+            cond = next((ls[q] for q in range(s, e) if re.match(r"^        if:", ls[q])), "")
+            has_version_guard = ("steps.ver.outputs.version" in cond
+                                  or "needs.verify.outputs.version" in cond)
+            if "!cancelled()" not in cond or not has_version_guard:
+                bad.append("%s:%d %s -- no `!cancelled()` + resolved-version guard, so the first failing "
+                           "check skips it" % (VD, s + 1, ls[s].strip()))
     if n < 14:
         bad.append("%s: found only %d check steps named '(x) ...' (floor 14) -- the reader is broken"
                    % (VD, n))
