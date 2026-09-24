@@ -56,6 +56,8 @@
 //! make a number look better: a waiver says "not owed, and here is why", and laundering a gap into
 //! one is how the losslessness claim became false in the first place.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 fn repo_root() -> std::path::PathBuf {
@@ -199,42 +201,34 @@ fn every_status_line_names_a_real_field() {
     );
 }
 
-/// Every `carried` claim must name a test function that EXISTS.
+/// The source roots a `carried` instrument may live in.
 ///
-/// This is the load-bearing assertion of the whole gate. "The IR has a member for it" is not
-/// coverage — the audited losses were all in fields nothing read and nothing emitted, where a
-/// mutation test had nothing to break. A claim of survival is admissible only with an instrument
-/// attached, so the named function is looked for in the tree and its absence is a build failure.
-#[test]
-fn every_carried_claim_names_a_real_test() {
-    let status = parse_status();
-    let mut wanted: BTreeSet<&str> = BTreeSet::new();
-    for s in status.values() {
-        if let Status::Carried { test } = s {
-            wanted.insert(test.as_str());
-        }
-    }
-    // Scan the engine's sources once; a test function is `fn <name>(`. BOTH seam roots since the
-    // core split (step 3.7) — the instruments live in busbar-core, and a scanner that read only
-    // the thin bin would call every claim a ghost — PLUS the extracted protocol crates: a
-    // dialect's instruments move out with its codec, and a claim carried by a moved test is still
-    // carried. The LLM protocol is TWO crates now — the engine kept `busbar-llm` and the six
-    // dialect codecs (with the great majority of these instruments) moved to `busbar-llm-codec` —
-    // so both roots are read. The SAME split was then repeated for MCP, A2A and voice, so each of
-    // those protocols is two roots here for the same reason: an instrument that travelled with its
-    // codec is still an instrument, and a scanner that read only the half left behind would call it
-    // a ghost.
-    let mut haystack = String::new();
-    let mut stack = vec![
-        repo_root().join("crates/busbar-core/src"),
-        repo_root().join("crates/busbar/src"),
-        repo_root().join("crates/busbar-llm/src"),
-        repo_root().join("crates/busbar-llm-codec/src"),
-        repo_root().join("crates/busbar-mcp/src/codec"),
-        repo_root().join("crates/busbar-plane-mcp/src"),
-        repo_root().join("crates/busbar-plane-a2a/src"),
-        repo_root().join("crates/busbar-voice-codec/src"),
-    ];
+/// The engine's thin bin, plus the extracted protocol crates: a dialect's instruments move out with
+/// its codec, and a claim carried by a moved test is still carried. The LLM protocol is TWO crates —
+/// the engine kept `busbar-llm` and the six dialect codecs (with the great majority of these
+/// instruments) moved to `busbar-llm-codec` — and the SAME split was repeated for MCP, A2A and
+/// voice, so each of those protocols is two roots here for the same reason: an instrument that
+/// travelled with its codec is still an instrument, and a scanner that read only the half left
+/// behind would call it a ghost.
+///
+/// Every root must EXIST ([`every_evidence_root_exists`]). `crates/busbar-core/src` sat in this list
+/// for as long as the crate had been gone (item 262): a root that is not there reads as "nothing to
+/// find" and never as a failure, which is how a stale path hides a shrinking search.
+const EVIDENCE_ROOTS: &[&str] = &[
+    "crates/busbar/src",
+    "crates/busbar-llm/src",
+    "crates/busbar-llm-codec/src",
+    "crates/busbar-mcp/src/codec",
+    "crates/busbar-plane-mcp/src",
+    "crates/busbar-plane-a2a/src",
+    "crates/busbar-voice-codec/src",
+];
+
+/// Every `.rs` under the evidence roots, classified once.
+fn evidence_files() -> Vec<Vec<common::Line>> {
+    let mut out = Vec::new();
+    let mut stack: Vec<std::path::PathBuf> =
+        EVIDENCE_ROOTS.iter().map(|r| repo_root().join(r)).collect();
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -245,22 +239,99 @@ fn every_carried_claim_names_a_real_test() {
                 stack.push(p);
             } else if p.extension().and_then(|x| x.to_str()) == Some("rs") {
                 if let Ok(t) = std::fs::read_to_string(&p) {
-                    haystack.push_str(&t);
-                    haystack.push('\n');
+                    out.push(common::classify(&t, common::is_test_path(&p)));
                 }
             }
         }
     }
-    let ghosts: Vec<&&str> = wanted
+    out
+}
+
+#[test]
+fn every_evidence_root_exists() {
+    let absent: Vec<&&str> = EVIDENCE_ROOTS
         .iter()
-        .filter(|t| !haystack.contains(&format!("fn {t}(")))
+        .filter(|r| !repo_root().join(r).is_dir())
+        .collect();
+    assert!(
+        absent.is_empty(),
+        "evidence root(s) {absent:?} do not exist. A root that is not there is searched as empty \
+         and never fails, so the search shrinks in silence — fix or drop the path."
+    );
+}
+
+/// Every `carried` claim must name a test function that is REAL EVIDENCE.
+///
+/// This is the load-bearing assertion of the whole gate. "The IR has a member for it" is not
+/// coverage — the audited losses were all in fields nothing read and nothing emitted, where a
+/// mutation test had nothing to break. A claim of survival is admissible only with an instrument
+/// attached, so the named function must be, somewhere under [`EVIDENCE_ROOTS`], (1) test code,
+/// (2) a test the harness runs, and (3) a body that asserts — the same three checks
+/// `capability_equality.rs` holds its proven cells to, from the one copy in `common`. It used to be
+/// satisfied by the text `fn NAME(` anywhere, which a production helper, a doc comment and an empty
+/// body all carry (item 262).
+#[test]
+fn every_carried_claim_names_a_real_test() {
+    let status = parse_status();
+    let mut wanted: BTreeSet<&str> = BTreeSet::new();
+    for s in status.values() {
+        if let Status::Carried { test } = s {
+            wanted.insert(test.as_str());
+        }
+    }
+    let files = evidence_files();
+    let ghosts: Vec<(&str, common::NotEvidence)> = wanted
+        .iter()
+        .filter_map(|t| {
+            common::test_fn_is_evidence(&files, t)
+                .err()
+                .map(|why| (*t, why))
+        })
         .collect();
     assert!(
         ghosts.is_empty(),
-        "qa/field-coverage.status claims field(s) are `carried` by test(s) that DO NOT EXIST. A \
+        "qa/field-coverage.status claims field(s) are `carried` by test(s) that are NOT EVIDENCE — \
+         absent, production code, not a test the harness runs, or a body that asserts nothing. A \
          field whose instrument is imaginary is a field nothing would notice being dropped:\n\
          {ghosts:#?}"
     );
+}
+
+/// THE EVIDENCE CHECK FIRES on each thing it must refuse, and accepts the one shape it must accept.
+#[test]
+fn the_evidence_check_refuses_a_helper_a_comment_an_empty_test_and_production_code() {
+    use common::NotEvidence;
+    let file = |src: &str| vec![common::classify(src, false)];
+    let real = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn named() {\n        assert_eq!(1, 1);\n    }\n}\n";
+    assert_eq!(common::test_fn_is_evidence(&file(real), "named"), Ok(()));
+    let two_hops = "#[cfg(test)]\nmod tests {\n    fn outer() {\n        inner();\n    }\n    fn inner() {\n        assert!(true);\n    }\n    #[test]\n    fn named() {\n        outer();\n    }\n}\n";
+    assert_eq!(
+        common::test_fn_is_evidence(&file(two_hops), "named"),
+        Ok(()),
+        "a test that asserts through same-file helpers two deep is a test that asserts"
+    );
+    for (src, want) in [
+        ("// fn named() { assert!(true) }\n", NotEvidence::Absent),
+        ("fn named() {\n    assert!(true);\n}\n", NotEvidence::Production),
+        (
+            "#[cfg(test)]\nmod tests {\n    fn named() {\n        assert!(true);\n    }\n}\n",
+            NotEvidence::NotATest,
+        ),
+        (
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn named() {}\n}\n",
+            NotEvidence::AssertsNothing,
+        ),
+        (
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn not_named() {\n        assert!(true);\n    }\n}\n",
+            NotEvidence::Absent,
+        ),
+    ] {
+        assert_eq!(
+            common::test_fn_is_evidence(&file(src), "named"),
+            Err(want),
+            "{src}"
+        );
+    }
 }
 
 /// The pinned MISSING set must EXACTLY equal the computed one, in both directions.

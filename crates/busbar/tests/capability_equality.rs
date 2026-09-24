@@ -111,12 +111,33 @@ const PLANES: [&str; 7] = [
 /// `voice-client` (the dialed provider WSS + telephony media egress) and `voice-server` (the inbound
 /// session-open front door: browser sideband WS + telephony media webhook) — exactly as the two
 /// bidirectional protocols do. Every mapped column must be a real declared ledger plane.
+///
+/// The map is keyed by the crate's directory suffix (`crates/busbar-<suffix>`), and it covers BOTH
+/// halves of every plane: the plane crate `scripts/plane-keys.sh` names (`busbar-llm`, …) and the
+/// pure `busbar-plane-*` crate the workspace carries beside it. The pure crates were invisible to
+/// this check until item 257 — it enumerated the four-entry shell variable and nothing else, so two
+/// workspace plane crates answered to no column and nothing said so. `plane-streaming` is the
+/// streaming plane voice is a dialect of (DECISIONS #18), so it answers to the two voice columns.
 const PLANE_CRATE_LEDGER_COLUMNS: &[(&str, &[&str])] = &[
     ("llm", &["llm"]),
     ("mcp", &["mcp-client", "mcp-server"]),
     ("a2a", &["a2a-client", "a2a-server"]),
     ("voice", &["voice-client", "voice-server"]),
+    ("plane-llm", &["llm"]),
+    ("plane-mcp", &["mcp-client", "mcp-server"]),
+    ("plane-a2a", &["a2a-client", "a2a-server"]),
+    ("plane-streaming", &["voice-client", "voice-server"]),
 ];
+
+/// THE WORKSPACE PLANE CRATES THAT ANSWER TO NO LEDGER COLUMN YET — pinned EXACTLY, at today's
+/// measurement, so the gap is named rather than invisible and cannot grow or quietly close.
+///
+/// `busbar-plane-decision` is the fifth plane (#48) and `qa/capability-equality.json` declares no
+/// column for it; mapping it to a column the ledger does not have would fail the column check, and
+/// leaving it out of the enumeration is the hole item 257 found. So it is listed here, and the
+/// cross-check below is RED if a crate joins the workspace unmapped and unlisted, AND if a listed
+/// crate gains a mapping without leaving this list. The column is the ledger owner's to add.
+const PLANE_CRATES_OWED_A_COLUMN: &[&str] = &["plane-decision"];
 
 /// Floor on the capability axis. Set AT today's real number (13), not below it. A floor of 12 was
 /// slack the gate could not afford: deleting one capability row together with its seven cells left
@@ -189,55 +210,9 @@ fn repo_root() -> PathBuf {
 //      whose body asserts nothing passes unconditionally and proves exactly nothing.
 // ---------------------------------------------------------------------------
 
-/// What an assertion looks like. `expect`/`unwrap` are deliberately NOT here: they say a value was
-/// the shape the test assumed, which is a precondition, not the thing under test.
-const ASSERTION_TOKENS: &[&str] = &[
-    "assert!",
-    "assert_eq!",
-    "assert_ne!",
-    "assert_matches!",
-    "debug_assert!",
-    "debug_assert_eq!",
-    "debug_assert_ne!",
-    "expect_err(",
-    "unwrap_err(",
-];
-
-/// Whether an attribute line marks the item below it as a test the harness runs. `#[test]`,
-/// `#[tokio::test]`, `#[tokio::test(flavor = "…")]` and `#[rstest]` all satisfy it.
-fn is_test_attribute(code: &str) -> bool {
-    let t = code.trim();
-    t.starts_with("#[") && (t.contains("test]") || t.contains("test("))
-}
-
-/// Whether a body — a slice of classified lines — asserts anything itself.
-fn asserts_directly(body: &[&common::Line]) -> bool {
-    body.iter()
-        .any(|l| ASSERTION_TOKENS.iter().any(|tok| l.code.contains(tok)))
-}
-
-/// The bare identifiers a body CALLS, so one hop into a same-file helper can be followed. Crude on
-/// purpose: this is used only to widen what counts as asserting, never to narrow it.
-fn called_idents(body: &[&common::Line]) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for line in body {
-        let chars: Vec<char> = line.code.chars().collect();
-        let mut i = 0usize;
-        while i < chars.len() {
-            if chars[i] == '(' {
-                let mut j = i;
-                while j > 0 && (chars[j - 1].is_ascii_alphanumeric() || chars[j - 1] == '_') {
-                    j -= 1;
-                }
-                if j < i && !chars[j].is_ascii_digit() {
-                    out.insert(chars[j..i].iter().collect::<String>());
-                }
-            }
-            i += 1;
-        }
-    }
-    out
-}
+// The three checks' building blocks live in `common` (item 262), because `field_coverage.rs`
+// accepts a named test as evidence too and two copies of the rule would be two bars.
+use common::{asserts_directly, called_idents, has_test_attribute};
 
 /// THE EVIDENCE CHECK. `kind` names the column so the failure reads as the caller's own.
 fn named_test_is_real(root: &Path, id: &str, test: &str, kind: &str) -> Result<(), String> {
@@ -276,24 +251,7 @@ fn named_test_is_real(root: &Path, id: &str, test: &str, kind: &str) -> Result<(
     }
 
     // (2) It is a test the harness runs, not a helper that merely lives among tests.
-    let mut has_attr = false;
-    let mut i = at;
-    while i > 0 {
-        i -= 1;
-        let code = lines[i].code.trim();
-        if code.is_empty() {
-            continue;
-        }
-        if code.starts_with("#[") || code.starts_with("#!") {
-            if is_test_attribute(code) {
-                has_attr = true;
-                break;
-            }
-            continue;
-        }
-        // Anything else is the previous item; the attribute block is over.
-        break;
-    }
+    let has_attr = has_test_attribute(&lines, at);
     if !has_attr {
         return Err(format!(
             "{kind} `{id}` is `proven` by {test}, but `fn {func}(` in {file} carries no test \
@@ -966,12 +924,65 @@ fn plane_keys_from_single_source(root: &Path) -> Vec<String> {
     panic!("scripts/plane-keys.sh declares no `PLANE_KEYS=...` line");
 }
 
-/// M0 TOTALITY CROSS-CHECK. Enumerate the workspace PLANE CRATES from the single source and assert
-/// each maps to >= 1 ledger column. This is the reverse of the pinned matrix: the matrix proves no
-/// declared cell is a lie; this proves no plane crate the tree carries is tracked by NOTHING. Voice
-/// arriving as a skeleton with no directional column is exactly the hole it catches — pinned here to
-/// its pending column so the check is honest-green today and RED the moment a plane crate joins the
-/// workspace with no row in `PLANE_CRATE_LEDGER_COLUMNS`.
+/// The workspace's `crates/busbar-plane-*` members, by directory suffix (`plane-decision`), read off
+/// the root `Cargo.toml`'s `members` list — the list cargo builds, not a list somebody keeps.
+fn workspace_pure_plane_crates(root: &Path) -> BTreeSet<String> {
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("the root Cargo.toml");
+    let members = manifest
+        .split_once("members = [")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(list, _)| list)
+        .expect("the root Cargo.toml declares `members = [ … ]`");
+    members
+        .split(',')
+        .filter_map(|m| m.trim().trim_matches('"').strip_prefix("crates/busbar-"))
+        .filter(|suffix| suffix.starts_with("plane-"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every workspace plane crate, by directory suffix: the plane keys the single source names, and the
+/// pure `busbar-plane-*` members of the workspace.
+fn workspace_plane_crates(root: &Path) -> BTreeSet<String> {
+    let mut all: BTreeSet<String> = plane_keys_from_single_source(root).into_iter().collect();
+    all.extend(workspace_pure_plane_crates(root));
+    all
+}
+
+/// THE VERDICT, over data: the crates that answer to no column, or the first column that is not a
+/// declared ledger plane.
+fn unmapped_plane_crates(
+    crates: &BTreeSet<String>,
+    map: &BTreeMap<&str, &[&str]>,
+    ledger_columns: &BTreeSet<String>,
+) -> Result<BTreeSet<String>, String> {
+    let mut unmapped = BTreeSet::new();
+    for key in crates {
+        match map.get(key.as_str()) {
+            Some(cols) if !cols.is_empty() => {
+                for &col in *cols {
+                    if !ledger_columns.contains(col) {
+                        return Err(format!(
+                            "plane crate busbar-{key} maps to column `{col}`, which is not a \
+                             declared ledger plane {ledger_columns:?}. Fix the map or the ledger."
+                        ));
+                    }
+                }
+            }
+            _ => {
+                unmapped.insert(key.clone());
+            }
+        }
+    }
+    Ok(unmapped)
+}
+
+/// M0 TOTALITY CROSS-CHECK. Enumerate the workspace PLANE CRATES — the single source's plane keys
+/// AND the workspace's `busbar-plane-*` members — and assert each maps to >= 1 ledger column, except
+/// the ones pinned in [`PLANE_CRATES_OWED_A_COLUMN`], which must be EXACTLY the unmapped set. This is
+/// the reverse of the pinned matrix: the matrix proves no declared cell is a lie; this proves no
+/// plane crate the tree carries is tracked by NOTHING without saying so. RED the moment a plane crate
+/// joins the workspace with no row in `PLANE_CRATE_LEDGER_COLUMNS` and no owed entry.
 #[test]
 fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
     let root = repo_root();
@@ -983,41 +994,61 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
         .collect();
     let map: BTreeMap<&str, &[&str]> = PLANE_CRATE_LEDGER_COLUMNS.iter().copied().collect();
 
-    let mut unmapped: Vec<String> = Vec::new();
-    for key in plane_keys_from_single_source(&root) {
-        // The single source names this plane; the crate must exist, or source and tree disagree.
+    let crates = workspace_plane_crates(&root);
+    for key in &crates {
+        // Every enumerated plane must be a crate on disk, or a source and the tree disagree.
         let crate_dir = root.join(format!("crates/busbar-{key}"));
         assert!(
             crate_dir.is_dir(),
-            "scripts/plane-keys.sh names plane `{key}` but crates/busbar-{key} does not exist; the \
-             single source and the tree disagree — fix one."
+            "plane `{key}` is enumerated but crates/busbar-{key} does not exist; \
+             scripts/plane-keys.sh or the workspace members and the tree disagree — fix one."
         );
-        match map.get(key.as_str()) {
-            Some(cols) if !cols.is_empty() => {
-                // Every mapped column must be a real declared ledger plane (voice is armed: its
-                // voice-client / voice-server columns are real ledger planes like the other two).
-                for &col in *cols {
-                    assert!(
-                        ledger_columns.contains(col),
-                        "plane crate busbar-{key} maps to column `{col}`, which is not a declared \
-                         ledger plane {ledger_columns:?}. Fix the map or the ledger."
-                    );
-                }
-            }
-            _ => unmapped.push(key),
-        }
     }
     assert!(
-        unmapped.is_empty(),
-        "workspace plane crate(s) {unmapped:?} map to ZERO ledger columns. A plane crate that \
-         reaches the workspace and answers to no column is tracked by nothing — add its columns to \
-         PLANE_CRATE_LEDGER_COLUMNS (voice is pinned to its own pending column as the pattern)."
+        workspace_pure_plane_crates(&root).len() >= 5,
+        "non-vacuity: the workspace carries five `busbar-plane-*` crates today, and the \
+         enumeration must see them"
+    );
+    let unmapped =
+        unmapped_plane_crates(&crates, &map, &ledger_columns).unwrap_or_else(|e| panic!("{e}"));
+    let owed: BTreeSet<String> = PLANE_CRATES_OWED_A_COLUMN
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        unmapped, owed,
+        "the workspace plane crates that map to ZERO ledger columns are not exactly the pinned owed \
+         set. A plane crate that reaches the workspace and answers to no column is tracked by \
+         nothing — add its columns to PLANE_CRATE_LEDGER_COLUMNS; a crate that gained its columns \
+         leaves PLANE_CRATES_OWED_A_COLUMN in the same commit."
     );
 
     println!(
-        "TOTALITY: {} workspace plane crate(s) all map to >= 1 ledger column",
-        PLANE_CRATE_LEDGER_COLUMNS.len()
+        "TOTALITY: {} workspace plane crate(s); {} map to >= 1 ledger column; owed a column: {:?}",
+        crates.len(),
+        crates.len() - unmapped.len(),
+        unmapped
     );
+}
+
+/// The totality verdict fires on a planted unmapped crate and on a planted bad column, and passes a
+/// mapped one — through the REAL `unmapped_plane_crates`.
+#[test]
+fn selftest_totality_names_an_unmapped_plane_crate_and_refuses_an_undeclared_column() {
+    let columns: BTreeSet<String> = ["llm".to_string()].into_iter().collect();
+    let crates: BTreeSet<String> = ["plane-llm".to_string(), "plane-new".to_string()]
+        .into_iter()
+        .collect();
+    let mut map: BTreeMap<&str, &[&str]> = BTreeMap::new();
+    map.insert("plane-llm", &["llm"]);
+    assert_eq!(
+        unmapped_plane_crates(&crates, &map, &columns),
+        Ok(["plane-new".to_string()].into_iter().collect())
+    );
+    map.insert("plane-new", &["nowhere"]);
+    assert!(unmapped_plane_crates(&crates, &map, &columns)
+        .expect_err("a column the ledger does not declare is refused")
+        .contains("nowhere"));
 }
 
 // ---------------------------------------------------------------------------
