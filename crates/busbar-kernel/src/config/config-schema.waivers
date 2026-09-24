@@ -22,3 +22,4 @@
 # line here, the change needs a human decision, not a config edit.
 #
 # EMPTY BY DEFAULT. It should stay that way.
+manual-de SecretRef::visit_str = the bare scalar `none` is the explicit keyless secret reference (a keyless local upstream such as ollama or vLLM), resolving to no credential; every other scalar is still refused and never echoed — owner-approved 2026-09-24
