@@ -343,7 +343,11 @@ jobs:
       - name: Every check on this commit must have concluded, and every conclusion must be green
         shell: bash
         run: |
-          set -uo pipefail   # deliberately NOT -e: an API hiccup must be RETRIED, then refused.
+          # errexit is ON whatever this line says: `shell: bash` runs the step as `bash -eo pipefail`.
+          # So every API read below is tested with `if !` -- a bare `x="$(api ...)"` followed by
+          # `if [ $? -ne 0 ]` dies on the assignment and never prints its refusal (item 354). The
+          # retries still run: command substitution does not inherit errexit.
+          set -euo pipefail
 
           # THE API IS THE ONE THING HERE THAT CAN FAIL FOR REASONS UNRELATED TO THE SOFTWARE, so it
           # is retried properly rather than trusted once. Bounded retries, then refusal: a lookup
@@ -361,8 +365,7 @@ jobs:
 
           deadline=$(( SECONDS + 75 * 60 ))
           while :; do
-            runs="$(api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=100")"
-            if [ $? -ne 0 ]; then
+            if ! runs="$(api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=100")"; then
               echo "::error::REFUSING TO RELEASE: the GitHub Actions API could not be read after 5 attempts, so the CI status of ${SHA} is UNKNOWN. Unknown is not green. Nothing has been built, no tag exists and nothing is public. Re-run this workflow when the API is answering." >&2
               exit 1
             fi
@@ -441,8 +444,7 @@ jobs:
 
           # External commit statuses (anything reporting through the statuses API rather than as a
           # workflow run) get the same treatment, including the same unknown-is-red rule.
-          st="$(api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/status")"
-          if [ $? -ne 0 ]; then
+          if ! st="$(api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/status")"; then
             echo "::error::REFUSING TO RELEASE: the commit-status API could not be read after 5 attempts, so external check state on ${SHA} is UNKNOWN. Unknown is not green."
             fail=1
           else
