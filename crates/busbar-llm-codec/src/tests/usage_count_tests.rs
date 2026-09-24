@@ -469,6 +469,62 @@ fn past_balanced(s: &str, open: char, close: char) -> Option<usize> {
 /// `.map_or(..)`, possibly after `.map(..)` steps — records an unreadable billed count as a number
 /// the provider never sent. That is exactly what `billed_count`/`billed_count_opt` exist to refuse.
 fn lenient_defaults(flat: &str) -> Vec<String> {
+    let wrappers = lenient_wrappers(flat);
+    const DEFAULTS: &[&str] = &[
+        ".unwrap_or(",
+        ".unwrap_or_default(",
+        ".unwrap_or_else(",
+        ".map_or(",
+    ];
+    let mut hits = Vec::new();
+    for w in &wrappers {
+        let mut from = 0;
+        while let Some(hit) = flat[from..].find(w.as_str()) {
+            let at = from + hit;
+            from = at + w.len();
+            // A whole identifier only: `read_count_u64` inside `xread_count_u64y` is another name.
+            if !whole_ident(flat, at, w.len()) {
+                continue;
+            }
+            let mut tail = &flat[from..];
+            if tail.starts_with('(') {
+                // CALL form `w(..)`.
+                let Some(end) = past_balanced(tail, '(', ')') else {
+                    continue;
+                };
+                tail = &tail[end..];
+            } else if let Some(t) = tail.strip_prefix(')') {
+                // PATH form `.and_then(w)`: step past the combinator's own close.
+                tail = t;
+            } else {
+                continue;
+            }
+            // `.map(..)` keeps the lenient `None` flowing; step through any number of them.
+            while let Some(t) = tail.strip_prefix(".map") {
+                let Some(end) = past_balanced(t, '(', ')') else {
+                    break;
+                };
+                tail = &t[end..];
+            }
+            if let Some(d) = DEFAULTS.iter().find(|d| tail.starts_with(**d)) {
+                let site: String = flat[at.saturating_sub(40)..at].to_string();
+                hits.push(format!("…{site}{w}…{d}"));
+            }
+        }
+    }
+    hits
+}
+
+/// Whether `flat[at..at + len]` is a whole identifier (not a slice of a longer name).
+fn whole_ident(flat: &str, at: usize, len: usize) -> bool {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    flat[..at].chars().next_back().is_none_or(|c| !is_ident(c))
+        && flat[at + len..].chars().next().is_none_or(|c| !is_ident(c))
+}
+
+/// `read_count_u64` plus every local closure or `-> Option<u64>` fn in `flat` that wraps one (found
+/// by what they CALL, never by what they are named, to a fixpoint so a wrapper of a wrapper is one).
+fn lenient_wrappers(flat: &str) -> Vec<String> {
     let mut wrappers: Vec<String> = vec!["read_count_u64".to_string()];
     loop {
         let mut grew = false;
@@ -526,54 +582,83 @@ fn lenient_defaults(flat: &str) -> Vec<String> {
             break;
         }
     }
+    wrappers
+}
 
-    const DEFAULTS: &[&str] = &[
-        ".unwrap_or(",
-        ".unwrap_or_default(",
-        ".unwrap_or_else(",
-        ".map_or(",
-    ];
+/// The IR fields whose value IS a billed quantity or selects the tier one prices at, where `None`
+/// means "the provider reported none" — so a `None` that really meant "present but unreadable"
+/// DROPS the unit from the bill (the cache tiers, Cohere's `billed_units` bucket, the separately
+/// metered search/web-search/tool-use counts; a rerank's `search_units` is the priced quantity
+/// itself, item 134). The attribution-only slices (`reasoning_tokens`, the audio and
+/// predicted-output slices) are not in the set: their totals are billed elsewhere.
+const BILLED_OPTION_FIELDS: &[&str] = &[
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "cache_creation_5m_input_tokens",
+    "cache_creation_1h_input_tokens",
+    "search_units",
+    "web_search_requests",
+    "tool_use_prompt_tokens",
+    "billed_input_tokens",
+    "billed_output_tokens",
+    "billed_classifications",
+];
+
+/// Every `FIELD: <expr>` initializer in `flat` (a [`squash`]ed file) where FIELD is a
+/// [`BILLED_OPTION_FIELDS`] member and `<expr>` routes through a lenient read — the `None`-flavoured
+/// twin of [`lenient_defaults`]: nothing is defaulted, the unreadable count simply becomes the
+/// field's "not reported" `None` and the unit leaves the ledger (item 133 remainder).
+fn lenient_billed_fields(flat: &str) -> Vec<String> {
+    let wrappers = lenient_wrappers(flat);
     let mut hits = Vec::new();
-    for w in &wrappers {
+    for field in BILLED_OPTION_FIELDS {
         let mut from = 0;
-        while let Some(hit) = flat[from..].find(w.as_str()) {
+        while let Some(hit) = flat[from..].find(field) {
             let at = from + hit;
-            from = at + w.len();
-            // A whole identifier only: `read_count_u64` inside `xread_count_u64y` is another name.
-            let before_ok = flat[..at]
-                .chars()
-                .next_back()
-                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
-            let mut tail = &flat[from..];
-            let after_ok = tail
-                .chars()
-                .next()
-                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
-            if !before_ok || !after_ok {
+            from = at + field.len();
+            if !whole_ident(flat, at, field.len()) {
                 continue;
             }
-            if tail.starts_with('(') {
-                // CALL form `w(..)`.
-                let Some(end) = past_balanced(tail, '(', ')') else {
-                    continue;
-                };
-                tail = &tail[end..];
-            } else if let Some(t) = tail.strip_prefix(')') {
-                // PATH form `.and_then(w)`: step past the combinator's own close.
-                tail = t;
-            } else {
+            // An initializer `FIELD:` — not a path `FIELD::`, not a use, not a destructure.
+            let Some(rest) = flat[from..].strip_prefix(':') else {
+                continue;
+            };
+            if rest.starts_with(':') {
                 continue;
             }
-            // `.map(..)` keeps the lenient `None` flowing; step through any number of them.
-            while let Some(t) = tail.strip_prefix(".map") {
-                let Some(end) = past_balanced(t, '(', ')') else {
-                    break;
-                };
-                tail = &t[end..];
+            // The initializer expression: up to the first top-level `,` or the unmatched close.
+            let mut depth = 0i32;
+            let mut end = rest.len();
+            for (i, c) in rest.char_indices() {
+                match c {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => {
+                        if depth == 0 {
+                            end = i;
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    ',' | ';' if depth == 0 => {
+                        end = i;
+                        break;
+                    }
+                    _ => {}
+                }
             }
-            if let Some(d) = DEFAULTS.iter().find(|d| tail.starts_with(**d)) {
-                let site: String = flat[at.saturating_sub(40)..at].to_string();
-                hits.push(format!("…{site}{w}…{d}"));
+            let expr = &rest[..end];
+            let lenient = wrappers.iter().find(|w| {
+                let mut f = 0;
+                while let Some(h) = expr[f..].find(w.as_str()) {
+                    if whole_ident(expr, f + h, w.len()) {
+                        return true;
+                    }
+                    f += h + w.len();
+                }
+                false
+            });
+            if let Some(w) = lenient {
+                hits.push(format!("{field}:{expr} (via {w})"));
             }
         }
     }
@@ -589,6 +674,9 @@ fn lenient_defaults(flat: &str) -> Vec<String> {
 /// the seam and then defaulting its `None` is the ORIGINAL defect, spelled politely: a present,
 /// unreadable count is ledgered as zero. This scan keys on the SHAPE — a lenient read, however it
 /// is named or wrapped, whose `None` is defaulted — so a reintroduction goes red here.
+///
+/// It also keys on the `None` twin ([`lenient_billed_fields`]): a lenient read assigned undefaulted
+/// to a billed `Option` field, where "unreadable" silently reads as "not reported" (item 133).
 #[test]
 fn no_dialect_defaults_a_lenient_count_read() {
     use std::path::Path;
@@ -620,6 +708,47 @@ fn no_dialect_defaults_a_lenient_count_read() {
         lenient_defaults(&is_fine).is_empty(),
         "{:?}",
         lenient_defaults(&is_fine)
+    );
+
+    // THE `None` TWIN (item 133 remainder). A lenient read that is NOT defaulted but lands straight
+    // in a billed `Option` field turns "present but unreadable" into "not reported" and drops the
+    // unit — the Cohere `search_units`/`classifications` reads survived item 133 exactly this way,
+    // and the defaulting scan above is (correctly) blind to them. Verbatim (squashed) from
+    // cohere/reader.rs and cohere/handler.rs before the fix: the closure, the path and the
+    // wrapped-through-`usage_val` forms must all flag.
+    let was_live_none = squash(
+        "let billed_u64 = |k: &str| { billed_units.and_then(|b| b.get(k)).and_then(crate::usage_count::read_count_u64) };\n\
+         search_units: billed_u64(\"search_units\"),\n\
+         billed_classifications: billed_u64(\"classifications\"),\n\
+         search_units: u.get(\"billed_units\").and_then(|b| b.get(\"search_units\")).and_then(crate::usage_count::read_count_u64),\n\
+         billed_classifications: usage_val.and_then(|u| u.get(\"billed_units\")).and_then(|b| b.get(\"classifications\")).and_then(crate::usage_count::read_count_u64),\n\
+         search_units: v.get(\"meta\").and_then(|m| m.get(\"billed_units\")).and_then(|b| b.get(\"search_units\")).and_then(crate::usage_count::read_count_u64),\n",
+    );
+    assert_eq!(
+        lenient_billed_fields(&was_live_none).len(),
+        5,
+        "the detector must flag every lenient read into a billed field: {:?}",
+        lenient_billed_fields(&was_live_none)
+    );
+    // The billed-field twin must flag the line the defaulting scan above is told to pass.
+    assert_eq!(
+        lenient_billed_fields(&is_fine).len(),
+        1,
+        "{:?}",
+        lenient_billed_fields(&is_fine)
+    );
+    // And NOT the refusing seam, a declaration, a destructure, or an attribution-only slice.
+    let is_fine_none = squash(
+        "search_units: billed_opt(u.get(\"billed_units\"), \"search_units\")?,\n\
+         cache_read_input_tokens: cached,\n\
+         pub search_units: Option<u64>,\n\
+         let IrUsageDetail { search_units, billed_classifications, .. } = d;\n\
+         reasoning_tokens: u.get(\"reasoning_tokens\").and_then(read_count_u64),\n",
+    );
+    assert!(
+        lenient_billed_fields(&is_fine_none).is_empty(),
+        "{:?}",
+        lenient_billed_fields(&is_fine_none)
     );
 
     fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
@@ -659,15 +788,20 @@ fn no_dialect_defaults_a_lenient_count_read() {
         let Ok(text) = std::fs::read_to_string(f) else {
             continue;
         };
-        for hit in lenient_defaults(&squash(&text)) {
+        let flat = squash(&text);
+        for hit in lenient_defaults(&flat)
+            .into_iter()
+            .chain(lenient_billed_fields(&flat))
+        {
             offenders.push(format!("{}: {hit}", f.display()));
         }
     }
     assert!(
         offenders.is_empty(),
-        "a lenient count read (`read_count_u64` or a wrapper of it) has its `None` DEFAULTED, so a \
-         present-but-unreadable billed count is ledgered as a number the provider never sent. Read \
-         it through `usage_count::billed_count`/`billed_count_opt` and refuse:\n  {}",
+        "a lenient count read (`read_count_u64` or a wrapper of it) has its `None` DEFAULTED, or \
+         lands as-is in a billed `Option` field, so a present-but-unreadable billed count is \
+         ledgered as a number the provider never sent or dropped as \"not reported\". Read it \
+         through `usage_count::billed_count`/`billed_count_opt` and refuse:\n  {}",
         offenders.join("\n  ")
     );
 }
