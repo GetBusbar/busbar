@@ -80,11 +80,14 @@ def consumer_state(root: str) -> str:
     `image:` lines means the guard arms itself AS A CONSEQUENCE of the consumer moving, which is the
     same "consumer moves last, on proof" ordering the release promote uses.
 
-    Returns 'mirrored' once ci.yml pulls its service containers from GHCR, else 'upstream'.
+    Returns 'mirrored' once ci.yml pulls its service containers from GHCR, else 'upstream', and
+    None when ci.yml is not there to read. A missing consumer is NOT 'upstream' (item 532): that
+    answer disarms the anonymous-pull hard failure, so a renamed ci.yml or a partial checkout
+    would switch the guard off for good. The caller refuses on None, as collect() does.
     """
     path = os.path.join(root, WORKFLOWS, "ci.yml")
     if not os.path.exists(path):
-        return "upstream"
+        return None
     text = open(path, encoding="utf-8").read()
     for m in ANY_IMAGE.finditer(text):
         if _is_mirror(m.group("ref").split(":")[0].split("@")[0]):
@@ -264,6 +267,20 @@ MUTATIONS = [
 ]
 
 
+def consumer_state_main(root: str, out=sys.stdout, err=sys.stderr) -> int:
+    """--consumer-state: print the state, or refuse (exit 1) when it cannot be derived."""
+    state = consumer_state(root)
+    if state is None:
+        msg = ("%s is missing, so whether it consumes the mirrors cannot be derived; refusing to "
+               "answer 'upstream', which would disarm the anonymous-pull check."
+               % os.path.join(WORKFLOWS, "ci.yml"))
+        print("::error::ci-images: " + msg, file=err)
+        print("ci-images: " + msg, file=err)
+        return 1
+    print(state, file=out)
+    return 0
+
+
 def selftest(root: str) -> int:
     images, problems = collect(root)
     if problems:
@@ -345,6 +362,30 @@ def selftest(root: str) -> int:
                   "Got: %s" % (got or "nothing"))
             failures += 1
 
+    # --consumer-state WITH NO ci.yml TO READ (item 532) refuses, never prints 'upstream'; the real
+    # tree's answer is one of the two states and exits 0.
+    import io
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(os.path.join(root, WORKFLOWS), os.path.join(tmp, WORKFLOWS))
+        os.remove(os.path.join(tmp, WORKFLOWS, "ci.yml"))
+        o, e = io.StringIO(), io.StringIO()
+        rc = consumer_state_main(tmp, o, e)
+        if rc != 0 and o.getvalue() == "" and "is missing" in e.getvalue():
+            print("  RED as required: --consumer-state with ci.yml missing refuses instead of "
+                  "answering 'upstream'")
+        else:
+            print("  SELFTEST FAILED: --consumer-state with ci.yml missing: rc=%d out=%r"
+                  % (rc, o.getvalue()))
+            failures += 1
+        o, e = io.StringIO(), io.StringIO()
+        rc = consumer_state_main(root, o, e)
+        if rc == 0 and o.getvalue().strip() in ("upstream", "mirrored"):
+            print("  GREEN twin: --consumer-state on the real tree answers %r" % o.getvalue().strip())
+        else:
+            print("  SELFTEST FAILED: --consumer-state on the real tree: rc=%d out=%r err=%r"
+                  % (rc, o.getvalue(), e.getvalue()))
+            failures += 1
+
     # THE VACUOUS-PASS RULE, proven by removing the pins entirely rather than by argument.
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(os.path.join(root, WORKFLOWS), os.path.join(tmp, WORKFLOWS))
@@ -379,8 +420,7 @@ def main() -> int:
     if args.selftest:
         return selftest(args.root)
     if args.consumer_state:
-        print(consumer_state(args.root))
-        return 0
+        return consumer_state_main(args.root)
     images, problems = collect(args.root)
     if problems:
         for p in problems:
