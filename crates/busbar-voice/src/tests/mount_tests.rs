@@ -533,7 +533,11 @@ fn redaction_leaves_a_message_that_carries_no_query_credential_alone() {
 /// cached input. This asserts the declared list excludes it and stays pairwise distinct.
 #[test]
 fn billable_classes_are_pairwise_disjoint_and_exclude_cached_tokens() {
-    let classes = crate::PLANE_DECL.billable_classes;
+    let classes: Vec<&str> = crate::PLANE_DECL
+        .billable_classes
+        .iter()
+        .map(|c| c.class)
+        .collect();
     assert!(
         !classes.contains(&"cached_tokens"),
         "cached_tokens is a subset of audio_tokens_in/text_tokens_in, not a billable class beside \
@@ -541,7 +545,7 @@ fn billable_classes_are_pairwise_disjoint_and_exclude_cached_tokens() {
          {classes:?}"
     );
     let mut seen = std::collections::BTreeSet::new();
-    for class in classes {
+    for class in &classes {
         assert!(
             seen.insert(*class),
             "declared billable classes must be pairwise disjoint (#71) — {class:?} repeats in \

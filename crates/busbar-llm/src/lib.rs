@@ -281,11 +281,26 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // and a rerank's billed search units (the one open class a codec counts). A present card
         // must configure all five (Q29/Q35).
         billable_classes: &[
-            busbar_api::UNIT_INPUT,
-            busbar_api::UNIT_OUTPUT,
-            busbar_api::UNIT_CACHE_READ,
-            busbar_api::UNIT_CACHE_WRITE,
-            busbar_llm_codec::ir::rerank::SEARCH_UNITS_CLASS,
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_api::UNIT_INPUT,
+                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+            },
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_api::UNIT_OUTPUT,
+                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+            },
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_api::UNIT_CACHE_READ,
+                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+            },
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_api::UNIT_CACHE_WRITE,
+                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+            },
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_llm_codec::ir::rerank::SEARCH_UNITS_CLASS,
+                family: "count",
+            },
         ],
         // 1.6.0 pools stage-B: the providers/models/pools LOGIC seam. `providers`/`pools` stay
         // CORE-OWNED-CONCRETE (never listed in `owned_config_sections` — see that field's doc), but

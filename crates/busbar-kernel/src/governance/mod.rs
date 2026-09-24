@@ -256,13 +256,11 @@ impl BudgetCell {
             .retain(|m| units_total(&m.cur) != 0 || units_total(&m.flushed) != 0);
     }
 
-    /// Total current TOKENS across models — the reserved token classes only (the legacy scalar view
-    /// for admin reads and the `tokens:` cap). An open class (a rerank's `search_units`, item 123)
-    /// rides the same map to be PRICED, but it is not a token and never counts as one.
+    /// Total current TOKENS across models — every token-family class (the scalar view for admin
+    /// reads and the `tokens:` cap). A class in another family (a rerank's `search_units`, audio
+    /// seconds) rides the same map to be PRICED, but it is not a token and never counts as one.
     fn total_tokens(&self) -> u64 {
-        busbar_api::RESERVED_UNITS
-            .iter()
-            .fold(0u64, |acc, u| acc.saturating_add(self.total_tier(u)))
+        token_total(self.models.iter().map(|m| &m.cur))
     }
 
     /// Current summed count of one reserved tier across models — a per-tier cap's counter.
@@ -271,6 +269,24 @@ impl BudgetCell {
             acc.saturating_add(m.cur.get(unit).copied().unwrap_or(0))
         })
     }
+}
+
+/// Whether `class` counts toward a `tokens:` cap: a reserved token tier, or a class an installed
+/// plane declares in the token family (a streaming plane's `audio_tokens_in` is as much a token as
+/// an LLM's `input`). The one predicate every token total in this module reads.
+pub fn is_token_class(class: &str) -> bool {
+    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    busbar_api::RESERVED_UNITS.contains(&class)
+        || plane_decls().iter().any(|d| {
+            (d.billable_classes.iter()).any(|c| c.family == TOKEN_FAMILY && c.class == class)
+        })
+}
+
+/// Saturating sum of the token-family counts across name-keyed unit maps.
+fn token_total<'a>(maps: impl Iterator<Item = &'a std::collections::BTreeMap<String, u64>>) -> u64 {
+    maps.flat_map(|m| m.iter())
+        .filter(|(k, _)| is_token_class(k))
+        .fold(0u64, |acc, (_, v)| acc.saturating_add(*v))
 }
 
 /// Saturating sum of every count in a name-keyed unit map — the scalar "total tokens" view over the

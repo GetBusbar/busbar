@@ -311,12 +311,30 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // measure is attribution, not a class. The figure is still carried, unbilled, as the
         // `cached_tokens` content fact (`busbar_plane_streaming::meta::FACT_CACHED_TOKENS`).
         billable_classes: &[
-            busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_IN.as_str(),
-            busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_OUT.as_str(),
-            busbar_plane_streaming::meta::CLASS_TEXT_TOKENS_IN.as_str(),
-            busbar_plane_streaming::meta::CLASS_TEXT_TOKENS_OUT.as_str(),
-            busbar_plane_streaming::meta::CLASS_AUDIO_SECONDS_IN.as_str(),
-            busbar_plane_streaming::meta::CLASS_TOOL_CALLS.as_str(),
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_IN.as_str(),
+                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+            },
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_OUT.as_str(),
+                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+            },
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_plane_streaming::meta::CLASS_TEXT_TOKENS_IN.as_str(),
+                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+            },
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_plane_streaming::meta::CLASS_TEXT_TOKENS_OUT.as_str(),
+                family: busbar_kernel::plane::registry::TOKEN_FAMILY,
+            },
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_plane_streaming::meta::CLASS_AUDIO_SECONDS_IN.as_str(),
+                family: "duration",
+            },
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_plane_streaming::meta::CLASS_TOOL_CALLS.as_str(),
+                family: "count",
+            },
         ],
         resolve_provider: None,
     };

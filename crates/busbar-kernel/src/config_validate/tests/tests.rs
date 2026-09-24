@@ -6019,9 +6019,14 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
     retain_verify_gates: None,
     default_section: None,
     owned_config_sections: &[],
-    billable_classes: &["calls", "bytes"],
+    billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
     resolve_provider: None,
 };
+
+/// One declared billable class in `family`.
+const fn bc(class: &'static str, family: &'static str) -> crate::plane::registry::BillableClass {
+    crate::plane::registry::BillableClass { class, family }
+}
 
 /// The FALLBACK plane's shape: its card is the flat 1.5.5 `rate_card:` (#47), and it declares the
 /// four reserved tiers plus two open classes.
@@ -6030,12 +6035,12 @@ static FLAT_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
     fallback: true,
     config_section: "pools",
     billable_classes: &[
-        "input",
-        "output",
-        "cache_read",
-        "cache_write",
-        "search_units",
-        "images",
+        bc("input", "token"),
+        bc("output", "token"),
+        bc("cache_read", "token"),
+        bc("cache_write", "token"),
+        bc("search_units", "count"),
+        bc("images", "count"),
     ],
     ..CLASS_PLANE
 };
@@ -6132,9 +6137,9 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
 #[test]
 fn a_dropped_in_planes_declared_classes_are_honoured() {
     let names = ["frames".to_string(), "widgets".to_string()];
-    let classes: Vec<&'static str> = names
+    let classes: Vec<crate::plane::registry::BillableClass> = names
         .into_iter()
-        .map(|s| &*Box::leak(s.into_boxed_str()))
+        .map(|s| bc(Box::leak(s.into_boxed_str()), "count"))
         .collect();
     let dropped: &'static crate::plane::registry::PlaneDecl =
         Box::leak(Box::new(crate::plane::registry::PlaneDecl {

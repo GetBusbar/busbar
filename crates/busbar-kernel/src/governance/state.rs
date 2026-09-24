@@ -1658,7 +1658,7 @@ impl GovState {
         );
         Ok(spend.map(|spend_cents| DerivedUsage {
             spend_cents,
-            tokens: ledger.total_tokens(),
+            tokens: super::token_total(ledger.models.iter().map(|m| &m.usage_units)),
             requests: ledger.requests,
         }))
     }
@@ -1799,7 +1799,8 @@ impl GovState {
     ///
     /// Metric semantics per bucket:
     /// - `requests`: precise - the +1 charge is synchronous with the check.
-    /// - `tokens`: BEST-EFFORT (the old TPM posture) - tokens land post-response, so the cap
+    /// - `tokens`: every token-family class any plane declares, not only the reserved four.
+    ///   BEST-EFFORT (the old TPM posture) - tokens land post-response, so the cap
     ///   blocks the NEXT request once the ledgered total has crossed it; in-flight requests'
     ///   tokens are invisible to admissions racing them.
     /// - `budget`: derived at check time from the cell's token ledger, each era at the card in

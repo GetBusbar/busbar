@@ -189,8 +189,14 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         owned_config_sections: &[],
         // The classes the plane crate declares (`busbar_plane_mcp::meta`), by its own symbols.
         billable_classes: &[
-            busbar_plane_mcp::meta::CLASS_TOOL_CALLS.as_str(),
-            busbar_plane_mcp::meta::CLASS_BYTES.as_str(),
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_plane_mcp::meta::CLASS_TOOL_CALLS.as_str(),
+                family: "count",
+            },
+            busbar_kernel::plane::registry::BillableClass {
+                class: busbar_plane_mcp::meta::CLASS_BYTES.as_str(),
+                family: "byte",
+            },
         ],
         resolve_provider: None,
     };

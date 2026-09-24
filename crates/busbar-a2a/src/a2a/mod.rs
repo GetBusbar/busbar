@@ -175,7 +175,10 @@ pub const PLANE_DECL: busbar_kernel::plane::registry::PlaneDecl =
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
         // The class the plane crate declares (`busbar_plane_a2a::meta`), by its own symbol.
-        billable_classes: &[busbar_plane_a2a::meta::CLASS_BYTES.as_str()],
+        billable_classes: &[busbar_kernel::plane::registry::BillableClass {
+            class: busbar_plane_a2a::meta::CLASS_BYTES.as_str(),
+            family: "byte",
+        }],
         resolve_provider: None,
         // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from
         // `agents:`/`public_url` on every apply, and its durable task table is restored at boot

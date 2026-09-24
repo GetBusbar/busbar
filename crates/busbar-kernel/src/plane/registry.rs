@@ -808,6 +808,19 @@ pub trait PlaneBootCtx {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
+/// One billable class a plane ledgers and the unit family its count is in — the family vocabulary
+/// the plane's own meter-class declarations use (`token`, `duration`, `count`, `byte`, …).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BillableClass {
+    /// The class string the plane's raw counts are keyed by.
+    pub class: &'static str,
+    /// The unit family the class counts in.
+    pub family: &'static str,
+}
+
+/// The token family: every class a plane declares in it counts toward a `tokens:` cap.
+pub const TOKEN_FAMILY: &str = "token";
+
 /// EVERYTHING CORE KNOWS ABOUT A PLANE'S VOCABULARY, declared once by the plane itself.
 ///
 /// Every field replaces one arm of one `match self` on `busbar_kernel::plane::Plane`. The doc on each
@@ -1178,13 +1191,14 @@ pub struct PlaneDecl {
     /// concretely — the invariant that makes the later section moves safe.
     pub owned_config_sections: &'static [&'static str],
 
-    /// THE BILLABLE UNIT CLASSES THIS PLANE LEDGERS — the class strings its raw counts are keyed by
-    /// (#71) and a rate card configures (a reserved `<class>_utok` tier, or `units: { <class>: .. }`).
-    /// When this plane's section carries a `rate_card`, boot and `--validate` REFUSE the config unless
-    /// the card configures every class listed here (an explicit 0 counts), naming each one missing
-    /// (owner ruling Q29/Q35). Identical for every plane, compiled-in or registered from outside core:
-    /// the kernel reads the list and never names a class. `&[]` for a plane that bills nothing.
-    pub billable_classes: &'static [&'static str],
+    /// THE BILLABLE UNIT CLASSES THIS PLANE LEDGERS, each with the unit family it counts in — the
+    /// class strings its raw counts are keyed by and a rate card configures (a reserved
+    /// `<class>_utok` tier, or `units: { <class>: .. }`). When this plane's section carries a
+    /// `rate_card`, boot and `--validate` REFUSE the config unless the card configures every class
+    /// listed here (an explicit 0 counts). Every class in [`TOKEN_FAMILY`] counts toward a `tokens:`
+    /// cap. Pairwise disjoint: no class is a subset of another. Identical for every plane, compiled-in or registered from outside
+    /// core: the kernel reads the list and never names a class. `&[]` for a plane that bills nothing.
+    pub billable_classes: &'static [BillableClass],
 
     /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
     /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,
