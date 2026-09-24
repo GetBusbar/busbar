@@ -1041,15 +1041,9 @@ const KNOWN_OUTSIDE_THIS_COLLAPSE: &[(&str, &str, usize, &str)] = &[
     (
         "crates/busbar-voice/src/runtime/metering.rs",
         "price_usage",
-        2,
-        "LocalLease's dev stand-in answers `Some(0)` with no card — a plane-side billing-off \
-         answer (#43, the busbar-voice owner's); and a `#[cfg(test)]` MockMeteringHost",
-    ),
-    (
-        "crates/busbar-voice/src/bin/voice-conform.rs",
-        "price_usage",
         1,
-        "the conformance harness's mock host — a test double compiled into a bin",
+        "a `#[cfg(test)]` MockMeteringHost (LocalLease's stand-in and voice-conform's mock host \
+         went with 1ee8dac1d, the session meter)",
     ),
 ];
 
