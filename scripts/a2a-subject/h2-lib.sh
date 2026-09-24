@@ -42,7 +42,8 @@ source "${H2_REPO}/testing/fleet-fixtures/lib.sh"
 H2_RATE_CARD_DEFAULT='rate_card: {}'
 
 H2_BIN="${A2A_SUBJECT_BUSBAR_BIN:-${H2_REPO}/target/release/busbar}"
-[ -x "$H2_BIN" ] || { echo "H2: no busbar binary at $H2_BIN (build with: cargo build --release -p busbar)" >&2; exit 2; }
+# `--selftest` (bottom of this file) drives no busbar at all, so it is the one run that needs no binary.
+[ -x "$H2_BIN" ] || [ "${BASH_SOURCE[0]}:${1:-}" = "$0:--selftest" ] || { echo "H2: no busbar binary at $H2_BIN (build with: cargo build --release -p busbar)" >&2; exit 2; }
 
 h2_free_ports() {
   python3 - <<'PY'
@@ -363,8 +364,110 @@ items=d.get('items') or []
 print(sum(1 for r in items if r.get('seq',0) > since and r.get('action')==action and r.get('resource')==resource))"
 }
 
+# Emit a PASS/FAIL verdict line and EXIT the rig: 0 on PASS, 1 on FAIL or on any other outcome word
+# (a verdict nobody can read is not a pass). It exits rather than returns so a rig that writes
+# `h2_verdict FAIL "..."` followed by anything else -- a cleanup line, a second check -- still ends
+# red; a `return` made every call site's exit status depend on the verdict being the script's last
+# command. The EXIT trap each rig sets (`h2_stop`) still runs. Pinned by `--selftest` (verdict-exits).
+# The a2a twin of scripts/mcp-subject/h2-lib.sh's h2_verdict (mcp item 547).
 h2_verdict() {
   local outcome="$1" detail="$2"
   printf '%s\t%s\n' "$outcome" "$detail"
-  [ "$outcome" = PASS ]
+  [ "$outcome" = PASS ] && exit 0
+  exit 1
 }
+
+# ── --selftest ────────────────────────────────────────────────────────────────────────────────────
+# `./scripts/a2a-subject/h2-lib.sh --selftest [case]` -- no busbar, no node, no network. Each rig case
+# copies the REAL rig script into a scratch dir beside a STUB h2-lib.sh (this file's own h2_verdict
+# and h2_int_is, plus canned answers for every reader the rig calls) and runs it, so what is judged is
+# the rig's own decision logic against a read it was never written for. Every case carries a control
+# the rig must PASS, so a stub that broke the rig outright cannot pass for a red.
+_h2_st_stub() {
+  local dir="$1"
+  {
+    echo 'set -uo pipefail'
+    declare -f h2_verdict h2_int_is 2>/dev/null
+    cat <<'STUB'
+_st_next() { local f="$H2_ST_DIR/n.$1" n v; n="$(cat "$f" 2>/dev/null || echo 0)"; echo $((n+1)) >"$f"; IFS='|' read -r -a v <<<"$2"; printf '%s\n' "${v[$n]:-}"; }
+h2_boot() { return 0; }
+h2_stop() { :; }
+h2_approve_agent() { return 0; }
+h2_mint() { echo "kid-selftest tok-selftest"; }
+h2_bind() { echo "bound-selftest"; }
+h2_call() { if [ -n "${H2_RATE_CARD_YAML+x}" ]; then echo "200 {}"; else echo "${H2_ST_CALL:-200} {}"; fi; }
+h2_usage_field() { _st_next usage "${H2_ST_USAGE:-1}"; }
+h2_put_fee() { echo '{"applied":true}'; }
+h2_admin_usage_total() { echo 80000; }
+h2_meter_row_field() { case "$3" in requests) echo 1 ;; *) echo 10000 ;; esac; }
+h2_meter_row_quantity() { printf '%s\n' "${H2_ST_QTY-3}"; }
+h2_validate_card() { echo ok; }
+sleep() { :; }
+STUB
+  } >"${dir}/h2-lib.sh"
+}
+
+# _h2_st_rig <script> [VAR=value ...] -> prints the rig's exit status
+_h2_st_rig() {
+  local script="$1" d
+  shift
+  d="$(mktemp -d "${_H2_ST_TMP}/case.XXXXXX")"
+  cp "${H2_HERE}/${script}" "${d}/"
+  _h2_st_stub "$d"
+  env -u H2_RATE_CARD_YAML H2_ST_DIR="$d" H2_WORK="${d}/work" "$@" bash "${d}/${script}" >"${d}/out" 2>&1
+  echo "$?"
+}
+
+# _h2_st_want <label> <0|red> <got>
+_h2_st_want() {
+  local label="$1" want="$2" got="$3" ok=1
+  _H2_ST_RAN=$((_H2_ST_RAN+1))
+  case "$want" in
+    0) [ "$got" = "0" ] || ok=0 ;;
+    red) [ "$got" != "0" ] || ok=0 ;;
+  esac
+  if [ "$ok" = 1 ]; then
+    printf 'ok\t%s\n' "$label"
+  else
+    printf 'FAIL\t%s (want %s, got exit %s)\n' "$label" "$want" "$got"
+    _H2_ST_FAILED=$((_H2_ST_FAILED+1))
+  fi
+}
+
+_h2_st_case_verdict_exits() {
+  local out st
+  out="$( (h2_verdict FAIL "selftest" >/dev/null; echo REACHED) )"; st=$?
+  _h2_st_want "verdict-exits: FAIL ends the rig red" red "$st"
+  _h2_st_want "verdict-exits: nothing after a FAIL verdict runs" 0 "${#out}"
+  out="$( (h2_verdict PASS "selftest" >/dev/null; echo REACHED; exit 7) )"; st=$?
+  _h2_st_want "verdict-exits: PASS ends the rig green" 0 "$st"
+  _h2_st_want "verdict-exits: nothing after a PASS verdict runs" 0 "${#out}"
+  ( h2_verdict MAYBE "selftest" >/dev/null ); st=$?
+  _h2_st_want "verdict-exits: an unknown outcome word is red" red "$st"
+}
+
+h2_selftest() {
+  local only="${1:-}" c
+  _H2_ST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/h2-selftest.XXXXXX")" || return 1
+  _H2_ST_RAN=0
+  _H2_ST_FAILED=0
+  for c in verdict_exits; do
+    [ -z "$only" ] || [ "$only" = "$c" ] || continue
+    "_h2_st_case_${c}"
+  done
+  rm -rf "$_H2_ST_TMP"
+  if [ "$_H2_ST_RAN" -eq 0 ]; then
+    printf 'FAIL\tno selftest case named %s\n' "$only"
+    return 1
+  fi
+  printf '%s\th2-lib selftest: %s checks, %s failed\n' \
+    "$([ "$_H2_ST_FAILED" -eq 0 ] && echo PASS || echo FAIL)" "$_H2_ST_RAN" "$_H2_ST_FAILED"
+  [ "$_H2_ST_FAILED" -eq 0 ]
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-}" in
+    --selftest) h2_selftest "${2:-}"; exit $? ;;
+    *) echo "usage: $0 --selftest [case]  (this file is otherwise sourced by scripts/a2a-subject/h2-*.sh)" >&2; exit 2 ;;
+  esac
+fi
